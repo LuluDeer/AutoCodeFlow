@@ -2341,6 +2341,14 @@ jobs:
   desktop-selftests:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      # electron 二进制由 apps/executor-desktop 的 postinstall 下载。官方 release CDN
+      # 在 CI runner 上**间歇** 502/504（2026-11-09 实测：desktop-selftests 连跑两次
+      # 均 504 Gateway Time-out，而本机 curl 同一 URL 返回 302 正常）⇒ 镜像兜底。
+      # 为什么放 **job 级**而不是 npm ci 的 step 级：实测下载发生在 `npm run test:main`
+      # 里（第 6 个 selftest 前），step 级 env 不跨步继承 ⇒ 必须整 job 生效。
+      # 取值与 release-desktop.yml 的同一行**逐字相同**，避免多处口径分叉。
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -2411,6 +2419,14 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      # electron 二进制由 apps/executor-desktop 的 postinstall 下载。官方 release CDN
+      # 在 CI runner 上**间歇** 502/504（2026-11-09 实测：desktop-selftests 连跑两次
+      # 均 504 Gateway Time-out，而本机 curl 同一 URL 返回 302 正常）⇒ 镜像兜底。
+      # 为什么放 **job 级**而不是 npm ci 的 step 级：实测下载发生在 `npm run test:main`
+      # 里（第 6 个 selftest 前），step 级 env 不跨步继承 ⇒ 必须整 job 生效。
+      # 取值与 release-desktop.yml 的同一行**逐字相同**，避免多处口径分叉。
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -2566,6 +2582,14 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 40
+    env:
+      # electron 二进制由 apps/executor-desktop 的 postinstall 下载。官方 release CDN
+      # 在 CI runner 上**间歇** 502/504（2026-11-09 实测：desktop-selftests 连跑两次
+      # 均 504 Gateway Time-out，而本机 curl 同一 URL 返回 302 正常）⇒ 镜像兜底。
+      # 为什么放 **job 级**而不是 npm ci 的 step 级：实测下载发生在 `npm run test:main`
+      # 里（第 6 个 selftest 前），step 级 env 不跨步继承 ⇒ 必须整 job 生效。
+      # 取值与 release-desktop.yml 的同一行**逐字相同**，避免多处口径分叉。
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -2624,6 +2648,14 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 20
+    env:
+      # electron 二进制由 apps/executor-desktop 的 postinstall 下载。官方 release CDN
+      # 在 CI runner 上**间歇** 502/504（2026-11-09 实测：desktop-selftests 连跑两次
+      # 均 504 Gateway Time-out，而本机 curl 同一 URL 返回 302 正常）⇒ 镜像兜底。
+      # 为什么放 **job 级**而不是 npm ci 的 step 级：实测下载发生在 `npm run test:main`
+      # 里（第 6 个 selftest 前），step 级 env 不跨步继承 ⇒ 必须整 job 生效。
+      # 取值与 release-desktop.yml 的同一行**逐字相同**，避免多处口径分叉。
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
