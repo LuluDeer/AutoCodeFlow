@@ -5561,6 +5561,57 @@
     （`palette.groupTruncated`）。⇒ 纪律：**要断言「文案里有哪几个插值参数」时，
     断言**词条表**（源文件）而不是渲染结果** —— 前者稳定、后者依赖 i18n ready 时机。
 
+### R196（2026-11-08 · 并行第 124 批 · **`no-explicit-any` 三段开回 error，73 → 0**）
+  **本批 1 个提交**：`52055835`（38 个源码/config 文件 + 新增 `electron-api.d.ts` + 摘要回填）。
+  - **① 起点**：R176 立的门**当场就把这条规则关掉了**（「实测 main 62 处、renderer 12 处 ⇒ 关掉」，
+    理由「目标是**把门立起来**，不是重写 170 个文件的类型」）。那个取舍在当时**是对的**，
+    但它让**债务不再被看见**。
+  - **② 先分类再动手（不是逐处消 any）**：74 处按性质切五类，各用不同办法 ——
+    `catch` 且 `err` **未被使用** 17 处 → 直接 `unknown`（**零风险**）· `catch` 用 `err.message` 20 处 →
+    `unknown` + `err instanceof Error ? err.message : String(err)` · **Electron IPC 事件签名** 16 处 →
+    **逐条指名豁免** · **`(window as any).electronAPI` 12 处** → **挖根因** ·
+    `JSON.parse` 结果 / `server.on('error')` 4 处 → 收窄成真实形状 ·
+    **`*.selftest.ts` 测试替身** 47 处 → **文件级**豁免。
+  - **③ 挖出的真根因：`window.electronAPI` 从来没有全局类型声明** —— `vite-env.d.ts` 注释自己写着
+    「本文件**故意不声明**」，现状是 **9 个文件各自**抄了一份
+    `declare const window: Window & { electronAPI: {...} }`，**字段集彼此不一致**
+    ⇒ 页面要用「别的文件才有」的字段时只能 `(window as any).electronAPI` 绕过去（12 处）。
+    ⇒ 修法**不是逐处消 any**，而是**建一处全局契约**：新增 `src/renderer/electron-api.d.ts`，
+    **字段集取自 preload 的真实暴露面**（从 `exposeInMainWorld('electronAPI', {...})` 提取的 **62 个方法**），
+    **删掉那 9 份不一致的局部声明** ⇒ 12 处 `as any` **全部消失**。
+    ⚠️ renderer 是**独立 tsconfig**（不继承根）⇒ 不能 `import type` preload（会把 electron 变成
+    编译期依赖）⇒ 手写形状声明 + 文件头写明「以 preload 为唯一真值源、改暴露面须同步」。
+  - **④ 保留的三类 `any` 不是漏网，是**有名有姓**的**：① `ipc-sender-guard.ts` 16 处 =
+    **Electron IPC 事件签名**（该模块刻意是**不依赖 electron 的结构子集替身**，main/preload/测试三处复用
+    ⇒ 写 `IpcMainInvokeEvent` 会把 electron 变成编译期依赖，**破坏设计**）⇒ 逐条 `eslint-disable` + 理由；
+    ② `*.selftest.ts` 47 处 = **测试替身**（fake updater / fake emitter）⇒ 文件级豁免；
+    ③ `electron-api.d.ts` 34 处 = **跨 IPC 边界返回值**（精确类型在 main 端才是权威）⇒ 文件级指名豁免。
+  - **⑤ 一处**差点写错又改回来**的（→ 382 的素材）**：`StatusWindow.tsx` 的
+    `getTodayLogs().then((result: any) => …)` 我一开始改成 `(result: unknown)` + 手写收窄
+    ⇒ **又多了 2 行**，把该文件顶到 `functionLines` 809/807、`branchDensity` 24.5/24.4 **被判红**。
+    回头一看**根本不需要** —— `getTodayLogs` 的类型现在来自全局契约，**去掉标注**就是精确类型
+    ⇒ 恢复到零新增行。
+  - **⑥ 顺带**：`agent-worker-bundle.sha256` 的**源码语义摘要**真漂移（我改的 `catch` 落在 worker 的
+    输入源码里）⇒ `npm run digest:regen` 回填（只回填 ① 源码语义摘要；产物字节哈希**由 CI 回填，不伪造**）；
+    `vite-env.d.ts` 的「故意不声明」过时注释改为「已迁到 `electron-api.d.ts`（R196 完成）」。
+  - **⑦ 验证（规则现在是**开的**）**：`lint:desktop` **0** · `typecheck` **main / renderer / worker 三段全 0** ·
+    **三段 `no-explicit-any` 实际计数：main 0 / renderer 0 / worker 0** · `check:size-caps` **0** ·
+    `check:desktop-bundle-drift` **0** · `test:main` / `test:renderer` 通过 · `test:guards:repo` **0（111/111）**。
+  - **⑧ 遗留（≤2）**：① **0 处 `no-explicit-any` 且规则已开** ⇒ 新增即红，必须指名豁免并写理由；
+    剩余豁免清单在三个 config 里各有注释说明（**豁免不是隐藏，是登记**）。
+    ② 形态判据的跨文件盲区（已签字登记）· 判据⑨「跟随变量」盲区（M）· 错误目录 R178 旁注过时（S）。
+  - **⑨ 方法学沉淀（承 381，编号实测最大 = 381 ⇒ 本轮用 382–383）**：
+    382**「补齐一处**精确类型**，比在调用点消十处 `any` 更省」** —— 本轮 12 处 `(window as any)` 的根因是
+    **一个缺失的全局声明**；补上那一处后，12 处 `any` **一行都不用单独改**（纯等价替换 `window.electronAPI`）。
+    ⇒ 纪律：**遇到 `as any` 扎堆，先问「是不是某个类型声明缺失/不一致」**，而不是逐个绕。
+    （同一轮里我**反例**了这一次：`StatusWindow` 那处 `getTodayLogs` 我**先**去手写收窄，
+    结果**又多 2 行被判红**；回头发现**类型已经来自全局契约、只要去掉标注**。）
+    383**「关规则是最贵的债务」** —— R176 关掉 `no-explicit-any` 的理由完全正当（先把门立起来），
+    但**关掉的这 17 天里，债务从「被 lint 每天念一遍」变成「没人知道有多少」**；
+    本轮重新打开时才发现它其实是 **5 个不同性质的类别**，其中 3 类**根本不该改**（IPC 签名 / 测试替身 /
+    IPC 边界返回值）、2 类可以**机械收紧**。⇒ 纪律：**关规则时必须同时登记「怎么重开」**
+    （本仓的做法是 config 里逐条写明关掉的**处数**与**理由**——正因如此本轮能一次分类到位）。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
