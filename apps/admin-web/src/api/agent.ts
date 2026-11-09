@@ -138,6 +138,21 @@ export const agentApi = {
       items: AgentSession[];
       total: number;
     }>,
+  /**
+   * R198：**待接管数**（`waiting_input` 会话的全量计数）。
+   *
+   * ⚠️ 为什么单独一个方法、而不在调用处写 `list({ status:'waiting_input', pageSize:1 })`：
+   * ① 语义独立（「待接管数」是一个**运营指标**，不是一次列表查询）；
+   * ② **不污染 `list` 的调用计数** —— 既有若干测试断言「`agentApi.list` 被调了几次」，
+   *    复用 `list` 会让那些断言被一个**用途完全不同**的请求打乱（R198 实测：
+   *    3 个 agent-sessions 用例从绿变红，报 `called 2 times, but got 5 times`）。
+   *    ⇒ 一个用途一个方法，调用计数才有意义。
+   * ③ 走同一个后端端点（`pageSize: 1` 只取 `total`），**不需要后端改动**。
+   */
+  pendingTakeoverCount: () =>
+    client
+      .get('/agent/sessions', { params: { status: 'waiting_input', page: 1, pageSize: 1 } })
+      .then((r) => (r as { total: number }).total),
   detail: (id: string) =>
     client.get(`/agent/sessions/${id}`) as Promise<{
       session: AgentSession;

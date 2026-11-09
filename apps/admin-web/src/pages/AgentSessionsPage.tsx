@@ -30,6 +30,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { useSearchParams } from 'react-router-dom';
 
 import PageHeader from '../components/PageHeader';
+import PendingTakeoverBadge from '../components/PendingTakeoverBadge';
 // UI-16：列表请求失败不再只弹 toast——页内原位错误块 + 重试入口
 import StateError from '../components/StateError';
 // UI-08：首屏数据未达时以骨架形态替代裸 spinner / 空态误报（见下方列表分支）
@@ -284,6 +285,7 @@ export default function AgentSessionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [items, setItems] = useState<AgentSession[]>([]);
   const [total, setTotal] = useState(0);
+  const [pendingRefreshToken, setPendingRefreshToken] = useState(0); // R198：待接管徽标的刷新信号
   const [page, setPage] = useState(() => {
     const p = Number(searchParams.get('page'));
     return Number.isInteger(p) && p > 0 ? p : 1;
@@ -353,6 +355,7 @@ export default function AgentSessionsPage() {
       if (!raceGuard.isLatest(seq)) return; // 过期响应：丢弃（不覆盖更新的筛选结果）
       setItems(res.items);
       setTotal(res.total);
+      setPendingRefreshToken(n => n + 1);
     } catch (err: unknown) {
       if (!raceGuard.isLatest(seq)) return;
       // B-14：后台轮询失败静默——连续弹 message 是噪音，列表保留旧数据。
@@ -963,6 +966,7 @@ export default function AgentSessionsPage() {
               {t('agents.create')}
             </Button>
             {budgetNode}
+            <PendingTakeoverBadge refreshToken={pendingRefreshToken} onJump={() => { setStatusFilter('waiting_input'); setPage(1); }} />
             {kindSelect}
             {statusSelect}
             {refreshButton}
@@ -973,6 +977,7 @@ export default function AgentSessionsPage() {
       {isMobile && (
         <div style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {budgetNode}
+          <PendingTakeoverBadge refreshToken={pendingRefreshToken} onJump={() => { setStatusFilter('waiting_input'); setPage(1); }} />
           {kindSelect}
           {statusSelect}
           <div>
