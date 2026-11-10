@@ -474,16 +474,49 @@ export function computeTriggerDedupTtlMs(task: Task): number {
 }
 
 /**
- * B-1: cron 周期估算（毫秒）。复用 maintenance-window.util 的
- * lastWindowCronFireBefore（同一套 node-cron.validate 口径的解析器，时区
- * 语义与调度注册一致）：取 now 的最近一次触达与它的上一次触达，两者间隔
- * 即「期望触发周期」。解析失败 / 7 天回看内触达不足两次（周期超过 7 天的
- * cron）返回 null——调用方回退保守阈值。
+ * B-1: cron 周期估算（毫秒）——**回看窗口内相邻落点间隔的最小值**。
  *
- * 结果按 (表达式|时区) 缓存并带 TTL：周期估算只服务于 misfire 阈值这一
- * 启发式（真闸是 B-1 的落点校验），10 分钟的陈旧窗口（跨 DST 时刻周期
- * 漂移一档）无正确性影响；无 TTL 的话进程生命周期内一次性缓存会让 DST
- * 前后的估算永久偏离。
+ * 复用 maintenance-window.util 的 lastWindowCronFireBefore（同一套
+ * node-cron.validate 口径的解析器，时区语义与调度注册一致）枚举落点。
+ *
+ * ## 为什么必须取「最小间隔」（INCIDENT-2026-11-10，漏单事故）
+ *
+ * 旧实现取的是「now 的最近一次触达」与「它的上一次触达」的间隔，并把它当作
+ * 触发周期。对**多点、且跨夜落点稀疏**的 cron 这是错的：
+ *
+ *   `0 10,12,14,16,18 * * *` 在 10:00 触发时，最近触达 = 今天 10:00，上一次
+ *   = **昨天 18:00** ⇒ 估出 16h，而真实白天周期是 2h。这个被放大的「周期」
+ *   直接喂给 `computeTriggerDedupTtlMs` 当作 Redis 去重锁 TTL：
+ *   锁从 10:00 一直持有到次日 02:00，期间 12/14/16/18 四个落点全部被
+ *   `SET NX` 拒绝 ⇒ `enqueue` 在 debug 级 early-return（生产 LOG_LEVEL=info
+ *   完全不可见）⇒ **不建 execution 行、不推进 lastTriggerTime**，且 DB
+ *   claim 的窗口同源（`lastTriggerTime < now - lockTTL`）**二次**挡掉，
+ *   连 misfire 补偿都因 lastTriggerTime 停滞而看不出来。
+ *
+ *   生产实测（2026-11-10，Redis `PTTL lock:task:trigger:<id>` 反解）：
+ *   `0 10,12,14,16,18` → 15.9999h、`0 9,18` → 14.9999h、
+ *   `0 10,18` → 15.9999h、`0 15,17,19,21` → 17.9999h、`0 10,16` → 5.9999h
+ *   —— 每个值都精确等于「该拍的上一次触达（昨日末拍/今日前一拍）→ 该拍」
+ *   的间隔减去 500ms 抖动缓冲，锁确由那次成功 enqueue 自建。
+ *
+ * 取最小间隔而非最近间隔，是因为**「周期」的语义是「最小重复单元」**：
+ * 一小时内每 2h 一拍的任务，其重复单元就是 2h，跨夜空档只是「当天最后一拍
+ * 到次日第一拍」的休止，不改变重复单元。用最小间隔后：
+ *   · 均匀 cron（每 N 分钟、每小时、单点每日）结果与旧实现**逐字相同**；
+ *   · 多点密集 cron（`0 10,12,14,16,18`）从 15.9999h 回到真实的 2h ⇒ 锁不再吞点；
+ *   · 多点稀疏 cron（`0 9,18`）从 14.9999h 回到真实的 9h。
+ *
+ * ## 边界
+ * - 解析失败 / 回看窗口内触达不足两次（周期超过窗口的 cron）返回 null
+ *   → 调用方回退保守阈值（方向安全）。
+ * - 枚举跨度上限见 `CRON_PERIOD_SCAN_SPAN_MS`（2 个自然日）：已足以覆盖任何
+ *   5 段 cron 的「最小重复单元」，同时把最坏计算量钳在亚毫秒级。
+ * - 最小值下限 1 分钟（cron 的物理粒度），避免空档边界算出 0 或负值。
+ *
+ * 结果按 (表达式|时区) 缓存并带 TTL：周期估算服务于 misfire 阈值 / 去重锁
+ * TTL / 漏跑容错窗口三处启发式，10 分钟的陈旧窗口（跨 DST 时刻周期漂移
+ * 一档）对这些用途无正确性影响；无 TTL 的话进程生命周期内一次性缓存会让
+ * DST 前后的估算永久偏离。
  */
 const CRON_PERIOD_ESTIMATE_TTL_MS = 10 * 60 * 1000;
 const CRON_PERIOD_ESTIMATE_CACHE = new Map<
@@ -491,6 +524,29 @@ const CRON_PERIOD_ESTIMATE_CACHE = new Map<
   { value: number | null; at: number }
 >();
 const CRON_PERIOD_ESTIMATE_CACHE_MAX = 512;
+/**
+ * 周期枚举的**时间跨度上限**（毫秒）——性能闸门，不是回看窗口。
+ *
+ * 由近及远枚举落点时，单次 `lastWindowCronFireBefore` 的代价就是「距上一落点
+ * 的分钟数」，因此枚举总代价 = Σ相邻间隔 ≈ **枚举跨度**（而非「落点数 ×
+ * 回看窗口」，后者是朴素实现的陷阱：每分钟触发的 cron 会退化成上亿步）。
+ *
+ * ## 为什么 2 个自然日足够
+ *
+ * 「周期」= 最小重复单元，它必然出现在落点序列的本地相邻对中。任何 5 段 cron
+ * 的匹配只依赖「分/时/日/月/周」字段，其最小重复结构在一个**星期**内必然完整
+ * 出现一次。取 2 天作为跨度上限，是因为：
+ *   · 日级/周级 cron：最少 2 个落点就得出结论（24h/7d），远不会触到上限；
+ *   · 一天内多点（`0 10,12,14,16,18`）：2 天 = 10 个落点，完整覆盖「日内
+ *     相邻间隔」与「跨夜空档」两类间隔 ⇒ 最小值必为日内 2h；
+ *   · 极稀疏（月级）：7 天回看内不足两点 ⇒ 返回 null（调用方回退保守值，
+ *     与旧实现的边界语义一致）。
+ * 2 天上的最坏代价 ≈ 2880 次分钟匹配，合计亚毫秒级；且结果按 (表达式|时区)
+ * 缓存 10 分钟 ⇒ 每个表达式最多每 10 分钟付一次。
+ */
+const CRON_PERIOD_SCAN_SPAN_MS = 2 * 24 * 60 * 60 * 1000;
+/** cron 的物理最小粒度（分钟）——最小间隔的下限，避免空档边界算出 0。 */
+const CRON_MIN_PERIOD_MS = 60_000;
 
 export function estimateCronPeriodMs(
   expr: string,
@@ -502,23 +558,33 @@ export function estimateCronPeriodMs(
   if (cached && Date.now() - cached.at < CRON_PERIOD_ESTIMATE_TTL_MS) {
     return cached.value;
   }
-  const latest = lastWindowCronFireBefore(
+  // 逐落点回扫并记录**相邻间隔的最小值**（不是「最近一次的间隔」）。
+  // lastWindowCronFireBefore 每次返回「严格早于 before」的最近落点，所以
+  // 从 now 开始反复以 older-1ms 为新的上界，即可由近及远枚举落点。
+  let value: number | null = null;
+  const spanFloor = now.getTime() - CRON_PERIOD_SCAN_SPAN_MS;
+  let prev: Date | null = lastWindowCronFireBefore(
     expr,
     now,
     MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
     timeZone,
   );
-  let value: number | null = null;
-  if (latest) {
-    const prev = lastWindowCronFireBefore(
+  while (prev && prev.getTime() > spanFloor) {
+    const older = lastWindowCronFireBefore(
       expr,
-      // 严格早于 latest：回看窗口 7 天对周级 cron 足够（月级 cron 触达
-      // 不足两次 → null → 调用方回退保守阈值，方向安全）。
-      new Date(latest.getTime() - 1),
+      new Date(prev.getTime() - 1),
       MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
       timeZone,
     );
-    if (prev) value = latest.getTime() - prev.getTime();
+    if (!older) break;
+    const gap = prev.getTime() - older.getTime();
+    // gap 恒为正（older 严格早于 prev）；取最小值即为重复单元。
+    if (gap >= CRON_MIN_PERIOD_MS && (value === null || gap < value)) {
+      value = gap;
+      // 已经到 cron 物理粒度（每分钟）⇒ 不可能有更小的重复单元，提前收敛。
+      if (value === CRON_MIN_PERIOD_MS) break;
+    }
+    prev = older;
   }
   if (CRON_PERIOD_ESTIMATE_CACHE.size >= CRON_PERIOD_ESTIMATE_CACHE_MAX) {
     CRON_PERIOD_ESTIMATE_CACHE.clear();

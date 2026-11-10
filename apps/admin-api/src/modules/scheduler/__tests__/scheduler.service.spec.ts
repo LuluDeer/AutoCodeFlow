@@ -4172,6 +4172,91 @@ describe("SchedulerService", () => {
       ).toBe(TRIGGER_DEDUP_MIN_TTL_MS);
     });
 
+    /**
+     * INCIDENT-2026-11-10（生产漏单事故）回归：**非对称落点的 cron 不得把
+     * 「跨夜空档」当成周期**。
+     *
+     * 缺陷现场：`estimateCronPeriodMs` 旧实现取「最近触达」与「它的上一次
+     * 触达」的间隔。对 `0 10,12,14,16,18 * * *`，当天首拍 10:00 的「上一次
+     * 触达」是**昨天 18:00** ⇒ 估出 16h（真实日内周期 2h）。这个放大值被
+     * 当作 Redis 去重锁 TTL（`renew:false` 且永不 release）⇒ 锁从 10:00
+     * 持有到次日 02:00 ⇒ 12/14/16/18 四个落点被 `SET NX` 拒绝，`enqueue`
+     * 在 debug 级静默 return（生产 LOG_LEVEL=info 不可见）⇒ 不建 execution
+     * 行、lastTriggerTime 不推进；DB claim 窗口同源，二次挡掉。
+     *
+     * 生产实测：该批锁的初始 TTL = 15.9999h（= 16h − 500ms 抖动缓冲），
+     * 与 `0 9,18` 的 14.9999h、`0 10,18` 的 15.9999h、`0 15,17,19,21` 的
+     * 17.9999h 一一对应「昨天末拍 → 今天首拍」的跨夜空档。
+     *
+     * 修复后：周期 = 回看窗口内相邻落点间隔的**最小值**（重复单元），
+     * 上述形状全部回到真实日内周期。
+     *
+     * ⚠️ 这些断言与时区/当前时刻**无关**（min-gap 对落点序列是平移不变的），
+     * 因而不会随 CI 运行时刻漂移。
+     */
+    describe("INCIDENT-2026-11-10: 跨夜空档不得被当成 cron 周期", () => {
+      const periodOf = (cronExpression: string) =>
+        computeTriggerDedupTtlMs(
+          makeTask({
+            triggerType: TaskTriggerType.CRON,
+            cronExpression,
+            timezone: "Asia/Shanghai",
+          }),
+        ) + TRIGGER_DEDUP_JITTER_BUFFER_MS;
+
+      it("`0 10,12,14,16,18` 的周期是日内 2h（不是跨夜 16h）", () => {
+        expect(periodOf("0 10,12,14,16,18 * * *")).toBe(2 * 60 * 60 * 1000);
+      });
+
+      it("`0 9,18` 的周期是 9h（不是跨夜 15h/24h）", () => {
+        expect(periodOf("0 9,18 * * *")).toBe(9 * 60 * 60 * 1000);
+      });
+
+      it("`0 10,18` 的周期是 8h（不是跨夜 16h）", () => {
+        expect(periodOf("0 10,18 * * *")).toBe(8 * 60 * 60 * 1000);
+      });
+
+      it("`0 10,14,17` 的周期是 3h（不是跨夜 17h）", () => {
+        expect(periodOf("0 10,14,17 * * *")).toBe(3 * 60 * 60 * 1000);
+      });
+
+      it("`0 15,17,19,21` 的周期是 2h（不是跨夜 18h）", () => {
+        expect(periodOf("0 15,17,19,21 * * *")).toBe(2 * 60 * 60 * 1000);
+      });
+
+      it("单点日级 `0 9 * * *` 仍是 24h（本来就是安全形状，不得回归）", () => {
+        expect(periodOf("0 9 * * *")).toBe(24 * 60 * 60 * 1000);
+      });
+
+      it("等间隔多点 `0 8,12,17` 取最小间隔 4h（旧实现给 15h）", () => {
+        expect(periodOf("0 8,12,17 * * *")).toBe(4 * 60 * 60 * 1000);
+      });
+
+      it("回归不变式：TTL 必须严格小于该任务的**最小**落点间隔", () => {
+        // 这正是「下一拍落入锁剩余窗口被 NX 拒绝」的充要条件。
+        // 对每个形状，TTL 都应 < 周期（= 最小间隔），留有 500ms 缓冲。
+        for (const expr of [
+          "0 10,12,14,16,18 * * *",
+          "0 9,18 * * *",
+          "0 10,18 * * *",
+          "0 10,14,17 * * *",
+          "0 15,17,19,21 * * *",
+          "0 9 * * *",
+        ]) {
+          const ttl = computeTriggerDedupTtlMs(
+            makeTask({
+              triggerType: TaskTriggerType.CRON,
+              cronExpression: expr,
+              timezone: "Asia/Shanghai",
+            }),
+          );
+          const period = periodOf(expr);
+          expect(ttl).toBeLessThan(period);
+          expect(period - ttl).toBe(TRIGGER_DEDUP_JITTER_BUFFER_MS);
+        }
+      });
+    });
+
     it("cron with blank expression → MIN_TTL lower bound", () => {
       expect(
         computeTriggerDedupTtlMs(
