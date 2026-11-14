@@ -27,7 +27,7 @@ export default {
   // W3: one-shot page-level notice when the SSE ticket exchange fails
   'sse.ticketFailed': 'Failed to obtain live-stream credentials — reconnecting automatically (live data may be delayed)',
   'brand.tagline': 'Enterprise task orchestration platform',
-  'brand.edition': 'AutoCodeFlow v1.0 · Enterprise',
+  'brand.edition': 'Enterprise',
 
   'login.account': 'Sign in',
   // SESSION-EXPIRED: shown when a 401 survives the refresh attempt and the user
@@ -142,8 +142,8 @@ export default {
   'nav.userMenu.aria': 'User menu',
 
   'dashboard.title': 'Dashboard',
-  'dashboard.description': 'System overview, auto-refreshes every 30 seconds',
-  'dashboard.stream.tooltip': 'Metrics stream (/metrics/stream): {{status}}',
+  'dashboard.description': 'System overview — real-time updates (SSE, 30s fallback polling)',
+  'dashboard.stream.tooltip': 'Metrics stream (/metrics/stream); falls back to 30s polling when disconnected: {{status}}',
   'dashboard.stream.live': 'Live',
   'dashboard.stream.reconnecting': 'Reconnecting',
   'dashboard.stream.connecting': 'Connecting',

@@ -29,7 +29,7 @@ export default {
   'sse.ticketFailed': '实时连接凭据获取失败，正在自动重连（实时数据可能延迟）',
   // ── 公共品牌 ──
   'brand.tagline': '企业级任务调度平台',
-  'brand.edition': 'AutoCodeFlow v1.0 · 企业版',
+  'brand.edition': '企业版',
 
   // ── 登录页 ──
   'login.account': '登录账号',
@@ -149,8 +149,8 @@ export default {
 
   // ── 控制台（DashboardPage）──
   'dashboard.title': '控制台',
-  'dashboard.description': '系统运行总览，每 30 秒自动刷新',
-  'dashboard.stream.tooltip': '汇总推送流（/metrics/stream）：{{status}}',
+  'dashboard.description': '系统运行总览，实时更新（SSE，30 秒兜底轮询）',
+  'dashboard.stream.tooltip': '汇总推送流（/metrics/stream）；断线时退化为 30 秒兜底轮询：{{status}}',
   'dashboard.stream.live': '实时',
   'dashboard.stream.reconnecting': '重连中',
   'dashboard.stream.connecting': '连接中',
