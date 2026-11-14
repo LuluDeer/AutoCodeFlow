@@ -1822,6 +1822,7 @@ export class TaskService implements OnModuleInit {
       order,
     });
     this.maskListSecrets(list, select);
+    await this.attachLastExecutionSummary(list);
     return paginate(list, total, p.page, p.pageSize);
   }
 
@@ -2076,6 +2077,7 @@ export class TaskService implements OnModuleInit {
     const hasMore = rows.length > p.pageSize;
     const list = hasMore ? rows.slice(0, p.pageSize) : rows;
     this.maskListSecrets(list, select);
+    await this.attachLastExecutionSummary(list);
     return paginate(list, total, 1, p.pageSize, {
       // 还有下一页 → 用本页最后一行编游标；否则显式 null（末页标记）。
       nextCursor: hasMore ? nextKeysetCursor(list) : null,
@@ -2097,6 +2099,80 @@ export class TaskService implements OnModuleInit {
       t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
         Record<string, unknown> | null | undefined;
     });
+  }
+
+  /**
+   * P1-1（UX 评审 2026-11-15）: 列表行内联「最近一次真实执行」摘要。
+   *
+   * 背景：任务列表首屏必须回答「上次跑成什么样 / 耗时多久 / 能否直达那次执行」，
+   * 此前 lastRun 列只有 lastTriggerTime 相对时间，没有结果、耗时与深链；前端再逐
+   * 任务拉执行历史会形成 N 次请求（N+1）。这里按当前页 taskId 集合做**一次**批量
+   * 查询，JS 侧按 taskId 取最新一条；口径与 lastStatus 筛选一致——synthetic 合成行
+   * （因上游失败而没轮到跑的 cancelled 占位）不参与「最新执行」。
+   *
+   * 失败兜底：摘要查询异常不拖垮列表——记 warn，各行 lastExecution 置 null，前端
+   * 回落到「从未执行 / 仅相对时间」的既有展示。?fields= 投影模式下照常回填：摘要
+   * 属于读面派生视图，不在字段白名单内裁剪。
+   */
+  private async attachLastExecutionSummary(list: Task[]): Promise<void> {
+    const ids = [...new Set(list.map((t) => t.id).filter(Boolean))];
+    if (ids.length === 0) return;
+
+    let rows: TaskExecution[];
+    try {
+      rows = await this.execRepo.find({
+        where: { taskId: In(ids), synthetic: false },
+        order: { createdAt: "DESC", id: "DESC" },
+        select: {
+          id: true,
+          taskId: true,
+          status: true,
+          startTime: true,
+          endTime: true,
+          duration: true,
+          createdAt: true,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `attachLastExecutionSummary 批量查询失败，列表行 lastExecution 置空: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      for (const t of list) {
+        (t as Task & { lastExecution: unknown }).lastExecution = null;
+      }
+      return;
+    }
+
+    const latest = new Map<string, TaskExecution>();
+    for (const row of rows) {
+      if (!latest.has(row.taskId)) latest.set(row.taskId, row);
+    }
+    for (const t of list) {
+      const row = latest.get(t.id);
+      (
+        t as Task & {
+          lastExecution: {
+            id: string;
+            status: ExecutionStatus;
+            startTime: Date | null;
+            endTime: Date | null;
+            duration: number | null;
+            createdAt: Date;
+          } | null;
+        }
+      ).lastExecution = row
+        ? {
+            id: row.id,
+            status: row.status,
+            startTime: row.startTime,
+            endTime: row.endTime,
+            duration: row.duration ?? null,
+            createdAt: row.createdAt,
+          }
+        : null;
+    }
   }
 
   /**
@@ -2223,6 +2299,7 @@ export class TaskService implements OnModuleInit {
 
     const [list, total] = await qb.getManyAndCount();
     this.maskListSecrets(list, select);
+    await this.attachLastExecutionSummary(list);
     return paginate(list, total, p.page, p.pageSize);
   }
 

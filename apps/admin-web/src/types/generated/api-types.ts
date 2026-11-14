@@ -4332,6 +4332,35 @@ export interface components {
             /** @enum {boolean} */
             deleted: true;
         };
+        TaskLastExecutionSummaryDto: {
+            /**
+             * Format: uuid
+             * @description 最近一次真实执行的 id（前端用于深链该次执行详情）
+             */
+            id: string;
+            /**
+             * @description 最近一次真实执行的状态（终态或在途）
+             * @enum {string}
+             */
+            status: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
+            /**
+             * Format: date-time
+             * @description 首次认领/开始时间（排队中的执行可能为空）
+             */
+            startTime: string | null;
+            /**
+             * Format: date-time
+             * @description 终态落定时间
+             */
+            endTime: string | null;
+            /** @description 挂钟耗时毫秒数（endTime - startTime），与执行行 duration 同口径 */
+            duration: number | null;
+            /**
+             * Format: date-time
+             * @description 执行行创建时间；startTime 为空时作为相对时间兜底
+             */
+            createdAt: string;
+        };
         TaskResponseDto: {
             /** Format: uuid */
             id: string;
@@ -4397,6 +4426,8 @@ export interface components {
              * @description 调度器最近一次将该任务入队的时间
              */
             lastTriggerTime: string | null;
+            /** @description 列表行内联的最近一次真实执行摘要（按当前页批量回填，非 N+1）；无真实执行时为 null。合成行（synthetic=true）不参与，与 lastStatus 筛选同口径。 */
+            lastExecution?: components["schemas"]["TaskLastExecutionSummaryDto"] | null;
             alarmEmail: string | null;
             /** @description 失败/超时告警使用的告警渠道名 */
             alarmChannels: string[] | null;

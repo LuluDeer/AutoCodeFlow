@@ -1500,5 +1500,12 @@
   "尝试世代：本执行行被 claim（认领并开始运行）过的次数，0 = 第一回合（存量行）。同一个执行可因重试/唤醒被重新 claim 成运行中；终态写入按本值做世代校验，迟到回合的结果不会覆盖新回合。": "Attempt generation: how many times this execution row has been claimed (claimed and started). 0 = the first round (rows created before this column existed). The same execution may be claimed into running again by a retry or a wake-up; terminal writes are generation-checked against this value, so a result from a late round never overwrites a newer round.",
   "提前触发并消耗下一个 cron 计划落点：登记后到该落点时刻调度器跳过一次（一次性），并留痕。缺省 false ⇒ 行为不变（手动触发不覆盖计划落点）。仅 cron 任务可用；已有未消耗登记时返回 409。": "Fire early and consume the next cron fire point: once registered, the scheduler skips that fire point (one-off) and leaves a trace. Default false ⇒ behavior unchanged (a manual trigger does not cover a fire point). Only available for cron tasks; returns 409 when an unconsumed registration already exists.",
   "列出「调度积压」的会话（pending 但队列里没有对应 job）": "List the sessions with a scheduling backlog (pending, but with no matching job in the queue)",
-  "队列是否停摆（有活排队但结构上没人能消费）": "Whether the queue has stalled (work is queued, but structurally nobody can consume it)"
+  "队列是否停摆（有活排队但结构上没人能消费）": "Whether the queue has stalled (work is queued, but structurally nobody can consume it)",
+  "最近一次真实执行的 id（前端用于深链该次执行详情）": "Id of the latest real execution (used by the web UI to deep-link to the execution detail)",
+  "最近一次真实执行的状态（终态或在途）": "Status of the latest real execution (terminal or in-flight)",
+  "首次认领/开始时间（排队中的执行可能为空）": "First claim/start time (may be null for a queued execution)",
+  "终态落定时间": "Terminal settlement time",
+  "挂钟耗时毫秒数（endTime - startTime），与执行行 duration 同口径": "Wall-clock duration in milliseconds (endTime - startTime), same unit as the execution row duration",
+  "执行行创建时间；startTime 为空时作为相对时间兜底": "Execution row creation time; fallback for relative time when startTime is null",
+  "列表行内联的最近一次真实执行摘要（按当前页批量回填，非 N+1）；无真实执行时为 null。合成行（synthetic=true）不参与，与 lastStatus 筛选同口径。": "Inline summary of the latest real execution on this list row (batch-loaded per page, not N+1). null = no real execution yet. Synthetic rows (synthetic=true) are excluded, matching the lastStatus filter semantics."
 }
