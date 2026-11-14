@@ -11,6 +11,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskListPage from '../pages/TaskListPage';
 import { tasksApi, type Task } from '../api/tasks';
+import { TASKLIST_COLUMNS_STORAGE_KEY } from '../utils/taskColumns';
 
 vi.mock('../api/tasks', async () => {
   const actual = await vi.importActual<typeof import('../api/tasks')>('../api/tasks');
@@ -82,6 +83,9 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // 本份用例断言调度/运行时等辅助列内容；P1-1 起这些列缺省收起，这里显式恢复
+  // 全列可见（空隐藏集 = 全显），对齐本文件既有「全列渲染」假设。
+  localStorage.setItem(TASKLIST_COLUMNS_STORAGE_KEY, JSON.stringify([]));
 });
 afterEach(() => cleanup());
 
