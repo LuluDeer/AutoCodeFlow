@@ -28,7 +28,7 @@ import { mutexGroupsApi } from '../api/applications';
 import { useAuthStore } from '../store/auth';
 
 vi.mock('../api/applications', () => ({
-  applicationsApi: { list: vi.fn().mockResolvedValue({ data: [], total: 0 }), delete: vi.fn(), create: vi.fn(), update: vi.fn(), upload: vi.fn() },
+  applicationsApi: { list: vi.fn().mockResolvedValue([]), delete: vi.fn(), create: vi.fn(), update: vi.fn(), upload: vi.fn() },
   deploymentsApi: { list: vi.fn().mockResolvedValue([]), stats: vi.fn().mockResolvedValue([]), deploy: vi.fn() },
   mutexGroupsApi: { list: vi.fn(), create: vi.fn() },
 }));

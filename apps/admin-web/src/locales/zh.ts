@@ -522,6 +522,13 @@ export default {
   'appList.deployCreated': '部署已创建',
   'appList.deployFail': '部署失败：请确认有在线执行器可用',
   'appList.executorListFail': '获取执行器列表失败，请检查网络连接',
+  // P1-8：辅助统计（实例数/最近部署）接口单独失败时的降级文案。主列表不受影响。
+  'appList.statsUnavailable.title': '辅助统计暂不可用，应用列表仍可正常使用',
+  'appList.statsUnavailable.column': '暂不可用',
+  'appList.statsUnavailable.retry': '重试统计',
+  'appList.statsUnavailable.detailToggle': '查看技术详情',
+  'appList.statsUnavailable.detailCollapse': '收起技术详情',
+  'appList.statsUnavailable.copy': '复制错误信息',
   'appList.col.name': '名称',
   'appList.col.version': '版本',
   'appList.col.runtime': '运行时',

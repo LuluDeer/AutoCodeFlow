@@ -510,6 +510,14 @@ export default {
   'appList.deployCreated': 'Deployment created',
   'appList.deployFail': 'Deployment failed: make sure an online executor is available',
   'appList.executorListFail': 'Failed to fetch executor list, check your network connection',
+  // P1-8: fallback copy when the auxiliary stats endpoint fails on its own.
+  // The main application list is unaffected.
+  'appList.statsUnavailable.title': 'Auxiliary statistics are unavailable. The application list still works normally.',
+  'appList.statsUnavailable.column': 'Unavailable',
+  'appList.statsUnavailable.retry': 'Retry statistics',
+  'appList.statsUnavailable.detailToggle': 'View technical details',
+  'appList.statsUnavailable.detailCollapse': 'Hide technical details',
+  'appList.statsUnavailable.copy': 'Copy error details',
   'appList.col.name': 'Name',
   'appList.col.version': 'Version',
   'appList.col.runtime': 'Runtime',

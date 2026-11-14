@@ -414,7 +414,10 @@ export const deploymentsApi = {
    *
    * 只返回至少有一条部署行的应用；无部署的应用不在结果里（按 0 处理）。
    */
-  stats: () => client.get<AppDeploymentStats[]>('/app-deployments/stats'),
+  // P1-8：辅助统计失败由应用列表页原位 Banner 承接（摘要 + 折叠技术详情 + 重试），
+  // 不进全局错误 toast——避免原始 URL/技术串绕过两级错误口径直接弹到顶栏。
+  stats: () =>
+    client.get<AppDeploymentStats[]>('/app-deployments/stats', { skipGlobalToast: true }),
   get: (id: string) => client.get<AppDeployment>(`/app-deployments/${id}`),
   deploy: (appId: string, dto: CreateDeploymentDto) =>
     client.post<AppDeployment>(`/app-deployments/applications/${appId}/deploy`, dto),
