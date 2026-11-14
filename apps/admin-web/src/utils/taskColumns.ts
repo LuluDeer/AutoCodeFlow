@@ -2,30 +2,44 @@
  * COLSET-01：任务列表列显隐偏好（localStorage 持久化，键 tasklist.columns.v1）。
  *
  * ── 设计约束（与 task-list-deep 列宽契约共存） ──────────────────────────────
- * 只做**显隐过滤**（visibleColumns.filter）——列定义、列宽、scroll.x 一律不动；
- * 持久化的是「隐藏列集合」（缺省空数组 = 全显，与既有渲染零行为差异）。
- * 隐藏而非记忆可见的好处：未来新增列时默认出现，不会被旧存量偏好藏掉。
+ * 只做**显隐过滤**（visibleColumns.filter）——列定义与列宽在列文件内维护；
+ * 持久化的是「隐藏列集合」。无存量时按 DEFAULT_HIDDEN_COLUMNS 缺省收起低频辅助列
+ * （P1-1 首屏治理）；隐藏而非记忆可见的好处：未来新增列时默认出现，不会被旧存量偏好藏掉。
  *
- * 脏值防御：非法 JSON / 非数组 / 含未知列键的条目一律剔除；无法解析时按
- * 缺省全显处理（回退到现状行为）。
+ * 脏值防御：非法 JSON / 非数组 / 含未知列键的条目一律剔除；无法解析时回退到
+ * DEFAULT_HIDDEN_COLUMNS（缺省收起辅助列）。
  */
 export const TASKLIST_COLUMNS_STORAGE_KEY = 'tasklist.columns.v1';
 
-/** 任务列表全部列键（顺序即 Checkbox.Group 展示顺序；与 TaskListPage columns 对齐） */
+/** 任务列表全部列键（顺序即 Checkbox.Group 展示顺序；与 TaskListPage columns 对齐）。
+ *  P1-1 列重排：核心六列（名称/状态/上次执行/下次执行/启用/操作）在前，低频辅助列在后。 */
 export const TASK_LIST_COLUMN_KEYS = [
   'name',
   'status',
+  'lastRun',
+  'nextRun',
+  'toggle',
+  'actions',
   'trigger',
   'priority',
   'schedule',
-  'nextRun',
-  'lastRun',
   'runtime',
-  'toggle',
-  'actions',
 ] as const;
 
 export type TaskColumnKey = (typeof TASK_LIST_COLUMN_KEYS)[number];
+
+/**
+ * 缺省隐藏列（P1-1 任务列表 1280 首屏治理）：首屏只保留值班核心六列——
+ * 名称 / 状态 / 上次执行 / 下次执行 / 启用 / 操作；触发方式、优先级、调度表达式、
+ * 运行时收进「列设置」，用户可勾选恢复。localStorage 有显式存量（含空数组 =
+ * 全显）时以存量为准，不覆盖既有偏好。
+ */
+export const DEFAULT_HIDDEN_COLUMNS: TaskColumnKey[] = [
+  'trigger',
+  'priority',
+  'schedule',
+  'runtime',
+];
 
 /**
  * 解析持久化值 → 隐藏列集合。
@@ -43,12 +57,13 @@ export function parseHiddenColumns(raw: string | null): TaskColumnKey[] | null {
   }
 }
 
-/** 读取隐藏列集合（storage 不可用/脏值 → 空数组 = 全显） */
+/** 读取隐藏列集合（无存量/脏值 → DEFAULT_HIDDEN_COLUMNS；storage 不可用同兜底） */
 export function readHiddenColumns(): TaskColumnKey[] {
   try {
-    return parseHiddenColumns(window.localStorage.getItem(TASKLIST_COLUMNS_STORAGE_KEY)) ?? [];
+    return parseHiddenColumns(window.localStorage.getItem(TASKLIST_COLUMNS_STORAGE_KEY))
+      ?? [...DEFAULT_HIDDEN_COLUMNS];
   } catch {
-    return [];
+    return [...DEFAULT_HIDDEN_COLUMNS];
   }
 }
 

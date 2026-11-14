@@ -39,7 +39,7 @@ import type { Task } from '../api/tasks';
 import { priorityTag } from '../utils/priority';
 import { runtimeLabel } from '../utils/runtime-label';
 import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
-import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
+import { formatDateTime, formatRelativeTime, formatDuration } from '../utils/timeFormat';
 import { describeCron } from '../utils/cron-desc';
 
 const { Text } = Typography;
@@ -57,6 +57,23 @@ type StatusConfig = Record<string, {
 
 /** 触发类型 → 标签文案（`TaskListPage` 的 `TRIGGER_LABEL(t)` 的返回值形状）。 */
 type TriggerLabelMap = Record<string, string>;
+
+/**
+ * 执行状态 → 徽章/文案映射（与 `ExecutionsPage` 的 STATUS_MAP 同口径；文案复用
+ * `execs.status.*` 词条，不另造任务列表私有副本）。P1-1：上次执行列从此不仅有
+ * 相对时间，还带结果语义色与文案。
+ */
+type ExecBadge = 'success' | 'processing' | 'error' | 'default' | 'warning';
+const EXEC_STATUS_MAP: Record<string, { badge: ExecBadge; labelKey: string }> = {
+  pending: { badge: 'default', labelKey: 'execs.status.pending' },
+  running: { badge: 'processing', labelKey: 'execs.status.running' },
+  waiting: { badge: 'warning', labelKey: 'execs.status.waiting' },
+  success: { badge: 'success', labelKey: 'execs.status.success' },
+  failed: { badge: 'error', labelKey: 'execs.status.failed' },
+  timeout: { badge: 'warning', labelKey: 'execs.status.timeout' },
+  killed: { badge: 'error', labelKey: 'execs.status.killed' },
+  cancelled: { badge: 'default', labelKey: 'execs.status.cancelled' },
+};
 
 /**
  * 列定义所需的全部外部依赖——**全部显式传入**，本模块不捕获任何页面 state。
@@ -161,13 +178,171 @@ export function buildTaskListColumns(deps: TaskListColumnsDeps) {
       // COLSET-01：显式 key（原仅 dataIndex）——列显隐过滤按 key 匹配，渲染不变
       key: 'status',
       dataIndex: 'status',
-      width: 90,
+      width: 84,
       render: (s: string) => {
         const cfg = statusConfig[s] || { badge: 'default', label: s, color: 'default' };
         return <Badge status={cfg.badge} text={cfg.label} />;
       },
     },
     {
+      // P1-1（UX 评审 2026-11-15）：上次执行——结果徽章（语义色 + 文案）+ 相对
+      // 时间（tooltip 绝对时间）+ 耗时；有执行 id 时整格直达该次执行详情，失败排障
+      // 一键落地。数据源是后端按当前页批量回填的 lastExecution（非 N+1，前端不伪造）。
+      title: t('taskList.col.lastRun'),
+      key: 'lastRun',
+      width: 190,
+      ...hideOnMobile,
+      render: (_: unknown, r: Task) => {
+        const summary = r.lastExecution ?? null;
+        const time = summary?.startTime ?? summary?.createdAt ?? r.lastTriggerTime;
+        if (!time) {
+          return (
+            <Tooltip title={t('taskList.lastRun.neverTooltip')}>
+              <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.lastRun.never')}</Text>
+            </Tooltip>
+          );
+        }
+        const cfg = summary ? EXEC_STATUS_MAP[summary.status] : null;
+        const durationText = summary?.duration != null ? formatDuration(summary.duration, t) : null;
+        const body = (
+          <div style={{ minWidth: 0 }}>
+            {summary && (
+              <Badge
+                status={cfg?.badge ?? 'default'}
+                text={cfg ? t(cfg.labelKey) : summary.status}
+              />
+            )}
+            <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+              <Tooltip title={formatDateTime(time)}>
+                <Text type="secondary" style={{ fontSize: 12 }}>{formatRelativeTime(time, t)}</Text>
+              </Tooltip>
+              {durationText && (
+                <Text type="secondary" style={{ fontSize: 11, marginInlineStart: 6 }}>· {durationText}</Text>
+              )}
+            </div>
+          </div>
+        );
+        // 有真实执行记录 → 结果/时间整格直达该次执行详情（复用执行列表深链口径）
+        if (summary?.id) {
+          return (
+            <Link
+              to={`/tasks/${r.id}/executions/${summary.id}`}
+              title={t('execs.action.detail')}
+              style={{ display: 'block', minWidth: 0, color: 'inherit' }}
+            >
+              {body}
+            </Link>
+          );
+        }
+        return body;
+      },
+    },
+    {
+      title: t('taskList.col.nextRun'),
+      key: 'nextRun',
+      width: 140,
+      ...hideOnMobile,
+      render: (_: unknown, r: Task) => {
+        // P1-1（UX-AUDIT-2026-09-21）：本列此前只渲染静态徽章（「Cron 计划中」
+        // /「定时运行中」），而列题是「下次执行」、tooltip 写着「下次 Cron 触发
+        // 时间」——承诺了时刻却从不给出时刻。用户因此无法回答"这任务下次什么
+        // 时候跑、它到底还在不在跑"，静默不执行在上百个任务里根本发现不了。
+        // 现按真实表达式算出最近一次触发时刻（复用详情页同一套纯函数）。
+        if (r.status !== 'active') {
+          return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.none')}</Text>;
+        }
+        const next = nextRunAt(r);
+        if (next) {
+          // 遗留 P1-3：tz 为空/非法时浏览器本地推算 ≠ 服务端进程时区，
+          // tooltip 追加服务端时区注记（沿用 trigger-preview 警示文案）。
+          const tzUnresolved = previewNeedsTimezoneWarning(r.timezone);
+          return (
+            <Tooltip
+              title={tzUnresolved
+                ? t('taskList.nextRun.cronTooltip') + '\n' + t('triggerPreview.tzUnresolved')
+                : t('taskList.nextRun.cronTooltip')}
+            >
+              <Text style={{ fontSize: 12 }}>{formatFireTime(next, r.timezone)}</Text>
+            </Tooltip>
+          );
+        }
+        // 表达式存在但算不出（非法/超子集）——如实说"无法预估"，不编假时刻
+        if (r.triggerType === 'cron' || r.triggerType === 'fixed_rate') {
+          return (
+            <Tooltip title={t('taskList.nextRun.unpredictableTooltip')}>
+              <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.unpredictable')}</Text>
+            </Tooltip>
+          );
+        }
+        return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.manual')}</Text>;
+      },
+    },
+    {
+      title: t('taskList.col.enabled'),
+      key: 'toggle',
+      width: 80,
+      render: (_: unknown, r: Task) => (
+        <Switch
+          size="small"
+          checked={r.status === 'active'}
+          loading={togglingId === r.id}
+          onChange={checked => checked ? onResume(r.id) : onPause(r.id)}
+          disabled={r.status === 'failed' || r.status === 'inactive' || (!!togglingId && togglingId !== r.id)}
+        />
+      ),
+    },
+    {
+      title: t('taskList.col.actions'),
+      key: 'actions',
+      // 5 个图标按钮（type=text/small 纯图标）实测 ~128px；fixed right 保证
+      // 内容区变窄时操作列常驻右侧，不随横向滚动消失。
+      width: 160,
+      fixed: 'right' as const,
+      render: (_: unknown, r: Task) => (
+        <Space size={2}>
+          {/* A11Y-ICON-01：纯图标按钮补中文 aria-label——此前读屏只能念出
+              antd 图标自带的 aria-label（eye/edit/copy/thunderbolt/delete），
+              中文界面下出现英文图标名，且与 Tooltip 文案不一致 */}
+          <Tooltip title={t('taskList.action.detail')}>
+            <Button type="text" size="small" icon={<EyeOutlined />} aria-label={t('taskList.action.detail')} onClick={() => nav(`/tasks/${r.id}`)} />
+          </Tooltip>
+          <Tooltip title={isAdmin ? t('taskList.action.edit') : t('taskList.adminOnly')}>
+            <Button type="text" size="small" icon={<EditOutlined />} aria-label={isAdmin ? t('taskList.action.edit') : t('taskList.adminOnly')} disabled={!isAdmin} onClick={() => nav(`/tasks/${r.id}/edit`)} />
+          </Tooltip>
+          <Tooltip title={isAdmin ? t('taskList.action.clone') : t('taskList.adminOnly')}>
+            <Button
+              type="text" size="small" icon={<CopyOutlined />}
+              aria-label={isAdmin ? t('taskList.action.clone') : t('taskList.adminOnly')}
+              loading={cloningId === r.id}
+              disabled={!isAdmin}
+              onClick={() => onClone(r)}
+            />
+          </Tooltip>
+          <Tooltip title={isAdmin ? t('taskList.action.trigger') : t('taskList.adminOnly')}>
+            <Button
+              type="text" size="small" icon={<ThunderboltOutlined />}
+              aria-label={isAdmin ? t('taskList.action.trigger') : t('taskList.adminOnly')}
+              disabled={!isAdmin}
+              onClick={() => onTrigger(r.id, r.name, r.params)}
+              style={{ color: colorPrimary }}
+            />
+          </Tooltip>
+          <Popconfirm
+            title={t('taskList.deleteConfirm')}
+            description={t('taskList.deleteForceTerminateDesc')}
+            onConfirm={() => onDelete(r.id)}
+            okText={t('taskList.ok')} okButtonProps={{ danger: true }}
+          >
+            <Tooltip title={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')}>
+              <Button type="text" size="small" icon={<DeleteOutlined />} danger aria-label={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')} disabled={!isAdmin} />
+            </Tooltip>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+    {
+      // ── 以下四列为 P1-1 收进「列设置」的低频辅助列，缺省隐藏（见
+      // utils/taskColumns.ts DEFAULT_HIDDEN_COLUMNS）；用户可在列设置里勾选恢复。
       title: t('taskList.col.trigger'),
       key: 'trigger',
       dataIndex: 'triggerType',
@@ -221,141 +396,12 @@ export function buildTaskListColumns(deps: TaskListColumnsDeps) {
       },
     },
     {
-      title: t('taskList.col.nextRun'),
-      key: 'nextRun',
-      width: 170,
-      ...hideOnMobile,
-      render: (_: unknown, r: Task) => {
-        // P1-1（UX-AUDIT-2026-09-21）：本列此前只渲染静态徽章（「Cron 计划中」
-        // /「定时运行中」），而列题是「下次执行」、tooltip 写着「下次 Cron 触发
-        // 时间」——承诺了时刻却从不给出时刻。用户因此无法回答"这任务下次什么
-        // 时候跑、它到底还在不在跑"，静默不执行在上百个任务里根本发现不了。
-        // 现按真实表达式算出最近一次触发时刻（复用详情页同一套纯函数）。
-        if (r.status !== 'active') {
-          return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.none')}</Text>;
-        }
-        const next = nextRunAt(r);
-        if (next) {
-          // 遗留 P1-3：tz 为空/非法时浏览器本地推算 ≠ 服务端进程时区，
-          // tooltip 追加服务端时区注记（沿用 trigger-preview 警示文案）。
-          const tzUnresolved = previewNeedsTimezoneWarning(r.timezone);
-          return (
-            <Tooltip
-              title={tzUnresolved
-                ? t('taskList.nextRun.cronTooltip') + '\n' + t('triggerPreview.tzUnresolved')
-                : t('taskList.nextRun.cronTooltip')}
-            >
-              <Text style={{ fontSize: 12 }}>{formatFireTime(next, r.timezone)}</Text>
-            </Tooltip>
-          );
-        }
-        // 表达式存在但算不出（非法/超子集）——如实说"无法预估"，不编假时刻
-        if (r.triggerType === 'cron' || r.triggerType === 'fixed_rate') {
-          return (
-            <Tooltip title={t('taskList.nextRun.unpredictableTooltip')}>
-              <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.unpredictable')}</Text>
-            </Tooltip>
-          );
-        }
-        return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.manual')}</Text>;
-      },
-    },
-    {
-      // P1-2（UX-AUDIT-2026-09-21）：上次触发时刻。该列在 DB 里一直存在、
-      // 后端也一直返回并支持排序，但界面从不显示——于是"任务其实早就不跑了"
-      // 这种最该被发现的静默故障反而最不可见。
-      title: t('taskList.col.lastRun'),
-      key: 'lastRun',
-      width: 150,
-      ...hideOnMobile,
-      render: (_: unknown, r: Task) => {
-        if (!r.lastTriggerTime) {
-          return (
-            <Tooltip title={t('taskList.lastRun.neverTooltip')}>
-              <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.lastRun.never')}</Text>
-            </Tooltip>
-          );
-        }
-        // 此前是不带 locale 的裸 toLocaleString()——跟随**浏览器** locale，
-        // 英文浏览器跑中文界面时显示 MM/DD/YYYY，与界面语言割裂。统一走
-        // formatDateTime（locale 跟随 i18n），与相对时间文案同源。
-        return (
-          <Tooltip title={formatDateTime(r.lastTriggerTime)}>
-            <Text style={{ fontSize: 12 }}>{formatRelativeTime(r.lastTriggerTime, t)}</Text>
-          </Tooltip>
-        );
-      },
-    },
-    {
       title: t('taskList.col.runtime'),
       key: 'runtime',
       dataIndex: 'runtime',
       width: 96,
       ...hideOnMobile,
       render: (v: string) => v ? <Tag>{runtimeLabel(v, t)}</Tag> : '-',
-    },
-    {
-      title: t('taskList.col.enabled'),
-      key: 'toggle',
-      width: 90,
-      render: (_: unknown, r: Task) => (
-        <Switch
-          size="small"
-          checked={r.status === 'active'}
-          loading={togglingId === r.id}
-          onChange={checked => checked ? onResume(r.id) : onPause(r.id)}
-          disabled={r.status === 'failed' || r.status === 'inactive' || (!!togglingId && togglingId !== r.id)}
-        />
-      ),
-    },
-    {
-      title: t('taskList.col.actions'),
-      key: 'actions',
-      // UI 打磨：5 个图标按钮实测 ~200px（移动端 .ant-btn-icon-only 还有
-      // 40px 触控兜底），160 会裁按钮；fixed right 保证横向滚动时操作常驻
-      width: 210,
-      fixed: 'right' as const,
-      render: (_: unknown, r: Task) => (
-        <Space size={2}>
-          {/* A11Y-ICON-01：纯图标按钮补中文 aria-label——此前读屏只能念出
-              antd 图标自带的 aria-label（eye/edit/copy/thunderbolt/delete），
-              中文界面下出现英文图标名，且与 Tooltip 文案不一致 */}
-          <Tooltip title={t('taskList.action.detail')}>
-            <Button type="text" size="small" icon={<EyeOutlined />} aria-label={t('taskList.action.detail')} onClick={() => nav(`/tasks/${r.id}`)} />
-          </Tooltip>
-          <Tooltip title={isAdmin ? t('taskList.action.edit') : t('taskList.adminOnly')}>
-            <Button type="text" size="small" icon={<EditOutlined />} aria-label={isAdmin ? t('taskList.action.edit') : t('taskList.adminOnly')} disabled={!isAdmin} onClick={() => nav(`/tasks/${r.id}/edit`)} />
-          </Tooltip>
-          <Tooltip title={isAdmin ? t('taskList.action.clone') : t('taskList.adminOnly')}>
-            <Button
-              type="text" size="small" icon={<CopyOutlined />}
-              aria-label={isAdmin ? t('taskList.action.clone') : t('taskList.adminOnly')}
-              loading={cloningId === r.id}
-              disabled={!isAdmin}
-              onClick={() => onClone(r)}
-            />
-          </Tooltip>
-          <Tooltip title={isAdmin ? t('taskList.action.trigger') : t('taskList.adminOnly')}>
-            <Button
-              type="text" size="small" icon={<ThunderboltOutlined />}
-              aria-label={isAdmin ? t('taskList.action.trigger') : t('taskList.adminOnly')}
-              disabled={!isAdmin}
-              onClick={() => onTrigger(r.id, r.name, r.params)}
-              style={{ color: colorPrimary }}
-            />
-          </Tooltip>
-          <Popconfirm
-            title={t('taskList.deleteConfirm')}
-            description={t('taskList.deleteForceTerminateDesc')}
-            onConfirm={() => onDelete(r.id)}
-            okText={t('taskList.ok')} okButtonProps={{ danger: true }}
-          >
-            <Tooltip title={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')}>
-              <Button type="text" size="small" icon={<DeleteOutlined />} danger aria-label={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')} disabled={!isAdmin} />
-            </Tooltip>
-          </Popconfirm>
-        </Space>
-      ),
     },
   ];
 }

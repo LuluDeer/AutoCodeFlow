@@ -69,26 +69,31 @@ const TASKS = [
     runbook: '## 失败排障\n1. 检查对象存储凭据\n2. 检查 pg_dump 版本', gitRepo: 'https://git.example.com/ops/jobs.git', gitBranch: 'main',
     gitCommit: 'a1b2c3d', currentVersion: 'v7', runtimeVersion: '3.12', codeSource: 'git', alarmEmail: 'oncall@example.com', alarmChannels: ['email'],
     lastTriggerTime: ISO(-90 * MIN), createdAt: ISO(-40 * 24 * 3600e3), updatedAt: ISO(-2 * 24 * 3600e3),
+    // 夹具镜像后端新契约 lastExecution（最近一次真实执行摘要，批量回填，非 N+1）；非产品数据。
+    lastExecution: { id: 'e-9001', status: 'failed', startTime: ISO(-95 * MIN), endTime: ISO(-94 * MIN), duration: 61_230, createdAt: ISO(-95 * MIN) },
     params: { target: 'pg-prod-1', compress: true }, secrets: { OSS_AK: '******', OSS_SK: '******' },
   },
   {
     id: 't-1002', name: '应用日志滚动清理', runtime: 'shell', entrypoint: 'cleanup.sh', status: 'active', triggerType: 'fixed_rate', fixedRate: 30,
     priority: 'P3', maxRetry: 1, timeout: 600, projectId: null, executorAppName: '北京联通节点-02', lastTriggerTime: ISO(-35 * MIN),
+    lastExecution: { id: 'e-9002b', status: 'success', startTime: ISO(-40 * MIN), endTime: ISO(-38 * MIN), duration: 48_500, createdAt: ISO(-40 * MIN) },
     createdAt: ISO(-90 * 24 * 3600e3), updatedAt: ISO(-5 * 24 * 3600e3),
   },
   {
     id: 't-1003', name: '用户画像宽表同步', runtime: 'node', entrypoint: 'sync_profile.mjs', status: 'paused', triggerType: 'cron', cronExpression: '0 */2 * * *',
     priority: 1, maxRetry: 5, timeout: 1800, projectId: 'p-1001', executorAppName: '华东云节点-03', lastTriggerTime: ISO(-26 * 3600e3),
+    lastExecution: { id: 'e-9004', status: 'cancelled', startTime: ISO(-27 * 3600e3), endTime: ISO(-27 * 3600e3), duration: null, createdAt: ISO(-27 * 3600e3) },
     createdAt: ISO(-60 * 24 * 3600e3), updatedAt: ISO(-1 * 24 * 3600e3), alarmEmail: 'data-team@example.com', alarmChannels: ['email', 'dingtalk'],
   },
   {
     id: 't-1004', name: 'Glue 脚本-临时对账任务', runtime: 'glue', entrypoint: '', status: 'active', triggerType: 'manual', glueSource: 'print("对账中")',
-    glueLanguage: 'python', priority: 3, maxRetry: 0, timeout: 300, projectId: null, createdAt: ISO(-3 * 24 * 3600e3), updatedAt: ISO(-1 * 24 * 3600e3),
+    glueLanguage: 'python', priority: 3, maxRetry: 0, timeout: 300, projectId: null, lastExecution: null, createdAt: ISO(-3 * 24 * 3600e3), updatedAt: ISO(-1 * 24 * 3600e3),
   },
   {
     id: 't-1005', name: '数据采集平台-巡检上报', runtime: 'python', entrypoint: 'inspect/main.py', status: 'active', triggerType: 'cron',
     cronExpression: '*/10 * * * *', priority: 2, maxRetry: 2, timeout: 900, projectId: 'p-1002', applicationId: 'app-2001',
     codeSource: 'application_zip', executorAppName: '上海电信机房-生产执行器-01-长名称', lastTriggerTime: ISO(-12 * MIN),
+    lastExecution: { id: 'e-9002', status: 'success', startTime: ISO(-20 * MIN), endTime: ISO(-18 * MIN), duration: 121_000, createdAt: ISO(-20 * MIN) },
     createdAt: ISO(-20 * 24 * 3600e3), updatedAt: ISO(-6 * 3600e3),
   },
 ];

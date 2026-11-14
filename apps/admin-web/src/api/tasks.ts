@@ -124,6 +124,12 @@ export interface Task {
    * 「任务其实早就不跑了」这种静默故障在上百个任务里根本发现不了。
    */
   lastTriggerTime?: string | null;
+  /**
+   * P1-1（UX 评审 2026-11-15）：最近一次**真实执行**的行内摘要（后端按当前页
+   * 批量查询回填，非 N+1）。无真实执行时为 null；合成行（synthetic=true）不参与，
+   * 与 lastStatus 筛选同口径。列表「上次执行」列的结果/耗时/深链数据源。
+   */
+  lastExecution?: TaskLastExecution | null;
   fixedRate?: number;
   cronExpression?: string;
   timezone?: string | null;
@@ -246,6 +252,14 @@ export type TaskExecutionStatus =
   | 'timeout'
   | 'killed'
   | 'cancelled';
+
+/**
+ * P1-1：任务列表行内联的最近一次真实执行摘要。类型直接派生自生成 schema
+ * `TaskLastExecutionSummaryDto`（不另建手写 interface，避免 web-type-drift 棘轮）。
+ * duration 单位毫秒，与执行行 duration 同口径；startTime 可能为空（排队中），
+ * createdAt 作为相对时间兜底。
+ */
+export type TaskLastExecution = components['schemas']['TaskLastExecutionSummaryDto'];
 
 export interface TaskExecution {
   id: string;

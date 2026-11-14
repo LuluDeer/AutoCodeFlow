@@ -948,15 +948,11 @@ export default function TaskListPage() {
         columns={visibleColumns}
         dataSource={tasks}
         loading={loading}
-        // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ scroll.x 横向滚动兜底
-        // UX-WALK 2026-10 回归修复：scroll.x 必须 ≥ 固定列宽合计（含勾选 32）+ 名称列
-        // 弹性下限 220。此前 P1-1/P1-2 增列（下次/上次执行）后固定列合计已达 1172
-        // （status90/trigger100/priority80/schedule190/nextRun170/lastRun150/runtime80/
-        // enabled70/actions210 + 勾选32），追平旧 scroll.x=1140 → antd 宽度填充
-        // （@rc-component/table useWidthColumns）把唯一无 width 的名称列压到 ~1px，
-        // 1280×800 桌面首列逐字竖排不可读。新增/加宽固定列时必须同步上调 scroll.x
-        // （task-list-deep 列宽契约测试钉住）。
-        scroll={{ x: 1428 }}
+        // P1-1（UX 评审 2026-11-15）：不再用固定 scroll.x=1428 硬塞全部列。
+        // 缺省只渲染核心六列（名称/状态/上次执行/下次执行/启用/操作），低频辅助列
+        // 收进列设置（DEFAULT_HIDDEN_COLUMNS）；固定列宽合计在 1280 内容区内即可放下，
+        // 名称列弹性吸收剩余宽度。操作列 fixed right 常驻。若用户在列设置里恢复辅助列
+        // 导致超宽，由表格自身布局压缩/省略号承担，不再靠一条 1428px 的横滚兜底。
         /* §2.1：keyset 模式 = `false`（页码器整体消失，改由下方自绘「上一页 /
            下一页」承担），OFFSET 模式 = 原有配置（逐字节不变）。
 
