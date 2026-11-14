@@ -4,8 +4,9 @@ import react from '@vitejs/plugin-react';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'node:url';
 import { gzipSync, constants as zlibConstants } from 'node:zlib';
+import { readFileSync } from 'node:fs';
 import { readdir, readFile, writeFile, stat } from 'node:fs/promises';
-import { join, isAbsolute } from 'node:path';
+import { join, dirname, isAbsolute } from 'node:path';
 import { visualizer } from 'rollup-plugin-visualizer';
 // F-30（DEEP_REVIEW 0ef3bbe）：首帧主题脚本的单一来源。
 import { THEME_INIT_SCRIPT } from './src/theme/tokens.ts';
@@ -77,7 +78,44 @@ function precompressAssetsPlugin(): Plugin {
   };
 }
 
+/**
+ * P1-9（2026-11-15 产品评审）：管理台展示版本号的单一事实源。
+ *
+ * 与 scripts/check-version-line.mjs 同一口径：平台主线版本 = 仓库根 version.txt
+ * （packages/* 版本由该守卫对齐到它）。解析优先级：
+ *   1. 显式构建期 env VITE_APP_VERSION（release / 镜像构建覆盖用）；
+ *   2. 仓库根 version.txt（本地 dev 与 CI 全量 checkout 都在盘）；
+ *   3. 本应用 package.json.version（兜底：单应用 Docker 上下文拿不到 version.txt 时）。
+ * 任一来源缺失即降级到下一级；读不到返回空串——页脚不渲染版本段，绝不抛错打断构建。
+ */
+function resolveAppVersion(): string {
+  const fromEnv = process.env.VITE_APP_VERSION?.trim();
+  if (fromEnv) return fromEnv;
+  const here = dirname(fileURLToPath(import.meta.url));
+  try {
+    const txt = readFileSync(join(here, '..', '..', 'version.txt'), 'utf8').trim();
+    if (txt) return txt;
+  } catch {
+    /* fall through to package.json */
+  }
+  try {
+    const pkg = JSON.parse(
+      readFileSync(join(here, 'package.json'), 'utf8'),
+    ) as { version?: string };
+    return typeof pkg.version === 'string' ? pkg.version.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+const APP_VERSION = resolveAppVersion();
+
 export default defineConfig({
+  // 构建期把主线版本注入 import.meta.env；运行期不再读文件/env 兜底。
+  // 消费点唯一：src/version.ts。
+  define: {
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(APP_VERSION),
+  },
   plugins: [
     react(),
     themeInitPlugin(),
