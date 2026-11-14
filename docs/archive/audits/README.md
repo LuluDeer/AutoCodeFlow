@@ -10,6 +10,7 @@
 | [design-audit-2026-09-22.md](design-audit-2026-09-22.md) |
 | [eng-audit-2026-09-21.md](eng-audit-2026-09-21.md) |
 | [mcp-agent-ux-audit-2026-10-08.md](mcp-agent-ux-audit-2026-10-08.md) |
+| [product-ui-review-2026-11-15.md](product-ui-review-2026-11-15.md) |
 | [sec-01-review-report.md](sec-01-review-report.md) |
 | [ux-audit-2026-09-21.md](ux-audit-2026-09-21.md) |
 | [ux-audit-desktop-2026-10-05.md](ux-audit-desktop-2026-10-05.md) |
