@@ -67,6 +67,7 @@ export default function InboxBadge() {
           type="text"
           danger
           size="small"
+          aria-label={t('inbox.badge.tooltip')}
           data-testid="inbox-badge-load-fail"
           onClick={() => void reload()}
         >
@@ -89,6 +90,7 @@ export default function InboxBadge() {
         <Button
           type="text"
           size="small"
+          aria-label={t('inbox.badge.tooltip')}
           data-testid="inbox-badge-button"
           onClick={() => navigate('/inbox')}
         >

@@ -592,5 +592,69 @@
       "review_by": "2026-12-15"
     }
   ],
-  "allowlist": []
+  "allowlist": [
+    {
+      "file": "apps/admin-web/src/api/artifacts.ts",
+      "name": "ArtifactIndexQuery",
+      "reason": "GET /artifacts 查询参数视图模型（page/pageSize/applicationId/taskId）；OpenAPI query 参数不生成 components['schemas']，无生成物对应。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "file": "apps/admin-web/src/api/inbox.ts",
+      "name": "InboxItem",
+      "reason": "收件箱归一化行：聚合 deployment/session/approval/failure 多源引用的前端视图模型，后端无对应 DTO。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "file": "apps/admin-web/src/api/inbox.ts",
+      "name": "InboxSectionState",
+      "reason": "小节装载状态（loading/ready/error + items/error/truncated/probed/snapshot），纯前端状态形状，无后端 schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "file": "apps/admin-web/src/api/inbox.ts",
+      "name": "InboxSections",
+      "reason": "Record<小节键, InboxSectionState> 前端聚合容器，无后端 schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "file": "apps/admin-web/src/api/inbox.ts",
+      "name": "InboxCountMap",
+      "reason": "Record<小节键, number|null> 未知态计数口径（null=读不到，不是 0），纯前端模型，无后端 schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "file": "apps/admin-web/src/api/inbox.ts",
+      "name": "PendingDeploymentsResponse",
+      "reason": "前端把 PaginatedAppDeploymentsDto 归一化为 {data,total} 自有信封，非后端原始 DTO。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "file": "apps/admin-web/src/api/inbox.ts",
+      "name": "QueueStallSnapshot",
+      "reason": "队列停摆观测快照；后端 inspect-queue-stall 200 响应 content 无 schema，前端自行建模。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "file": "apps/admin-web/src/api/inbox.ts",
+      "name": "AgentWaitingResult",
+      "reason": "内部判别联合 {approvals,sessions} | {error}，非 API 响应体，无后端 schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "file": "apps/admin-web/src/api/inbox.ts",
+      "name": "StallResult",
+      "reason": "内部判别联合 {snapshot} | {error}，非 API 响应体，无后端 schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    }
+  ]
 }

@@ -109,7 +109,6 @@ export default {
   'projectCtx.all': '全部项目',
   'projectCtx.default': '默认项目',
   'projectCtx.placeholder': '选择项目',
-  'projectCtx.searchPlaceholder': '搜索项目',
   'projectCtx.aria': '当前项目切换器',
   'projectCtx.globalScope': '全局口径',
   'projectCtx.globalScope.tooltip': '该指标为机队/调度全局统计，不随当前项目过滤',
@@ -3084,8 +3083,6 @@ export default {
 
   'artifactLibrary.title': '产物库',
   'artifactLibrary.description': '跨执行的产物索引：按应用 / 任务回看历史产物，并跳回来源执行。',
-  'artifactLibrary.filter.application': '应用',
-  'artifactLibrary.filter.task': '任务',
   'artifactLibrary.filter.allApplication': '全部应用',
   'artifactLibrary.filter.allTask': '全部任务',
   'artifactLibrary.filter.note': '当前仅支持按应用、任务筛选；关键字、时间范围与类型筛选后端暂不支持。',

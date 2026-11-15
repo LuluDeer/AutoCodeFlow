@@ -430,6 +430,27 @@ const ROUTES = [
     { id: 'pm-2', projectId: 'p-1001', userId: 2, role: 'editor', createdAt: ISO(-90 * 24 * 3600e3) },
     { id: 'pm-3', projectId: 'p-1001', userId: 4, role: 'viewer', createdAt: ISO(-3 * 24 * 3600e3) },
   ]],
+  // P1-2 项目详情:实体回显 + 统计摘要(GET /projects/:id、/projects/:id/summary)。
+  ['GET', /^\/projects\/([^/]+)\/summary$/, (u, q, m) => {
+    const proj = PROJECTS.find((p) => p.id === m[1]) ?? PROJECTS[1];
+    return {
+      projectId: proj.id,
+      projectName: proj.name,
+      taskCount: 2,
+      applicationCount: 0,
+      memberCount: 3,
+      executionsLast7d: 5,
+      failedExecutionsLast7d: 1,
+      timeoutExecutionsLast7d: 1,
+      failureRate: 20.0,
+      recentFailures: [{ id: 'e-9004', taskId: 't-1002', taskName: TASKS[1].name, status: 'timeout', failureReason: 'timeout', errorMessage: '执行超时(600s)', createdAt: ISO(-3 * 3600e3), duration: 600_000 }],
+      recentExecutions: [
+        { id: 'e-9002b', taskId: 't-1002', taskName: TASKS[1].name, status: 'success', createdAt: ISO(-2 * 3600e3), duration: 48_500 },
+        { id: 'e-9004', taskId: 't-1002', taskName: TASKS[1].name, status: 'timeout', createdAt: ISO(-3 * 3600e3), duration: 600_000 },
+      ],
+    };
+  }],
+  ['GET', /^\/projects\/([^/]+)$/, (u, q, m) => PROJECTS.find((p) => p.id === m[1]) ?? PROJECTS[0]],
   // projectsApi.list(无 page 参数)→ 裸数组;listPaged(带 page)→ 分页信封
   // (list/items 双键为后端 R-21 遗留,前端只消费 list,双键都给)。
   ['GET', /^\/projects$/, (u, q) => {
@@ -602,6 +623,7 @@ const PAGES = [
   { key: 'inbox', path: '/inbox' },
   { key: 'sops', path: '/sops' },
   { key: 'projects', path: '/projects' },
+  { key: 'project-detail', path: '/projects/p-1001' },
   { key: 'users', path: '/users' },
   { key: 'registry', path: '/registry' },
   { key: 'settings-token', path: '/settings' },
@@ -708,6 +730,27 @@ async function detectOverflow(page, rootSelector = null) {
   }, rootSelector);
 }
 
+// 1280 桌面端:列表容器横滚手量。区分「表格/列表容器内部横滚」与「body 级视口溢出」。
+async function measureListContainers(page) {
+  return page.evaluate(() => {
+    const vw = window.innerWidth;
+    const doc = document.documentElement;
+    const docSw = Math.max(doc.scrollWidth, document.body ? document.body.scrollWidth : 0);
+    const pick = (sel, rank) => [...document.querySelectorAll(sel)].map((el) => ({ el, rank }));
+    const nodes = [...pick('.ant-table-content', 0), ...pick('.ant-list', 1), ...pick('.ant-card', 2)];
+    const containers = nodes.map(({ el, rank }) => ({
+      rank,
+      sel: (typeof el.className === 'string' && el.className
+        ? el.className.trim().split(/\s+/).slice(0, 2).join('.') : el.tagName.toLowerCase()),
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      overflowX: getComputedStyle(el).overflowX,
+    })).filter((c) => c.clientWidth > 0)
+      .sort((a, b) => a.rank - b.rank);
+    return { vw, docScrollWidth: docSw, bodyOverflow: docSw > vw + 1, containers };
+  });
+}
+
 // 暗色白底残留自动扫描(辅助信号,非结论):data-theme=dark 下,可见且
 // backgroundColor ≥245 的元素(经典硬编码 #fff 残留)。只报面积 ≥40×14 的
 // 前几个,人工目检以 report.md「人工目检」小节为准。
@@ -792,8 +835,12 @@ async function visitPage(browser, pageDef, viewport, opts = {}) {
   let overflowInfo = null;
   let renderSmoke = null;
   let lightBlocks = [];
+  let tableMetrics = null;
   if (OVERFLOW_W(viewport.w)) {
     try { overflowInfo = await detectOverflow(page); } catch { /* 页面已崩则跳过 */ }
+  }
+  if (viewport.w === 1280) {
+    try { tableMetrics = await measureListContainers(page); } catch { tableMetrics = null; }
   }
   try {
     renderSmoke = await page.evaluate(() => ({
@@ -822,7 +869,7 @@ async function visitPage(browser, pageDef, viewport, opts = {}) {
 
   return {
     key: pageDef.key, path: pageDef.path, viewport: viewport.w, dark,
-    gotoError, overflowInfo, renderSmoke, shot, lightBlocks,
+    gotoError, overflowInfo, renderSmoke, shot, lightBlocks, tableMetrics,
     errors: consoleErrors.map((c) => c.text),
     warnCount: consoleWarns.length,
     notableWarns: notableWarns.map((c) => ({ flags: classifyConsole('warning', c.text), text: c.text.slice(0, 200) })),
@@ -1068,6 +1115,30 @@ async function testInteraction(browser, ix, viewport, opts = {}) {
 // 主流程
 // ─────────────────────────────────────────────────────────────────────────────
 
+// 1280 桌面端列表容器横滚手量表(脚本只在 ≤600 判 body 溢出;这里补桌面容器度量)。
+const DESKTOP_LIST_KEYS = ['tasks', 'executions', 'applications', 'projects', 'artifacts', 'inbox'];
+function pushDesktopMetrics(lines, results) {
+  lines.push(`## 1280 桌面端列表容器横滚手量`);
+  lines.push('');
+  lines.push(`| 页面 | 主列表容器 | 容器 scrollWidth | 容器 clientWidth | 表格内部横滚 | body scrollWidth / innerWidth | body 级视口溢出 |`);
+  lines.push(`|---|---|---|---|---|---|---|`);
+  for (const key of DESKTOP_LIST_KEYS) {
+    const r = results.find((x) => x.key === key && x.viewport === 1280 && !x.dark);
+    if (!r || !r.tableMetrics) {
+      lines.push(`| ${key} | n/a | — | — | — | — | n/a |`);
+      continue;
+    }
+    const m = r.tableMetrics;
+    const c = m.containers[0];
+    const inner = c
+      ? (c.scrollWidth > c.clientWidth + 1 ? `是 (${c.scrollWidth} > ${c.clientWidth}, overflowX=${c.overflowX})` : '否')
+      : '无表格/列表容器';
+    const body = m.bodyOverflow ? `是 (${m.docScrollWidth} > ${m.vw})` : `否 (${m.docScrollWidth} ≤ ${m.vw})`;
+    lines.push(`| ${key} | ${c ? c.sel : '—'} | ${c ? c.scrollWidth : '—'} | ${c ? c.clientWidth : '—'} | ${inner} | ${m.docScrollWidth} / ${m.vw} | ${body} |`);
+  }
+  lines.push('');
+}
+
 async function main() {
   const runStartedAt = new Date().toISOString();
   // 本机只装了 chromium-1234 完整版(chrome-win64),playwright-core 1.63 默认
@@ -1180,6 +1251,8 @@ async function main() {
     lines.push(`| ${r.key} (${r.path}) | ${r.viewport} | ${overflowCell} | ${offender} | ${errCell} | ${warnCell} | ${gapCell} |`);
   }
   lines.push('');
+
+  pushDesktopMetrics(lines, results);
 
   if (errPages.length || blankPages.length) {
     lines.push(`## 错误详情`);

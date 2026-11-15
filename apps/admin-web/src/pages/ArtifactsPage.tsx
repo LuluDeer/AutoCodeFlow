@@ -52,6 +52,51 @@ const { Text } = Typography;
 
 const DEFAULT_PAGE_SIZE = 20;
 
+interface ArtifactFilterBarProps {
+  applicationId?: string;
+  taskId?: string;
+  appOptions: { value: string; label: string }[];
+  taskOptions: { value: string; label: string }[];
+  onApplicationChange: (value?: string) => void;
+  onTaskChange: (value?: string) => void;
+}
+
+/** 筛选工具栏：按应用 / 按任务两个真实过滤器（后端契约只支持这两个维度）。 */
+function ArtifactFilterBar({
+  applicationId,
+  taskId,
+  appOptions,
+  taskOptions,
+  onApplicationChange,
+  onTaskChange,
+}: ArtifactFilterBarProps) {
+  const { t } = useTranslation();
+  return (
+    <Space wrap style={{ marginBottom: 16 }}>
+      <Select
+        allowClear
+        showSearch
+        optionFilterProp="label"
+        style={{ minWidth: 200 }}
+        placeholder={t('artifactLibrary.filter.allApplication')}
+        value={applicationId}
+        options={appOptions}
+        onChange={(v) => onApplicationChange(v || undefined)}
+      />
+      <Select
+        allowClear
+        showSearch
+        optionFilterProp="label"
+        style={{ minWidth: 200 }}
+        placeholder={t('artifactLibrary.filter.allTask')}
+        value={taskId}
+        options={taskOptions}
+        onChange={(v) => onTaskChange(v || undefined)}
+      />
+    </Space>
+  );
+}
+
 export default function ArtifactsPage() {
   const { t } = useTranslation();
   const nav = useNavigate();
@@ -255,34 +300,20 @@ export default function ArtifactsPage() {
         description={t('artifactLibrary.description')}
       />
 
-      <Space wrap style={{ marginBottom: 16 }}>
-        <Select
-          allowClear
-          showSearch
-          optionFilterProp="label"
-          style={{ minWidth: 200 }}
-          placeholder={t('artifactLibrary.filter.allApplication')}
-          value={applicationId}
-          options={appOptions}
-          onChange={(v) => {
-            setApplicationId(v || undefined);
-            resetPage();
-          }}
-        />
-        <Select
-          allowClear
-          showSearch
-          optionFilterProp="label"
-          style={{ minWidth: 200 }}
-          placeholder={t('artifactLibrary.filter.allTask')}
-          value={taskId}
-          options={taskOptions}
-          onChange={(v) => {
-            setTaskId(v || undefined);
-            resetPage();
-          }}
-        />
-      </Space>
+      <ArtifactFilterBar
+        applicationId={applicationId}
+        taskId={taskId}
+        appOptions={appOptions}
+        taskOptions={taskOptions}
+        onApplicationChange={(v) => {
+          setApplicationId(v);
+          resetPage();
+        }}
+        onTaskChange={(v) => {
+          setTaskId(v);
+          resetPage();
+        }}
+      />
 
       <Alert
         type="info"

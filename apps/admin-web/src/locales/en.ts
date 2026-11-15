@@ -103,7 +103,6 @@ export default {
   'projectCtx.all': 'All projects',
   'projectCtx.default': 'Default project',
   'projectCtx.placeholder': 'Select project',
-  'projectCtx.searchPlaceholder': 'Search projects',
   'projectCtx.aria': 'Current project switcher',
   'projectCtx.globalScope': 'Global scope',
   'projectCtx.globalScope.tooltip': 'This metric is fleet/scheduler-wide and is not filtered by the current project',
@@ -3087,8 +3086,6 @@ export default {
 
   'artifactLibrary.title': 'Artifacts',
   'artifactLibrary.description': 'Cross-execution artifact index: review historical artifacts by app or task, and jump back to the source run.',
-  'artifactLibrary.filter.application': 'App',
-  'artifactLibrary.filter.task': 'Task',
   'artifactLibrary.filter.allApplication': 'All apps',
   'artifactLibrary.filter.allTask': 'All tasks',
   'artifactLibrary.filter.note': 'Only app and task filters are supported today; keyword, time-range and type filters are not supported by the backend yet.',

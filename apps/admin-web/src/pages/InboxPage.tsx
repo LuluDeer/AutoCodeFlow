@@ -76,6 +76,140 @@ function dispatchInboxRefresh(): void {
   window.dispatchEvent(new Event(INBOX_REFRESH_EVENT));
 }
 
+/** 副标题本地化组合：提交者前缀 / 工具名 + 理由；API 层只回原始字段。 */
+function inboxSubtitleText(item: InboxItem, t: ReturnType<typeof useTranslation>['t']): string | undefined {
+  if (item.section === 'deployments' && item.subtitle) {
+    return t('inbox.subtitle.requester', { name: item.subtitle });
+  }
+  if (item.section === 'agentApprovals') {
+    const reason = item.approval?.reason;
+    return item.subtitle ? `${item.subtitle}${reason ? ` · ${reason}` : ''}` : undefined;
+  }
+  return item.subtitle;
+}
+
+interface InboxRowActionsProps {
+  item: InboxItem;
+  canWrite: boolean;
+  actingId: string | null;
+  userId: number | null | undefined;
+  onApprove: (item: InboxItem) => void;
+  onReject: (item: InboxItem) => void;
+  onGrant: (item: InboxItem) => void;
+  onDeny: (item: InboxItem) => void;
+  onResume: (item: InboxItem) => void;
+}
+
+/** 行内动作按钮组：按小节渲染批准/拒绝/授予/拒绝/接管/查看详情；只读小节只给深链。 */
+function InboxRowActions({
+  item,
+  canWrite,
+  actingId,
+  userId,
+  onApprove,
+  onReject,
+  onGrant,
+  onDeny,
+  onResume,
+}: InboxRowActionsProps) {
+  const { t } = useTranslation();
+
+  if (READONLY_SECTIONS.has(item.section)) {
+    return item.detailUrl ? (
+      <Link to={item.detailUrl}>
+        <Button size="small">{t('inbox.action.viewDetail')}</Button>
+      </Link>
+    ) : null;
+  }
+
+  const self = isSelfDeployment(item.deployment, userId ?? null);
+  const writeDisabled = !canWrite || self || actingId === item.id;
+
+  switch (item.section) {
+    case 'deployments':
+      return (
+        <Space size={4} wrap>
+          <Tooltip title={self ? t('inbox.selfApprovalHint') : undefined}>
+            <Button
+              size="small"
+              type="primary"
+              disabled={writeDisabled}
+              loading={actingId === item.id}
+              onClick={() => onApprove(item)}
+            >
+              {t('inbox.action.approve')}
+            </Button>
+          </Tooltip>
+          <Button
+            size="small"
+            danger
+            disabled={writeDisabled}
+            loading={actingId === item.id}
+            onClick={() => onReject(item)}
+          >
+            {t('inbox.action.reject')}
+          </Button>
+          {item.detailUrl && (
+            <Link to={item.detailUrl}>
+              <Button size="small">{t('inbox.action.viewDetail')}</Button>
+            </Link>
+          )}
+        </Space>
+      );
+    case 'agentApprovals':
+      return (
+        <Space size={4} wrap>
+          <Button
+            size="small"
+            type="primary"
+            disabled={!canWrite || actingId === item.id}
+            loading={actingId === item.id}
+            onClick={() => onGrant(item)}
+          >
+            {t('inbox.action.grant')}
+          </Button>
+          <Button
+            size="small"
+            danger
+            disabled={!canWrite || actingId === item.id}
+            loading={actingId === item.id}
+            onClick={() => onDeny(item)}
+          >
+            {t('inbox.action.deny')}
+          </Button>
+          {item.detailUrl && (
+            <Link to={item.detailUrl}>
+              <Button size="small">{t('inbox.action.viewSession')}</Button>
+            </Link>
+          )}
+        </Space>
+      );
+    case 'agentWaiting':
+    case 'stalled':
+    case 'backlogged':
+      return (
+        <Space size={4} wrap>
+          <Button
+            size="small"
+            type="primary"
+            disabled={!canWrite || actingId === item.id || !item.session}
+            loading={actingId === item.id}
+            onClick={() => onResume(item)}
+          >
+            {t('inbox.action.resume')}
+          </Button>
+          {item.detailUrl && (
+            <Link to={item.detailUrl}>
+              <Button size="small">{t('inbox.action.viewSession')}</Button>
+            </Link>
+          )}
+        </Space>
+      );
+    default:
+      return null;
+  }
+}
+
 export default function InboxPage() {
   const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
@@ -195,116 +329,9 @@ export default function InboxPage() {
   const allReady = sections ? SECTION_ORDER.every((key) => sections[key].status === 'ready') : false;
   const queueStall = sections?.queueStall.snapshot;
 
-  const renderActions = (item: InboxItem) => {
-    if (READONLY_SECTIONS.has(item.section)) {
-      return item.detailUrl ? (
-        <Link to={item.detailUrl}>
-          <Button size="small">{t('inbox.action.viewDetail')}</Button>
-        </Link>
-      ) : null;
-    }
-
-    const self = isSelfDeployment(item.deployment, user?.id ?? null);
-    const writeDisabled = !canWrite || self || actingId === item.id;
-
-    switch (item.section) {
-      case 'deployments':
-        return (
-          <Space size={4} wrap>
-            <Tooltip title={self ? t('inbox.selfApprovalHint') : undefined}>
-              <Button
-                size="small"
-                type="primary"
-                disabled={writeDisabled}
-                loading={actingId === item.id}
-                onClick={() => handleApprove(item)}
-              >
-                {t('inbox.action.approve')}
-              </Button>
-            </Tooltip>
-            <Button
-              size="small"
-              danger
-              disabled={writeDisabled}
-              loading={actingId === item.id}
-              onClick={() => openReject(item)}
-            >
-              {t('inbox.action.reject')}
-            </Button>
-            {item.detailUrl && (
-              <Link to={item.detailUrl}>
-                <Button size="small">{t('inbox.action.viewDetail')}</Button>
-              </Link>
-            )}
-          </Space>
-        );
-      case 'agentApprovals':
-        return (
-          <Space size={4} wrap>
-            <Button
-              size="small"
-              type="primary"
-              disabled={!canWrite || actingId === item.id}
-              loading={actingId === item.id}
-              onClick={() => handleGrant(item)}
-            >
-              {t('inbox.action.grant')}
-            </Button>
-            <Button
-              size="small"
-              danger
-              disabled={!canWrite || actingId === item.id}
-              loading={actingId === item.id}
-              onClick={() => handleDeny(item)}
-            >
-              {t('inbox.action.deny')}
-            </Button>
-            {item.detailUrl && (
-              <Link to={item.detailUrl}>
-                <Button size="small">{t('inbox.action.viewSession')}</Button>
-              </Link>
-            )}
-          </Space>
-        );
-      case 'agentWaiting':
-      case 'stalled':
-      case 'backlogged':
-        return (
-          <Space size={4} wrap>
-            <Button
-              size="small"
-              type="primary"
-              disabled={!canWrite || actingId === item.id || !item.session}
-              loading={actingId === item.id}
-              onClick={() => handleResume(item)}
-            >
-              {t('inbox.action.resume')}
-            </Button>
-            {item.detailUrl && (
-              <Link to={item.detailUrl}>
-                <Button size="small">{t('inbox.action.viewSession')}</Button>
-              </Link>
-            )}
-          </Space>
-        );
-      default:
-        return null;
-    }
-  };
-
-  /** 副标题本地化组合：提交者前缀 / 工具名 + 理由；API 层只回原始字段。 */
-  const renderSubtitle = (item: InboxItem): string | undefined => {
-    if (item.section === 'deployments' && item.subtitle) {
-      return t('inbox.subtitle.requester', { name: item.subtitle });
-    }
-    if (item.section === 'agentApprovals') {
-      const reason = item.approval?.reason;
-      return item.subtitle ? `${item.subtitle}${reason ? ` · ${reason}` : ''}` : undefined;
-    }
-    return item.subtitle;
-  };
-
-  const renderRow = (item: InboxItem) => (
+  const renderRow = (item: InboxItem) => {
+    const subtitle = inboxSubtitleText(item, t);
+    return (
     <div
       key={item.id}
       data-testid={`inbox-row-${item.section}`}
@@ -329,15 +356,28 @@ export default function InboxPage() {
               : t('inbox.noTimeInfo')}
           </Text>
         </div>
-        {renderSubtitle(item) && (
+        {subtitle && (
           <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 2 }}>
-            {renderSubtitle(item)}
+            {subtitle}
           </Text>
         )}
       </div>
-      <Space wrap>{renderActions(item)}</Space>
+      <Space wrap>
+        <InboxRowActions
+          item={item}
+          canWrite={canWrite}
+          actingId={actingId}
+          userId={user?.id}
+          onApprove={handleApprove}
+          onReject={openReject}
+          onGrant={handleGrant}
+          onDeny={handleDeny}
+          onResume={handleResume}
+        />
+      </Space>
     </div>
-  );
+    );
+  };
 
   const renderSection = (key: InboxSectionKey) => {
     const section = sections?.[key];
