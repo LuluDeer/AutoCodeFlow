@@ -17,6 +17,7 @@ import {
   TaskExecution,
   ExecutionStatus,
 } from "./entities/task-execution.entity";
+import { DEFAULT_PROJECT_ID } from "../project/project.entity";
 import { ExecutionReport } from "../metrics/entities/execution-report.entity";
 import { AppError } from "../../common/errors/app-error";
 // NETOPT-3⑤：LIKE 元字符转义（getAllExecutions 的 taskName/executorAddress
@@ -354,6 +355,7 @@ export class ExecutionRead {
       executorAddress?: string;
       startTime?: string;
       endTime?: string;
+      projectId?: string;
       cursor?: string;
     },
   ) {
@@ -443,6 +445,7 @@ export class ExecutionRead {
       executorAddress?: string;
       startTime?: string;
       endTime?: string;
+      projectId?: string;
     },
     write: (chunk: string) => Promise<void>,
     options: { limit?: number; signal?: AbortSignal } = {},
@@ -536,20 +539,37 @@ export class ExecutionRead {
       executorAddress?: string;
       startTime?: string;
       endTime?: string;
+      projectId?: string;
     },
   ): void {
     if (p.status) qb.andWhere("e.status = :status", { status: p.status });
     if (p.taskId) qb.andWhere("e.taskId = :taskId", { taskId: p.taskId });
+    // P1-2：taskName 与 projectId 都需要关联 tasks 表——join 只挂一次，
+    // 避免同 alias 重复 LEFT JOIN（TypeORM 不会按 alias 去重）。
+    if (p.taskName || p.projectId) {
+      qb.leftJoin("tasks", "t", "t.id = e.taskId");
+    }
     if (p.taskName) {
       // taskName 过滤：命中执行行自身的 taskName，或命中 tasks 表名称
       //（保留 join 仅用于此过滤场景）
       // NETOPT-3⑤: API-09 同款转义——`_`/`%` 必须按字面量匹配（搜
       // `zhang_san` 不应命中 `zhangXsan`），否则搜索结果静默变宽、运维
       // 会据错误结果集得出错误结论。
-      qb.leftJoin("tasks", "t", "t.id = e.taskId");
       qb.andWhere("(e.taskName ILIKE :taskName OR t.name ILIKE :taskName)", {
         taskName: `%${escapeLikePattern(p.taskName)}%`,
       });
+    }
+    if (p.projectId) {
+      // P1-2：项目维度经 taskId 关联 tasks.projectId 派生（执行行自身不冗余）。
+      // 与任务列表同一套 "default" 语义：未分配（IS NULL）+ 默认项目。
+      // synthetic 占位行仍带真实 taskId，join 后归属与其任务一致，不会被静默丢行。
+      if (p.projectId === "default") {
+        qb.andWhere("(t.projectId IS NULL OR t.projectId = :defaultPid)", {
+          defaultPid: DEFAULT_PROJECT_ID,
+        });
+      } else {
+        qb.andWhere("t.projectId = :projectId", { projectId: p.projectId });
+      }
     }
     if (p.executorAddress)
       // NETOPT-3⑤: 同上——执行器地址常含下划线/通配符字符，转义后按字面量匹配。
@@ -627,6 +647,7 @@ export class ExecutionRead {
       executorAddress?: string;
       startTime?: string;
       endTime?: string;
+      projectId?: string;
     },
     rawCursor: string,
   ) {

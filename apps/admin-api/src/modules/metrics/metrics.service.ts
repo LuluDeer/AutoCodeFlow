@@ -1,6 +1,14 @@
 import { forwardRef, Inject, Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, MoreThanOrEqual, Between } from "typeorm";
+import {
+  Repository,
+  SelectQueryBuilder,
+  MoreThanOrEqual,
+  Between,
+  Or,
+  IsNull,
+  In,
+} from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import { Task } from "../task/entities/task.entity";
 import {
@@ -11,6 +19,7 @@ import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
 import { ExecutionReport } from "./entities/execution-report.entity";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { EventLoopLagService } from "../../common/metrics/event-loop-lag.service";
+import { DEFAULT_PROJECT_ID } from "../project/project.entity";
 
 @Injectable()
 export class MetricsService {
@@ -38,7 +47,57 @@ export class MetricsService {
   /** NETOPT-1④: getSummary 执行聚合的时间窗（天），取舍见 getSummary 内注 */
   private static readonly AGGREGATION_WINDOW_DAYS = 30;
 
-  async getSummary() {
+  /**
+   * P1-2：任务域项目过滤 where（任务仓库直查用）。
+   * `"default"` = 未分配（projectId IS NULL）+ 默认项目；省略 = 全部项目。
+   * 与任务列表 / 执行列表同一套口径。
+   */
+  private projectTaskWhere(projectId?: string): Record<string, unknown> {
+    if (!projectId) return {};
+    if (projectId === "default") {
+      return { projectId: Or(IsNull(), In([DEFAULT_PROJECT_ID])) };
+    }
+    return { projectId };
+  }
+
+  /** 执行聚合 QB 关联 tasks 表——执行行自身不冗余 projectId，经 taskId 派生。 */
+  private joinTaskForProject(qb: SelectQueryBuilder<TaskExecution>): void {
+    qb.leftJoin("tasks", "t", "t.id = e.taskId");
+  }
+
+  private applyProjectFilter(
+    qb: SelectQueryBuilder<TaskExecution>,
+    projectId?: string,
+  ): void {
+    if (!projectId) return;
+    if (projectId === "default") {
+      qb.andWhere("(t.projectId IS NULL OR t.projectId = :defaultPid)", {
+        defaultPid: DEFAULT_PROJECT_ID,
+      });
+    } else {
+      qb.andWhere("t.projectId = :projectId", { projectId });
+    }
+  }
+
+  /** 今日执行次数；无项目上下文时保持原 repo.count 路径（查询形状不变）。 */
+  private async countTodayRuns(
+    todayStart: Date,
+    projectId?: string,
+  ): Promise<number> {
+    if (!projectId) {
+      return this.execRepo.count({
+        where: { createdAt: MoreThanOrEqual(todayStart) },
+      });
+    }
+    const qb = this.execRepo
+      .createQueryBuilder("e")
+      .leftJoin("tasks", "t", "t.id = e.taskId")
+      .where("e.createdAt >= :todayStart", { todayStart });
+    this.applyProjectFilter(qb, projectId);
+    return qb.getCount();
+  }
+
+  async getSummary(projectId?: string) {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
@@ -52,23 +111,25 @@ export class MetricsService {
       Date.now() - MetricsService.AGGREGATION_WINDOW_DAYS * 86_400_000,
     );
 
+    // P1-2：执行器计数（totalExecutors/onlineExecutors）是机队全局口径——
+    // Executor 实体不带项目归属，无法按项目切分；选中具体项目时前端须对这两项
+    // 显式标注「全局口径」，不能把全局机队数当成项目数。
     const [totalTasks, totalExecutors, onlineExecutors, todayRuns] =
       await Promise.all([
-        this.taskRepo.count(),
+        this.taskRepo.count({ where: this.projectTaskWhere(projectId) }),
         this.executorRepo.count(),
         this.executorRepo.count({ where: { status: ExecutorStatus.ONLINE } }),
-        this.execRepo.count({
-          where: { createdAt: MoreThanOrEqual(todayStart) },
-        }),
+        this.countTodayRuns(todayStart, projectId),
       ]);
 
-    const execStats = await this.execRepo
+    const statsQb = this.execRepo
       .createQueryBuilder("e")
       .select("e.status", "status")
       .addSelect("COUNT(*)", "count")
-      .where("e.createdAt >= :windowStart", { windowStart })
-      .groupBy("e.status")
-      .getRawMany();
+      .where("e.createdAt >= :windowStart", { windowStart });
+    if (projectId) this.joinTaskForProject(statsQb);
+    this.applyProjectFilter(statsQb, projectId);
+    const execStats = await statsQb.groupBy("e.status").getRawMany();
 
     const statMap: Record<string, number> = {};
     for (const row of execStats) statMap[row.status] = parseInt(row.count, 10);
@@ -78,12 +139,14 @@ export class MetricsService {
     const failed = statMap[ExecutionStatus.FAILED] ?? 0;
     const running = statMap[ExecutionStatus.RUNNING] ?? 0;
 
-    const avgDuration = await this.execRepo
+    const avgQb = this.execRepo
       .createQueryBuilder("e")
       .select("AVG(e.duration)", "avg")
       .where("e.status = :s", { s: ExecutionStatus.SUCCESS })
-      .andWhere("e.createdAt >= :windowStart", { windowStart })
-      .getRawOne();
+      .andWhere("e.createdAt >= :windowStart", { windowStart });
+    if (projectId) this.joinTaskForProject(avgQb);
+    this.applyProjectFilter(avgQb, projectId);
+    const avgDuration = await avgQb.getRawOne();
 
     return {
       totalTasks,
@@ -97,15 +160,18 @@ export class MetricsService {
   }
 
   /** Execution count per day for the last N days (success vs failed) */
-  async getDailyTrend(days = 7) {
-    const rows = await this.execRepo
+  async getDailyTrend(days = 7, projectId?: string) {
+    const trendQb = this.execRepo
       .createQueryBuilder("e")
       .select("DATE_TRUNC('day', e.createdAt)", "day")
       .addSelect("e.status", "status")
       .addSelect("COUNT(*)", "count")
       .where("e.createdAt >= NOW() - CAST(:days || ' days' AS INTERVAL)", {
         days,
-      })
+      });
+    if (projectId) this.joinTaskForProject(trendQb);
+    this.applyProjectFilter(trendQb, projectId);
+    const rows = await trendQb
       .groupBy("DATE_TRUNC('day', e.createdAt), e.status")
       .orderBy("DATE_TRUNC('day', e.createdAt)", "ASC")
       .getRawMany();
@@ -171,24 +237,43 @@ export class MetricsService {
   }
 
   /** Most recent failed execution records (top 10) */
-  async getRecentFailures() {
-    return this.execRepo.find({
-      where: { status: ExecutionStatus.FAILED },
-      order: { createdAt: "DESC" },
-      take: 10,
-      select: {
-        id: true,
-        taskId: true,
-        taskName: true,
-        errorMessage: true,
-        failureReason: true,
-        // 改动2（可观测性补齐）：透出回调上报的原始退出码，失败溯源不再
-        // 只有推断出的 failureReason。
-        exitCode: true,
-        createdAt: true,
-        duration: true,
-      },
-    });
+  async getRecentFailures(projectId?: string) {
+    // 无项目上下文：保持原 repo.find 路径（查询形状与既有 spec 逐字一致）。
+    if (!projectId) {
+      return this.execRepo.find({
+        where: { status: ExecutionStatus.FAILED },
+        order: { createdAt: "DESC" },
+        take: 10,
+        select: {
+          id: true,
+          taskId: true,
+          taskName: true,
+          errorMessage: true,
+          failureReason: true,
+          // 改动2（可观测性补齐）：透出回调上报的原始退出码，失败溯源不再
+          // 只有推断出的 failureReason。
+          exitCode: true,
+          createdAt: true,
+          duration: true,
+        },
+      });
+    }
+    const qb = this.execRepo
+      .createQueryBuilder("e")
+      .select([
+        "e.id",
+        "e.taskId",
+        "e.taskName",
+        "e.errorMessage",
+        "e.failureReason",
+        "e.exitCode",
+        "e.createdAt",
+        "e.duration",
+      ])
+      .leftJoin("tasks", "t", "t.id = e.taskId")
+      .where("e.status = :status", { status: ExecutionStatus.FAILED });
+    this.applyProjectFilter(qb, projectId);
+    return qb.orderBy("e.createdAt", "DESC").take(10).getMany();
   }
 
   /** Generate execution report for a specific date */

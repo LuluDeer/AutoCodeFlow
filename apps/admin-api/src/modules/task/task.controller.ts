@@ -507,6 +507,12 @@ export class TaskController {
   @ApiQuery({ name: "executorAddress", required: false })
   @ApiQuery({ name: "startTime", required: false })
   @ApiQuery({ name: "endTime", required: false })
+  @ApiQuery({
+    name: "projectId",
+    required: false,
+    description:
+      "按所属项目过滤（经任务关联派生）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。",
+  })
   // §2.1：keyset 游标（与 GET /tasks、GET /tasks/:id/executions 同款参数）。
   // 显式声明是为了与本端点其余 query 参数的历史风格一致；DTO 侧
   // AllExecutionsQueryDto 也已带 @ApiPropertyOptional（白名单必需）。
@@ -586,6 +592,12 @@ export class TaskController {
     description: "仅返回在该时刻及之前创建的执行（ISO 8601）",
   })
   @ApiQuery({
+    name: "projectId",
+    required: false,
+    description:
+      "按所属项目过滤（经任务关联派生，与列表端点同口径）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。",
+  })
+  @ApiQuery({
     name: "limit",
     required: false,
     description:
@@ -653,6 +665,7 @@ export class TaskController {
           executorAddress: query.executorAddress,
           startTime: query.startTime,
           endTime: query.endTime,
+          projectId: query.projectId,
         },
         write,
         // limit 只在"调小"方向生效——归一逻辑在 service，此处原样透传。

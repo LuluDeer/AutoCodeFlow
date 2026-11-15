@@ -219,10 +219,12 @@ export interface AppDeploymentEventsPage {
 }
 
 export const applicationsApi = {
-  list: (signal?: AbortSignal) =>
+  // P1-2：后端 /applications 已支持 projectId 查询（实体 projectId 列）；
+  // 第二参可选，旧调用方（任务表单下拉等）只传 signal，行为不变。
+  list: (signal?: AbortSignal, params?: { projectId?: string }) =>
     signal
-      ? client.get<Application[]>('/applications', { signal })
-      : client.get<Application[]>('/applications'),
+      ? client.get<Application[]>('/applications', { signal, params })
+      : client.get<Application[]>('/applications', { params }),
   get: (id: string) => client.get<Application>(`/applications/${id}`),
   create: (data: Partial<Application>) => client.post<Application>('/applications', data),
   update: (id: string, data: Partial<Application>) =>

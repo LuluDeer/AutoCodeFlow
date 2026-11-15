@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Table,
   Button,
   Tag,
@@ -37,6 +37,7 @@ import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 // URL-SYNC-02（审计 P2）：双向 URL 同步（外部深链/前进后退真正生效）
 import { useUrlStateSync } from '../hooks/useUrlStateSync';
+import { useProjectFilter } from '../hooks/useProjectFilter';
 import { useAuthStore, isAdminUser } from '../store/auth';
 // D-P2-02a（设计审计）：运行时枚举本地化唯一事实源（与 status/priority 同范式）
 import { runtimeLabel } from '../utils/runtime-label';
@@ -305,6 +306,9 @@ export default function TaskListPage() {
     },
   );
 
+  // P1-2：全局当前项目上下文（?project=）；后端 GET /tasks 已支持 projectId 过滤。
+  const { backendProjectId } = useProjectFilter();
+
   const { data, isLoading: loading, error, refetch } = useTasksList({
     page,
     pageSize,
@@ -313,6 +317,8 @@ export default function TaskListPage() {
     q: debouncedSearch || undefined,
     status: statusFilter,
     triggerType: triggerFilter,
+    // P1-2：项目维度透传；'all' → undefined（不传），'default' / UUID 原样发后端。
+    projectId: backendProjectId,
     // §2.1：keyset 模式下恒为 undefined（后端契约：cursor 与 lastStatus 互斥，
     // 同时带 = 400）。关闭开关时原样透传，行为不变。
     lastStatus: effectiveLastStatus,
@@ -325,6 +331,18 @@ export default function TaskListPage() {
     // axios 的序列化细节上等于把风险外包给库版本。
     ...(activeCursor === undefined ? {} : { cursor: activeCursor }),
   });
+
+  // P1-2：切换项目上下文后回到第一页并清游标栈——旧项目的页码/游标对新项目结果集
+  // 无意义（与其它改变结果集的入口同口径，见 resetCursorStack 头注）。
+  // 首次挂载不重置：否则深链 ?page=N 会被打回第 1 页；仅在项目实际切换时回退。
+  const prevProjectRef = useRef(backendProjectId);
+  useEffect(() => {
+    if (prevProjectRef.current === backendProjectId) return;
+    prevProjectRef.current = backendProjectId;
+    setPage(1);
+    resetCursorStack(stablePaging);
+  }, [backendProjectId, stablePaging]);
+
   // FEAT-17: 写后失效句柄（原 useRequest refresh → invalidate 面收口）
   const queryClient = useQueryClient();
   const refresh = () => void invalidateTaskData(queryClient);

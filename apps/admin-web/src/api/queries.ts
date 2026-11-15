@@ -31,10 +31,18 @@ import { taskTemplatesApi, type TaskTemplate } from './task-templates';
 export const queryKeys = {
   metrics: {
     all: ['metrics'] as const,
-    summary: ['metrics', 'summary'] as const,
-    trend: (days: number) => ['metrics', 'trend', days] as const,
+    // P1-2：项目维度缓存键。projectId 省略（全部项目）时保持历史裸键，
+    // 与 metrics/stream SSE 快照写入的全局键对齐；选中具体项目后另起子键，
+    // SSE 全局快照不会覆盖项目视图缓存。
+    summary: (projectId?: string) =>
+      projectId ? ['metrics', 'summary', projectId] : ['metrics', 'summary'],
+    trend: (days: number, projectId?: string) =>
+      projectId
+        ? ['metrics', 'trend', days, projectId]
+        : ['metrics', 'trend', days],
     executorStats: ['metrics', 'executors'] as const,
-    recentFailures: ['metrics', 'failures'] as const,
+    recentFailures: (projectId?: string) =>
+      projectId ? ['metrics', 'failures', projectId] : ['metrics', 'failures'],
     scheduler: ['metrics', 'scheduler'] as const,
   },
   executions: {
@@ -47,6 +55,8 @@ export const queryKeys = {
       executorAddress?: string;
       startTime?: string;
       endTime?: string;
+      /** P1-2：所属项目过滤（"default" = 未分配 + 默认项目；省略 = 全部项目）。 */
+      projectId?: string;
       /**
        * keyset 分页游标（可选）。**必须进 queryKey**：游标不同 = 不同的结果页，
        * 若把它排除在外，第 1/2/3 页会共用同一个缓存条目（翻回上一页拿到的是
@@ -85,6 +95,8 @@ export const queryKeys = {
       name?: string;
       status?: string;
       triggerType?: string;
+      /** P1-2：所属项目过滤（"default" = 未分配 + 默认项目；省略 = 全部项目）。 */
+      projectId?: string;
       /**
        * keyset（游标）分页令牌——**必须进 queryKey**。游标不同 = 不同的结果页，
        * 若把它排除在外，第 1/2/3 页会共用同一个缓存条目（翻回上一页拿到的是
@@ -122,6 +134,10 @@ export const queryKeys = {
   projects: {
     list: ['projects', 'list'] as const,
     members: (id: string) => ['projects', 'members', id] as const,
+    /** 单个项目实体（GET /projects/:id）：详情页标题/描述。 */
+    detail: (id: string) => ['projects', 'detail', id] as const,
+    /** P1-2：项目详情统计（GET /projects/:id/summary）。 */
+    summary: (id: string) => ['projects', 'summary', id] as const,
     candidateUsers: ['projects', 'candidate-users'] as const,
     /**
      * 当前用户在各项目里的角色（`GET /projects/me/roles`）。
@@ -165,11 +181,11 @@ export function sseFallbackRefetchInterval(sseKey: string): () => number | false
   return () => (getSSEStatus(sseKey) === 'live' ? false : 30_000);
 }
 
-/** GET /metrics/summary —— Dashboard KPI 四卡数据源。 */
-export function useMetricsSummary(): UseQueryResult<MetricsSummary> {
+/** GET /metrics/summary —— Dashboard KPI 四卡数据源。projectId 省略 = 全部项目。 */
+export function useMetricsSummary(projectId?: string): UseQueryResult<MetricsSummary> {
   return useQuery({
-    queryKey: queryKeys.metrics.summary,
-    queryFn: ({ signal }) => metricsApi.getSummary(signal),
+    queryKey: queryKeys.metrics.summary(projectId),
+    queryFn: ({ signal }) => metricsApi.getSummary({ projectId }, signal),
     // NETOPT-E P3-3: SSE 断流且无写操作时 KPI 停在最后一帧——metrics/stream
     // 的 summary 快照与 useMetricsStream 共享缓存，live 时推送即新鲜度来源，
     // 断流时 30s 轮询兜底（与"断线退化为自身请求节奏"的注释对齐）。
@@ -177,11 +193,11 @@ export function useMetricsSummary(): UseQueryResult<MetricsSummary> {
   });
 }
 
-/** GET /metrics/trend?days=N —— 趋势图/sparkline 共用（同 key 合并请求）。 */
-export function useMetricsTrend(days: number): UseQueryResult<DailyTrend[]> {
+/** GET /metrics/trend?days=N —— 趋势图/sparkline 共用（同 key 合并请求）。projectId 省略 = 全部项目。 */
+export function useMetricsTrend(days: number, projectId?: string): UseQueryResult<DailyTrend[]> {
   return useQuery({
-    queryKey: queryKeys.metrics.trend(days),
-    queryFn: ({ signal }) => metricsApi.getDailyTrend(days, signal),
+    queryKey: queryKeys.metrics.trend(days, projectId),
+    queryFn: ({ signal }) => metricsApi.getDailyTrend(days, { projectId }, signal),
     // 趋势窗为历史统计，30s 全局 staleTime 之上再加 60s GC 防切换页签丢失
     gcTime: 60_000,
     // 恒定 30s 轮询：metrics/stream 快照只含 summary/executors/scheduler，
@@ -202,11 +218,11 @@ export function useExecutorStats() {
   });
 }
 
-/** GET /metrics/failures —— 失败 Top 榜 + 最近失败两卡共用。 */
-export function useRecentFailures() {
+/** GET /metrics/failures —— 失败 Top 榜 + 最近失败两卡共用。projectId 省略 = 全部项目。 */
+export function useRecentFailures(projectId?: string) {
   return useQuery({
-    queryKey: queryKeys.metrics.recentFailures,
-    queryFn: ({ signal }) => metricsApi.getRecentFailures(signal),
+    queryKey: queryKeys.metrics.recentFailures(projectId),
+    queryFn: ({ signal }) => metricsApi.getRecentFailures({ projectId }, signal),
     // 恒定 30s 轮询：metrics/stream 快照不含 failures（同 useMetricsTrend），
     // 轮询是唯一新鲜度来源，不能按 SSE 状态停（原"SSE 断流兜底"注释更正）。
     refetchInterval: 30_000,
@@ -267,6 +283,8 @@ export function useExecutionsList(
     executorAddress?: string;
     startTime?: string;
     endTime?: string;
+    /** P1-2：所属项目过滤（"default" = 未分配 + 默认项目；省略 = 全部项目）。 */
+    projectId?: string;
     /** keyset 分页游标（不透明）。缺省 = 走 OFFSET 路径（现有行为，响应无 nextCursor）。 */
     cursor?: string;
   },
@@ -313,6 +331,8 @@ export function useTasksList(params: {
   triggerType?: string;
   /** P2-18：最近一次执行结果筛选（lastStatus），透传 GET /tasks 查询参数。 */
   lastStatus?: string;
+  /** P1-2：所属项目过滤（"default" = 未分配 + 默认项目；省略 = 全部项目）。 */
+  projectId?: string;
   /**
    * keyset（游标）分页令牌——**三态原样透传，不在这里归一**。
    *

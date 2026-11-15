@@ -378,6 +378,8 @@ export interface ExecutionExportFilters {
   startTime?: string;
   /** createdAt <= 该 ISO 8601 时刻 */
   endTime?: string;
+  /** P1-2：所属项目过滤（"default" = 未分配 + 默认项目；省略 = 全部项目）。 */
+  projectId?: string;
   /** 行数上限（安全阀，不是分页）；只能调小，后端硬顶 50000 */
   limit?: number;
 }
@@ -422,6 +424,11 @@ export type TaskListParams = {
    * 待 openapi 重导出后并入生成类型。
    */
   lastStatus?: string;
+  /**
+   * P1-2：按所属项目过滤。`"default"` 命中未分配 + 默认项目两类任务；
+   * 省略 = 全部项目。后端 GET /tasks 已支持（list-tasks-query.dto.ts）。
+   */
+  projectId?: string;
   /**
    * §2.1 keyset（游标）分页令牌——**三态**，且三态必须在状态层就分开：
    *
@@ -942,7 +949,7 @@ export const tasksApi = {
    * 未成文行为——旧路径逐字节不变是硬要求，不该押在别人身上。
    */
   allExecutions: (
-    params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string; startTime?: string; endTime?: string; executorAddress?: string; cursor?: string },
+    params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string; startTime?: string; endTime?: string; executorAddress?: string; projectId?: string; cursor?: string },
     signal?: AbortSignal,
   ) => {
     // 显式归一：三态里的第 ① 态落在这里，二/三态（含空串）原样透传。
@@ -987,6 +994,7 @@ export const tasksApi = {
       if (filters.executorAddress) params.executorAddress = filters.executorAddress;
       if (filters.startTime) params.startTime = filters.startTime;
       if (filters.endTime) params.endTime = filters.endTime;
+      if (filters.projectId) params.projectId = filters.projectId;
       if (typeof filters.limit === 'number') params.limit = filters.limit;
     }
     const blob = await client.get<Blob>('/tasks/executions/export', {

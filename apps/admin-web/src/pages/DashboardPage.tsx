@@ -38,6 +38,7 @@ import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
 import DashboardEmptyGuide from '../components/dashboard/DashboardEmptyGuide';
 import { useMetricsStream, useMetricsStreamDegraded, type MetricsStreamStatus } from '../hooks/useMetricsStream';
+import { useProjectFilter } from '../hooks/useProjectFilter';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
@@ -111,6 +112,10 @@ export default function DashboardPage() {
   // UI-02：图表双主题——网格线/轴文字随 data-theme 切换
   const isDark = useThemeStore(selectResolvedTheme) === 'dark';
 
+  // P1-2：全局当前项目上下文（?project=）。任务/执行派生的聚合按项目过滤；
+  // 执行器机队与调度器无项目归属，保持全局口径并在对应卡片显式标注。
+  const { backendProjectId, isScoped } = useProjectFilter();
+
   // UI-14: Dashboard 汇总流——SSE 推送 summary/executors/scheduler 快照直接
   // 写入 queryClient 缓存（setQueryData），连接活跃时页面免轮询；断线自动退避
   // 重连，页头状态点实时提示。
@@ -127,18 +132,19 @@ export default function DashboardPage() {
   // 写入 queryClient 缓存（setQueryData，见 useMetricsStream），连接活跃时
   // 免轮询；断线时 30s refetchInterval 兜底恢复轮询节奏（与 SSE 推送互斥共存）。
 
-  const { data: summary, isLoading: summaryLoading, refetch: refetchSummary, error: summaryError } = useMetricsSummary();
+  const { data: summary, isLoading: summaryLoading, refetch: refetchSummary, error: summaryError } = useMetricsSummary(backendProjectId);
 
-  const { data: trend, isLoading: trendLoading, refetch: refetchTrend, error: trendError } = useMetricsTrend(trendDays);
+  const { data: trend, isLoading: trendLoading, refetch: refetchTrend, error: trendError } = useMetricsTrend(trendDays, backendProjectId);
 
   // UI-04 ①：sparkline 用近 7 天趋势（含 24h；趋势图主卡共用一次请求，
   // days=1 时后端按日桶仅 1~2 点形状无意义，故 sparkline 取 7 天窗口）
   // queryKey 与主趋势卡 days=7 时自动合并为同一请求。
-  const { data: sparkTrend } = useMetricsTrend(7);
+  const { data: sparkTrend } = useMetricsTrend(7, backendProjectId);
 
+  // 执行器机队无项目归属——即便选中具体项目，热力条仍是全局机队口径（卡片上有标注）。
   const { data: executorStats, isLoading: execLoading, refetch: refetchExecutors, error: execError } = useExecutorStats();
 
-  const { data: failures, isLoading: failLoading, refetch: refetchFailures, error: failError } = useRecentFailures();
+  const { data: failures, isLoading: failLoading, refetch: refetchFailures, error: failError } = useRecentFailures(backendProjectId);
 
   // UI-04 ④：调度延迟卡数据源（既有 /metrics/scheduler，CORE-06 字段已在）
   // R171（P2-3）：两路调度的 error 此前被丢弃 ⇒ ① 延迟卡落到「暂无定时触发样本」；
@@ -180,6 +186,25 @@ export default function DashboardPage() {
   };
 
   const failureList = (failures ?? []).slice(0, 8);
+
+  // P1-2：选中具体项目时，机队/调度类无项目归属的指标显式标注「全局口径」——
+  // 不把全局机队数/调度数当成项目数字。未选项目（全部项目）时不渲染该标注。
+  const globalScopeTag = isScoped ? (
+    <Tooltip title={t('projectCtx.globalScope.tooltip')}>
+      <Tag style={{ fontSize: 10, lineHeight: '16px', marginInlineEnd: 0 }}>
+        {t('projectCtx.globalScope')}
+      </Tag>
+    </Tooltip>
+  ) : null;
+
+  // P1-2：跳执行列表的深链保留当前项目上下文（?project=），与既有筛选参数并存。
+  const executionsHref = (status?: string) => {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (backendProjectId) params.set('project', backendProjectId);
+    const qs = params.toString();
+    return `/executions${qs ? `?${qs}` : ''}`;
+  };
 
   // I18N-DATAKEY-01：dataKey 用稳定英文键，展示名由 Area name 走 i18n——
   // 此前用中文「成功/失败」当 dataKey、靠 Legend formatter 映射，Tooltip
@@ -279,7 +304,10 @@ export default function DashboardPage() {
                     现改词为「已注册调度」并加 tooltip 说明差异来源。 */}
                 {schedulerStats ? (
                   <Tooltip title={t('dashboard.kpi.scheduledHint')}>
-                    <span>{t('dashboard.kpi.scheduled', { count: schedulerStats.totalScheduledTasks })}</span>
+                    <span>
+                      {t('dashboard.kpi.scheduled', { count: schedulerStats.totalScheduledTasks })}
+                      {isScoped ? ` · ${t('projectCtx.globalScope')}` : ''}
+                    </span>
                   </Tooltip>
                 ) : ' '}
               </KpiFootnote>
@@ -320,7 +348,7 @@ export default function DashboardPage() {
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.onlineExecutors')}</Text>}
+                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.onlineExecutors')} {globalScopeTag}</Text>}
                 value={`${s?.onlineExecutors ?? '-'} / ${s?.totalExecutors ?? '-'}`}
                 prefix={<ApiOutlined style={{ color: CHART_COLORS.memory }} />}
                 styles={{ content: { color: CHART_COLORS.memory, fontSize: 28 } }}
@@ -453,7 +481,7 @@ export default function DashboardPage() {
         <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.executors')}</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.executors')} {globalScopeTag}</Text>}
             style={{ height: '100%' }}
             extra={<Link to="/executors" style={{ fontSize: 12 }}>{t('dashboard.executors.all')}</Link>}
           >
@@ -468,7 +496,7 @@ export default function DashboardPage() {
         <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.schedulerLatency')}</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.schedulerLatency')} {globalScopeTag}</Text>}
             style={{ height: '100%' }}
           >
             {/* R171（P2-3）：读不到不能渲染成「暂无样本」（那是「确实没有」的文案）。 */}
@@ -484,7 +512,7 @@ export default function DashboardPage() {
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.failureTop')}</Text>}
             style={{ height: '100%' }}
-            extra={<Link to="/executions?status=failed" style={{ fontSize: 12 }}>{t('dashboard.failureTop.all')}</Link>}
+            extra={<Link to={executionsHref('failed')} style={{ fontSize: 12 }}>{t('dashboard.failureTop.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
             {failLoading && !failures ? (
@@ -499,7 +527,7 @@ export default function DashboardPage() {
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.recentFailures')}</Text>}
             style={{ height: '100%' }}
-            extra={<Link to="/executions" style={{ fontSize: 12 }}>{t('dashboard.recentFailures.all')}</Link>}
+            extra={<Link to={executionsHref()} style={{ fontSize: 12 }}>{t('dashboard.recentFailures.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
             {failLoading && !failures ? (

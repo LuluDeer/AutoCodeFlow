@@ -45,6 +45,7 @@ import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级，CSS 做不到）
 import { useIsMobile } from '../hooks/useIsMobile';
+import { useProjectFilter } from '../hooks/useProjectFilter';
 import StateError from '../components/StateError';
 import ApplicationMutexGroupField from '../components/ApplicationMutexGroupField';
 import DeployModeFields from '../components/DeployModeFields';
@@ -190,11 +191,18 @@ export default function ApplicationListPage() {
     }
   }, []);
 
-  const fetchApps = useCallback(async () => {
+  // P1-2：全局当前项目上下文（?project=）；后端 /applications 已支持 projectId
+  // 真过滤（含 "default" = 未分配 + 默认项目）。
+  const { backendProjectId } = useProjectFilter();
+
+  const fetchApps = useCallback(async (projectId?: string) => {
     setLoading(true);
     setLoadError(null);
     try {
-      const data = await applicationsApi.list();
+      const data = await applicationsApi.list(
+        undefined,
+        projectId ? { projectId } : undefined,
+      );
       setRawApps(data);
     } catch (err: unknown) {
       setLoadError(err);
@@ -209,17 +217,18 @@ export default function ApplicationListPage() {
   }, []);
 
   // P1-8：两条链路独立触发——stats reject 不再把已取到的主列表拖进错误态。
+  // P1-2：项目上下文变化后主列表按新项目重取（stats 聚合端点无项目维度，见下）。
   useEffect(() => {
-    void fetchApps();
+    void fetchApps(backendProjectId);
     void fetchStats();
-  }, [fetchApps, fetchStats]);
+  }, [fetchApps, fetchStats, backendProjectId]);
 
   // 写面变更（删除/保存/上传/部署）后：主列表与统计一起后台刷新。stats 若仍
   // 失败只落 Banner，不影响列表渲染；刷新按钮同理走这里。
   const refreshAfterMutation = useCallback(() => {
-    void fetchApps();
+    void fetchApps(backendProjectId);
     void fetchStats();
-  }, [fetchApps, fetchStats]);
+  }, [fetchApps, fetchStats, backendProjectId]);
 
   // Banner 技术详情复制（P3-06：原始 URL/技术串与本地化摘要分开，复制内容含原文）。
   const handleCopyStatsError = async () => {
@@ -681,7 +690,7 @@ export default function ApplicationListPage() {
 
       {/* UI-08：首屏错误态（重试+复制错误信息） */}
       {loadError !== null && !loading && (
-        <StateError error={loadError} onRetry={fetchApps} style={{ marginBottom: 16 }} />
+        <StateError error={loadError} onRetry={() => fetchApps(backendProjectId)} style={{ marginBottom: 16 }} />
       )}
 
       {/* P1-8 / P3-06：辅助统计失败的原位 Warning——主列表照常渲染。

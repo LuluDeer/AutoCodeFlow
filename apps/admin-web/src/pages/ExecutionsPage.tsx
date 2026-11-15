@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Table,
   Typography,
   Badge,
@@ -34,6 +34,7 @@ import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 // URL-SYNC-02（审计 P2）：双向 URL 同步（外部深链/前进后退真正生效）
 import { useUrlStateSync } from '../hooks/useUrlStateSync';
+import { useProjectFilter } from '../hooks/useProjectFilter';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 // ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析（id 优先、地址回落）。
 // 阶段 3 起 pull 允许同址多行并存，仅显示 IP:端口 无法回答「哪台机器」。
@@ -231,6 +232,9 @@ export default function ExecutionsPage() {
    */
   const [cursorState, setCursorState] = useState<CursorStack>(() => initialCursorStack(undefined));
 
+  // P1-2：全局当前项目上下文（?project=）；后端执行列表经 taskId 关联任务派生项目归属。
+  const { backendProjectId } = useProjectFilter();
+
   /**
    * 重置游标栈（回到第 1 页）。
    *
@@ -270,7 +274,7 @@ export default function ExecutionsPage() {
   // 翻页/筛选变化后当前页数据会变，跨页选中行不再可见——清空选中防误比
   useEffect(() => {
     setSelectedIds([]);
-  }, [page, pageSize, statusFilter, search, executorFilter, timeRange, cursorState]);
+  }, [page, pageSize, statusFilter, search, executorFilter, timeRange, cursorState, backendProjectId]);
 
   const handleKill = async (r: TaskExecution) => {
     setKillingId(r.id);
@@ -348,6 +352,8 @@ export default function ExecutionsPage() {
       executorAddress: executorFilter || undefined,
       startTime: timeRange?.[0]?.toISOString(),
       endTime: timeRange?.[1]?.toISOString(),
+      // P1-2：项目维度透传；'all' → undefined（不传），'default' / UUID 原样发后端。
+      projectId: backendProjectId,
       // keyset 三态的**唯一**出口，落在下面这个三元里：
       //   · 关闭开关 → 整个 `cursor` 键都不出现（`{}`），请求与改动前完全一致；
       //   · 打开开关 → 空串（`?cursor=`，keyset 起点）或上一页返回的不透明游标。
@@ -359,6 +365,17 @@ export default function ExecutionsPage() {
     },
     { refetchInterval: sseFallbackRefetchInterval(SSE_STATUS_KEYS.executionsStream) },
   );
+
+  // P1-2：切换项目上下文后回到第一页并清游标栈——旧项目的页码/游标对新项目结果集
+  // 无意义（与其它改变结果集的入口同口径，见 resetCursorStack 头注）。
+  // 首次挂载不重置：否则深链 ?page=N 会被打回第 1 页；仅在项目实际切换时回退。
+  const prevProjectRef = useRef(backendProjectId);
+  useEffect(() => {
+    if (prevProjectRef.current === backendProjectId) return;
+    prevProjectRef.current = backendProjectId;
+    setPage(1);
+    resetCursorStack(stablePaging);
+  }, [backendProjectId, stablePaging]);
 
   // FEAT-16: 执行终态推送流——SSE live 时终态事件即时 invalidate 列表+汇总
   // 缓存（<3s 刷新验收），断线时上方 refetchInterval 兜底轮询自动成为唯一
@@ -544,6 +561,8 @@ export default function ExecutionsPage() {
         executorAddress: executorFilter || undefined,
         startTime: timeRange?.[0]?.toISOString(),
         endTime: timeRange?.[1]?.toISOString(),
+        // P1-2：导出与列表同一项目口径，避免导出全量而页面只显示某项目。
+        projectId: backendProjectId,
       });
       message.success(t('execs.exportAll.success'));
     } catch (err: unknown) {

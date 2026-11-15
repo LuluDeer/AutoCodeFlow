@@ -15,7 +15,7 @@ import {
   memo,
   type ReactNode,
 } from 'react';
-import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
+import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip, Select } from 'antd';
 import { message } from '../utils/toast';
 import {
   DashboardOutlined,
@@ -69,6 +69,9 @@ import BrandFox from '../components/BrandFox';
 // P0-7（UX 审计）：setLanguage 此前导出但全站零调用——此处是它的第一个入口。
 import '../i18n';
 import { setLanguage, availableLanguages } from '../i18n';
+import { useProjectFilter, PROJECT_FILTER_ALL, PROJECT_FILTER_DEFAULT } from '../hooks/useProjectFilter';
+import { projectsApi, type ProjectViewRow } from '../api/projects';
+import { DEFAULT_PROJECT_ID } from '../constants/project';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -277,6 +280,20 @@ export default function MainLayout() {
   const themeMeta = THEME_BUTTON_META[themeMode];
   const themeLabel = t(themeMeta.labelKey);
   const themeAria = t(themeMeta.ariaKey);
+
+  // P1-2：全局「当前项目」上下文（四工作面共用 ?project= 参数，hook 内部读写 URL）。
+  const { projectId, setProjectId } = useProjectFilter();
+  // 切换器数据源：全量可见项目（后端按权限裁剪：ADMIN 全量，普通用户默认项目 ∪ 成员）。
+  // 拉取失败不阻塞壳层——仅保留「全部 / 默认项目」两项降级渲染。
+  const [projectOptions, setProjectOptions] = useState<ProjectViewRow[]>([]);
+  useEffect(() => {
+    let alive = true;
+    projectsApi
+      .list()
+      .then((rows) => { if (alive) setProjectOptions(rows); })
+      .catch(() => { /* 降级：见上注 */ });
+    return () => { alive = false; };
+  }, []);
 
   /**
    * P0-7（UX 审计）：界面语言。
@@ -632,6 +649,27 @@ export default function MainLayout() {
           </Space>
 
           <Space size={4}>
+            {/* P1-2：全局「当前项目」切换器——Dashboard / 任务 / 执行 / 应用四面共用
+                ?project= 上下文。默认项目实体行从具体列表剔除：独立的「默认项目」选项
+                表达「未分配 + 默认项目」合并视图（后端 "default" 字面量口径）。 */}
+            <Select
+              className="header-project"
+              data-testid="project-switcher"
+              aria-label={t('projectCtx.aria')}
+              showSearch
+              optionFilterProp="label"
+              value={projectId}
+              onChange={(value: string) => setProjectId(value)}
+              placeholder={t('projectCtx.placeholder')}
+              options={[
+                { value: PROJECT_FILTER_ALL, label: t('projectCtx.all') },
+                { value: PROJECT_FILTER_DEFAULT, label: t('projectCtx.default') },
+                ...projectOptions
+                  .filter((p) => p.id !== DEFAULT_PROJECT_ID)
+                  .map((p) => ({ value: p.id, label: p.name })),
+              ]}
+            />
+
             {/* 时间显示（UI-09：≤768px 隐藏——头部仅留高频操作按钮）
                 UI-12：纯装饰信息，对读屏隐藏（每分每秒变化会持续打断朗读）
                 F-12：提取为 memoized <Clock />，自管 setInterval 不波及父 Layout */}

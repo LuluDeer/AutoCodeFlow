@@ -149,7 +149,7 @@ describe('useMetricsSummary 条件轮询（注册表驱动，端到端）', () =
     expect(mockGet).toHaveBeenCalledTimes(3);
 
     // 兜底查询自身的 queryKey 仍是缓存事实源（缓存语义未被本次改动触碰）
-    expect(queryClient.getQueryData(queryKeys.metrics.summary)).toBeDefined();
+    expect(queryClient.getQueryData(queryKeys.metrics.summary())).toBeDefined();
   });
 
   // ── F-17（UIAUDIT P3-10）：ExecutionsPage 列表查询同机制接线 ──────────────

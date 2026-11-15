@@ -65,7 +65,7 @@ export function useMetricsStreamDegraded(): boolean {
 
 /** A-4：metrics/stream 降级段名 → queryClient 缓存键（与 onMessage 写入面同源） */
 const STREAM_SEGMENT_QUERY_KEYS: Record<string, readonly unknown[]> = {
-  summary: queryKeys.metrics.summary,
+  summary: queryKeys.metrics.summary(),
   executors: queryKeys.metrics.executorStats,
   scheduler: queryKeys.metrics.scheduler,
 };
@@ -107,7 +107,7 @@ export function useMetricsStream({ enabled = true }: UseMetricsStreamOptions = {
           // 与具名 error 帧的置位形成对称闭环）。
           setStreamDegraded(snap.errors.length > 0);
           if (snap.summary !== undefined && snap.summary !== null) {
-            queryClient.setQueryData(queryKeys.metrics.summary, snap.summary);
+            queryClient.setQueryData(queryKeys.metrics.summary(), snap.summary);
           }
           if (snap.executors !== undefined && snap.executors !== null) {
             queryClient.setQueryData(queryKeys.metrics.executorStats, snap.executors);

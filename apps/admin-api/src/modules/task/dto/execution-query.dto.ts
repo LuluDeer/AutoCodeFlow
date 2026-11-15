@@ -68,6 +68,19 @@ export class AllExecutionsQueryDto extends PaginationDto {
   @IsString()
   taskId?: string;
 
+  /**
+   * P1-2：按所属项目过滤。执行行自身不冗余 projectId，经 taskId 关联 tasks.projectId
+   * 派生（与任务列表同一套口径）。特殊值 `"default"` 命中未分配（projectId IS NULL）
+   * 与默认项目（projectId = DEFAULT_PROJECT_ID）两类行；省略 = 全部项目。
+   */
+  @ApiPropertyOptional({
+    description:
+      "按所属项目过滤（经任务关联派生）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。",
+  })
+  @IsOptional()
+  @IsString()
+  projectId?: string;
+
   @ApiPropertyOptional({ description: "按任务名模糊搜索" })
   @IsOptional()
   @IsString()
@@ -159,6 +172,18 @@ export class ExportExecutionsQueryDto {
   @IsOptional()
   @IsString()
   taskId?: string;
+
+  /**
+   * P1-2：按所属项目过滤（与列表端点同口径，经任务关联派生）。
+   * `"default"` = 未分配 + 默认项目；省略 = 全部项目。
+   */
+  @ApiPropertyOptional({
+    description:
+      "按所属项目过滤（经任务关联派生）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。",
+  })
+  @IsOptional()
+  @IsString()
+  projectId?: string;
 
   @ApiPropertyOptional({ description: "按任务名模糊搜索" })
   @IsOptional()
