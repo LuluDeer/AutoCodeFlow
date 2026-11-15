@@ -40,7 +40,7 @@
 
 import { chromium } from 'playwright-core';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -121,8 +121,9 @@ const APPLICATIONS = [
   { id: 'app-2004', name: '爬虫集群-电商价格监控', description: '多站点价格抓取', version: '3.7.0', runtime: 'python', status: 'failed', createdAt: ISO(-15 * 24 * 3600e3), updatedAt: ISO(-1 * 24 * 3600e3) },
 ];
 
-// P1-3：GET /artifacts 跨执行产物索引行（镜像后端 ExecutionArtifactRowDto 契约：
-// 裸数组、无 total；仅 applicationId / taskId / page / pageSize 可筛）。
+// P1-3：GET /artifacts 跨执行产物索引行（镜像后端 ExecutionArtifactRowDto 契约 +
+// paginate 信封：list/items/total/page/pageSize/totalPages；支持 applicationId / taskId /
+// q（文件名关键字）/ from / to（createdAt 闭区间）/ ext（扩展名后缀）过滤，total 为过滤后总数）。
 const ARTIFACT_ROWS = [
   { id: 'ar-1', executionId: 'e-9001', taskId: 't-1001', applicationId: null, name: 'backup-dump.sql.gz', size: 1_288_490_188, sha256: 'aa'.repeat(32), createdAt: ISO(-94 * MIN) },
   { id: 'ar-2', executionId: 'e-9001', taskId: 't-1001', applicationId: null, name: '备份日志-中文文件名.txt', size: 4096, sha256: 'bb'.repeat(32), createdAt: ISO(-94 * MIN) },
@@ -312,16 +313,23 @@ const ROUTES = [
   ['GET', /^\/tasks$/, (u, q) => TASKS_PAGED(q)],
   ['GET', /^\/tasks\/executions\/all$/, (u, q) => pagedEnvelope(EXECUTIONS, q)],
   ['GET', /^\/tasks\/executions\/([^/]+)\/artifacts$/, () => [{ name: 'backup-dump.sql.gz', size: 1_288_490_188, sha256: 'aa'.repeat(20) }, { name: '备份日志-中文文件名.txt', size: 4096, sha256: 'bb'.repeat(20) }]],
-  // P1-3：GET /artifacts 索引（裸数组、无 total；夹具镜像真实契约：仅应用/任务可筛）
+  // P1-3：GET /artifacts 索引（镜像真实契约：paginate 信封；应用/任务/关键字/时间闭区间/扩展名可筛）
   ['GET', /^\/artifacts$/, (u, q) => {
     const appId = q.get('applicationId');
     const taskId = q.get('taskId');
-    const page = Math.max(1, parseInt(q.get('page') || '1', 10) || 1);
-    const pageSize = Math.max(1, parseInt(q.get('pageSize') || '20', 10) || 20);
+    const kw = (q.get('q') || '').trim().toLowerCase();
+    const from = q.get('from');
+    const to = q.get('to');
+    const ext = (q.get('ext') || '').trim().toLowerCase();
     let pool = ARTIFACT_ROWS;
     if (appId) pool = pool.filter((r) => r.applicationId === appId);
     if (taskId) pool = pool.filter((r) => r.taskId === taskId);
-    return pool.slice((page - 1) * pageSize, page * pageSize);
+    if (kw) pool = pool.filter((r) => r.name.toLowerCase().includes(kw));
+    if (from) pool = pool.filter((r) => new Date(r.createdAt) >= new Date(from));
+    if (to) pool = pool.filter((r) => new Date(r.createdAt) <= new Date(to));
+    if (ext) pool = pool.filter((r) => r.name.toLowerCase().endsWith('.' + ext));
+    const env = pagedEnvelope(pool, q);
+    return { ...env, list: env.items };
   }],
   ['GET', /^\/tasks\/([^/]+)$/, (u, q, m) => TASKS.find((t) => t.id === m[1]) || TASKS[0]],
   ['GET', /^\/tasks\/([^/]+)\/executions$/, (u, q, m) => {
@@ -1423,7 +1431,15 @@ async function main() {
   process.stdout.write(`\n[ux-walkthrough] report written to ${join(OUT_DIR, 'report.md')}${round1 ? ' (首轮内容已保留)' : ''}\n`);
 }
 
-main().catch((err) => {
-  console.error('[ux-walkthrough] fatal:', err);
-  process.exit(1);
-});
+// 直接执行时跑完整走查;被截图探针等脚本 import 时只复用 apiHandler / USER,不触发 main。
+const isDirectEntry =
+  process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+
+if (isDirectEntry) {
+  main().catch((err) => {
+    console.error('[ux-walkthrough] fatal:', err);
+    process.exit(1);
+  });
+}
+
+export { apiHandler, USER };

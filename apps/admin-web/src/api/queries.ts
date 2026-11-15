@@ -818,12 +818,12 @@ export function useExecutionArtifacts(
 }
 
 /**
- * P1-3：GET /artifacts 跨执行产物索引。响应是裸数组（无分页信封、无 total）；
- * 后端只支持 applicationId / taskId / page / pageSize 四个查询参数。
+ * P1-3：GET /artifacts 跨执行产物索引。响应是 paginate 信封（items/total/...），
+ * `total` 为过滤后总数；query 支持 applicationId / taskId / q / from / to / ext 组合过滤。
  */
 export function useArtifactsIndex(
   query: ArtifactIndexQuery,
-): UseQueryResult<ArtifactRow[]> {
+): UseQueryResult<PageResult<ArtifactRow>> {
   return useQuery({
     queryKey: queryKeys.artifacts.index(query),
     queryFn: ({ signal }) => artifactsApi.listIndex(query, signal),

@@ -10,6 +10,30 @@ export const PREVIEW_IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', '
 /** 文本类扩展名（小写、不含点）——可在弹窗内联只读预览。 */
 export const PREVIEW_TEXT_EXTS = ['txt', 'log', 'json', 'csv', 'md', 'yaml', 'yml', 'xml'] as const;
 
+/**
+ * 类型筛选下拉选项（小写、不含点）。
+ *
+ * 与后端 `artifacts.constants.ts` 的 `ARTIFACT_EXTENSION_FILTERS` 白名单逐字对齐；
+ * 后端是契约事实源——白名单增删时两处一起改。前端只列白名单，不让用户手输后缀。
+ */
+export const ARTIFACT_EXTENSION_FILTERS = [
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'svg',
+  'pdf',
+  'zip',
+  'json',
+  'txt',
+  'log',
+  'md',
+  'csv',
+  'xlsx',
+  'html',
+] as const;
+
 /** 取文件名扩展名（小写、不含点）；无扩展名返回空串。 */
 export function artifactExtension(name: string): string {
   const base = name.split('/').pop() ?? name;

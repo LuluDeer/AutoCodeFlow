@@ -737,13 +737,13 @@
     "apps/admin-web/scripts/ux-walkthrough.mjs": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1191,
-      "why": "2026-11-04 实测 nonCommentLines=1055 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。2026-11-15 P1-5 补三条导入/PATCH 夹具路由（POST /tasks/import、POST /task-templates/import、PATCH /task-templates/:id），实测 nonCommentLines=1078，棘轮上限按实测上调。 | **2026-11-15 本轮重签（+46 非注释行）**：P1-3/P1-4 产物库与待办收件箱两个新值班入口（1fe742e1）——走查矩阵补 /artifacts、/inbox 页面及其任务深链的夹具路由、视口与暗色用例；ceiling.nonCommentLines 1078→1124，函数体 281、密度 24.8（较基线 25.7 净降）未变口径。 | **2026-11-15 收口轮重签（+67 非注释行）**：C 部分全站浏览器回归补齐 /projects/:id 项目详情页夹具（GET /projects/:id 实体回显、GET /projects/:id/summary 统计摘要）与三视口用例，并新增 1280 桌面端列表容器横滚手量探针（measureListContainers 度量 .ant-table-content/.ant-list 的 scrollWidth/clientWidth，pushDesktopMetrics 落报告小节，区分表格内部横滚与 body 级视口溢出）；ceiling.nonCommentLines 1124→1191、functionLines 281→283、branchDensity 24.8→24.9，exports/ctorParams 仍为 0。",
+      "maxLines": 1203,
+      "why": "2026-11-04 实测 nonCommentLines=1055 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。2026-11-15 P1-5 补三条导入/PATCH 夹具路由（POST /tasks/import、POST /task-templates/import、PATCH /task-templates/:id），实测 nonCommentLines=1078，棘轮上限按实测上调。 | **2026-11-15 本轮重签（+46 非注释行）**：P1-3/P1-4 产物库与待办收件箱两个新值班入口（1fe742e1）——走查矩阵补 /artifacts、/inbox 页面及其任务深链的夹具路由、视口与暗色用例；ceiling.nonCommentLines 1078→1124，函数体 281、密度 24.8（较基线 25.7 净降）未变口径。 | **2026-11-15 收口轮重签（+67 非注释行）**：C 部分全站浏览器回归补齐 /projects/:id 项目详情页夹具（GET /projects/:id 实体回显、GET /projects/:id/summary 统计摘要）与三视口用例，并新增 1280 桌面端列表容器横滚手量探针（measureListContainers 度量 .ant-table-content/.ant-list 的 scrollWidth/clientWidth，pushDesktopMetrics 落报告小节，区分表格内部横滚与 body 级视口溢出）；ceiling.nonCommentLines 1124→1191、functionLines 281→283、branchDensity 24.8→24.9，exports/ctorParams 仍为 0。 | **2026-11-15 P1-3 筛选补齐重签（+12 非注释行）**：/artifacts 夹具路由补 q（文件名关键字）/from/to（createdAt 闭区间）/ext（扩展名后缀）过滤并对齐 paginate 信封（list/items 双键兼容）；为让本地截图探针复用 apiHandler/USER，补直接执行守卫（与 docs-screenshots.mjs 同型）与尾部 export 列表。实测 nonCommentLines 1191→1203、exports 0→1，functionLines 283、branchDensity 24.9、ctorParams 0 未变口径。",
       "ceiling": {
-        "nonCommentLines": 1191,
+        "nonCommentLines": 1203,
         "functionLines": 283,
         "ctorParams": 0,
-        "exports": 0,
+        "exports": 1,
         "branchDensity": 24.9
       },
       "firstRun": {
