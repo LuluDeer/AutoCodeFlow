@@ -16,6 +16,7 @@ import {
   type ReactNode,
 } from 'react';
 import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip, Select } from 'antd';
+import type { MenuProps } from 'antd';
 import { message } from '../utils/toast';
 import {
   DashboardOutlined,
@@ -80,8 +81,9 @@ const { Text } = Typography;
 // 无需 zustand 重量级方案；key 命名对齐 autoflow-theme 惯例）
 const SIDER_COLLAPSED_KEY = 'autoflow-sider-collapsed';
 const MENU_OPEN_KEYS_KEY = 'autoflow-menu-open-keys';
-// 默认展开「任务」「执行」两组（计划书指定），首次进入即见高频入口
-const DEFAULT_OPEN_KEYS = ['g-tasks', 'g-executions'];
+// 默认展开「自动化」组（计划书指定），首次进入即见高频入口；
+// 控制台 / 执行记录为直达一级入口，不需要分组展开态。
+const DEFAULT_OPEN_KEYS = ['g-tasks'];
 
 // F-25（DEEP_REVIEW 0ef3bbe）：按平台动态显示搜索快捷键（Mac ⌘K / 其他 Ctrl K），
 // 与 CommandPalette 实际监听的 metaKey||ctrlKey 保持一致。判定逻辑抽到
@@ -130,36 +132,40 @@ const THEME_BUTTON_META: Record<ThemeMode, { icon: ReactNode; labelKey: string; 
   system: { icon: <DesktopOutlined />, labelKey: 'nav.theme.system', ariaKey: 'nav.theme.system.aria' },
 };
 
-// UI-03：菜单分组结构（新导航 IA：概览/任务/执行/执行器/应用/系统）——
-// 渲染时按角色过滤（R5 RBAC），分组键不带 '/'，页面键以路由开头。
+// P1-6：菜单 IA（扁平化 + 场景分组）。
+// - 控制台、执行记录是高频直达入口，不再包「单子项折叠组」（消除双击路径）；
+// - 原「系统」杂烩拆为 组织 / 治理 / 辅助 三组，每组 ≤3 项；
+// - 分组节点不再挂图标（图标只留给叶子页面项），从构造上去掉父子同图标；
+// - 分组键不带 '/'，页面键以路由开头；渲染时按角色过滤（R5 RBAC）。
 // 分组用 antd Menu 的 submenu 形态（非 type:'group'），保证分组可折叠/展开并持久化。
 // UI-10：label 由 buildMenuItems(t) 在组件内构造（语言切换即时生效）。
-function buildMenuItems(t: (k: string) => string) {
+interface MenuLeaf {
+  key: string;
+  icon: ReactNode;
+  label: string;
+}
+interface MenuGroup {
+  key: string;
+  label: string;
+  children: MenuLeaf[];
+}
+type MenuEntry = MenuLeaf | MenuGroup;
+
+function buildMenuItems(t: (k: string) => string): MenuEntry[] {
   return [
-    {
-      key: 'g-overview',
-      icon: <DashboardOutlined />,
-      label: t('nav.group.overview'),
-      children: [{ key: '/dashboard', icon: <DashboardOutlined />, label: t('nav.dashboard') }],
-    },
+    // 直达一级入口（无子分组）
+    { key: '/dashboard', icon: <DashboardOutlined />, label: t('nav.dashboard') },
     {
       key: 'g-tasks',
-      icon: <ThunderboltOutlined />,
       label: t('nav.group.tasks'),
       children: [
         { key: '/tasks', icon: <ThunderboltOutlined />, label: t('nav.tasks') },
         { key: '/task-templates', icon: <FileTextOutlined />, label: t('nav.taskTemplates') },
       ],
     },
-    {
-      key: 'g-executions',
-      icon: <HistoryOutlined />,
-      label: t('nav.group.executions'),
-      children: [{ key: '/executions', icon: <HistoryOutlined />, label: t('nav.executions') }],
-    },
+    { key: '/executions', icon: <HistoryOutlined />, label: t('nav.executions') },
     {
       key: 'g-executors',
-      icon: <ClusterOutlined />,
       label: t('nav.group.executors'),
       children: [
         { key: '/executors', icon: <ClusterOutlined />, label: t('nav.executors') },
@@ -168,25 +174,38 @@ function buildMenuItems(t: (k: string) => string) {
     },
     {
       key: 'g-applications',
-      icon: <AppstoreOutlined />,
       label: t('nav.group.applications'),
       children: [
         { key: '/applications', icon: <AppstoreOutlined />, label: t('nav.applications') },
         { key: '/registry', icon: <DatabaseOutlined />, label: t('nav.registry') },
       ],
     },
+    // 组织：成员与项目
     {
-      key: 'g-system',
-      icon: <SettingOutlined />,
-      label: t('nav.group.system'),
+      key: 'g-org',
+      label: t('nav.group.org'),
       children: [
         { key: '/users', icon: <UserOutlined />, label: t('nav.users') },
+        { key: '/projects', icon: <TeamOutlined />, label: t('nav.projects') },
+      ],
+    },
+    // 治理：审计 / 通知 / 设置
+    {
+      key: 'g-gov',
+      label: t('nav.group.gov'),
+      children: [
+        { key: '/audit', icon: <AuditOutlined />, label: t('nav.audit') },
+        { key: '/notifications', icon: <BellOutlined />, label: t('nav.notifications') },
+        { key: '/settings', icon: <SettingOutlined />, label: t('nav.settings') },
+      ],
+    },
+    // 辅助：SOP / Agent 会话
+    {
+      key: 'g-assist',
+      label: t('nav.group.assist'),
+      children: [
         { key: '/sops', icon: <FileTextOutlined />, label: t('nav.sops') },
         { key: '/agent-sessions', icon: <RobotOutlined />, label: t('nav.agents') },
-        { key: '/notifications', icon: <BellOutlined />, label: t('nav.notifications') },
-        { key: '/audit', icon: <AuditOutlined />, label: t('nav.audit') },
-        { key: '/projects', icon: <TeamOutlined />, label: t('nav.projects') },
-        { key: '/settings', icon: <SettingOutlined />, label: t('nav.settings') },
       ],
     },
   ];
@@ -352,13 +371,15 @@ export default function MainLayout() {
   // UI-10：菜单项 label 经 t() 构造（语言切换即时生效）；过滤在构造后展开无关。
   const allMenuItems = buildMenuItems(t);
   const menuItems = allMenuItems
-    .map((group) => ({
-      ...group,
-      children: isAdmin
-        ? group.children
-        : group.children.filter((c) => !ADMIN_ONLY_MENU_KEYS.has(c.key)),
-    }))
-    .filter((group) => group.children.length > 0);
+    .map((entry) => {
+      // 直达一级入口（叶子）原样保留；分组按角色裁掉 ADMIN-only 子项
+      if (!('children' in entry)) return entry;
+      const children = isAdmin
+        ? entry.children
+        : entry.children.filter((c) => !ADMIN_ONLY_MENU_KEYS.has(c.key));
+      return { ...entry, children };
+    })
+    .filter((entry) => !('children' in entry) || entry.children.length > 0);
 
 
 
@@ -424,7 +445,7 @@ export default function MainLayout() {
   // 持久化，不干扰用户对其他分组的手动折叠；用户随后手动收起也仍被尊重
   // （effect 只在分组归属变化时触发，不会立刻又弹开）。
   const selectedGroupKey = menuItems.find((g) =>
-    g.children.some((c) => c.key === selectedKey),
+    'children' in g && g.children.some((c) => c.key === selectedKey),
   )?.key;
   useEffect(() => {
     if (!selectedGroupKey) return;
@@ -448,6 +469,8 @@ export default function MainLayout() {
     audit: t('nav.audit'),
     projects: t('nav.projects'),
     settings: t('nav.settings'),
+    sops: t('nav.sops'),
+    'agent-sessions': t('nav.agents'),
     install: t('nav.install'),
     new: t('nav.new'),
     edit: t('nav.edit'),
@@ -495,16 +518,23 @@ export default function MainLayout() {
     }
   };
 
-  // 渲染带 tooltip 的菜单项（折叠时）
+  // 渲染带 tooltip 的菜单项（折叠时）；叶子入口与分组分别包 Tooltip
   const menuItemsWithTooltip = collapsed
-    ? menuItems.map(item => ({
-        ...item,
-        label: <Tooltip placement="right" title={item.label}>{item.label}</Tooltip>,
-        children: item.children?.map(child => ({
-          ...child,
-          label: <Tooltip placement="right" title={child.label}>{child.label}</Tooltip>,
-        })),
-      }))
+    ? menuItems.map((item) =>
+        'children' in item
+          ? {
+              ...item,
+              label: <Tooltip placement="right" title={item.label}>{item.label}</Tooltip>,
+              children: item.children.map((child) => ({
+                ...child,
+                label: <Tooltip placement="right" title={child.label}>{child.label}</Tooltip>,
+              })),
+            }
+          : {
+              ...item,
+              label: <Tooltip placement="right" title={item.label}>{item.label}</Tooltip>,
+            },
+      )
     : menuItems;
 
   return (
@@ -574,7 +604,7 @@ export default function MainLayout() {
             selectedKeys={[selectedKey]}
             openKeys={openKeys}
             onOpenChange={setOpenKeys}
-            items={menuItemsWithTooltip}
+            items={menuItemsWithTooltip as MenuProps['items']}
             onClick={({ key }) => nav(key)}
             style={{ border: 'none', marginTop: 8, paddingBottom: 56 }}
           />

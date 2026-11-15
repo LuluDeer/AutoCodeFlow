@@ -224,11 +224,14 @@ describe('UI-09 MainLayout 移动端抽屉', () => {
     fireEvent.click(screen.getByTestId('mobile-menu-toggle'));
     const rootLayout = document.querySelector('.ant-layout') as HTMLElement;
     expect(rootLayout.className).toContain('mobile-sider-open');
-    // 展开任务分组并点击「任务调度」（antd 菜单可点击节点为 li.ant-menu-item）
-    fireEvent.click(screen.getByText('任务'));
+    // 展开自动化分组并点击「任务」（antd 菜单可点击节点为 li.ant-menu-item）
     const menu = document.querySelector('.ant-menu') as HTMLElement;
+    const groupTitle = Array.from(menu.querySelectorAll<HTMLElement>('.ant-menu-submenu-title'))
+      .find((el) => el.textContent === '自动化');
+    expect(groupTitle).toBeTruthy();
+    fireEvent.click(groupTitle!);
     const item = Array.from(menu.querySelectorAll<HTMLElement>('.ant-menu-title-content'))
-      .find((el) => el.textContent === '任务调度');
+      .find((el) => el.textContent === '任务');
     expect(item).toBeTruthy();
     fireEvent.click(item!.closest('li')!);
     // 路由跳转成功（jsdom 测试路由树中 MainLayout 被 /tasks 桩替换——
