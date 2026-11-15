@@ -8,11 +8,12 @@ import {
   message as antdMessage,
 } from 'antd';
 import {
-  DeleteOutlined, EditOutlined, PlusOutlined, TeamOutlined, UserAddOutlined,
+  DeleteOutlined, EditOutlined, PlusOutlined, ProfileOutlined, TeamOutlined, UserAddOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useDebounce } from '../hooks/useDebounce';
 import {
   projectsApi,
   type CreateProjectDto,
@@ -329,6 +330,7 @@ export default function ProjectsPage() {
   // AgentSessionsPage 先例）；非法深链值（?page=abc、负数、浮点、pageSize>100）
   // 回落默认值，不空屏不报错。上限 100 与后端钳制纪律一致。
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [page, setPage] = useState(() => {
     const p = Number(searchParams.get('page'));
     return Number.isInteger(p) && p > 0 ? p : 1;
@@ -337,24 +339,45 @@ export default function ProjectsPage() {
     const ps = Number(searchParams.get('pageSize'));
     return Number.isInteger(ps) && ps > 0 && ps <= 100 ? ps : 20;
   });
+  // P1-2：关键字搜索（后端按名称/描述字面量模糊匹配）。输入框绑定即时值
+  // `search` 保证回显，列表查询跟随防抖后的 `debouncedSearch`；q 进 URL 可分享。
+  const [search, setSearch] = useState(() => searchParams.get('q')?.trim() ?? '');
+  const debouncedSearch = useDebounce(search, 300);
 
   // 列表：后端已按主体过滤，前端零额外处理；R3 起走服务端分页（信封形状，
-  // list/items 双键取 list）。queryKey 带上 page/pageSize——翻页各自缓存；
-  // 成员变更的失效走 queryKeys.projects.list 前缀（v5 前缀语义覆盖全部分页键）。
+  // list/items 双键取 list）。queryKey 带上 page/pageSize/q——翻页/各关键字
+  // 各自缓存；成员变更的失效走 queryKeys.projects.list 前缀（v5 前缀语义覆盖）。
   const projectsQuery = useQuery({
-    queryKey: [...queryKeys.projects.list, page, pageSize],
-    queryFn: ({ signal }) => projectsApi.listPaged(page, pageSize, signal),
+    queryKey: [...queryKeys.projects.list, page, pageSize, debouncedSearch],
+    queryFn: ({ signal }) => {
+      // 无关键字时不传第 4 参 q：保持既有 3 参调用形状，避免显式 undefined
+      // 落到 mock 调用参数里把既有用例的 toHaveBeenLastCalledWith 顶成多参不匹配。
+      const q = debouncedSearch || undefined;
+      return q
+        ? projectsApi.listPaged(page, pageSize, signal, q)
+        : projectsApi.listPaged(page, pageSize, signal);
+    },
   });
   const rows: ProjectViewRow[] = projectsQuery.data?.list ?? [];
   const total: number = projectsQuery.data?.total ?? 0;
 
+  // 关键字变化回到第 1 页（防抖值变了才触发，避免输入中途翻页）。
+  // 挂载首次不重置：否则会把深链 ?page=2 打回第 1 页。
+  const prevSearchRef = useRef(debouncedSearch);
+  useEffect(() => {
+    if (prevSearchRef.current === debouncedSearch) return;
+    prevSearchRef.current = debouncedSearch;
+    setPage(1);
+  }, [debouncedSearch]);
+
   // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；默认值不写入保持 URL 干净）
   useEffect(() => {
     const next = new URLSearchParams();
+    if (debouncedSearch) next.set('q', debouncedSearch);
     if (page !== 1) next.set('page', String(page));
     if (pageSize !== 20) next.set('pageSize', String(pageSize));
     setSearchParams(next, { replace: true });
-  }, [page, pageSize, setSearchParams]);
+  }, [debouncedSearch, page, pageSize, setSearchParams]);
 
   // ── PROJECT-CRUD-01：新建 / 编辑 / 删除 ──────────────────────────────
   const invalidateList = useCallback(() => {
@@ -531,6 +554,15 @@ export default function ProjectsPage() {
               : undefined;
           return (
             <Space size={0}>
+              {/* P1-2：进入项目详情（统计 + 最近失败/活动）。 */}
+              <Button
+                type="link"
+                size="small"
+                icon={<ProfileOutlined aria-hidden />}
+                onClick={() => navigate(`/projects/${row.id}`)}
+              >
+                {t('projects.action.detail')}
+              </Button>
               <Button
                 type="link"
                 size="small"
@@ -565,7 +597,7 @@ export default function ProjectsPage() {
         },
       },
     ],
-    [isAdmin, openEdit, performDelete, t],
+    [isAdmin, navigate, openEdit, performDelete, t],
   );
 
   const modal = (
@@ -666,6 +698,17 @@ export default function ProjectsPage() {
         description={t('projects.description')}
         extra={headerExtra}
       />
+      {/* P1-2：关键字搜索（名称/描述，后端字面量匹配；防抖后随 q 进 URL）。 */}
+      <Space style={{ marginBottom: 16 }} wrap>
+        <Input.Search
+          allowClear
+          placeholder={t('projects.search.placeholder')}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ width: 260, maxWidth: '100%' }}
+          aria-label={t('projects.search.placeholder')}
+        />
+      </Space>
       {/* UI-09 第三轮：≤768px 卡片列表（MOBILE-CARD-01 同款结构级降级）——
           项目卡按首查信息组织：名称+我的角色 → 描述 → 创建时间 → 成员/编辑/删除；
           桌面保留 5 列表格（fixed 操作列 + scroll.x）。服务端分页两侧共用
@@ -673,8 +716,11 @@ export default function ProjectsPage() {
       {isMobile ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {rows.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('projects.empty')}>
-              {isAdmin && (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={debouncedSearch ? t('projects.search.emptyResult') : t('projects.empty')}
+            >
+              {isAdmin && !debouncedSearch && (
                 <Button type="primary" onClick={openCreate}>
                   {t('projects.empty.createFirst')}
                 </Button>
@@ -716,6 +762,13 @@ export default function ProjectsPage() {
                     {t('projects.col.createdAt_colon')}{formatDateTime(row.createdAt)}
                   </div>
                   <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    <Button
+                      size="small"
+                      icon={<ProfileOutlined aria-hidden />}
+                      onClick={() => navigate(`/projects/${row.id}`)}
+                    >
+                      {t('projects.action.detail')}
+                    </Button>
                     <Button
                       size="small"
                       icon={<TeamOutlined aria-hidden />}
@@ -775,6 +828,11 @@ export default function ProjectsPage() {
           // UI 打磨：loading 直传 isFetching——翻页/重取期间表格有反馈，
           // 首屏（无数据）仍走上方整页骨架
           loading={projectsQuery.isFetching}
+          locale={{
+            emptyText: debouncedSearch
+              ? t('projects.search.emptyResult')
+              : t('projects.empty'),
+          }}
           pagination={{
             current: page,
             pageSize,

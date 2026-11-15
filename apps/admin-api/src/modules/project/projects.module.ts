@@ -12,13 +12,23 @@ import { AuditModule } from "../audit/audit.module";
 // 无运行时依赖环（本模块不 import TaskModule，TaskModule 也不 import 本模块；
 // 两端各自 forFeature 同一实体是 TypeORM 的受支持用法）。
 import { Task } from "../task/entities/task.entity";
+// P1-2 项目详情统计：应用计数 + 执行聚合（跨模块 forFeature，与 Task 同款，
+// 只取连接与元数据，无运行时依赖环）。
+import { TaskExecution } from "../task/entities/task-execution.entity";
+import { Application } from "../application/entities/application.entity";
 // R32-A5：成员授予前的目标用户存在性校验要读 users 表（ProjectAccessService
 // 的 @Optional UsersService）。UsersModule 不反向依赖本模块，无循环。
 import { UsersModule } from "../users/users.module";
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Project, ProjectMember, Task]),
+    TypeOrmModule.forFeature([
+      Project,
+      ProjectMember,
+      Task,
+      Application,
+      TaskExecution,
+    ]),
     AuditModule,
     UsersModule,
   ],

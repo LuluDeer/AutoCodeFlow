@@ -19,6 +19,7 @@ describe("ProjectsController（AUTH-02 成员面）", () => {
     const service = {
       findAll: jest.fn(),
       findOne: jest.fn(),
+      getSummary: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
       remove: jest.fn(),
@@ -242,6 +243,47 @@ describe("ProjectsController（AUTH-02 成员面）", () => {
       await expect(
         controller.findOne("p-missing", admin),
       ).rejects.toMatchObject({ errorCode: "PROJECT_NOT_FOUND" });
+    });
+  });
+
+  // P1-2：GET /projects/:id/summary 读面判定与 findOne 逐字同口径
+  // （ADMIN ∪ 默认项目 ∪ 成员；非成员 404，避免存在性 oracle）。
+  describe("getSummary 读面成员判定（P1-2）", () => {
+    it("非成员普通用户 → 404 PROJECT_NOT_FOUND（不 403）", async () => {
+      const { controller } = makeController();
+      await expect(
+        controller.getSummary("p-other", user),
+      ).rejects.toMatchObject({
+        errorCode: "PROJECT_NOT_FOUND",
+      });
+    });
+
+    it("成员（任意档）→ 放行进 service.getSummary", async () => {
+      const { controller, service, access } = makeController();
+      access.resolveRole.mockResolvedValue("viewer");
+      service.getSummary.mockResolvedValue({ projectId: "p1" });
+      await expect(controller.getSummary("p1", user)).resolves.toEqual({
+        projectId: "p1",
+      });
+      expect(service.getSummary).toHaveBeenCalledWith("p1");
+    });
+
+    it("ADMIN → 放行（不查成员行）", async () => {
+      const { controller, service, access } = makeController();
+      service.getSummary.mockResolvedValue({ projectId: "p1" });
+      await expect(controller.getSummary("p1", admin)).resolves.toEqual({
+        projectId: "p1",
+      });
+      expect(access.resolveRole).not.toHaveBeenCalled();
+    });
+
+    it("默认项目对普通用户恒可读", async () => {
+      const { controller, service, access } = makeController();
+      service.getSummary.mockResolvedValue({ projectId: DEFAULT_PROJECT_ID });
+      await expect(
+        controller.getSummary(DEFAULT_PROJECT_ID, user),
+      ).resolves.toEqual({ projectId: DEFAULT_PROJECT_ID });
+      expect(access.resolveRole).not.toHaveBeenCalled();
     });
   });
 

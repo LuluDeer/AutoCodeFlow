@@ -25,6 +25,7 @@ import {
   MyProjectRolesDto,
   ProjectListPageDto,
   ProjectRemovalImpactResponseDto,
+  ProjectSummaryResponseDto,
 } from "./dto/project-response.dto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
@@ -133,20 +134,23 @@ export class ProjectsController {
    *   ——那正是本轮要收敛的对象。
    */
   @Get()
-  @ApiOperation({ summary: "列出调用者可访问的项目" })
+  @ApiOperation({
+    summary: "列出调用者可访问的项目（q 按名称/描述关键字过滤）",
+  })
   @ApiResponse({
     status: 200,
     description:
-      "不带 page/pageSize 查询参数时返回完整的 ProjectViewRow 数组（旧形态）；带任一参数时返回分页信封（list/items/total/page/pageSize/totalPages），范围为调用者可见的项目",
+      "不带 page/pageSize 查询参数时返回完整的 ProjectViewRow 数组（旧形态）；带任一参数时返回分页信封（list/items/total/page/pageSize/totalPages），范围为调用者可见的项目；q 对名称/描述做字面量模糊匹配",
     type: ProjectListPageDto,
   })
   async findAll(
     @CurrentUser() user: { id: number; role: UserRole } | undefined,
     @Query("page") page?: string,
     @Query("pageSize") pageSize?: string,
+    @Query("q") q?: string,
   ): Promise<ProjectViewRow[] | ProjectListPageShape> {
     const [projects, memberships] = await Promise.all([
-      this.service.findAll(),
+      this.service.findAll(q),
       user?.id
         ? this.access.listRolesForUser(user.id)
         : Promise.resolve([] as ProjectMemberView[]),
@@ -212,6 +216,31 @@ export class ProjectsController {
       }
     }
     return this.service.findOne(id);
+  }
+
+  /**
+   * P1-2：项目详情统计（GET /projects/:id/summary）。
+   *
+   * 读面判定与 `findOne` 逐字一致：ADMIN ∪ 默认项目 ∪ 项目成员；非成员给
+   * 404 PROJECT_NOT_FOUND（存在性不泄露，与列表过滤自洽）。统计口径见
+   * `ProjectSummaryResponseDto` 注释。
+   */
+  @Get(":id/summary")
+  @ApiOperation({
+    summary: "项目详情统计（任务/应用/近 7 天执行/失败率/成员）",
+  })
+  @ApiOkResponse({ type: ProjectSummaryResponseDto })
+  async getSummary(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @CurrentUser() user: { id: number; role: UserRole } | undefined,
+  ): Promise<ProjectSummaryResponseDto> {
+    if (user?.role !== UserRole.ADMIN && id !== DEFAULT_PROJECT_ID) {
+      const role = await this.access.resolveRole(user?.id, id);
+      if (!role) {
+        throw new AppError("PROJECT_NOT_FOUND", { id });
+      }
+    }
+    return this.service.getSummary(id);
   }
 
   @UseGuards(RolesGuard)

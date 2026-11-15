@@ -34,6 +34,9 @@ vi.mock('../api/projects', () => ({
     remove: vi.fn(),
     // PROJECT-IMPACT-01：删除影响面预览（删除前先报数）
     removalImpact: vi.fn(),
+    // P1-2：详情实体 + summary（本页不调用，补齐 mock 形状避免缺方法告警）
+    getOne: vi.fn(),
+    summary: vi.fn(),
   },
 }));
 vi.mock('../api/users', () => ({
@@ -409,6 +412,32 @@ describe('ProjectsPage 服务端分页（R3）', () => {
     const router = renderWithRouter('/projects?page=abc');
     await screen.findByText('Default');
     await waitFor(() => expect(router.state.location.search).toBe(''));
+  });
+
+  // P1-2：关键字搜索（q 进 URL 可分享；防抖后随 q 发请求）。
+  it('输入关键字 → 防抖后 listPaged 带 q，URL 回写 ?q=', async () => {
+    const router = renderWithRouter();
+    expect(await screen.findByText('Default')).toBeTruthy();
+
+    const input = screen.getByPlaceholderText('搜索项目名称或描述') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'Alpha' } });
+
+    await waitFor(() =>
+      expect(projectsApi.listPaged).toHaveBeenLastCalledWith(
+        1, 20, expect.anything(), 'Alpha',
+      ),
+    );
+    await waitFor(() => expect(router.state.location.search).toBe('?q=Alpha'));
+  });
+
+  it('深链 ?q=Alpha：首请求即带 q（搜索条件可分享）', async () => {
+    renderWithRouter('/projects?q=Alpha');
+    await screen.findByText('Default');
+    await waitFor(() =>
+      expect(projectsApi.listPaged).toHaveBeenLastCalledWith(
+        1, 20, expect.anything(), 'Alpha',
+      ),
+    );
   });
 });
 

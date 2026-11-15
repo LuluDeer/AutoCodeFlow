@@ -26,6 +26,8 @@ export const ApplicationListPage = lazy(() => import('./pages/ApplicationListPag
 export const ApplicationDetailPage = lazy(() => import('./pages/ApplicationDetailPage'));
 export const ExecutionsPage = lazy(() => import('./pages/ExecutionsPage'));
 export const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
+// P1-2：项目详情（统计 + 最近失败/活动）
+export const ProjectDetailPage = lazy(() => import('./pages/ProjectDetailPage'));
 // P5/P6: SOP 管理（全 ADMIN-only——发布权 = 间接指令注入权）
 export const SopsPage = lazy(() => import('./pages/SopsPage'));
 // 视频转 SOP（2026-10-28）：会话式编写页，同属发布面 → ADMIN-only

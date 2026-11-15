@@ -12187,6 +12187,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "同时按项目名称与描述做关键字搜索。LIKE 元字符（% 与 _）按字面匹配。",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Keyword search across both project name and description. LIKE metacharacters (% and _) match literally."
           }
         ],
         "responses": {
@@ -12382,6 +12392,41 @@
         ],
         "x-i18n-en": {
           "summary": "Preview the consequences of deleting this project"
+        }
+      }
+    },
+    "/projects/{id}/summary": {
+      "get": {
+        "operationId": "ProjectsController_getSummary",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "项目详情统计（任务/应用/近 7 天执行/失败率/成员 + 最近失败与最近活动列表）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSummaryResponseDto"
+                }
+              }
+            },
+            "x-i18n-en": "Project detail summary (tasks / applications / last-7-day executions / failure rate / members, plus recent failures and recent activity)"
+          }
+        },
+        "summary": "项目详情统计（任务/应用/近 7 天执行/失败率/成员）",
+        "tags": [
+          "Projects"
+        ],
+        "x-i18n-en": {
+          "summary": "Project detail summary (tasks / applications / last-7-day executions / failure rate / members)"
         }
       }
     },
@@ -24147,6 +24192,206 @@
           "activeTaskCount",
           "memberCount",
           "deletable"
+        ]
+      },
+      "ProjectSummaryRecentFailureDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "执行记录 ID（uuid）",
+            "x-i18n-en": "Execution record id (uuid)"
+          },
+          "taskId": {
+            "type": "string",
+            "description": "所属任务 ID（uuid）",
+            "x-i18n-en": "Parent task id (uuid)"
+          },
+          "taskName": {
+            "type": "string",
+            "description": "执行时快照的任务名",
+            "x-i18n-en": "Task name snapshotted at execution time"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "success",
+              "failed",
+              "timeout",
+              "killed",
+              "cancelled",
+              "package_fetch_failed"
+            ],
+            "description": "执行终态状态",
+            "x-i18n-en": "Terminal execution status"
+          },
+          "failureReason": {
+            "type": "string",
+            "nullable": true,
+            "description": "失败成因标签（失败/超时行有值，其余为 null）",
+            "x-i18n-en": "Failure reason label (set on failed/timeout rows, null otherwise)"
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true,
+            "description": "失败错误信息（截断后的可读文本；无则 null）",
+            "x-i18n-en": "Failure error message (truncated readable text; null if absent)"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "执行创建时间（ISO-8601）",
+            "x-i18n-en": "Execution creation time (ISO-8601)"
+          },
+          "duration": {
+            "type": "number",
+            "nullable": true,
+            "description": "执行耗时（毫秒）；未跑完/合成行为 null",
+            "x-i18n-en": "Execution duration (ms); null for unfinished/synthetic rows"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "taskName",
+          "status",
+          "createdAt"
+        ]
+      },
+      "ProjectSummaryRecentExecutionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "执行记录 ID（uuid）",
+            "x-i18n-en": "Execution record id (uuid)"
+          },
+          "taskId": {
+            "type": "string",
+            "description": "所属任务 ID（uuid）",
+            "x-i18n-en": "Parent task id (uuid)"
+          },
+          "taskName": {
+            "type": "string",
+            "description": "执行时快照的任务名",
+            "x-i18n-en": "Task name snapshotted at execution time"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "success",
+              "failed",
+              "timeout",
+              "killed",
+              "cancelled",
+              "package_fetch_failed"
+            ],
+            "description": "执行状态",
+            "x-i18n-en": "Execution status"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "执行创建时间（ISO-8601）",
+            "x-i18n-en": "Execution creation time (ISO-8601)"
+          },
+          "duration": {
+            "type": "number",
+            "nullable": true,
+            "description": "执行耗时（毫秒）；未跑完/合成行为 null",
+            "x-i18n-en": "Execution duration (ms); null for unfinished/synthetic rows"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "taskName",
+          "status",
+          "createdAt"
+        ]
+      },
+      "ProjectSummaryResponseDto": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "description": "项目 ID（uuid）",
+            "x-i18n-en": "Project ID (uuid)"
+          },
+          "projectName": {
+            "type": "string",
+            "description": "项目名称（详情页标题回显）",
+            "x-i18n-en": "Project name (echoed as the detail page title)"
+          },
+          "taskCount": {
+            "type": "number",
+            "description": "未软删除的任务数（排除 status=deleted；默认项目含未分配 NULL 行）",
+            "x-i18n-en": "Non-soft-deleted task count (excludes status=deleted; the Default project also includes unassigned NULL rows)"
+          },
+          "applicationCount": {
+            "type": "number",
+            "description": "归属本项目的应用数（按 applications.projectId；默认项目含 NULL 行。当前应用写入口尚未开放项目归属，非默认项目预期为 0）",
+            "x-i18n-en": "Applications assigned to this project (by applications.projectId; the Default project also includes NULL rows. The application write entry does not expose project assignment yet, so non-default projects are expected to be 0)"
+          },
+          "memberCount": {
+            "type": "number",
+            "description": "项目成员关系行数",
+            "x-i18n-en": "Number of project member rows"
+          },
+          "executionsLast7d": {
+            "type": "number",
+            "description": "近 7 天执行数（经 taskId 关联 tasks.projectId 统计）",
+            "x-i18n-en": "Executions in the last 7 days (joined to tasks via taskId and counted by task projectId)"
+          },
+          "failedExecutionsLast7d": {
+            "type": "number",
+            "description": "近 7 天失败执行数（status=failed）",
+            "x-i18n-en": "Failed executions in the last 7 days (status=failed)"
+          },
+          "timeoutExecutionsLast7d": {
+            "type": "number",
+            "description": "近 7 天超时执行数（status=timeout）",
+            "x-i18n-en": "Timed-out executions in the last 7 days (status=timeout)"
+          },
+          "failureRate": {
+            "type": "number",
+            "nullable": true,
+            "description": "近 7 天失败率（failed / 执行总数，百分比保留两位）；窗口内无执行为 null，前端显示暂无数据",
+            "x-i18n-en": "Last-7-day failure rate (failed / total executions, percent rounded to 2 decimals); null when there are no executions in the window, the UI shows no-data"
+          },
+          "recentFailures": {
+            "type": "array",
+            "description": "最近 5 条失败/超时执行（按 createdAt DESC，不限 7 天窗口）",
+            "x-i18n-en": "5 most recent failed/timeout executions (createdAt DESC, not limited to the 7-day window)",
+            "items": {
+              "$ref": "#/components/schemas/ProjectSummaryRecentFailureDto"
+            }
+          },
+          "recentExecutions": {
+            "type": "array",
+            "description": "最近 5 条执行（按 createdAt DESC，不限终态与窗口）",
+            "x-i18n-en": "5 most recent executions (createdAt DESC, any status and window)",
+            "items": {
+              "$ref": "#/components/schemas/ProjectSummaryRecentExecutionDto"
+            }
+          }
+        },
+        "required": [
+          "projectId",
+          "projectName",
+          "taskCount",
+          "applicationCount",
+          "memberCount",
+          "executionsLast7d",
+          "failedExecutionsLast7d",
+          "timeoutExecutionsLast7d",
+          "failureRate",
+          "recentFailures",
+          "recentExecutions"
         ]
       },
       "ProjectDeleteResponseDto": {

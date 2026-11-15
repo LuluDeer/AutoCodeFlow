@@ -5,6 +5,8 @@ import { ProjectsService } from "../projects.service";
 import { Project, DEFAULT_PROJECT_ID } from "../project.entity";
 import { ProjectMember } from "../entities/project-member.entity";
 import { Task } from "../../task/entities/task.entity";
+import { TaskExecution } from "../../task/entities/task-execution.entity";
+import { Application } from "../../application/entities/application.entity";
 
 /**
  * AUTH-01: ProjectsService 单测——CRUD + 默认项目删除/改名拦截。
@@ -19,6 +21,10 @@ describe("ProjectsService（AUTH-01）", () => {
   let repo: Record<string, jest.Mock>;
   let taskRepo: Record<string, jest.Mock>;
   let memberRepo: Record<string, jest.Mock>;
+  let appRepo: Record<string, jest.Mock>;
+  let execRepo: Record<string, jest.Mock>;
+  // summary 执行聚合走 QueryBuilder 链；共享一个链桩，每个方法返回 this。
+  let execQb: Record<string, jest.Mock>;
 
   const makeRow = (over: Partial<Project> = {}): Project =>
     ({
@@ -47,12 +53,29 @@ describe("ProjectsService（AUTH-01）", () => {
     };
     taskRepo = { count: jest.fn().mockResolvedValue(0) };
     memberRepo = { count: jest.fn().mockResolvedValue(0) };
+    appRepo = { count: jest.fn().mockResolvedValue(0) };
+    execQb = {
+      innerJoin: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([]),
+      getMany: jest.fn().mockResolvedValue([]),
+    };
+    execRepo = { createQueryBuilder: jest.fn(() => execQb) };
     const module = await Test.createTestingModule({
       providers: [
         ProjectsService,
         { provide: getRepositoryToken(Project), useValue: repo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
         { provide: getRepositoryToken(ProjectMember), useValue: memberRepo },
+        { provide: getRepositoryToken(Application), useValue: appRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
       ],
     }).compile();
     service = module.get(ProjectsService);
@@ -287,6 +310,129 @@ describe("ProjectsService（AUTH-01）", () => {
       const impact = await service.describeRemovalImpact("p1");
       expect(impact.taskCount).toBe(0);
       expect(impact.memberCount).toBe(0);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+  });
+
+  // ── P1-2：列表 q 关键字搜索 ──────────────────────────────────────────
+  describe("findAll 关键字搜索（P1-2 q）", () => {
+    it("无 q → 原单对象路径（行为逐字节不变）", async () => {
+      repo.find.mockResolvedValue([makeRow()]);
+      await service.findAll();
+      expect(repo.find).toHaveBeenCalledWith({ order: { createdAt: "ASC" } });
+    });
+
+    it("空白 q 视为无关键字", async () => {
+      repo.find.mockResolvedValue([]);
+      await service.findAll("   ");
+      expect(repo.find).toHaveBeenCalledWith({ order: { createdAt: "ASC" } });
+    });
+
+    it("带 q → name OR description 的 ILike，元字符转义按字面量匹配", async () => {
+      repo.find.mockResolvedValue([]);
+      await service.findAll("daily_report");
+      const { where } = repo.find.mock.calls[0][0];
+      expect(Array.isArray(where)).toBe(true);
+      expect(where).toHaveLength(2);
+      expect(where[0].name).toEqual(
+        expect.objectContaining({ _value: "%daily\\_report%" }),
+      );
+      expect(where[1].description).toEqual(
+        expect.objectContaining({ _value: "%daily\\_report%" }),
+      );
+    });
+  });
+
+  // ── P1-2：项目详情统计 GET /projects/:id/summary ─────────────────────
+  describe("getSummary（P1-2 项目详情统计）", () => {
+    it("汇总任务/应用/成员/近 7 天执行与失败率，透出最近失败与活动", async () => {
+      repo.findOne.mockResolvedValue(makeRow({ name: "数据平台组" }));
+      taskRepo.count.mockResolvedValue(12);
+      appRepo.count.mockResolvedValue(0);
+      memberRepo.count.mockResolvedValue(3);
+      execQb.getRawMany.mockResolvedValue([
+        { status: "success", count: "6" },
+        { status: "failed", count: "2" },
+        { status: "timeout", count: "1" },
+      ]);
+      execQb.getMany
+        .mockResolvedValueOnce([
+          {
+            id: "e1",
+            taskId: "t1",
+            taskName: "任务甲",
+            status: "failed",
+            failureReason: "script_error",
+            errorMessage: "boom",
+            createdAt: new Date("2026-11-15T01:00:00.000Z"),
+            duration: 1200,
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            id: "e2",
+            taskId: "t2",
+            taskName: "任务乙",
+            status: "success",
+            failureReason: null,
+            errorMessage: null,
+            createdAt: new Date("2026-11-15T02:00:00.000Z"),
+            duration: 900,
+          },
+        ]);
+
+      const summary = await service.getSummary("p1");
+
+      expect(summary.projectName).toBe("数据平台组");
+      expect(summary.taskCount).toBe(12);
+      expect(summary.applicationCount).toBe(0);
+      expect(summary.memberCount).toBe(3);
+      expect(summary.executionsLast7d).toBe(9);
+      expect(summary.failedExecutionsLast7d).toBe(2);
+      expect(summary.timeoutExecutionsLast7d).toBe(1);
+      // 2 / 9 → 22.22%
+      expect(summary.failureRate).toBe(22.22);
+      expect(summary.recentFailures[0].taskName).toBe("任务甲");
+      expect(summary.recentExecutions[0].taskName).toBe("任务乙");
+    });
+
+    it("窗口内无执行 → failureRate 为 null（前端显示暂无数据，不渲染 0%）", async () => {
+      repo.findOne.mockResolvedValue(makeRow());
+      taskRepo.count.mockResolvedValue(0);
+      appRepo.count.mockResolvedValue(0);
+      memberRepo.count.mockResolvedValue(0);
+      execQb.getRawMany.mockResolvedValue([]);
+
+      const summary = await service.getSummary("p1");
+      expect(summary.executionsLast7d).toBe(0);
+      expect(summary.failedExecutionsLast7d).toBe(0);
+      expect(summary.failureRate).toBeNull();
+      expect(summary.recentFailures).toEqual([]);
+      expect(summary.recentExecutions).toEqual([]);
+    });
+
+    it("项目不存在 → 404（不返回一堆 0 冒充成功）", async () => {
+      repo.findOne.mockResolvedValue(null);
+      await expect(service.getSummary("nope")).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it("执行聚合查询失败 → 计数按 0 / 空列表降级，不阻断页面", async () => {
+      repo.findOne.mockResolvedValue(makeRow());
+      execQb.getRawMany.mockRejectedValue(new Error("boom"));
+      const warnSpy = jest
+        .spyOn(
+          (service as unknown as { logger: { warn: jest.Mock } }).logger,
+          "warn",
+        )
+        .mockImplementation(() => {});
+
+      const summary = await service.getSummary("p1");
+      expect(summary.executionsLast7d).toBe(0);
+      expect(summary.failureRate).toBeNull();
+      expect(summary.recentFailures).toEqual([]);
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
     });

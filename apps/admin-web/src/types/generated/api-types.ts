@@ -4091,6 +4091,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{id}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 项目详情统计（任务/应用/近 7 天执行/失败率/成员） */
+        get: operations["ProjectsController_getSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{id}/members": {
         parameters: {
             query?: never;
@@ -8423,6 +8440,74 @@ export interface components {
             memberCount: number;
             /** @description 是否可删；默认项目恒为 false（remove 会返回 404 PROJECT_DEFAULT_IMMUTABLE） */
             deletable: boolean;
+        };
+        ProjectSummaryRecentFailureDto: {
+            /** @description 执行记录 ID（uuid） */
+            id: string;
+            /** @description 所属任务 ID（uuid） */
+            taskId: string;
+            /** @description 执行时快照的任务名 */
+            taskName: string;
+            /**
+             * @description 执行终态状态
+             * @enum {string}
+             */
+            status: "pending" | "running" | "success" | "failed" | "timeout" | "killed" | "cancelled" | "package_fetch_failed";
+            /** @description 失败成因标签（失败/超时行有值，其余为 null） */
+            failureReason?: string | null;
+            /** @description 失败错误信息（截断后的可读文本；无则 null） */
+            errorMessage?: string | null;
+            /**
+             * Format: date-time
+             * @description 执行创建时间（ISO-8601）
+             */
+            createdAt: string;
+            /** @description 执行耗时（毫秒）；未跑完/合成行为 null */
+            duration?: number | null;
+        };
+        ProjectSummaryRecentExecutionDto: {
+            /** @description 执行记录 ID（uuid） */
+            id: string;
+            /** @description 所属任务 ID（uuid） */
+            taskId: string;
+            /** @description 执行时快照的任务名 */
+            taskName: string;
+            /**
+             * @description 执行状态
+             * @enum {string}
+             */
+            status: "pending" | "running" | "success" | "failed" | "timeout" | "killed" | "cancelled" | "package_fetch_failed";
+            /**
+             * Format: date-time
+             * @description 执行创建时间（ISO-8601）
+             */
+            createdAt: string;
+            /** @description 执行耗时（毫秒）；未跑完/合成行为 null */
+            duration?: number | null;
+        };
+        ProjectSummaryResponseDto: {
+            /** @description 项目 ID（uuid） */
+            projectId: string;
+            /** @description 项目名称（详情页标题回显） */
+            projectName: string;
+            /** @description 未软删除的任务数（排除 status=deleted；默认项目含未分配 NULL 行） */
+            taskCount: number;
+            /** @description 归属本项目的应用数（按 applications.projectId；默认项目含 NULL 行。当前应用写入口尚未开放项目归属，非默认项目预期为 0） */
+            applicationCount: number;
+            /** @description 项目成员关系行数 */
+            memberCount: number;
+            /** @description 近 7 天执行数（经 taskId 关联 tasks.projectId 统计） */
+            executionsLast7d: number;
+            /** @description 近 7 天失败执行数（status=failed） */
+            failedExecutionsLast7d: number;
+            /** @description 近 7 天超时执行数（status=timeout） */
+            timeoutExecutionsLast7d: number;
+            /** @description 近 7 天失败率（failed / 执行总数，百分比保留两位）；窗口内无执行为 null，前端显示暂无数据 */
+            failureRate: number | null;
+            /** @description 最近 5 条失败/超时执行（按 createdAt DESC，不限 7 天窗口） */
+            recentFailures: components["schemas"]["ProjectSummaryRecentFailureDto"][];
+            /** @description 最近 5 条执行（按 createdAt DESC，不限终态与窗口） */
+            recentExecutions: components["schemas"]["ProjectSummaryRecentExecutionDto"][];
         };
         ProjectDeleteResponseDto: {
             /** @description true = 删除/移除生效 */
@@ -14998,6 +15083,8 @@ export interface operations {
             query: {
                 page: string;
                 pageSize: string;
+                /** @description 同时按项目名称与描述做关键字搜索。LIKE 元字符（% 与 _）按字面匹配。 */
+                q?: string;
             };
             header?: never;
             path?: never;
@@ -15126,6 +15213,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectRemovalImpactResponseDto"];
+                };
+            };
+        };
+    };
+    ProjectsController_getSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 项目详情统计（任务/应用/近 7 天执行/失败率/成员 + 最近失败与最近活动列表） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectSummaryResponseDto"];
                 };
             };
         };

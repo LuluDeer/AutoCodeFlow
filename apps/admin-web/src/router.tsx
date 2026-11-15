@@ -31,6 +31,7 @@ import {
   ApplicationDetailPage,
   ExecutionsPage,
   ProjectsPage,
+  ProjectDetailPage,
   SopsPage,
   SopFromVideoPage,
   AgentSessionsPage,
@@ -88,6 +89,9 @@ export const router = createBrowserRouter(
         { path: 'audit', element: <RequireAdmin>{withSuspense(<AuditLogPage />)}</RequireAdmin> },
         { path: 'applications', element: withSuspense(<ApplicationListPage />) },
         { path: 'projects', element: withSuspense(<ProjectsPage />) },
+        // P1-2：项目详情统计。置于静态 `projects` 之后；`projects/:id` 单段动态，
+        // 与 `projects/me/roles`（两段）不冲突。
+        { path: 'projects/:id', element: withSuspense(<ProjectDetailPage />) },
         { path: 'applications/:id', element: withSuspense(<ApplicationDetailPage />) },
         { path: 'executor-packages', element: <RequireAdmin>{withSuspense(<ExecutorPackagesPage />)}</RequireAdmin> },
         { path: 'sops', element: <RequireAdmin>{withSuspense(<SopsPage />)}</RequireAdmin> },
