@@ -245,6 +245,47 @@ const TREND = Array.from({ length: 7 }, (_, i) => ({
   success: 180 + i * 12, failed: 8 + (i % 3) * 4, timeout: 2 + (i % 2),
 }));
 
+// P2-1（Dashboard 口径分离）：metrics 夹具按 projectId 区分数值，镜像真实契约——
+// summary / trend / failures 随项目过滤；executors / scheduler 无项目归属，数值恒定。
+// 深链探针用两个 UUID 形状项目（useProjectFilter 只放行 UUID / all / default）。
+const PROJ_A = 'aaaaaaaa-0000-4000-8000-000000000001';
+const PROJ_B = 'aaaaaaaa-0000-4000-8000-000000000002';
+
+const SUMMARY_GLOBAL = {
+  totalTasks: 128, todayRuns: 342, totalExecutors: 12, onlineExecutors: 9,
+  executions: { total: 15230, success: 14520, failed: 512, running: 7 },
+  successRate: 96.4, avgDurationMs: 5230,
+};
+// 执行器计数（totalExecutors/onlineExecutors）在三个口径下恒定——后端 executorRepo.count()
+// 不带项目条件（metrics.service.ts 114–123），夹具与该语义对齐。
+const SUMMARY_BY_PROJECT = {
+  [PROJ_A]: {
+    totalTasks: 18, todayRuns: 64, totalExecutors: 12, onlineExecutors: 9,
+    executions: { total: 412, success: 388, failed: 21, running: 3 },
+    successRate: 94.2, avgDurationMs: 6840,
+  },
+  [PROJ_B]: {
+    totalTasks: 7, todayRuns: 12, totalExecutors: 12, onlineExecutors: 9,
+    executions: { total: 96, success: 88, failed: 7, running: 1 },
+    successRate: 91.7, avgDurationMs: 2410,
+  },
+};
+
+const TREND_BY_PROJECT = {
+  [PROJ_A]: TREND.map((d, i) => ({ ...d, success: 40 + i * 3, failed: 2 + (i % 2), timeout: 1 })),
+  [PROJ_B]: TREND.map((d, i) => ({ ...d, success: 8 + i, failed: 1, timeout: 0 })),
+};
+
+const FAILURES_GLOBAL = [
+  { id: 'e-9001', taskId: 't-1001', taskName: TASKS[0].name, errorMessage: 'OSS 上传失败: SignatureDoesNotMatch', failureReason: 'credential', exitCode: 2, createdAt: ISO(-95 * MIN), duration: 61_230 },
+  { id: 'e-9004', taskId: 't-1002', taskName: TASKS[1].name, errorMessage: '执行超时(600s)', failureReason: 'timeout', exitCode: null, createdAt: ISO(-3 * 3600e3), duration: 600_000 },
+  { id: 'e-9006', taskId: 't-1003', taskName: TASKS[2].name, errorMessage: '源库连接被拒绝', failureReason: 'network', exitCode: 1, createdAt: ISO(-6 * 3600e3), duration: 2100 },
+];
+const FAILURES_BY_PROJECT = {
+  [PROJ_A]: [FAILURES_GLOBAL[0], FAILURES_GLOBAL[1]],
+  [PROJ_B]: [FAILURES_GLOBAL[2]],
+};
+
 const EXEC_METRICS_HISTORY = Array.from({ length: 24 }, (_, i) => ({
   timestamp: new Date(Date.now() - (23 - i) * 3600e3).toISOString(),
   cpuUsage: i % 7 === 3 ? null : 30 + ((i * 7) % 50),
@@ -293,14 +334,10 @@ const ROUTES = [
   ['POST', /^\/auth\/sse-ticket$/, () => ({ ticket: 'mock-sse-ticket', expiresAt: ISO(30e3) })],
   ['GET', /^\/auth\/sessions$/, () => AUTH_SESSIONS],
   // ── metrics / dashboard ──
-  ['GET', /^\/metrics\/summary$/, () => ({ totalTasks: 128, todayRuns: 342, totalExecutors: 12, onlineExecutors: 9, executions: { total: 15230, success: 14520, failed: 512, running: 7 }, successRate: 96.4, avgDurationMs: 5230 })],
-  ['GET', /^\/metrics\/trend$/, () => TREND],
+  ['GET', /^\/metrics\/summary$/, (u, q) => SUMMARY_BY_PROJECT[q.get('projectId')] || SUMMARY_GLOBAL],
+  ['GET', /^\/metrics\/trend$/, (u, q) => TREND_BY_PROJECT[q.get('projectId')] || TREND],
   ['GET', /^\/metrics\/executors$/, () => EXECUTORS.slice(0, 5).map((e) => ({ id: e.id, appName: e.appName, address: e.address, status: e.status, cpuUsage: e.cpuUsage, memUsage: e.memUsage, runningTaskCount: e.runningTaskCount, lastHeartbeat: e.lastHeartbeat }))],
-  ['GET', /^\/metrics\/failures$/, () => [
-    { id: 'e-9001', taskId: 't-1001', taskName: TASKS[0].name, errorMessage: 'OSS 上传失败: SignatureDoesNotMatch', failureReason: 'credential', exitCode: 2, createdAt: ISO(-95 * MIN), duration: 61_230 },
-    { id: 'e-9004', taskId: 't-1002', taskName: TASKS[1].name, errorMessage: '执行超时(600s)', failureReason: 'timeout', exitCode: null, createdAt: ISO(-3 * 3600e3), duration: 600_000 },
-    { id: 'e-9006', taskId: 't-1003', taskName: TASKS[2].name, errorMessage: '源库连接被拒绝', failureReason: 'network', exitCode: 1, createdAt: ISO(-6 * 3600e3), duration: 2100 },
-  ]],
+  ['GET', /^\/metrics\/failures$/, (u, q) => FAILURES_BY_PROJECT[q.get('projectId')] || FAILURES_GLOBAL],
   ['GET', /^\/metrics\/scheduler$/, () => ({
     counters: { ticks: 86400, tickDurationMsTotal: 432000, lastTickDurationMs: 4, lastTickAt: ISO(-1e3), triggersClaimed: 1520, triggersSkippedLockHeld: 3, triggersSkippedDbClaim: 1, triggersSkippedInactive: 42, triggersSkippedBlockStrategy: 6, triggersSkippedMaintenance: 12, triggersFailed: 2, dependencyTriggersClaimed: 30, dependencyTriggersSkipped: 2, triggerLatencyCount: 1520, triggerLatencySumMs: 456000, triggerLatencyBuckets: [1200, 220, 60, 25, 10, 5], lastTriggerLatencyMs: 180, startedAt: ISO(-24 * 3600e3) },
     derived: { avgTickDurationMs: 5, tickRatePerSec: 1, triggerClaimRatePerSec: 0.017, avgTriggerLatencyMs: 300, p99TriggerLatencyMs: 820 },
@@ -1442,4 +1479,4 @@ if (isDirectEntry) {
   });
 }
 
-export { apiHandler, USER };
+export { apiHandler, USER, PROJ_A, PROJ_B };

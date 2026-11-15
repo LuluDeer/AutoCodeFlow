@@ -1,0 +1,199 @@
+{
+  "generatedAt": "2026-11-15T17:51:20.520Z",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "fixtureSource": "apps/admin-web/scripts/ux-walkthrough.mjs",
+  "projects": {
+    "a": {
+      "id": "aaaaaaaa-0000-4000-8000-000000000001",
+      "label": "项目 A",
+      "cards": {
+        "tasks": {
+          "badge": "project",
+          "value": "18"
+        },
+        "todayRuns": {
+          "badge": "project",
+          "value": "64"
+        },
+        "running": {
+          "badge": "project",
+          "value": "3"
+        },
+        "successRate": {
+          "badge": "project",
+          "value": "94.2%成功 388失败 21其他状态 3口径：成功 / 全部执行（含超时、已终止）"
+        },
+        "avgDuration": {
+          "badge": "project",
+          "value": "6.8秒基于近期全部执行记录"
+        },
+        "trend": {
+          "badge": "project",
+          "value": "失败成功11-1011-1111-1211-1311-1411-1511-16015304560"
+        },
+        "failureTop": {
+          "badge": "project",
+          "value": "2 行"
+        },
+        "recentFailures": {
+          "badge": "project",
+          "value": "2 行"
+        },
+        "onlineExecutors": {
+          "badge": "global",
+          "value": "9 / 12"
+        },
+        "executors": {
+          "badge": "global",
+          "value": "5 行"
+        },
+        "schedulerLatency": {
+          "badge": "global",
+          "value": "P99 820ms平均300ms最近一次180ms样本 1520 次 · 进程内计数器（重启清零）"
+        }
+      }
+    },
+    "b": {
+      "id": "aaaaaaaa-0000-4000-8000-000000000002",
+      "label": "项目 B",
+      "cards": {
+        "tasks": {
+          "badge": "project",
+          "value": "7"
+        },
+        "todayRuns": {
+          "badge": "project",
+          "value": "12"
+        },
+        "running": {
+          "badge": "project",
+          "value": "1"
+        },
+        "successRate": {
+          "badge": "project",
+          "value": "91.7%成功 88失败 7其他状态 1口径：成功 / 全部执行（含超时、已终止）"
+        },
+        "avgDuration": {
+          "badge": "project",
+          "value": "2.4秒基于近期全部执行记录"
+        },
+        "trend": {
+          "badge": "project",
+          "value": "失败成功11-1011-1111-1211-1311-1411-1511-160481216"
+        },
+        "failureTop": {
+          "badge": "project",
+          "value": "1 行"
+        },
+        "recentFailures": {
+          "badge": "project",
+          "value": "1 行"
+        },
+        "onlineExecutors": {
+          "badge": "global",
+          "value": "9 / 12"
+        },
+        "executors": {
+          "badge": "global",
+          "value": "5 行"
+        },
+        "schedulerLatency": {
+          "badge": "global",
+          "value": "P99 820ms平均300ms最近一次180ms样本 1520 次 · 进程内计数器（重启清零）"
+        }
+      }
+    }
+  },
+  "comparison": {
+    "changed": [
+      {
+        "card": "tasks",
+        "scope": "project",
+        "a": "18",
+        "b": "7",
+        "badge": "project"
+      },
+      {
+        "card": "todayRuns",
+        "scope": "project",
+        "a": "64",
+        "b": "12",
+        "badge": "project"
+      },
+      {
+        "card": "running",
+        "scope": "project",
+        "a": "3",
+        "b": "1",
+        "badge": "project"
+      },
+      {
+        "card": "successRate",
+        "scope": "project",
+        "a": "94.2%成功 388失败 21其他状态 3口径：成功 / 全部执行（含超时、已终止）",
+        "b": "91.7%成功 88失败 7其他状态 1口径：成功 / 全部执行（含超时、已终止）",
+        "badge": "project"
+      },
+      {
+        "card": "avgDuration",
+        "scope": "project",
+        "a": "6.8秒基于近期全部执行记录",
+        "b": "2.4秒基于近期全部执行记录",
+        "badge": "project"
+      },
+      {
+        "card": "trend",
+        "scope": "project",
+        "a": "失败成功11-1011-1111-1211-1311-1411-1511-16015304560",
+        "b": "失败成功11-1011-1111-1211-1311-1411-1511-160481216",
+        "badge": "project"
+      },
+      {
+        "card": "failureTop",
+        "scope": "project",
+        "a": "2 行",
+        "b": "1 行",
+        "badge": "project"
+      },
+      {
+        "card": "recentFailures",
+        "scope": "project",
+        "a": "2 行",
+        "b": "1 行",
+        "badge": "project"
+      }
+    ],
+    "unchanged": [
+      {
+        "card": "onlineExecutors",
+        "scope": "global",
+        "a": "9 / 12",
+        "b": "9 / 12",
+        "badge": "global"
+      },
+      {
+        "card": "executors",
+        "scope": "global",
+        "a": "5 行",
+        "b": "5 行",
+        "badge": "global"
+      },
+      {
+        "card": "schedulerLatency",
+        "scope": "global",
+        "a": "P99 820ms平均300ms最近一次180ms样本 1520 次 · 进程内计数器（重启清零）",
+        "b": "P99 820ms平均300ms最近一次180ms样本 1520 次 · 进程内计数器（重启清零）",
+        "badge": "global"
+      }
+    ]
+  },
+  "screenshots": {
+    "dashboard-a-1280-light.png": "E:\\softwareData\\coding\\AutoCodeFlow\\docs\\archive\\audits\\assets\\product-ui-remediation-2026-11-15\\dashboard-scope\\dashboard-a-1280-light.png",
+    "dashboard-b-1280-light.png": "E:\\softwareData\\coding\\AutoCodeFlow\\docs\\archive\\audits\\assets\\product-ui-remediation-2026-11-15\\dashboard-scope\\dashboard-b-1280-light.png",
+    "dashboard-a-1280-dark.png": "E:\\softwareData\\coding\\AutoCodeFlow\\docs\\archive\\audits\\assets\\product-ui-remediation-2026-11-15\\dashboard-scope\\dashboard-a-1280-dark.png",
+    "dashboard-b-1280-dark.png": "E:\\softwareData\\coding\\AutoCodeFlow\\docs\\archive\\audits\\assets\\product-ui-remediation-2026-11-15\\dashboard-scope\\dashboard-b-1280-dark.png"
+  }
+}

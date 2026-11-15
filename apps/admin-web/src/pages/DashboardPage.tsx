@@ -6,7 +6,7 @@ import {
 import {
   CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined,
   ClockCircleOutlined, RocketOutlined, ApiOutlined, ReloadOutlined,
-  WarningOutlined, MinusCircleOutlined,
+  WarningOutlined, MinusCircleOutlined, ProjectOutlined, GlobalOutlined,
 } from '@ant-design/icons';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -59,6 +59,67 @@ function KpiFootnote({ children }: { children?: ReactNode }) {
       }}
     >
       {children}
+    </div>
+  );
+}
+
+/**
+ * P2-1（Dashboard 口径分离）：指标口径分组。
+ * - `project`：随顶栏当前项目过滤（请求带 projectId，切项目数值变化）；
+ * - `global`：机队/调度全局口径（无项目归属，请求不带 projectId，切项目数值不变）。
+ * 分组依据逐字对齐后端 metrics.service.ts：执行器计数 / 调度计数器 / 队列深度
+ * 无项目归属，summary 内的 onlineExecutors/totalExecutors 虽随 summary 响应下发，
+ * 但后端用 executorRepo.count() 不带项目条件计算（见 service.ts 114–123 行注释）。
+ */
+type MetricScope = 'project' | 'global';
+
+/**
+ * 口径徽章：文字标签 + 图标双编码——不靠颜色单一维度区分。全局卡 hover 显示
+ * 「该指标为机队/调度全局统计，不随当前项目过滤」；随项目卡文案直陈口径。
+ */
+function ScopeBadge({ scope }: { scope: MetricScope }) {
+  const { t } = useTranslation();
+  if (scope === 'global') {
+    return (
+      <Tooltip title={t('projectCtx.globalScope.tooltip')}>
+        <Tag
+          data-testid="scope-badge-global"
+          icon={<GlobalOutlined />}
+          style={{ fontSize: 10, lineHeight: '16px', marginInlineEnd: 0 }}
+        >
+          {t('projectCtx.globalScope')}
+        </Tag>
+      </Tooltip>
+    );
+  }
+  return (
+    <Tag
+      data-testid="scope-badge-project"
+      icon={<ProjectOutlined />}
+      style={{ fontSize: 10, lineHeight: '16px', marginInlineEnd: 0 }}
+    >
+      {t('projectCtx.scopedScope')}
+    </Tag>
+  );
+}
+
+/** 口径分区标题：标题 + 徽章图例 + 一句口径说明，两组在同一屏内分区清晰。 */
+function ScopeSectionHeader({ scope, testId }: { scope: MetricScope; testId: string }) {
+  const { t } = useTranslation();
+  const title = scope === 'global'
+    ? t('dashboard.scope.groupGlobal.title')
+    : t('dashboard.scope.groupProject.title');
+  const desc = scope === 'global'
+    ? t('dashboard.scope.groupGlobal.desc')
+    : t('dashboard.scope.groupProject.desc');
+  return (
+    <div
+      data-testid={testId}
+      style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 4 }}
+    >
+      <Text strong style={{ fontSize: 15 }}>{title}</Text>
+      <ScopeBadge scope={scope} />
+      <Text type="secondary" style={{ fontSize: 12 }}>{desc}</Text>
     </div>
   );
 }
@@ -132,7 +193,13 @@ export default function DashboardPage() {
   // 写入 queryClient 缓存（setQueryData，见 useMetricsStream），连接活跃时
   // 免轮询；断线时 30s refetchInterval 兜底恢复轮询节奏（与 SSE 推送互斥共存）。
 
+  // P2-1：随项目口径的 summary（任务数 / 今日执行 / 运行中 / 成功率 / 平均耗时）。
   const { data: summary, isLoading: summaryLoading, refetch: refetchSummary, error: summaryError } = useMetricsSummary(backendProjectId);
+
+  // P2-1：机队执行器计数无项目归属——后端 executorRepo.count() 不带项目条件
+  // （metrics.service.ts 114–123），单独走不带 projectId 的全局 summary 键，
+  // 与 metrics/stream 全局快照共享缓存；切项目时这一路数值保持不变。
+  const { data: globalSummary, refetch: refetchGlobalSummary } = useMetricsSummary();
 
   const { data: trend, isLoading: trendLoading, refetch: refetchTrend, error: trendError } = useMetricsTrend(trendDays, backendProjectId);
 
@@ -163,6 +230,7 @@ export default function DashboardPage() {
     executions?: { total?: number; running?: number; success?: number; failed?: number };
   }
   const s = summary as unknown as DashboardSummary | undefined;
+  const g = globalSummary as unknown as DashboardSummary | undefined;
   const successRate = s?.successRate ?? 0;
   const totalExec = s?.executions?.total ?? 0;
   const runningCount = s?.executions?.running ?? 0;
@@ -181,21 +249,11 @@ export default function DashboardPage() {
   // R171（P2-3）：刷新/重试必须覆盖**六路**（页头按钮与错误块共用这一个出口）——
   // 此前两处各抄四行且都不含调度两路 ⇒ 调度失败时点重试是假动作。
   const refetchAll = () => {
-    void refetchSummary(); void refetchTrend(); void refetchExecutors();
+    void refetchSummary(); void refetchGlobalSummary(); void refetchTrend(); void refetchExecutors();
     void refetchFailures(); void refetchSchedMetrics(); void refetchSchedStats();
   };
 
   const failureList = (failures ?? []).slice(0, 8);
-
-  // P1-2：选中具体项目时，机队/调度类无项目归属的指标显式标注「全局口径」——
-  // 不把全局机队数/调度数当成项目数字。未选项目（全部项目）时不渲染该标注。
-  const globalScopeTag = isScoped ? (
-    <Tooltip title={t('projectCtx.globalScope.tooltip')}>
-      <Tag style={{ fontSize: 10, lineHeight: '16px', marginInlineEnd: 0 }}>
-        {t('projectCtx.globalScope')}
-      </Tag>
-    </Tooltip>
-  ) : null;
 
   // P1-2：跳执行列表的深链保留当前项目上下文（?project=），与既有筛选参数并存。
   const executionsHref = (status?: string) => {
@@ -275,22 +333,25 @@ export default function DashboardPage() {
       {/* UI-04 ⑤：空态引导——无任何任务时整页引导创建，替代空指标噪音 */}
       <DashboardEmptyGuide totalTasks={s?.totalTasks} onCreateTask={() => nav('/tasks/new')} />
 
+      {/* P2-1 口径分组（随当前项目）：任务/执行类聚合，请求带 projectId，切项目数值变化。 */}
+      <ScopeSectionHeader scope="project" testId="scope-group-project" />
+
       {/* KPI 卡片——UI-02：卡片底色接入 CSS 变量（双主题），强调色取 token 语义面。
           UI-08：首屏（无数据加载中）以骨架形态替代 Spin 包裹，刷新态仍原样 */}
       {/* UI-09：KPI 卡 xs={12} 两列并排时内容宽仅 ~144px——十位数统计值按
           28px 字号会溢出卡片（实测 1,234,567,890 顶出右边界），窄屏由
           .ui09-kpi-stat 媒体查询降字号兜底（见 index.css） */}
       {summaryLoading && !s ? (
-        // UI 打磨：KPI 行首屏骨架用 cards 变体（4 张卡），与真实 4 卡布局同形，
+        // UI 打磨：KPI 行首屏骨架用 cards 变体（3 张随项目卡），与真实布局同形，
         // 此前 table 行骨架在加载完成瞬间明显跳动
-        <PageSkeleton variant="cards" rows={4} />
+        <PageSkeleton variant="cards" rows={3} />
       ) : (
         <Row gutter={[16, 16]} align="stretch">
-          <Col xs={12} sm={6}>
+          <Col xs={12} sm={8}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.tasks')}</Text>}
+                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.tasks')} <ScopeBadge scope="project" /></Text>}
                 value={s?.totalTasks ?? '-'}
                 prefix={<RocketOutlined style={{ color: CHART_COLORS.cpu }} />}
                 styles={{ content: { color: CHART_COLORS.cpu, fontSize: 28 } }}
@@ -313,12 +374,12 @@ export default function DashboardPage() {
               </KpiFootnote>
             </Card>
           </Col>
-          {/* UI-04 ①：24h 执行量 + sparkline */}
-          <Col xs={12} sm={6}>
+          {/* UI-04 ①：24h 执行量 + sparkline（随项目） */}
+          <Col xs={12} sm={8}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.todayRuns')}</Text>}
+                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.todayRuns')} <ScopeBadge scope="project" /></Text>}
                 value={s?.todayRuns ?? totalExec}
                 prefix={<ThunderboltOutlined style={{ color: CHART_COLORS.success }} />}
                 styles={{ content: { color: CHART_COLORS.success, fontSize: 28 } }}
@@ -326,12 +387,12 @@ export default function DashboardPage() {
               <KpiSparkline color={CHART_COLORS.success} hasData={sparkHasData} data={runSpark} />
             </Card>
           </Col>
-          {/* UI-04 ①：运行中 + sparkline */}
-          <Col xs={12} sm={6}>
+          {/* UI-04 ①：运行中 + sparkline（随项目） */}
+          <Col xs={12} sm={8}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.running')}</Text>}
+                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.running')} <ScopeBadge scope="project" /></Text>}
                 value={runningCount}
                 prefix={<ClockCircleOutlined style={{ color: CHART_COLORS.concurrent }} />}
                 styles={{ content: { color: runningCount > 0 ? CHART_COLORS.concurrent : 'var(--chart-axis-text)', fontSize: 28 } }}
@@ -344,22 +405,6 @@ export default function DashboardPage() {
               <KpiSparkline color={CHART_COLORS.concurrent} hasData={sparkHasData} data={runSpark} />
             </Card>
           </Col>
-          <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
-              <Statistic
-                className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.onlineExecutors')} {globalScopeTag}</Text>}
-                value={`${s?.onlineExecutors ?? '-'} / ${s?.totalExecutors ?? '-'}`}
-                prefix={<ApiOutlined style={{ color: CHART_COLORS.memory }} />}
-                styles={{ content: { color: CHART_COLORS.memory, fontSize: 28 } }}
-              />
-              <KpiFootnote>
-                {s?.onlineExecutors != null && s?.totalExecutors != null
-                  ? t('dashboard.kpi.offline', { count: s.totalExecutors - s.onlineExecutors })
-                  : ' '}
-              </KpiFootnote>
-            </Card>
-          </Col>
         </Row>
       )}
 
@@ -368,7 +413,7 @@ export default function DashboardPage() {
         <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.successRate')}</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.successRate')} <ScopeBadge scope="project" /></Text>}
             style={{ height: '100%' }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -410,7 +455,7 @@ export default function DashboardPage() {
         <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.avgDuration')}</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.avgDuration')} <ScopeBadge scope="project" /></Text>}
             style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
             styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' } }}
           >
@@ -429,7 +474,7 @@ export default function DashboardPage() {
       {/* 趋势图 */}
       <Card
         size="small" variant="borderless"
-        title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.trend')}</Text>}
+        title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.trend')} <ScopeBadge scope="project" /></Text>}
         extra={
           <Segmented
             size="small"
@@ -475,42 +520,12 @@ export default function DashboardPage() {
         )}
       </Card>
 
-      {/* 执行器资源热力条（UI-04 ③） + 调度延迟（UI-04 ④）——UI 打磨：md 起两列
-          （与成功率行同断点，消除 md 区间半页两列半页单列的错乱节奏）+ 两卡等高 */}
-      <Row gutter={[16, 16]} align="stretch">
-        <Col xs={24} md={12}>
-          <Card
-            size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.executors')} {globalScopeTag}</Text>}
-            style={{ height: '100%' }}
-            extra={<Link to="/executors" style={{ fontSize: 12 }}>{t('dashboard.executors.all')}</Link>}
-          >
-            {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
-            {execLoading && !executorStats ? (
-              <PageSkeleton variant="table" rows={2} />
-            ) : (
-              <ExecutorHeatBars executors={executorStats ?? []} onOpenExecutor={id => nav(`/executors/${id}`)} />
-            )}
-          </Card>
-        </Col>
-        <Col xs={24} md={12}>
-          <Card
-            size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.schedulerLatency')} {globalScopeTag}</Text>}
-            style={{ height: '100%' }}
-          >
-            {/* R171（P2-3）：读不到不能渲染成「暂无样本」（那是「确实没有」的文案）。 */}
-            {schedMetricsError ? <Text type="danger">{t('dashboard.schedulerLatencyReadFailed')}</Text> : <SchedulerLatencyCard metrics={schedMetrics} />}
-          </Card>
-        </Col>
-      </Row>
-
       {/* 失败 Top 任务榜（UI-04 ②） + 最近失败明细——UI 打磨：同上 md 两列 + 等高 */}
       <Row gutter={[16, 16]} align="stretch">
         <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.failureTop')}</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.failureTop')} <ScopeBadge scope="project" /></Text>}
             style={{ height: '100%' }}
             extra={<Link to={executionsHref('failed')} style={{ fontSize: 12 }}>{t('dashboard.failureTop.all')}</Link>}
           >
@@ -525,7 +540,7 @@ export default function DashboardPage() {
         <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.recentFailures')}</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.recentFailures')} <ScopeBadge scope="project" /></Text>}
             style={{ height: '100%' }}
             extra={<Link to={executionsHref()} style={{ fontSize: 12 }}>{t('dashboard.recentFailures.all')}</Link>}
           >
@@ -602,6 +617,53 @@ export default function DashboardPage() {
               )}
             </>
             )}
+          </Card>
+        </Col>
+      </Row>
+
+      {/* P2-1 口径分组（全局口径：机队/调度）：执行器机队、调度计数器与队列深度无项目
+          归属，请求不带 projectId；切项目时这一组数值保持不变。 */}
+      <ScopeSectionHeader scope="global" testId="scope-group-global" />
+      <Row gutter={[16, 16]} align="stretch">
+        <Col xs={12} md={8}>
+          <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
+            <Statistic
+              className="ui09-kpi-stat"
+              title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.onlineExecutors')} <ScopeBadge scope="global" /></Text>}
+              value={`${g?.onlineExecutors ?? '-'} / ${g?.totalExecutors ?? '-'}`}
+              prefix={<ApiOutlined style={{ color: CHART_COLORS.memory }} />}
+              styles={{ content: { color: CHART_COLORS.memory, fontSize: 28 } }}
+            />
+            <KpiFootnote>
+              {g?.onlineExecutors != null && g?.totalExecutors != null
+                ? t('dashboard.kpi.offline', { count: g.totalExecutors - g.onlineExecutors })
+                : ' '}
+            </KpiFootnote>
+          </Card>
+        </Col>
+        <Col xs={24} md={8}>
+          <Card
+            size="small" variant="borderless"
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.executors')} <ScopeBadge scope="global" /></Text>}
+            style={{ height: '100%' }}
+            extra={<Link to="/executors" style={{ fontSize: 12 }}>{t('dashboard.executors.all')}</Link>}
+          >
+            {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
+            {execLoading && !executorStats ? (
+              <PageSkeleton variant="table" rows={2} />
+            ) : (
+              <ExecutorHeatBars executors={executorStats ?? []} onOpenExecutor={id => nav(`/executors/${id}`)} />
+            )}
+          </Card>
+        </Col>
+        <Col xs={24} md={8}>
+          <Card
+            size="small" variant="borderless"
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.schedulerLatency')} <ScopeBadge scope="global" /></Text>}
+            style={{ height: '100%' }}
+          >
+            {/* R171（P2-3）：读不到不能渲染成「暂无样本」（那是「确实没有」的文案）。 */}
+            {schedMetricsError ? <Text type="danger">{t('dashboard.schedulerLatencyReadFailed')}</Text> : <SchedulerLatencyCard metrics={schedMetrics} />}
           </Card>
         </Col>
       </Row>
