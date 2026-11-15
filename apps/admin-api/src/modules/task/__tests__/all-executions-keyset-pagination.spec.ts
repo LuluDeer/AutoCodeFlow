@@ -1,3 +1,7 @@
+/**
+ * ALLOW: P2-2 执行列表筛选补齐补 runtime/triggerType/组合筛选/过滤后 total 的回归用例，
+ * 本 spec 非注释行超 900 行阈值；新增行全部是验收证据用例（零生产代码），拆分留待独立任务。
+ */
 import { BadRequestException } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
@@ -21,6 +25,7 @@ import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.s
 import { ExecutionReport } from "../../metrics/entities/execution-report.entity";
 import { ProjectAccessService } from "../../project/project-access.service";
 import { decodeExecutionCursor } from "../../../common/utils/keyset-cursor.util";
+import { DEFAULT_PROJECT_ID } from "../../project/project.entity";
 
 /**
  * §2.1 游标分页 · **服务层**定向 spec（GET /tasks/executions/all）。
@@ -31,7 +36,7 @@ import { decodeExecutionCursor } from "../../../common/utils/keyset-cursor.util"
  *   ② 带 cursor 的新路径**翻完 N 页不漏不重**（5 条同一 createdAt 专打决胜键）；
  *   ③ 非法游标一律 400，绝不静默退回第一页（那会造成翻页死循环）。
  *
- * 外加本端点独有的第四条：**六个全局过滤器必须与游标条件正确 AND 组合**，
+ * 外加本端点独有的第四条：**九个全局过滤器必须与游标条件正确 AND 组合**，
  * 且两条路径共用同一份过滤装配——过滤器被游标条件覆盖（或反之）会让结果集
  * 静默变宽/变窄，而 `total` 与 `items` 都不报错。
  *
@@ -52,6 +57,12 @@ interface Row {
   status: ExecutionStatus;
   executorAddress: string | null;
   createdAt: Date;
+  /** P2-2：执行行记录的触发方式（自由 varchar，精确匹配）。 */
+  triggerType: string;
+  /** P2-2：任务域运行时（tasks.runtime 关联派生；假仓库直接挂在行上建模）。 */
+  runtime: string;
+  /** tasks 表里该 taskId 归属的项目 id（projectId 过滤建模；null = 未分配）。 */
+  taskRowProjectId?: string | null;
   /**
    * 微秒分量（0–999）。真实列 `timestamp without time zone` 精度 6，实体读出来
    * 才截成毫秒；显式建模微秒才能复现"同毫秒但微秒不同"的漏行条件。
@@ -101,6 +112,9 @@ function makeRows(): Row[] {
       status: ExecutionStatus.SUCCESS,
       executorAddress: "10.0.0.5",
       createdAt: SAME_INSTANT,
+      triggerType: "cron",
+      runtime: "python",
+      taskRowProjectId: null,
     });
   }
   for (let i = 0; i < 4; i++) {
@@ -111,6 +125,9 @@ function makeRows(): Row[] {
       status: ExecutionStatus.FAILED,
       executorAddress: "10.0.0.5",
       createdAt: new Date(SAME_INSTANT.getTime() - (i + 1) * 1000),
+      triggerType: "fixed_rate",
+      runtime: "node",
+      taskRowProjectId: null,
     });
   }
   // 别的任务：既验证"不带 taskId 时也能出现"（全局列表），也供过滤用例使用
@@ -122,6 +139,9 @@ function makeRows(): Row[] {
     executorAddress: "10.0.0.9",
     createdAt: new Date("2026-01-02T03:04:00.000Z"),
     taskRowName: "Backfill Target",
+    triggerType: "webhook",
+    runtime: "python",
+    taskRowProjectId: "proj-2001",
   });
   rows.push({
     id: "99999999-9999-4999-8999-888888888888",
@@ -130,6 +150,9 @@ function makeRows(): Row[] {
     status: ExecutionStatus.SUCCESS,
     executorAddress: "host_b",
     createdAt: new Date("2026-01-02T03:03:00.000Z"),
+    triggerType: "manual",
+    runtime: "shell",
+    taskRowProjectId: "proj-2001",
   });
   return rows;
 }
@@ -164,6 +187,9 @@ function makeExecRepo(rowset: Row[]) {
       executorAddress?: string;
       startTime?: string;
       endTime?: string;
+      projectId?: string;
+      runtime?: string;
+      triggerType?: string;
     },
     cursorParams: Record<string, unknown> | null,
     take: number | null,
@@ -197,6 +223,23 @@ function makeExecRepo(rowset: Row[]) {
         r.createdAt.getTime() > Date.parse(filters.endTime)
       )
         return false;
+      if (filters.runtime && r.runtime !== filters.runtime) return false;
+      if (filters.triggerType && r.triggerType !== filters.triggerType)
+        return false;
+      if (filters.projectId) {
+        // 与生产同口径：`default` = 未分配（IS NULL）+ 默认项目；其余精确匹配。
+        if (filters.projectId === "default") {
+          if (
+            r.taskRowProjectId !== null &&
+            r.taskRowProjectId !== undefined &&
+            r.taskRowProjectId !== DEFAULT_PROJECT_ID
+          ) {
+            return false;
+          }
+        } else if (r.taskRowProjectId !== filters.projectId) {
+          return false;
+        }
+      }
       return true;
     });
 
@@ -242,6 +285,9 @@ function makeExecRepo(rowset: Row[]) {
       "executorAddress",
       "startTime",
       "endTime",
+      "projectId",
+      "runtime",
+      "triggerType",
     ]) {
       if (key in params) {
         filters[key] = params[key] as string;
@@ -255,6 +301,9 @@ function makeExecRepo(rowset: Row[]) {
     executorAddress?: string;
     startTime?: string;
     endTime?: string;
+    projectId?: string;
+    runtime?: string;
+    triggerType?: string;
   } = {};
 
   const repo: any = {
@@ -758,6 +807,9 @@ describe("§2.1 TaskService.getAllExecutions — OFFSET / keyset 双路径", () 
         executorAddress: "10.0.0.5",
         createdAt: ms,
         micro,
+        triggerType: "cron",
+        runtime: "python",
+        taskRowProjectId: null,
       }));
       await build();
 
@@ -785,7 +837,7 @@ describe("§2.1 TaskService.getAllExecutions — OFFSET / keyset 双路径", () 
   });
 
   // ── ③ 过滤器 × 游标：必须 AND 组合，且共用同一份装配 ──────────────────
-  describe("六个过滤器与游标条件正确 AND 组合", () => {
+  describe("九个过滤器与游标条件正确 AND 组合", () => {
     it("status 过滤在 keyset 分支同样生效（不与游标条件互相覆盖）", async () => {
       const first: any = await service.getAllExecutions({
         page: 1,
@@ -855,6 +907,89 @@ describe("§2.1 TaskService.getAllExecutions — OFFSET / keyset 双路径", () 
       expect(res.items[0].executorAddress).toBe("10.0.0.9");
     });
 
+    it("P2-2: runtime 过滤——只返回该任务运行时的行，total 为过滤后真实总数", async () => {
+      const res: any = await service.getAllExecutions({
+        page: 1,
+        pageSize: 20,
+        runtime: "python",
+      });
+      // 5 条 cron 同刻行 + 1 条 webhook 运行中 = 6 条 python
+      expect(res.total).toBe(6);
+      expect(res.items.every((r: Row) => r.runtime === "python")).toBe(true);
+    });
+
+    it("P2-2: triggerType 过滤——按执行行记录值精确匹配（不做模糊）", async () => {
+      const res: any = await service.getAllExecutions({
+        page: 1,
+        pageSize: 20,
+        triggerType: "cron",
+      });
+      expect(res.total).toBe(5);
+      expect(
+        res.items.every((r: Row) => r.triggerType === "cron"),
+      ).toBe(true);
+    });
+
+    it("P2-2: runtime + status 组合——两个条件取交集（不是互相覆盖）", async () => {
+      const res: any = await service.getAllExecutions({
+        page: 1,
+        pageSize: 20,
+        runtime: "python",
+        status: ExecutionStatus.RUNNING,
+      });
+      expect(res.total).toBe(1);
+      expect(res.items[0].id).toBe(
+        "99999999-9999-4999-8999-999999999999",
+      );
+    });
+
+    it("P2-2: projectId + status 组合——任务域派生过滤与执行状态取交集", async () => {
+      const res: any = await service.getAllExecutions({
+        page: 1,
+        pageSize: 20,
+        projectId: "proj-2001",
+        status: ExecutionStatus.SUCCESS,
+      });
+      expect(res.total).toBe(1);
+      expect(res.items[0].id).toBe(
+        "99999999-9999-4999-8999-888888888888",
+      );
+    });
+
+    it("P2-2: runtime 过滤在 keyset 分支同样生效，total 不受游标影响", async () => {
+      const res: any = await service.getAllExecutions({
+        page: 1,
+        pageSize: 20,
+        runtime: "node",
+        cursor: "",
+      });
+      expect(res.total).toBe(4);
+      expect(res.items.every((r: Row) => r.runtime === "node")).toBe(true);
+    });
+
+    it("P2-2: runtime 走 tasks 关联列 t.runtime；triggerType 走执行行 e.triggerType", async () => {
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 20,
+        runtime: "python",
+        triggerType: "cron",
+      });
+      const qb = execRepo.createQueryBuilder.mock.results[0].value;
+      expect(qb.andWhere).toHaveBeenCalledWith("t.runtime = :runtime", {
+        runtime: "python",
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        "e.triggerType = :triggerType",
+        { triggerType: "cron" },
+      );
+      // runtime 需要关联 tasks 表——join 与 taskName/projectId 共用一次
+      expect(qb.leftJoin).toHaveBeenCalledWith(
+        "tasks",
+        "t",
+        "t.id = e.taskId",
+      );
+    });
+
     it("startTime/endTime 时间范围在 keyset 分支同样生效（与游标条件是 AND）", async () => {
       const res: any = await service.getAllExecutions({
         page: 1,
@@ -914,6 +1049,9 @@ describe("§2.1 TaskService.getAllExecutions — OFFSET / keyset 双路径", () 
         executorAddress: "10.0.0",
         startTime: "2026-01-01T00:00:00.000Z",
         endTime: "2026-12-31T23:59:59.000Z",
+        projectId: "default",
+        runtime: "python",
+        triggerType: "cron",
       } as const;
 
       await service.getAllExecutions({ page: 1, pageSize: 5, ...params });
@@ -930,8 +1068,8 @@ describe("§2.1 TaskService.getAllExecutions — OFFSET / keyset 双路径", () 
       const keysetSql = [...state.lastKeysetFilters];
 
       expect(keysetSql).toEqual(offsetSql);
-      // 有齿校验：确实装配了 6 个过滤器（少一个说明某条件根本没下发）
-      expect(offsetSql).toHaveLength(6);
+      // 有齿校验：确实装配了 9 个过滤器（少一个说明某条件根本没下发）
+      expect(offsetSql).toHaveLength(9);
     });
   });
 

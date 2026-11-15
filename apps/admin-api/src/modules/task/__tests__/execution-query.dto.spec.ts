@@ -118,6 +118,29 @@ describe("AllExecutionsQueryDto (GET /tasks/executions/all)", () => {
     expect(result.endTime).toBe("2026-01-31T23:59:59.000Z");
   });
 
+  it("P2-2: accepts runtime (task enum) and triggerType (execution-row free varchar)", async () => {
+    const result = await validate({ runtime: "python", triggerType: "webhook" });
+    expect(result.runtime).toBe("python");
+    expect(result.triggerType).toBe("webhook");
+  });
+
+  it("P2-2: runtime outside TaskRuntime enum is rejected (400)", async () => {
+    await expect(validate({ runtime: "ruby" })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it("P2-2: triggerType is free varchar — an unknown token passes the DTO (service matches 0 rows)", async () => {
+    const result = await validate({ triggerType: "agent" });
+    expect(result.triggerType).toBe("agent");
+  });
+
+  it("P2-2: triggerType over 64 chars is rejected", async () => {
+    await expect(validate({ triggerType: "x".repeat(65) })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
   it("rejects unknown query params", async () => {
     await expect(validate({ status: "failed", bogus: "1" })).rejects.toThrow(
       BadRequestException,

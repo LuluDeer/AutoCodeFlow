@@ -534,7 +534,7 @@ export interface paths {
         };
         /**
          * 全局执行记录
-         * @description 全局执行记录（跨任务）。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks、GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（status/taskId/taskName/executorAddress/startTime/endTime）自由组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。
+         * @description 全局执行记录（跨任务）。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks、GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（status/taskId/taskName/executorAddress/startTime/endTime/projectId/runtime/triggerType）自由组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。
          */
         get: operations["TaskController_allExecutions"];
         put?: never;
@@ -554,7 +554,7 @@ export interface paths {
         };
         /**
          * 导出执行记录为 CSV（流式，仅管理员）
-         * @description 导出执行记录为 CSV 文件（UTF-8，RFC 4180）。支持与 GET /tasks/executions/all 完全相同的过滤条件（status/taskId/taskName/executorAddress/startTime/endTime）——两处共用同一份过滤装配。**流式输出**：按 (createdAt DESC, id DESC) 逐页拉取并分块写出，不把全量结果拼进内存。行数达上限（默认硬顶 5 万行，可用 limit 调小）时在文件末尾追加 `# truncated at N rows` 注释行，便于识别截断。单元格做 CSV 公式注入防护（以 = + - @ 制表符 回车 开头的值前缀单引号）。列：id/taskId/taskName/status/triggerType/executorId/executorAddress/createdAt/startTime/endTime/durationMs/retryCount/exitCode/failureReason/errorMessage。
+         * @description 导出执行记录为 CSV 文件（UTF-8，RFC 4180）。支持与 GET /tasks/executions/all 完全相同的过滤条件（status/taskId/taskName/executorAddress/startTime/endTime/projectId/runtime/triggerType）——两处共用同一份过滤装配。**流式输出**：按 (createdAt DESC, id DESC) 逐页拉取并分块写出，不把全量结果拼进内存。行数达上限（默认硬顶 5 万行，可用 limit 调小）时在文件末尾追加 `# truncated at N rows` 注释行，便于识别截断。单元格做 CSV 公式注入防护（以 = + - @ 制表符 回车 开头的值前缀单引号）。列：id/taskId/taskName/status/triggerType/executorId/executorAddress/createdAt/startTime/endTime/durationMs/retryCount/exitCode/failureReason/errorMessage。
          */
         get: operations["TaskController_exportExecutions"];
         put?: never;
@@ -9432,8 +9432,8 @@ export interface operations {
                 name?: string;
                 /** @description 按执行状态过滤 */
                 status?: string;
-                /** @description 按 runtime 过滤（python/node/shell） */
-                runtime?: string;
+                /** @description 按任务运行时过滤（经任务关联派生，tasks.runtime；python/node/shell）。 */
+                runtime?: "python" | "node" | "shell";
                 /** @description 按任务 id 过滤 */
                 taskId?: string;
                 /** @description 按所属项目过滤（经任务关联派生）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。 */
@@ -9446,6 +9446,8 @@ export interface operations {
                 startTime?: string;
                 /** @description 仅返回在该时刻及之前创建的执行（ISO 8601） */
                 endTime?: string;
+                /** @description 按执行行记录的触发方式精确匹配（task_executions.triggerType，自由 varchar；实测取值 cron/fixed_rate/misfire/manual/dependency/rollback/webhook/agent）。 */
+                triggerType?: string;
                 /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器组合，非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。 */
                 cursor?: string;
             };
@@ -9483,6 +9485,10 @@ export interface operations {
                 startTime?: string;
                 /** @description 仅返回在该时刻及之前创建的执行（ISO 8601） */
                 endTime?: string;
+                /** @description 按任务运行时过滤（经任务关联派生，tasks.runtime；python/node/shell）。 */
+                runtime?: "python" | "node" | "shell";
+                /** @description 按执行行记录的触发方式精确匹配（task_executions.triggerType，自由 varchar；实测取值 cron/fixed_rate/misfire/manual/dependency/rollback/webhook/agent）。 */
+                triggerType?: string;
                 /** @description 本次导出的行数上限（安全阀，不是分页）。可调小；超过硬顶（50000）按硬顶处理，达上限时 CSV 末尾追加截断注释行。 */
                 limit?: number;
             };

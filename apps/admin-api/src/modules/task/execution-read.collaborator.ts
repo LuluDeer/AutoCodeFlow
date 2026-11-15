@@ -356,6 +356,8 @@ export class ExecutionRead {
       startTime?: string;
       endTime?: string;
       projectId?: string;
+      runtime?: string;
+      triggerType?: string;
       cursor?: string;
     },
   ) {
@@ -446,6 +448,8 @@ export class ExecutionRead {
       startTime?: string;
       endTime?: string;
       projectId?: string;
+      runtime?: string;
+      triggerType?: string;
     },
     write: (chunk: string) => Promise<void>,
     options: { limit?: number; signal?: AbortSignal } = {},
@@ -540,13 +544,18 @@ export class ExecutionRead {
       startTime?: string;
       endTime?: string;
       projectId?: string;
+      runtime?: string;
+      triggerType?: string;
     },
   ): void {
     if (p.status) qb.andWhere("e.status = :status", { status: p.status });
     if (p.taskId) qb.andWhere("e.taskId = :taskId", { taskId: p.taskId });
-    // P1-2：taskName 与 projectId 都需要关联 tasks 表——join 只挂一次，
-    // 避免同 alias 重复 LEFT JOIN（TypeORM 不会按 alias 去重）。
-    if (p.taskName || p.projectId) {
+    // P2-2：triggerType 是执行域列（task_executions.triggerType），直接挂 e。
+    if (p.triggerType)
+      qb.andWhere("e.triggerType = :triggerType", { triggerType: p.triggerType });
+    // P1-2：taskName / projectId 与 P2-2 的 runtime 都需要关联 tasks 表——
+    // join 只挂一次，避免同 alias 重复 LEFT JOIN（TypeORM 不会按 alias 去重）。
+    if (p.taskName || p.projectId || p.runtime) {
       qb.leftJoin("tasks", "t", "t.id = e.taskId");
     }
     if (p.taskName) {
@@ -570,6 +579,11 @@ export class ExecutionRead {
       } else {
         qb.andWhere("t.projectId = :projectId", { projectId: p.projectId });
       }
+    }
+    if (p.runtime) {
+      // P2-2：运行时是任务域字段（tasks.runtime），经 join 的 t 过滤；执行行
+      // 自身不冗余 runtime 列。
+      qb.andWhere("t.runtime = :runtime", { runtime: p.runtime });
     }
     if (p.executorAddress)
       // NETOPT-3⑤: 同上——执行器地址常含下划线/通配符字符，转义后按字面量匹配。
@@ -648,6 +662,8 @@ export class ExecutionRead {
       startTime?: string;
       endTime?: string;
       projectId?: string;
+      runtime?: string;
+      triggerType?: string;
     },
     rawCursor: string,
   ) {

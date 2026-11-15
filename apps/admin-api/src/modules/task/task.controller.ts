@@ -496,7 +496,7 @@ export class TaskController {
   @Get("executions/all")
   @ApiOperation({
     description:
-      "全局执行记录（跨任务）。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks、GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（status/taskId/taskName/executorAddress/startTime/endTime）自由组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。",
+      "全局执行记录（跨任务）。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks、GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（status/taskId/taskName/executorAddress/startTime/endTime/projectId/runtime/triggerType）自由组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。",
     summary: "全局执行记录",
   })
   @ApiQuery({ name: "page", required: false })
@@ -512,6 +512,17 @@ export class TaskController {
     required: false,
     description:
       "按所属项目过滤（经任务关联派生）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。",
+  })
+  @ApiQuery({
+    name: "runtime",
+    required: false,
+    description: "按任务运行时过滤（经任务关联派生，tasks.runtime；python/node/shell）。",
+  })
+  @ApiQuery({
+    name: "triggerType",
+    required: false,
+    description:
+      "按执行行记录的触发方式精确匹配（task_executions.triggerType，自由 varchar；实测取值 cron/fixed_rate/misfire/manual/dependency/rollback/webhook/agent）。",
   })
   // §2.1：keyset 游标（与 GET /tasks、GET /tasks/:id/executions 同款参数）。
   // 显式声明是为了与本端点其余 query 参数的历史风格一致；DTO 侧
@@ -562,7 +573,7 @@ export class TaskController {
   @Get("executions/export")
   @ApiOperation({
     description:
-      "导出执行记录为 CSV 文件（UTF-8，RFC 4180）。支持与 GET /tasks/executions/all 完全相同的过滤条件（status/taskId/taskName/executorAddress/startTime/endTime）——两处共用同一份过滤装配。**流式输出**：按 (createdAt DESC, id DESC) 逐页拉取并分块写出，不把全量结果拼进内存。行数达上限（默认硬顶 5 万行，可用 limit 调小）时在文件末尾追加 `# truncated at N rows` 注释行，便于识别截断。单元格做 CSV 公式注入防护（以 = + - @ 制表符 回车 开头的值前缀单引号）。列：id/taskId/taskName/status/triggerType/executorId/executorAddress/createdAt/startTime/endTime/durationMs/retryCount/exitCode/failureReason/errorMessage。",
+      "导出执行记录为 CSV 文件（UTF-8，RFC 4180）。支持与 GET /tasks/executions/all 完全相同的过滤条件（status/taskId/taskName/executorAddress/startTime/endTime/projectId/runtime/triggerType）——两处共用同一份过滤装配。**流式输出**：按 (createdAt DESC, id DESC) 逐页拉取并分块写出，不把全量结果拼进内存。行数达上限（默认硬顶 5 万行，可用 limit 调小）时在文件末尾追加 `# truncated at N rows` 注释行，便于识别截断。单元格做 CSV 公式注入防护（以 = + - @ 制表符 回车 开头的值前缀单引号）。列：id/taskId/taskName/status/triggerType/executorId/executorAddress/createdAt/startTime/endTime/durationMs/retryCount/exitCode/failureReason/errorMessage。",
     summary: "导出执行记录为 CSV（流式，仅管理员）",
   })
   @ApiQuery({
@@ -596,6 +607,17 @@ export class TaskController {
     required: false,
     description:
       "按所属项目过滤（经任务关联派生，与列表端点同口径）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。",
+  })
+  @ApiQuery({
+    name: "runtime",
+    required: false,
+    description: "按任务运行时过滤（经任务关联派生，tasks.runtime；python/node/shell）。",
+  })
+  @ApiQuery({
+    name: "triggerType",
+    required: false,
+    description:
+      "按执行行记录的触发方式精确匹配（task_executions.triggerType，自由 varchar；实测取值 cron/fixed_rate/misfire/manual/dependency/rollback/webhook/agent）。",
   })
   @ApiQuery({
     name: "limit",
@@ -666,6 +688,8 @@ export class TaskController {
           startTime: query.startTime,
           endTime: query.endTime,
           projectId: query.projectId,
+          runtime: query.runtime,
+          triggerType: query.triggerType,
         },
         write,
         // limit 只在"调小"方向生效——归一逻辑在 service，此处原样透传。

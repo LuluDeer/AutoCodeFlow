@@ -3380,6 +3380,8 @@ export class TaskService implements OnModuleInit {
       startTime?: string;
       endTime?: string;
       projectId?: string;
+      runtime?: string;
+      triggerType?: string;
       cursor?: string;
     },
   ) {
@@ -3402,6 +3404,8 @@ export class TaskService implements OnModuleInit {
       startTime?: string;
       endTime?: string;
       projectId?: string;
+      runtime?: string;
+      triggerType?: string;
     },
     write: (chunk: string) => Promise<void>,
     options: { limit?: number; signal?: AbortSignal } = {},

@@ -1,15 +1,18 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
 import { Type } from "class-transformer";
 import {
+  IsEnum,
   IsISO8601,
   IsIn,
   IsInt,
   IsOptional,
   IsString,
+  MaxLength,
   Min,
 } from "class-validator";
 import { PaginationDto } from "../../../common/dto/pagination.dto";
 import { LOG_LEVEL_VALUES } from "../log-level.util";
+import { TaskRuntime } from "../entities/task.entity";
 
 /**
  * N7: GET /tasks/:id/executions previously typed @Query() with the TS
@@ -108,6 +111,43 @@ export class AllExecutionsQueryDto extends PaginationDto {
   endTime?: string;
 
   /**
+   * P2-2：按**任务运行时**过滤（任务域，经 `tasks.runtime` 关联派生）。
+   *
+   * 与任务列表的 `runtime` 过滤器同一枚举（`TaskRuntime`：python / node /
+   * shell）。省略 = 全部运行时。执行行本身不冗余 runtime 列，条件落在关联
+   * 任务行上；任务被删除（无关联行）的执行不参与本过滤。
+   */
+  @ApiPropertyOptional({
+    description:
+      "按任务运行时过滤（经任务关联派生，tasks.runtime；枚举 python/node/shell）。省略 = 全部运行时。",
+    enum: Object.values(TaskRuntime),
+  })
+  @IsOptional()
+  @IsEnum(TaskRuntime)
+  runtime?: string;
+
+  /**
+   * P2-2：按**执行行记录的触发方式**精确匹配（执行域，
+   * `task_executions.triggerType`）。
+   *
+   * ⚠️ 与任务的调度枚举（`TaskTriggerType`：cron/fixed_rate/api/manual）
+   * **不是同一套值域**：执行行 `triggerType` 是自由 varchar，由各触发链路
+   * 写入实测取值：`cron` / `fixed_rate` / `misfire`（调度补偿）/
+   * `manual`（手动与 API-Key 触发落行）/ `dependency`（依赖扇出）/
+   * `rollback`（任务回滚重放）/ `webhook`（Webhook 入站）/ `agent`
+   * （Agent 工具触发）。这里**按行内记录值精确匹配**，不做模糊；未知取值
+   * 不会被 DTO 拒绝（自由 varchar 语义），只是命中 0 行。
+   */
+  @ApiPropertyOptional({
+    description:
+      "按执行行记录的触发方式精确匹配（task_executions.triggerType，自由 varchar；实测取值 cron/fixed_rate/misfire/manual/dependency/rollback/webhook/agent，与任务调度枚举不同）。按行内记录值精确匹配，不做模糊。",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  triggerType?: string;
+
+  /**
    * §2.1（推广到 GET /tasks/executions/all）：**可选**的不透明游标。
    *
    * 与 `TaskExecutionsQueryDto#cursor` 逐字同款（同一套编码/解码纯函数
@@ -119,8 +159,8 @@ export class AllExecutionsQueryDto extends PaginationDto {
    *
    * 本端点**没有** sortBy / lastStatus 那类会与游标冲突的参数（排序恒为
    * `createdAt DESC, id DESC`），故无需像 `GET /tasks` 那样再做可组合性判定：
-   * 六个过滤器（status/taskId/taskName/executorAddress/startTime/endTime）全部
-   * 与游标条件是 AND 关系，可以任意组合。
+   * 全部过滤器（status/taskId/taskName/executorAddress/startTime/endTime/
+   * projectId/runtime/triggerType）全部与游标条件是 AND 关系，可以任意组合。
    */
   @ApiPropertyOptional({
     description:
@@ -210,6 +250,32 @@ export class ExportExecutionsQueryDto {
   @IsOptional()
   @IsISO8601()
   endTime?: string;
+
+  /**
+   * P2-2：按任务运行时过滤（与列表端点同字段，见
+   * `AllExecutionsQueryDto#runtime`；经 `tasks.runtime` 关联派生）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "按任务运行时过滤（经任务关联派生，tasks.runtime；枚举 python/node/shell）。省略 = 全部运行时。",
+    enum: Object.values(TaskRuntime),
+  })
+  @IsOptional()
+  @IsEnum(TaskRuntime)
+  runtime?: string;
+
+  /**
+   * P2-2：按执行行记录的触发方式精确匹配（与列表端点同字段，见
+   * `AllExecutionsQueryDto#triggerType`；自由 varchar，按行内记录值精确匹配）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "按执行行记录的触发方式精确匹配（task_executions.triggerType，自由 varchar；实测取值 cron/fixed_rate/misfire/manual/dependency/rollback/webhook/agent）。按行内记录值精确匹配，不做模糊。",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  triggerType?: string;
 
   /**
    * 本次导出的行数上限（安全阀，不是分页）。
