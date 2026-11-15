@@ -3847,7 +3847,11 @@ export interface paths {
         delete: operations["TaskTemplateController_remove"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * 编辑自定义任务模板
+         * @description 局部更新自定义模板的名称 / 说明 / 分类 / config。官方模板只读（403）；仅属主或 ADMIN 可改，createdBy 为空的历史行仅 ADMIN。key、isOfficial、createdBy 不可经本端点改写；config 整体替换并按 CreateTaskDto 子集校验。
+         */
+        patch: operations["TaskTemplateController_update"];
         trace?: never;
     };
     "/task-templates/import": {
@@ -8562,6 +8566,21 @@ export interface components {
             isAdmin: boolean;
             /** @description 调用方在所有项目中的成员关系行 */
             memberships: components["schemas"]["ProjectMemberViewDto"][];
+        };
+        UpdateTaskTemplateDto: {
+            /**
+             * @description 模板展示名
+             * @example 每日订单同步
+             */
+            name?: string;
+            /** @description 模板说明；传 null 清空 */
+            description?: string | null;
+            /** @description 粗分类标签（备份/巡检/同步/清理/通知…）；传 null 清空 */
+            category?: string | null;
+            /** @description 合法 CreateTaskDto 子集（省略 name）；整体替换现有 config */
+            config?: {
+                [key: string]: unknown;
+            };
         };
     };
     responses: never;
@@ -14683,6 +14702,55 @@ export interface operations {
                 };
             };
             /** @description 官方模板不可删除 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 模板不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskTemplateController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 模板 UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description 待更新字段（局部） */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTaskTemplateDto"];
+            };
+        };
+        responses: {
+            /** @description 更新后的模板 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
+                };
+            };
+            /** @description 字段 / config 非法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 官方只读 / 非属主 / 历史行仅管理员 */
             403: {
                 headers: {
                     [name: string]: unknown;

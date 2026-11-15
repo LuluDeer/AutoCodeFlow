@@ -21,7 +21,7 @@ import { Table,
 import { message } from '../utils/toast';
 import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
-  DeleteOutlined, EyeOutlined, EditOutlined,
+  DeleteOutlined, EyeOutlined, EditOutlined, ImportOutlined,
   CheckSquareOutlined, FileTextOutlined, ColumnWidthOutlined,
   LeftOutlined, RightOutlined,
 } from '@ant-design/icons';
@@ -56,6 +56,7 @@ import {
   type TaskColumnKey,
 } from '../utils/taskColumns';
 import ParamsEditor from '../components/ParamsEditor';
+import TaskImportModal from '../components/TaskImportModal';
 import PageHeader from '../components/PageHeader';
 // UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
 import PageSkeleton from '../components/PageSkeleton';
@@ -167,6 +168,8 @@ export default function TaskListPage() {
   const [triggering, setTriggering] = useState(false);
   const [consumeNextFirePoint, setConsumeNextFirePoint] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  // P1-5：任务定义导入弹窗（上传 JSON / 粘贴定义 → 客户端校验 + 冲突预览 → 结果呈现）。
+  const [importOpen, setImportOpen] = useState(false);
   const [batchLoading, setBatchLoading] = useState(false);
   // COLSET-01：隐藏列集合（缺省空 = 全显，与既有渲染零行为差异；只过滤显隐不动列定义）
   const [hiddenColumns, setHiddenColumns] = useState<TaskColumnKey[]>(() => readHiddenColumns());
@@ -683,6 +686,12 @@ export default function TaskListPage() {
             <Button icon={<FileTextOutlined />} onClick={() => nav('/task-templates')}>
               {t('taskList.templates')}
             </Button>
+            {/* P1-5：任务定义导入（导出 JSON 回灌）；写操作与新建同口径，非管理员禁用。 */}
+            <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
+              <Button icon={<ImportOutlined />} disabled={!isAdmin} onClick={() => setImportOpen(true)}>
+                {t('taskList.import')}
+              </Button>
+            </Tooltip>
             <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
             <Button type="primary" icon={<PlusOutlined />} disabled={!isAdmin} onClick={() => nav('/tasks/new')}>
               {t('taskList.create')}
@@ -1046,6 +1055,15 @@ export default function TaskListPage() {
           </Button>
         </div>
       )}
+
+      <TaskImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        existing={tasks}
+        currentProjectId={backendProjectId}
+        onImported={refresh}
+        onViewDetail={(id) => nav(`/tasks/${id}`)}
+      />
     </div>
   );
 }

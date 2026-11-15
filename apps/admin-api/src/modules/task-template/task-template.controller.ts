@@ -1,4 +1,12 @@
-import { Body, Controller, Delete, Get, Param, Post } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+} from "@nestjs/common";
 import {
   ApiBearerAuth,
   ApiBody,
@@ -10,6 +18,7 @@ import {
 } from "@nestjs/swagger";
 import { TaskTemplateService } from "./task-template.service";
 import { CreateTaskTemplateDto } from "./dto/create-task-template.dto";
+import { UpdateTaskTemplateDto } from "./dto/update-task-template.dto";
 // 清单导入端点（本轮）：请求体 = 一份 manifest.json（或 registry 里的一条）。
 import { ImportTaskTemplateManifestDto } from "./dto/import-task-template-manifest.dto";
 // PK-19: instantiate 覆盖体 Swagger 文档 DTO（运行时 @Body() 仍为 Record<string, unknown>）。
@@ -41,6 +50,7 @@ import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
  *  POST   /api/task-templates         新建自定义模板（config 经 CreateTaskDto 校验）
  *  POST   /api/task-templates/import  导入清单（manifest.json / registry 条目）落成模板行
  *  POST   /api/task-templates/:id/instantiate  从模板一键建任务（config 展开为默认、body 覆盖）
+ *  PATCH  /api/task-templates/:id     编辑自定义模板（名称/说明/分类/config；官方只读）
  *  DELETE /api/task-templates/:id     删除自定义模板（官方模板 403）
  *
  * 缩范围说明（见 PLAN-CLAIMS）：计划书 ② 原拟「POST /tasks 支持 body 带 templateId」，
@@ -86,6 +96,50 @@ export class TaskTemplateController {
   @ApiResponse({ status: 404, description: "模板不存在" })
   one(@Param("id", ParseUuidShapePipe) id: string): Promise<TaskTemplate> {
     return this.svc.findOne(id);
+  }
+
+  @WriteGuard("task-template", { scope: "authenticated" })
+  @Patch(":id")
+  @ApiOperation({
+    description:
+      "局部更新自定义模板的名称 / 说明 / 分类 / config。官方模板只读（403）；仅属主或 ADMIN 可改，" +
+      "createdBy 为空的历史行仅 ADMIN。key、isOfficial、createdBy 不可经本端点改写；" +
+      "config 整体替换并按 CreateTaskDto 子集校验。",
+    summary: "编辑自定义任务模板",
+  })
+  @ApiParam({ name: "id", description: "模板 UUID" })
+  @ApiBody({ type: UpdateTaskTemplateDto, description: "待更新字段（局部）" })
+  @ApiResponse({
+    status: 200,
+    description: "更新后的模板",
+    type: TaskTemplateResponseDto,
+  })
+  @ApiResponse({ status: 400, description: "字段 / config 非法" })
+  @ApiResponse({
+    status: 403,
+    description: "官方只读 / 非属主 / 历史行仅管理员",
+  })
+  @ApiResponse({ status: 404, description: "模板不存在" })
+  async update(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @Body() dto: UpdateTaskTemplateDto,
+    @CurrentUser() user: AuthUser,
+  ): Promise<TaskTemplate> {
+    const updated = await this.svc.update(id, dto, {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+    });
+    await this.audit.log({
+      username: user.username,
+      action: "task_template.update",
+      resource: "task_template",
+      resourceId: id,
+      detail: {
+        fields: Object.keys(dto ?? {}),
+      },
+    });
+    return updated;
   }
 
   @WriteGuard("task-template", { scope: "authenticated" })

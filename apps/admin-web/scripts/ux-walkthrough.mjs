@@ -459,6 +459,27 @@ const ROUTES = [
   ['GET', /^\/audit$/, () => ({ data: AUDIT_LOGS, total: AUDIT_LOGS.length })],
   // ── task templates ──
   ['GET', /^\/task-templates$/, () => TEMPLATES],
+  // P1-5 夹具镜像契约（真实后端：POST /tasks/import 单条创建，返回 { taskId, name, warnings }；
+  // POST /task-templates/import 落一行自定义模板；PATCH /task-templates/:id 局部更新）。
+  ['POST', /^\/tasks\/import$/, () => ({
+    taskId: 't-import-1',
+    name: '导入任务（夹具）',
+    warnings: ['重新配置密钥后再启用任务'],
+  })],
+  ['POST', /^\/task-templates\/import$/, () => ({
+    id: 'tpl-7',
+    key: 'custom-imported-fixture',
+    name: '夹具导入模板',
+    description: '由导入弹窗落库的自定义模板',
+    category: '同步',
+    config: { triggerType: 'manual', runtime: 'python', entrypoint: 'imported.py' },
+    createdBy: 'admin',
+    createdAt: ISO(-1 * 3600e3),
+  })],
+  ['PATCH', /^\/task-templates\/([^/]+)$/, (u, q, m) => {
+    const hit = TEMPLATES.find((t) => t.id === m[1]) ?? TEMPLATES[0];
+    return { ...hit, name: `${hit.name}（已编辑）` };
+  }],
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -11547,6 +11547,72 @@
           "summary": "Delete a custom task template",
           "description": "Official templates cannot be deleted (403)."
         }
+      },
+      "patch": {
+        "description": "局部更新自定义模板的名称 / 说明 / 分类 / config。官方模板只读（403）；仅属主或 ADMIN 可改，createdBy 为空的历史行仅 ADMIN。key、isOfficial、createdBy 不可经本端点改写；config 整体替换并按 CreateTaskDto 子集校验。",
+        "operationId": "TaskTemplateController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "模板 UUID",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Template UUID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "待更新字段（局部）",
+          "x-i18n-en": "Fields to update (partial)",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTaskTemplateDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的模板",
+            "x-i18n-en": "Updated template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskTemplateResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "字段 / config 非法",
+            "x-i18n-en": "Invalid field / config"
+          },
+          "403": {
+            "description": "官方只读 / 非属主 / 历史行仅管理员",
+            "x-i18n-en": "Official read-only / not the owner / legacy row: admins only"
+          },
+          "404": {
+            "description": "模板不存在",
+            "x-i18n-en": "Template not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "编辑自定义任务模板",
+        "tags": [
+          "Task Templates"
+        ],
+        "x-i18n-en": {
+          "summary": "Edit a custom task template",
+          "description": "Partial update of a custom template's name / description / category / config. Official templates are read-only (403); only the owner or an ADMIN can edit, and legacy rows with a null createdBy are ADMIN-only. key, isOfficial and createdBy cannot be changed through this endpoint; config is replaced wholesale and validated against the CreateTaskDto subset."
+        }
       }
     },
     "/task-templates/import": {
@@ -24539,6 +24605,35 @@
           "isAdmin",
           "memberships"
         ]
+      },
+      "UpdateTaskTemplateDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "每日订单同步",
+            "description": "模板展示名",
+            "x-i18n-en": "Template display name"
+          },
+          "description": {
+            "type": "string",
+            "description": "模板说明；传 null 清空",
+            "nullable": true,
+            "x-i18n-en": "Template description; pass null to clear"
+          },
+          "category": {
+            "type": "string",
+            "description": "粗分类标签（备份/巡检/同步/清理/通知…）；传 null 清空",
+            "nullable": true,
+            "x-i18n-en": "Broad category tag (backup / inspection / sync / cleanup / notify…); pass null to clear"
+          },
+          "config": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "合法 CreateTaskDto 子集（省略 name）；整体替换现有 config",
+            "x-i18n-en": "A valid subset of CreateTaskDto (without name); replaces the existing config wholesale"
+          }
+        }
       }
     }
   },

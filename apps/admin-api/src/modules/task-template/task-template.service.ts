@@ -7,6 +7,7 @@ import { TaskService } from "../task/task.service";
 import { Task } from "../task/entities/task.entity";
 import { TaskTemplate } from "./entities/task-template.entity";
 import { CreateTaskTemplateDto } from "./dto/create-task-template.dto";
+import { UpdateTaskTemplateDto } from "./dto/update-task-template.dto";
 import {
   assertValidCreateTaskPayload,
   assertValidTaskTemplateConfig,
@@ -236,12 +237,53 @@ export class TaskTemplateService {
     return this.taskService.create(dto, user);
   }
 
+  /**
+   * 更新自定义模板的展示信息 / config。
+   *
+   * 权限口径与 `remove` 完全一致（官方只读、属主或 ADMIN、历史行仅 ADMIN），
+   * 抽到 `assertMutable` 复用，避免「可删不可改 / 可改不可删」的口径裂缝。
+   * `key / isOfficial / createdBy` 不在可编辑集合内（见 UpdateTaskTemplateDto
+   * 头注）。`config` 整体替换并走 CreateTaskDto 子集校验；`description / category`
+   * 传 null 清空。
+   */
+  async update(
+    id: string,
+    dto: UpdateTaskTemplateDto,
+    requester: TemplateRequester,
+  ): Promise<TaskTemplate> {
+    const tpl = await this.findOne(id);
+    this.assertMutable(tpl, requester);
+
+    if (dto.config !== undefined) {
+      tpl.config = await assertValidTaskTemplateConfig(dto.config);
+    }
+    if (dto.name !== undefined) {
+      tpl.name = dto.name.trim();
+    }
+    if (dto.description !== undefined) {
+      tpl.description = dto.description?.trim() || null;
+    }
+    if (dto.category !== undefined) {
+      tpl.category = dto.category?.trim() || null;
+    }
+    return this.repo.save(tpl);
+  }
+
   async remove(id: string, requester: TemplateRequester): Promise<void> {
     const tpl = await this.findOne(id);
+    this.assertMutable(tpl, requester);
+    await this.repo.delete({ id });
+  }
+
+  /**
+   * 可写性闸门：官方模板只读；自定义模板仅属主或 ADMIN；createdBy=NULL 的
+   * 历史行仅 ADMIN。update / remove 共用，权限口径不允许两处漂移。
+   */
+  private assertMutable(tpl: TaskTemplate, requester: TemplateRequester): void {
     if (tpl.isOfficial || OFFICIAL_TEMPLATE_KEYS.includes(tpl.key)) {
       throw new AppError("TASK_TEMPLATE_OFFICIAL_READONLY");
     }
-    // 属主或 ADMIN 才可删。createdBy=NULL（迁移 seed / 无主体写入）安全回退——仅 ADMIN。
+    // 属主或 ADMIN 才可写。createdBy=NULL（迁移 seed / 无主体写入）安全回退——仅 ADMIN。
     const isAdmin = requester.role === UserRole.ADMIN;
     if (tpl.createdBy == null) {
       if (!isAdmin) {
@@ -250,9 +292,8 @@ export class TaskTemplateService {
     } else if (!isAdmin && !isTemplateOwner(tpl.createdBy, requester)) {
       // R39-A1：判定改走 `isTemplateOwner`——新键按 user id（删号后同名新号
       // id 不同 ⇒ 403），历史行（裸 username）仍按 username 比对（兼容路径，
-      // 去掉它历史模板就会变成「谁都删不掉」）。
+      // 去掉它历史模板就会变成「谁都改不掉」）。
       throw new AppError("TASK_TEMPLATE_NOT_OWNER");
     }
-    await this.repo.delete({ id });
   }
 }

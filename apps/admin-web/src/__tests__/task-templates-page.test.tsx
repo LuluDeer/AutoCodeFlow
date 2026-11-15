@@ -24,7 +24,7 @@ import { message } from '../utils/toast';
 const navMock = vi.fn();
 vi.mock('react-router-dom', () => ({ useNavigate: () => navMock }));
 vi.mock('../api/task-templates', () => ({
-  taskTemplatesApi: { list: vi.fn(), get: vi.fn(), create: vi.fn(), remove: vi.fn(), instantiate: vi.fn() },
+  taskTemplatesApi: { list: vi.fn(), get: vi.fn(), create: vi.fn(), remove: vi.fn(), instantiate: vi.fn(), importTemplate: vi.fn(), update: vi.fn(), exportDefinition: vi.fn() },
 }));
 // 页面从 utils/toast 取 message；showApiError 也从同一模块取，故这里一并捕获
 // success/error，既能断言成功提示，也能断言失败透出的后端文案（如 409 重名）。

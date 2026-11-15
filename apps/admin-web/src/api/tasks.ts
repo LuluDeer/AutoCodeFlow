@@ -811,6 +811,18 @@ export const tasksApi = {
       : client.get(`/tasks/${id}`) as Promise<Task>,
   create: (data: components["schemas"]["CreateTaskDto"]) =>
     client.post('/tasks', data) as Promise<Task>,
+  /**
+   * P1-5：导入任务定义（`POST /tasks/import`）。
+   *
+   * 后端契约（不可在前端假装超出）：**单条**定义创建；名称冲突由后端自动追加
+   * ` (imported)` 后缀、**绝不覆盖**既有任务；无 dry-run、无批量跳过/覆盖选项；
+   * 新任务初始为暂停状态。响应 `{ taskId, name, warnings }`，warnings 始终含
+   * 「重新配置密钥」提示。
+   */
+  importDefinition: (data: components["schemas"]["ImportTaskDto"]) =>
+    client.post('/tasks/import', data) as Promise<
+      components["schemas"]["TaskImportResultDto"]
+    >,
   update: (id: string, data: components["schemas"]["UpdateTaskDto"]) =>
     client.patch(`/tasks/${id}`, data) as Promise<Task>,
   delete: (id: string) => client.delete(`/tasks/${id}`),
