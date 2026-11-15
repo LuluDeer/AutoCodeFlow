@@ -21,7 +21,8 @@ import { Card,
   Result,
   Input,
   Drawer,
-  Checkbox, theme } from 'antd';
+  Checkbox, Dropdown, Divider, theme } from 'antd';
+import type { MenuProps } from 'antd';
 import { message } from '../utils/toast';
 import {
   ApartmentOutlined,
@@ -31,6 +32,7 @@ import {
   ClockCircleOutlined, RobotOutlined, CodeOutlined,
   CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined, SaveOutlined,
   SyncOutlined, InfoCircleOutlined, HistoryOutlined, DownloadOutlined,
+  MoreOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -58,6 +60,8 @@ import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
 // CRON-DESC-01：Cron 表达式的人类可读描述（utils/cron-desc.ts）
 import { describeCron } from '../utils/cron-desc';
+// P2-06：维护窗口 Cron → 人性化区间（原文留 tooltip）
+import { describeMaintenanceWindow } from '../utils/maintenance-desc';
 // ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析（id 优先、地址回落）。
 // 执行历史表的「执行器」列此前只渲染 IP:端口；阶段 3 起 pull 允许同址多行并存
 // （ADR-017 §5），地址甚至不再唯一——只显示地址无法回答「哪台机器」。
@@ -117,6 +121,7 @@ import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
+import MarkdownView from '../components/MarkdownView';
 const { Text } = Typography;
 
 /** CORE-02: retryableErrors 展示文案走 i18n（复用 taskForm.retryable.* 键，未知值原样兜底） */
@@ -460,6 +465,48 @@ export default function TaskDetailPage() {
   const versionColumns = buildVersionColumns({ t, isAdmin, setRollbackTarget });
   const diffRows = buildDiffRows(versionDiff);
 
+  // P1-7：页头动作分级——唯一主按钮=立即触发；低频/写面次级动作收进「更多」下拉；
+  // 删除（不可逆）独立成危险分组，与主/次级动作以竖分隔线隔开，二次确认写清影响范围。
+  const moreMenuItems: MenuProps['items'] = [
+    ...(isActive
+      ? [{ key: 'pause', icon: <PauseCircleOutlined />, disabled: toggleLoading || !isAdmin, label: t('taskDetail.pause') }]
+      : []),
+    ...(isPaused
+      ? [{ key: 'resume', icon: <PlayCircleOutlined />, disabled: toggleLoading || !isAdmin, label: t('taskDetail.resume') }]
+      : []),
+    { key: 'ai', icon: <RobotOutlined />, disabled: !isAdmin || aiLoading, label: t('taskDetail.aiSuggestion') },
+    {
+      key: 'tpl',
+      icon: <SaveOutlined />,
+      disabled: !isAdmin,
+      label: <span data-testid="save-as-template">{t('taskDetail.saveAsTemplate')}</span>,
+    },
+    { key: 'history', icon: <HistoryOutlined />, label: <span data-testid="version-history">{t('taskDetail.version.title')}</span> },
+    {
+      key: 'export',
+      icon: <DownloadOutlined />,
+      disabled: exportingDefinition,
+      label: <span data-testid="export-definition">{exportingDefinition ? t('taskDetail.exporting') : t('taskDetail.exportDefinition')}</span>,
+    },
+    { key: 'edit', icon: <EditOutlined />, disabled: !isAdmin, label: t('taskDetail.edit') },
+  ];
+
+  const onMoreMenuClick: MenuProps['onClick'] = ({ key }) => {
+    switch (key) {
+      case 'pause': handlePause(); break;
+      case 'resume': handleResume(); break;
+      case 'ai': handleAiSuggest(); break;
+      case 'tpl':
+        tplForm.setFieldsValue({ name: t('taskDetail.templateNameFormat', { name: task.name }) });
+        setTplModalOpen(true);
+        break;
+      case 'history': setVersionDrawerOpen(true); break;
+      case 'export': exportDefinition(); break;
+      case 'edit': handleEdit(); break;
+      default: break;
+    }
+  };
+
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
@@ -476,36 +523,18 @@ export default function TaskDetailPage() {
           { title: task.name },
         ]}
         extra={
-          <>
-            <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<ThunderboltOutlined />} type="primary" disabled={!isAdmin} onClick={handleTrigger}>{t('taskDetail.triggerNow')}</Button></Tooltip>
-            {isActive && <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<PauseCircleOutlined />} loading={toggleLoading} disabled={toggleLoading || !isAdmin} onClick={handlePause}>{t('taskDetail.pause')}</Button></Tooltip>}
-            {isPaused && <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<PlayCircleOutlined />} type="primary" loading={toggleLoading} disabled={toggleLoading || !isAdmin} onClick={handleResume}>{t('taskDetail.resume')}</Button></Tooltip>}
-            <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<RobotOutlined />} onClick={handleAiSuggest} loading={aiLoading} disabled={!isAdmin}>{t('taskDetail.aiSuggestion')}</Button></Tooltip>
-            {/* CORE-03 收尾：把当前任务配置固化为自定义模板（POST /task-templates） */}
+          <Space wrap>
             <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
-            <Button
-              icon={<SaveOutlined />}
-              data-testid="save-as-template"
-              onClick={() => { tplForm.setFieldsValue({ name: t('taskDetail.templateNameFormat', { name: task.name }) }); setTplModalOpen(true); }}
-              disabled={!isAdmin}
-            >
-              {t('taskDetail.saveAsTemplate')}
-            </Button>
-          </Tooltip>
-            {/* A5（第二轮审计）：版本历史入口（列表 / 两版对比 / 回滚） */}
-            <Button
-              icon={<HistoryOutlined />}
-              data-testid="version-history"
-              onClick={() => setVersionDrawerOpen(true)}
-            >
-              {t('taskDetail.version.title')}
-            </Button>
-            <Button icon={<DownloadOutlined />} data-testid="export-definition" loading={exportingDefinition} disabled={exportingDefinition} onClick={exportDefinition}>{exportingDefinition ? t('taskDetail.exporting') : t('taskDetail.exportDefinition')}</Button>
-            <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<EditOutlined />} disabled={!isAdmin} onClick={handleEdit}>{t('taskDetail.edit')}</Button></Tooltip>
+              <Button icon={<ThunderboltOutlined />} type="primary" disabled={!isAdmin} onClick={handleTrigger}>{t('taskDetail.triggerNow')}</Button>
+            </Tooltip>
+            <Dropdown trigger={['click']} placement="bottomRight" menu={{ items: moreMenuItems, onClick: onMoreMenuClick }}>
+              <Button icon={<MoreOutlined />}>{t('taskDetail.more')}</Button>
+            </Dropdown>
+            <Divider orientation="vertical" style={{ margin: 0 }} />
             <Popconfirm title={t('taskDetail.confirmDelete')} description={t('taskDetail.deleteForceTerminateDesc')} onConfirm={handleDelete} okText={t('taskDetail.delete')} okButtonProps={{ danger: true }}>
               <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<DeleteOutlined />} danger disabled={!isAdmin}>{t('taskDetail.delete')}</Button></Tooltip>
             </Popconfirm>
-          </>
+          </Space>
         }
       />
       {/* UI-09：状态行 Tag 群窄屏换行（Space wrap） */}
@@ -654,11 +683,17 @@ export default function TaskDetailPage() {
                   {task.maintenanceWindows && task.maintenanceWindows.length > 0 && (
                     <Descriptions.Item label={t('taskDetail.field.maintenance')} span="filled">
                       <Space size={[4, 4]} wrap>
-                        {task.maintenanceWindows.map((w, i) => (
-                          <Tag key={i} color="orange" style={{ fontFamily: 'monospace' }}>
-                            {`${w.start} → ${w.end}${w.description ? t('taskDetail.maintenance.descFmt', { desc: w.description }) : ''}`}
-                          </Tag>
-                        ))}
+                        {task.maintenanceWindows.map((w, i) => {
+                          const win = describeMaintenanceWindow(w.start, w.end, t);
+                          return (
+                            <Tooltip key={i} title={t('taskDetail.maintenance.rawTooltip', { start: w.start, end: w.end })}>
+                              <Tag color="orange">
+                                {win.human ?? win.raw}
+                                {w.description ? t('taskDetail.maintenance.descFmt', { desc: w.description }) : ''}
+                              </Tag>
+                            </Tooltip>
+                          );
+                        })}
                       </Space>
                     </Descriptions.Item>
                   )}
@@ -670,22 +705,10 @@ export default function TaskDetailPage() {
                       </Space>
                     </Descriptions.Item>
                   )}
-                  {/* FEAT-11: 运行手册（markdown 排障知识） */}
+                  {/* FEAT-11: 运行手册（markdown 排障知识；P2-06 安全 Markdown 渲染，长文可折叠） */}
                   {task.runbook && (
                     <Descriptions.Item label={t('taskDetail.field.runbook')} span="filled">
-                      {/* UI 打磨：代码样式长手册限高内滚，避免描述区被单条目撑爆 */}
-                      <Typography.Paragraph
-                        style={{
-                          marginBottom: 0,
-                          whiteSpace: 'pre-wrap',
-                          fontFamily: 'monospace',
-                          fontSize: 12,
-                          maxHeight: 320,
-                          overflowY: 'auto',
-                        }}
-                      >
-                        {task.runbook}
-                      </Typography.Paragraph>
+                      <MarkdownView source={task.runbook} />
                     </Descriptions.Item>
                   )}
                   <Descriptions.Item label={t('taskDetail.field.timeout')}>{task.timeout ? t('taskDetail.unit.second', { n: task.timeout }) : t('taskDetail.timeout.notLimited')}</Descriptions.Item>

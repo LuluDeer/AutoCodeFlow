@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Modal, message } from 'antd';
@@ -87,6 +87,19 @@ const findBtn = (root: ParentNode, text: string): HTMLButtonElement | null =>
   (Array.from(root.querySelectorAll('button')) as HTMLButtonElement[]).find(
     (b) => (b.textContent ?? '').replace(/\s/g, '') === text,
   ) ?? null;
+
+// P1-7：详情页配置热更新收进「更多」下拉——先开菜单再按文本定位菜单项；
+// 禁用态落在 li 的 ant-dropdown-menu-item-disabled 类上。
+async function openDetailMoreMenu() {
+  fireEvent.click(findBtn(document.body, '更多')!);
+  await screen.findByRole('menu');
+}
+const findDetailMenuItem = (text: string): HTMLElement =>
+  Array.from(document.querySelectorAll('.ant-dropdown-menu-item')).find(
+    (el) => (el.textContent ?? '').replace(/\s/g, '') === text,
+  ) as HTMLElement;
+const menuItemDisabled = (el: HTMLElement): boolean =>
+  el.classList.contains('ant-dropdown-menu-item-disabled');
 
 beforeEach(() => {
   cleanup();
@@ -185,9 +198,10 @@ describe('UI-18 → ARCH-33: 详情页控制面入口门控', () => {
     await screen.findAllByText('pull-exec');
 
     expect(await screen.findByText('Pull 回连')).toBeTruthy();
-    const btn = findBtn(document.body, '配置热更新');
-    expect(btn).toBeTruthy();
-    expect(btn!.disabled).toBe(true);
+    await openDetailMoreMenu();
+    const item = findDetailMenuItem('配置热更新');
+    expect(item).toBeTruthy();
+    expect(menuItemDisabled(item)).toBe(true);
   });
 
   it('ARCH-33：协议 v2 pull 执行器按钮**可用**（控制面已上 pull 通道）', async () => {
@@ -197,9 +211,10 @@ describe('UI-18 → ARCH-33: 详情页控制面入口门控', () => {
     renderDetail();
     await screen.findAllByText('pull-v2');
 
-    const btn = findBtn(document.body, '配置热更新');
-    expect(btn).toBeTruthy();
-    expect(btn!.disabled).toBe(false);
+    await openDetailMoreMenu();
+    const item = findDetailMenuItem('配置热更新');
+    expect(item).toBeTruthy();
+    expect(menuItemDisabled(item)).toBe(false);
   });
 
   it('未上报协议版本的 pull 执行器：按钮 disabled（兜底为不支持）', async () => {
@@ -209,8 +224,8 @@ describe('UI-18 → ARCH-33: 详情页控制面入口门控', () => {
     renderDetail();
     await screen.findAllByText('pull-legacy');
 
-    const btn = findBtn(document.body, '配置热更新');
-    expect(btn!.disabled).toBe(true);
+    await openDetailMoreMenu();
+    expect(menuItemDisabled(findDetailMenuItem('配置热更新'))).toBe(true);
   });
 
   it('push 执行器（缺省）按钮可用', async () => {
@@ -220,8 +235,9 @@ describe('UI-18 → ARCH-33: 详情页控制面入口门控', () => {
     renderDetail();
     await screen.findAllByText('push-exec');
 
-    const btn = findBtn(document.body, '配置热更新');
-    expect(btn).toBeTruthy();
-    expect(btn!.disabled).toBe(false);
+    await openDetailMoreMenu();
+    const item = findDetailMenuItem('配置热更新');
+    expect(item).toBeTruthy();
+    expect(menuItemDisabled(item)).toBe(false);
   });
 });

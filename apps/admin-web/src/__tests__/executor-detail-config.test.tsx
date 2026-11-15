@@ -96,8 +96,19 @@ function renderPage(initial = '/executors/executor-1') {
   );
 }
 
+// P1-7：配置热更新收进页头「更多」下拉——先开菜单再点条目。
+async function openExecutorMoreMenu() {
+  fireEvent.click(findBtn(document.body, '更多')!);
+  await screen.findByRole('menu');
+}
+const findMenuItem = (text: string): HTMLElement =>
+  Array.from(document.querySelectorAll('.ant-dropdown-menu-item')).find(
+    (el) => (el.textContent ?? '').replace(/\s/g, '') === text,
+  ) as HTMLElement;
+
 async function openConfigModal() {
-  fireEvent.click(findBtn(document.body, '配置热更新')!);
+  await openExecutorMoreMenu();
+  fireEvent.click(findMenuItem('配置热更新'));
   await screen.findByText('任务超时(秒)');
 }
 

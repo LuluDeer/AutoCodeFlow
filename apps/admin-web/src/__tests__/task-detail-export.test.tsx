@@ -137,9 +137,17 @@ const renderPage = () =>
     </QueryClientProvider>,
   );
 
-/** 导出按钮：data-testid 锚定（文案随 exporting 切换，不适合按文本找）。 */
-const exportButton = async (): Promise<HTMLButtonElement> =>
-  (await screen.findByTestId('export-definition')) as HTMLButtonElement;
+/**
+ * 导出菜单项：P1-7 起入口收进页头「更多」下拉——先开菜单再按 data-testid 锚定。
+ * 禁用态落在 antd 菜单项 li 的 `ant-dropdown-menu-item-disabled` 类上（不再是按钮 disabled 属性）。
+ */
+const openExportMenu = async () => {
+  fireEvent.click(await screen.findByRole('button', { name: /更多/ }));
+  await screen.findByRole('menu');
+};
+const exportItem = (): HTMLElement =>
+  screen.getByTestId('export-definition').closest('.ant-dropdown-menu-item') as HTMLElement;
+const itemDisabled = (el: HTMLElement): boolean => el.classList.contains('ant-dropdown-menu-item-disabled');
 
 const exportCalls = () => mockedClient.get.mock.calls.filter(([url]) => String(url) === EXPORT_URL);
 
@@ -157,11 +165,12 @@ describe('E-1 导出定义 · 页面入口（读面操作，不受 isAdmin 门�
     }) as never);
 
     renderPage();
-    const btn = await exportButton();
+    await openExportMenu();
+    const btn = exportItem();
     // 非管理员也必须可点：读权限与 GET /tasks/:id 同档（后端无 @Roles）。
-    expect(btn.disabled).toBe(false);
+    expect(itemDisabled(btn)).toBe(false);
 
-    // 两次 click 落在**同一个 act 批次**里：首帧重渲染尚未发生 ⇒ 按钮的
+    // 两次 click 落在**同一个 act 批次**里：首帧重渲染尚未发生 ⇒ 菜单项的
     // disabled/loading 还没生效，此时唯一能挡住第二发的是 hook 里的 ref 闸门。
     // 这正是「去掉连点保护 ⇒ 本用例必红」的判据形态。
     await act(async () => {
@@ -170,14 +179,17 @@ describe('E-1 导出定义 · 页面入口（读面操作，不受 isAdmin 门�
     });
 
     expect(exportCalls()).toHaveLength(1);
+    // 菜单项点击后下拉自动收起：离场动画期间旧菜单 DOM 是 props 快照，读不到
+    // 在途态；重开菜单拿到实时 items，再断言 disabled + 「导出中…」。
+    await openExportMenu();
     // 在途态可见（loading + disabled），文案切到「导出中…」
-    expect(btn.disabled).toBe(true);
+    expect(itemDisabled(exportItem())).toBe(true);
     expect(screen.getByText('导出中…')).toBeTruthy();
 
     await act(async () => {
       release(new Blob(['{}'], { type: 'application/json' }));
     });
-    await waitFor(() => expect(btn.disabled).toBe(false));
+    await waitFor(() => expect(itemDisabled(exportItem())).toBe(false));
     // 全程仍然只有一发
     expect(exportCalls()).toHaveLength(1);
   });
@@ -190,14 +202,14 @@ describe('E-1 导出定义 · 页面入口（读面操作，不受 isAdmin 门�
     }) as never);
 
     renderPage();
-    const btn = await exportButton();
-    fireEvent.click(btn);
+    await openExportMenu();
+    fireEvent.click(exportItem());
 
     await waitFor(() => expect(showApiError).toHaveBeenCalledTimes(1));
     // 兜底文案是新增的 i18n 键（不硬编码中英文）
     expect(vi.mocked(showApiError).mock.calls[0]![1]).toBe('导出任务定义失败');
-    // loading 复位：finally 必须把在途标记清掉，否则按钮永久禁用（卡死页面）
-    await waitFor(() => expect(btn.disabled).toBe(false));
+    // loading 复位：finally 必须把在途标记清掉，否则菜单项永久禁用（卡死页面）
+    await waitFor(() => expect(itemDisabled(exportItem())).toBe(false));
     expect(screen.getByText('导出定义')).toBeTruthy();
   });
 });

@@ -97,7 +97,10 @@ function renderPage() {
   );
 }
 
+// P1-7：版本历史入口收进页头「更多」下拉——先开菜单再点条目。
 const openDrawer = async () => {
+  fireEvent.click(await screen.findByRole('button', { name: /更多/ }));
+  await screen.findByRole('menu');
   fireEvent.click(await screen.findByTestId('version-history'));
   await waitFor(() =>
     expect(vi.mocked(tasksApi.versions)).toHaveBeenCalledWith('task-1'),
