@@ -293,6 +293,10 @@ export function useExecutionsList(
     endTime?: string;
     /** P1-2：所属项目过滤（"default" = 未分配 + 默认项目；省略 = 全部项目）。 */
     projectId?: string;
+    /** P2-2：任务运行时等值过滤（tasks.runtime；python/node/shell）。 */
+    runtime?: string;
+    /** P2-2：执行行触发方式精确匹配（task_executions.triggerType，自由 varchar）。 */
+    triggerType?: string;
     /** keyset 分页游标（不透明）。缺省 = 走 OFFSET 路径（现有行为，响应无 nextCursor）。 */
     cursor?: string;
   },

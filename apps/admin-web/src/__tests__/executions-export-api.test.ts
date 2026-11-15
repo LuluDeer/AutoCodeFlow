@@ -88,6 +88,18 @@ describe('tasksApi.exportExecutions（api 层路径/参数契约）', () => {
     });
   });
 
+  it('runtime / triggerType 白名单下发（P2-2），未知键仍被挡掉', async () => {
+    await tasksApi.exportExecutions({
+      runtime: 'python',
+      triggerType: 'webhook',
+      ...({ bogus: 'x' } as Record<string, unknown>),
+    } as never);
+
+    const params = (mockedClient.get.mock.calls[0]![1] as { params: Record<string, unknown> }).params;
+    expect(params).toEqual({ runtime: 'python', triggerType: 'webhook' });
+    expect('bogus' in params).toBe(false);
+  });
+
   it('空筛选 → params 为空对象（不把 undefined 拼进查询串）', async () => {
     await tasksApi.exportExecutions({
       status: undefined,

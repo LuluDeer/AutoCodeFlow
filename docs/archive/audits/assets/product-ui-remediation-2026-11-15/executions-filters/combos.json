@@ -1,0 +1,3365 @@
+{
+  "generatedAt": "2026-11-15T18:53:32.072Z",
+  "baseUrl": "http://localhost:5176",
+  "fixture": {
+    "poolSize": 6,
+    "rows": [
+      {
+        "id": "e-9001",
+        "taskId": "t-1001",
+        "runtime": "python",
+        "projectId": "p-1000",
+        "status": "failed",
+        "triggerType": "cron",
+        "createdAt": "2026-11-15T17:18:06.635Z"
+      },
+      {
+        "id": "e-9002",
+        "taskId": "t-1005",
+        "runtime": "python",
+        "projectId": "p-1002",
+        "status": "success",
+        "triggerType": "cron",
+        "createdAt": "2026-11-15T18:33:06.635Z"
+      },
+      {
+        "id": "e-9003",
+        "taskId": "t-1001",
+        "runtime": "python",
+        "projectId": "p-1000",
+        "status": "running",
+        "triggerType": "manual",
+        "createdAt": "2026-11-15T18:51:06.635Z"
+      },
+      {
+        "id": "e-9004",
+        "taskId": "t-1002",
+        "runtime": "shell",
+        "projectId": null,
+        "status": "timeout",
+        "triggerType": "fixed_rate",
+        "createdAt": "2026-11-15T15:53:06.635Z"
+      },
+      {
+        "id": "e-9005",
+        "taskId": "t-1003",
+        "runtime": "node",
+        "projectId": "p-1001",
+        "status": "killed",
+        "triggerType": "cron",
+        "createdAt": "2026-11-14T16:53:06.635Z"
+      },
+      {
+        "id": "e-9006",
+        "taskId": "t-1005",
+        "runtime": "python",
+        "projectId": "p-1002",
+        "status": "success",
+        "triggerType": "webhook",
+        "createdAt": "2026-11-15T18:47:06.635Z"
+      }
+    ]
+  },
+  "dimensions": {
+    "status": [
+      "failed",
+      "success",
+      "running",
+      "timeout",
+      "killed"
+    ],
+    "runtime": [
+      "python",
+      "node",
+      "shell"
+    ],
+    "triggerType": [
+      "cron",
+      "fixed_rate",
+      "manual",
+      "webhook"
+    ],
+    "projectId": [
+      "p-1000",
+      "p-1001",
+      "p-1002",
+      "default"
+    ],
+    "taskId": [
+      "t-1001",
+      "t-1005"
+    ],
+    "timeRange": [
+      {
+        "key": "last1h",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      {
+        "key": "last6h",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      {
+        "key": "last24h",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "dimension": "single",
+      "label": "status=failed",
+      "filters": {
+        "status": "failed"
+      },
+      "query": "status=failed",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9001"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "status=success",
+      "filters": {
+        "status": "success"
+      },
+      "query": "status=success",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "status=running",
+      "filters": {
+        "status": "running"
+      },
+      "query": "status=running",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "status=timeout",
+      "filters": {
+        "status": "timeout"
+      },
+      "query": "status=timeout",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "status=killed",
+      "filters": {
+        "status": "killed"
+      },
+      "query": "status=killed",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9005"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "runtime=python",
+      "filters": {
+        "runtime": "python"
+      },
+      "query": "runtime=python",
+      "expected": {
+        "count": 4,
+        "total": 4,
+        "ids": [
+          "e-9001",
+          "e-9002",
+          "e-9003",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "runtime=node",
+      "filters": {
+        "runtime": "node"
+      },
+      "query": "runtime=node",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9005"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "runtime=shell",
+      "filters": {
+        "runtime": "shell"
+      },
+      "query": "runtime=shell",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "triggerType=cron",
+      "filters": {
+        "triggerType": "cron"
+      },
+      "query": "triggerType=cron",
+      "expected": {
+        "count": 3,
+        "total": 3,
+        "ids": [
+          "e-9001",
+          "e-9002",
+          "e-9005"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "triggerType=fixed_rate",
+      "filters": {
+        "triggerType": "fixed_rate"
+      },
+      "query": "triggerType=fixed_rate",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "triggerType=manual",
+      "filters": {
+        "triggerType": "manual"
+      },
+      "query": "triggerType=manual",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "triggerType=webhook",
+      "filters": {
+        "triggerType": "webhook"
+      },
+      "query": "triggerType=webhook",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "projectId=p-1000",
+      "filters": {
+        "projectId": "p-1000"
+      },
+      "query": "projectId=p-1000",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9001",
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "projectId=p-1001",
+      "filters": {
+        "projectId": "p-1001"
+      },
+      "query": "projectId=p-1001",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9005"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "projectId=p-1002",
+      "filters": {
+        "projectId": "p-1002"
+      },
+      "query": "projectId=p-1002",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "projectId=default",
+      "filters": {
+        "projectId": "default"
+      },
+      "query": "projectId=default",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "taskId=t-1001",
+      "filters": {
+        "taskId": "t-1001"
+      },
+      "query": "taskId=t-1001",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9001",
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "taskId=t-1005",
+      "filters": {
+        "taskId": "t-1005"
+      },
+      "query": "taskId=t-1005",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "timeRange=last1h",
+      "filters": {
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 3,
+        "total": 3,
+        "ids": [
+          "e-9002",
+          "e-9003",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "timeRange=last6h",
+      "filters": {
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 5,
+        "total": 5,
+        "ids": [
+          "e-9001",
+          "e-9002",
+          "e-9003",
+          "e-9004",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "single",
+      "label": "timeRange=last24h",
+      "filters": {
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 5,
+        "total": 5,
+        "ids": [
+          "e-9001",
+          "e-9002",
+          "e-9003",
+          "e-9004",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × runtime=python",
+      "filters": {
+        "status": "failed",
+        "runtime": "python"
+      },
+      "query": "status=failed&runtime=python",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9001"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × runtime=node",
+      "filters": {
+        "status": "failed",
+        "runtime": "node"
+      },
+      "query": "status=failed&runtime=node",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × runtime=shell",
+      "filters": {
+        "status": "failed",
+        "runtime": "shell"
+      },
+      "query": "status=failed&runtime=shell",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × runtime=python",
+      "filters": {
+        "status": "success",
+        "runtime": "python"
+      },
+      "query": "status=success&runtime=python",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × runtime=node",
+      "filters": {
+        "status": "success",
+        "runtime": "node"
+      },
+      "query": "status=success&runtime=node",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × runtime=shell",
+      "filters": {
+        "status": "success",
+        "runtime": "shell"
+      },
+      "query": "status=success&runtime=shell",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × runtime=python",
+      "filters": {
+        "status": "running",
+        "runtime": "python"
+      },
+      "query": "status=running&runtime=python",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × runtime=node",
+      "filters": {
+        "status": "running",
+        "runtime": "node"
+      },
+      "query": "status=running&runtime=node",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × runtime=shell",
+      "filters": {
+        "status": "running",
+        "runtime": "shell"
+      },
+      "query": "status=running&runtime=shell",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × runtime=python",
+      "filters": {
+        "status": "timeout",
+        "runtime": "python"
+      },
+      "query": "status=timeout&runtime=python",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × runtime=node",
+      "filters": {
+        "status": "timeout",
+        "runtime": "node"
+      },
+      "query": "status=timeout&runtime=node",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × runtime=shell",
+      "filters": {
+        "status": "timeout",
+        "runtime": "shell"
+      },
+      "query": "status=timeout&runtime=shell",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × runtime=python",
+      "filters": {
+        "status": "killed",
+        "runtime": "python"
+      },
+      "query": "status=killed&runtime=python",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × runtime=node",
+      "filters": {
+        "status": "killed",
+        "runtime": "node"
+      },
+      "query": "status=killed&runtime=node",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9005"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × runtime=shell",
+      "filters": {
+        "status": "killed",
+        "runtime": "shell"
+      },
+      "query": "status=killed&runtime=shell",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × triggerType=cron",
+      "filters": {
+        "status": "failed",
+        "triggerType": "cron"
+      },
+      "query": "status=failed&triggerType=cron",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9001"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × triggerType=fixed_rate",
+      "filters": {
+        "status": "failed",
+        "triggerType": "fixed_rate"
+      },
+      "query": "status=failed&triggerType=fixed_rate",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × triggerType=manual",
+      "filters": {
+        "status": "failed",
+        "triggerType": "manual"
+      },
+      "query": "status=failed&triggerType=manual",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × triggerType=webhook",
+      "filters": {
+        "status": "failed",
+        "triggerType": "webhook"
+      },
+      "query": "status=failed&triggerType=webhook",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × triggerType=cron",
+      "filters": {
+        "status": "success",
+        "triggerType": "cron"
+      },
+      "query": "status=success&triggerType=cron",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9002"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × triggerType=fixed_rate",
+      "filters": {
+        "status": "success",
+        "triggerType": "fixed_rate"
+      },
+      "query": "status=success&triggerType=fixed_rate",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × triggerType=manual",
+      "filters": {
+        "status": "success",
+        "triggerType": "manual"
+      },
+      "query": "status=success&triggerType=manual",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × triggerType=webhook",
+      "filters": {
+        "status": "success",
+        "triggerType": "webhook"
+      },
+      "query": "status=success&triggerType=webhook",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × triggerType=cron",
+      "filters": {
+        "status": "running",
+        "triggerType": "cron"
+      },
+      "query": "status=running&triggerType=cron",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × triggerType=fixed_rate",
+      "filters": {
+        "status": "running",
+        "triggerType": "fixed_rate"
+      },
+      "query": "status=running&triggerType=fixed_rate",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × triggerType=manual",
+      "filters": {
+        "status": "running",
+        "triggerType": "manual"
+      },
+      "query": "status=running&triggerType=manual",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × triggerType=webhook",
+      "filters": {
+        "status": "running",
+        "triggerType": "webhook"
+      },
+      "query": "status=running&triggerType=webhook",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × triggerType=cron",
+      "filters": {
+        "status": "timeout",
+        "triggerType": "cron"
+      },
+      "query": "status=timeout&triggerType=cron",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × triggerType=fixed_rate",
+      "filters": {
+        "status": "timeout",
+        "triggerType": "fixed_rate"
+      },
+      "query": "status=timeout&triggerType=fixed_rate",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × triggerType=manual",
+      "filters": {
+        "status": "timeout",
+        "triggerType": "manual"
+      },
+      "query": "status=timeout&triggerType=manual",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × triggerType=webhook",
+      "filters": {
+        "status": "timeout",
+        "triggerType": "webhook"
+      },
+      "query": "status=timeout&triggerType=webhook",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × triggerType=cron",
+      "filters": {
+        "status": "killed",
+        "triggerType": "cron"
+      },
+      "query": "status=killed&triggerType=cron",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9005"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × triggerType=fixed_rate",
+      "filters": {
+        "status": "killed",
+        "triggerType": "fixed_rate"
+      },
+      "query": "status=killed&triggerType=fixed_rate",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × triggerType=manual",
+      "filters": {
+        "status": "killed",
+        "triggerType": "manual"
+      },
+      "query": "status=killed&triggerType=manual",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × triggerType=webhook",
+      "filters": {
+        "status": "killed",
+        "triggerType": "webhook"
+      },
+      "query": "status=killed&triggerType=webhook",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × projectId=p-1000",
+      "filters": {
+        "status": "failed",
+        "projectId": "p-1000"
+      },
+      "query": "status=failed&projectId=p-1000",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9001"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × projectId=p-1001",
+      "filters": {
+        "status": "failed",
+        "projectId": "p-1001"
+      },
+      "query": "status=failed&projectId=p-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × projectId=p-1002",
+      "filters": {
+        "status": "failed",
+        "projectId": "p-1002"
+      },
+      "query": "status=failed&projectId=p-1002",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × projectId=default",
+      "filters": {
+        "status": "failed",
+        "projectId": "default"
+      },
+      "query": "status=failed&projectId=default",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × projectId=p-1000",
+      "filters": {
+        "status": "success",
+        "projectId": "p-1000"
+      },
+      "query": "status=success&projectId=p-1000",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × projectId=p-1001",
+      "filters": {
+        "status": "success",
+        "projectId": "p-1001"
+      },
+      "query": "status=success&projectId=p-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × projectId=p-1002",
+      "filters": {
+        "status": "success",
+        "projectId": "p-1002"
+      },
+      "query": "status=success&projectId=p-1002",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × projectId=default",
+      "filters": {
+        "status": "success",
+        "projectId": "default"
+      },
+      "query": "status=success&projectId=default",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × projectId=p-1000",
+      "filters": {
+        "status": "running",
+        "projectId": "p-1000"
+      },
+      "query": "status=running&projectId=p-1000",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × projectId=p-1001",
+      "filters": {
+        "status": "running",
+        "projectId": "p-1001"
+      },
+      "query": "status=running&projectId=p-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × projectId=p-1002",
+      "filters": {
+        "status": "running",
+        "projectId": "p-1002"
+      },
+      "query": "status=running&projectId=p-1002",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × projectId=default",
+      "filters": {
+        "status": "running",
+        "projectId": "default"
+      },
+      "query": "status=running&projectId=default",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × projectId=p-1000",
+      "filters": {
+        "status": "timeout",
+        "projectId": "p-1000"
+      },
+      "query": "status=timeout&projectId=p-1000",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × projectId=p-1001",
+      "filters": {
+        "status": "timeout",
+        "projectId": "p-1001"
+      },
+      "query": "status=timeout&projectId=p-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × projectId=p-1002",
+      "filters": {
+        "status": "timeout",
+        "projectId": "p-1002"
+      },
+      "query": "status=timeout&projectId=p-1002",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × projectId=default",
+      "filters": {
+        "status": "timeout",
+        "projectId": "default"
+      },
+      "query": "status=timeout&projectId=default",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × projectId=p-1000",
+      "filters": {
+        "status": "killed",
+        "projectId": "p-1000"
+      },
+      "query": "status=killed&projectId=p-1000",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × projectId=p-1001",
+      "filters": {
+        "status": "killed",
+        "projectId": "p-1001"
+      },
+      "query": "status=killed&projectId=p-1001",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9005"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × projectId=p-1002",
+      "filters": {
+        "status": "killed",
+        "projectId": "p-1002"
+      },
+      "query": "status=killed&projectId=p-1002",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × projectId=default",
+      "filters": {
+        "status": "killed",
+        "projectId": "default"
+      },
+      "query": "status=killed&projectId=default",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × taskId=t-1001",
+      "filters": {
+        "status": "failed",
+        "taskId": "t-1001"
+      },
+      "query": "status=failed&taskId=t-1001",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9001"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × taskId=t-1005",
+      "filters": {
+        "status": "failed",
+        "taskId": "t-1005"
+      },
+      "query": "status=failed&taskId=t-1005",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × taskId=t-1001",
+      "filters": {
+        "status": "success",
+        "taskId": "t-1001"
+      },
+      "query": "status=success&taskId=t-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × taskId=t-1005",
+      "filters": {
+        "status": "success",
+        "taskId": "t-1005"
+      },
+      "query": "status=success&taskId=t-1005",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × taskId=t-1001",
+      "filters": {
+        "status": "running",
+        "taskId": "t-1001"
+      },
+      "query": "status=running&taskId=t-1001",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × taskId=t-1005",
+      "filters": {
+        "status": "running",
+        "taskId": "t-1005"
+      },
+      "query": "status=running&taskId=t-1005",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × taskId=t-1001",
+      "filters": {
+        "status": "timeout",
+        "taskId": "t-1001"
+      },
+      "query": "status=timeout&taskId=t-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × taskId=t-1005",
+      "filters": {
+        "status": "timeout",
+        "taskId": "t-1005"
+      },
+      "query": "status=timeout&taskId=t-1005",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × taskId=t-1001",
+      "filters": {
+        "status": "killed",
+        "taskId": "t-1001"
+      },
+      "query": "status=killed&taskId=t-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × taskId=t-1005",
+      "filters": {
+        "status": "killed",
+        "taskId": "t-1005"
+      },
+      "query": "status=killed&taskId=t-1005",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × timeRange=last1h",
+      "filters": {
+        "status": "failed",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=failed&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × timeRange=last6h",
+      "filters": {
+        "status": "failed",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=failed&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9001"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=failed × timeRange=last24h",
+      "filters": {
+        "status": "failed",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=failed&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9001"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × timeRange=last1h",
+      "filters": {
+        "status": "success",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=success&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × timeRange=last6h",
+      "filters": {
+        "status": "success",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=success&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=success × timeRange=last24h",
+      "filters": {
+        "status": "success",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=success&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × timeRange=last1h",
+      "filters": {
+        "status": "running",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=running&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × timeRange=last6h",
+      "filters": {
+        "status": "running",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=running&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=running × timeRange=last24h",
+      "filters": {
+        "status": "running",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=running&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × timeRange=last1h",
+      "filters": {
+        "status": "timeout",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=timeout&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × timeRange=last6h",
+      "filters": {
+        "status": "timeout",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=timeout&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=timeout × timeRange=last24h",
+      "filters": {
+        "status": "timeout",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=timeout&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × timeRange=last1h",
+      "filters": {
+        "status": "killed",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=killed&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × timeRange=last6h",
+      "filters": {
+        "status": "killed",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=killed&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "status=killed × timeRange=last24h",
+      "filters": {
+        "status": "killed",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "status=killed&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × triggerType=cron",
+      "filters": {
+        "runtime": "python",
+        "triggerType": "cron"
+      },
+      "query": "runtime=python&triggerType=cron",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9001",
+          "e-9002"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × triggerType=fixed_rate",
+      "filters": {
+        "runtime": "python",
+        "triggerType": "fixed_rate"
+      },
+      "query": "runtime=python&triggerType=fixed_rate",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × triggerType=manual",
+      "filters": {
+        "runtime": "python",
+        "triggerType": "manual"
+      },
+      "query": "runtime=python&triggerType=manual",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × triggerType=webhook",
+      "filters": {
+        "runtime": "python",
+        "triggerType": "webhook"
+      },
+      "query": "runtime=python&triggerType=webhook",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × triggerType=cron",
+      "filters": {
+        "runtime": "node",
+        "triggerType": "cron"
+      },
+      "query": "runtime=node&triggerType=cron",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9005"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × triggerType=fixed_rate",
+      "filters": {
+        "runtime": "node",
+        "triggerType": "fixed_rate"
+      },
+      "query": "runtime=node&triggerType=fixed_rate",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × triggerType=manual",
+      "filters": {
+        "runtime": "node",
+        "triggerType": "manual"
+      },
+      "query": "runtime=node&triggerType=manual",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × triggerType=webhook",
+      "filters": {
+        "runtime": "node",
+        "triggerType": "webhook"
+      },
+      "query": "runtime=node&triggerType=webhook",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × triggerType=cron",
+      "filters": {
+        "runtime": "shell",
+        "triggerType": "cron"
+      },
+      "query": "runtime=shell&triggerType=cron",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × triggerType=fixed_rate",
+      "filters": {
+        "runtime": "shell",
+        "triggerType": "fixed_rate"
+      },
+      "query": "runtime=shell&triggerType=fixed_rate",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × triggerType=manual",
+      "filters": {
+        "runtime": "shell",
+        "triggerType": "manual"
+      },
+      "query": "runtime=shell&triggerType=manual",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × triggerType=webhook",
+      "filters": {
+        "runtime": "shell",
+        "triggerType": "webhook"
+      },
+      "query": "runtime=shell&triggerType=webhook",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × projectId=p-1000",
+      "filters": {
+        "runtime": "python",
+        "projectId": "p-1000"
+      },
+      "query": "runtime=python&projectId=p-1000",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9001",
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × projectId=p-1001",
+      "filters": {
+        "runtime": "python",
+        "projectId": "p-1001"
+      },
+      "query": "runtime=python&projectId=p-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × projectId=p-1002",
+      "filters": {
+        "runtime": "python",
+        "projectId": "p-1002"
+      },
+      "query": "runtime=python&projectId=p-1002",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × projectId=default",
+      "filters": {
+        "runtime": "python",
+        "projectId": "default"
+      },
+      "query": "runtime=python&projectId=default",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × projectId=p-1000",
+      "filters": {
+        "runtime": "node",
+        "projectId": "p-1000"
+      },
+      "query": "runtime=node&projectId=p-1000",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × projectId=p-1001",
+      "filters": {
+        "runtime": "node",
+        "projectId": "p-1001"
+      },
+      "query": "runtime=node&projectId=p-1001",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9005"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × projectId=p-1002",
+      "filters": {
+        "runtime": "node",
+        "projectId": "p-1002"
+      },
+      "query": "runtime=node&projectId=p-1002",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × projectId=default",
+      "filters": {
+        "runtime": "node",
+        "projectId": "default"
+      },
+      "query": "runtime=node&projectId=default",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × projectId=p-1000",
+      "filters": {
+        "runtime": "shell",
+        "projectId": "p-1000"
+      },
+      "query": "runtime=shell&projectId=p-1000",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × projectId=p-1001",
+      "filters": {
+        "runtime": "shell",
+        "projectId": "p-1001"
+      },
+      "query": "runtime=shell&projectId=p-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × projectId=p-1002",
+      "filters": {
+        "runtime": "shell",
+        "projectId": "p-1002"
+      },
+      "query": "runtime=shell&projectId=p-1002",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × projectId=default",
+      "filters": {
+        "runtime": "shell",
+        "projectId": "default"
+      },
+      "query": "runtime=shell&projectId=default",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × taskId=t-1001",
+      "filters": {
+        "runtime": "python",
+        "taskId": "t-1001"
+      },
+      "query": "runtime=python&taskId=t-1001",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9001",
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × taskId=t-1005",
+      "filters": {
+        "runtime": "python",
+        "taskId": "t-1005"
+      },
+      "query": "runtime=python&taskId=t-1005",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × taskId=t-1001",
+      "filters": {
+        "runtime": "node",
+        "taskId": "t-1001"
+      },
+      "query": "runtime=node&taskId=t-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × taskId=t-1005",
+      "filters": {
+        "runtime": "node",
+        "taskId": "t-1005"
+      },
+      "query": "runtime=node&taskId=t-1005",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × taskId=t-1001",
+      "filters": {
+        "runtime": "shell",
+        "taskId": "t-1001"
+      },
+      "query": "runtime=shell&taskId=t-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × taskId=t-1005",
+      "filters": {
+        "runtime": "shell",
+        "taskId": "t-1005"
+      },
+      "query": "runtime=shell&taskId=t-1005",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × timeRange=last1h",
+      "filters": {
+        "runtime": "python",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "runtime=python&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 3,
+        "total": 3,
+        "ids": [
+          "e-9002",
+          "e-9003",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × timeRange=last6h",
+      "filters": {
+        "runtime": "python",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "runtime=python&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 4,
+        "total": 4,
+        "ids": [
+          "e-9001",
+          "e-9002",
+          "e-9003",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=python × timeRange=last24h",
+      "filters": {
+        "runtime": "python",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "runtime=python&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 4,
+        "total": 4,
+        "ids": [
+          "e-9001",
+          "e-9002",
+          "e-9003",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × timeRange=last1h",
+      "filters": {
+        "runtime": "node",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "runtime=node&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × timeRange=last6h",
+      "filters": {
+        "runtime": "node",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "runtime=node&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=node × timeRange=last24h",
+      "filters": {
+        "runtime": "node",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "runtime=node&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × timeRange=last1h",
+      "filters": {
+        "runtime": "shell",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "runtime=shell&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × timeRange=last6h",
+      "filters": {
+        "runtime": "shell",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "runtime=shell&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "runtime=shell × timeRange=last24h",
+      "filters": {
+        "runtime": "shell",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "runtime=shell&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=cron × projectId=p-1000",
+      "filters": {
+        "triggerType": "cron",
+        "projectId": "p-1000"
+      },
+      "query": "triggerType=cron&projectId=p-1000",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9001"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=cron × projectId=p-1001",
+      "filters": {
+        "triggerType": "cron",
+        "projectId": "p-1001"
+      },
+      "query": "triggerType=cron&projectId=p-1001",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9005"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=cron × projectId=p-1002",
+      "filters": {
+        "triggerType": "cron",
+        "projectId": "p-1002"
+      },
+      "query": "triggerType=cron&projectId=p-1002",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9002"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=cron × projectId=default",
+      "filters": {
+        "triggerType": "cron",
+        "projectId": "default"
+      },
+      "query": "triggerType=cron&projectId=default",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=fixed_rate × projectId=p-1000",
+      "filters": {
+        "triggerType": "fixed_rate",
+        "projectId": "p-1000"
+      },
+      "query": "triggerType=fixed_rate&projectId=p-1000",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=fixed_rate × projectId=p-1001",
+      "filters": {
+        "triggerType": "fixed_rate",
+        "projectId": "p-1001"
+      },
+      "query": "triggerType=fixed_rate&projectId=p-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=fixed_rate × projectId=p-1002",
+      "filters": {
+        "triggerType": "fixed_rate",
+        "projectId": "p-1002"
+      },
+      "query": "triggerType=fixed_rate&projectId=p-1002",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=fixed_rate × projectId=default",
+      "filters": {
+        "triggerType": "fixed_rate",
+        "projectId": "default"
+      },
+      "query": "triggerType=fixed_rate&projectId=default",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=manual × projectId=p-1000",
+      "filters": {
+        "triggerType": "manual",
+        "projectId": "p-1000"
+      },
+      "query": "triggerType=manual&projectId=p-1000",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=manual × projectId=p-1001",
+      "filters": {
+        "triggerType": "manual",
+        "projectId": "p-1001"
+      },
+      "query": "triggerType=manual&projectId=p-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=manual × projectId=p-1002",
+      "filters": {
+        "triggerType": "manual",
+        "projectId": "p-1002"
+      },
+      "query": "triggerType=manual&projectId=p-1002",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=manual × projectId=default",
+      "filters": {
+        "triggerType": "manual",
+        "projectId": "default"
+      },
+      "query": "triggerType=manual&projectId=default",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=webhook × projectId=p-1000",
+      "filters": {
+        "triggerType": "webhook",
+        "projectId": "p-1000"
+      },
+      "query": "triggerType=webhook&projectId=p-1000",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=webhook × projectId=p-1001",
+      "filters": {
+        "triggerType": "webhook",
+        "projectId": "p-1001"
+      },
+      "query": "triggerType=webhook&projectId=p-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=webhook × projectId=p-1002",
+      "filters": {
+        "triggerType": "webhook",
+        "projectId": "p-1002"
+      },
+      "query": "triggerType=webhook&projectId=p-1002",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=webhook × projectId=default",
+      "filters": {
+        "triggerType": "webhook",
+        "projectId": "default"
+      },
+      "query": "triggerType=webhook&projectId=default",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=cron × taskId=t-1001",
+      "filters": {
+        "triggerType": "cron",
+        "taskId": "t-1001"
+      },
+      "query": "triggerType=cron&taskId=t-1001",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9001"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=cron × taskId=t-1005",
+      "filters": {
+        "triggerType": "cron",
+        "taskId": "t-1005"
+      },
+      "query": "triggerType=cron&taskId=t-1005",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9002"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=fixed_rate × taskId=t-1001",
+      "filters": {
+        "triggerType": "fixed_rate",
+        "taskId": "t-1001"
+      },
+      "query": "triggerType=fixed_rate&taskId=t-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=fixed_rate × taskId=t-1005",
+      "filters": {
+        "triggerType": "fixed_rate",
+        "taskId": "t-1005"
+      },
+      "query": "triggerType=fixed_rate&taskId=t-1005",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=manual × taskId=t-1001",
+      "filters": {
+        "triggerType": "manual",
+        "taskId": "t-1001"
+      },
+      "query": "triggerType=manual&taskId=t-1001",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=manual × taskId=t-1005",
+      "filters": {
+        "triggerType": "manual",
+        "taskId": "t-1005"
+      },
+      "query": "triggerType=manual&taskId=t-1005",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=webhook × taskId=t-1001",
+      "filters": {
+        "triggerType": "webhook",
+        "taskId": "t-1001"
+      },
+      "query": "triggerType=webhook&taskId=t-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=webhook × taskId=t-1005",
+      "filters": {
+        "triggerType": "webhook",
+        "taskId": "t-1005"
+      },
+      "query": "triggerType=webhook&taskId=t-1005",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=cron × timeRange=last1h",
+      "filters": {
+        "triggerType": "cron",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "triggerType=cron&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9002"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=cron × timeRange=last6h",
+      "filters": {
+        "triggerType": "cron",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "triggerType=cron&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9001",
+          "e-9002"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=cron × timeRange=last24h",
+      "filters": {
+        "triggerType": "cron",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "triggerType=cron&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9001",
+          "e-9002"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=fixed_rate × timeRange=last1h",
+      "filters": {
+        "triggerType": "fixed_rate",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "triggerType=fixed_rate&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=fixed_rate × timeRange=last6h",
+      "filters": {
+        "triggerType": "fixed_rate",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "triggerType=fixed_rate&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=fixed_rate × timeRange=last24h",
+      "filters": {
+        "triggerType": "fixed_rate",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "triggerType=fixed_rate&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=manual × timeRange=last1h",
+      "filters": {
+        "triggerType": "manual",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "triggerType=manual&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=manual × timeRange=last6h",
+      "filters": {
+        "triggerType": "manual",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "triggerType=manual&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=manual × timeRange=last24h",
+      "filters": {
+        "triggerType": "manual",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "triggerType=manual&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=webhook × timeRange=last1h",
+      "filters": {
+        "triggerType": "webhook",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "triggerType=webhook&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=webhook × timeRange=last6h",
+      "filters": {
+        "triggerType": "webhook",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "triggerType=webhook&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "triggerType=webhook × timeRange=last24h",
+      "filters": {
+        "triggerType": "webhook",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "triggerType=webhook&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1000 × taskId=t-1001",
+      "filters": {
+        "projectId": "p-1000",
+        "taskId": "t-1001"
+      },
+      "query": "projectId=p-1000&taskId=t-1001",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9001",
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1000 × taskId=t-1005",
+      "filters": {
+        "projectId": "p-1000",
+        "taskId": "t-1005"
+      },
+      "query": "projectId=p-1000&taskId=t-1005",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1001 × taskId=t-1001",
+      "filters": {
+        "projectId": "p-1001",
+        "taskId": "t-1001"
+      },
+      "query": "projectId=p-1001&taskId=t-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1001 × taskId=t-1005",
+      "filters": {
+        "projectId": "p-1001",
+        "taskId": "t-1005"
+      },
+      "query": "projectId=p-1001&taskId=t-1005",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1002 × taskId=t-1001",
+      "filters": {
+        "projectId": "p-1002",
+        "taskId": "t-1001"
+      },
+      "query": "projectId=p-1002&taskId=t-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1002 × taskId=t-1005",
+      "filters": {
+        "projectId": "p-1002",
+        "taskId": "t-1005"
+      },
+      "query": "projectId=p-1002&taskId=t-1005",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=default × taskId=t-1001",
+      "filters": {
+        "projectId": "default",
+        "taskId": "t-1001"
+      },
+      "query": "projectId=default&taskId=t-1001",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=default × taskId=t-1005",
+      "filters": {
+        "projectId": "default",
+        "taskId": "t-1005"
+      },
+      "query": "projectId=default&taskId=t-1005",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1000 × timeRange=last1h",
+      "filters": {
+        "projectId": "p-1000",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "projectId=p-1000&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1000 × timeRange=last6h",
+      "filters": {
+        "projectId": "p-1000",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "projectId=p-1000&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9001",
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1000 × timeRange=last24h",
+      "filters": {
+        "projectId": "p-1000",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "projectId=p-1000&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9001",
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1001 × timeRange=last1h",
+      "filters": {
+        "projectId": "p-1001",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "projectId=p-1001&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1001 × timeRange=last6h",
+      "filters": {
+        "projectId": "p-1001",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "projectId=p-1001&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1001 × timeRange=last24h",
+      "filters": {
+        "projectId": "p-1001",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "projectId=p-1001&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1002 × timeRange=last1h",
+      "filters": {
+        "projectId": "p-1002",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "projectId=p-1002&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1002 × timeRange=last6h",
+      "filters": {
+        "projectId": "p-1002",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "projectId=p-1002&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=p-1002 × timeRange=last24h",
+      "filters": {
+        "projectId": "p-1002",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "projectId=p-1002&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=default × timeRange=last1h",
+      "filters": {
+        "projectId": "default",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "projectId=default&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 0,
+        "total": 0,
+        "ids": []
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=default × timeRange=last6h",
+      "filters": {
+        "projectId": "default",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "projectId=default&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "projectId=default × timeRange=last24h",
+      "filters": {
+        "projectId": "default",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "projectId=default&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9004"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "taskId=t-1001 × timeRange=last1h",
+      "filters": {
+        "taskId": "t-1001",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "taskId=t-1001&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 1,
+        "total": 1,
+        "ids": [
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "taskId=t-1001 × timeRange=last6h",
+      "filters": {
+        "taskId": "t-1001",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "taskId=t-1001&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9001",
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "taskId=t-1001 × timeRange=last24h",
+      "filters": {
+        "taskId": "t-1001",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "taskId=t-1001&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9001",
+          "e-9003"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "taskId=t-1005 × timeRange=last1h",
+      "filters": {
+        "taskId": "t-1005",
+        "startTime": "2026-11-15T17:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "taskId=t-1005&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "taskId=t-1005 × timeRange=last6h",
+      "filters": {
+        "taskId": "t-1005",
+        "startTime": "2026-11-15T12:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "taskId=t-1005&startTime=2026-11-15T12%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    },
+    {
+      "dimension": "pair",
+      "label": "taskId=t-1005 × timeRange=last24h",
+      "filters": {
+        "taskId": "t-1005",
+        "startTime": "2026-11-14T18:53:06.637Z",
+        "endTime": "2026-11-15T18:53:06.637Z"
+      },
+      "query": "taskId=t-1005&startTime=2026-11-14T18%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expected": {
+        "count": 2,
+        "total": 2,
+        "ids": [
+          "e-9002",
+          "e-9006"
+        ]
+      }
+    }
+  ],
+  "browserReadback": [
+    {
+      "label": "unfiltered",
+      "query": "",
+      "expectedCount": 6,
+      "expectedTotal": 6,
+      "renderedRows": [
+        "e-9001",
+        "e-9002",
+        "e-9003",
+        "e-9004",
+        "e-9005",
+        "e-9006"
+      ],
+      "renderedTotal": 6,
+      "totalText": "共 6 条",
+      "match": true
+    },
+    {
+      "label": "runtime=python",
+      "query": "runtime=python",
+      "expectedCount": 4,
+      "expectedTotal": 4,
+      "renderedRows": [
+        "e-9001",
+        "e-9002",
+        "e-9003",
+        "e-9006"
+      ],
+      "renderedTotal": 4,
+      "totalText": "共 4 条",
+      "match": true
+    },
+    {
+      "label": "triggerType=cron",
+      "query": "triggerType=cron",
+      "expectedCount": 3,
+      "expectedTotal": 3,
+      "renderedRows": [
+        "e-9001",
+        "e-9002",
+        "e-9005"
+      ],
+      "renderedTotal": 3,
+      "totalText": "共 3 条",
+      "match": true
+    },
+    {
+      "label": "runtime=python&triggerType=cron",
+      "query": "runtime=python&triggerType=cron",
+      "expectedCount": 2,
+      "expectedTotal": 2,
+      "renderedRows": [
+        "e-9001",
+        "e-9002"
+      ],
+      "renderedTotal": 2,
+      "totalText": "共 2 条",
+      "match": true
+    },
+    {
+      "label": "status=success",
+      "query": "status=success",
+      "expectedCount": 2,
+      "expectedTotal": 2,
+      "renderedRows": [
+        "e-9002",
+        "e-9006"
+      ],
+      "renderedTotal": 2,
+      "totalText": "共 2 条",
+      "match": true
+    },
+    {
+      "label": "projectId=p-1002",
+      "query": "projectId=p-1002",
+      "expectedCount": 2,
+      "expectedTotal": 2,
+      "skipped": true,
+      "skipReason": "项目上下文经 ?project= 归一化（非 UUID 回落 all）；夹具 p-10xx 为合成 id，浏览器侧不可驱动，仅记录夹具真值。",
+      "match": null
+    },
+    {
+      "label": "timeRange=last1h",
+      "query": "startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expectedCount": 3,
+      "expectedTotal": 3,
+      "renderedRows": [
+        "e-9002",
+        "e-9003",
+        "e-9006"
+      ],
+      "renderedTotal": 3,
+      "totalText": "共 3 条",
+      "match": true
+    },
+    {
+      "label": "status=success&timeRange=last1h",
+      "query": "status=success&startTime=2026-11-15T17%3A53%3A06.637Z&endTime=2026-11-15T18%3A53%3A06.637Z",
+      "expectedCount": 2,
+      "expectedTotal": 2,
+      "renderedRows": [
+        "e-9002",
+        "e-9006"
+      ],
+      "renderedTotal": 2,
+      "totalText": "共 2 条",
+      "match": true
+    }
+  ],
+  "screenshots": [
+    {
+      "file": "executions-filters-1280.png",
+      "viewport": 1280,
+      "query": "",
+      "purpose": "桌面端未筛选全量列表，四个筛选控件可见"
+    },
+    {
+      "file": "executions-filters-375.png",
+      "viewport": 375,
+      "query": "",
+      "purpose": "窄屏卡片列表 + 筛选区堆叠"
+    },
+    {
+      "file": "executions-filters-combo-1280.png",
+      "viewport": 1280,
+      "query": "runtime=python&triggerType=cron",
+      "purpose": "runtime=python 且 triggerType=cron 组合筛选（深链可复现）"
+    }
+  ]
+}

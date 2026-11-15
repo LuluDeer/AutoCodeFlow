@@ -214,6 +214,51 @@ describe('ExecutionsPage 筛选与请求参数（QA-03）', () => {
     expect(lastCall?.status).toBe('failed');
   });
 
+  it('运行时筛选 → allExecutions 收到 runtime 参数（P2-2）', async () => {
+    mockedTasks.allExecutions.mockResolvedValue(pageFixture([]));
+    renderPage();
+    await screen.findByText('暂无执行记录');
+    const callsBefore = mockedTasks.allExecutions.mock.calls.length;
+
+    fireEvent.mouseDown(screen.getByText('全部运行时'));
+    fireEvent.click(await screen.findByText('Python', { selector: '.ant-select-item-option-content' }));
+
+    await waitFor(() => {
+      expect(mockedTasks.allExecutions.mock.calls.length).toBeGreaterThan(callsBefore);
+    });
+    const lastCall = mockedTasks.allExecutions.mock.calls[mockedTasks.allExecutions.mock.calls.length - 1]?.[0];
+    expect(lastCall?.runtime).toBe('python');
+  });
+
+  it('触发方式筛选 → allExecutions 收到 triggerType 参数（P2-2）', async () => {
+    mockedTasks.allExecutions.mockResolvedValue(pageFixture([]));
+    renderPage();
+    await screen.findByText('暂无执行记录');
+    const callsBefore = mockedTasks.allExecutions.mock.calls.length;
+
+    fireEvent.mouseDown(screen.getByText('全部触发方式'));
+    fireEvent.click(await screen.findByText('Webhook', { selector: '.ant-select-item-option-content' }));
+
+    await waitFor(() => {
+      expect(mockedTasks.allExecutions.mock.calls.length).toBeGreaterThan(callsBefore);
+    });
+    const lastCall = mockedTasks.allExecutions.mock.calls[mockedTasks.allExecutions.mock.calls.length - 1]?.[0];
+    expect(lastCall?.triggerType).toBe('webhook');
+  });
+
+  it('深链 ?runtime&triggerType&startTime&endTime → 首屏即按这些筛选请求（P2-2 URL 同步）', async () => {
+    mockedTasks.allExecutions.mockResolvedValue(pageFixture([]));
+    renderPage('/executions?runtime=node&triggerType=cron&startTime=2026-09-01T00:00:00.000Z&endTime=2026-09-30T00:00:00.000Z');
+
+    await waitFor(() => {
+      const lastCall = mockedTasks.allExecutions.mock.calls[mockedTasks.allExecutions.mock.calls.length - 1]?.[0];
+      expect(lastCall?.runtime).toBe('node');
+      expect(lastCall?.triggerType).toBe('cron');
+      expect(lastCall?.startTime).toBe('2026-09-01T00:00:00.000Z');
+      expect(lastCall?.endTime).toBe('2026-09-30T00:00:00.000Z');
+    });
+  });
+
   it('搜索任务名：防抖窗口内不发请求，300ms 停顿后恰好一次并以 taskName 下发（NETOPT-G P3）', async () => {
     // 旧用例用真实 waitFor（timeout 2000）只锁"最终发了请求"——删掉 useDebounce
     // 全绿。对照 command-palette.test.tsx 的 fake-timer 范本：真断言防抖行为。

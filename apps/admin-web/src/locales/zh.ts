@@ -385,6 +385,8 @@ export default {
   'execs.compare.limit': '最多对比 {{max}} 条执行记录',
   'execs.searchPlaceholder': '搜索任务名',
   'execs.statusAll': '全部状态',
+  'execs.runtimeAll': '全部运行时',
+  'execs.triggerAll': '全部触发方式',
   'execs.executorPlaceholder': '执行器地址',
   'execs.timeStart': '开始时间',
   'execs.timeEnd': '结束时间',

@@ -378,6 +378,8 @@ export default {
   'execs.compare.limit': 'Can compare at most {{max}} executions',
   'execs.searchPlaceholder': 'Search task name',
   'execs.statusAll': 'All statuses',
+  'execs.runtimeAll': 'All runtimes',
+  'execs.triggerAll': 'All trigger types',
   'execs.executorPlaceholder': 'Executor address',
   'execs.timeStart': 'Start time',
   'execs.timeEnd': 'End time',

@@ -101,9 +101,10 @@ const TASKS = [
 const EXECUTIONS = [
   { id: 'e-9001', taskId: 't-1001', taskName: TASKS[0].name, status: 'failed', triggerType: 'cron', executorAddress: 'http://192.168.4.54:9001', startTime: ISO(-95 * MIN), endTime: ISO(-94 * MIN), duration: 61_230, params: { target: 'pg-prod-1' }, logs: '[2026-10-03 02:00:01] 开始备份\n[2026-10-03 02:00:44] FATAL: OSS 凭据失效', errorMessage: 'OSS 上传失败: SignatureDoesNotMatch', failureReason: 'credential', exitCode: 2, aiAnalysis: '疑似对象存储凭据轮换后未同步到任务级 secrets。', retryCount: 2, taskVersion: 'v7', traceId: '4bf92f3577b34da6a3ce929d0e0e4736', resolvedPackageVersion: null, result: { interpreter: { requested: '3.12', resolved: '3.12.13', reason: 'match', pool: 'uv' } }, createdAt: ISO(-95 * MIN) },
   { id: 'e-9002', taskId: 't-1005', taskName: TASKS[4].name, status: 'success', triggerType: 'cron', executorAddress: 'http://192.168.4.54:9001', startTime: ISO(-20 * MIN), endTime: ISO(-18 * MIN), duration: 121_000, exitCode: 0, logs: '巡检完成,7/7 通过', createdAt: ISO(-20 * MIN), retryCount: 0, taskVersion: 'v2' },
-  { id: 'e-9003', taskId: 't-1001', taskName: TASKS[0].name, status: 'running', triggerType: 'api', executorAddress: 'http://192.168.4.60:9001', startTime: ISO(-2 * MIN), logs: '备份进行中 34%', createdAt: ISO(-2 * MIN) },
+  { id: 'e-9003', taskId: 't-1001', taskName: TASKS[0].name, status: 'running', triggerType: 'manual', executorAddress: 'http://192.168.4.60:9001', startTime: ISO(-2 * MIN), logs: '备份进行中 34%', createdAt: ISO(-2 * MIN) },
   { id: 'e-9004', taskId: 't-1002', taskName: TASKS[1].name, status: 'timeout', triggerType: 'fixed_rate', executorAddress: 'http://192.168.4.61:9001', startTime: ISO(-3 * 3600e3), endTime: ISO(-3 * 3600e3 + 600e3), duration: 600_000, errorMessage: '执行超时(600s)', failureReason: 'timeout', exitCode: null, createdAt: ISO(-3 * 3600e3) },
   { id: 'e-9005', taskId: 't-1003', taskName: TASKS[2].name, status: 'killed', triggerType: 'cron', executorAddress: 'http://192.168.4.62:9001', startTime: ISO(-26 * 3600e3), endTime: ISO(-25 * 3600e3), duration: 2100e3, errorMessage: '管理员手动终止', createdAt: ISO(-26 * 3600e3), exitCode: 137 },
+  { id: 'e-9006', taskId: 't-1005', taskName: TASKS[4].name, status: 'success', triggerType: 'webhook', executorAddress: 'http://192.168.4.54:9001', startTime: ISO(-6 * MIN), endTime: ISO(-5 * MIN), duration: 88_000, exitCode: 0, createdAt: ISO(-6 * MIN), retryCount: 0, taskVersion: 'v2' },
 ];
 
 const EXECUTORS = [
@@ -326,6 +327,40 @@ const TASKS_PAGED = (q) => {
   return { ...env, list: env.items }; // projects 同款 list/items 双键兼容,防未来漂移
 };
 
+// P2-2：执行列表夹具按后端同源口径真过滤（status / taskId / taskName /
+// executorAddress / projectId / runtime / triggerType / startTime / endTime）。
+// runtime 经任务关联派生（task.runtime），triggerType 取执行行记录值；
+// projectId 口径与后端一致（`default` = 未分配 + 默认项目）。
+const TASK_BY_ID = Object.fromEntries(TASKS.map((t) => [t.id, t]));
+const filterExecutions = (q) => {
+  const eq = (k) => (q.get(k) || '').trim();
+  const status = eq('status');
+  const taskId = eq('taskId');
+  const taskName = eq('taskName').toLowerCase();
+  const executorAddress = eq('executorAddress').toLowerCase();
+  const projectId = eq('projectId');
+  const runtime = eq('runtime');
+  const triggerType = eq('triggerType');
+  const startTime = q.get('startTime');
+  const endTime = q.get('endTime');
+  return EXECUTIONS.filter((e) => {
+    const task = TASK_BY_ID[e.taskId];
+    if (status && e.status !== status) return false;
+    if (taskId && e.taskId !== taskId) return false;
+    if (taskName && !`${e.taskName ?? ''} ${task?.name ?? ''}`.toLowerCase().includes(taskName)) return false;
+    if (executorAddress && !String(e.executorAddress ?? '').toLowerCase().includes(executorAddress)) return false;
+    if (projectId) {
+      if (projectId === 'default') { if (task?.projectId != null) return false; }
+      else if (task?.projectId !== projectId) return false;
+    }
+    if (runtime && task?.runtime !== runtime) return false;
+    if (triggerType && e.triggerType !== triggerType) return false;
+    if (startTime && new Date(e.createdAt) < new Date(startTime)) return false;
+    if (endTime && new Date(e.createdAt) > new Date(endTime)) return false;
+    return true;
+  });
+};
+
 const ROUTES = [
   // ── auth ──
   ['GET', /^\/auth\/oidc\/status$/, () => ({ enabled: false })],
@@ -348,7 +383,7 @@ const ROUTES = [
   ['GET', /^\/tasks\/scheduler\/stats$/, () => ({ healthy: true, activeTimers: 96, activeCronTasks: 64, runningTaskCount: 7, totalScheduledTasks: 128, uptime: 864000 })],
   // ── tasks ──
   ['GET', /^\/tasks$/, (u, q) => TASKS_PAGED(q)],
-  ['GET', /^\/tasks\/executions\/all$/, (u, q) => pagedEnvelope(EXECUTIONS, q)],
+  ['GET', /^\/tasks\/executions\/all$/, (u, q) => pagedEnvelope(filterExecutions(q), q)],
   ['GET', /^\/tasks\/executions\/([^/]+)\/artifacts$/, () => [{ name: 'backup-dump.sql.gz', size: 1_288_490_188, sha256: 'aa'.repeat(20) }, { name: '备份日志-中文文件名.txt', size: 4096, sha256: 'bb'.repeat(20) }]],
   // P1-3：GET /artifacts 索引（镜像真实契约：paginate 信封；应用/任务/关键字/时间闭区间/扩展名可筛）
   ['GET', /^\/artifacts$/, (u, q) => {
@@ -1479,4 +1514,4 @@ if (isDirectEntry) {
   });
 }
 
-export { apiHandler, USER, PROJ_A, PROJ_B };
+export { apiHandler, USER, PROJ_A, PROJ_B, TASKS, EXECUTIONS, filterExecutions };
