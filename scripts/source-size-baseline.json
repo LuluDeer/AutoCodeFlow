@@ -827,14 +827,14 @@
     "apps/admin-web/src/layouts/MainLayout.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 665,
-      "why": "2026-11-04 实测 functionLines=531 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | **2026-11-15 本轮重签（+57 非注释行 / 函数体 +48）**：P1-6 导航 IA 扁平化（82454f0d）菜单分组与全路由侧栏导航；P1-2 项目上下文选择器贯通（878812db）；P1-3/P1-4（1fe742e1）产物库/收件箱两个侧栏入口与徽标位。ceiling.nonCommentLines 608→665、functionLines 531→579，密度 11.7 较基线 11.8 净降。",
+      "maxLines": 704,
+      "why": "2026-11-04 实测 functionLines=531 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | **2026-11-15 本轮重签（+57 非注释行 / 函数体 +48）**：P1-6 导航 IA 扁平化（82454f0d）菜单分组与全路由侧栏导航；P1-2 项目上下文选择器贯通（878812db）；P1-3/P1-4（1fe742e1）产物库/收件箱两个侧栏入口与徽标位。ceiling.nonCommentLines 608→665、functionLines 531→579，密度 11.7 较基线 11.8 净降。 | **2026-11-15 二次重签（+39 非注释行 / 函数体 +45）**：375 头部收敛——≤768px 把主题/语言/搜索三个次要控件收进「更多」下拉（header-more），窄屏隐藏用户触发器文本块、收窄项目切换器；未隐藏任何可达入口。ceiling.nonCommentLines 665→704、functionLines 579→624、密度 11.7→12.5（仍低于阈值 20，比值豁免）。",
       "ceiling": {
-        "nonCommentLines": 665,
-        "functionLines": 579,
+        "nonCommentLines": 704,
+        "functionLines": 624,
         "ctorParams": 0,
         "exports": 4,
-        "branchDensity": 11.7
+        "branchDensity": 12.5
       },
       "firstRun": {
         "bad": [

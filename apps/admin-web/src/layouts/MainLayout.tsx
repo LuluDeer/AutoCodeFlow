@@ -42,6 +42,7 @@ import {
   TranslationOutlined,
   RobotOutlined,
   FolderOpenOutlined,
+  MoreOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -54,6 +55,7 @@ import { logoutRemote } from '../api/logout';
 const CommandPalette = lazy(() => import('../components/CommandPalette'));
 // HOTKEY-01：全站快捷键（g 前缀跳转 + ? 速查 Modal）——在本壳层挂载一次
 import useGlobalHotkeys from '../hooks/useGlobalHotkeys';
+import { useIsMobile } from '../hooks/useIsMobile';
 const ShortcutHelpModal = lazy(
   () => import('../components/ShortcutHelpModal'),
 );
@@ -278,6 +280,9 @@ export default function MainLayout() {
   const { t, i18n } = useTranslation();
   const { user, setUser, setProfileError } = useAuthStore();
   const isAdmin = user?.role === 'admin';
+  // 375 头部收敛：≤768px 把主题/语言/搜索三个次要控件收进「更多」下拉，
+  // 顶栏只留高频入口（项目切换/待办/通知/用户），不隐藏任何可达入口。
+  const isMobile = useIsMobile();
   // UI-03：折叠态持久化到 localStorage（跨会话记忆用户偏好）
   const [collapsed, setCollapsedState] = useState<boolean>(() => readCollapsedPreference());
   const setCollapsed = (v: boolean) => {
@@ -523,6 +528,19 @@ export default function MainLayout() {
     }
   };
 
+  // 窄屏「更多」下拉：主题 / 语言 / 搜索三个次要控件的收纳位。
+  // 菜单项保留原行为与可读标签；桌面端这些仍是顶栏直达按钮，不下沉。
+  const handleMoreMenu = ({ key }: { key: string }) => {
+    if (key === 'theme') cycleThemeMode();
+    else if (key === 'lang') handleLanguageToggle();
+    else if (key === 'search') setPaletteOpen((v) => !v);
+  };
+  const moreMenuItems: MenuProps['items'] = [
+    { key: 'theme', icon: themeMeta.icon, label: themeLabel },
+    { key: 'lang', icon: <TranslationOutlined />, label: t(`nav.lang.${currentLang}`) },
+    { key: 'search', icon: <SearchOutlined />, label: t('nav.search.aria') },
+  ];
+
   // 渲染带 tooltip 的菜单项（折叠时）；叶子入口与分组分别包 Tooltip
   const menuItemsWithTooltip = collapsed
     ? menuItems.map((item) =>
@@ -683,7 +701,7 @@ export default function MainLayout() {
             )}
           </Space>
 
-          <Space size={4}>
+          <Space size={isMobile ? 2 : 4} className="header-controls">
             {/* P1-2：全局「当前项目」切换器——Dashboard / 任务 / 执行 / 应用四面共用
                 ?project= 上下文。默认项目实体行从具体列表剔除：独立的「默认项目」选项
                 表达「未分配 + 默认项目」合并视图（后端 "default" 字面量口径）。 */}
@@ -711,17 +729,20 @@ export default function MainLayout() {
             <Clock colorText={token.colorText} colorTextSecondary={token.colorTextSecondary} />
 
             {/* UI-02：明暗主题切换——light → dark → system 三态循环，
-                图标随当前态变化，aria-label 随态更新（可达性） */}
-            <Tooltip title={t('nav.theme.tooltip', { label: themeLabel })}>
-              <Button
-                type="text"
-                icon={themeMeta.icon}
-                aria-label={themeAria}
-                data-testid="theme-toggle"
-                style={{ fontSize: 16, color: token.colorTextSecondary }}
-                onClick={cycleThemeMode}
-              />
-            </Tooltip>
+                图标随当前态变化，aria-label 随态更新（可达性）。
+                窄屏下沉「更多」下拉（见下方 header-more），桌面端直达。 */}
+            {!isMobile && (
+              <Tooltip title={t('nav.theme.tooltip', { label: themeLabel })}>
+                <Button
+                  type="text"
+                  icon={themeMeta.icon}
+                  aria-label={themeAria}
+                  data-testid="theme-toggle"
+                  style={{ fontSize: 16, color: token.colorTextSecondary }}
+                  onClick={cycleThemeMode}
+                />
+              </Tooltip>
+            )}
 
             {/* P0-7（UX 审计）：界面语言切换入口。
                 此前 i18n 基础设施完整（setLanguage / availableLanguages / en 按需
@@ -729,28 +750,51 @@ export default function MainLayout() {
                 localStorage，而没有任何 UI 能写入它，2300+ 行英文词条是死代码，
                 英文用户永远看不到英文界面。此处按主题切换同款形态补上入口。
                 aria 随当前语言变化（读屏可播报），tooltip 说明点击行为。 */}
-            <Tooltip title={t('nav.lang.tooltip', { label: t(`nav.lang.${currentLang}`) })}>
-              <Button
-                type="text"
-                icon={<TranslationOutlined />}
-                aria-label={t('nav.lang.switch.aria', { label: t(`nav.lang.${currentLang}`) })}
-                data-testid="lang-toggle"
-                style={{ fontSize: 16, color: token.colorTextSecondary }}
-                onClick={handleLanguageToggle}
-              />
-            </Tooltip>
+            {!isMobile && (
+              <Tooltip title={t('nav.lang.tooltip', { label: t(`nav.lang.${currentLang}`) })}>
+                <Button
+                  type="text"
+                  icon={<TranslationOutlined />}
+                  aria-label={t('nav.lang.switch.aria', { label: t(`nav.lang.${currentLang}`) })}
+                  data-testid="lang-toggle"
+                  style={{ fontSize: 16, color: token.colorTextSecondary }}
+                  onClick={handleLanguageToggle}
+                />
+              </Tooltip>
+            )}
 
-            {/* FEAT-09: 全局搜索入口——点击行为与 ⌘K/Ctrl+K 一致（再按切换） */}
-            {/* F-25（DEEP_REVIEW 0ef3bbe）：tooltip 按平台动态显示 ⌘K / Ctrl K */}
-            <Tooltip title={SEARCH_SHORTCUT_HINT}>
-              <Button
-                type="text"
-                icon={<SearchOutlined />}
-                aria-label={t('nav.search.aria')}
-                style={{ fontSize: 16, color: token.colorTextSecondary }}
-                onClick={() => setPaletteOpen((v) => !v)}
-              />
-            </Tooltip>
+            {/* FEAT-09: 全局搜索入口——点击行为与 ⌘K/Ctrl+K 一致（再按切换）
+                F-25（DEEP_REVIEW 0ef3bbe）：tooltip 按平台动态显示 ⌘K / Ctrl K。
+                窄屏下沉「更多」下拉，桌面端直达。 */}
+            {!isMobile && (
+              <Tooltip title={SEARCH_SHORTCUT_HINT}>
+                <Button
+                  type="text"
+                  icon={<SearchOutlined />}
+                  aria-label={t('nav.search.aria')}
+                  style={{ fontSize: 16, color: token.colorTextSecondary }}
+                  onClick={() => setPaletteOpen((v) => !v)}
+                />
+              </Tooltip>
+            )}
+
+            {/* 375 头部收敛：窄屏把上述三个次要控件汇成一个「更多」下拉；
+                下拉内条目保留图标 + 可读标签，键盘可 Tab 聚焦、Enter 展开。 */}
+            {isMobile && (
+              <Dropdown
+                menu={{ items: moreMenuItems, onClick: handleMoreMenu }}
+                placement="bottomRight"
+                trigger={['click']}
+              >
+                <Button
+                  type="text"
+                  aria-label={t('nav.more.aria')}
+                  data-testid="header-more"
+                  icon={<MoreOutlined />}
+                  style={{ fontSize: 16, color: token.colorTextSecondary }}
+                />
+              </Dropdown>
+            )}
 
             {/* F-24（DEEP_REVIEW 0ef3bbe）：原帮助按钮无 onClick（纯摆设、有 aria-label 却无行为），
                 且项目无文档/关于落地页——按评审建议移除该占位按钮，避免误导。 */}
@@ -781,15 +825,16 @@ export default function MainLayout() {
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 8,
+                  gap: isMobile ? 4 : 8,
                   cursor: 'pointer',
-                  padding: '4px 8px',
+                  padding: isMobile ? '4px 4px' : '4px 8px',
                   borderRadius: 8,
                   border: 'none',
                   background: 'transparent',
                   transition: 'background 0.2s',
                 }}
                 className="user-dropdown-trigger"
+                data-testid="user-dropdown-trigger"
               >
                 <Avatar
                   size={30}
@@ -797,7 +842,9 @@ export default function MainLayout() {
                 >
                   {user?.username?.[0]?.toUpperCase() || 'U'}
                 </Avatar>
-                <div style={{ lineHeight: 1.3 }}>
+                {/* 窄屏隐藏用户名/角色文本（账号信息仍在下拉菜单内可读），
+                    触发器保留头像 + aria-label，键盘可达不受影响。 */}
+                <div className="header-user-meta" style={{ lineHeight: 1.3 }}>
                   <div style={{ fontSize: 13, fontWeight: 500, color: token.colorText }}>{user?.username || t('nav.user')}</div>
                   <div style={{ fontSize: 11, color: token.colorTextSecondary }}>{user?.role === 'admin' ? t('nav.role.admin') : t('nav.role.user')}</div>
                 </div>

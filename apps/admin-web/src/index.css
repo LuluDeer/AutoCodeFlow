@@ -212,7 +212,14 @@ html[data-theme='dark'] mark.log-search-hit {
     display: none;
   }
   .header-project {
-    width: 128px;
+    /* 375 头部收敛：项目切换器收窄（长名称省略号，完整名在下拉选项内），
+       给待办/通知/用户头像留出宽度，不再把右侧控件顶出 375 视口。 */
+    width: 88px;
+    min-width: 0;
+  }
+  /* 窄屏隐藏用户触发器的用户名/角色文本（下拉菜单内仍可读）；头像保留 */
+  .header-user-meta {
+    display: none;
   }
 
   /* 内容区与头部 padding 收紧（覆盖 antd 内联样式需 !important） */

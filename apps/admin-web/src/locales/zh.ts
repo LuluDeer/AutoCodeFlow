@@ -153,6 +153,7 @@ export default {
   'nav.notify.loadFailed': '近期失败读取失败',
   'nav.notify.retry': '重试',
   'nav.userMenu.aria': '用户菜单',
+  'nav.more.aria': '更多选项',
 
   // ── 控制台（DashboardPage）──
   'dashboard.title': '控制台',
@@ -3085,7 +3086,10 @@ export default {
   'artifactLibrary.description': '跨执行的产物索引：按应用 / 任务回看历史产物，并跳回来源执行。',
   'artifactLibrary.filter.allApplication': '全部应用',
   'artifactLibrary.filter.allTask': '全部任务',
-  'artifactLibrary.filter.note': '当前仅支持按应用、任务筛选；关键字、时间范围与类型筛选后端暂不支持。',
+  'artifactLibrary.filter.keywordPlaceholder': '搜索文件名',
+  'artifactLibrary.filter.allType': '全部类型',
+  'artifactLibrary.filter.note': '支持按应用、任务、文件名关键字、产出时间范围与扩展名筛选；条件随地址栏同步，可深链分享。',
+  'artifactLibrary.total': '共 {{count}} 条',
   'artifactLibrary.col.name': '文件名',
   'artifactLibrary.col.typeSize': '类型 / 大小',
   'artifactLibrary.col.execution': '来源执行',
@@ -3098,7 +3102,7 @@ export default {
   'artifactLibrary.action.gotoExecution': '查看执行',
   'artifactLibrary.clearFilters': '清除筛选',
   'artifactLibrary.empty.desc': '还没有任何执行产物；产物由任务执行终态回调上报。',
-  'artifactLibrary.empty.noMatch': '该筛选条件下没有产物，试试调整应用或任务。',
+  'artifactLibrary.empty.noMatch': '该筛选条件下没有产物，试试调整关键字、时间范围、类型、应用或任务。',
   'artifactLibrary.error.title': '产物索引加载失败',
   'artifactLibrary.preview.title': '产物预览',
   'artifactLibrary.preview.unsupportedTitle': '该类型暂不支持内联预览',

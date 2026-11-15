@@ -1,0 +1,481 @@
+{
+  "viewport": {
+    "width": 375,
+    "height": 812
+  },
+  "generatedAt": "2026-11-15T16:08:30.779Z",
+  "pages": [
+    {
+      "docScrollWidth": 375,
+      "docClientWidth": 375,
+      "bodyScrollWidth": 375,
+      "overflow": false,
+      "header": {
+        "left": 0,
+        "right": 375,
+        "width": 375
+      },
+      "controls": [
+        {
+          "name": "project-switcher",
+          "present": true,
+          "left": 133,
+          "right": 221,
+          "width": 88,
+          "visible": true
+        },
+        {
+          "name": "header-time",
+          "present": true,
+          "left": 0,
+          "right": 0,
+          "width": 0,
+          "visible": false
+        },
+        {
+          "name": "theme-toggle",
+          "present": false
+        },
+        {
+          "name": "lang-toggle",
+          "present": false
+        },
+        {
+          "name": "inbox-badge",
+          "present": true,
+          "left": 259,
+          "right": 289,
+          "width": 30,
+          "visible": true
+        },
+        {
+          "name": "notify-bell",
+          "present": true,
+          "left": 291,
+          "right": 323,
+          "width": 32,
+          "visible": true
+        },
+        {
+          "name": "user-dropdown",
+          "present": true,
+          "left": 325,
+          "right": 363,
+          "width": 38,
+          "visible": true
+        }
+      ],
+      "offenders": [
+        {
+          "tag": "g",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "ellipse",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "g",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "ellipse",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "g",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "ellipse",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        }
+      ],
+      "key": "dashboard",
+      "path": "/dashboard",
+      "consoleErrors": []
+    },
+    {
+      "docScrollWidth": 375,
+      "docClientWidth": 375,
+      "bodyScrollWidth": 375,
+      "overflow": false,
+      "header": {
+        "left": 0,
+        "right": 375,
+        "width": 375
+      },
+      "controls": [
+        {
+          "name": "project-switcher",
+          "present": true,
+          "left": 133,
+          "right": 221,
+          "width": 88,
+          "visible": true
+        },
+        {
+          "name": "header-time",
+          "present": true,
+          "left": 0,
+          "right": 0,
+          "width": 0,
+          "visible": false
+        },
+        {
+          "name": "theme-toggle",
+          "present": false
+        },
+        {
+          "name": "lang-toggle",
+          "present": false
+        },
+        {
+          "name": "inbox-badge",
+          "present": true,
+          "left": 259,
+          "right": 289,
+          "width": 30,
+          "visible": true
+        },
+        {
+          "name": "notify-bell",
+          "present": true,
+          "left": 291,
+          "right": 323,
+          "width": 32,
+          "visible": true
+        },
+        {
+          "name": "user-dropdown",
+          "present": true,
+          "left": 325,
+          "right": 363,
+          "width": 38,
+          "visible": true
+        }
+      ],
+      "offenders": [
+        {
+          "tag": "g",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "ellipse",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "g",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "ellipse",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "g",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "ellipse",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        }
+      ],
+      "key": "tasks",
+      "path": "/tasks",
+      "consoleErrors": []
+    },
+    {
+      "docScrollWidth": 375,
+      "docClientWidth": 375,
+      "bodyScrollWidth": 375,
+      "overflow": false,
+      "header": {
+        "left": 0,
+        "right": 375,
+        "width": 375
+      },
+      "controls": [
+        {
+          "name": "project-switcher",
+          "present": true,
+          "left": 133,
+          "right": 221,
+          "width": 88,
+          "visible": true
+        },
+        {
+          "name": "header-time",
+          "present": true,
+          "left": 0,
+          "right": 0,
+          "width": 0,
+          "visible": false
+        },
+        {
+          "name": "theme-toggle",
+          "present": false
+        },
+        {
+          "name": "lang-toggle",
+          "present": false
+        },
+        {
+          "name": "inbox-badge",
+          "present": true,
+          "left": 259,
+          "right": 289,
+          "width": 30,
+          "visible": true
+        },
+        {
+          "name": "notify-bell",
+          "present": true,
+          "left": 291,
+          "right": 323,
+          "width": 32,
+          "visible": true
+        },
+        {
+          "name": "user-dropdown",
+          "present": true,
+          "left": 325,
+          "right": 363,
+          "width": 38,
+          "visible": true
+        }
+      ],
+      "offenders": [
+        {
+          "tag": "g",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "ellipse",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "g",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "ellipse",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "g",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "ellipse",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        }
+      ],
+      "key": "inbox",
+      "path": "/inbox",
+      "consoleErrors": []
+    },
+    {
+      "docScrollWidth": 375,
+      "docClientWidth": 375,
+      "bodyScrollWidth": 375,
+      "overflow": false,
+      "header": {
+        "left": 0,
+        "right": 375,
+        "width": 375
+      },
+      "controls": [
+        {
+          "name": "project-switcher",
+          "present": true,
+          "left": 133,
+          "right": 221,
+          "width": 88,
+          "visible": true
+        },
+        {
+          "name": "header-time",
+          "present": true,
+          "left": 0,
+          "right": 0,
+          "width": 0,
+          "visible": false
+        },
+        {
+          "name": "theme-toggle",
+          "present": false
+        },
+        {
+          "name": "lang-toggle",
+          "present": false
+        },
+        {
+          "name": "inbox-badge",
+          "present": true,
+          "left": 259,
+          "right": 289,
+          "width": 30,
+          "visible": true
+        },
+        {
+          "name": "notify-bell",
+          "present": true,
+          "left": 291,
+          "right": 323,
+          "width": 32,
+          "visible": true
+        },
+        {
+          "name": "user-dropdown",
+          "present": true,
+          "left": 325,
+          "right": 363,
+          "width": 38,
+          "visible": true
+        }
+      ],
+      "offenders": [
+        {
+          "tag": "g",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "ellipse",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "g",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "ellipse",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "g",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        },
+        {
+          "tag": "ellipse",
+          "cls": "[object SVGAnimatedString]",
+          "text": "",
+          "left": 340.3,
+          "right": 383.6,
+          "width": 43.4
+        }
+      ],
+      "key": "artifacts",
+      "path": "/artifacts",
+      "consoleErrors": [
+        "Warning: [antd: Alert] `message` is deprecated. Please use `title` instead."
+      ]
+    }
+  ],
+  "regression": [
+    {
+      "viewport": "768",
+      "docScrollWidth": 768,
+      "docClientWidth": 768,
+      "overflow": false
+    },
+    {
+      "viewport": "1280",
+      "docScrollWidth": 1280,
+      "docClientWidth": 1280,
+      "overflow": false
+    }
+  ]
+}
