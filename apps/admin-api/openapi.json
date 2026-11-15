@@ -1384,6 +1384,16 @@
             "x-i18n-en": "Filter by task id"
           },
           {
+            "name": "projectId",
+            "required": false,
+            "in": "query",
+            "description": "按所属项目过滤（经任务关联派生）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Filter by owning project (derived via the associated task). Pass `default` to match both unassigned and default-project rows; omit to include all projects."
+          },
+          {
             "name": "taskName",
             "required": false,
             "in": "query",
@@ -1486,6 +1496,16 @@
               "type": "string"
             },
             "x-i18n-en": "Filter by task id"
+          },
+          {
+            "name": "projectId",
+            "required": false,
+            "in": "query",
+            "description": "按所属项目过滤（经任务关联派生，与列表端点同口径）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Filter by owning project (derived via the associated task, same semantics as the list endpoint). Pass `default` to match both unassigned and default-project rows; omit to include all projects."
           },
           {
             "name": "taskName",
@@ -7433,7 +7453,16 @@
     "/metrics/summary": {
       "get": {
         "operationId": "MetricsController_getSummary",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "projectId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
@@ -7462,6 +7491,14 @@
         "parameters": [
           {
             "name": "days",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "projectId",
             "required": true,
             "in": "query",
             "schema": {
@@ -7526,7 +7563,16 @@
     "/metrics/failures": {
       "get": {
         "operationId": "MetricsController_getRecentFailures",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "projectId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
@@ -11499,6 +11545,72 @@
           "description": "Lets the task creation form prefetch the template's `config` for pre-filling."
         }
       },
+      "patch": {
+        "description": "局部更新自定义模板的名称 / 说明 / 分类 / config。官方模板只读（403）；仅属主或 ADMIN 可改，createdBy 为空的历史行仅 ADMIN。key、isOfficial、createdBy 不可经本端点改写；config 整体替换并按 CreateTaskDto 子集校验。",
+        "operationId": "TaskTemplateController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "模板 UUID",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Template UUID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "待更新字段（局部）",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTaskTemplateDto"
+              }
+            }
+          },
+          "x-i18n-en": "Fields to update (partial)"
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的模板",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskTemplateResponseDto"
+                }
+              }
+            },
+            "x-i18n-en": "Updated template"
+          },
+          "400": {
+            "description": "字段 / config 非法",
+            "x-i18n-en": "Invalid field / config"
+          },
+          "403": {
+            "description": "官方只读 / 非属主 / 历史行仅管理员",
+            "x-i18n-en": "Official read-only / not the owner / legacy row: admins only"
+          },
+          "404": {
+            "description": "模板不存在",
+            "x-i18n-en": "Template not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "编辑自定义任务模板",
+        "tags": [
+          "Task Templates"
+        ],
+        "x-i18n-en": {
+          "summary": "Edit a custom task template",
+          "description": "Partial update of a custom template's name / description / category / config. Official templates are read-only (403); only the owner or an ADMIN can edit, and legacy rows with a null createdBy are ADMIN-only. key, isOfficial and createdBy cannot be changed through this endpoint; config is replaced wholesale and validated against the CreateTaskDto subset."
+        }
+      },
       "delete": {
         "description": "官方模板不可删除（403）。",
         "operationId": "TaskTemplateController_remove",
@@ -11546,72 +11658,6 @@
         "x-i18n-en": {
           "summary": "Delete a custom task template",
           "description": "Official templates cannot be deleted (403)."
-        }
-      },
-      "patch": {
-        "description": "局部更新自定义模板的名称 / 说明 / 分类 / config。官方模板只读（403）；仅属主或 ADMIN 可改，createdBy 为空的历史行仅 ADMIN。key、isOfficial、createdBy 不可经本端点改写；config 整体替换并按 CreateTaskDto 子集校验。",
-        "operationId": "TaskTemplateController_update",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "description": "模板 UUID",
-            "schema": {
-              "type": "string"
-            },
-            "x-i18n-en": "Template UUID"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "description": "待更新字段（局部）",
-          "x-i18n-en": "Fields to update (partial)",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateTaskTemplateDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "更新后的模板",
-            "x-i18n-en": "Updated template",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TaskTemplateResponseDto"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "字段 / config 非法",
-            "x-i18n-en": "Invalid field / config"
-          },
-          "403": {
-            "description": "官方只读 / 非属主 / 历史行仅管理员",
-            "x-i18n-en": "Official read-only / not the owner / legacy row: admins only"
-          },
-          "404": {
-            "description": "模板不存在",
-            "x-i18n-en": "Template not found"
-          }
-        },
-        "security": [
-          {
-            "JWT": []
-          }
-        ],
-        "summary": "编辑自定义任务模板",
-        "tags": [
-          "Task Templates"
-        ],
-        "x-i18n-en": {
-          "summary": "Edit a custom task template",
-          "description": "Partial update of a custom template's name / description / category / config. Official templates are read-only (403); only the owner or an ADMIN can edit, and legacy rows with a null createdBy are ADMIN-only. key, isOfficial and createdBy cannot be changed through this endpoint; config is replaced wholesale and validated against the CreateTaskDto subset."
         }
       }
     },
@@ -12256,18 +12302,16 @@
           },
           {
             "name": "q",
-            "required": false,
+            "required": true,
             "in": "query",
-            "description": "同时按项目名称与描述做关键字搜索。LIKE 元字符（% 与 _）按字面匹配。",
             "schema": {
               "type": "string"
-            },
-            "x-i18n-en": "Keyword search across both project name and description. LIKE metacharacters (% and _) match literally."
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "不带 page/pageSize 查询参数时返回完整的 ProjectViewRow 数组（旧形态）；带任一参数时返回分页信封（list/items/total/page/pageSize/totalPages），范围为调用者可见的项目",
+            "description": "不带 page/pageSize 查询参数时返回完整的 ProjectViewRow 数组（旧形态）；带任一参数时返回分页信封（list/items/total/page/pageSize/totalPages），范围为调用者可见的项目；q 对名称/描述做字面量模糊匹配",
             "content": {
               "application/json": {
                 "schema": {
@@ -12275,15 +12319,15 @@
                 }
               }
             },
-            "x-i18n-en": "Without page/pageSize query parameters, returns the full ProjectViewRow array (legacy shape); with either parameter, returns a paging envelope (list/items/total/page/pageSize/totalPages), scoped to projects visible to the caller"
+            "x-i18n-en": "Without page/pageSize query parameters, returns the full ProjectViewRow array (legacy shape); with either parameter, returns a paging envelope (list/items/total/page/pageSize/totalPages), scoped to projects visible to the caller; q performs a keyword match on name/description (LIKE wildcards matched literally)"
           }
         },
-        "summary": "列出调用者可访问的项目",
+        "summary": "列出调用者可访问的项目（q 按名称/描述关键字过滤）",
         "tags": [
           "Projects"
         ],
         "x-i18n-en": {
-          "summary": "List projects accessible to the caller"
+          "summary": "List projects accessible to the caller (q filters by name/description keyword)"
         }
       },
       "post": {
@@ -12427,6 +12471,40 @@
         ]
       }
     },
+    "/projects/{id}/summary": {
+      "get": {
+        "operationId": "ProjectsController_getSummary",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSummaryResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "项目详情统计（任务/应用/近 7 天执行/失败率/成员）",
+        "tags": [
+          "Projects"
+        ],
+        "x-i18n-en": {
+          "summary": "Project detail stats (tasks/applications/executions in the last 7 days/failure rate/members)"
+        }
+      }
+    },
     "/projects/{id}/removal-impact": {
       "get": {
         "operationId": "ProjectsController_describeRemovalImpact",
@@ -12458,41 +12536,6 @@
         ],
         "x-i18n-en": {
           "summary": "Preview the consequences of deleting this project"
-        }
-      }
-    },
-    "/projects/{id}/summary": {
-      "get": {
-        "operationId": "ProjectsController_getSummary",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "项目详情统计（任务/应用/近 7 天执行/失败率/成员 + 最近失败与最近活动列表）",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProjectSummaryResponseDto"
-                }
-              }
-            },
-            "x-i18n-en": "Project detail summary (tasks / applications / last-7-day executions / failure rate / members, plus recent failures and recent activity)"
-          }
-        },
-        "summary": "项目详情统计（任务/应用/近 7 天执行/失败率/成员）",
-        "tags": [
-          "Projects"
-        ],
-        "x-i18n-en": {
-          "summary": "Project detail summary (tasks / applications / last-7-day executions / failure rate / members)"
         }
       }
     },
@@ -13476,13 +13519,13 @@
           "lastExecution": {
             "nullable": true,
             "description": "列表行内联的最近一次真实执行摘要（按当前页批量回填，非 N+1）；无真实执行时为 null。合成行（synthetic=true）不参与，与 lastStatus 筛选同口径。",
-            "x-i18n-en": "Inline summary of the latest real execution on this list row (batch-loaded per page, not N+1). null = no real execution yet. Synthetic rows (synthetic=true) are excluded, matching the lastStatus filter semantics.",
             "type": "object",
             "allOf": [
               {
                 "$ref": "#/components/schemas/TaskLastExecutionSummaryDto"
               }
-            ]
+            ],
+            "x-i18n-en": "Inline summary of the latest real execution on this list row (batch-loaded per page, not N+1). null = no real execution yet. Synthetic rows (synthetic=true) are excluded, matching the lastStatus filter semantics."
           },
           "alarmEmail": {
             "type": "string",
@@ -23368,6 +23411,35 @@
           "updatedAt"
         ]
       },
+      "UpdateTaskTemplateDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "每日订单同步",
+            "description": "模板展示名",
+            "x-i18n-en": "Template display name"
+          },
+          "description": {
+            "type": "string",
+            "description": "模板说明；传 null 清空",
+            "nullable": true,
+            "x-i18n-en": "Template description; pass null to clear"
+          },
+          "category": {
+            "type": "string",
+            "description": "粗分类标签（备份/巡检/同步/清理/通知…）；传 null 清空",
+            "nullable": true,
+            "x-i18n-en": "Broad category tag (backup / inspection / sync / cleanup / notify…); pass null to clear"
+          },
+          "config": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "合法 CreateTaskDto 子集（省略 name）；整体替换现有 config",
+            "x-i18n-en": "A valid subset of CreateTaskDto (without name); replaces the existing config wholesale"
+          }
+        }
+      },
       "CreateTaskTemplateDto": {
         "type": "object",
         "properties": {
@@ -24184,6 +24256,205 @@
           "updatedAt"
         ]
       },
+      "ProjectSummaryRecentFailureDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "执行记录 ID（uuid）",
+            "x-i18n-en": "Execution record ID (uuid)"
+          },
+          "taskId": {
+            "type": "string",
+            "description": "所属任务 ID（uuid）",
+            "x-i18n-en": "ID of the owning task (uuid)"
+          },
+          "taskName": {
+            "type": "string",
+            "description": "执行时快照的任务名",
+            "x-i18n-en": "Task name snapshotted at execution time"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "success",
+              "failed",
+              "timeout",
+              "killed",
+              "cancelled",
+              "package_fetch_failed"
+            ],
+            "description": "执行终态状态",
+            "x-i18n-en": "Terminal execution status"
+          },
+          "failureReason": {
+            "type": "string",
+            "nullable": true,
+            "description": "失败成因标签（失败/超时行有值，其余为 null）",
+            "x-i18n-en": "Failure reason label (set on failed/timeout rows; null otherwise)"
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true,
+            "description": "失败错误信息（截断后的可读文本；无则 null）",
+            "x-i18n-en": "Failure error message (truncated readable text; null if none)"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "执行创建时间（ISO-8601）",
+            "x-i18n-en": "Execution creation time (ISO-8601)"
+          },
+          "duration": {
+            "type": "number",
+            "nullable": true,
+            "description": "执行耗时（毫秒）；未跑完/合成行为 null",
+            "x-i18n-en": "Execution duration in milliseconds; null if unfinished or synthetic"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "taskName",
+          "status",
+          "createdAt"
+        ]
+      },
+      "ProjectSummaryRecentExecutionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "执行记录 ID（uuid）",
+            "x-i18n-en": "Execution record ID (uuid)"
+          },
+          "taskId": {
+            "type": "string",
+            "description": "所属任务 ID（uuid）",
+            "x-i18n-en": "ID of the owning task (uuid)"
+          },
+          "taskName": {
+            "type": "string",
+            "description": "执行时快照的任务名",
+            "x-i18n-en": "Task name snapshotted at execution time"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "success",
+              "failed",
+              "timeout",
+              "killed",
+              "cancelled",
+              "package_fetch_failed"
+            ],
+            "description": "执行状态",
+            "x-i18n-en": "Execution status"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "执行创建时间（ISO-8601）",
+            "x-i18n-en": "Execution creation time (ISO-8601)"
+          },
+          "duration": {
+            "type": "number",
+            "nullable": true,
+            "description": "执行耗时（毫秒）；未跑完/合成行为 null",
+            "x-i18n-en": "Execution duration in milliseconds; null if unfinished or synthetic"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "taskName",
+          "status",
+          "createdAt"
+        ]
+      },
+      "ProjectSummaryResponseDto": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "description": "项目 ID（uuid）",
+            "x-i18n-en": "Project ID (uuid)"
+          },
+          "projectName": {
+            "type": "string",
+            "description": "项目名称（详情页标题回显）",
+            "x-i18n-en": "Project name (shown as the detail page title)"
+          },
+          "taskCount": {
+            "type": "number",
+            "description": "未软删除的任务数（排除 status=deleted；默认项目含未分配 NULL 行）",
+            "x-i18n-en": "Number of tasks that are not soft-deleted (excludes status=deleted; the default project includes unassigned NULL rows)"
+          },
+          "applicationCount": {
+            "type": "number",
+            "description": "归属本项目的应用数（按 applications.projectId；默认项目含 NULL 行。当前应用写入口尚未开放项目归属，非默认项目预期为 0）",
+            "x-i18n-en": "Number of applications owned by this project (by applications.projectId; the default project includes NULL rows. The application write path has not opened project assignment yet, so non-default projects are expected to be 0)"
+          },
+          "memberCount": {
+            "type": "number",
+            "description": "项目成员关系行数",
+            "x-i18n-en": "Number of project membership rows"
+          },
+          "executionsLast7d": {
+            "type": "number",
+            "description": "近 7 天执行数（经 taskId 关联 tasks.projectId 统计）",
+            "x-i18n-en": "Executions in the last 7 days (counted via taskId joined to tasks.projectId)"
+          },
+          "failedExecutionsLast7d": {
+            "type": "number",
+            "description": "近 7 天失败执行数（status=failed）",
+            "x-i18n-en": "Failed executions in the last 7 days (status=failed)"
+          },
+          "timeoutExecutionsLast7d": {
+            "type": "number",
+            "description": "近 7 天超时执行数（status=timeout）",
+            "x-i18n-en": "Timed-out executions in the last 7 days (status=timeout)"
+          },
+          "failureRate": {
+            "type": "number",
+            "nullable": true,
+            "description": "近 7 天失败率（failed / 执行总数，百分比保留两位）；窗口内无执行为 null，前端显示暂无数据",
+            "x-i18n-en": "Failure rate in the last 7 days (failed / total executions, percentage rounded to two decimals); null when there are no executions in the window, and the frontend shows no-data"
+          },
+          "recentFailures": {
+            "description": "最近 5 条失败/超时执行（按 createdAt DESC，不限 7 天窗口）",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectSummaryRecentFailureDto"
+            },
+            "x-i18n-en": "Latest 5 failed/timeout executions (createdAt DESC, not limited to the 7-day window)"
+          },
+          "recentExecutions": {
+            "description": "最近 5 条执行（按 createdAt DESC，不限终态与窗口）",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectSummaryRecentExecutionDto"
+            },
+            "x-i18n-en": "Latest 5 executions (createdAt DESC, regardless of terminal state or window)"
+          }
+        },
+        "required": [
+          "projectId",
+          "projectName",
+          "taskCount",
+          "applicationCount",
+          "memberCount",
+          "executionsLast7d",
+          "failedExecutionsLast7d",
+          "timeoutExecutionsLast7d",
+          "recentFailures",
+          "recentExecutions"
+        ]
+      },
       "CreateProjectDto": {
         "type": "object",
         "properties": {
@@ -24258,206 +24529,6 @@
           "activeTaskCount",
           "memberCount",
           "deletable"
-        ]
-      },
-      "ProjectSummaryRecentFailureDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "执行记录 ID（uuid）",
-            "x-i18n-en": "Execution record id (uuid)"
-          },
-          "taskId": {
-            "type": "string",
-            "description": "所属任务 ID（uuid）",
-            "x-i18n-en": "Parent task id (uuid)"
-          },
-          "taskName": {
-            "type": "string",
-            "description": "执行时快照的任务名",
-            "x-i18n-en": "Task name snapshotted at execution time"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "pending",
-              "running",
-              "success",
-              "failed",
-              "timeout",
-              "killed",
-              "cancelled",
-              "package_fetch_failed"
-            ],
-            "description": "执行终态状态",
-            "x-i18n-en": "Terminal execution status"
-          },
-          "failureReason": {
-            "type": "string",
-            "nullable": true,
-            "description": "失败成因标签（失败/超时行有值，其余为 null）",
-            "x-i18n-en": "Failure reason label (set on failed/timeout rows, null otherwise)"
-          },
-          "errorMessage": {
-            "type": "string",
-            "nullable": true,
-            "description": "失败错误信息（截断后的可读文本；无则 null）",
-            "x-i18n-en": "Failure error message (truncated readable text; null if absent)"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time",
-            "description": "执行创建时间（ISO-8601）",
-            "x-i18n-en": "Execution creation time (ISO-8601)"
-          },
-          "duration": {
-            "type": "number",
-            "nullable": true,
-            "description": "执行耗时（毫秒）；未跑完/合成行为 null",
-            "x-i18n-en": "Execution duration (ms); null for unfinished/synthetic rows"
-          }
-        },
-        "required": [
-          "id",
-          "taskId",
-          "taskName",
-          "status",
-          "createdAt"
-        ]
-      },
-      "ProjectSummaryRecentExecutionDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "执行记录 ID（uuid）",
-            "x-i18n-en": "Execution record id (uuid)"
-          },
-          "taskId": {
-            "type": "string",
-            "description": "所属任务 ID（uuid）",
-            "x-i18n-en": "Parent task id (uuid)"
-          },
-          "taskName": {
-            "type": "string",
-            "description": "执行时快照的任务名",
-            "x-i18n-en": "Task name snapshotted at execution time"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "pending",
-              "running",
-              "success",
-              "failed",
-              "timeout",
-              "killed",
-              "cancelled",
-              "package_fetch_failed"
-            ],
-            "description": "执行状态",
-            "x-i18n-en": "Execution status"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time",
-            "description": "执行创建时间（ISO-8601）",
-            "x-i18n-en": "Execution creation time (ISO-8601)"
-          },
-          "duration": {
-            "type": "number",
-            "nullable": true,
-            "description": "执行耗时（毫秒）；未跑完/合成行为 null",
-            "x-i18n-en": "Execution duration (ms); null for unfinished/synthetic rows"
-          }
-        },
-        "required": [
-          "id",
-          "taskId",
-          "taskName",
-          "status",
-          "createdAt"
-        ]
-      },
-      "ProjectSummaryResponseDto": {
-        "type": "object",
-        "properties": {
-          "projectId": {
-            "type": "string",
-            "description": "项目 ID（uuid）",
-            "x-i18n-en": "Project ID (uuid)"
-          },
-          "projectName": {
-            "type": "string",
-            "description": "项目名称（详情页标题回显）",
-            "x-i18n-en": "Project name (echoed as the detail page title)"
-          },
-          "taskCount": {
-            "type": "number",
-            "description": "未软删除的任务数（排除 status=deleted；默认项目含未分配 NULL 行）",
-            "x-i18n-en": "Non-soft-deleted task count (excludes status=deleted; the Default project also includes unassigned NULL rows)"
-          },
-          "applicationCount": {
-            "type": "number",
-            "description": "归属本项目的应用数（按 applications.projectId；默认项目含 NULL 行。当前应用写入口尚未开放项目归属，非默认项目预期为 0）",
-            "x-i18n-en": "Applications assigned to this project (by applications.projectId; the Default project also includes NULL rows. The application write entry does not expose project assignment yet, so non-default projects are expected to be 0)"
-          },
-          "memberCount": {
-            "type": "number",
-            "description": "项目成员关系行数",
-            "x-i18n-en": "Number of project member rows"
-          },
-          "executionsLast7d": {
-            "type": "number",
-            "description": "近 7 天执行数（经 taskId 关联 tasks.projectId 统计）",
-            "x-i18n-en": "Executions in the last 7 days (joined to tasks via taskId and counted by task projectId)"
-          },
-          "failedExecutionsLast7d": {
-            "type": "number",
-            "description": "近 7 天失败执行数（status=failed）",
-            "x-i18n-en": "Failed executions in the last 7 days (status=failed)"
-          },
-          "timeoutExecutionsLast7d": {
-            "type": "number",
-            "description": "近 7 天超时执行数（status=timeout）",
-            "x-i18n-en": "Timed-out executions in the last 7 days (status=timeout)"
-          },
-          "failureRate": {
-            "type": "number",
-            "nullable": true,
-            "description": "近 7 天失败率（failed / 执行总数，百分比保留两位）；窗口内无执行为 null，前端显示暂无数据",
-            "x-i18n-en": "Last-7-day failure rate (failed / total executions, percent rounded to 2 decimals); null when there are no executions in the window, the UI shows no-data"
-          },
-          "recentFailures": {
-            "type": "array",
-            "description": "最近 5 条失败/超时执行（按 createdAt DESC，不限 7 天窗口）",
-            "x-i18n-en": "5 most recent failed/timeout executions (createdAt DESC, not limited to the 7-day window)",
-            "items": {
-              "$ref": "#/components/schemas/ProjectSummaryRecentFailureDto"
-            }
-          },
-          "recentExecutions": {
-            "type": "array",
-            "description": "最近 5 条执行（按 createdAt DESC，不限终态与窗口）",
-            "x-i18n-en": "5 most recent executions (createdAt DESC, any status and window)",
-            "items": {
-              "$ref": "#/components/schemas/ProjectSummaryRecentExecutionDto"
-            }
-          }
-        },
-        "required": [
-          "projectId",
-          "projectName",
-          "taskCount",
-          "applicationCount",
-          "memberCount",
-          "executionsLast7d",
-          "failedExecutionsLast7d",
-          "timeoutExecutionsLast7d",
-          "failureRate",
-          "recentFailures",
-          "recentExecutions"
         ]
       },
       "ProjectDeleteResponseDto": {
@@ -24605,35 +24676,6 @@
           "isAdmin",
           "memberships"
         ]
-      },
-      "UpdateTaskTemplateDto": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "example": "每日订单同步",
-            "description": "模板展示名",
-            "x-i18n-en": "Template display name"
-          },
-          "description": {
-            "type": "string",
-            "description": "模板说明；传 null 清空",
-            "nullable": true,
-            "x-i18n-en": "Template description; pass null to clear"
-          },
-          "category": {
-            "type": "string",
-            "description": "粗分类标签（备份/巡检/同步/清理/通知…）；传 null 清空",
-            "nullable": true,
-            "x-i18n-en": "Broad category tag (backup / inspection / sync / cleanup / notify…); pass null to clear"
-          },
-          "config": {
-            "type": "object",
-            "additionalProperties": true,
-            "description": "合法 CreateTaskDto 子集（省略 name）；整体替换现有 config",
-            "x-i18n-en": "A valid subset of CreateTaskDto (without name); replaces the existing config wholesale"
-          }
-        }
       }
     }
   },

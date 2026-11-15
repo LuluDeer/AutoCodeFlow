@@ -4049,7 +4049,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 列出调用者可访问的项目 */
+        /** 列出调用者可访问的项目（q 按名称/描述关键字过滤） */
         get: operations["ProjectsController_findAll"];
         put?: never;
         /** 创建项目（ADMIN） */
@@ -4078,23 +4078,6 @@ export interface paths {
         patch: operations["ProjectsController_update"];
         trace?: never;
     };
-    "/projects/{id}/removal-impact": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 预览删除该项目的后果 */
-        get: operations["ProjectsController_describeRemovalImpact"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/projects/{id}/summary": {
         parameters: {
             query?: never;
@@ -4104,6 +4087,23 @@ export interface paths {
         };
         /** 项目详情统计（任务/应用/近 7 天执行/失败率/成员） */
         get: operations["ProjectsController_getSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/removal-impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 预览删除该项目的后果 */
+        get: operations["ProjectsController_describeRemovalImpact"];
         put?: never;
         post?: never;
         delete?: never;
@@ -8059,6 +8059,21 @@ export interface components {
              */
             updatedAt: string;
         };
+        UpdateTaskTemplateDto: {
+            /**
+             * @description 模板展示名
+             * @example 每日订单同步
+             */
+            name?: string;
+            /** @description 模板说明；传 null 清空 */
+            description?: string | null;
+            /** @description 粗分类标签（备份/巡检/同步/清理/通知…）；传 null 清空 */
+            category?: string | null;
+            /** @description 合法 CreateTaskDto 子集（省略 name）；整体替换现有 config */
+            config?: {
+                [key: string]: unknown;
+            };
+        };
         CreateTaskTemplateDto: {
             /**
              * @description 模板展示名
@@ -8421,30 +8436,6 @@ export interface components {
              */
             updatedAt: string;
         };
-        CreateProjectDto: {
-            /** @description 项目名称 */
-            name: string;
-            /** @description 项目描述 */
-            description?: string;
-        };
-        UpdateProjectDto: {
-            /** @description 项目名称 */
-            name?: string;
-            /** @description 项目描述 */
-            description?: string;
-        };
-        ProjectRemovalImpactResponseDto: {
-            /** @description 项目名称（确认框标题回显） */
-            projectName: string;
-            /** @description 该项目下未软删除的任务数（status != deleted）。这些任务删除后会退回「未分配」视图 */
-            taskCount: number;
-            /** @description 其中处于 active 状态的任务数——删除后仍会被 cron 触发，是真正会持续产生副作用的那部分 */
-            activeTaskCount: number;
-            /** @description 项目成员关系行数（删除时由 FK ON DELETE CASCADE 一并清除） */
-            memberCount: number;
-            /** @description 是否可删；默认项目恒为 false（remove 会返回 404 PROJECT_DEFAULT_IMMUTABLE） */
-            deletable: boolean;
-        };
         ProjectSummaryRecentFailureDto: {
             /** @description 执行记录 ID（uuid） */
             id: string;
@@ -8507,11 +8498,35 @@ export interface components {
             /** @description 近 7 天超时执行数（status=timeout） */
             timeoutExecutionsLast7d: number;
             /** @description 近 7 天失败率（failed / 执行总数，百分比保留两位）；窗口内无执行为 null，前端显示暂无数据 */
-            failureRate: number | null;
+            failureRate?: number | null;
             /** @description 最近 5 条失败/超时执行（按 createdAt DESC，不限 7 天窗口） */
             recentFailures: components["schemas"]["ProjectSummaryRecentFailureDto"][];
             /** @description 最近 5 条执行（按 createdAt DESC，不限终态与窗口） */
             recentExecutions: components["schemas"]["ProjectSummaryRecentExecutionDto"][];
+        };
+        CreateProjectDto: {
+            /** @description 项目名称 */
+            name: string;
+            /** @description 项目描述 */
+            description?: string;
+        };
+        UpdateProjectDto: {
+            /** @description 项目名称 */
+            name?: string;
+            /** @description 项目描述 */
+            description?: string;
+        };
+        ProjectRemovalImpactResponseDto: {
+            /** @description 项目名称（确认框标题回显） */
+            projectName: string;
+            /** @description 该项目下未软删除的任务数（status != deleted）。这些任务删除后会退回「未分配」视图 */
+            taskCount: number;
+            /** @description 其中处于 active 状态的任务数——删除后仍会被 cron 触发，是真正会持续产生副作用的那部分 */
+            activeTaskCount: number;
+            /** @description 项目成员关系行数（删除时由 FK ON DELETE CASCADE 一并清除） */
+            memberCount: number;
+            /** @description 是否可删；默认项目恒为 false（remove 会返回 404 PROJECT_DEFAULT_IMMUTABLE） */
+            deletable: boolean;
         };
         ProjectDeleteResponseDto: {
             /** @description true = 删除/移除生效 */
@@ -8566,21 +8581,6 @@ export interface components {
             isAdmin: boolean;
             /** @description 调用方在所有项目中的成员关系行 */
             memberships: components["schemas"]["ProjectMemberViewDto"][];
-        };
-        UpdateTaskTemplateDto: {
-            /**
-             * @description 模板展示名
-             * @example 每日订单同步
-             */
-            name?: string;
-            /** @description 模板说明；传 null 清空 */
-            description?: string | null;
-            /** @description 粗分类标签（备份/巡检/同步/清理/通知…）；传 null 清空 */
-            category?: string | null;
-            /** @description 合法 CreateTaskDto 子集（省略 name）；整体替换现有 config */
-            config?: {
-                [key: string]: unknown;
-            };
         };
     };
     responses: never;
@@ -9330,6 +9330,8 @@ export interface operations {
                 runtime?: string;
                 /** @description 按任务 id 过滤 */
                 taskId?: string;
+                /** @description 按所属项目过滤（经任务关联派生）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。 */
+                projectId?: string;
                 /** @description 按任务名模糊搜索 */
                 taskName?: string;
                 /** @description 按执行器地址模糊过滤 */
@@ -9365,6 +9367,8 @@ export interface operations {
                 status?: string;
                 /** @description 按任务 id 过滤 */
                 taskId?: string;
+                /** @description 按所属项目过滤（经任务关联派生，与列表端点同口径）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。 */
+                projectId?: string;
                 /** @description 按任务名模糊搜索（命中执行行自身或 tasks.name） */
                 taskName?: string;
                 /** @description 按执行器地址模糊过滤 */
@@ -12620,7 +12624,9 @@ export interface operations {
     };
     MetricsController_getSummary: {
         parameters: {
-            query?: never;
+            query: {
+                projectId: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -12641,6 +12647,7 @@ export interface operations {
         parameters: {
             query: {
                 days: string;
+                projectId: string;
             };
             header?: never;
             path?: never;
@@ -12679,7 +12686,9 @@ export interface operations {
     };
     MetricsController_getRecentFailures: {
         parameters: {
-            query?: never;
+            query: {
+                projectId: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -15151,8 +15160,7 @@ export interface operations {
             query: {
                 page: string;
                 pageSize: string;
-                /** @description 同时按项目名称与描述做关键字搜索。LIKE 元字符（% 与 _）按字面匹配。 */
-                q?: string;
+                q: string;
             };
             header?: never;
             path?: never;
@@ -15160,7 +15168,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 不带 page/pageSize 查询参数时返回完整的 ProjectViewRow 数组（旧形态）；带任一参数时返回分页信封（list/items/total/page/pageSize/totalPages），范围为调用者可见的项目 */
+            /** @description 不带 page/pageSize 查询参数时返回完整的 ProjectViewRow 数组（旧形态）；带任一参数时返回分页信封（list/items/total/page/pageSize/totalPages），范围为调用者可见的项目；q 对名称/描述做字面量模糊匹配 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -15264,6 +15272,27 @@ export interface operations {
             };
         };
     };
+    ProjectsController_getSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectSummaryResponseDto"];
+                };
+            };
+        };
+    };
     ProjectsController_describeRemovalImpact: {
         parameters: {
             query?: never;
@@ -15281,28 +15310,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectRemovalImpactResponseDto"];
-                };
-            };
-        };
-    };
-    ProjectsController_getSummary: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 项目详情统计（任务/应用/近 7 天执行/失败率/成员 + 最近失败与最近活动列表） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ProjectSummaryResponseDto"];
                 };
             };
         };
