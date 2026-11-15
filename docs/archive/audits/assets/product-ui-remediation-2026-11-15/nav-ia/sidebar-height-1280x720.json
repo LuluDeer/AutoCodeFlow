@@ -1,0 +1,295 @@
+{
+  "viewport": {
+    "width": 1280,
+    "height": 720
+  },
+  "role": "admin",
+  "generatedAt": "2026-11-15T16:08:22.705Z",
+  "defaultExpanded": {
+    "sider": {
+      "clientHeight": 1455,
+      "scrollHeight": 1455,
+      "overflowY": "visible",
+      "hasVerticalScrollbar": false
+    },
+    "menu": {
+      "clientHeight": 552,
+      "scrollHeight": 552
+    },
+    "logoHeight": 56,
+    "availableMenuHeight": 1351,
+    "viewportHeight": 720,
+    "docScrollHeight": 1455,
+    "rows": [
+      {
+        "key": "rc-menu-uuid-_r_1_-/dashboard",
+        "label": "控制台",
+        "kind": "leaf",
+        "top": 68,
+        "bottom": 108,
+        "height": 40,
+        "titleTop": 68,
+        "titleBottom": 108,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "",
+        "label": "自动化",
+        "kind": "group",
+        "top": 112,
+        "bottom": 292,
+        "height": 180,
+        "titleTop": 112,
+        "titleBottom": 152,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "rc-menu-uuid-_r_1_-/executions",
+        "label": "执行记录",
+        "kind": "leaf",
+        "top": 296,
+        "bottom": 336,
+        "height": 40,
+        "titleTop": 296,
+        "titleBottom": 336,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "",
+        "label": "节点",
+        "kind": "group",
+        "top": 340,
+        "bottom": 380,
+        "height": 40,
+        "titleTop": 340,
+        "titleBottom": 380,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "",
+        "label": "应用",
+        "kind": "group",
+        "top": 384,
+        "bottom": 424,
+        "height": 40,
+        "titleTop": 384,
+        "titleBottom": 424,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "",
+        "label": "组织",
+        "kind": "group",
+        "top": 428,
+        "bottom": 468,
+        "height": 40,
+        "titleTop": 428,
+        "titleBottom": 468,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "",
+        "label": "治理",
+        "kind": "group",
+        "top": 472,
+        "bottom": 512,
+        "height": 40,
+        "titleTop": 472,
+        "titleBottom": 512,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "",
+        "label": "辅助",
+        "kind": "group",
+        "top": 516,
+        "bottom": 556,
+        "height": 40,
+        "titleTop": 516,
+        "titleBottom": 556,
+        "titleHeight": 40,
+        "inViewport": true
+      }
+    ],
+    "expandedChildren": [
+      {
+        "key": "rc-menu-uuid-_r_1_-/tasks",
+        "label": "任务",
+        "top": 160,
+        "bottom": 200,
+        "height": 40
+      },
+      {
+        "key": "rc-menu-uuid-_r_1_-/task-templates",
+        "label": "模板",
+        "top": 204,
+        "bottom": 244,
+        "height": 40
+      },
+      {
+        "key": "rc-menu-uuid-_r_1_-/artifacts",
+        "label": "产物库",
+        "top": 248,
+        "bottom": 288,
+        "height": 40
+      }
+    ],
+    "lastRow": {
+      "key": "",
+      "label": "辅助",
+      "kind": "group",
+      "top": 516,
+      "bottom": 556,
+      "height": 40,
+      "titleTop": 516,
+      "titleBottom": 556,
+      "titleHeight": 40,
+      "inViewport": true
+    },
+    "consoleErrors": [],
+    "conclusion": "末行「辅助」bottom=556 ≤ 720，一屏可见"
+  },
+  "shots": [
+    "sidebar-zh-1280x720.png",
+    "sidebar-zh-1280x720-collapsed.png"
+  ],
+  "allCollapsed": {
+    "sider": {
+      "clientHeight": 1644,
+      "scrollHeight": 1644,
+      "overflowY": "visible",
+      "hasVerticalScrollbar": false
+    },
+    "menu": {
+      "clientHeight": 412,
+      "scrollHeight": 412
+    },
+    "logoHeight": 56,
+    "availableMenuHeight": 1540,
+    "viewportHeight": 720,
+    "docScrollHeight": 1644,
+    "rows": [
+      {
+        "key": "rc-menu-uuid-_r_1_-/dashboard",
+        "label": "控制台",
+        "kind": "leaf",
+        "top": 68,
+        "bottom": 108,
+        "height": 40,
+        "titleTop": 68,
+        "titleBottom": 108,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "",
+        "label": "自动化",
+        "kind": "group",
+        "top": 112,
+        "bottom": 152,
+        "height": 40,
+        "titleTop": 112,
+        "titleBottom": 152,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "rc-menu-uuid-_r_1_-/executions",
+        "label": "执行记录",
+        "kind": "leaf",
+        "top": 156,
+        "bottom": 196,
+        "height": 40,
+        "titleTop": 156,
+        "titleBottom": 196,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "",
+        "label": "节点",
+        "kind": "group",
+        "top": 200,
+        "bottom": 240,
+        "height": 40,
+        "titleTop": 200,
+        "titleBottom": 240,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "",
+        "label": "应用",
+        "kind": "group",
+        "top": 244,
+        "bottom": 284,
+        "height": 40,
+        "titleTop": 244,
+        "titleBottom": 284,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "",
+        "label": "组织",
+        "kind": "group",
+        "top": 288,
+        "bottom": 328,
+        "height": 40,
+        "titleTop": 288,
+        "titleBottom": 328,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "",
+        "label": "治理",
+        "kind": "group",
+        "top": 332,
+        "bottom": 372,
+        "height": 40,
+        "titleTop": 332,
+        "titleBottom": 372,
+        "titleHeight": 40,
+        "inViewport": true
+      },
+      {
+        "key": "",
+        "label": "辅助",
+        "kind": "group",
+        "top": 376,
+        "bottom": 416,
+        "height": 40,
+        "titleTop": 376,
+        "titleBottom": 416,
+        "titleHeight": 40,
+        "inViewport": true
+      }
+    ],
+    "expandedChildren": [],
+    "lastRow": {
+      "key": "",
+      "label": "辅助",
+      "kind": "group",
+      "top": 376,
+      "bottom": 416,
+      "height": 40,
+      "titleTop": 376,
+      "titleBottom": 416,
+      "titleHeight": 40,
+      "inViewport": true
+    },
+    "consoleErrors": [],
+    "rowCount": 8,
+    "totalTopHeight": 348,
+    "fits": true,
+    "conclusion": "全折叠 8 行总高 348px，末行 bottom=416 ≤ 720"
+  }
+}
