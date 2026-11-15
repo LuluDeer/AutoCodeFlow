@@ -18,6 +18,7 @@
     "pages/DashboardPage.tsx",
     "pages/ProjectDetailPage.tsx",
     "pages/ProjectsPage.tsx",
+    "pages/InboxPage.tsx",
     "pages/SsoCompletePage.tsx",
     "pages/TaskDetailPage.tsx",
     "pages/TaskListPage.tsx",

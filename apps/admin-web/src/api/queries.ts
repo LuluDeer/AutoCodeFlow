@@ -22,9 +22,10 @@ import { getSSEStatus, SSE_STATUS_KEYS } from './sse-client';
 import { metricsApi, type MetricsSummary, type DailyTrend } from './metrics';
 import { tasksApi, type Task, type TaskExecution, type TaskStats, type PageResult } from './tasks';
 import { executorsApi, type Executor, type ExecutorExecution, type ExecutorMetrics, type ExecutorRuntimeConfig } from './executors';
-import { artifactsApi, type ExecutionArtifact } from './artifacts';
+import { artifactsApi, type ExecutionArtifact, type ArtifactRow, type ArtifactIndexQuery } from './artifacts';
 import { type ExecutionReportPayload, executionReportsApi } from './execution-reports';
 import { taskTemplatesApi, type TaskTemplate } from './task-templates';
+import { applicationsApi, type Application } from './applications';
 
 // ── queryKey 工厂 ────────────────────────────────────────────────────────
 
@@ -84,6 +85,10 @@ export const queryKeys = {
     /** GET /tasks/:taskId/executions 重试链兄弟执行列表 */
     retryChain: (taskId: string) => ['executions', 'retry-chain', taskId] as const,
   },
+  /** P1-3：GET /artifacts 跨执行产物索引（应用/任务维度）。 */
+  artifacts: {
+    index: (query: ArtifactIndexQuery) => ['artifacts', 'index', query] as const,
+  },
   scheduler: {
     stats: ['scheduler', 'stats'] as const,
   },
@@ -113,6 +118,9 @@ export const queryKeys = {
     stats: (id: string) => ['tasks', 'stats', id] as const,
     /** 分页聚合后的全量任务表（DAG 布局解析用） */
     allForDag: ['tasks', 'list', 'dag-all'] as const,
+  },
+  applications: {
+    all: ['applications'] as const,
   },
   executors: {
     all: ['executors'] as const,
@@ -352,6 +360,14 @@ export function useTasksList(params: {
     // cursor 已在 queryKeys.tasks.list 的 params 形状里 → 自动进缓存键。
     queryKey: queryKeys.tasks.list(params),
     queryFn: ({ signal }) => tasksApi.list(params, signal),
+  });
+}
+
+/** GET /applications 全量应用（下拉选项 / 名称解析用；后端返回裸数组）。 */
+export function useApplicationsList(): UseQueryResult<Application[]> {
+  return useQuery({
+    queryKey: queryKeys.applications.all,
+    queryFn: ({ signal }) => applicationsApi.list(signal),
   });
 }
 
@@ -798,6 +814,19 @@ export function useExecutionArtifacts(
     queryKey: queryKeys.executions.artifacts(execId ?? ''),
     queryFn: ({ signal }) => artifactsApi.listArtifacts(execId!, signal),
     enabled: enabled && !!execId,
+  });
+}
+
+/**
+ * P1-3：GET /artifacts 跨执行产物索引。响应是裸数组（无分页信封、无 total）；
+ * 后端只支持 applicationId / taskId / page / pageSize 四个查询参数。
+ */
+export function useArtifactsIndex(
+  query: ArtifactIndexQuery,
+): UseQueryResult<ArtifactRow[]> {
+  return useQuery({
+    queryKey: queryKeys.artifacts.index(query),
+    queryFn: ({ signal }) => artifactsApi.listIndex(query, signal),
   });
 }
 

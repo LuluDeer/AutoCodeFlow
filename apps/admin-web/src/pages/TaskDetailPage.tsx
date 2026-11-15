@@ -33,6 +33,7 @@ import {
   CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined, SaveOutlined,
   SyncOutlined, InfoCircleOutlined, HistoryOutlined, DownloadOutlined,
   MoreOutlined,
+  FolderOpenOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -524,6 +525,10 @@ export default function TaskDetailPage() {
         ]}
         extra={
           <Space wrap>
+            {/* P1-3：产物库入口（次级按钮，不占唯一主按钮位；携带 taskId 预填筛选） */}
+            <Button icon={<FolderOpenOutlined />} onClick={() => nav(`/artifacts?taskId=${task.id}`)}>
+              {t('taskDetail.viewAllArtifacts')}
+            </Button>
             <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
               <Button icon={<ThunderboltOutlined />} type="primary" disabled={!isAdmin} onClick={handleTrigger}>{t('taskDetail.triggerNow')}</Button>
             </Tooltip>

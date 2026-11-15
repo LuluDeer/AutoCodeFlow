@@ -31,7 +31,7 @@ import { message } from '../utils/toast';
 import {
   ArrowLeftOutlined, SyncOutlined, ReloadOutlined, GithubOutlined,
   SaveOutlined, HistoryOutlined,
-  RocketOutlined, RobotOutlined,
+  RocketOutlined, RobotOutlined, FolderOpenOutlined,
 } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
@@ -1438,6 +1438,10 @@ export default function ApplicationDetailPage() {
           <>
             <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/applications')}>{t('appDetail.back')}</Button>
             <Button icon={<ReloadOutlined />} onClick={fetchApp}>{t('appDetail.refresh')}</Button>
+            {/* P1-3：产物库入口（次级按钮，携带 applicationId 预填筛选） */}
+            <Button icon={<FolderOpenOutlined />} onClick={() => nav(`/artifacts?applicationId=${app.id}`)}>
+              {t('appDetail.viewAllArtifacts')}
+            </Button>
             <Button type="primary" icon={<RocketOutlined />} onClick={() => setSearchParams({ tab: 'deployments' })}>
               {t('appDetail.newDeploy')}
             </Button>

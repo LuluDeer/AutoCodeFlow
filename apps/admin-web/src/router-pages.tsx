@@ -25,6 +25,8 @@ export const AuditLogPage = lazy(() => import('./pages/audit/index'));
 export const ApplicationListPage = lazy(() => import('./pages/ApplicationListPage'));
 export const ApplicationDetailPage = lazy(() => import('./pages/ApplicationDetailPage'));
 export const ExecutionsPage = lazy(() => import('./pages/ExecutionsPage'));
+// P1-3：跨执行产物库（GET /artifacts，ADMIN-only）
+export const ArtifactsPage = lazy(() => import('./pages/ArtifactsPage'));
 export const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
 // P1-2：项目详情（统计 + 最近失败/活动）
 export const ProjectDetailPage = lazy(() => import('./pages/ProjectDetailPage'));
@@ -34,3 +36,5 @@ export const SopsPage = lazy(() => import('./pages/SopsPage'));
 export const SopFromVideoPage = lazy(() => import('./pages/SopFromVideoPage'));
 // P2 遗留补齐: Agent 会话查看面（全 ADMIN-only——会话能改系统状态）
 export const AgentSessionsPage = lazy(() => import('./pages/AgentSessionsPage'));
+// P1-4：待办收件箱（聚合部署审批 / Agent 待办 / 卡住 / 积压 / 队列停摆）
+export const InboxPage = lazy(() => import('./pages/InboxPage'));

@@ -133,7 +133,14 @@ export interface AgentApprovalDecision {
 }
 
 export const agentApi = {
-  list: (params?: { kind?: string; status?: string; page?: number; pageSize?: number }) =>
+  list: (params?: {
+    kind?: string;
+    status?: string;
+    page?: number;
+    pageSize?: number;
+    stalled?: number | string;
+    stalledMinutes?: number | string;
+  }) =>
     client.get('/agent/sessions', { params }) as Promise<{
       items: AgentSession[];
       total: number;

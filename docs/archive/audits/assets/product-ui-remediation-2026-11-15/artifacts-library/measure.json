@@ -1,0 +1,46 @@
+{
+  "slice": "P1-3 产物库 /artifacts",
+  "capturedAt": "2026-11-15T17:31:00+08:00",
+  "baseUrl": "http://localhost:5177 (vite dev, Playwright route 拦 /api 夹具, 无后端)",
+  "viewport": { "desktop": "1280x800", "mobile": "375x812" },
+  "tableMetrics1280": {
+    "selector": ".ant-table-content",
+    "scrollWidth": 1080,
+    "clientWidth": 1012,
+    "internalHorizontalScrollPx": 68,
+    "docScrollWidth": 1280,
+    "viewportWidth": 1280,
+    "bodyLevelOverflow": false,
+    "note": "68px 为表格容器内部横向滚动(与既有 ExecutionsPage x=1080 同基线);页面级文档宽度等于视口,无 body 级越界。"
+  },
+  "mobile375": {
+    "docScrollWidth": 443,
+    "viewportWidth": 375,
+    "offenders": "顶栏用户下拉 ant-space(user-dropdown-trigger) —— 共享 MainLayout 外壳基线,各既有页面同型;产物库移动卡片本身在视口内。"
+  },
+  "scenarios": [
+    { "key": "artifacts-1280-light", "path": "/artifacts", "theme": "light", "viewport": 1280, "expect": "列表有数据:5 行,文件名/类型大小/来源执行/任务应用/产出时间/操作齐全", "status": "passed" },
+    { "key": "artifacts-375-light", "path": "/artifacts", "theme": "light", "viewport": 375, "expect": "移动卡片列表,文件名换行,操作按钮换行右对齐", "status": "passed" },
+    { "key": "artifacts-1280-dark", "path": "/artifacts", "theme": "dark", "viewport": 1280, "expect": "暗色表壳/表格,无白底残留", "status": "passed" },
+    { "key": "artifacts-task-1280", "path": "/artifacts?taskId=t-1001", "theme": "light", "viewport": 1280, "expect": "任务筛选预填,仅 t-1001 两行", "status": "passed" },
+    { "key": "artifacts-app-1280", "path": "/artifacts?applicationId=app-2001", "theme": "light", "viewport": 1280, "expect": "应用筛选预填,仅 app-2001 两行", "status": "passed" },
+    { "key": "artifacts-empty-1280", "path": "/artifacts?taskId=t-1004", "theme": "light", "viewport": 1280, "expect": "无匹配空态 + 清除筛选按钮", "status": "passed" },
+    { "key": "artifacts-preview-1280", "path": "/artifacts", "theme": "light", "viewport": 1280, "expect": "预览弹窗:gz 判为不支持内联,提示下载;显示 SHA-256", "status": "passed" }
+  ],
+  "console": {
+    "pageErrors": 0,
+    "fixtureGap404Endpoints": [
+      "/agent/sessions",
+      "/agent/sessions/backlogged",
+      "/agent/sessions/queue-stall",
+      "/projects",
+      "/app-deployments/approvals/pending",
+      "/metrics/failures"
+    ],
+    "deprecationWarning": "Warning: [antd: Alert] `message` is deprecated. Please use `title` instead. (既有页面同型 antd v6 告警,非本切片新增缺陷)",
+    "note": "单产物 blob 端点 GET /tasks/executions/:execId/artifacts/:name 在夹具为 404(已知夹具缺口,非产品缺陷);浏览器内图片/文本预览会命中 loadFailed 提示,二进制/未知后缀走 unsupported 提示。"
+  },
+  "filtersSupportedByBackend": ["applicationId", "taskId", "page", "pageSize"],
+  "filtersNotSupportedByBackend": ["executionId", "时间范围", "类型", "关键字"],
+  "contractNotes": "GET /artifacts 返回裸数组(无分页信封、无 total);分页以『当前页返回数 == pageSize』推断是否有下一页,total 仅驱动页码器,不向用户展示总数。"
+}

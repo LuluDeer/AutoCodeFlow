@@ -41,6 +41,7 @@ import {
   DesktopOutlined,
   TranslationOutlined,
   RobotOutlined,
+  FolderOpenOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -63,6 +64,8 @@ import { BRAND_GRADIENT, LAYOUT_TOKENS } from '../theme/tokens';
 import type { ThemeMode } from '../theme/store';
 // BELL-01：通知铃升级为近期失败速览面板（组件内含未读红点逻辑）
 import NotificationBell from '../components/NotificationBell';
+// P1-4：待办收件箱顶栏入口（聚合审批/接管待办计数），同通知铃按 ADMIN 门控
+import InboxBadge from '../components/InboxBadge';
 // BRAND（2026-11-02）：狐狸是中台的**产品形象**（侧边栏标志位），六边形留给托盘与
 // 状态指示——分层见 design-system/brand/README.md §4。
 import BrandFox from '../components/BrandFox';
@@ -161,6 +164,7 @@ function buildMenuItems(t: (k: string) => string): MenuEntry[] {
       children: [
         { key: '/tasks', icon: <ThunderboltOutlined />, label: t('nav.tasks') },
         { key: '/task-templates', icon: <FileTextOutlined />, label: t('nav.taskTemplates') },
+        { key: '/artifacts', icon: <FolderOpenOutlined />, label: t('nav.artifacts') },
       ],
     },
     { key: '/executions', icon: <HistoryOutlined />, label: t('nav.executions') },
@@ -213,7 +217,7 @@ function buildMenuItems(t: (k: string) => string): MenuEntry[] {
 
 // ADMIN-only 菜单入口：普通用户不渲染（后端对应接口均 @Roles(ADMIN)）
 // R6：/notifications 收紧——GET/PATCH /notification/channels 为 ADMIN-only
-const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', '/notifications', '/sops', '/agent-sessions']);
+const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', '/notifications', '/sops', '/agent-sessions', '/artifacts']);
 
 // F-12（DEEP_REVIEW 0ef3bbe）: 实时时钟提取为独立 memoized 子组件。
 // 此前 setInterval 每秒触发 MainLayout 整棵组件树重渲；现在时钟自管 state
@@ -461,6 +465,7 @@ export default function MainLayout() {
     tasks: t('nav.tasks'),
     'task-templates': t('nav.taskTemplates'),
     executions: t('nav.executions'),
+    artifacts: t('nav.artifacts'),
     executors: t('nav.executors'),
     'executor-packages': t('nav.executorPackages'),
     registry: t('nav.registry'),
@@ -754,6 +759,7 @@ export default function MainLayout() {
                 对普通用户隐藏该快捷入口，避免点击后落入 403 页。
                 BELL-01：升级为近期失败速览面板（未读红点 + 面板内跳转），
                 此前是零反馈的纯跳转。 */}
+            {isAdmin && <InboxBadge />}
             {isAdmin && <NotificationBell />}
 
             {/* 用户头像下拉 */}

@@ -121,6 +121,16 @@ const APPLICATIONS = [
   { id: 'app-2004', name: '爬虫集群-电商价格监控', description: '多站点价格抓取', version: '3.7.0', runtime: 'python', status: 'failed', createdAt: ISO(-15 * 24 * 3600e3), updatedAt: ISO(-1 * 24 * 3600e3) },
 ];
 
+// P1-3：GET /artifacts 跨执行产物索引行（镜像后端 ExecutionArtifactRowDto 契约：
+// 裸数组、无 total；仅 applicationId / taskId / page / pageSize 可筛）。
+const ARTIFACT_ROWS = [
+  { id: 'ar-1', executionId: 'e-9001', taskId: 't-1001', applicationId: null, name: 'backup-dump.sql.gz', size: 1_288_490_188, sha256: 'aa'.repeat(32), createdAt: ISO(-94 * MIN) },
+  { id: 'ar-2', executionId: 'e-9001', taskId: 't-1001', applicationId: null, name: '备份日志-中文文件名.txt', size: 4096, sha256: 'bb'.repeat(32), createdAt: ISO(-94 * MIN) },
+  { id: 'ar-3', executionId: 'e-9002', taskId: 't-1005', applicationId: 'app-2001', name: 'inspection-report.json', size: 8192, sha256: 'cc'.repeat(32), createdAt: ISO(-18 * MIN) },
+  { id: 'ar-4', executionId: 'e-9002', taskId: 't-1005', applicationId: 'app-2001', name: 'screenshot-dashboard.png', size: 245_760, sha256: 'dd'.repeat(32), createdAt: ISO(-18 * MIN) },
+  { id: 'ar-5', executionId: 'e-9004', taskId: 't-1002', applicationId: null, name: 'cleanup-summary.csv', size: 1024, sha256: 'ee'.repeat(32), createdAt: ISO(-3 * 3600e3) },
+];
+
 const APP_DEPLOYMENTS = [
   { id: 'dep-7001', applicationId: 'app-2001', executorId: 'ex-3001', executorAddress: 'http://192.168.4.54:9001', status: 'running', runMode: 'daemon', deployedCommit: 'f00dcafe', deployedVersion: '2.3.1', startCommand: 'python main.py', env: { LOG_LEVEL: 'info' }, pid: 4200, lastHeartbeat: ISO(-30e3), statusMessage: '运行正常', deployedAt: ISO(-2 * 24 * 3600e3), approvalStatus: 'approved', approvalMeta: { requestedBy: 2, requestedByName: '王运维', requestedAt: ISO(-2 * 24 * 3600e3 - 3600e3), actedBy: 1, actedByName: 'admin', actedAt: ISO(-2 * 24 * 3600e3), reason: '常规发布' }, rolloutState: 'promoted', createdAt: ISO(-2 * 24 * 3600e3), updatedAt: ISO(-1 * 3600e3) },
   { id: 'dep-7002', applicationId: 'app-2002', executorId: 'ex-3002', executorAddress: 'http://10.8.0.12:9001', status: 'stopped', runMode: 'scheduled', deployedCommit: 'beef1234', deployedVersion: '1.0.0', startCommand: 'node index.js', env: null, pid: null, lastHeartbeat: null, statusMessage: '已停止', deployedAt: ISO(-30 * 24 * 3600e3), approvalStatus: null, approvalMeta: null, rolloutState: null, createdAt: ISO(-30 * 24 * 3600e3), updatedAt: ISO(-20 * 24 * 3600e3) },
@@ -302,6 +312,17 @@ const ROUTES = [
   ['GET', /^\/tasks$/, (u, q) => TASKS_PAGED(q)],
   ['GET', /^\/tasks\/executions\/all$/, (u, q) => pagedEnvelope(EXECUTIONS, q)],
   ['GET', /^\/tasks\/executions\/([^/]+)\/artifacts$/, () => [{ name: 'backup-dump.sql.gz', size: 1_288_490_188, sha256: 'aa'.repeat(20) }, { name: '备份日志-中文文件名.txt', size: 4096, sha256: 'bb'.repeat(20) }]],
+  // P1-3：GET /artifacts 索引（裸数组、无 total；夹具镜像真实契约：仅应用/任务可筛）
+  ['GET', /^\/artifacts$/, (u, q) => {
+    const appId = q.get('applicationId');
+    const taskId = q.get('taskId');
+    const page = Math.max(1, parseInt(q.get('page') || '1', 10) || 1);
+    const pageSize = Math.max(1, parseInt(q.get('pageSize') || '20', 10) || 20);
+    let pool = ARTIFACT_ROWS;
+    if (appId) pool = pool.filter((r) => r.applicationId === appId);
+    if (taskId) pool = pool.filter((r) => r.taskId === taskId);
+    return pool.slice((page - 1) * pageSize, page * pageSize);
+  }],
   ['GET', /^\/tasks\/([^/]+)$/, (u, q, m) => TASKS.find((t) => t.id === m[1]) || TASKS[0]],
   ['GET', /^\/tasks\/([^/]+)\/executions$/, (u, q, m) => {
     const pool = EXECUTIONS.filter((e) => e.taskId === m[1]);
@@ -380,6 +401,18 @@ const ROUTES = [
   ]],
   ['GET', /^\/applications\/([^/]+)\/removal-impact$/, () => ({ applicationName: APPLICATIONS[0].name, tasksLosingSource: 4, deploymentCount: 3, packageFileWillBeDeleted: true })],
   ['GET', /^\/applications\/([^/]+)$/, (u, q, m) => APPLICATIONS.find((a) => a.id === m[1]) || APPLICATIONS[0]],
+  // P1-4 收件箱夹具：部署审批待办（GET /app-deployments/approvals/pending，Paginated 信封）
+  ['GET', /^\/app-deployments\/approvals\/pending$/, () => ({
+    data: [{
+      ...APP_DEPLOYMENTS[0],
+      id: 'dep-pending-1',
+      status: 'pending',
+      approvalStatus: 'pending_approval',
+      application: APPLICATIONS[0],
+      approvalMeta: { requestedBy: 2, requestedByName: '王运维', requestedAt: ISO(-40 * MIN) },
+    }],
+    total: 1,
+  })],
   ['GET', /^\/app-deployments$/, (u, q) => {
     const appId = q.get('applicationId');
     const pool = appId ? APP_DEPLOYMENTS.filter((d) => d.applicationId === appId) : APP_DEPLOYMENTS;
@@ -424,6 +457,23 @@ const ROUTES = [
     const env = pagedEnvelope(AGENT_SESSIONS, q);
     return { items: env.items, total: env.total };
   }],
+  // P1-4 收件箱夹具（镜像真实契约；backlogged / queue-stall 在 openapi 未公示 200 schema，
+  // 结构按 admin-api 控制器返回值镜像）。声明在会话详情单段正则之前，避免被吞。
+  ['GET', /^\/agent\/sessions\/backlogged$/, () => ({
+    sessionIds: ['ag-6004'],
+    count: 1,
+    probed: 1,
+    truncated: false,
+  })],
+  ['GET', /^\/agent\/sessions\/queue-stall$/, () => ({
+    stalled: true,
+    reason: '调度器心跳超时：执行器离线，待派发任务滞留队列。',
+    pendingJobs: 2,
+    degraded: false,
+  })],
+  ['GET', /^\/agent\/sessions\/([^/]+)\/approvals$/, (u, q, m) => [
+    { id: 'apr-1', approvalKey: `apr-${m[1]}-write`, sessionId: m[1], toolName: 'shell.exec', reason: 'write 类操作需要人工点头（审批策略 writeRequiresApproval=true）', status: 'pending', decidedBy: null, decidedAt: null, consumedAt: null, createdAt: ISO(-30 * MIN) },
+  ]],
   ['GET', /^\/agent\/sessions\/([^/]+)$/, (u, q, m) => ({
     session: AGENT_SESSIONS.find((s) => s.id === m[1]) || AGENT_SESSIONS[0],
     steps: [
@@ -546,7 +596,10 @@ const PAGES = [
   { key: 'task-detail', path: '/tasks/t-1001' },
   { key: 'execution-detail', path: '/tasks/t-1001/executions/e-9001' },
   { key: 'executions', path: '/executions' },
+  { key: 'artifacts', path: '/artifacts' },
+  { key: 'artifacts-task', path: '/artifacts?taskId=t-1001' },
   { key: 'agent-sessions', path: '/agent-sessions' },
+  { key: 'inbox', path: '/inbox' },
   { key: 'sops', path: '/sops' },
   { key: 'projects', path: '/projects' },
   { key: 'users', path: '/users' },

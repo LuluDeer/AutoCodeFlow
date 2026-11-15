@@ -1,0 +1,336 @@
+[
+  {
+    "label": "inbox@375",
+    "viewport": 375,
+    "dark": false,
+    "measure": {
+      "doc": {
+        "scrollWidth": 443,
+        "clientWidth": 375
+      },
+      "rootBox": {
+        "scrollWidth": 351,
+        "clientWidth": 351
+      },
+      "badgeText": "6",
+      "sections": [
+        {
+          "key": "inbox-section-deployments",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-agentApprovals",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-agentWaiting",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-stalled",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-backlogged",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-queueStall",
+          "rows": 0
+        },
+        {
+          "key": "inbox-section-recentFailures",
+          "rows": 1
+        }
+      ],
+      "wide": [
+        {
+          "sel": "div.ant-space.css-dev-only-do-not-override-jdb7z4",
+          "right": 443,
+          "text": "全部项目17:2811月15日周日61Aadmin管理员"
+        },
+        {
+          "sel": "div.ant-space-item",
+          "right": 443,
+          "text": "Aadmin管理员"
+        },
+        {
+          "sel": "button.ant-dropdown-trigger.user-dropdown-trigger",
+          "right": 443,
+          "text": "Aadmin管理员"
+        },
+        {
+          "sel": "span.ant-avatar.ant-avatar-circle",
+          "right": 392,
+          "text": "A"
+        },
+        {
+          "sel": "span.ant-avatar-string",
+          "right": 381,
+          "text": "A"
+        }
+      ],
+      "bodyChars": 550,
+      "dataTheme": "light"
+    },
+    "consoleErrors": [
+      "error: Warning: [antd: Alert] `message` is deprecated. Please use `title` instead."
+    ],
+    "pageErrors": [],
+    "api404": [],
+    "shot": "E:\\softwareData\\coding\\AutoCodeFlow\\docs\\archive\\audits\\assets\\product-ui-remediation-2026-11-15\\inbox\\inbox-375.png"
+  },
+  {
+    "label": "inbox@1280",
+    "viewport": 1280,
+    "dark": false,
+    "measure": {
+      "doc": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280
+      },
+      "rootBox": {
+        "scrollWidth": 1012,
+        "clientWidth": 1012
+      },
+      "badgeText": "6",
+      "sections": [
+        {
+          "key": "inbox-section-deployments",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-agentApprovals",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-agentWaiting",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-stalled",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-backlogged",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-queueStall",
+          "rows": 0
+        },
+        {
+          "key": "inbox-section-recentFailures",
+          "rows": 1
+        }
+      ],
+      "wide": [
+        {
+          "sel": "g.[object.SVGAnimatedString]",
+          "right": 1289,
+          "text": ""
+        },
+        {
+          "sel": "ellipse.[object.SVGAnimatedString]",
+          "right": 1289,
+          "text": ""
+        },
+        {
+          "sel": "g.[object.SVGAnimatedString]",
+          "right": 1289,
+          "text": ""
+        },
+        {
+          "sel": "ellipse.[object.SVGAnimatedString]",
+          "right": 1289,
+          "text": ""
+        },
+        {
+          "sel": "g.[object.SVGAnimatedString]",
+          "right": 1289,
+          "text": ""
+        }
+      ],
+      "bodyChars": 565,
+      "dataTheme": "light"
+    },
+    "consoleErrors": [
+      "error: Warning: [antd: Alert] `message` is deprecated. Please use `title` instead."
+    ],
+    "pageErrors": [],
+    "api404": [],
+    "shot": "E:\\softwareData\\coding\\AutoCodeFlow\\docs\\archive\\audits\\assets\\product-ui-remediation-2026-11-15\\inbox\\inbox-1280.png"
+  },
+  {
+    "label": "approve-action",
+    "measure": {
+      "deployRows": 1,
+      "toasts": [
+        "已批准"
+      ]
+    },
+    "pageErrors": []
+  },
+  {
+    "label": "inbox@375-dark",
+    "viewport": 375,
+    "dark": true,
+    "measure": {
+      "doc": {
+        "scrollWidth": 443,
+        "clientWidth": 375
+      },
+      "rootBox": {
+        "scrollWidth": 351,
+        "clientWidth": 351
+      },
+      "badgeText": "6",
+      "sections": [
+        {
+          "key": "inbox-section-deployments",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-agentApprovals",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-agentWaiting",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-stalled",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-backlogged",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-queueStall",
+          "rows": 0
+        },
+        {
+          "key": "inbox-section-recentFailures",
+          "rows": 1
+        }
+      ],
+      "wide": [
+        {
+          "sel": "div.ant-space.css-dev-only-do-not-override-jdb7z4",
+          "right": 443,
+          "text": "全部项目17:2911月15日周日61Aadmin管理员"
+        },
+        {
+          "sel": "div.ant-space-item",
+          "right": 443,
+          "text": "Aadmin管理员"
+        },
+        {
+          "sel": "button.ant-dropdown-trigger.user-dropdown-trigger",
+          "right": 443,
+          "text": "Aadmin管理员"
+        },
+        {
+          "sel": "span.ant-avatar.ant-avatar-circle",
+          "right": 392,
+          "text": "A"
+        },
+        {
+          "sel": "span.ant-avatar-string",
+          "right": 381,
+          "text": "A"
+        }
+      ],
+      "bodyChars": 550,
+      "dataTheme": "dark"
+    },
+    "consoleErrors": [
+      "error: Warning: [antd: Alert] `message` is deprecated. Please use `title` instead."
+    ],
+    "pageErrors": [],
+    "api404": [],
+    "shot": "E:\\softwareData\\coding\\AutoCodeFlow\\docs\\archive\\audits\\assets\\product-ui-remediation-2026-11-15\\inbox\\inbox-375-dark.png"
+  },
+  {
+    "label": "inbox@1280-dark",
+    "viewport": 1280,
+    "dark": true,
+    "measure": {
+      "doc": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280
+      },
+      "rootBox": {
+        "scrollWidth": 1012,
+        "clientWidth": 1012
+      },
+      "badgeText": "6",
+      "sections": [
+        {
+          "key": "inbox-section-deployments",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-agentApprovals",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-agentWaiting",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-stalled",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-backlogged",
+          "rows": 1
+        },
+        {
+          "key": "inbox-section-queueStall",
+          "rows": 0
+        },
+        {
+          "key": "inbox-section-recentFailures",
+          "rows": 1
+        }
+      ],
+      "wide": [
+        {
+          "sel": "g.[object.SVGAnimatedString]",
+          "right": 1289,
+          "text": ""
+        },
+        {
+          "sel": "ellipse.[object.SVGAnimatedString]",
+          "right": 1289,
+          "text": ""
+        },
+        {
+          "sel": "g.[object.SVGAnimatedString]",
+          "right": 1289,
+          "text": ""
+        },
+        {
+          "sel": "ellipse.[object.SVGAnimatedString]",
+          "right": 1289,
+          "text": ""
+        },
+        {
+          "sel": "g.[object.SVGAnimatedString]",
+          "right": 1289,
+          "text": ""
+        }
+      ],
+      "bodyChars": 565,
+      "dataTheme": "dark"
+    },
+    "consoleErrors": [
+      "error: Warning: [antd: Alert] `message` is deprecated. Please use `title` instead."
+    ],
+    "pageErrors": [],
+    "api404": [],
+    "shot": "E:\\softwareData\\coding\\AutoCodeFlow\\docs\\archive\\audits\\assets\\product-ui-remediation-2026-11-15\\inbox\\inbox-1280-dark.png"
+  }
+]

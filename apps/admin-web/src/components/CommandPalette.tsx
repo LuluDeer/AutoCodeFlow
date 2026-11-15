@@ -63,8 +63,10 @@ import {
   ClusterOutlined,
   DatabaseOutlined,
   FileTextOutlined,
+  FolderOpenOutlined,
   HistoryOutlined,
   HomeOutlined,
+  MailOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
   PlusOutlined,
@@ -217,6 +219,7 @@ const getPageNavActions = (t: TFunction): StaticAction[] => [
   { key: 'nav-tasks', id: 'nav-tasks', title: t('nav.tasks'), description: t('palette.pageNav.tasksDesc'), to: '/tasks', icon: <ThunderboltOutlined /> },
   { key: 'nav-task-templates', id: 'nav-task-templates', title: t('nav.taskTemplates'), description: t('palette.pageNav.taskTemplatesDesc'), to: '/task-templates', icon: <FileTextOutlined /> },
   { key: 'nav-executions', id: 'nav-executions', title: t('nav.executions'), description: t('palette.pageNav.executionsDesc'), to: '/executions', icon: <HistoryOutlined /> },
+  { key: 'nav-artifacts', id: 'nav-artifacts', title: t('nav.artifacts'), description: t('palette.pageNav.artifactsDesc'), to: '/artifacts', adminOnly: true, icon: <FolderOpenOutlined /> },
   { key: 'nav-executors', id: 'nav-executors', title: t('nav.executors'), description: t('palette.pageNav.executorsDesc'), to: '/executors', icon: <ClusterOutlined /> },
   { key: 'nav-executor-packages', id: 'nav-executor-packages', title: t('nav.executorPackages'), description: t('palette.pageNav.executorPackagesDesc'), to: '/executor-packages', adminOnly: true, icon: <DatabaseOutlined /> },
   { key: 'nav-applications', id: 'nav-applications', title: t('nav.applications'), description: t('palette.pageNav.applicationsDesc'), to: '/applications', icon: <AppstoreOutlined /> },
@@ -228,6 +231,7 @@ const getPageNavActions = (t: TFunction): StaticAction[] => [
   { key: 'nav-settings', id: 'nav-settings', title: t('nav.settings'), description: t('palette.pageNav.settingsDesc'), to: '/settings', icon: <SettingOutlined /> },
   { key: 'nav-sops', id: 'nav-sops', title: t('nav.sops'), description: t('palette.pageNav.sopsDesc'), to: '/sops', adminOnly: true, icon: <FileTextOutlined /> },
   { key: 'nav-agent-sessions', id: 'nav-agent-sessions', title: t('nav.agents'), description: t('palette.pageNav.agentsDesc'), to: '/agent-sessions', adminOnly: true, icon: <RobotOutlined /> },
+  { key: 'nav-inbox', id: 'nav-inbox', title: t('inbox.title'), description: t('inbox.description'), to: '/inbox', adminOnly: true, icon: <MailOutlined /> },
 ];
 
 interface GroupResult<T> {
