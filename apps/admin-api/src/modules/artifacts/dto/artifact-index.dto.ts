@@ -1,13 +1,21 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsOptional, IsUUID } from "class-validator";
-import { Type } from "class-transformer";
+import {
+  IsISO8601,
+  IsIn,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+} from "class-validator";
+import { Transform, Type } from "class-transformer";
 import { PageQueryDto } from "../../../common/dto/pagination.dto";
+import { ARTIFACT_EXTENSION_FILTERS } from "../artifacts.constants";
 
 /**
  * ARTIFACTS-INDEX-46：GET /artifacts 查询参数。
  *
  * 继承 PageQueryDto（API-07 教训：分页与业务过滤分层——本端点消费
- * applicationId/taskId 两个真实过滤器，故在此显式声明，不混入通用基类）。
+ * applicationId/taskId/q/from/to/ext 真实过滤器，故在此显式声明，不混入通用基类）。
  */
 export class ListArtifactRowsDto extends PageQueryDto {
   @ApiPropertyOptional({
@@ -28,6 +36,48 @@ export class ListArtifactRowsDto extends PageQueryDto {
   @Type(() => String)
   @IsUUID()
   taskId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "文件名关键字（name ILIKE 不区分大小写模糊匹配；长度上限 100，trim 后空串视为未传）",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  @Type(() => String)
+  q?: string;
+
+  @ApiPropertyOptional({
+    format: "date-time",
+    description:
+      "仅返回 createdAt >= 该时刻的产物（ISO-8601 闭区间起点；非法格式 400 VALIDATION_FAILED）",
+  })
+  @IsOptional()
+  @IsISO8601()
+  @Type(() => String)
+  from?: string;
+
+  @ApiPropertyOptional({
+    format: "date-time",
+    description:
+      "仅返回 createdAt <= 该时刻的产物（ISO-8601 闭区间终点；from>to 400 VALIDATION_FAILED）",
+  })
+  @IsOptional()
+  @IsISO8601()
+  @Type(() => String)
+  to?: string;
+
+  @ApiPropertyOptional({
+    enum: [...ARTIFACT_EXTENSION_FILTERS],
+    description:
+      "按扩展名过滤（小写、不带点；命中文件名末尾的 .<ext>；不在白名单 400 VALIDATION_FAILED）",
+  })
+  @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === "string" ? value.trim().toLowerCase() : value,
+  )
+  @IsIn([...ARTIFACT_EXTENSION_FILTERS])
+  ext?: string;
 }
 
 /**

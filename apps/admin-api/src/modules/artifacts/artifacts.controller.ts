@@ -136,7 +136,8 @@ export class ArtifactsController {
     return { ok: true, ...stored };
   }
 
-  // ARTIFACTS-INDEX-46（部署模型评审 §4.6）：按应用/任务维度索引查询产物。
+  // ARTIFACTS-INDEX-46（部署模型评审 §4.6）：按应用/任务/文件名关键字/时间范围/
+  // 扩展名维度索引查询产物。
   // 走 execution_artifacts 新表（jsonb 清单无索引不可查询的痛点由本面承接），
   // 与上方按执行的清单端点（读 jsonb）并存——读面分工见
   // ArtifactsService.listArtifactRows 头注（过渡期：存量执行无新表行 → 如实
@@ -146,11 +147,39 @@ export class ArtifactsController {
   @ApiBearerAuth("JWT")
   @ApiOperation({
     description:
-      "按应用/任务维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。",
-    summary: "按应用/任务查询产物索引（仅管理员）",
+      "按应用/任务/文件名关键字/时间范围/扩展名维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。",
+    summary: "按应用/任务/关键字/时间/类型查询产物索引（仅管理员）",
   })
   @ApiQuery({ name: "applicationId", required: false, format: "uuid" })
   @ApiQuery({ name: "taskId", required: false, format: "uuid" })
+  @ApiQuery({
+    name: "q",
+    required: false,
+    type: String,
+    description:
+      "文件名关键字（name ILIKE 不区分大小写模糊匹配；长度上限 100，trim 后空串视为未传）",
+  })
+  @ApiQuery({
+    name: "from",
+    required: false,
+    format: "date-time",
+    description:
+      "仅返回 createdAt >= 该时刻的产物（ISO-8601 闭区间起点；非法格式 400 VALIDATION_FAILED）",
+  })
+  @ApiQuery({
+    name: "to",
+    required: false,
+    format: "date-time",
+    description:
+      "仅返回 createdAt <= 该时刻的产物（ISO-8601 闭区间终点；from>to 400 VALIDATION_FAILED）",
+  })
+  @ApiQuery({
+    name: "ext",
+    required: false,
+    type: String,
+    description:
+      "按扩展名过滤（小写、不带点；命中文件名末尾的 .<ext>；不在白名单 400 VALIDATION_FAILED）",
+  })
   @ApiQuery({ name: "page", required: false, type: Number })
   @ApiQuery({ name: "pageSize", required: false, type: Number })
   @ApiOkResponse({ type: [ExecutionArtifactRowDto] })

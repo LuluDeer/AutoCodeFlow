@@ -5,7 +5,16 @@ import {
   Optional,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import {
+  And,
+  ILike,
+  LessThanOrEqual,
+  Like,
+  MoreThanOrEqual,
+  Repository,
+  type FindOperator,
+  type FindOptionsWhere,
+} from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import { isUUID } from "class-validator";
 import * as crypto from "crypto";
@@ -27,12 +36,15 @@ import { createResponseReadStream } from "../../common/utils/response-stream.uti
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
 import {
+  ARTIFACT_EXTENSION_FILTERS,
   getArtifactRootDir,
   isArtifactPathWithin,
   MAX_ARTIFACT_COUNT,
   MAX_ARTIFACT_SIZE_BYTES,
   SAFE_ARTIFACT_NAME_RE,
 } from "./artifacts.constants";
+// NETOPT-3⑤ 同款先例：ILIKE 的 `_`/`%` 一律转义按字面量匹配（与 audit/users/project 共用工具）。
+import { escapeLikePattern } from "../audit/audit.service";
 
 const CONTENT_TYPE_BY_EXT: Record<string, string> = {
   ".png": "image/png",
@@ -212,12 +224,18 @@ export class ArtifactsService {
    * 先例冲突）。按执行的既有清单端点 GET /tasks/executions/:execId/artifacts
    * 继续读 jsonb，存量执行在该面完整可见——两面各答各的问题，不重叠。
    *
-   * @param query 过滤：applicationId / taskId（均可选，都不传=全量分页）+ 分页。
-   * @returns paginate() 信封（仓库惯例 6 键：list/items/total/page/pageSize/totalPages）。
+   * @param query 过滤：applicationId / taskId / q（文件名关键字）/ from / to
+   *   （createdAt 闭区间）/ ext（扩展名白名单），均可选，都不传=全量分页 + 分页。
+   * @returns paginate() 信封（仓库惯例 6 键：list/items/total/page/pageSize/totalPages）；
+   *   `total` 是**过滤后**的总行数（findAndCount 的 count 与行集同一份 where）。
    */
   async listArtifactRows(query: {
     applicationId?: string;
     taskId?: string;
+    q?: string;
+    from?: string;
+    to?: string;
+    ext?: string;
     page: number;
     pageSize: number;
   }) {
@@ -239,9 +257,67 @@ export class ArtifactsService {
         detail: "execution_artifacts repository not available",
       });
     }
-    const where: { applicationId?: string; taskId?: string } = {};
+
+    // q：文件名关键字。trim 后空串 = 未传（避免生成 `%%` 全匹配的无效 where）；
+    // 截断 100 字符防超长 needle 直达 PG；`_`/`%` 经 escapeLikePattern 按字面量处理。
+    const keyword = query.q?.trim().slice(0, 100) || undefined;
+
+    // ext：白名单后缀匹配。DTO @IsIn 已兜非法值，service 再判一次纵深防御；
+    // 白名单内只有 [a-z0-9]，后缀 LIKE 不带通配符注入面。
+    const ext = query.ext?.trim().toLowerCase() || undefined;
+    if (
+      ext &&
+      !ARTIFACT_EXTENSION_FILTERS.includes(
+        ext as (typeof ARTIFACT_EXTENSION_FILTERS)[number],
+      )
+    ) {
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail: "ext 不在扩展名白名单内",
+      });
+    }
+
+    // from/to：createdAt 闭区间。DTO @IsISO8601 已兜非法格式，service 再解析一次
+    // 守卫 NaN；from>to 同样 400（VALIDATION_FAILED），不带病查询。
+    let fromDate: Date | null = null;
+    let toDate: Date | null = null;
+    if (query.from) {
+      fromDate = new Date(query.from);
+      if (Number.isNaN(fromDate.getTime())) {
+        throw new AppError(ErrorCode.VALIDATION_FAILED, {
+          detail: "from 不是合法的 ISO-8601 时间",
+        });
+      }
+    }
+    if (query.to) {
+      toDate = new Date(query.to);
+      if (Number.isNaN(toDate.getTime())) {
+        throw new AppError(ErrorCode.VALIDATION_FAILED, {
+          detail: "to 不是合法的 ISO-8601 时间",
+        });
+      }
+    }
+    if (fromDate && toDate && fromDate.getTime() > toDate.getTime()) {
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail: "from 不能晚于 to",
+      });
+    }
+
+    const where: FindOptionsWhere<ExecutionArtifactRow> = {};
     if (query.applicationId) where.applicationId = query.applicationId;
     if (query.taskId) where.taskId = query.taskId;
+
+    // 同一列上的多个谓词用 And() 合取（q 模糊 + ext 后缀可同时生效）。
+    const namePredicates: FindOperator<string>[] = [];
+    if (keyword) namePredicates.push(ILike(`%${escapeLikePattern(keyword)}%`));
+    if (ext) namePredicates.push(Like(`%.${ext}`));
+    if (namePredicates.length === 1) where.name = namePredicates[0];
+    else if (namePredicates.length > 1) where.name = And(...namePredicates);
+
+    const timePredicates: FindOperator<Date>[] = [];
+    if (fromDate) timePredicates.push(MoreThanOrEqual(fromDate));
+    if (toDate) timePredicates.push(LessThanOrEqual(toDate));
+    if (timePredicates.length === 1) where.createdAt = timePredicates[0];
+    else if (timePredicates.length > 1) where.createdAt = And(...timePredicates);
 
     const [rows, total] = await this.artifactIndexRepo.findAndCount({
       where,

@@ -31,6 +31,36 @@ export const MAX_ARTIFACT_SIZE_BYTES = 100 * 1024 * 1024;
 export const SAFE_ARTIFACT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
 
 /**
+ * GET /artifacts?ext= 的扩展名白名单（小写、不带点）。
+ *
+ * 取值与上传面 CONTENT_TYPE_BY_EXT 覆盖的常见交付类型对齐；前端类型下拉选项
+ * 直接列这份白名单（不让用户手输）。不在表内的后缀在 DTO 层 `@IsIn` 400，
+ * service 层再兜底判一次——白名单收窄的是开放后缀枚举面，也避免把 LIKE 后缀
+ * 匹配面暴露成任意输入。
+ */
+export const ARTIFACT_EXTENSION_FILTERS = [
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "svg",
+  "pdf",
+  "zip",
+  "json",
+  "txt",
+  "log",
+  "md",
+  "csv",
+  "xlsx",
+  "html",
+] as const;
+
+/** 白名单元素类型（供 DTO / service 收窄类型）。 */
+export type ArtifactExtensionFilter =
+  (typeof ARTIFACT_EXTENSION_FILTERS)[number];
+
+/**
  * R31（本轮审计）：产物路径的**纵深防御判定**——纯函数，便于直接钉住。
  *
  * 为什么单独抽出来：原实现在 `resolveArtifactPath` 里写成

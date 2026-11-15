@@ -3750,8 +3750,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 按应用/任务查询产物索引（仅管理员）
-         * @description 按应用/任务维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。
+         * 按应用/任务/关键字/时间/类型查询产物索引（仅管理员）
+         * @description 按应用/任务/文件名关键字/时间范围/扩展名维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。
          */
         get: operations["ArtifactsController_listArtifactRows"];
         put?: never;
@@ -14499,6 +14499,14 @@ export interface operations {
                 applicationId?: string;
                 /** @description 按任务过滤（冗余自执行行 task_executions.taskId） */
                 taskId?: string;
+                /** @description 文件名关键字（name ILIKE 不区分大小写模糊匹配；长度上限 100，trim 后空串视为未传） */
+                q?: string;
+                /** @description 仅返回 createdAt >= 该时刻的产物（ISO-8601 闭区间起点；非法格式 400 VALIDATION_FAILED） */
+                from?: string;
+                /** @description 仅返回 createdAt <= 该时刻的产物（ISO-8601 闭区间终点；from>to 400 VALIDATION_FAILED） */
+                to?: string;
+                /** @description 按扩展名过滤（小写、不带点；命中文件名末尾的 .<ext>；不在白名单 400 VALIDATION_FAILED） */
+                ext?: "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "pdf" | "zip" | "json" | "txt" | "log" | "md" | "csv" | "xlsx" | "html";
             };
             header?: never;
             path?: never;
