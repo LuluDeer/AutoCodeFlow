@@ -167,7 +167,7 @@ afterEach(() => {
 });
 
 describe('UI-12 MainLayout — 焦点管理与 aria', () => {
-  it('首个 Tab 落在「跳到主要内容」链接，且落点 #main-content 真实存在', async () => {
+  it('首个 Tab 落在「跳到主要内容」链接，且落点 #main-content 是 main landmark', async () => {
     const user = userEvent.setup();
     renderLayout();
 
@@ -178,6 +178,8 @@ describe('UI-12 MainLayout — 焦点管理与 aria', () => {
 
     const main = document.getElementById('main-content');
     expect(main).toBeTruthy();
+    // Lighthouse landmark-one-main：主内容必须是 main landmark，而不只是一个带 id 的 div
+    expect(screen.getByRole('main')).toBe(main);
     // tabIndex=-1：可编程聚焦但不进入 Tab 序列（不是键盘陷阱）
     expect(main?.getAttribute('tabindex')).toBe('-1');
   });

@@ -90,6 +90,8 @@ afterEach(() => {
 describe('UI-12 LoginPage — 表单语义', () => {
   it('表单具备可访问名：标题与 Form 通过 aria-labelledby 关联', () => {
     renderLogin();
+    // Lighthouse landmark-one-main：登录页同样必须有 main landmark
+    expect(screen.getByRole('main')).toBeTruthy();
     const form = document.querySelector('form.ant-form') as HTMLFormElement;
     const labelledby = form.getAttribute('aria-labelledby');
     expect(labelledby).toBeTruthy();

@@ -79,7 +79,11 @@ describe('InboxBadge 顶栏待办入口', () => {
     render(<MemoryRouter><InboxBadge /></MemoryRouter>);
     const btn = await screen.findByTestId('inbox-badge-button');
     expect(btn).toBeTruthy();
-    expect(screen.getByTestId('inbox-badge').textContent).toContain('3');
+    // 徽标在 loading 阶段先渲染「—」，计数是后续异步落地的；
+    // 直接断言会与 setState 竞态（CI 上曾报 expected '—' to contain '3'）。
+    await waitFor(() => {
+      expect(screen.getByTestId('inbox-badge').textContent).toContain('3');
+    });
   });
 
   it('任一源未知（null）⇒ 徽标显示「—」而不是假总数', async () => {
