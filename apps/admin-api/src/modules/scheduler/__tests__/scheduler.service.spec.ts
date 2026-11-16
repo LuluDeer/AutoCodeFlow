@@ -902,16 +902,18 @@ describe("SchedulerService", () => {
       const runAudit = () =>
         (service as any).auditMissedFirePointsBody() as Promise<void>;
 
-      it("多点 cron 丢一拍即告警（0 8,12,17 —— 旧判据在此静默）", async () => {
+      it("最近落点已过 grace 且未触发即告警（旧判据在多点火点会静默）", async () => {
         await makeLeader();
-        // 用固定 now 不可行（方法内部取 Date.now），改为构造"最近一个计划落点
-        // 在 4 小时前、但 lastTriggerTime 停在那之前"的形状。
-        // 0 8,12,17：若现在是 16:00，最近落点是 12:00（4h 前）——
-        // 旧判据阈值 2×4h=8h 不命中；新判据要求"12:00 晚于 lastTriggerTime"。
+        // 不能用固定 now（方法内部取 new Date）；也不能写死 "0 8,12,17"：
+        // CI 若恰好在 08:00/12:00/17:00 UTC 的 90s grace 内跑，最近落点会
+        // 被 grace 跳过，用例偶发失败。改为相对当前时刻 3 分钟前生成一个
+        // 单点 cron，落点必然已过 grace，且 lastTriggerTime 在落点之前。
         const now = Date.now();
+        const fireAt = new Date(now - 3 * 60 * 1000);
+        const cronExpression = `${fireAt.getMinutes()} ${fireAt.getHours()} * * *`;
         const task = makeTask({
           triggerType: TaskTriggerType.CRON,
-          cronExpression: "0 8,12,17 * * *",
+          cronExpression,
           misfireStrategy: MisfireStrategy.IGNORE,
           // 上次触发早于最近落点 → 漏了
           lastTriggerTime: new Date(now - 20 * 60 * 60 * 1000),
