@@ -171,7 +171,7 @@ export class ArtifactsController {
     required: false,
     format: "date-time",
     description:
-      "仅返回 createdAt <= 该时刻的产物（ISO-8601 闭区间终点；from>to 400 VALIDATION_FAILED）",
+      "仅返回 createdAt <= 该时刻的产物（ISO-8601 闭区间终点；起始时间晚于终点时返回 400 VALIDATION_FAILED）",
   })
   @ApiQuery({
     name: "ext",

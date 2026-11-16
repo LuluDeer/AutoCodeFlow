@@ -10229,7 +10229,7 @@ export interface operations {
                 q?: string;
                 /** @description 仅返回 createdAt >= 该时刻的产物（ISO-8601 闭区间起点；非法格式 400 VALIDATION_FAILED） */
                 from?: string;
-                /** @description 仅返回 createdAt <= 该时刻的产物（ISO-8601 闭区间终点；from>to 400 VALIDATION_FAILED） */
+                /** @description 仅返回 createdAt <= 该时刻的产物（ISO-8601 闭区间终点；起始时间晚于终点时返回 400 VALIDATION_FAILED） */
                 to?: string;
                 /** @description 按扩展名过滤（小写、不带点；命中文件名末尾的 .<ext>；不在白名单 400 VALIDATION_FAILED） */
                 ext?: "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "pdf" | "zip" | "json" | "txt" | "log" | "md" | "csv" | "xlsx" | "html";
