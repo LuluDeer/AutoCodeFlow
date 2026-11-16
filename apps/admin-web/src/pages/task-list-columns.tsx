@@ -82,7 +82,7 @@ const EXEC_STATUS_MAP: Record<string, { badge: ExecBadge; labelKey: string }> = 
  */
 export type TaskListColumnsDeps = {
   /** i18n 取词函数（与搬迁前页面内的 `t` 是同一个值）。 */
-  t: (k: string, opts?: Record<string, unknown>) => string;
+  t: import('i18next').TFunction;
   /** `STATUS_CONFIG(t)` 的结果。 */
   statusConfig: StatusConfig;
   /** `TRIGGER_LABEL(t)` 的结果。 */

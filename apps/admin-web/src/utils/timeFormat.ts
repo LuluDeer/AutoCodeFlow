@@ -7,10 +7,10 @@ const FALLBACK = '—';
 
 /** i18n 插值 t（可选：传参时用调用方的 t；缺省回落 i18n 单例——跟随当前
  *  语言，测试环境默认 zh，与旧「中文基线内联」输出逐字一致）。 */
-type TFunc = (k: string, opts?: Record<string, unknown>) => string;
+type TFunc = import('i18next').TFunction;
 
 /** 缺省 t：i18n 单例（非组件文件直引单例，与 api/tasks.ts 同模式）。 */
-const fallbackT: TFunc = (k, opts) => i18n.t(k, opts);
+const fallbackT = ((k, opts) => i18n.t(k, opts ?? {})) as TFunc;
 
 function toDate(value: TimeInput): Date | null {
   if (value == null) return null;

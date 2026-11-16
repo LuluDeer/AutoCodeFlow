@@ -11,7 +11,7 @@
 
 import i18n from '../i18n';
 
-type TFunc = (k: string, opts?: Record<string, unknown>) => string;
+type TFunc = import('i18next').TFunction;
 
 interface CronTime {
   minute: number;
@@ -47,7 +47,7 @@ export function describeMaintenanceWindow(
   end: string,
   t?: TFunc,
 ): MaintenanceDesc {
-  const T: TFunc = t ?? ((k, o) => i18n.t(k, o));
+  const T = (t ?? ((k, o) => i18n.t(k, o ?? {}))) as TFunc;
   const raw = `${start} → ${end}`;
   const s = parseCronTime(start);
   const e = parseCronTime(end);

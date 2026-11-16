@@ -49,7 +49,7 @@ const TRIGGER_OPTIONS = (t: (k: string) => string) => [
  * 主 cron 与维护窗口 start/end 三个字段共用。
  */
 const cronGateValidator =
-  (t: (k: string, opts?: Record<string, unknown>) => string) =>
+  (t: import('i18next').TFunction) =>
   (_rule: unknown, value: string | undefined) => {
     const v = (value ?? '').trim();
     if (!v) return Promise.resolve(); // 空值交给 required 规则

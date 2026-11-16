@@ -27,7 +27,7 @@ interface SchedulerLatencyCardProps {
 
 /** 三指标行：标签 + 值（formatLatencyMs 专用档：直方图派生浮点不裸奔，
  *  P3-② 审计——此前「平均 6.716883116883117ms」17 位小数直接糊在卡面上） */
-function LatencyStat({ label, value, color, t }: { label: React.ReactNode; value: number | null | undefined; color?: string; t?: (k: string, o?: Record<string, unknown>) => string }) {
+function LatencyStat({ label, value, color, t }: { label: React.ReactNode; value: number | null | undefined; color?: string; t?: import('i18next').TFunction }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
       <Text type="secondary" style={{ fontSize: 12 }}>

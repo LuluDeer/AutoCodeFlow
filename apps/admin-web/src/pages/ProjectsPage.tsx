@@ -64,7 +64,7 @@ const { Text } = Typography;
  * 而不是点下去弹一句英文 404。
  */
 
-type TFn = (k: string, o?: Record<string, unknown>) => string;
+type TFn = import('i18next').TFunction;
 
 const ROLE_COLOR: Record<ProjectRole, string> = {
   viewer: 'default',
