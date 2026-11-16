@@ -925,9 +925,7 @@ describe("§2.1 TaskService.getAllExecutions — OFFSET / keyset 双路径", () 
         triggerType: "cron",
       });
       expect(res.total).toBe(5);
-      expect(
-        res.items.every((r: Row) => r.triggerType === "cron"),
-      ).toBe(true);
+      expect(res.items.every((r: Row) => r.triggerType === "cron")).toBe(true);
     });
 
     it("P2-2: runtime + status 组合——两个条件取交集（不是互相覆盖）", async () => {
@@ -938,9 +936,7 @@ describe("§2.1 TaskService.getAllExecutions — OFFSET / keyset 双路径", () 
         status: ExecutionStatus.RUNNING,
       });
       expect(res.total).toBe(1);
-      expect(res.items[0].id).toBe(
-        "99999999-9999-4999-8999-999999999999",
-      );
+      expect(res.items[0].id).toBe("99999999-9999-4999-8999-999999999999");
     });
 
     it("P2-2: projectId + status 组合——任务域派生过滤与执行状态取交集", async () => {
@@ -951,9 +947,7 @@ describe("§2.1 TaskService.getAllExecutions — OFFSET / keyset 双路径", () 
         status: ExecutionStatus.SUCCESS,
       });
       expect(res.total).toBe(1);
-      expect(res.items[0].id).toBe(
-        "99999999-9999-4999-8999-888888888888",
-      );
+      expect(res.items[0].id).toBe("99999999-9999-4999-8999-888888888888");
     });
 
     it("P2-2: runtime 过滤在 keyset 分支同样生效，total 不受游标影响", async () => {
@@ -978,16 +972,11 @@ describe("§2.1 TaskService.getAllExecutions — OFFSET / keyset 双路径", () 
       expect(qb.andWhere).toHaveBeenCalledWith("t.runtime = :runtime", {
         runtime: "python",
       });
-      expect(qb.andWhere).toHaveBeenCalledWith(
-        "e.triggerType = :triggerType",
-        { triggerType: "cron" },
-      );
+      expect(qb.andWhere).toHaveBeenCalledWith("e.triggerType = :triggerType", {
+        triggerType: "cron",
+      });
       // runtime 需要关联 tasks 表——join 与 taskName/projectId 共用一次
-      expect(qb.leftJoin).toHaveBeenCalledWith(
-        "tasks",
-        "t",
-        "t.id = e.taskId",
-      );
+      expect(qb.leftJoin).toHaveBeenCalledWith("tasks", "t", "t.id = e.taskId");
     });
 
     it("startTime/endTime 时间范围在 keyset 分支同样生效（与游标条件是 AND）", async () => {

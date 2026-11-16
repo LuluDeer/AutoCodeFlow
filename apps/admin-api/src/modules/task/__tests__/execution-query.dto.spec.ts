@@ -119,7 +119,10 @@ describe("AllExecutionsQueryDto (GET /tasks/executions/all)", () => {
   });
 
   it("P2-2: accepts runtime (task enum) and triggerType (execution-row free varchar)", async () => {
-    const result = await validate({ runtime: "python", triggerType: "webhook" });
+    const result = await validate({
+      runtime: "python",
+      triggerType: "webhook",
+    });
     expect(result.runtime).toBe("python");
     expect(result.triggerType).toBe("webhook");
   });

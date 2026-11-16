@@ -574,9 +574,7 @@ describe("GET /tasks/executions/export — 执行记录 CSV 流式导出", () =>
 
       await service.streamExecutionsCsv({ runtime: "node" }, out.write);
 
-      expect(uuidIdsOf(out)).toEqual([
-        "aaaaaaaa-aaaa-4aaa-8aaa-000000000512",
-      ]);
+      expect(uuidIdsOf(out)).toEqual(["aaaaaaaa-aaaa-4aaa-8aaa-000000000512"]);
     });
 
     it("P2-2: runtime + status 组合——两个条件取交集", async () => {
@@ -605,9 +603,7 @@ describe("GET /tasks/executions/export — 执行记录 CSV 流式导出", () =>
         out.write,
       );
 
-      expect(uuidIdsOf(out)).toEqual([
-        "aaaaaaaa-aaaa-4aaa-8aaa-000000000521",
-      ]);
+      expect(uuidIdsOf(out)).toEqual(["aaaaaaaa-aaaa-4aaa-8aaa-000000000521"]);
     });
 
     it("status + taskId 组合：两个条件取交集（不是互相覆盖）", async () => {

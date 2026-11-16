@@ -552,7 +552,9 @@ export class ExecutionRead {
     if (p.taskId) qb.andWhere("e.taskId = :taskId", { taskId: p.taskId });
     // P2-2：triggerType 是执行域列（task_executions.triggerType），直接挂 e。
     if (p.triggerType)
-      qb.andWhere("e.triggerType = :triggerType", { triggerType: p.triggerType });
+      qb.andWhere("e.triggerType = :triggerType", {
+        triggerType: p.triggerType,
+      });
     // P1-2：taskName / projectId 与 P2-2 的 runtime 都需要关联 tasks 表——
     // join 只挂一次，避免同 alias 重复 LEFT JOIN（TypeORM 不会按 alias 去重）。
     if (p.taskName || p.projectId || p.runtime) {

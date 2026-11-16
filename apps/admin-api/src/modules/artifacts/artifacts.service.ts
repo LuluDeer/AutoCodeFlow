@@ -317,7 +317,8 @@ export class ArtifactsService {
     if (fromDate) timePredicates.push(MoreThanOrEqual(fromDate));
     if (toDate) timePredicates.push(LessThanOrEqual(toDate));
     if (timePredicates.length === 1) where.createdAt = timePredicates[0];
-    else if (timePredicates.length > 1) where.createdAt = And(...timePredicates);
+    else if (timePredicates.length > 1)
+      where.createdAt = And(...timePredicates);
 
     const [rows, total] = await this.artifactIndexRepo.findAndCount({
       where,

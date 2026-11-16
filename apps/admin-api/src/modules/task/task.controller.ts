@@ -516,7 +516,8 @@ export class TaskController {
   @ApiQuery({
     name: "runtime",
     required: false,
-    description: "按任务运行时过滤（经任务关联派生，tasks.runtime；python/node/shell）。",
+    description:
+      "按任务运行时过滤（经任务关联派生，tasks.runtime；python/node/shell）。",
   })
   @ApiQuery({
     name: "triggerType",
@@ -611,7 +612,8 @@ export class TaskController {
   @ApiQuery({
     name: "runtime",
     required: false,
-    description: "按任务运行时过滤（经任务关联派生，tasks.runtime；python/node/shell）。",
+    description:
+      "按任务运行时过滤（经任务关联派生，tasks.runtime；python/node/shell）。",
   })
   @ApiQuery({
     name: "triggerType",
