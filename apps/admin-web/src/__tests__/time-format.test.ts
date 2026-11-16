@@ -45,10 +45,10 @@ describe('F-26 currentLocale（locale 单一来源）', () => {
 });
 
 describe('F-26 formatRelativeTime（合并后唯一实现）', () => {
-  const t = (k: string, o?: Record<string, unknown>) => {
+  const t = ((k: string, o?: Record<string, unknown>) => {
     const n = o?.n ?? o?.h ?? o?.m;
     return n === undefined ? k : `${k}:${String(n)}`;
-  };
+  }) as unknown as import('i18next').TFunction;
 
   it.each([
     [30, 'time.relative.justNow'],
@@ -78,8 +78,8 @@ describe('F-26 formatRelativeTime（合并后唯一实现）', () => {
 });
 
 describe('F-35 formatDuration（i18n 版 + 小时档）', () => {
-  const t = (k: string, o?: Record<string, unknown>) =>
-    `${k}(${Object.entries(o ?? {}).map(([a, b]) => `${a}=${String(b)}`).join(',')})`;
+  const t = ((k: string, o?: Record<string, unknown>) =>
+    `${k}(${Object.entries(o ?? {}).map(([a, b]) => `${a}=${String(b)}`).join(',')})`) as unknown as import('i18next').TFunction;
 
   it('毫秒/秒档保持既有输出', () => {
     expect(formatDuration(500)).toBe('500ms');

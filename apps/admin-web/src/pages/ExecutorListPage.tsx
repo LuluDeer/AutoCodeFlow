@@ -44,7 +44,7 @@ import {
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
-type TFunc = (k: string, opts?: Record<string, unknown>) => string;
+type TFunc = import('i18next').TFunction;
 // F-15（DEEP_REVIEW 0ef3bbe）：心跳语义色走 antd token（双主题自适应）。
 type AntdToken = ReturnType<typeof theme.useToken>['token'];
 function heartbeatLabel(

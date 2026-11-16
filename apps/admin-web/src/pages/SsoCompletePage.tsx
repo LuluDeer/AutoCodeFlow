@@ -108,7 +108,7 @@ export default function SsoCompletePage() {
   }, [nav, setAuth, t]);
 
   const hintInfo = error ? resolveErrorHint(error) : null;
-  const hint = hintInfo ? t(hintInfo.key, hintInfo.params) : '';
+  const hint = hintInfo ? t(hintInfo.key, hintInfo.params ?? {}) : '';
   return (
     <div
       style={{

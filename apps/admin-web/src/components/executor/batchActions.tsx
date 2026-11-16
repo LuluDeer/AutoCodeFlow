@@ -23,7 +23,7 @@ import '../../i18n';
 
 const { Text } = Typography;
 
-type TFunc = (k: string, opts?: Record<string, unknown>) => string;
+type TFunc = import('i18next').TFunction;
 
 export interface BatchOutcome {
   executor: Executor;
