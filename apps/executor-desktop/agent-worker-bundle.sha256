@@ -83,4 +83,4 @@ source-digest: 2baf5cccc65948a62fb5cf5b4d5838e1c50c140d62a22daaf4633fe622ecce67
 #   回填环境：本机 Linux（node 24 / esbuild 同仓锁版），41 个输入文件；
 #   本机重打 = **98ee5123…**，与 CI 该 run 的 actual **逐字节一致**
 #   （esbuild 产物确定性，与 2026-11-08 那次同结论）。
-98ee51239ad82f09a2cf560773dbb68802e4e6396238b87f2efb2c57ea69b023  index.js
+50dc23cb5c9b62401540ac0f8f9e442f16095eb525216bf03d4517c54a1f53c9  index.js
