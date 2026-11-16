@@ -782,4 +782,4 @@ source-digest: f35054ece802dc8d55bcdab98779ba6cb58f27b65c29796042d2ec01c25f5d3c
 #   source-digest 不变（f35054ece802…，src 零改动）。
 #   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），59 个输入文件。
 #   字节确定性：同一目录连续两次重打逐字节一致；且与 CI 同环境结论吻合（见 ① 的佐证）。
-df9ee12d600cf9ffb495d4aa2fa49506301fdccf385b1da406dee89dcf709fc9  index.js
+f23d75f22dc2e20e85285f2a9ec91fed8f482f56996a47046f5ee76574aad20d  index.js

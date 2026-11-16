@@ -5299,6 +5299,7 @@
           "createdAt",
           "updatedAt",
           "version",
+          "versionCompliant",
           "tokenHash",
           "minVersion"
         ],
@@ -24029,14 +24030,6 @@
               "type": "string"
             },
             "x-i18n-en": "Task ID"
-          },
-          {
-            "in": "header",
-            "name": "idempotency-key",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
           },
           {
             "description": "G10 幂等键（8-128 字符，字母/数字/._:-）：同键同参 24h 内只触发一次（重放返回 409 TASK_IDEMPOTENCY_REPLAY）；同键不同参返回 409 TASK_IDEMPOTENCY_KEY_REUSED。缺省不做去重。",

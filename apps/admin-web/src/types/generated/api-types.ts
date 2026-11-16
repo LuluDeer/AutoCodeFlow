@@ -6127,7 +6127,7 @@ export interface components {
             /** @description 乐观锁 @VersionColumn（TypeORM 版本列） */
             version: number;
             /** @description 自报版本是否满足最低版本门禁 */
-            versionCompliant?: boolean;
+            versionCompliant: boolean;
         };
         ExecutorInstallCmdDto: {
             adminApiUrl: string;
@@ -15077,8 +15077,7 @@ export interface operations {
     TaskController_trigger: {
         parameters: {
             query?: never;
-            header: {
-                "idempotency-key": string;
+            header?: {
                 /** @description G10 幂等键（8-128 字符，字母/数字/._:-）：同键同参 24h 内只触发一次（重放返回 409 TASK_IDEMPOTENCY_REPLAY）；同键不同参返回 409 TASK_IDEMPOTENCY_KEY_REUSED。缺省不做去重。 */
                 "Idempotency-Key"?: string;
             };
