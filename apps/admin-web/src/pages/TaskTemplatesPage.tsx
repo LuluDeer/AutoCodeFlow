@@ -234,53 +234,6 @@ export default function TaskTemplatesPage() {
                   ? <Tag color="gold">{t('templates.official')}</Tag>
                   : <Tag>{t('templates.custom')}</Tag>
               }
-              actions={[
-                <Button
-                  key="use" type="link" size="small" icon={<CopyOutlined aria-hidden />}
-                  onClick={() => setUsingTpl(tpl)}
-                >
-                  {t('templates.use')}
-                </Button>,
-                <Button
-                  key="preview" type="link" size="small" icon={<EyeOutlined aria-hidden />}
-                  onClick={() => setPreviewTpl(tpl)}
-                >
-                  {t('templates.preview')}
-                </Button>,
-                <Button
-                  key="export" type="link" size="small" icon={<DownloadOutlined aria-hidden />}
-                  onClick={() => handleExport(tpl)}
-                >
-                  {t('templates.export')}
-                </Button>,
-                tpl.isOfficial ? null : (
-                  <Button
-                    key="edit" type="link" size="small" icon={<EditOutlined aria-hidden />}
-                    onClick={() => setEditingTpl(tpl)}
-                  >
-                    {t('templates.edit')}
-                  </Button>
-                ),
-                tpl.isOfficial ? null : (
-                  <Popconfirm
-                    key="del" title={t('templates.deleteConfirm')} okText={t('templates.deleteOk')} cancelText={t('templates.cancel')}
-                    okButtonProps={{ danger: true }}
-                    onConfirm={() => handleDelete(tpl.id)}
-                  >
-                    {/* UI-09 图标按钮 a11y：删除按钮是 icon-only——antd 不会把
-                        Tooltip 转成 aria-label，必须显式补 aria-label（可访问名
-                        不再依赖图标的 aria-label="delete"）；图标本身纯装饰。 */}
-                    <Tooltip title={t('templates.delete')}>
-                      <Button
-                        type="text" size="small" danger
-                        icon={<DeleteOutlined aria-hidden />}
-                        aria-label={t('templates.delete')}
-                        loading={deletingId === tpl.id}
-                      />
-                    </Tooltip>
-                  </Popconfirm>
-                ),
-              ].filter(Boolean)}
             >
               <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ minHeight: 44, marginBottom: 8 }}>
                 {tpl.description || t('templates.noDesc')}
@@ -300,6 +253,56 @@ export default function TaskTemplatesPage() {
                 <Text type="secondary" style={{ fontSize: 12 }}>
                   <FieldTimeOutlined aria-hidden /> {configSummary(tpl.config, t) || '—'}
                 </Text>
+              </div>
+              {/* 操作行：不用 Card 等分 actions——窄卡片(xl=6, 约 241px)下 5 个 link 按钮
+                  被 antd 压进等宽 li,文字 nowrap 溢出相邻按钮形成横向重叠。改为 body 内
+                  flex-wrap 自绘行,空间不足时自然折行,与执行器/应用卡片同一套惯例。 */}
+              <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                <Button
+                  type="link" size="small" icon={<CopyOutlined aria-hidden />}
+                  onClick={() => setUsingTpl(tpl)}
+                >
+                  {t('templates.use')}
+                </Button>
+                <Button
+                  type="link" size="small" icon={<EyeOutlined aria-hidden />}
+                  onClick={() => setPreviewTpl(tpl)}
+                >
+                  {t('templates.preview')}
+                </Button>
+                <Button
+                  type="link" size="small" icon={<DownloadOutlined aria-hidden />}
+                  onClick={() => handleExport(tpl)}
+                >
+                  {t('templates.export')}
+                </Button>
+                {!tpl.isOfficial && (
+                  <Button
+                    type="link" size="small" icon={<EditOutlined aria-hidden />}
+                    onClick={() => setEditingTpl(tpl)}
+                  >
+                    {t('templates.edit')}
+                  </Button>
+                )}
+                {!tpl.isOfficial && (
+                  <Popconfirm
+                    title={t('templates.deleteConfirm')} okText={t('templates.deleteOk')} cancelText={t('templates.cancel')}
+                    okButtonProps={{ danger: true }}
+                    onConfirm={() => handleDelete(tpl.id)}
+                  >
+                    {/* UI-09 图标按钮 a11y：删除按钮是 icon-only——antd 不会把
+                        Tooltip 转成 aria-label，必须显式补 aria-label（可访问名
+                        不再依赖图标的 aria-label="delete"）；图标本身纯装饰。 */}
+                    <Tooltip title={t('templates.delete')}>
+                      <Button
+                        type="text" size="small" danger
+                        icon={<DeleteOutlined aria-hidden />}
+                        aria-label={t('templates.delete')}
+                        loading={deletingId === tpl.id}
+                      />
+                    </Tooltip>
+                  </Popconfirm>
+                )}
               </div>
             </Card>
           </Col>
