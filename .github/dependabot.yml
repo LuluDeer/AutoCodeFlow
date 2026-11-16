@@ -8,6 +8,7 @@ version: 2
 updates:
   - package-ecosystem: github-actions
     directory: '/'
+    target-branch: develop
     schedule:
       interval: weekly
     # 分组合并：同生态补丁级升级合一个 PR，避免每周多 PR 噪音；
@@ -40,6 +41,7 @@ updates:
   # breaking change）。到期豁免的依赖升级仍应按需手动指定版本号。
   - package-ecosystem: npm
     directory: '/apps/admin-api'
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
@@ -49,6 +51,7 @@ updates:
 
   - package-ecosystem: npm
     directory: '/apps/admin-web'
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
@@ -58,6 +61,7 @@ updates:
 
   - package-ecosystem: npm
     directory: '/apps/executor-node'
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
@@ -69,6 +73,7 @@ updates:
   # dependabot 不执行 postinstall（只改 manifest/lock），故不会拖下 electron 二进制。
   - package-ecosystem: npm
     directory: '/apps/executor-desktop'
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
@@ -78,6 +83,7 @@ updates:
 
   - package-ecosystem: npm
     directory: '/packages/acf-cli'
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
@@ -87,6 +93,7 @@ updates:
 
   - package-ecosystem: npm
     directory: '/packages/mcp-server'
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
@@ -96,6 +103,7 @@ updates:
 
   - package-ecosystem: npm
     directory: '/packages/autocodeflow-node-sdk'
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
@@ -105,6 +113,7 @@ updates:
 
   - package-ecosystem: npm
     directory: '/packages/docs-site'
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 2
