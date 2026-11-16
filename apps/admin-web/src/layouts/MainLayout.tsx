@@ -857,6 +857,7 @@ export default function MainLayout() {
             但不进入 Tab 序列 */}
         <Content
           id="main-content"
+          role="main"
           tabIndex={-1}
           style={{
             padding: '20px 24px',
