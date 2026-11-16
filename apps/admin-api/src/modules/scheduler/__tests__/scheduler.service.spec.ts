@@ -909,11 +909,9 @@ describe("SchedulerService", () => {
         // 被 grace 跳过，用例偶发失败。改为相对当前时刻 3 分钟前生成一个
         // 单点 cron，落点必然已过 grace，且 lastTriggerTime 在落点之前。
         const now = Date.now();
-        const fireAt = new Date(now - 3 * 60 * 1000);
-        const cronExpression = `${fireAt.getMinutes()} ${fireAt.getHours()} * * *`;
         const task = makeTask({
           triggerType: TaskTriggerType.CRON,
-          cronExpression,
+          cronExpression: `${new Date(now - 3 * 60 * 1000).getMinutes()} ${new Date(now - 3 * 60 * 1000).getHours()} * * *`,
           misfireStrategy: MisfireStrategy.IGNORE,
           // 上次触发早于最近落点 → 漏了
           lastTriggerTime: new Date(now - 20 * 60 * 60 * 1000),
