@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { Modal } from 'antd';
 import '../i18n';
 import SopsPage from '../pages/SopsPage';
 import { sopsApi } from '../api/sops';
@@ -130,6 +131,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  Modal.destroyAll();
   cleanup();
   vi.restoreAllMocks();
   delete (document as unknown as Record<string, unknown>).visibilityState;
