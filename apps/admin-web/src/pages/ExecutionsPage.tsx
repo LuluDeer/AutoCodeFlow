@@ -161,7 +161,7 @@ const initialCursorStack = (
  */
 function buildExecutionsCsv(
   rows: TaskExecution[],
-  t: (k: string) => string,
+  t: import('i18next').TFunction,
   /**
    * ADR-017 阶段 3（决策 §7）：执行器可读名解析（与表格列同源）。
    * 导出列与 Table 列**口径一致**是本文件既有纪律（见上方注释）；表格列已改成

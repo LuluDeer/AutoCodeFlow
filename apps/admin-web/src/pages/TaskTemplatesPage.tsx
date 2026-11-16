@@ -34,7 +34,7 @@ import '../i18n';
 
 const { Text, Paragraph } = Typography;
 
-type TFn = (k: string, options?: Record<string, unknown>) => string;
+type TFn = import('i18next').TFunction;
 
 const TRIGGER_LABEL = (t: TFn): Record<string, string> => ({
   manual: t('templates.trigger.manual'),

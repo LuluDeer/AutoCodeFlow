@@ -55,7 +55,7 @@ const APP_STATUS_UNAVAILABLE: Record<string, { color: string; tagKey: string; re
  */
 export const buildAppSelectOption = (
   a: AppOptionSource,
-  t: (k: string, opts?: Record<string, unknown>) => string,
+  t: import('i18next').TFunction,
   opts: { /** zip 分支：按健康状态禁用 + runtime 与任务不一致时 Tag 变警示色 */ withHealth?: boolean; taskRuntime?: string },
 ) => {
   const unavailable = opts.withHealth ? APP_STATUS_UNAVAILABLE[a.status] : undefined;

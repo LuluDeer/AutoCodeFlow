@@ -223,7 +223,7 @@ export default function TemplateImportModal({
           description={
             <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
               {issues.map((issue, i) => (
-                <li key={i}>{t(ISSUE_KEY[issue.code], issue.params)}</li>
+                <li key={i}>{t(ISSUE_KEY[issue.code], issue.params ?? {})}</li>
               ))}
             </ul>
           }

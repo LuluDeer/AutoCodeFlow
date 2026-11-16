@@ -61,7 +61,7 @@ const { Text } = Typography;
  */
 export type VersionColumnsDeps = {
   /** i18n 取词函数（与搬迁前页面内的 `t` 是同一个值）。 */
-  t: (k: string, opts?: Record<string, unknown>) => string;
+  t: import('i18next').TFunction;
   /** 当前用户是否管理员（决定「回滚到此版本」是否可用）。 */
   isAdmin: boolean;
   /** 点行内「回滚」时设置确认弹窗目标（页面的 `useTaskVersionRollback` 返回值）。 */

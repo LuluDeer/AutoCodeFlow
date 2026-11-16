@@ -109,7 +109,7 @@ const CREATE_FIELD_ID = {
 /** G4：把 createdBy 的机器形态翻成可读文本（用户 / 系统主体）。 */
 function actorLabel(
   raw: string,
-  t: (k: string, v?: Record<string, unknown>) => string,
+  t: import('i18next').TFunction,
 ): string {
   if (raw.startsWith('user:')) return raw.slice('user:'.length);
   if (raw.startsWith('system:')) {
@@ -118,13 +118,13 @@ function actorLabel(
   return raw;
 }
 
-function statusTag(status: string, t: (k: string, v?: Record<string, unknown>) => string) {
+function statusTag(status: string, t: import('i18next').TFunction) {
   return (
     <Tag color={AGENT_SESSION_STATUS_COLOR[status] ?? 'default'}>{agentStatusLabel(status, t)}</Tag>
   );
 }
 
-function usageOf(s: AgentSession, t: (k: string, v?: Record<string, unknown>) => string): string {
+function usageOf(s: AgentSession, t: import('i18next').TFunction): string {
   return t('agents.usageSummary', {
     steps: s.totalSteps,
     tokens: s.totalTokensIn + s.totalTokensOut,

@@ -66,7 +66,7 @@ interface ImportResult {
   warnings: string[];
 }
 
-function conflictText(conflict: ImportConflict, t: (k: string, o?: Record<string, unknown>) => string): string {
+function conflictText(conflict: ImportConflict, t: import('i18next').TFunction): string {
   if (conflict.type === 'name') {
     return t('taskImport.conflict.name', { name: conflict.existingName ?? '' });
   }
@@ -274,7 +274,7 @@ export default function TaskImportModal({
           description={
             <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
               {issues.map((issue, i) => (
-                <li key={i}>{t(ISSUE_KEY[issue.code], issue.params)}</li>
+                <li key={i}>{t(ISSUE_KEY[issue.code], issue.params ?? {})}</li>
               ))}
             </ul>
           }
