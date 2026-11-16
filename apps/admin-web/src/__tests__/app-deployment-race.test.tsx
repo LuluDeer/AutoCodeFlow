@@ -88,7 +88,8 @@ describe('AppDeploymentPage 翻页竞态（W7）', () => {
     await screen.findByText('10.0.0.1');
 
     // ② 翻到 page=2 → 第 2 次请求发出（悬而未决，旧 seq）
-    fireEvent.click(document.querySelector('.ant-pagination-item[title="2"]') as HTMLElement);
+    const page2 = document.querySelector('.ant-pagination-item[title="2"]') as HTMLElement;
+    fireEvent.click((page2.querySelector('a, button') ?? page2) as HTMLElement);
     await waitFor(() => expect(deploymentsApi.list).toHaveBeenCalledTimes(2));
     expect(deploymentsApi.list).toHaveBeenNthCalledWith(2, 'app-1', 2);
 

@@ -268,7 +268,7 @@ describe('AuditLogPage 分页（QA-03）', () => {
     // antd v6 分页页码 li 内部是 <a> 非 button（diag 验证），点击 li 本体触发
     const page2 = document.body.querySelector('li.ant-pagination-item-2');
     expect(page2).toBeTruthy();
-    fireEvent.click(page2!);
+    fireEvent.click((page2!.querySelector('a, button') ?? page2) as HTMLElement);
     await waitFor(() => {
       expect(lastAuditQuery()).toContain('page=2');
     });

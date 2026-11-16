@@ -96,7 +96,8 @@ describe('AppDeploymentPage loading 归属（E2）', () => {
     vi.mocked(deploymentsApi.list).mockImplementationOnce(
       () => new Promise((resolve) => { releasePage2 = resolve as (v: unknown) => void; }) as never,
     );
-    fireEvent.click(screen.getByTitle('2'));
+    const page2 = screen.getByTitle('2');
+    fireEvent.click((page2.querySelector('a, button') ?? page2) as HTMLElement);
     await waitFor(() => expect(deploymentsApi.list).toHaveBeenCalledTimes(2));
 
     // 轮询拍插进来：自增 fetchSeq，把翻页请求判成"过期"

@@ -101,7 +101,8 @@ describe('AppDeploymentPage 定时刷新闭包与卸载（NETOPT-7③）', () =>
     await flush();
 
     // 窗口内立即翻到 page=2 → effect 重新拉取新页
-    fireEvent.click(document.querySelector('.ant-pagination-item[title="2"]') as HTMLElement);
+    const page2 = document.querySelector('.ant-pagination-item[title="2"]') as HTMLElement;
+    fireEvent.click((page2.querySelector('a, button') ?? page2) as HTMLElement);
     await flush();
     expect(deploymentsApi.list).toHaveBeenNthCalledWith(2, 'app-1', 2);
     expect(screen.getByText('10.0.0.2')).toBeTruthy();

@@ -452,8 +452,8 @@ describe('UIUX-F-3 SopsPage 列表 load 竞态守卫', () => {
     });
     await screen.findByText('Demo SOP');
 
-    const nextBtn = () => document.querySelector('.ant-pagination-next') as HTMLButtonElement;
-    const prevBtn = () => document.querySelector('.ant-pagination-prev') as HTMLButtonElement;
+    const nextBtn = () => document.querySelector('.ant-pagination-next button') as HTMLButtonElement;
+    const prevBtn = () => document.querySelector('.ant-pagination-prev button') as HTMLButtonElement;
 
     // 下一页（第 2 页立即返回）→ 返回第 1 页（挂起）→ 再下一页（立即返回）：
     // 此时第 1 页的慢响应仍在途

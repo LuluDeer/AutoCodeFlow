@@ -220,7 +220,7 @@ describe('ApplicationDetailPage 版本追溯 Tab 部署事件流（R4 §4.1A）'
     const pager = table.closest('.ant-card')?.querySelectorAll('.ant-pagination li');
     const page2 = Array.from(pager ?? []).find((el) => (el.textContent ?? '') === '2');
     expect(page2).toBeTruthy();
-    fireEvent.click(page2 as HTMLElement);
+    fireEvent.click((page2?.querySelector('a, button') ?? page2) as HTMLElement);
     await waitFor(() => expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 2, 20, undefined));
   });
 
@@ -308,7 +308,7 @@ describe('ApplicationDetailPage 部署事件流 eventType 筛选（服务端过�
     const table = screen.getByTestId('deployment-events-table');
     const pager = table.closest('.ant-card')?.querySelectorAll('.ant-pagination li');
     const page2 = Array.from(pager ?? []).find((el) => (el.textContent ?? '') === '2');
-    fireEvent.click(page2 as HTMLElement);
+    fireEvent.click((page2?.querySelector('a, button') ?? page2) as HTMLElement);
     await waitFor(() =>
       expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 2, 20, { eventType: 'upgrade' }),
     );
@@ -477,7 +477,7 @@ describe('ApplicationDetailPage 部署事件流时间范围筛选（since/until 
     const table = screen.getByTestId('deployment-events-table');
     const pager = table.closest('.ant-card')?.querySelectorAll('.ant-pagination li');
     const page2 = Array.from(pager ?? []).find((el) => (el.textContent ?? '') === '2');
-    fireEvent.click(page2 as HTMLElement);
+    fireEvent.click((page2?.querySelector('a, button') ?? page2) as HTMLElement);
     await waitFor(() =>
       expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 2, 20, exp),
     );

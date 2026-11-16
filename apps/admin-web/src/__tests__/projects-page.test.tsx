@@ -382,9 +382,8 @@ describe('ProjectsPage 服务端分页（R3）', () => {
 
     // antd 分页器第 2 页按钮；total=3/pageSize=20 → 两页
     // （对齐 app-deployment-race 先例：antd v6 分页项用 selector 点击）
-    fireEvent.click(
-      document.querySelector('.ant-pagination-item[title="2"]') as HTMLElement,
-    );
+    const page2 = document.querySelector('.ant-pagination-item[title="2"]') as HTMLElement;
+    fireEvent.click((page2.querySelector('a, button') ?? page2) as HTMLElement);
     await waitFor(() =>
       expect(projectsApi.listPaged).toHaveBeenLastCalledWith(2, 20, expect.anything()),
     );

@@ -80,8 +80,10 @@ const pageOf = (params: unknown): number =>
 const headerCheckbox = () =>
   document.querySelector('.ant-table-thead input[type=checkbox]') as HTMLInputElement;
 
-const goToPage2 = () =>
-  fireEvent.click(document.querySelector('.ant-pagination-item[title="2"]') as HTMLElement);
+const goToPage2 = () => {
+  const item = document.querySelector('.ant-pagination-item[title="2"]') as HTMLElement;
+  fireEvent.click((item.querySelector('a, button') ?? item) as HTMLElement);
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
