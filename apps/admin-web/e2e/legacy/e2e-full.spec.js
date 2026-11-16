@@ -776,11 +776,11 @@ test('17. RBAC — admin 访问 /notifications 正常且菜单入口可见', asy
   await login(page);
   await page.goto(`${BASE}/dashboard`);
   await page.waitForLoadState('networkidle');
-  // 侧边菜单含「通知设置」入口（R6 起该入口 ADMIN-only；UI-03 分组化后
-  // 位于「系统」子菜单内，先展开分组再断言子项可见）
-  await page.locator('.ant-menu').getByText('系统', { exact: true }).click();
-  await expect(page.locator('.ant-menu').getByText('通知设置')).toBeVisible({ timeout: 10000 });
-  console.log('  ✓ admin 菜单含通知设置入口');
+  // 侧边菜单含「通知」入口（R6 起该入口 ADMIN-only；P1-6 分组化后
+  // 位于「治理」分组内，先展开分组再断言子项可见）
+  await page.locator('.ant-menu').getByText('治理', { exact: true }).click();
+  await expect(page.locator('.ant-menu').getByText('通知', { exact: true })).toBeVisible({ timeout: 10000 });
+  console.log('  ✓ admin 菜单含通知入口');
   // 路由可访问：渲染 NotificationSettingsPage 特有区块，而非 RequireAdmin 403
   await page.goto(`${BASE}/notifications`);
   await page.waitForLoadState('networkidle');
@@ -798,9 +798,9 @@ test('18. RBAC — 普通用户 /notifications 被拦(403)且菜单无入口', a
   await page.goto(`${BASE}/dashboard`);
   // 等 profile 拉取完成（role 决定菜单渲染，侧边栏显示「普通用户」）
   await expect(page.getByText('普通用户')).toBeVisible({ timeout: 10000 });
-  // 菜单无「通知设置」入口
-  await expect(page.locator('.ant-menu').getByText('通知设置')).toHaveCount(0);
-  console.log('  ✓ 普通用户菜单无通知设置入口');
+  // 菜单无「通知」入口
+  await expect(page.locator('.ant-menu').getByText('通知', { exact: true })).toHaveCount(0);
+  console.log('  ✓ 普通用户菜单无通知入口');
   // 直接 URL 访问 → RequireAdmin 渲染 403 Result
   await page.goto(`${BASE}/notifications`);
   await expect(page.getByText('您没有权限访问该页面')).toBeVisible({ timeout: 10000 });
