@@ -17,10 +17,10 @@
 
 import i18n from '../i18n';
 
-type TFunc = (k: string, opts?: Record<string, unknown>) => string;
+type TFunc = import('i18next').TFunction;
 
 /** 缺省 t：i18n 单例（测试环境默认 zh，与旧中文基线输出逐字一致）。 */
-const fallbackT: TFunc = (k, opts) => i18n.t(k, opts);
+const fallbackT = ((k, opts) => i18n.t(k, opts ?? {})) as TFunc;
 
 /** 把字段解析为数字列表（如 `12,18`）；仅接受纯数字/逗号 */
 function parseNumberList(field: string, max: number): number[] | null {

@@ -31,7 +31,7 @@ import { resolveRunningCount } from '../../utils/executor-metrics';
 import InconsistentMetricsTag from './InconsistentMetricsTag';
 import '../../i18n';
 
-type TFunc = (k: string, opts?: Record<string, unknown>) => string;
+type TFunc = import('i18next').TFunction;
 
 const { Text } = Typography;
 

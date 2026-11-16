@@ -325,11 +325,11 @@ describe('FEAT-15 EventSubscriptionsSettings', () => {
 
   it('subscriptionFailureStats 纯函数：健康 vs 连续失败', () => {
     // i18n 化后纯函数需注入 t；此用例关心健康/失败判定与插值，用最小 stub
-    const t = (k: string, opts?: Record<string, unknown>): string => {
+    const t = ((k: string, opts?: Record<string, unknown>): string => {
       if (k === 'eventSub.stats.failures') return `连续失败 ${String(opts?.count ?? 0)} 次`;
       if (k === 'eventSub.stats.healthy') return '正常';
       return k;
-    };
+    }) as unknown as import('i18next').TFunction;
     const ok = subscriptionFailureStats(subRow(), t);
     expect(ok.label).toBe('正常');
     expect(ok.color).toBe('green');

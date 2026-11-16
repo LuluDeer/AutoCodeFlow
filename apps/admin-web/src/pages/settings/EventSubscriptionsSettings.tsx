@@ -86,7 +86,7 @@ export function isValidWebhookUrl(value: string | undefined | null): boolean {
 /** 失败统计列纯函数（导出供测试）：连续失败 >0 展示红色统计，否则健康。 */
 export function subscriptionFailureStats(
   sub: EventSubscription,
-  t: (k: string, opts?: Record<string, unknown>) => string = (k) => k,
+  t: import('i18next').TFunction = ((k) => k) as import('i18next').TFunction,
 ): {
   label: string;
   color: string;
