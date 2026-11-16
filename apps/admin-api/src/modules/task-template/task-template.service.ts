@@ -266,6 +266,8 @@ export class TaskTemplateService {
     if (dto.category !== undefined) {
       tpl.category = dto.category?.trim() || null;
     }
+    // adr-026-exempt: 模板仅属主可编辑（上方 assertMutable 已校验）；模板无状态机/执行状态列，
+    // 同一模板的并发编辑至多 last-write-wins，不会覆盖任务终态或执行状态。
     return this.repo.save(tpl);
   }
 
