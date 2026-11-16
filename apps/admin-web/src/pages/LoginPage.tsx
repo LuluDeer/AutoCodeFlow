@@ -115,8 +115,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div
-      role="main"
+    <div role="main"
       style={{
         minHeight: '100vh',
         display: 'flex',

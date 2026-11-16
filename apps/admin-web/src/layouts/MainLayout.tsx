@@ -855,10 +855,7 @@ export default function MainLayout() {
 
         {/* UI-12：主内容 landmark——skip-link 的落点；tabIndex=-1 使其可编程聚焦
             但不进入 Tab 序列 */}
-        <Content
-          id="main-content"
-          role="main"
-          tabIndex={-1}
+        <Content id="main-content" role="main" tabIndex={-1}
           style={{
             padding: '20px 24px',
             background: token.colorBgLayout,
