@@ -505,22 +505,29 @@ describe('TaskListPage 删除后空页钳制（UX 边界）', () => {
   });
 });
 
-// ─── UX-WALK 2026-10：列宽契约（1280 桌面首列可读性防回归）────────────────
+// ─── P1-1（UX 评审 2026-11-15）：1280 首屏列契约防回归 ──────────────────────
 // jsdom 无布局引擎，钉「列配置声明」而非像素布局：
-//  · 除「任务名称」外每列（含勾选列）必须声明 width——antd v6 对无 width 列在
-//    table-layout:fixed 下平分剩余空间，声明缺失会直接挤扁名称列；
-//  · scroll.x（渲染为 <table style="width:…px">）≥ 已声明列宽合计 + 名称列下限 220。
-// 回归背景：P1-1/P1-2 增列（下次/上次执行）后固定列合计 1172 追平 scroll.x=1140，
-// 唯一无 width 的名称列被压到 ~1px，1280×800 桌面首列逐字竖排不可读。
-// 布局级验证已由走查脚本在真 Chromium 复测：1280 首列恢复可读、375 卡片化无溢出。
-describe('TaskListPage 列宽契约（UX-WALK 防回归）', () => {
-  const NAME_MIN_WIDTH = 220;
+//  · 缺省只渲染核心六列（名称/状态/上次执行/下次执行/启用/操作）+ 勾选列；
+//    触发方式/优先级/调度/运行时由列设置收起（DEFAULT_HIDDEN_COLUMNS）；
+//  · 除「任务名称」外每列必须声明 width——antd v6 对无 width 列在 fixed 布局下平分
+//    剩余空间，声明缺失会挤扁名称列；
+//  · 不再设固定 scroll.x 硬塞全部列；操作列 fixed right 常驻右侧。
+// 布局级验证（1280 无横滚 / 六列同屏 / 结果+耗时可见）由真 Chromium 走查复测。
+describe('TaskListPage 列契约（P1-1 首屏治理防回归）', () => {
   const parsePx = (v: string): number | null => {
     const m = /^(\d+(?:\.\d+)?)px$/.exec(v.trim());
     return m ? parseFloat(m[1]) : null;
   };
+  const CORE_KEYS = ['name', 'status', 'lastRun', 'nextRun', 'toggle', 'actions'];
+  const COLLAPSED_KEYS = ['trigger', 'priority', 'schedule', 'runtime'];
+  const SEG: Record<string, string> = {
+    name: 'name', status: 'status', lastRun: 'lastRun', nextRun: 'nextRun',
+    toggle: 'enabled', actions: 'actions', trigger: 'trigger', priority: 'priority',
+    schedule: 'schedule', runtime: 'runtime',
+  };
+  const label = (k: string) => i18n.t(`taskList.col.${SEG[k]}`) as string;
 
-  it('勾选列 + 9 个固定列全部声明 width，唯一无宽度列是「任务名称」', async () => {
+  it('缺省渲染勾选列 + 核心六列；四个辅助列收起不进 DOM', async () => {
     renderPage();
     await screen.findByText('备份任务');
     const table = document.querySelector('.ant-table table') as HTMLTableElement;
@@ -528,27 +535,30 @@ describe('TaskListPage 列宽契约（UX-WALK 防回归）', () => {
     const ths = Array.from(table.querySelectorAll('thead th')) as HTMLElement[];
     const cols = Array.from(table.querySelectorAll('colgroup col')) as HTMLElement[];
     expect(ths.length).toBe(cols.length);
-    expect(ths.length).toBe(11); // 勾选 1 + 数据 10
+    expect(ths.length).toBe(7); // 勾选 1 + 核心数据 6
+
+    const texts = ths.map((th) => th.textContent ?? '');
+    for (const k of CORE_KEYS) expect(texts).toContain(label(k));
+    for (const k of COLLAPSED_KEYS) expect(texts).not.toContain(label(k));
 
     const widthless = cols.filter((c) => parsePx(c.style.width) === null);
-    // 唯一无宽度列 = 名称列（吃剩余空间）；勾选列由 rowSelection.columnWidth 显式声明
+    // 唯一无宽度列 = 名称列（吃剩余空间）；勾选列由 rowSelection.columnWidth 声明
     expect(widthless.length).toBe(1);
-    const nameThIndex = ths.findIndex((th) => th.textContent === i18n.t('taskList.col.name'));
-    expect(nameThIndex).toBeGreaterThan(-1);
+    const nameThIndex = ths.findIndex((th) => th.textContent === label('name'));
     expect(cols.indexOf(widthless[0])).toBe(nameThIndex);
   });
 
-  it('scroll.x ≥ 已声明列宽合计 + 名称列下限 220（新增/加宽列必须同步上调 scroll.x）', async () => {
+  it('操作列 fixed right 常驻；表格不再挂固定像素 scroll.x', async () => {
     renderPage();
     await screen.findByText('备份任务');
     const table = document.querySelector('.ant-table table') as HTMLTableElement;
-    const declared = Array.from(table.querySelectorAll('colgroup col'))
-      .map((c) => parsePx((c as HTMLElement).style.width))
-      .filter((w): w is number => w !== null);
-    const declaredSum = declared.reduce((a, b) => a + b, 0);
-    const scrollX = parsePx(table.style.width);
-    expect(scrollX).not.toBeNull();
-    // 低于该下限时 antd/CSS fixed 布局会把无宽度名称列压扁（回归形态：~1px）
-    expect(scrollX!).toBeGreaterThanOrEqual(declaredSum + NAME_MIN_WIDTH);
+    const actionTh = Array.from(table.querySelectorAll('thead th')).find(
+      (th) => th.textContent === label('actions'),
+    ) as HTMLElement;
+    expect(actionTh).toBeTruthy();
+    // antd v6 右固定列类名为 ant-table-cell-fix-end（旧版 -right 已更名）
+    expect(actionTh.className).toContain('ant-table-cell-fix-end');
+    // 无 scroll.x → <table> 不挂像素宽（1280 内容区内由列宽 + 名称弹性吸收）
+    expect(parsePx(table.style.width)).toBeNull();
   });
 });

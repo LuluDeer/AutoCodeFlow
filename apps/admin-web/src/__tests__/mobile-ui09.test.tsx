@@ -224,11 +224,14 @@ describe('UI-09 MainLayout 移动端抽屉', () => {
     fireEvent.click(screen.getByTestId('mobile-menu-toggle'));
     const rootLayout = document.querySelector('.ant-layout') as HTMLElement;
     expect(rootLayout.className).toContain('mobile-sider-open');
-    // 展开任务分组并点击「任务调度」（antd 菜单可点击节点为 li.ant-menu-item）
-    fireEvent.click(screen.getByText('任务'));
+    // 展开自动化分组并点击「任务」（antd 菜单可点击节点为 li.ant-menu-item）
     const menu = document.querySelector('.ant-menu') as HTMLElement;
+    const groupTitle = Array.from(menu.querySelectorAll<HTMLElement>('.ant-menu-submenu-title'))
+      .find((el) => el.textContent === '自动化');
+    expect(groupTitle).toBeTruthy();
+    fireEvent.click(groupTitle!);
     const item = Array.from(menu.querySelectorAll<HTMLElement>('.ant-menu-title-content'))
-      .find((el) => el.textContent === '任务调度');
+      .find((el) => el.textContent === '任务');
     expect(item).toBeTruthy();
     fireEvent.click(item!.closest('li')!);
     // 路由跳转成功（jsdom 测试路由树中 MainLayout 被 /tasks 桩替换——
@@ -241,21 +244,19 @@ describe('UI-09 MainLayout 移动端抽屉', () => {
 });
 
 describe('UI-09 三页表格移动端产物', () => {
-  it('TaskListPage：scroll.x 兜底 + 次要列挂 ui09-hide-mobile 类', async () => {
+  it('TaskListPage：不再挂固定 scroll.x；缺省辅助列收起不进 DOM（P1-1）', async () => {
     renderPage(<TaskListPage />, '/tasks');
     await screen.findAllByText(/备份\s*任务/);
     const style = tableScrollStyle();
-    expect(style).toBeTruthy();
-    // UX-WALK 2026-10：scroll.x 必须 ≥ 固定列宽合计（status90/trigger100/priority80/
-    // schedule190/nextRun170/lastRun150/runtime96/enabled90/actions210 + 勾选32 = 1208）
-    // + 名称列弹性下限 220 → 1428。旧值 1392 被 2026-11-02 的英文挤压修复（runtime
-    // 80→96、enabled 70→90，见 commit 2e9ef84b）追平：那条提交同步上调了
-    // TaskListPage 的 scroll.x，却漏改本文件里的字面量——断言从此恒红。
-    // 这里对齐**当前**契约；算术本身的守卫在 task-list-deep.test.tsx（它算的是
-    // 「已声明列宽合计 + 220」而不是写死数字，加宽列不会再漏一次）。
-    expect(Number.parseFloat(style!.width)).toBe(1428);
-    const classes = cellClassSet();
-    expect(classes.has('ui09-hide-mobile')).toBe(true);
+    // P1-1：移除固定 scroll.x=1428 硬塞，表格不挂像素宽，名称列弹性吸收剩余宽度；
+    // 辅助列（触发方式/优先级/调度/运行时）缺省收进列设置，不在首屏 DOM。
+    expect(style ? style.width : '').toBe('');
+    const headers = [...document.querySelectorAll('thead th')].map((th) => th.textContent ?? '');
+    expect(headers).toContain('任务名称');
+    expect(headers).toContain('上次执行');
+    for (const aux of ['触发方式', '优先级', '调度', '运行时']) {
+      expect(headers).not.toContain(aux);
+    }
   });
 
   it('TaskDetailPage 执行记录表：scroll.x 兜底 + 次要列挂 ui09-hide-mobile 类', async () => {

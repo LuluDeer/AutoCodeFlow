@@ -1,11 +1,12 @@
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, Statistic, Row, Col, Progress, Typography, Empty, Tooltip, Space, Alert, Result, Tag, theme, Divider } from 'antd';
+import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, Statistic, Row, Col, Progress, Typography, Empty, Tooltip, Space, Alert, Result, Tag, theme, Divider, Dropdown } from 'antd';
+import type { MenuProps } from 'antd';
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
 import { Modal as confirmModal } from '../utils/modal';
 // R59：展示口径与「计数不一致」提示外提到组件（页面已到体量棘轮上限）。
 import RunningMetricsCard from '../components/executor/RunningMetricsCard';
-import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined, ArrowLeftOutlined, MoreOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
@@ -29,6 +30,8 @@ import { formatRelativeTime, formatDurationShort, formatDateTime, formatDuration
 import { HEARTBEAT_TIMEOUT_FALLBACK_MS, isHeartbeatStale } from '../utils/executorLiveness';
 // ARCH-33（ADR-016）：pull 控制面可用性判据（UI-18 判据的修订版）
 import { isControlPlaneUnavailable } from '../utils/control-plane';
+// D-P2-02a：运行时枚举本地化唯一事实源（裸 `python/node/shell` 不再直出）
+import { runtimeLabel } from '../utils/runtime-label';
 // F-36（DEEP_REVIEW 0ef3bbe）：编辑弹窗字段白名单（回填/提交都不再整体快照透传）。
 import { executorEditFormValues, pickExecutorEditPayload, type ExecutorEditValues } from './executor-edit';
 import { useAuthStore, isAdminUser } from '../store/auth';
@@ -407,6 +410,28 @@ export default function ExecutorDetailPage() {
     { title: t('executorDetail.history.col.error'), dataIndex: 'errorMessage', key: 'errorMessage', ellipsis: true, minWidth: 175, render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-' },
   ];
 
+  // P1-7：页头动作分级——唯一主按钮=编辑（元数据主管理流程）；配置热更新收进
+  // 「更多」下拉；离线/轮换/删除独立成危险分组：离线=普通状态动作（不标红），
+  // 轮换=warning，删除=danger（红色只留给不可逆/破坏性动作）。
+  const moreMenuItems: MenuProps['items'] = [
+    {
+      key: 'config',
+      icon: <ReloadOutlined />,
+      disabled: isControlPlaneUnavailable(executor),
+      label: (
+        <Tooltip title={isControlPlaneUnavailable(executor) ? t('executorDetail.config.pullDisabledTooltip') : undefined}>
+          {t('executorDetail.configHotReload')}
+        </Tooltip>
+      ),
+    },
+  ];
+  const onMoreMenuClick: MenuProps['onClick'] = ({ key }) => {
+    if (key !== 'config') return;
+    configForm.resetFields();
+    configForm.setFieldsValue({ maxConcurrentTasks: executor.maxConcurrentTasks ?? undefined });
+    setConfigOpen(true);
+  };
+
   return (
     // UI-09 第三轮：页面根挂 ui09-exec-detail 作用域（与 ExecutionDetailPage
     // 同源复用既有媒体查询规则：面包屑 li 允许收缩，本页无新增 CSS）。
@@ -430,91 +455,67 @@ export default function ExecutorDetailPage() {
           { title: t('executorDetail.title') },
         ]}
         extra={
-          <>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/executors')}>{t('executorDetail.backToList')}</Button>
-            {(canManageMetadata || isAdmin) ? (
-          // UI 打磨：头部 5 个操作按钮窄屏收纳换行（wrap + 紧凑间距），不引入 Dropdown
           <Space wrap size={4}>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/executors')}>{t('executorDetail.backToList')}</Button>
             {canManageMetadata && (
-            <Space.Compact>
-              <Button onClick={() => { editForm.setFieldsValue(executorEditFormValues(executor)); setEditOpen(true); }}>{t('executorDetail.edit')}</Button>
-              {/* UI-18 → ARCH-33（ADR-016）修订：判据由「pull 模式」改为
-                  「pull 且协议 < 2」。ADR-016 把控制面搬上 pull 通道后，
-                  协议 v2 的 pull 执行器可以正常热更新；v1 及未上报版本的
-                  pull 执行器仍必须禁用——它们会**静默忽略** commands 字段，
-                  比入站失败更危险（失败可见，静默不可见）。 */}
-              <Tooltip title={isControlPlaneUnavailable(executor) ? t('executorDetail.config.pullDisabledTooltip') : undefined}>
-                <Button
-                  disabled={isControlPlaneUnavailable(executor)}
-                  onClick={() => {
-                    // B-1：打开即回显已知值——maxConcurrentTasks 取当前 executor
-                    // 记录（后端 GET /:id 可得的唯一可回显配置项）；其余字段后端
-                    // 不下发，留空 = 保持执行器现有值（不再是无提示的整表空白）。
-                    // 先 reset 清掉上次会话遗留的半填字段，再回显。
-                    configForm.resetFields();
-                    configForm.setFieldsValue({ maxConcurrentTasks: executor.maxConcurrentTasks ?? undefined });
-                    setConfigOpen(true);
-                  }}
-                >{t('executorDetail.configHotReload')}</Button>
-              </Tooltip>
-            </Space.Compact>
-            )}
-            {isAdmin && (
-            <Space.Compact>
-              <Button
-                danger
-                disabled={!isOnline}
-                loading={settingOffline}
-                onClick={() => {
-                  confirmModal.confirm({
-                    title: t('executorDetail.offline.confirmTitle'),
-                    content: t('executorDetail.offline.confirmContent'),
-                    okText: t('executorDetail.confirm'),
-                    cancelText: t('executorDetail.cancel'),
-                    onOk: setOffline,
-                  });
-                }}
-              >
-                {t('executorDetail.offline.setOffline')}
+              <Button type="primary" onClick={() => { editForm.setFieldsValue(executorEditFormValues(executor)); setEditOpen(true); }}>
+                {t('executorDetail.edit')}
               </Button>
-            </Space.Compact>
             )}
-            {/* 常规操作与高危操作（轮换/删除）之间的视觉分组；N-02③ 后轮换/删除
-                仍 ADMIN-only（平台级敏感操作不下放） */}
+            {canManageMetadata && (
+              <Dropdown trigger={['click']} placement="bottomRight" menu={{ items: moreMenuItems, onClick: onMoreMenuClick }}>
+                <Button icon={<MoreOutlined />}>{t('executorDetail.more')}</Button>
+              </Dropdown>
+            )}
             {isAdmin && (
-            <>
-            <Divider orientation="vertical" style={{ margin: 0 }} />
-            <Tooltip title={t('executorDetail.rotate.oldTokenInvalidTip')}>
-              <Button
-                danger
-                icon={<CopyOutlined />}
-                onClick={() => { rotateForm.resetFields(); setRotateOpen(true); }}
-              >{t('executorDetail.rotate.rotateToken')}</Button>
-            </Tooltip>
-            {/* AUTH-05 交接：删除执行器入口（高危，与列表批量操作互补的单台形态） */}
-            <Tooltip title={t('executorDetail.remove.reRegisterTip')}>
-              <Button
-                danger
-                icon={<DeleteOutlined />}
-                onClick={() => {
-                  removeForm.resetFields();
-                  setRemoveOpen(true);
-                  // DEEP-AUDIT B·1.1：打开确认框即拉取影响面——钉定/appName 绑定
-                  // 的任务数与 pull 队列深度一并回显，删除前用户看得见后果。
-                  setRemoveImpactLoading(true);
-                  executorsApi
-                    .removalImpact(id!)
-                    .then(setRemoveImpact)
-                    .catch(() => setRemoveImpact(null))
-                    .finally(() => setRemoveImpactLoading(false));
-                }}
-              >{t('executorDetail.remove.delete')}</Button>
-            </Tooltip>
-            </>
+              <>
+                <Divider orientation="vertical" style={{ margin: 0 }} />
+                {/* 危险分组①：设置离线是普通状态动作（不标红）——心跳回来会自动翻回在线 */}
+                <Button
+                  disabled={!isOnline}
+                  loading={settingOffline}
+                  onClick={() => {
+                    confirmModal.confirm({
+                      title: t('executorDetail.offline.confirmTitle'),
+                      content: t('executorDetail.offline.confirmContent'),
+                      okText: t('executorDetail.confirm'),
+                      cancelText: t('executorDetail.cancel'),
+                      onOk: setOffline,
+                    });
+                  }}
+                >
+                  {t('executorDetail.offline.setOffline')}
+                </Button>
+                {/* 危险分组②：轮换 Token = warning（旧令牌立即失效、执行器短暂重注册，非不可逆） */}
+                <Tooltip title={t('executorDetail.rotate.oldTokenInvalidTip')}>
+                  <Button
+                    icon={<CopyOutlined />}
+                    style={{ color: token.colorWarning, borderColor: token.colorWarning }}
+                    onClick={() => { rotateForm.resetFields(); setRotateOpen(true); }}
+                  >{t('executorDetail.rotate.rotateToken')}</Button>
+                </Tooltip>
+                {/* 危险分组③：删除 = danger（不可逆；影响面在确认弹窗内回显） */}
+                <Tooltip title={t('executorDetail.remove.reRegisterTip')}>
+                  <Button
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={() => {
+                      removeForm.resetFields();
+                      setRemoveOpen(true);
+                      // DEEP-AUDIT B·1.1：打开确认框即拉取影响面——钉定/appName 绑定
+                      // 的任务数与 pull 队列深度一并回显，删除前用户看得见后果。
+                      setRemoveImpactLoading(true);
+                      executorsApi
+                        .removalImpact(id!)
+                        .then(setRemoveImpact)
+                        .catch(() => setRemoveImpact(null))
+                        .finally(() => setRemoveImpactLoading(false));
+                    }}
+                  >{t('executorDetail.remove.delete')}</Button>
+                </Tooltip>
+              </>
             )}
           </Space>
-            ) : undefined}
-          </>
         }
       />
 
@@ -545,7 +546,9 @@ export default function ExecutorDetailPage() {
               )}
             </Space>
           </Descriptions.Item>
-          <Descriptions.Item label={t('executorDetail.field.type')}>{executor.type || '-'}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.type')}>
+            {executor.type ? <Tag>{runtimeLabel(executor.type, t)}</Tag> : '-'}
+          </Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.version')}>{executor.executorVersion || '-'}</Descriptions.Item>
           {/* UI-17/ARCH-32: 派发模式（pull = NAT 内零入站，长轮询取件） */}
           <Descriptions.Item label={t('executorDetail.field.dispatchMode')}>
@@ -642,8 +645,10 @@ export default function ExecutorDetailPage() {
               </Tooltip>
             )}
           </Descriptions.Item>
-          {/* U16: 死信积压——回调持续失败的载荷落盘执行器本地 dead-letter */}
-          <Descriptions.Item label={t('executorDetail.field.deadLetter')}>
+          {/* U16: 死信积压——回调持续失败的载荷落盘执行器本地 dead-letter。
+              P2-05：标签「死信积压（活性上报·进页快照）」较长，独占一行（filled），
+              避免在三列窄格里被挤成逐字竖排。 */}
+          <Descriptions.Item label={t('executorDetail.field.deadLetter')} span="filled">
             {executor.deadLetterCount === undefined || executor.deadLetterCount === null ? (
               <Tooltip title={t('executorDetail.deadLetter.notReportedTip')}>
                 <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined aria-hidden="true" /></Text>

@@ -31,13 +31,32 @@
  * 注释掉 ⇒ 本文件第 ② 层立刻红。这是「守卫能挡住回归」的实证，不是声称。
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "../api/queries";
 
-const HERE = dirname(new URL(import.meta.url).pathname);
-const SRC = resolve(HERE, "..");
+// 不用 import.meta.url 取路径：vitest jsdom 下它不是 file: scheme，且
+// `new URL(import.meta.url).pathname` 在 Windows 上会把盘符拼重（E:\E:\…）。
+// 与 settings-query-key-contract.test.tsx 同一套 cwd 候选定位，跨平台一致。
+function findSrcRoot(): string {
+  const candidates = [
+    join(process.cwd(), "src"),
+    join(process.cwd(), "apps", "admin-web", "src"),
+  ];
+  for (const c of candidates) {
+    if (existsSync(join(c, "api", "queries.ts"))) return c;
+  }
+  let dir = dirname(resolve(process.cwd()));
+  for (let i = 0; i < 5; i += 1) {
+    const c = join(dir, "src");
+    if (existsSync(join(c, "api", "queries.ts"))) return c;
+    dir = dirname(dir);
+  }
+  throw new Error(`找不到 admin-web 的 src 目录（cwd=${process.cwd()}）`);
+}
+
+const SRC = findSrcRoot();
 
 function read(rel: string): string {
   return readFileSync(join(SRC, rel), "utf8");

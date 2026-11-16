@@ -171,6 +171,9 @@ describe('R171 P2-2：版本抽屉渲染（页面层）', () => {
     vi.mocked(tasksApi.versions).mockReset().mockRejectedValue(new Error('502'));
 
     renderPage();
+    // P1-7：版本历史入口收进「更多」下拉——先开菜单再点条目。
+    fireEvent.click(await screen.findByRole('button', { name: /更多/ }));
+    await screen.findByRole('menu');
     fireEvent.click(await screen.findByTestId('version-history'));
 
     // StateError（页内错误块）出现，标题是版本列表的加载失败

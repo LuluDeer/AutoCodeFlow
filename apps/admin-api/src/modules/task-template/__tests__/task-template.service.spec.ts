@@ -348,3 +348,170 @@ describe("TaskTemplateService (CORE-03)", () => {
     );
   });
 });
+
+describe("TaskTemplateService.update（P1-5 模板编辑闭环）", () => {
+  const owner = { id: 42, username: "alice", role: UserRole.USER };
+  let svc: TaskTemplateService;
+  let repo: ReturnType<typeof makeRepo>;
+
+  beforeEach(async () => {
+    repo = makeRepo();
+    const module = await Test.createTestingModule({
+      providers: [
+        TaskTemplateService,
+        { provide: getRepositoryToken(TaskTemplate), useValue: repo },
+        { provide: getRepositoryToken(Task), useValue: makeTaskRepo() },
+        { provide: TaskService, useValue: { create: jest.fn() } },
+      ],
+    }).compile();
+    svc = module.get(TaskTemplateService);
+  });
+
+  const owned = (over: Partial<TaskTemplate> = {}): TaskTemplate =>
+    official({
+      id: "c-1",
+      key: "mine",
+      isOfficial: false,
+      createdBy: "user:42|alice",
+      ...over,
+    });
+
+  it("属主更新名称/说明/分类/config：落库且 key/isOfficial/createdBy 不变", async () => {
+    const tpl = owned();
+    repo.findOne.mockResolvedValue(tpl);
+    repo.save.mockImplementation(async (e) => e);
+
+    const updated = await svc.update(
+      "c-1",
+      {
+        name: "重命名后",
+        description: "  新说明  ",
+        category: "巡检",
+        config: {
+          triggerType: "manual",
+          runtime: "python",
+          entrypoint: "m.py",
+        },
+      },
+      owner,
+    );
+
+    expect(repo.save).toHaveBeenCalledTimes(1);
+    expect(updated.name).toBe("重命名后");
+    expect(updated.description).toBe("新说明");
+    expect(updated.category).toBe("巡检");
+    expect(updated.config.entrypoint).toBe("m.py");
+    // 不可变字段保持原值
+    expect(updated.key).toBe("mine");
+    expect(updated.isOfficial).toBe(false);
+    expect(updated.createdBy).toBe("user:42|alice");
+  });
+
+  it("局部更新：只改 name 时 config / description 保持原值", async () => {
+    const tpl = owned({
+      description: "旧说明",
+      config: { triggerType: "manual", runtime: "node", entrypoint: "old.js" },
+    });
+    repo.findOne.mockResolvedValue(tpl);
+    repo.save.mockImplementation(async (e) => e);
+
+    const updated = await svc.update("c-1", { name: "只改名" }, owner);
+
+    expect(updated.name).toBe("只改名");
+    expect(updated.description).toBe("旧说明");
+    expect(updated.config.entrypoint).toBe("old.js");
+  });
+
+  it("description / category 传 null → 清空", async () => {
+    const tpl = owned({ description: "x", category: "y" });
+    repo.findOne.mockResolvedValue(tpl);
+    repo.save.mockImplementation(async (e) => e);
+
+    const updated = await svc.update(
+      "c-1",
+      { description: null, category: null },
+      owner,
+    );
+
+    expect(updated.description).toBeNull();
+    expect(updated.category).toBeNull();
+  });
+
+  it("脏 config（白名单外字段）被拒且不落库", async () => {
+    repo.findOne.mockResolvedValue(owned());
+    await expect(
+      svc.update(
+        "c-1",
+        {
+          config: {
+            triggerType: "manual",
+            runtime: "node",
+            entrypoint: "x.js",
+            bogus: 1,
+          },
+        },
+        owner,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(repo.save).not.toHaveBeenCalled();
+  });
+
+  it("官方模板更新 → 403（与删除同闸门）", async () => {
+    repo.findOne.mockResolvedValue(official());
+    await expect(
+      svc.update("official-1", { name: "x" }, owner),
+    ).rejects.toThrow(ForbiddenException);
+    expect(repo.save).not.toHaveBeenCalled();
+  });
+
+  it("非属主非 ADMIN 更新 → 403", async () => {
+    repo.findOne.mockResolvedValue(owned());
+    await expect(
+      svc.update(
+        "c-1",
+        { name: "x" },
+        { id: 2, username: "mallory", role: UserRole.USER },
+      ),
+    ).rejects.toThrow(ForbiddenException);
+    expect(repo.save).not.toHaveBeenCalled();
+  });
+
+  it("createdBy=NULL 历史行：普通用户 403，ADMIN 放行", async () => {
+    repo.findOne.mockResolvedValue(owned({ createdBy: null }));
+    await expect(
+      svc.update(
+        "legacy",
+        { name: "x" },
+        { id: 1, username: "alice", role: UserRole.USER },
+      ),
+    ).rejects.toThrow(ForbiddenException);
+
+    repo.findOne.mockResolvedValue(owned({ createdBy: null }));
+    repo.save.mockImplementation(async (e) => e);
+    await svc.update(
+      "legacy",
+      { name: "admin 改名" },
+      { id: 99, username: "root", role: UserRole.ADMIN },
+    );
+    expect(repo.save).toHaveBeenCalledTimes(1);
+  });
+
+  it("ADMIN 可改他人自定义模板", async () => {
+    repo.findOne.mockResolvedValue(owned());
+    repo.save.mockImplementation(async (e) => e);
+    await svc.update(
+      "c-1",
+      { name: "admin 调整" },
+      { id: 99, username: "root", role: UserRole.ADMIN },
+    );
+    expect(repo.save).toHaveBeenCalledTimes(1);
+  });
+
+  it("模板不存在 → 404（不写库）", async () => {
+    repo.findOne.mockResolvedValue(null);
+    await expect(svc.update("ghost", { name: "x" }, owner)).rejects.toThrow(
+      NotFoundException,
+    );
+    expect(repo.save).not.toHaveBeenCalled();
+  });
+});

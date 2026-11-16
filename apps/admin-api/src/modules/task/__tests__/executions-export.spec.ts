@@ -1,3 +1,7 @@
+/**
+ * ALLOW: P2-2 执行列表筛选补齐补 runtime/triggerType 与组合筛选的导出端回归用例，
+ * 本 spec 非注释行超 900 行阈值；新增行全部是验收证据用例（零生产代码），拆分留待独立任务。
+ */
 import "reflect-metadata";
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
@@ -61,6 +65,8 @@ interface Row {
   taskName: string;
   status: ExecutionStatus;
   triggerType: string | null;
+  /** P2-2：任务域运行时（tasks.runtime 关联派生；假仓库挂在行上建模）。 */
+  runtime: string;
   executorId: string | null;
   executorAddress: string | null;
   createdAt: Date;
@@ -82,6 +88,7 @@ function makeRow(over: Partial<Row> & { id: string }): Row {
     taskName: "Nightly Report",
     status: ExecutionStatus.SUCCESS,
     triggerType: "cron",
+    runtime: "python",
     executorId: "33333333-3333-4333-8333-333333333333",
     executorAddress: "10.0.0.5",
     createdAt: new Date("2026-01-02T03:04:05.000Z"),
@@ -158,6 +165,9 @@ function makeExecRepo(rowset: Row[]) {
           let rows = rowset.filter((r) => {
             if (bounds.status && r.status !== bounds.status) return false;
             if (bounds.taskId && r.taskId !== bounds.taskId) return false;
+            if (bounds.triggerType && r.triggerType !== bounds.triggerType)
+              return false;
+            if (bounds.runtime && r.runtime !== bounds.runtime) return false;
             if (
               bounds.taskName &&
               !`${r.taskName ?? ""}`
@@ -517,6 +527,85 @@ describe("GET /tasks/executions/export — 执行记录 CSV 流式导出", () =>
       expect(uuidIdsOf(out)).toEqual(["aaaaaaaa-aaaa-4aaa-8aaa-000000000403"]);
     });
 
+    it("P2-2: triggerType 过滤——按执行行记录值精确匹配（不做模糊）", async () => {
+      rowset = [
+        makeRow({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-000000000501",
+          triggerType: "webhook",
+        }),
+        makeRow({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-000000000502",
+          triggerType: "manual",
+        }),
+        makeRow({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-000000000503",
+          triggerType: "webhook",
+          status: ExecutionStatus.FAILED,
+        }),
+      ];
+      await build();
+      const out = collector();
+
+      await service.streamExecutionsCsv({ triggerType: "webhook" }, out.write);
+
+      expect(uuidIdsOf(out)).toEqual([
+        "aaaaaaaa-aaaa-4aaa-8aaa-000000000503",
+        "aaaaaaaa-aaaa-4aaa-8aaa-000000000501",
+      ]);
+    });
+
+    it("P2-2: runtime 过滤——按任务运行时（tasks.runtime 关联派生）", async () => {
+      rowset = [
+        makeRow({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-000000000511",
+          runtime: "python",
+        }),
+        makeRow({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-000000000512",
+          runtime: "node",
+        }),
+        makeRow({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-000000000513",
+          runtime: "shell",
+        }),
+      ];
+      await build();
+      const out = collector();
+
+      await service.streamExecutionsCsv({ runtime: "node" }, out.write);
+
+      expect(uuidIdsOf(out)).toEqual(["aaaaaaaa-aaaa-4aaa-8aaa-000000000512"]);
+    });
+
+    it("P2-2: runtime + status 组合——两个条件取交集", async () => {
+      rowset = [
+        makeRow({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-000000000521",
+          runtime: "node",
+          status: ExecutionStatus.FAILED,
+        }),
+        makeRow({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-000000000522",
+          runtime: "node",
+          status: ExecutionStatus.SUCCESS,
+        }),
+        makeRow({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-000000000523",
+          runtime: "python",
+          status: ExecutionStatus.FAILED,
+        }),
+      ];
+      await build();
+      const out = collector();
+
+      await service.streamExecutionsCsv(
+        { runtime: "node", status: ExecutionStatus.FAILED },
+        out.write,
+      );
+
+      expect(uuidIdsOf(out)).toEqual(["aaaaaaaa-aaaa-4aaa-8aaa-000000000521"]);
+    });
+
     it("status + taskId 组合：两个条件取交集（不是互相覆盖）", async () => {
       await build();
       const out = collector();
@@ -566,12 +655,14 @@ describe("GET /tasks/executions/export — 执行记录 CSV 流式导出", () =>
           executorAddress: "10.0.0",
           startTime: "2026-01-01T00:00:00.000Z",
           endTime: "2026-12-31T23:59:59.000Z",
+          runtime: "python",
+          triggerType: "cron",
         },
         out.write,
       );
 
       const sqls = state.filters.map((f) => f.sql);
-      // 六个谓词的形态与 getAllExecutions 逐字一致（唯一真值源的证据）
+      // 谓词的形态与 getAllExecutions 逐字一致（唯一真值源的证据）
       expect(sqls).toContain("e.status = :status");
       expect(sqls).toContain("e.taskId = :taskId");
       expect(sqls).toContain(
@@ -580,9 +671,11 @@ describe("GET /tasks/executions/export — 执行记录 CSV 流式导出", () =>
       expect(sqls).toContain("e.executorAddress ILIKE :executorAddress");
       expect(sqls).toContain("e.createdAt >= :startTime");
       expect(sqls).toContain("e.createdAt <= :endTime");
+      expect(sqls).toContain("t.runtime = :runtime");
+      expect(sqls).toContain("e.triggerType = :triggerType");
       // 一个都不少（少一个说明某条件根本没下发）
       expect(sqls.filter((s) => !s.includes("task_executions c"))).toHaveLength(
-        6,
+        8,
       );
     });
 
@@ -879,6 +972,8 @@ describe("GET /tasks/executions/export — 执行记录 CSV 流式导出", () =>
           executorAddress: "10.0.0.5",
           startTime: "2026-01-01T00:00:00.000Z",
           endTime: "2026-01-31T23:59:59.000Z",
+          runtime: "python",
+          triggerType: "cron",
           limit: 500,
         } as ExportExecutionsQueryDto,
         res,
@@ -897,6 +992,8 @@ describe("GET /tasks/executions/export — 执行记录 CSV 流式导出", () =>
           executorAddress: "10.0.0.5",
           startTime: "2026-01-01T00:00:00.000Z",
           endTime: "2026-01-31T23:59:59.000Z",
+          runtime: "python",
+          triggerType: "cron",
         },
         expect.any(Function),
         expect.objectContaining({ limit: 500 }),
@@ -969,7 +1066,7 @@ describe("ExportExecutionsQueryDto — 白名单与上限校验", () => {
       metatype: ExportExecutionsQueryDto,
     });
 
-  it("接受六个过滤器 + limit 并完成类型转换（limit 为 number）", async () => {
+  it("接受过滤器 + limit 并完成类型转换（limit 为 number）", async () => {
     const out: any = await run({
       status: "failed",
       taskId: TASK_A,
@@ -977,10 +1074,20 @@ describe("ExportExecutionsQueryDto — 白名单与上限校验", () => {
       executorAddress: "e",
       startTime: "2026-01-01T00:00:00.000Z",
       endTime: "2026-01-31T00:00:00.000Z",
+      runtime: "python",
+      triggerType: "cron",
       limit: "500",
     });
     expect(out.limit).toBe(500);
     expect(out.status).toBe("failed");
+    expect(out.runtime).toBe("python");
+    expect(out.triggerType).toBe("cron");
+  });
+
+  it("P2-2: runtime 非枚举值被拒绝；triggerType 自由 varchar 接受未知取值", async () => {
+    await expect(run({ runtime: "ruby" })).rejects.toBeTruthy();
+    const ok: any = await run({ triggerType: "agent" });
+    expect(ok.triggerType).toBe("agent");
   });
 
   it("分页参数在这里**不**合法（page/pageSize 会 400——导出不分页）", async () => {

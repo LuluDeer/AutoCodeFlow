@@ -604,7 +604,26 @@ export default () => ({
       // 失实声称"registered as optional ... in the Joi schema"，实际仅注册了
       // TOKEN/USER/PASS 三个键）。现收编到 registry.npm.url；默认
       // http://localhost:4873 与旧 controller 回退逐字节一致。
-      url: process.env.NPM_REGISTRY_URL || "http://localhost:4873",
+      //
+      // ## R207（2026-11-09，真机缺陷）：admin 侧改用**独立键**，与 PyPI 侧对称
+      //
+      // 此前 admin 直接复用 `NPM_REGISTRY_URL` —— 但那个键是**执行器语义**：
+      // compose 用 `${NPM_REGISTRY_URL-http://registry-npm:4873}`（单横线）实现
+      // 「显式置空 ⇒ 执行器回落 npmjs.com 官方源」的契约（见 docker-compose.yml
+      // 的 B-2 注记）。于是 `.env` 里写 `NPM_REGISTRY_URL=`（一个**有意**的空串，
+      // 表达"执行器用官方源"）时，admin 拿到的也是空串 ⇒ 回落下面的
+      // `http://localhost:4873` —— 那是**容器自己**，registry-npm 是**另一个**
+      // 容器（别名 `registry-npm:4873`）⇒ ECONNREFUSED ⇒ 控制台「包注册中心」
+      // 页恒报 `REGISTRY_UPSTREAM_FAILED`（实测 2026-11-09 生产栈）。
+      //
+      // 与 PyPI 侧完全同型（那边早已用 `ADMIN_PYPI_REGISTRY_URL` 独立键解决，
+      // 见下），只是 npm 侧漏了 ⇒ 本轮补齐、两侧对称。
+      // 优先级：`ADMIN_NPM_REGISTRY_URL`（admin 专用基址）→ `NPM_REGISTRY_URL`
+      // （兼容旧部署，容器外用户可能只设了它）→ 回退 localhost（既有行为）。
+      url:
+        process.env.ADMIN_NPM_REGISTRY_URL ||
+        process.env.NPM_REGISTRY_URL ||
+        "http://localhost:4873",
       token: process.env.NPM_REGISTRY_TOKEN || "",
       user: process.env.NPM_REGISTRY_USER || "",
       pass: process.env.NPM_REGISTRY_PASS || "",
@@ -985,7 +1004,8 @@ if (process.env.NODE_ENV === "production") {
   const registryUrls: ReadonlyArray<readonly [string, string]> = [
     ["NPM_REGISTRY_URL", process.env.NPM_REGISTRY_URL ?? ""],
     ["PYPI_REGISTRY_URL", process.env.PYPI_REGISTRY_URL ?? ""],
-    // admin 侧的 PyPI 基址同属 registry 出站面，凭据同样走 Basic
+    // admin 侧的两个基址同属 registry 出站面，凭据同样走 Basic
+    ["ADMIN_NPM_REGISTRY_URL", process.env.ADMIN_NPM_REGISTRY_URL ?? ""],
     ["ADMIN_PYPI_REGISTRY_URL", process.env.ADMIN_PYPI_REGISTRY_URL ?? ""],
   ];
   for (const [name, raw] of registryUrls) {

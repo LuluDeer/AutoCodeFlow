@@ -291,6 +291,25 @@ function countI18nKeys(node) {
   return 0;
 }
 
+/**
+ * 递归按字典序排序对象键，保证跨环境（Nest 扫描顺序 / 注入顺序）字节级稳定。
+ *
+ * 为什么需要：api-types-drift 用 `git diff --exit-code` 比对生成物；同一份
+ * OpenAPI 在不同机器上 paths/schemas 的插入顺序可能不同，语义零差异却整文件
+ * diff。排序只改键序、不改值，也不改数组顺序。
+ */
+function sortKeys(value) {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const key of Object.keys(value).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+      out[key] = sortKeys(value[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
 function run() {
   const argv = process.argv.slice(2);
   const check = argv.includes("--check");
@@ -356,7 +375,7 @@ function run() {
   const dead = argv.includes("--report") ? deadMapEntries(doc, map) : [];
 
   if (!check) {
-    fs.writeFileSync(OPENAPI, JSON.stringify(doc, null, 2) + "\n", "utf8");
+    fs.writeFileSync(OPENAPI, JSON.stringify(sortKeys(doc), null, 2) + "\n", "utf8");
     console.log(
       `✔ API-I18N 已注入 ${res.injected} 处 x-i18n-en（覆盖 ${res.translatable} 个中文可翻译节点；` +
         `另有 ${res.alreadyEnglish} 个纯英文、${res.empty} 个空描述不计入）。`,

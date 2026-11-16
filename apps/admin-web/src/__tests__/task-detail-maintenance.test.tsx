@@ -1,7 +1,8 @@
 /**
  * FEAT-06: 任务详情页维护窗口展示回归。
- * 配置了 maintenanceWindows 的任务在"任务配置"描述区渲染窗口 Tag
- * （start → end（说明））；未配置时不渲染"维护窗口"项。
+ * 配置了 maintenanceWindows 的任务在"任务配置"描述区渲染窗口 Tag；
+ * P2-06：裸 Cron 人性化（每日/周几 HH:MM–HH:MM，跨午夜括注），
+ * 原始表达式保留在 Tooltip 次要文本，不再直出。未配置时不渲染"维护窗口"项。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
@@ -98,9 +99,12 @@ describe('TaskDetailPage 维护窗口展示（FEAT-06）', () => {
         <TaskDetailPage />
       </QueryClientProvider>,
     );
-    expect(await screen.findByText('0 22 * * 5 → 0 6 * * 6（发布冻结）')).toBeTruthy();
-    expect(screen.getByText('30 2 * * * → 0 4 * * *')).toBeTruthy();
+    expect(await screen.findByText('周五 22:00 → 周六 06:00（跨午夜）（发布冻结）')).toBeTruthy();
+    expect(screen.getByText('每日 02:30–04:00')).toBeTruthy();
     expect(screen.getByText('维护窗口')).toBeTruthy();
+    // P2-06：裸 Cron 不再作为可见文案直出（原文进 Tooltip）
+    expect(screen.queryByText('0 22 * * 5 → 0 6 * * 6')).toBeNull();
+    expect(screen.queryByText('30 2 * * * → 0 4 * * *')).toBeNull();
   });
 
   it('未配置窗口：不渲染"维护窗口"描述项', async () => {

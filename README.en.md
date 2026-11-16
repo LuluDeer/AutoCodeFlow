@@ -158,7 +158,7 @@ An Electron executor that installs on any machine, stays in the system tray, reg
 
 ![Desktop executor history](docs/assets/screenshots/en/executor-desktop/history.png)
 
-**Local apps** — deployed apps, side-by-side versions, uninstall and rollback.
+**Local apps** — deployed apps, side-by-side versions, uninstall.
 
 ![Desktop executor local apps](docs/assets/screenshots/en/executor-desktop/apps-detail.png)
 
@@ -263,11 +263,11 @@ create task
 | **Scheduling** | Cron (5-field + timezone), fixed rate, manual, inbound webhook, dependency DAG, maintenance windows |
 | **Execution policy** | Timeout + warning ratio, max retries with retryable-error allowlist, concurrency gates / mutex groups, block & misfire strategies, executor affinity tags |
 | **Fleet** | Node.js / Python / Electron executors; self-registration, heartbeat liveness, load-aware dispatch, multi-instance consistency (outbox + claim) |
-| **Code delivery** | Inline Glue scripts (editor, lint, AI generation), Git repos, application zips; private npm/PyPI dependency install |
+| **Code delivery** | Inline Glue scripts (online editor, starter templates), Git repos, application zips; private npm/PyPI dependency install |
 | **Observability** | SSE live logs, execution trends, scheduler latency, Prometheus metrics, trace IDs propagated admin → executor → callback (opt-in `OTEL_ENABLED`, spans in in-process `[trace]` logs — no OTLP export yet, see [deployment](docs/deployment.md)), Loki log aggregation |
 | **Alerting** | WeCom, DingTalk, Slack webhooks, SMTP email; rules, silences, HMAC-signed webhooks |
 | **Security** | Project-scoped RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs, two-person deploy approval, optional bubblewrap sandbox for Python tasks (secure overlay) |
-| **AI** | OpenAI / Ollama / Qwen for script generation, failure root-cause analysis, schedule suggestions and app health checks; MCP server for agents |
+| **AI** | OpenAI / Ollama / Qwen for failure root-cause analysis, schedule suggestions and app health checks; MCP server for agents |
 | **Tooling** | `acf` CLI (69 subcommands), Node/Python SDKs, MCP server (56 tools), VitePress docs site |
 
 ## 🚀 Quick start

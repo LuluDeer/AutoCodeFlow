@@ -1444,7 +1444,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 257 个操作，覆盖 221 个路径。
+共 259 个操作，覆盖 222 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1519,7 +1519,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/applications/{id}/versions` | 获取应用版本历史 |
 | POST | `/applications/upload` | 上传应用包（zip） |
 | POST | `/applications/webhook` | 版本发布 Webhook |
-| GET | `/artifacts` | 按应用/任务查询产物索引（仅管理员） |
+| GET | `/artifacts` | 按应用/任务/关键字/时间/类型查询产物索引（仅管理员） |
 | GET | `/audit` | 分页查询审计日志（仅管理员） |
 | GET | `/audit/actions` | 审计动作清单（去重，仅管理员） |
 | GET | `/audit/export` | 导出审计日志为 CSV（最多 10 000 行，仅管理员） |
@@ -1620,7 +1620,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/notification/silences` | 创建通知静默 |
 | DELETE | `/notification/silences/{id}` | 移除通知静默 |
 | POST | `/notification/test` | 向渠道发送测试通知 |
-| GET | `/projects` | 列出调用者可访问的项目 |
+| GET | `/projects` | 列出调用者可访问的项目（q 按名称/描述关键字过滤） |
 | POST | `/projects` | 创建项目（ADMIN） |
 | DELETE | `/projects/{id}` | - |
 | GET | `/projects/{id}` | 按 id 获取项目 |
@@ -1630,6 +1630,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | DELETE | `/projects/{id}/members/{userId}` | - |
 | PATCH | `/projects/{id}/members/{userId}` | 变更成员角色（ADMIN） |
 | GET | `/projects/{id}/removal-impact` | 预览删除该项目的后果 |
+| GET | `/projects/{id}/summary` | 项目详情统计（任务/应用/近 7 天执行/失败率/成员） |
 | GET | `/projects/me/roles` | 调用者在各项目中的角色 |
 | GET | `/registry/npm/packages` | - |
 | GET | `/registry/pypi/packages` | - |
@@ -1654,6 +1655,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/task-templates` | 创建自定义任务模板 |
 | DELETE | `/task-templates/{id}` | 删除自定义任务模板 |
 | GET | `/task-templates/{id}` | 获取单个任务模板 |
+| PATCH | `/task-templates/{id}` | 编辑自定义任务模板 |
 | POST | `/task-templates/{id}/instantiate` | 从模板创建可运行任务（一键克隆） |
 | POST | `/task-templates/import` | 导入任务模板清单（manifest.json / registry 条目） |
 | GET | `/tasks` | 列出任务 |

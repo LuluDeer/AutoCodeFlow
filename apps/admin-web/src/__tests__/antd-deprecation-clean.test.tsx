@@ -368,7 +368,9 @@ describe('走查告警收敛：task-detail 抽屉 size 迁移', () => {
     renderOnDataRouter(<TaskDetailPage />, '/tasks/t-1001');
     await screen.findByTestId('page-header');
     // 打开抽屉：迁移点在 Drawer 的 size prop，关闭态也应触发（走查即页面
-    // 加载时告警），打开态再加一层保险。
+    // 加载时告警），打开态再加一层保险。P1-7：入口在「更多」下拉内。
+    fireEvent.click(await screen.findByRole('button', { name: /更多/ }));
+    await screen.findByRole('menu');
     fireEvent.click(screen.getByTestId('version-history'));
     await waitFor(() => expect(document.querySelector('.ant-drawer-open')).toBeTruthy());
     cap.assertClean();

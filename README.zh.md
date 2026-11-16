@@ -162,7 +162,7 @@ Electron 桌面执行器：装在任何一台机器上，常驻系统托盘，�
 
 ![桌面执行器执行历史](docs/assets/screenshots/zh/executor-desktop/history.png)
 
-**本地应用** — 已部署应用、多版本并存、卸载与版本回退。
+**本地应用** — 已部署应用、多版本并存与卸载。
 
 ![桌面执行器本地应用](docs/assets/screenshots/zh/executor-desktop/apps-detail.png)
 
@@ -267,11 +267,11 @@ flowchart LR
 | **调度** | Cron（5 段表达式 + 时区）、固定频率、手动触发、Webhook 入站、任务依赖 DAG、维护窗口 |
 | **执行策略** | 超时与超时预警、最大重试与可重试错误白名单、并发闸/互斥组、阻塞策略、misfire 策略、执行器亲和/反亲和标签 |
 | **多执行器** | Node.js / Python / Electron 桌面三类执行器；自动注册、心跳保活、负载感知分发、多实例一致性（outbox + claim） |
-| **脚本形态** | 内置 Glue 脚本（在线编辑、语法检查、AI 生成）、Git 仓库、应用 zip 包；私有 npm/PyPI 依赖安装 |
+| **脚本形态** | 内置 Glue 脚本（在线编辑器、起步模板）、Git 仓库、应用 zip 包；私有 npm/PyPI 依赖安装 |
 | **可观测** | SSE 实时日志、执行趋势与成功率、调度延迟、Prometheus 指标、traceId 全链贯穿（可选 `OTEL_ENABLED`，span 只在进程内 `[trace]` 日志输出，**尚未 OTLP 出站**，见[部署指南](docs/deployment.md)）、Loki 日志聚合 |
 | **告警通知** | 企业微信、钉钉、Slack Webhook、SMTP 邮件；规则、静默期、HMAC 签名校验 |
 | **安全** | RBAC（项目级角色）、作用域 API Key、TOTP 双因子、OIDC SSO、审计日志、部署第二人审批、Python 任务可选 bubblewrap 沙箱（secure overlay） |
-| **AI** | OpenAI / Ollama / Qwen：脚本生成、失败根因分析、调度建议、应用健康分析；MCP Server 让 Agent 直接管理任务 |
+| **AI** | OpenAI / Ollama / Qwen：失败根因分析、调度建议、应用健康分析；MCP Server 让 Agent 直接管理任务 |
 | **交付** | `acf` CLI（69 个子命令）、Node/Python 双 SDK、MCP Server（56 个工具）、VitePress 文档站 |
 
 ## 🚀 快速开始

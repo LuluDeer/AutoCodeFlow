@@ -239,4 +239,123 @@ describe("ArtifactsService.listArtifactRows（GET /artifacts 读面）", () => {
     ).rejects.toThrow();
     expect(findAndCount).not.toHaveBeenCalled();
   });
+
+  /** FindOperator 结构探针（typeorm 0.3：{ type, value }，And 的 value 是算子数组）。 */
+  const asOp = (v: unknown): { type: string; value: unknown } =>
+    v as { type: string; value: unknown };
+
+  it("q 文件名关键字：name ILIKE 模糊匹配，LIKE 元字符按字面量转义", async () => {
+    findAndCount.mockResolvedValue([[mkRow({})], 1]);
+    await svc.listArtifactRows({ q: "report", page: 1, pageSize: 20 });
+    const { where } = findAndCount.mock.calls[0][0];
+    const nameOp = asOp(where.name);
+    expect(nameOp.type).toBe("ilike");
+    expect(nameOp.value).toBe("%report%");
+  });
+
+  it("q 含 % / _ / \\ 时经 escapeLikePattern 转义，不成为通配符", async () => {
+    findAndCount.mockResolvedValue([[mkRow({})], 0]);
+    await svc.listArtifactRows({ q: "a_b%c", page: 1, pageSize: 20 });
+    const { where } = findAndCount.mock.calls[0][0];
+    expect(asOp(where.name).value).toBe("%a\\_b\\%c%");
+  });
+
+  it("q trim 后为空串 → 视为未传，不生成 name 谓词", async () => {
+    findAndCount.mockResolvedValue([[mkRow({})], 1]);
+    await svc.listArtifactRows({ q: "   ", page: 1, pageSize: 20 });
+    const { where } = findAndCount.mock.calls[0][0];
+    expect(where.name).toBeUndefined();
+  });
+
+  it("from/to 闭区间：createdAt 分别挂 MoreThanOrEqual / LessThanOrEqual", async () => {
+    findAndCount.mockResolvedValue([[mkRow({})], 1]);
+    await svc.listArtifactRows({
+      from: "2026-11-01T00:00:00.000Z",
+      to: "2026-11-15T23:59:59.000Z",
+      page: 1,
+      pageSize: 20,
+    });
+    const { where } = findAndCount.mock.calls[0][0];
+    const timeOp = asOp(where.createdAt);
+    expect(timeOp.type).toBe("and");
+    const [startOp, endOp] = timeOp.value as { type: string; value: Date }[];
+    expect(startOp.type).toBe("moreThanOrEqual");
+    expect(startOp.value.toISOString()).toBe("2026-11-01T00:00:00.000Z");
+    expect(endOp.type).toBe("lessThanOrEqual");
+    expect(endOp.value.toISOString()).toBe("2026-11-15T23:59:59.000Z");
+  });
+
+  it("仅 from 单边：createdAt 只挂下界谓词", async () => {
+    findAndCount.mockResolvedValue([[mkRow({})], 1]);
+    await svc.listArtifactRows({
+      from: "2026-11-01T00:00:00.000Z",
+      page: 1,
+      pageSize: 20,
+    });
+    const { where } = findAndCount.mock.calls[0][0];
+    const timeOp = asOp(where.createdAt);
+    expect(timeOp.type).toBe("moreThanOrEqual");
+  });
+
+  it("ext 白名单内：name 后缀 LIKE '%.<ext>'", async () => {
+    findAndCount.mockResolvedValue([[mkRow({ name: "screenshot.png" })], 1]);
+    await svc.listArtifactRows({ ext: "png", page: 1, pageSize: 20 });
+    const { where } = findAndCount.mock.calls[0][0];
+    const nameOp = asOp(where.name);
+    expect(nameOp.type).toBe("like");
+    expect(nameOp.value).toBe("%.png");
+  });
+
+  it("ext 不在白名单 → 400 VALIDATION_FAILED，不查库", async () => {
+    const err = await svc
+      .listArtifactRows({ ext: "exe", page: 1, pageSize: 20 })
+      .catch((e: unknown) => e);
+    expect((err as { errorCode: string }).errorCode).toBe("VALIDATION_FAILED");
+    expect((err as { getStatus(): number }).getStatus()).toBe(400);
+    expect(findAndCount).not.toHaveBeenCalled();
+  });
+
+  it("from>to → 400 VALIDATION_FAILED，不查库", async () => {
+    const err = await svc
+      .listArtifactRows({
+        from: "2026-11-15T00:00:00.000Z",
+        to: "2026-11-01T00:00:00.000Z",
+        page: 1,
+        pageSize: 20,
+      })
+      .catch((e: unknown) => e);
+    expect((err as { errorCode: string }).errorCode).toBe("VALIDATION_FAILED");
+    expect(findAndCount).not.toHaveBeenCalled();
+  });
+
+  it("非法时间格式 → 400 VALIDATION_FAILED，不查库", async () => {
+    const err = await svc
+      .listArtifactRows({ from: "not-a-date", page: 1, pageSize: 20 })
+      .catch((e: unknown) => e);
+    expect((err as { errorCode: string }).errorCode).toBe("VALIDATION_FAILED");
+    expect(findAndCount).not.toHaveBeenCalled();
+  });
+
+  it("过滤后 total 正确透传：findAndCount 的 count 即过滤后总数", async () => {
+    findAndCount.mockResolvedValue([[mkRow({}), mkRow({ id: "row-2" })], 37]);
+    const res = await svc.listArtifactRows({
+      applicationId: "33333333-3333-4333-8333-333333333333",
+      q: "report",
+      ext: "csv",
+      from: "2026-11-01T00:00:00.000Z",
+      to: "2026-11-15T23:59:59.000Z",
+      page: 1,
+      pageSize: 20,
+    });
+    expect(res.items).toHaveLength(2);
+    expect(res.total).toBe(37);
+    // 组合过滤：应用/任务等值 + name(q ILIKE + ext 后缀 And) + 时间 And 全部在同一份 where。
+    const { where } = findAndCount.mock.calls[0][0];
+    expect(where.applicationId).toBe("33333333-3333-4333-8333-333333333333");
+    const nameOp = asOp(where.name);
+    expect(nameOp.type).toBe("and");
+    const namePreds = nameOp.value as { type: string; value: string }[];
+    expect(namePreds.map((p) => p.type).sort()).toEqual(["ilike", "like"]);
+    expect(asOp(where.createdAt).type).toBe("and");
+  });
 });

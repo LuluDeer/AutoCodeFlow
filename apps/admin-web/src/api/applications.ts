@@ -219,10 +219,12 @@ export interface AppDeploymentEventsPage {
 }
 
 export const applicationsApi = {
-  list: (signal?: AbortSignal) =>
+  // P1-2：后端 /applications 已支持 projectId 查询（实体 projectId 列）；
+  // 第二参可选，旧调用方（任务表单下拉等）只传 signal，行为不变。
+  list: (signal?: AbortSignal, params?: { projectId?: string }) =>
     signal
-      ? client.get<Application[]>('/applications', { signal })
-      : client.get<Application[]>('/applications'),
+      ? client.get<Application[]>('/applications', { signal, params })
+      : client.get<Application[]>('/applications', { params }),
   get: (id: string) => client.get<Application>(`/applications/${id}`),
   create: (data: Partial<Application>) => client.post<Application>('/applications', data),
   update: (id: string, data: Partial<Application>) =>
@@ -414,7 +416,10 @@ export const deploymentsApi = {
    *
    * 只返回至少有一条部署行的应用；无部署的应用不在结果里（按 0 处理）。
    */
-  stats: () => client.get<AppDeploymentStats[]>('/app-deployments/stats'),
+  // P1-8：辅助统计失败由应用列表页原位 Banner 承接（摘要 + 折叠技术详情 + 重试），
+  // 不进全局错误 toast——避免原始 URL/技术串绕过两级错误口径直接弹到顶栏。
+  stats: () =>
+    client.get<AppDeploymentStats[]>('/app-deployments/stats', { skipGlobalToast: true }),
   get: (id: string) => client.get<AppDeployment>(`/app-deployments/${id}`),
   deploy: (appId: string, dto: CreateDeploymentDto) =>
     client.post<AppDeployment>(`/app-deployments/applications/${appId}/deploy`, dto),

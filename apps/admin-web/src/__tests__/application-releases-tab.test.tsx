@@ -205,7 +205,7 @@ describe('ApplicationDetailPage 版本追溯 Tab（FEAT-14 / DEP-01）', () => {
     // antd 分页器第 2 页按钮
     const page2 = screen.getAllByTitle('2').find((el) => el.tagName === 'LI');
     expect(page2).toBeTruthy();
-    fireEvent.click(page2 as HTMLElement);
+    fireEvent.click((page2!.querySelector('a, button') ?? page2) as HTMLElement);
     await waitFor(() => expect(mockedApps.getReleases).toHaveBeenCalledWith('app-1', 2, 20));
   });
 

@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-    "/auth/login": {
+    "/agent-collab/assignments/{id}/candidate-package": {
         parameters: {
             query?: never;
             header?: never;
@@ -13,18 +13,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * 用户登录
-         * @description 使用用户名和密码登录，返回 Access Token 与 Refresh Token。每分钟最多 20 次尝试。
-         */
-        post: operations["AuthController_login"];
+        post: operations["SopCollabController_uploadCandidatePackage"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/auth/refresh": {
+    "/agent-collab/assignments/{id}/clarifications/ack": {
         parameters: {
             query?: never;
             header?: never;
@@ -33,18 +29,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * 刷新令牌
-         * @description 使用 Refresh Token 换取新的 Access Token 与 Refresh Token（token rotation）。旧 Refresh Token 立即失效。
-         */
-        post: operations["AuthController_refreshToken"];
+        post: operations["SopCollabController_ackClarificationReply"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/auth/logout": {
+    "/agent-collab/assignments/{id}/complete": {
         parameters: {
             query?: never;
             header?: never;
@@ -53,18 +45,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * 登出（撤销全部 Refresh Token）
-         * @description 登出当前用户并撤销其所有有效的 Refresh Token，防止令牌被重复使用。
-         */
-        post: operations["AuthController_logout"];
+        post: operations["SopCollabController_complete"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/auth/sse-ticket": {
+    "/agent-collab/assignments/{id}/media": {
         parameters: {
             query?: never;
             header?: never;
@@ -73,1921 +61,104 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * 签发短效 SSE 票据
-         * @description 用当前会话换取一枚 30 秒有效、限定路径的票据，作为 SSE 流式路由上的 ?ticket= 使用（EventSource 无法设置请求头）。
-         */
-        post: operations["AuthController_issueSseTicket"];
+        post: operations["SopCollabController_uploadMedia"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/auth/profile": {
+    "/agent-collab/assignments/{id}/progress": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * 获取当前用户信息
-         * @description 返回当前登录用户的基本信息，包括 ID、用户名与角色。
-         */
-        get: operations["AuthController_getProfile"];
+        get?: never;
+        put?: never;
+        post: operations["SopCollabController_progress"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent-collab/capability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["SopCollabController_capability"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent-collab/clarifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["SopCollabController_clarify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent-collab/llm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["SopCollabController_llmRelay"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent-collab/poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["SopCollabController_poll"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 获取生效的 Agent 预算设置 */
+        get: operations["AgentController_budgetInfo"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/totp/setup": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 预登记 TOTP 密钥（可选启用 2FA，第 1 步）
-         * @description 生成 Base32 密钥与 otpauth:// URL，并以预登记（未启用）状态保存。用认证器中的有效验证码调用 POST /auth/totp/enable 即可启用。
-         */
-        post: operations["AuthController_totpSetup"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/totp/enable": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 启用 TOTP（可选启用 2FA，第 2 步）
-         * @description 用预登记的密钥校验一个有效验证码，然后置 totpEnabled=true。
-         */
-        post: operations["AuthController_totpEnable"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/totp/disable": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 停用 TOTP
-         * @description 需要账户密码或有效的 TOTP 验证码作为确认。
-         */
-        post: operations["AuthController_totpDisable"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/totp/verify": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 完成 TOTP 登录（第二因子）
-         * @description 重新校验用户名+密码，验证 6 位 TOTP 验证码，并签发 accessToken/refreshToken。在 /auth/login 返回 { totpRequired: true } 之后调用。
-         */
-        post: operations["AuthController_totpVerifyLogin"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/sessions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 列出我的活跃登录会话
-         * @description 每个活跃（未撤销、未过期）的 refresh token 一行。与调用者 access token 的 sid 声明匹配的那一行会标记 current=true。
-         */
-        get: operations["AuthController_listSessions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/sessions/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * 撤销我的一个会话
-         * @description 将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的/已吊销的 id 返回 404。
-         */
-        delete: operations["AuthController_revokeSession"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/sessions/revoke-others": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 撤销除当前会话外我的全部会话
-         * @description 对其他设备做批量远程登出。若 access token 没有 sid 声明，则退化为撤销全部会话（故障安全策略：绝不保留未知会话）。
-         */
-        post: operations["AuthController_revokeOtherSessions"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/oidc/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["OidcController_status"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/oidc/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["OidcController_login"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/oidc/callback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["OidcController_callback"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/users": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 获取用户列表 */
-        get: operations["UsersController_findAll"];
-        put?: never;
-        /** 创建用户 */
-        post: operations["UsersController_create"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/users/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 获取用户详情 */
-        get: operations["UsersController_findOne"];
-        put?: never;
-        post?: never;
-        /** 删除用户 */
-        delete: operations["UsersController_remove"];
-        options?: never;
-        head?: never;
-        /** 更新用户 */
-        patch: operations["UsersController_update"];
-        trace?: never;
-    };
-    "/tasks": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 列出任务
-         * @description 获取任务列表，支持分页与搜索。可按状态过滤。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。游标绑定默认排序 createdAt DESC, id DESC，故与 `sortBy` 或 `lastStatus` 同时给出会返回 400（不静默错乱）；非法游标同样 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。
-         */
-        get: operations["TaskController_findAll"];
-        put?: never;
-        /**
-         * 创建任务
-         * @description 创建新的自动化任务。支持 cron、webhook 与事件三种触发方式。任务创建后处于暂停状态。
-         */
-        post: operations["TaskController_create"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/import": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 导入任务定义（JSON 导出载荷）
-         * @description E-1：用 GET /tasks/:id/export 的载荷创建任务。校验走完整的 POST /tasks 创建链路。名称冲突绝不覆盖：追加 ' (imported)'，再依次尝试 ' (imported) 2'、' (imported) 3'……直到找到可用名称。密钥绝不参与传输（SEC-02 红线）：载荷中携带的 secrets 键会被忽略，导入的任务在无密钥状态下启动——warnings 中始终包含重新配置的提示。新任务初始为暂停状态。
-         */
-        post: operations["TaskController_importDefinition"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/batch/trigger": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 批量触发任务
-         * @description 触发多个任务。部分失败不影响其他任务。
-         */
-        post: operations["TaskController_batchTrigger"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/batch/pause": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 批量暂停任务
-         * @description 暂停多个任务。部分失败不影响其他任务。
-         */
-        post: operations["TaskController_batchPause"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/batch/resume": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 批量恢复任务
-         * @description 恢复多个任务。部分失败不影响其他任务。
-         */
-        post: operations["TaskController_batchResume"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/batch/delete": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 批量删除任务
-         * @description 删除多个任务。部分失败不影响其他任务。
-         */
-        post: operations["TaskController_batchDelete"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/executions/all": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 全局执行记录
-         * @description 全局执行记录（跨任务）。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks、GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（status/taskId/taskName/executorAddress/startTime/endTime）自由组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。
-         */
-        get: operations["TaskController_allExecutions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/executions/export": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 导出执行记录为 CSV（流式，仅管理员）
-         * @description 导出执行记录为 CSV 文件（UTF-8，RFC 4180）。支持与 GET /tasks/executions/all 完全相同的过滤条件（status/taskId/taskName/executorAddress/startTime/endTime）——两处共用同一份过滤装配。**流式输出**：按 (createdAt DESC, id DESC) 逐页拉取并分块写出，不把全量结果拼进内存。行数达上限（默认硬顶 5 万行，可用 limit 调小）时在文件末尾追加 `# truncated at N rows` 注释行，便于识别截断。单元格做 CSV 公式注入防护（以 = + - @ 制表符 回车 开头的值前缀单引号）。列：id/taskId/taskName/status/triggerType/executorId/executorAddress/createdAt/startTime/endTime/durationMs/retryCount/exitCode/failureReason/errorMessage。
-         */
-        get: operations["TaskController_exportExecutions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/executions/{execId}/logs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 执行日志（按执行 ID）
-         * @description GET /tasks/:id/executions/:execId/logs 的兼容别名——无需知道任务 ID，直接按执行自身的 ID 定位。acf-cli 与 mcp-server 使用它。
-         */
-        get: operations["TaskController_executionLogsByExecId"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/executions/{execId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 执行详情（按执行 ID）
-         * @description GET /tasks/:id/executions/:execId 的兼容别名——无需知道任务 ID，直接按执行自身的 ID 定位。acf-cli 与 mcp-server 使用它。
-         */
-        get: operations["TaskController_executionByExecId"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/scheduler/stats": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 调度器状态 */
-        get: operations["TaskController_schedulerStats"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/stats": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 任务执行统计
-         * @description 获取任务的执行统计：成功率、平均耗时与最近 20 次执行。
-         */
-        get: operations["TaskController_getStats"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/suggest-schedule": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * AI 调度建议
-         * @description 分析执行历史并返回 AI 推荐的 cron 表达式及推理说明
-         */
-        post: operations["TaskController_suggestSchedule"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 任务详情
-         * @description 获取单个任务的详细信息，包括配置、状态与执行统计。
-         */
-        get: operations["TaskController_findOne"];
-        put?: never;
-        post?: never;
-        /**
-         * 删除任务
-         * @description 删除任务。正在运行的执行会被强制终止。
-         */
-        delete: operations["TaskController_remove"];
-        options?: never;
-        head?: never;
-        /**
-         * 更新任务
-         * @description 更新任务配置。注意：正在运行的任务不会立即受影响。
-         */
-        patch: operations["TaskController_update"];
-        trace?: never;
-    };
-    "/tasks/{id}/export": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 将任务定义导出为可下载的 JSON 文件
-         * @description E-1：以附件形式返回任务定义快照（name/description/runtime + 解释器版本/GLUE 脚本/params/超时与重试/依赖/部署约束/维护窗口/触发配置/git 源/应用与项目键），并带 schemaVersion \"1\" 与 exportedAt。SEC-02 红线：密钥绝不进入导出内容（整个键都被剔除——值与键名一并不保留）。该载荷可被 POST /tasks/import 原样接受。读取权限与 GET /tasks/:id 一致。
-         */
-        get: operations["TaskController_exportDefinition"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/glue": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /**
-         * 更新 GLUE 脚本
-         * @description 更新 GLUE 脚本源码，用于在线编辑执行逻辑。
-         */
-        put: operations["TaskController_updateGlue"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/trigger": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 手动触发
-         * @description 手动触发任务执行。自定义 params 可覆盖任务默认值。NF-01: 双凭据面——用户 JWT 或携带 task:trigger 扩展域的 API Key （Authorization: Bearer acf_，guard 分流见 jwt-auth.guard/api-key-auth.helper）；响应契约与 JWT 面完全一致。
-         */
-        post: operations["TaskController_trigger"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/webhook": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 获取任务 Webhook 状态
-         * @description 返回 `{ enabled, url }`。密钥从不返回。
-         */
-        get: operations["TaskController_webhookStatus"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/webhook/enable": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 启用任务 Webhook
-         * @description 签发新的 Webhook 密钥，仅在 `secret` 中返回一次。对已启用的任务再次启用会轮换密钥。
-         */
-        post: operations["TaskController_webhookEnable"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/webhook/rotate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 轮换任务 Webhook 密钥
-         * @description 旧密钥立即失效；新密钥只展示一次。
-         */
-        post: operations["TaskController_webhookRotate"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/webhook/disable": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 停用任务 Webhook
-         * @description 清除密钥；此后带签名的调用会返回 401。
-         */
-        post: operations["TaskController_webhookDisable"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/executions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 执行记录
-         * @description 获取任务的执行历史列表。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。
-         */
-        get: operations["TaskController_executions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/executions/{execId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 执行详情
-         * @description 获取单次执行的详细信息，包括时间、状态与输出。
-         */
-        get: operations["TaskController_execution"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/executions/{execId}/report": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 执行报告 + 时间线
-         * @description OBS-04：供执行详情页「分析报告 / 时间线」页签一次性取数的载荷。返回执行行（其时间戳驱动时间线）、由这些数据库时间戳映射出的 created→started→finished 时间线，以及该执行所在日期的 execution_reports 日聚合行（不存在时 report=null——前端做优雅降级）。
-         */
-        get: operations["TaskController_executionReport"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/executions/{execId}/logs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 执行日志
-         * @description 获取执行日志，按行分页以避免内存过载。
-         */
-        get: operations["TaskController_executionLogs"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/executions/{execId}/logs/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 执行日志 SSE 流
-         * @description 通过 Server-Sent Events 流式推送执行日志。完成时发送 [DONE] 事件。
-         */
-        get: operations["TaskController_streamLogs"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/rollback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Git 回滚（按 commit SHA）
-         * @description 把任务回滚到指定 gitCommit 指向的**代码版本**（仅 Git 类任务适用）。与 /tasks/:id/versions/:versionId/rollback（按任务配置快照回滚）本质不同：本端点动的是仓库代码 checkout 到该 commit，非任务配置。对照表见 docs/rollback-semantics.md。
-         */
-        post: operations["TaskController_rollback"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/versions/{versionId}/rollback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 版本回滚（按任务配置快照）
-         * @description 把任务**配置**整体回滚到指定历史版本快照（:versionId 路径参数）。与 /tasks/:id/rollback（按 gitCommit 回滚代码）本质不同：本端点动的是任务配置快照，不 checkout 仓库代码。对照表见 docs/rollback-semantics.md。
-         */
-        post: operations["TaskController_rollbackToVersion"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/versions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 版本列表
-         * @description 获取任务的历史版本列表。
-         */
-        get: operations["TaskController_getVersions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/versions/{versionId1}/compare/{versionId2}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 版本差异
-         * @description 比较两个版本之间的差异。
-         */
-        get: operations["TaskController_compareVersions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/pause": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 暂停任务
-         * @description 暂停任务的调度执行。正在进行的执行不受影响。
-         */
-        post: operations["TaskController_pause"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/resume": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 恢复任务
-         * @description 恢复任务的调度执行。
-         */
-        post: operations["TaskController_resume"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/executions/{execId}/analyze": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * AI 分析执行
-         * @description 对某次执行触发按需 AI 分析。结果会落库并返回。
-         */
-        post: operations["TaskController_analyzeExecution"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{id}/executions/{execId}/kill": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 取消执行
-         * @description 强制取消正在运行或等待中的执行记录。
-         */
-        post: operations["TaskController_killExecution"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks-batch/trigger": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 批量触发任务（已废弃）
-         * @deprecated
-         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/trigger（同 body/响应/审计）。触发多个任务。部分失败不影响其他任务。
-         */
-        post: operations["TaskBatchController_batchTrigger"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks-batch/pause": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 批量暂停任务（已废弃）
-         * @deprecated
-         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/pause（同 body/响应/审计）。暂停多个任务。部分失败不影响其他任务。
-         */
-        post: operations["TaskBatchController_batchPause"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks-batch/resume": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 批量恢复任务（已废弃）
-         * @deprecated
-         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/resume（同 body/响应/审计）。恢复多个任务。部分失败不影响其他任务。
-         */
-        post: operations["TaskBatchController_batchResume"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks-batch/delete": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 批量删除任务（已废弃）
-         * @deprecated
-         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/delete（同 body/响应/审计）。删除多个任务。部分失败不影响其他任务。
-         */
-        post: operations["TaskBatchController_batchDelete"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/webhooks/tasks/{taskId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 通过入站 Webhook 触发任务
-         * @description 公开的机器调用端点。需要 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头；签名是用该任务的 Webhook 密钥对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256（可通过 POST /api/tasks/:id/webhook/enable 启用）。请求体 `{ params }` 会覆盖该任务本次执行的默认参数。可加 `?wait=1&timeout=N` 让请求停驻到执行进入终态（N ≤ 300 秒；超时则返回 `completed:false` 及最新快照）。任务不存在 / Webhook 未启用 / 签名错误一律返回相同的 401。同一投递在 ±5 分钟窗内重复到达时返回 `{deduplicated:true}`（不重复触发；可用 `X-AutoFlow-Delivery` 提供投递幂等键，缺省以签名去重）。
-         */
-        post: operations["TaskWebhookController_trigger"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executions/callback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 执行结果回调
-         * @description 任务完成后由执行器（或持有本次执行 AUTOFLOW_CALLBACK_TOKEN 的任务代码）调用，用于上报执行结果。可使用执行器共享令牌/按地址令牌，或绑定到该批次 executionId 的本次执行 `v1.` HMAC 令牌（N23）。
-         */
-        post: operations["ExecutionCallbackController_callback"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executions/{id}/logs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 实时执行日志流式上报
-         * @description 任务仍在运行时由执行器调用，用于增量上报日志行。接受一段日志行及其从 0 开始的起始行号；重复上报同一区间是幂等的。鉴权：本次执行 `v1.` HMAC 令牌或按地址/per-executor 令牌（共享令牌不适用——它不绑定执行，见 SEC-R3-3）。
-         */
-        post: operations["ExecutionCallbackController_appendLogChunk"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/register": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 注册执行器
-         * @description 执行器启动时调用，用于向中台注册。鉴权需要共享令牌。
-         */
-        post: operations["ExecutorController_register"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/heartbeat": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 心跳上报
-         * @description 执行器周期性调用本接口上报状态，包括 CPU、内存与运行中任务数。
-         */
-        post: operations["ExecutorController_heartbeat"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/pull": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 拉取派发载荷（长轮询）
-         * @description ARCH-32：pull 模式执行器（位于 NAT 后、无入站可达性）通过长轮询本端点接收派发载荷。最多阻塞 waitMs（服务端会做上限钳制），返回 { task }——队列为空时为 null。
-         */
-        post: operations["ExecutorController_pullDispatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/command-result": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 上报 pull 控制命令的执行结果
-         * @description ARCH-33：pull 模式执行器上报其从 pull 响应中领取的控制命令（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）的执行结果。属尽力而为——业务的终态仍通过各自的回调收敛。
-         */
-        post: operations["ExecutorController_reportCommandResult"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/config": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 获取面向执行器的配置（pull 模式热更新）
-         * @description E-1: pull 执行器在长轮询响应中发现 configVersion 与本地不一致时调用，拉取与 admin 主动推送 /api/config/reload 同形的配置载荷（执行器侧走与 /api/config/reload 完全相同的校验与应用路径）。per-executor 令牌认证，address 走查询参数（与 register/heartbeat 同源）。
-         */
-        get: operations["ExecutorController_pullExecutorConfig"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/{address}/terminal-states": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 对账终态执行记录（只读）
-         * @description A6（DEEP_REVIEW）：针对执行器本地回调死信目录的只读对账视图。返回该执行器上已进入终态（success/failed/timeout/killed/cancelled）的执行记录，按终态时间升序排列，便于调用方当作水位线流消费。执行器用它给死信分级处理：执行已终态的死信回调已无意义（直接删除）；执行仍未结束且死信原因是重试预算耗尽的，值得重新入队；毒载荷（超大/损坏）保留待人工排查。严格只读——不改任何状态、不释放名额、不写审计；所有状态变更仍走既有的回调/终态路径。
-         */
-        get: operations["ExecutorController_getTerminalStates"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 列出执行器（截断上限见描述；不支持分页）
-         * @description 获取执行器列表（按 createdAt 降序），包含在线状态、分组与标签。**不支持分页**：page/pageSize 等查询参数不被接受（忽略而非报错）；服务端按创建时间只返回最新 EXECUTOR_LIST_LIMIT（500）台，超出部分被截断。截断信号：GET /executors/runtime-config 的 listLimit/executorTotal 字段，调用方在 total > listLimit 时须呈现「仅显示前 N / 共 M 台」类告警，不得把截断结果当作全量。
-         */
-        get: operations["ExecutorController_findAll"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/groups": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 获取全部执行器分组
-         * @description 获取全部执行器分组及其执行器数量统计。
-         */
-        get: operations["ExecutorController_getGroups"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/tags": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 获取全部执行器标签
-         * @description 获取执行器使用的全部标签及其统计。
-         */
-        get: operations["ExecutorController_getTags"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/runtime-config": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 获取生效的执行器运行配置
-         * @description 后端实际生效的存活阈值（heartbeatTimeoutMs = heartbeatIntervalMs × timeoutMultiplier；静默超过该时长后，过期扫描会把执行器标记为 OFFLINE），以及 findAll() 的列表上限与执行器总数，便于管理台让「过期」着色与后端对齐，并在列表被截断时告警（listLimit < executorTotal）。
-         */
-        get: operations["ExecutorController_getRuntimeConfig"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/picker": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 列出执行器选择器选项（轻量）
-         * @description 供执行器选择器下拉（部署弹窗）使用的最小读取面：仅 id/appName/address/status/runningTaskCount/maxConcurrentTasks，而不是 GET /executors 的完整实体投影。最多返回 EXECUTOR_PICKER_LIMIT 行（createdAt DESC）；当 total > items.length 时响应带 truncated=true，便于界面明确告警——不像上限 500 的完整列表那样静默截断。
-         */
-        get: operations["ExecutorController_findPickerOptions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/install-cmd": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 获取执行器安装命令
-         * @description 返回在目标机器上安装并启动执行器的 shell 命令。
-         */
-        get: operations["ExecutorController_getInstallCmd"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/install.sh": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 下载执行器安装脚本
-         * @description 以纯文本返回一键安装脚本（curl -fsSL <url>/api/executors/install.sh | bash -s -- --api-url ... --secret ...）。不含敏感信息：共享密钥由调用方以 bash 参数传入。
-         */
-        get: operations["ExecutorController_getInstallScript"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/artifact/executor-node.tar.gz": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 下载 executor-node 安装产物（tar.gz）
-         * @description 提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。仅接受 Authorization: Bearer <执行器共享令牌>（查询串 ?token= 已收口，不再接受）；兼容开关见 EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT（默认关闭）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。
-         */
-        get: operations["ExecutorController_getExecutorArtifact"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 获取单个执行器详情
-         * @description 获取指定执行器的详细信息，包括配置、状态与性能指标。
-         */
-        get: operations["ExecutorController_findOne"];
-        put?: never;
-        post?: never;
-        /**
-         * 删除执行器记录
-         * @description 管理员操作：按 ID 永久删除执行器记录。适用于执行器已离线且不再需要的场景。
-         */
-        delete: operations["ExecutorController_removeExecutor"];
-        options?: never;
-        head?: never;
-        /**
-         * 更新执行器元数据
-         * @description 更新执行器的分组、标签、描述与最大并发任务数。需要 ADMIN 角色，或该执行器所属项目的 editor 及以上角色。
-         */
-        patch: operations["ExecutorController_update"];
-        trace?: never;
-    };
-    "/executors/{id}/reload-config": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 向执行器推送配置热更新
-         * @description 无需重启即动态更新执行器配置。执行器必须在线。需要 ADMIN 角色，或该执行器所属项目的 editor 及以上角色。
-         */
-        post: operations["ExecutorController_reloadConfig"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/{id}/rotate-token": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 轮换执行器令牌
-         * @description 生成新的执行器鉴权令牌。新令牌仅在本响应中展示一次。
-         */
-        post: operations["ExecutorController_rotateToken"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/token": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 获取动态令牌
-         * @description 执行器调用本接口获取动态令牌。首次鉴权使用共享令牌。R9（第八轮 P1）：按 (address, startupId) 幂等——同进程重复获取会返回当前令牌而不是轮换；以下情况才会轮换：首次签发、startupId 变化（重启）、无 startupId 的历史方式获取且超出短暂复用窗口，或此前签发的令牌与已存储哈希不再匹配。
-         */
-        post: operations["ExecutorController_getToken"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/offline": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 执行器下线通知
-         * @description 执行器优雅停机时调用，用于通知中台并将该执行器标记为离线。
-         */
-        post: operations["ExecutorController_offline"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/{id}/set-offline": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 将执行器标记为离线
-         * @description 管理员操作：按 ID 将指定执行器标记为离线（不会中断正在运行的任务；用于崩溃后残留的过期记录）。
-         */
-        post: operations["ExecutorController_setOffline"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/{id}/removal-impact": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 预览删除该执行器会破坏什么
-         * @description 统计通过 task.executorId / task.executorAppName 绑定到该执行器的任务数（删除后派发会失败），以及待处理的 pull 队列深度。
-         */
-        get: operations["ExecutorController_removalImpact"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/{id}/executions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 获取执行器的任务执行历史
-         * @description 分页获取指定执行器的全部任务执行记录。
-         */
-        get: operations["ExecutorController_getExecutorExecutions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executors/{id}/metrics": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 获取执行器性能指标
-         * @description 获取执行器最近 7 天的性能指标，包括总执行次数、成功率与平均耗时。FEAT-04：响应还带 `history`——最近 24 小时的 executor_metrics_history 采样按固定 15 分钟 AVG 桶聚合（≤96 个点，升序；每个点为 {timestamp, cpuUsage, memUsage, runningTaskCount}；某个桶没有上报值时 cpuUsage/memUsage 为 null）。该执行器没有任何历史采样时返回空数组——管理台据此渲染空状态。
-         */
-        get: operations["ExecutorController_getExecutorMetrics"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/notification/channels": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 获取所有通知渠道配置 */
-        get: operations["NotificationConfigController_getChannels"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/notification/channels/{key}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** 更新通知渠道配置 */
-        patch: operations["NotificationConfigController_updateChannel"];
-        trace?: never;
-    };
-    "/notification/channels/{key}/test": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 测试通知渠道 */
-        post: operations["NotificationConfigController_testChannel"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/notification/test": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 向渠道发送测试通知 */
-        post: operations["NotificationConfigController_sendTest"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/notification/send": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 从任务代码发送通知（SDK，仅管理员） */
-        post: operations["NotificationConfigController_send"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/notification/silences": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 列出通知静默（已持久化） */
-        get: operations["NotificationConfigController_listSilences"];
-        put?: never;
-        /** 创建通知静默 */
-        post: operations["NotificationConfigController_createSilence"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/notification/silences/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** 移除通知静默 */
-        delete: operations["NotificationConfigController_removeSilence"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/alerts/webhook": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Alertmanager v2 Webhook 接收端
-         * @description 入站 Alertmanager v2 告警回调。HMAC-SHA256 over `${timestamp}.${rawBody}`，需携带 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 头（secret = ALERT_WEBHOOK_SECRET，未配置时 503）。alerts[] 为空数组返回 400。
-         */
-        post: operations["AlertsController_webhook"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/config": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 获取当前 AI 配置 */
-        get: operations["AiController_getConfig"];
-        put?: never;
-        /** 将 AI 配置保存到系统配置存储 */
-        post: operations["AiController_saveConfig"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/test": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 用示例提示词测试当前 AI 配置 */
-        post: operations["AiController_testConfig"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/providers": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 模型接入注册表 + 各用途当前指向 */
-        get: operations["AiController_listProviders"];
-        /** 新增/更新一个模型接入（密钥 `***` = 不改） */
-        put: operations["AiController_saveProvider"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/providers/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** 删除一个模型接入（连同其密钥） */
-        delete: operations["AiController_deleteProvider"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/routes": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** 设置某个用途使用的模型（空 = 跟随全局） */
-        put: operations["AiController_assignRoute"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/media": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 上传视频（视频转 SOP 的输入；ADMIN） */
-        post: operations["AiMediaController_upload"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/media/{mediaId}/{fileName}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 按签名直链取视频字节（模型侧；无需 JWT） */
-        get: operations["AiMediaController_download"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/sop-draft/from-video": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 把一段操作录屏转成 SOP 草稿（返回可编辑内容，不落库） */
-        post: operations["AiSopDraftController_fromVideo"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/sop-sessions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 列出本人的编写会话（最近更新在前） */
-        get: operations["AiSopSessionController_list"];
-        put?: never;
-        /** 用一段录屏开启 SOP 编写会话（模型可能追问或直接出稿） */
-        post: operations["AiSopSessionController_create"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/sop-sessions/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 读取会话（messages/media/draft/剩余追问次数） */
-        get: operations["AiSopSessionController_detail"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/sop-sessions/{id}/turns": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 补充一句话或一段录屏，继续下一轮 */
-        post: operations["AiSopSessionController_turn"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/sop-sessions/{id}/turns/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 流式继续一轮（SSE 事件流：三种帧类型） */
-        post: operations["AiSopSessionController_turnStream"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/ai/sop-sessions/{id}/saved": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 标记会话已保存为 SOP 草稿（前端在 POST /sop 成功后调用） */
-        post: operations["AiSopSessionController_markSaved"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2063,6 +234,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/sessions/{id}/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出会话的全部审批单 */
+        get: operations["AgentController_listApprovals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/sessions/{id}/approvals/{approvalKey}/deny": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 拒绝 Agent 审批单 */
+        post: operations["AgentController_denyApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/sessions/{id}/approvals/{approvalKey}/grant": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 批准 Agent 审批单并恢复会话 */
+        post: operations["AgentController_grantApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/sessions/{id}/export": {
         parameters: {
             query?: never;
@@ -2097,15 +319,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/agent/budget": {
+    "/ai/config": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** 获取生效的 Agent 预算设置 */
-        get: operations["AgentController_budgetInfo"];
+        /** 获取当前 AI 配置 */
+        get: operations["AiController_getConfig"];
+        put?: never;
+        /** 将 AI 配置保存到系统配置存储 */
+        post: operations["AiController_saveConfig"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/media": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 上传视频（视频转 SOP 的输入；ADMIN） */
+        post: operations["AiMediaController_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/media/{mediaId}/{fileName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 按签名直链取视频字节（模型侧；无需 JWT） */
+        get: operations["AiMediaController_download"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2114,7 +371,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/agent/sessions/{id}/approvals/{approvalKey}/grant": {
+    "/ai/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 模型接入注册表 + 各用途当前指向 */
+        get: operations["AiController_listProviders"];
+        /** 新增/更新一个模型接入（密钥 `***` = 不改） */
+        put: operations["AiController_saveProvider"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/providers/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -2123,15 +398,32 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 批准 Agent 审批单并恢复会话 */
-        post: operations["AgentController_grantApproval"];
+        post?: never;
+        /** 删除一个模型接入（连同其密钥） */
+        delete: operations["AiController_deleteProvider"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/routes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** 设置某个用途使用的模型（空 = 跟随全局） */
+        put: operations["AiController_assignRoute"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/agent/sessions/{id}/approvals/{approvalKey}/deny": {
+    "/ai/sop-draft/from-video": {
         parameters: {
             query?: never;
             header?: never;
@@ -2140,23 +432,41 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 拒绝 Agent 审批单 */
-        post: operations["AgentController_denyApproval"];
+        /** 把一段操作录屏转成 SOP 草稿（返回可编辑内容，不落库） */
+        post: operations["AiSopDraftController_fromVideo"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/agent/sessions/{id}/approvals": {
+    "/ai/sop-sessions": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** 列出会话的全部审批单 */
-        get: operations["AgentController_listApprovals"];
+        /** 列出本人的编写会话（最近更新在前） */
+        get: operations["AiSopSessionController_list"];
+        put?: never;
+        /** 用一段录屏开启 SOP 编写会话（模型可能追问或直接出稿） */
+        post: operations["AiSopSessionController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/sop-sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 读取会话（messages/media/draft/剩余追问次数） */
+        get: operations["AiSopSessionController_detail"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2165,33 +475,175 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/sop": {
+    "/ai/sop-sessions/{id}/saved": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** SOP 列表（可按 status 过滤） */
-        get: operations["SopController_list"];
+        get?: never;
         put?: never;
-        /** 起草 SOP（draft 态；slug 重复则覆盖草稿） */
-        post: operations["SopController_draft"];
+        /** 标记会话已保存为 SOP 草稿（前端在 POST /sop 成功后调用） */
+        post: operations["AiSopSessionController_markSaved"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/sop/assignments/{assignmentId}": {
+    "/ai/sop-sessions/{id}/turns": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** 指派详情（含澄清对话全量） */
-        get: operations["SopController_assignment"];
+        get?: never;
+        put?: never;
+        /** 补充一句话或一段录屏，继续下一轮 */
+        post: operations["AiSopSessionController_turn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/sop-sessions/{id}/turns/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 流式继续一轮（SSE 事件流：三种帧类型） */
+        post: operations["AiSopSessionController_turnStream"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 用示例提示词测试当前 AI 配置 */
+        post: operations["AiController_testConfig"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/alerts/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Alertmanager v2 Webhook 接收端
+         * @description 入站 Alertmanager v2 告警回调。HMAC-SHA256 over `${timestamp}.${rawBody}`，需携带 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 头（secret = ALERT_WEBHOOK_SECRET，未配置时 503）。alerts[] 为空数组返回 400。
+         */
+        post: operations["AlertsController_webhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出我的 API Key（脱敏） */
+        get: operations["ApiKeysController_list"];
+        put?: never;
+        /**
+         * 创建 API Key
+         * @description 明文密钥仅返回一次（`acf_<64 hex>`）；服务端只保存 sha256 哈希，之后无法再取回。
+         */
+        post: operations["ApiKeysController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api-keys/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 撤销（软删除）我的 API Key */
+        delete: operations["ApiKeysController_revoke"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api-keys/{id}/permanent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 永久删除我的 API Key（仅限已吊销/已过期） */
+        delete: operations["ApiKeysController_remove"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api-keys/{id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 撤销我的 API Key（显式别名，幂等） */
+        post: operations["ApiKeysController_revokeAlias"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/app-deployments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出部署 */
+        get: operations["AppDeploymentController_findAll"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2200,58 +652,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/sop/media/{mediaId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 下载执行器回传的媒体（截图/录屏） */
-        get: operations["SopController_downloadMedia"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/sop/assignments/{assignmentId}/media": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 指派的媒体清单 */
-        get: operations["SopController_mediaList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/sop/assignable-executors": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 当前租约内可接 SOP 指派的执行器（agent:sop） */
-        get: operations["SopController_assignableExecutors"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/sop/assignments/{assignmentId}/clarifications/{clarificationId}/reply": {
+    "/app-deployments/applications/{appId}/deploy": {
         parameters: {
             query?: never;
             header?: never;
@@ -2260,296 +661,15 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 人工回复一条澄清（升级转人工后的答复入口） */
-        post: operations["SopController_humanReply"];
+        /** 将应用分配到执行器 */
+        post: operations["AppDeploymentController_deploy"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/sop/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** SOP 详情 */
-        get: operations["SopController_detail"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** 编辑工作副本（published 态也可编辑——真身在不可变版本快照） */
-        patch: operations["SopController_update"];
-        trace?: never;
-    };
-    "/sop/{id}/publish": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 发布（严格校验 + 不可变版本快照 + contentHash） */
-        post: operations["SopController_publish"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/sop/{id}/assign": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 指派给执行器（executorId 或 executorAddress 二选一） */
-        post: operations["SopController_assign"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/sop/{id}/versions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 版本历史（不可变快照列表） */
-        get: operations["SopController_versions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/sop/{id}/assignments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 指派记录 */
-        get: operations["SopController_assignments"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/sop/{id}/deprecate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 归档 SOP（停止派新单，保留全部历史） */
-        post: operations["SopController_deprecate"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/sop/{id}/assignments/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 取消该 SOP 下所有未结束的指派（归档前置动作） */
-        post: operations["SopController_cancelAssignments"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/sop/{id}/restore": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 恢复已归档的 SOP */
-        post: operations["SopController_restore"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent-collab/poll": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["SopCollabController_poll"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent-collab/capability": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["SopCollabController_capability"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent-collab/clarifications": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["SopCollabController_clarify"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent-collab/assignments/{id}/progress": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["SopCollabController_progress"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent-collab/assignments/{id}/complete": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["SopCollabController_complete"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent-collab/assignments/{id}/clarifications/ack": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["SopCollabController_ackClarificationReply"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent-collab/llm": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["SopCollabController_llmRelay"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent-collab/assignments/{id}/media": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["SopCollabController_uploadMedia"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent-collab/assignments/{id}/candidate-package": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["SopCollabController_uploadCandidatePackage"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/metrics": {
+    "/app-deployments/applications/{appId}/events": {
         parameters: {
             query?: never;
             header?: never;
@@ -2557,10 +677,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Prometheus 指标端点
-         * @description Prometheus 文本 exposition 格式：调度器计数器（autoflow_scheduler_*）、BullMQ 队列深度 gauge（autoflow_queue_*）以及进程默认指标（CPU/内存/GC）。需要 JWT；可用 METRICS_PROMETHEUS_ENABLED=false 完全关闭该端点。
+         * 列出应用的部署事件流（不可变动作追溯）
+         * @description R4（部署模型评审 2026-10-23 §4.1A）：不可变部署事件流（append-only）。每个部署域写动作一行短事实快照（事件类型/版本事实/操作人）；事件无 UPDATE/DELETE 路径，remove 事件比部署行活得久（事件表无外键）。分页默认 50、上限 200，按 createdAt 倒序。事件 detail 由写入侧保证不含 env 密钥
          */
-        get: operations["MetricsController_getPrometheusMetrics"];
+        get: operations["AppDeploymentController_listApplicationEvents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2569,14 +689,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/metrics/summary": {
+    "/app-deployments/approvals/pending": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["MetricsController_getSummary"];
+        /** 列出待审批的部署 */
+        get: operations["AppDeploymentController_listPendingApprovals"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2585,163 +706,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/metrics/trend": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["MetricsController_getDailyTrend"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/metrics/executors": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["MetricsController_getExecutorStats"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/metrics/failures": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["MetricsController_getRecentFailures"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/metrics/scheduler": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["MetricsController_getSchedulerMetrics"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/metrics/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 仪表盘汇总 SSE 流（UI-14 第一阶段）
-         * @description Server-Sent Events 流，每约 3 秒推送一次快照：{ summary, executors, scheduler }（查询降级时追加错误帧）。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。并发：每实例 METRICS_STREAM_MAX_GLOBAL 个名额（占满返回 503）。
-         */
-        get: operations["MetricsStreamController_stream"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executions/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 执行终态 SSE 流（FEAT-16）
-         * @description Server-Sent Events 流，从进程内领域事件总线转发执行终态事件（execution.completed / execution.failed / execution.killed）。载荷：ExecutionTerminalEventPayload。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。
-         */
-        get: operations["ExecutionsStreamController_stream"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/config": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 列出所有配置项 */
-        get: operations["ConfigController_findAll"];
-        /** 创建或更新配置项 */
-        put: operations["ConfigController_upsert"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/config/history": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 获取配置变更历史 */
-        get: operations["ConfigController_getHistory"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/config/history/{key}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 获取指定配置 key 的历史 */
-        get: operations["ConfigController_getHistoryByKey"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/config/history/{id}/rollback": {
+    "/app-deployments/heartbeat": {
         parameters: {
             query?: never;
             header?: never;
@@ -2750,49 +715,15 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 将配置回滚到历史版本 */
-        post: operations["ConfigController_rollback"];
+        /** 执行器上报应用运行状态（需要 X-Executor-Token） */
+        post: operations["AppDeploymentController_heartbeat"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/config/executor-shared-token/generate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 生成或轮换执行器共享令牌 */
-        post: operations["ConfigController_generateExecutorSharedToken"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/config/executor-shared-token": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 获取当前执行器共享令牌（明文，仅管理员） */
-        get: operations["ConfigController_getExecutorSharedToken"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/config/runtime-version": {
+    "/app-deployments/stats": {
         parameters: {
             query?: never;
             header?: never;
@@ -2800,10 +731,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 获取权威的 Python 运行时版本契约
-         * @description 返回当前生效的可声明范围（min/max，可用 PYTHON_RUNTIME_VERSION_MIN/MAX 覆盖）、在线下载下限（onlineMin），以及未上报解释器的执行器所使用的历史回退解释器。前端把这些值注入版本辅助函数，而不是硬编码。仅返回契约常量——不含配置存储的值，也不含任何密钥。
+         * 各应用的部署统计（聚合）
+         * @description 每个至少有一次部署的应用返回一行。用于替代应用列表页原先逐个应用发起的扇出请求（N 个请求共用同一个限流桶）。
          */
-        get: operations["ConfigController_getRuntimeVersion"];
+        get: operations["AppDeploymentController_findStats"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2812,25 +743,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/config/{key}": {
+    "/app-deployments/{id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** 获取单个配置项 */
-        get: operations["ConfigController_findOne"];
+        /** 获取部署详情 */
+        get: operations["AppDeploymentController_findById"];
         put?: never;
         post?: never;
-        /** 删除配置项 */
-        delete: operations["ConfigController_remove"];
+        /**
+         * 删除已结束的部署记录（failed/stopped）
+         * @description 从历史中移除已进入终态的部署行。进行中、运行中和待审批的部署会被拒绝并返回 409——请先停止运行中的部署；待审批的请用驳回/撤销。
+         */
+        delete: operations["AppDeploymentController_remove"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/config/batch": {
+    "/app-deployments/{id}/approval/approve": {
         parameters: {
             query?: never;
             header?: never;
@@ -2839,8 +773,348 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 批量创建或更新配置项 */
-        post: operations["ConfigController_batchUpsert"];
+        /** 审批通过待处理的部署（第二人审批） */
+        post: operations["AppDeploymentController_approve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/app-deployments/{id}/approval/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 撤销自己发起的待审批部署请求（仅发起人） */
+        post: operations["AppDeploymentController_cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/app-deployments/{id}/approval/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 驳回待处理的部署（第二人审批） */
+        post: operations["AppDeploymentController_reject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/app-deployments/{id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 停止运行中的部署 */
+        post: operations["AppDeploymentController_stop"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/app-deployments/{id}/upgrade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 触发叠加升级 */
+        post: operations["AppDeploymentController_upgrade"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 获取应用列表 */
+        get: operations["ApplicationController_findAll"];
+        put?: never;
+        /** 创建应用 */
+        post: operations["ApplicationController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 上传应用包（zip） */
+        post: operations["ApplicationController_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 版本发布 Webhook
+         * @description 接收版本发布通知并更新应用版本。若 triggerDeploy=true，则对所有 RUNNING 状态的部署触发滚动升级。该路由对 CI/CD 调用方公开，且匹配到的应用必须已配置 webhookSecret。调用方必须携带 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头。签名是对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256。
+         */
+        post: operations["ApplicationController_webhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 获取应用详情 */
+        get: operations["ApplicationController_findById"];
+        /** 更新应用 */
+        put: operations["ApplicationController_update"];
+        post?: never;
+        /** 删除应用 */
+        delete: operations["ApplicationController_remove"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/{id}/analyze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 应用健康度 AI 分析
+         * @description 聚合该应用下所有任务的执行统计，并运行 AI 健康评估
+         */
+        post: operations["ApplicationController_analyzeHealth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/{id}/deploy-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 按版本快照恢复应用字段后下发到设备（可按执行器点名）
+         * @description R1（部署模型评审 §4.2）：先执行与 set-current-version 完全相同的字段恢复，再下发。executorIds 缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 行为一致）；显式 executorIds = 仅对这些执行器对应的 RUNNING 部署行逐台走既有 upgrade 链（部署行 startCommand 会被覆写为恢复后的 app.entrypoint——既有 upgrade 语义）。执行器无部署行/行状态不可下发的进响应 skipped 明细（no_deployment/not_running/upgrade_rejected），不报错。部署行触发痕迹落 triggerType=rollback + 操作人（该端点为旧「应用回滚」拆出的下发半边）
+         */
+        post: operations["ApplicationController_deployVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/{id}/releases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列出应用的统一发布记录（版本 × 最新部署）
+         * @description 统一发布追溯视图：按版本聚合部署信息，分页默认 50、上限 200。
+         */
+        get: operations["ApplicationController_listReleases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/{id}/removal-impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 预览删除该应用会破坏什么 */
+        get: operations["ApplicationController_removalImpact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/{id}/rollback/{deploymentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 将应用回滚到历史版本（deprecated alias）
+         * @deprecated
+         * @description 【deprecated】下一版本删除。等价于 set-current-version + deploy-version（executorIds 缺省）的组合，行为与历史版本逐字节一致。新调用方请改用 POST /applications/:id/set-current-version 与 POST /applications/:id/deploy-version
+         */
+        post: operations["ApplicationController_rollback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/{id}/set-current-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 将应用当前字段设为指定版本快照（不动部署/设备）
+         * @description R1（部署模型评审 §4.2）：只按 application_versions 快照恢复应用当前字段（version/gitCommit/gitBranch/packageUrl/env/entrypoint/manifest/runtime，与 rollback 同一映射），绝不触碰部署行与设备。响应 dispatched:false。校验与错误码与 rollback 快照路径一致（版本存在 404、属本应用/已发布 400）
+         */
+        post: operations["ApplicationController_setCurrentVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/{id}/sync-tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 从 manifest.json 同步任务注册
+         * @description 解析应用的 manifest.json 并自动注册任务定义
+         */
+        post: operations["ApplicationController_syncTasks"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/{id}/upgrade-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 触发该应用全部已部署设备升级到最新版本
+         * @description DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。R2（部署模型评审 §4.4）：覆盖面显式化——默认 = 全部 RUNNING 部署行（含 scheduled「仅部署」行：实证口径为 scheduled 部署完成即上报 running，稳态就是 RUNNING）；includeStopped=true 时 all 策略把 stopped 行一并纳入（canary 忽略该参数——健康探测需要活进程）；pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细（不抛错）；failed 行恒排除。响应新增 coverage 按状态分组计数。version 定向参数等价于 set-current-version + deploy-version 组合（会改写中台当前版本），建议改用 R1 拆分端点
+         */
+        post: operations["ApplicationController_upgradeAll"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取应用版本历史
+         * @description 返回已持久化的应用版本快照；对历史数据回退到部署记录。
+         */
+        get: operations["ApplicationController_getVersionHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 按应用/任务/关键字/时间/类型查询产物索引（仅管理员）
+         * @description 按应用/任务/文件名关键字/时间范围/扩展名维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。
+         */
+        get: operations["ArtifactsController_listArtifactRows"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2907,198 +1181,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/health": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 基础健康检查
-         * @description 公开健康检查。仅返回整体状态（healthy/degraded/unhealthy）与时间戳。详细指标（执行器数量、队列深度、任务计数）见 GET /health/detailed（需要 JWT）。
-         */
-        get: operations["HealthController_health"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/health/detailed": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 详细健康检查（需认证）
-         * @description 完整的详细健康状态与指标，包括数据库、Redis、消息队列、执行器与调度器。需要 JWT 认证。仅需公开状态时请用 GET /health。
-         */
-        get: operations["HealthController_detailed"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/health/live": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 存活检查
-         * @description 简单的存活检查，返回服务是否在运行。用于 Kubernetes 存活探针。
-         */
-        get: operations["HealthController_live"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/health/ready": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 就绪检查
-         * @description 检查服务是否已就绪、可接受请求。校验数据库与 Redis 连接。用于 Kubernetes 就绪探针。
-         */
-        get: operations["HealthController_ready"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/health/services": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 服务状态（需认证）
-         * @description 获取各核心服务的健康状态详情。需要 JWT 认证。
-         */
-        get: operations["HealthController_services"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/health/metrics": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 系统指标（需认证）
-         * @description 获取关键系统指标，包括任务数、执行器数、队列长度等。需要 JWT 认证。
-         */
-        get: operations["HealthController_metrics"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/applications": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 获取应用列表 */
-        get: operations["ApplicationController_findAll"];
-        put?: never;
-        /** 创建应用 */
-        post: operations["ApplicationController_create"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/applications/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 获取应用详情 */
-        get: operations["ApplicationController_findById"];
-        /** 更新应用 */
-        put: operations["ApplicationController_update"];
-        post?: never;
-        /** 删除应用 */
-        delete: operations["ApplicationController_remove"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/applications/{id}/removal-impact": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 预览删除该应用会破坏什么 */
-        get: operations["ApplicationController_removalImpact"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/applications/upload": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 上传应用包（zip） */
-        post: operations["ApplicationController_upload"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/applications/webhook": {
+    "/auth/login": {
         parameters: {
             query?: never;
             header?: never;
@@ -3108,28 +1191,44 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 版本发布 Webhook
-         * @description 接收版本发布通知并更新应用版本。若 triggerDeploy=true，则对所有 RUNNING 状态的部署触发滚动升级。该路由对 CI/CD 调用方公开，且匹配到的应用必须已配置 webhookSecret。调用方必须携带 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头。签名是对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256。
+         * 用户登录
+         * @description 使用用户名和密码登录，返回 Access Token 与 Refresh Token。每分钟最多 20 次尝试。
          */
-        post: operations["ApplicationController_webhook"];
+        post: operations["AuthController_login"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/applications/{id}/versions": {
+    "/auth/logout": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
+        get?: never;
+        put?: never;
         /**
-         * 获取应用版本历史
-         * @description 返回已持久化的应用版本快照；对历史数据回退到部署记录。
+         * 登出（撤销全部 Refresh Token）
+         * @description 登出当前用户并撤销其所有有效的 Refresh Token，防止令牌被重复使用。
          */
-        get: operations["ApplicationController_getVersionHistory"];
+        post: operations["AuthController_logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/oidc/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["OidcController_callback"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3138,18 +1237,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/applications/{id}/releases": {
+    "/auth/oidc/login": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * 列出应用的统一发布记录（版本 × 最新部署）
-         * @description 统一发布追溯视图：按版本聚合部署信息，分页默认 50、上限 200。
-         */
-        get: operations["ApplicationController_listReleases"];
+        get: operations["OidcController_login"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3158,136 +1253,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/applications/{id}/upgrade-all": {
+    "/auth/oidc/status": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
-        /**
-         * 触发该应用全部已部署设备升级到最新版本
-         * @description DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。R2（部署模型评审 §4.4）：覆盖面显式化——默认 = 全部 RUNNING 部署行（含 scheduled「仅部署」行：实证口径为 scheduled 部署完成即上报 running，稳态就是 RUNNING）；includeStopped=true 时 all 策略把 stopped 行一并纳入（canary 忽略该参数——健康探测需要活进程）；pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细（不抛错）；failed 行恒排除。响应新增 coverage 按状态分组计数。version 定向参数等价于 set-current-version + deploy-version 组合（会改写中台当前版本），建议改用 R1 拆分端点
-         */
-        post: operations["ApplicationController_upgradeAll"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/applications/{id}/sync-tasks": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 从 manifest.json 同步任务注册
-         * @description 解析应用的 manifest.json 并自动注册任务定义
-         */
-        post: operations["ApplicationController_syncTasks"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/applications/{id}/analyze": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 应用健康度 AI 分析
-         * @description 聚合该应用下所有任务的执行统计，并运行 AI 健康评估
-         */
-        post: operations["ApplicationController_analyzeHealth"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/applications/{id}/set-current-version": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 将应用当前字段设为指定版本快照（不动部署/设备）
-         * @description R1（部署模型评审 §4.2）：只按 application_versions 快照恢复应用当前字段（version/gitCommit/gitBranch/packageUrl/env/entrypoint/manifest/runtime，与 rollback 同一映射），绝不触碰部署行与设备。响应 dispatched:false。校验与错误码与 rollback 快照路径一致（版本存在 404、属本应用/已发布 400）
-         */
-        post: operations["ApplicationController_setCurrentVersion"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/applications/{id}/deploy-version": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 按版本快照恢复应用字段后下发到设备（可按执行器点名）
-         * @description R1（部署模型评审 §4.2）：先执行与 set-current-version 完全相同的字段恢复，再下发。executorIds 缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 行为一致）；显式 executorIds = 仅对这些执行器对应的 RUNNING 部署行逐台走既有 upgrade 链（部署行 startCommand 会被覆写为恢复后的 app.entrypoint——既有 upgrade 语义）。执行器无部署行/行状态不可下发的进响应 skipped 明细（no_deployment/not_running/upgrade_rejected），不报错。部署行触发痕迹落 triggerType=rollback + 操作人（该端点为旧「应用回滚」拆出的下发半边）
-         */
-        post: operations["ApplicationController_deployVersion"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/applications/{id}/rollback/{deploymentId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 将应用回滚到历史版本（deprecated alias）
-         * @deprecated
-         * @description 【deprecated】下一版本删除。等价于 set-current-version + deploy-version（executorIds 缺省）的组合，行为与历史版本逐字节一致。新调用方请改用 POST /applications/:id/set-current-version 与 POST /applications/:id/deploy-version
-         */
-        post: operations["ApplicationController_rollback"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/app-deployments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 列出部署 */
-        get: operations["AppDeploymentController_findAll"];
+        get: operations["OidcController_status"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3296,7 +1269,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/app-deployments/stats": {
+    "/auth/profile": {
         parameters: {
             query?: never;
             header?: never;
@@ -3304,10 +1277,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 各应用的部署统计（聚合）
-         * @description 每个至少有一次部署的应用返回一行。用于替代应用列表页原先逐个应用发起的扇出请求（N 个请求共用同一个限流桶）。
+         * 获取当前用户信息
+         * @description 返回当前登录用户的基本信息，包括 ID、用户名与角色。
          */
-        get: operations["AppDeploymentController_findStats"];
+        get: operations["AuthController_getProfile"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3316,7 +1289,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/app-deployments/applications/{appId}/events": {
+    "/auth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 刷新令牌
+         * @description 使用 Refresh Token 换取新的 Access Token 与 Refresh Token（token rotation）。旧 Refresh Token 立即失效。
+         */
+        post: operations["AuthController_refreshToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/sessions": {
         parameters: {
             query?: never;
             header?: never;
@@ -3324,10 +1317,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 列出应用的部署事件流（不可变动作追溯）
-         * @description R4（部署模型评审 2026-10-23 §4.1A）：不可变部署事件流（append-only）。每个部署域写动作一行短事实快照（事件类型/版本事实/操作人）；事件无 UPDATE/DELETE 路径，remove 事件比部署行活得久（事件表无外键）。分页默认 50、上限 200，按 createdAt 倒序。事件 detail 由写入侧保证不含 env 密钥
+         * 列出我的活跃登录会话
+         * @description 每个活跃（未撤销、未过期）的 refresh token 一行。与调用者 access token 的 sid 声明匹配的那一行会标记 current=true。
          */
-        get: operations["AppDeploymentController_listApplicationEvents"];
+        get: operations["AuthController_listSessions"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3336,277 +1329,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/app-deployments/{id}": {
+    "/auth/sessions/revoke-others": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** 获取部署详情 */
-        get: operations["AppDeploymentController_findById"];
+        get?: never;
         put?: never;
-        post?: never;
         /**
-         * 删除已结束的部署记录（failed/stopped）
-         * @description 从历史中移除已进入终态的部署行。进行中、运行中和待审批的部署会被拒绝并返回 409——请先停止运行中的部署；待审批的请用驳回/撤销。
+         * 撤销除当前会话外我的全部会话
+         * @description 对其他设备做批量远程登出。若 access token 没有 sid 声明，则退化为撤销全部会话（故障安全策略：绝不保留未知会话）。
          */
-        delete: operations["AppDeploymentController_remove"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/app-deployments/applications/{appId}/deploy": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 将应用分配到执行器 */
-        post: operations["AppDeploymentController_deploy"];
+        post: operations["AuthController_revokeOtherSessions"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/app-deployments/approvals/pending": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 列出待审批的部署 */
-        get: operations["AppDeploymentController_listPendingApprovals"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/app-deployments/{id}/approval/approve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 审批通过待处理的部署（第二人审批） */
-        post: operations["AppDeploymentController_approve"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/app-deployments/{id}/approval/reject": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 驳回待处理的部署（第二人审批） */
-        post: operations["AppDeploymentController_reject"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/app-deployments/{id}/approval/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 撤销自己发起的待审批部署请求（仅发起人） */
-        post: operations["AppDeploymentController_cancel"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/app-deployments/{id}/upgrade": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 触发叠加升级 */
-        post: operations["AppDeploymentController_upgrade"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/app-deployments/{id}/stop": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 停止运行中的部署 */
-        post: operations["AppDeploymentController_stop"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/app-deployments/heartbeat": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 执行器上报应用运行状态（需要 X-Executor-Token） */
-        post: operations["AppDeploymentController_heartbeat"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/mutex-groups": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 列出互斥组（供应用表单下拉与后台管理使用） */
-        get: operations["MutexGroupController_findAll"];
-        put?: never;
-        /** 创建互斥组 */
-        post: operations["MutexGroupController_create"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/mutex-groups/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** 更新互斥组（名称 / maxConcurrentPerDevice） */
-        put: operations["MutexGroupController_update"];
-        post?: never;
-        /** 删除互斥组（已关联的应用会变为未分组） */
-        delete: operations["MutexGroupController_remove"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executor-packages": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 获取执行器包列表
-         * @description 获取执行器包列表。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /audit、GET /tasks/executions/all 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较），并在响应中**追加** `nextCursor`（null = 已到末页）。响应形状保持裸 {items,total} 不变（不换成 paginate 信封——items 被 admin-web 包表与安装向导消费）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（name/type/status/platform）自由组合。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。
-         */
-        get: operations["ExecutorPackageController_findAll"];
-        put?: never;
-        /** 上传执行器包 */
-        post: operations["ExecutorPackageController_create"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executor-packages/latest": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 按类型获取最新的 ACTIVE 执行器包 */
-        get: operations["ExecutorPackageController_findLatest"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executor-packages/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 获取执行器包详情 */
-        get: operations["ExecutorPackageController_findOne"];
-        put?: never;
-        post?: never;
-        /** 删除执行器包 */
-        delete: operations["ExecutorPackageController_remove"];
-        options?: never;
-        head?: never;
-        /** 更新执行器包信息 */
-        patch: operations["ExecutorPackageController_update"];
-        trace?: never;
-    };
-    "/executor-packages/{id}/download": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 下载执行器包文件
-         * @description 接受有效的管理员 access JWT 或执行器共享令牌。JWT 校验是无状态的、不查用户库，与上传鉴权中间件一致；access token 的过期时间即撤销延迟。
-         */
-        get: operations["ExecutorPackageController_download"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executor-packages/{id}/deprecate": {
+    "/auth/sessions/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -3616,241 +1359,17 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** 弃用执行器包 */
-        patch: operations["ExecutorPackageController_deprecate"];
-        trace?: never;
-    };
-    "/executor-packages/{id}/activate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** 激活执行器包 */
-        patch: operations["ExecutorPackageController_activate"];
-        trace?: never;
-    };
-    "/executor-packages/push-result": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 执行器包推送结果回调（由 executor-node 调用） */
-        post: operations["ExecutorPackageController_pushResult"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executor-packages/{id}/push": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 将执行器包推送到调度节点 */
-        post: operations["ExecutorPackageController_push"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/registry/pypi/packages": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["RegistryController_listPypiPackages"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/registry/npm/packages": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["RegistryController_listNpmPackages"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/registry/pypi/upload": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["RegistryController_uploadPypiPackage"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/executions/{execId}/artifacts/{name}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
         /**
-         * 上传单个执行产物（执行器 → 中台，尽力而为）
-         * @description 必须使用**该执行器的 per-executor 动态令牌**（与执行器上报终态回调所用凭据一致）——共享令牌默认拒绝（SEC-1：共享令牌不携带执行器身份，放行等于允许向任意 execId 的产物目录写入）。接受 multipart/form-data，字段名为 'file'（与执行器包上传通道同形态）。可选的 ?sha256= 会与上传的字节做交叉校验。过渡期如需允许共享令牌，置 EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true（每次命中都会 warn，属安全欠账）。
+         * 撤销我的一个会话
+         * @description 将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的/已吊销的 id 返回 404。
          */
-        put: operations["ArtifactsController_upload"];
-        post?: never;
-        delete?: never;
+        delete: operations["AuthController_revokeSession"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/artifacts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 按应用/任务查询产物索引（仅管理员）
-         * @description 按应用/任务维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。
-         */
-        get: operations["ArtifactsController_listArtifactRows"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/executions/{execId}/artifacts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 列出执行产物（manifest，仅管理员）
-         * @description 返回执行器终态回调上报并已落库的产物 manifest。需要管理员 JWT（全局 JwtAuthGuard + RolesGuard）。
-         */
-        get: operations["ArtifactsController_list"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/executions/{execId}/artifacts/{name}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 下载单个执行产物（流式，仅管理员）
-         * @description 将已存储的产物以流式返回给已认证的管理员。强制校验裸文件名（防路径穿越），产物不存在时返回 404。
-         */
-        get: operations["ArtifactsController_download"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/task-templates": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 列出任务模板（官方 + 自定义）
-         * @description 返回全部任务模板。官方预置模板（由迁移脚本写入，与 MCP 的 `TASK_TEMPLATES` 对齐）在前，用户创建的自定义模板在后。
-         */
-        get: operations["TaskTemplateController_list"];
-        put?: never;
-        /**
-         * 创建自定义任务模板
-         * @description 持久化前会按 CreateTaskDto 语义校验 `config` 对象；出现多余或非法字段将以 400 拒绝。
-         */
-        post: operations["TaskTemplateController_create"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/task-templates/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 获取单个任务模板
-         * @description 供创建任务表单预取模板的 `config` 用于预填。
-         */
-        get: operations["TaskTemplateController_one"];
-        put?: never;
-        post?: never;
-        /**
-         * 删除自定义任务模板
-         * @description 官方模板不可删除（403）。
-         */
-        delete: operations["TaskTemplateController_remove"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/task-templates/import": {
+    "/auth/sse-ticket": {
         parameters: {
             query?: never;
             header?: never;
@@ -3860,17 +1379,17 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 导入任务模板清单（manifest.json / registry 条目）
-         * @description 校验一份清单（manifest.json，或 registry.json 里的一条）并落成一行任务模板。清单键集合封闭：出现未知键（含 hook/command/glueSource 这类可执行片段）即 400；config 走 CreateTaskDto 语义校验。key（= 清单的 name）已存在即 409，不覆盖既有行。
+         * 签发短效 SSE 票据
+         * @description 用当前会话换取一枚 30 秒有效、限定路径的票据，作为 SSE 流式路由上的 ?ticket= 使用（EventSource 无法设置请求头）。
          */
-        post: operations["TaskTemplateController_importTemplate"];
+        post: operations["AuthController_issueSseTicket"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/task-templates/{id}/instantiate": {
+    "/auth/totp/disable": {
         parameters: {
             query?: never;
             header?: never;
@@ -3880,11 +1399,229 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 从模板创建可运行任务（一键克隆）
-         * @description 把模板的 config 展开为默认值，再叠加请求体（显式字段优先；至少需要 `name`）。合并后的载荷按 CreateTaskDto 校验，并走标准任务创建路径落库。
+         * 停用 TOTP
+         * @description 需要账户密码或有效的 TOTP 验证码作为确认。
          */
-        post: operations["TaskTemplateController_instantiate"];
+        post: operations["AuthController_totpDisable"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/totp/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 启用 TOTP（可选启用 2FA，第 2 步）
+         * @description 用预登记的密钥校验一个有效验证码，然后置 totpEnabled=true。
+         */
+        post: operations["AuthController_totpEnable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/totp/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 预登记 TOTP 密钥（可选启用 2FA，第 1 步）
+         * @description 生成 Base32 密钥与 otpauth:// URL，并以预登记（未启用）状态保存。用认证器中的有效验证码调用 POST /auth/totp/enable 即可启用。
+         */
+        post: operations["AuthController_totpSetup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/totp/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 完成 TOTP 登录（第二因子）
+         * @description 重新校验用户名+密码，验证 6 位 TOTP 验证码，并签发 accessToken/refreshToken。在 /auth/login 返回 { totpRequired: true } 之后调用。
+         */
+        post: operations["AuthController_totpVerifyLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出所有配置项 */
+        get: operations["ConfigController_findAll"];
+        /** 创建或更新配置项 */
+        put: operations["ConfigController_upsert"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 批量创建或更新配置项 */
+        post: operations["ConfigController_batchUpsert"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/executor-shared-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 获取当前执行器共享令牌（明文，仅管理员） */
+        get: operations["ConfigController_getExecutorSharedToken"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/executor-shared-token/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 生成或轮换执行器共享令牌 */
+        post: operations["ConfigController_generateExecutorSharedToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 获取配置变更历史 */
+        get: operations["ConfigController_getHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/history/{id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 将配置回滚到历史版本 */
+        post: operations["ConfigController_rollback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/history/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 获取指定配置 key 的历史 */
+        get: operations["ConfigController_getHistoryByKey"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/runtime-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取权威的 Python 运行时版本契约
+         * @description 返回当前生效的可声明范围（min/max，可用 PYTHON_RUNTIME_VERSION_MIN/MAX 覆盖）、在线下载下限（onlineMin），以及未上报解释器的执行器所使用的历史回退解释器。前端把这些值注入版本辅助函数，而不是硬编码。仅返回契约常量——不含配置存储的值，也不含任何密钥。
+         */
+        get: operations["ConfigController_getRuntimeVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 获取单个配置项 */
+        get: operations["ConfigController_findOne"];
+        put?: never;
+        post?: never;
+        /** 删除配置项 */
+        delete: operations["ConfigController_remove"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3966,28 +1703,161 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api-keys": {
+    "/executions/callback": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** 列出我的 API Key（脱敏） */
-        get: operations["ApiKeysController_list"];
+        get?: never;
         put?: never;
         /**
-         * 创建 API Key
-         * @description 明文密钥仅返回一次（`acf_<64 hex>`）；服务端只保存 sha256 哈希，之后无法再取回。
+         * 执行结果回调
+         * @description 任务完成后由执行器（或持有本次执行 AUTOFLOW_CALLBACK_TOKEN 的任务代码）调用，用于上报执行结果。可使用执行器共享令牌/按地址令牌，或绑定到该批次 executionId 的本次执行 `v1.` HMAC 令牌（N23）。
          */
-        post: operations["ApiKeysController_create"];
+        post: operations["ExecutionCallbackController_callback"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api-keys/{id}": {
+    "/executions/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 执行终态 SSE 流（FEAT-16）
+         * @description Server-Sent Events 流，从进程内领域事件总线转发执行终态事件（execution.completed / execution.failed / execution.killed）。载荷：ExecutionTerminalEventPayload。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。
+         */
+        get: operations["ExecutionsStreamController_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executions/{execId}/artifacts/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * 上传单个执行产物（执行器 → 中台，尽力而为）
+         * @description 必须使用**该执行器的 per-executor 动态令牌**（与执行器上报终态回调所用凭据一致）——共享令牌默认拒绝（SEC-1：共享令牌不携带执行器身份，放行等于允许向任意 execId 的产物目录写入）。接受 multipart/form-data，字段名为 'file'（与执行器包上传通道同形态）。可选的 ?sha256= 会与上传的字节做交叉校验。过渡期如需允许共享令牌，置 EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true（每次命中都会 warn，属安全欠账）。
+         */
+        put: operations["ArtifactsController_upload"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executions/{id}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 实时执行日志流式上报
+         * @description 任务仍在运行时由执行器调用，用于增量上报日志行。接受一段日志行及其从 0 开始的起始行号；重复上报同一区间是幂等的。鉴权：本次执行 `v1.` HMAC 令牌或按地址/per-executor 令牌（共享令牌不适用——它不绑定执行，见 SEC-R3-3）。
+         */
+        post: operations["ExecutionCallbackController_appendLogChunk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executor-packages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取执行器包列表
+         * @description 获取执行器包列表。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /audit、GET /tasks/executions/all 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较），并在响应中**追加** `nextCursor`（null = 已到末页）。响应形状保持裸 {items,total} 不变（不换成 paginate 信封——items 被 admin-web 包表与安装向导消费）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（name/type/status/platform）自由组合。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。
+         */
+        get: operations["ExecutorPackageController_findAll"];
+        put?: never;
+        /** 上传执行器包 */
+        post: operations["ExecutorPackageController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executor-packages/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 按类型获取最新的 ACTIVE 执行器包 */
+        get: operations["ExecutorPackageController_findLatest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executor-packages/push-result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 执行器包推送结果回调（由 executor-node 调用） */
+        post: operations["ExecutorPackageController_pushResult"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executor-packages/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 获取执行器包详情 */
+        get: operations["ExecutorPackageController_findOne"];
+        put?: never;
+        post?: never;
+        /** 删除执行器包 */
+        delete: operations["ExecutorPackageController_remove"];
+        options?: never;
+        head?: never;
+        /** 更新执行器包信息 */
+        patch: operations["ExecutorPackageController_update"];
+        trace?: never;
+    };
+    "/executor-packages/{id}/activate": {
         parameters: {
             query?: never;
             header?: never;
@@ -3997,31 +1867,14 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** 撤销（软删除）我的 API Key */
-        delete: operations["ApiKeysController_revoke"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api-keys/{id}/revoke": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 撤销我的 API Key（显式别名，幂等） */
-        post: operations["ApiKeysController_revokeAlias"];
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /** 激活执行器包 */
+        patch: operations["ExecutorPackageController_activate"];
         trace?: never;
     };
-    "/api-keys/{id}/permanent": {
+    "/executor-packages/{id}/deprecate": {
         parameters: {
             query?: never;
             header?: never;
@@ -4031,8 +1884,909 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** 永久删除我的 API Key（仅限已吊销/已过期） */
-        delete: operations["ApiKeysController_remove"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** 弃用执行器包 */
+        patch: operations["ExecutorPackageController_deprecate"];
+        trace?: never;
+    };
+    "/executor-packages/{id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 下载执行器包文件
+         * @description 接受有效的管理员 access JWT 或执行器共享令牌。JWT 校验是无状态的、不查用户库，与上传鉴权中间件一致；access token 的过期时间即撤销延迟。
+         */
+        get: operations["ExecutorPackageController_download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executor-packages/{id}/push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 将执行器包推送到调度节点 */
+        post: operations["ExecutorPackageController_push"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列出执行器（截断上限见描述；不支持分页）
+         * @description 获取执行器列表（按 createdAt 降序），包含在线状态、分组与标签。**不支持分页**：page/pageSize 等查询参数不被接受（忽略而非报错）；服务端按创建时间只返回最新 EXECUTOR_LIST_LIMIT（500）台，超出部分被截断。截断信号：GET /executors/runtime-config 的 listLimit/executorTotal 字段，调用方在 total > listLimit 时须呈现「仅显示前 N / 共 M 台」类告警，不得把截断结果当作全量。
+         */
+        get: operations["ExecutorController_findAll"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/artifact/executor-node.tar.gz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 下载 executor-node 安装产物（tar.gz）
+         * @description 提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。仅接受 Authorization: Bearer <执行器共享令牌>（查询串 ?token= 已收口，不再接受）；兼容开关见 EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT（默认关闭）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。
+         */
+        get: operations["ExecutorController_getExecutorArtifact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/command-result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 上报 pull 控制命令的执行结果
+         * @description ARCH-33：pull 模式执行器上报其从 pull 响应中领取的控制命令（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）的执行结果。属尽力而为——业务的终态仍通过各自的回调收敛。
+         */
+        post: operations["ExecutorController_reportCommandResult"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取面向执行器的配置（pull 模式热更新）
+         * @description E-1: pull 执行器在长轮询响应中发现 configVersion 与本地不一致时调用，拉取与 admin 主动推送 /api/config/reload 同形的配置载荷（执行器侧走与 /api/config/reload 完全相同的校验与应用路径）。per-executor 令牌认证，address 走查询参数（与 register/heartbeat 同源）。
+         */
+        get: operations["ExecutorController_pullExecutorConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取全部执行器分组
+         * @description 获取全部执行器分组及其执行器数量统计。
+         */
+        get: operations["ExecutorController_getGroups"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/heartbeat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 心跳上报
+         * @description 执行器周期性调用本接口上报状态，包括 CPU、内存与运行中任务数。
+         */
+        post: operations["ExecutorController_heartbeat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/install-cmd": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取执行器安装命令
+         * @description 返回在目标机器上安装并启动执行器的 shell 命令。
+         */
+        get: operations["ExecutorController_getInstallCmd"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/install.sh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 下载执行器安装脚本
+         * @description 以纯文本返回一键安装脚本（curl -fsSL <url>/api/executors/install.sh | bash -s -- --api-url ... --secret ...）。不含敏感信息：共享密钥由调用方以 bash 参数传入。
+         */
+        get: operations["ExecutorController_getInstallScript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/offline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 执行器下线通知
+         * @description 执行器优雅停机时调用，用于通知中台并将该执行器标记为离线。
+         */
+        post: operations["ExecutorController_offline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/picker": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列出执行器选择器选项（轻量）
+         * @description 供执行器选择器下拉（部署弹窗）使用的最小读取面：仅 id/appName/address/status/runningTaskCount/maxConcurrentTasks，而不是 GET /executors 的完整实体投影。最多返回 EXECUTOR_PICKER_LIMIT 行（createdAt DESC）；当 total > items.length 时响应带 truncated=true，便于界面明确告警——不像上限 500 的完整列表那样静默截断。
+         */
+        get: operations["ExecutorController_findPickerOptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/pull": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 拉取派发载荷（长轮询）
+         * @description ARCH-32：pull 模式执行器（位于 NAT 后、无入站可达性）通过长轮询本端点接收派发载荷。最多阻塞 waitMs（服务端会做上限钳制），返回 { task }——队列为空时为 null。
+         */
+        post: operations["ExecutorController_pullDispatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 注册执行器
+         * @description 执行器启动时调用，用于向中台注册。鉴权需要共享令牌。
+         */
+        post: operations["ExecutorController_register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/runtime-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取生效的执行器运行配置
+         * @description 后端实际生效的存活阈值（heartbeatTimeoutMs = heartbeatIntervalMs × timeoutMultiplier；静默超过该时长后，过期扫描会把执行器标记为 OFFLINE），以及 findAll() 的列表上限与执行器总数，便于管理台让「过期」着色与后端对齐，并在列表被截断时告警（listLimit < executorTotal）。
+         */
+        get: operations["ExecutorController_getRuntimeConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/tags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取全部执行器标签
+         * @description 获取执行器使用的全部标签及其统计。
+         */
+        get: operations["ExecutorController_getTags"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 获取动态令牌
+         * @description 执行器调用本接口获取动态令牌。首次鉴权使用共享令牌。R9（第八轮 P1）：按 (address, startupId) 幂等——同进程重复获取会返回当前令牌而不是轮换；以下情况才会轮换：首次签发、startupId 变化（重启）、无 startupId 的历史方式获取且超出短暂复用窗口，或此前签发的令牌与已存储哈希不再匹配。
+         */
+        post: operations["ExecutorController_getToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/{address}/terminal-states": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 对账终态执行记录（只读）
+         * @description A6（DEEP_REVIEW）：针对执行器本地回调死信目录的只读对账视图。返回该执行器上已进入终态（success/failed/timeout/killed/cancelled）的执行记录，按终态时间升序排列，便于调用方当作水位线流消费。执行器用它给死信分级处理：执行已终态的死信回调已无意义（直接删除）；执行仍未结束且死信原因是重试预算耗尽的，值得重新入队；毒载荷（超大/损坏）保留待人工排查。严格只读——不改任何状态、不释放名额、不写审计；所有状态变更仍走既有的回调/终态路径。
+         */
+        get: operations["ExecutorController_getTerminalStates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取单个执行器详情
+         * @description 获取指定执行器的详细信息，包括配置、状态与性能指标。
+         */
+        get: operations["ExecutorController_findOne"];
+        put?: never;
+        post?: never;
+        /**
+         * 删除执行器记录
+         * @description 管理员操作：按 ID 永久删除执行器记录。适用于执行器已离线且不再需要的场景。
+         */
+        delete: operations["ExecutorController_removeExecutor"];
+        options?: never;
+        head?: never;
+        /**
+         * 更新执行器元数据
+         * @description 更新执行器的分组、标签、描述与最大并发任务数。需要 ADMIN 角色，或该执行器所属项目的 editor 及以上角色。
+         */
+        patch: operations["ExecutorController_update"];
+        trace?: never;
+    };
+    "/executors/{id}/executions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取执行器的任务执行历史
+         * @description 分页获取指定执行器的全部任务执行记录。
+         */
+        get: operations["ExecutorController_getExecutorExecutions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/{id}/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取执行器性能指标
+         * @description 获取执行器最近 7 天的性能指标，包括总执行次数、成功率与平均耗时。FEAT-04：响应还带 `history`——最近 24 小时的 executor_metrics_history 采样按固定 15 分钟 AVG 桶聚合（≤96 个点，升序；每个点为 {timestamp, cpuUsage, memUsage, runningTaskCount}；某个桶没有上报值时 cpuUsage/memUsage 为 null）。该执行器没有任何历史采样时返回空数组——管理台据此渲染空状态。
+         */
+        get: operations["ExecutorController_getExecutorMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/{id}/reload-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 向执行器推送配置热更新
+         * @description 无需重启即动态更新执行器配置。执行器必须在线。需要 ADMIN 角色，或该执行器所属项目的 editor 及以上角色。
+         */
+        post: operations["ExecutorController_reloadConfig"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/{id}/removal-impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 预览删除该执行器会破坏什么
+         * @description 统计通过 task.executorId / task.executorAppName 绑定到该执行器的任务数（删除后派发会失败），以及待处理的 pull 队列深度。
+         */
+        get: operations["ExecutorController_removalImpact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/{id}/rotate-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 轮换执行器令牌
+         * @description 生成新的执行器鉴权令牌。新令牌仅在本响应中展示一次。
+         */
+        post: operations["ExecutorController_rotateToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executors/{id}/set-offline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 将执行器标记为离线
+         * @description 管理员操作：按 ID 将指定执行器标记为离线（不会中断正在运行的任务；用于崩溃后残留的过期记录）。
+         */
+        post: operations["ExecutorController_setOffline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 基础健康检查
+         * @description 公开健康检查。仅返回整体状态（healthy/degraded/unhealthy）与时间戳。详细指标（执行器数量、队列深度、任务计数）见 GET /health/detailed（需要 JWT）。
+         */
+        get: operations["HealthController_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health/detailed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 详细健康检查（需认证）
+         * @description 完整的详细健康状态与指标，包括数据库、Redis、消息队列、执行器与调度器。需要 JWT 认证。仅需公开状态时请用 GET /health。
+         */
+        get: operations["HealthController_detailed"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 存活检查
+         * @description 简单的存活检查，返回服务是否在运行。用于 Kubernetes 存活探针。
+         */
+        get: operations["HealthController_live"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 系统指标（需认证）
+         * @description 获取关键系统指标，包括任务数、执行器数、队列长度等。需要 JWT 认证。
+         */
+        get: operations["HealthController_metrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 就绪检查
+         * @description 检查服务是否已就绪、可接受请求。校验数据库与 Redis 连接。用于 Kubernetes 就绪探针。
+         */
+        get: operations["HealthController_ready"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 服务状态（需认证）
+         * @description 获取各核心服务的健康状态详情。需要 JWT 认证。
+         */
+        get: operations["HealthController_services"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Prometheus 指标端点
+         * @description Prometheus 文本 exposition 格式：调度器计数器（autoflow_scheduler_*）、BullMQ 队列深度 gauge（autoflow_queue_*）以及进程默认指标（CPU/内存/GC）。需要 JWT；可用 METRICS_PROMETHEUS_ENABLED=false 完全关闭该端点。
+         */
+        get: operations["MetricsController_getPrometheusMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics/executors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["MetricsController_getExecutorStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics/failures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["MetricsController_getRecentFailures"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics/scheduler": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["MetricsController_getSchedulerMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 仪表盘汇总 SSE 流（UI-14 第一阶段）
+         * @description Server-Sent Events 流，每约 3 秒推送一次快照：{ summary, executors, scheduler }（查询降级时追加错误帧）。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。并发：每实例 METRICS_STREAM_MAX_GLOBAL 个名额（占满返回 503）。
+         */
+        get: operations["MetricsStreamController_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["MetricsController_getSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics/trend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["MetricsController_getDailyTrend"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mutex-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出互斥组（供应用表单下拉与后台管理使用） */
+        get: operations["MutexGroupController_findAll"];
+        put?: never;
+        /** 创建互斥组 */
+        post: operations["MutexGroupController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mutex-groups/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** 更新互斥组（名称 / maxConcurrentPerDevice） */
+        put: operations["MutexGroupController_update"];
+        post?: never;
+        /** 删除互斥组（已关联的应用会变为未分组） */
+        delete: operations["MutexGroupController_remove"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notification/channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 获取所有通知渠道配置 */
+        get: operations["NotificationConfigController_getChannels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notification/channels/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** 更新通知渠道配置 */
+        patch: operations["NotificationConfigController_updateChannel"];
+        trace?: never;
+    };
+    "/notification/channels/{key}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 测试通知渠道 */
+        post: operations["NotificationConfigController_testChannel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notification/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 从任务代码发送通知（SDK，仅管理员） */
+        post: operations["NotificationConfigController_send"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notification/silences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出通知静默（已持久化） */
+        get: operations["NotificationConfigController_listSilences"];
+        put?: never;
+        /** 创建通知静默 */
+        post: operations["NotificationConfigController_createSilence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notification/silences/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 移除通知静默 */
+        delete: operations["NotificationConfigController_removeSilence"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notification/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 向渠道发送测试通知 */
+        post: operations["NotificationConfigController_sendTest"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4045,11 +2799,28 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 列出调用者可访问的项目 */
+        /** 列出调用者可访问的项目（q 按名称/描述关键字过滤） */
         get: operations["ProjectsController_findAll"];
         put?: never;
         /** 创建项目（ADMIN） */
         post: operations["ProjectsController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/me/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 调用者在各项目中的角色 */
+        get: operations["ProjectsController_myRoles"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4072,23 +2843,6 @@ export interface paths {
         head?: never;
         /** 更新项目（ADMIN） */
         patch: operations["ProjectsController_update"];
-        trace?: never;
-    };
-    "/projects/{id}/removal-impact": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 预览删除该项目的后果 */
-        get: operations["ProjectsController_describeRemovalImpact"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
         trace?: never;
     };
     "/projects/{id}/members": {
@@ -4126,17 +2880,1284 @@ export interface paths {
         patch: operations["ProjectsController_updateMember"];
         trace?: never;
     };
-    "/projects/me/roles": {
+    "/projects/{id}/removal-impact": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** 调用者在各项目中的角色 */
-        get: operations["ProjectsController_myRoles"];
+        /** 预览删除该项目的后果 */
+        get: operations["ProjectsController_describeRemovalImpact"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 项目详情统计（任务/应用/近 7 天执行/失败率/成员） */
+        get: operations["ProjectsController_getSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/registry/npm/packages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["RegistryController_listNpmPackages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/registry/pypi/packages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["RegistryController_listPypiPackages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/registry/pypi/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["RegistryController_uploadPypiPackage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** SOP 列表（可按 status 过滤） */
+        get: operations["SopController_list"];
+        put?: never;
+        /** 起草 SOP（draft 态；slug 重复则覆盖草稿） */
+        post: operations["SopController_draft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/assignable-executors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 当前租约内可接 SOP 指派的执行器（agent:sop） */
+        get: operations["SopController_assignableExecutors"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/assignments/{assignmentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 指派详情（含澄清对话全量） */
+        get: operations["SopController_assignment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/assignments/{assignmentId}/clarifications/{clarificationId}/reply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 人工回复一条澄清（升级转人工后的答复入口） */
+        post: operations["SopController_humanReply"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/assignments/{assignmentId}/media": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 指派的媒体清单 */
+        get: operations["SopController_mediaList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/media/{mediaId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 下载执行器回传的媒体（截图/录屏） */
+        get: operations["SopController_downloadMedia"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** SOP 详情 */
+        get: operations["SopController_detail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** 编辑工作副本（published 态也可编辑——真身在不可变版本快照） */
+        patch: operations["SopController_update"];
+        trace?: never;
+    };
+    "/sop/{id}/assign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 指派给执行器（executorId 或 executorAddress 二选一） */
+        post: operations["SopController_assign"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/{id}/assignments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 指派记录 */
+        get: operations["SopController_assignments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/{id}/assignments/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 取消该 SOP 下所有未结束的指派（归档前置动作） */
+        post: operations["SopController_cancelAssignments"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/{id}/deprecate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 归档 SOP（停止派新单，保留全部历史） */
+        post: operations["SopController_deprecate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/{id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 发布（严格校验 + 不可变版本快照 + contentHash） */
+        post: operations["SopController_publish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 恢复已归档的 SOP */
+        post: operations["SopController_restore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 版本历史（不可变快照列表） */
+        get: operations["SopController_versions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/task-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列出任务模板（官方 + 自定义）
+         * @description 返回全部任务模板。官方预置模板（由迁移脚本写入，与 MCP 的 `TASK_TEMPLATES` 对齐）在前，用户创建的自定义模板在后。
+         */
+        get: operations["TaskTemplateController_list"];
+        put?: never;
+        /**
+         * 创建自定义任务模板
+         * @description 持久化前会按 CreateTaskDto 语义校验 `config` 对象；出现多余或非法字段将以 400 拒绝。
+         */
+        post: operations["TaskTemplateController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/task-templates/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 导入任务模板清单（manifest.json / registry 条目）
+         * @description 校验一份清单（manifest.json，或 registry.json 里的一条）并落成一行任务模板。清单键集合封闭：出现未知键（含 hook/command/glueSource 这类可执行片段）即 400；config 走 CreateTaskDto 语义校验。key（= 清单的 name）已存在即 409，不覆盖既有行。
+         */
+        post: operations["TaskTemplateController_importTemplate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/task-templates/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取单个任务模板
+         * @description 供创建任务表单预取模板的 `config` 用于预填。
+         */
+        get: operations["TaskTemplateController_one"];
+        put?: never;
+        post?: never;
+        /**
+         * 删除自定义任务模板
+         * @description 官方模板不可删除（403）。
+         */
+        delete: operations["TaskTemplateController_remove"];
+        options?: never;
+        head?: never;
+        /**
+         * 编辑自定义任务模板
+         * @description 局部更新自定义模板的名称 / 说明 / 分类 / config。官方模板只读（403）；仅属主或 ADMIN 可改，createdBy 为空的历史行仅 ADMIN。key、isOfficial、createdBy 不可经本端点改写；config 整体替换并按 CreateTaskDto 子集校验。
+         */
+        patch: operations["TaskTemplateController_update"];
+        trace?: never;
+    };
+    "/task-templates/{id}/instantiate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 从模板创建可运行任务（一键克隆）
+         * @description 把模板的 config 展开为默认值，再叠加请求体（显式字段优先；至少需要 `name`）。合并后的载荷按 CreateTaskDto 校验，并走标准任务创建路径落库。
+         */
+        post: operations["TaskTemplateController_instantiate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列出任务
+         * @description 获取任务列表，支持分页与搜索。可按状态过滤。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。游标绑定默认排序 createdAt DESC, id DESC，故与 `sortBy` 或 `lastStatus` 同时给出会返回 400（不静默错乱）；非法游标同样 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。
+         */
+        get: operations["TaskController_findAll"];
+        put?: never;
+        /**
+         * 创建任务
+         * @description 创建新的自动化任务。支持 cron、webhook 与事件三种触发方式。任务创建后处于暂停状态。
+         */
+        post: operations["TaskController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks-batch/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量删除任务（已废弃）
+         * @deprecated
+         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/delete（同 body/响应/审计）。删除多个任务。部分失败不影响其他任务。
+         */
+        post: operations["TaskBatchController_batchDelete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks-batch/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量暂停任务（已废弃）
+         * @deprecated
+         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/pause（同 body/响应/审计）。暂停多个任务。部分失败不影响其他任务。
+         */
+        post: operations["TaskBatchController_batchPause"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks-batch/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量恢复任务（已废弃）
+         * @deprecated
+         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/resume（同 body/响应/审计）。恢复多个任务。部分失败不影响其他任务。
+         */
+        post: operations["TaskBatchController_batchResume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks-batch/trigger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量触发任务（已废弃）
+         * @deprecated
+         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/trigger（同 body/响应/审计）。触发多个任务。部分失败不影响其他任务。
+         */
+        post: operations["TaskBatchController_batchTrigger"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/batch/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量删除任务
+         * @description 删除多个任务。部分失败不影响其他任务。
+         */
+        post: operations["TaskController_batchDelete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/batch/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量暂停任务
+         * @description 暂停多个任务。部分失败不影响其他任务。
+         */
+        post: operations["TaskController_batchPause"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/batch/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量恢复任务
+         * @description 恢复多个任务。部分失败不影响其他任务。
+         */
+        post: operations["TaskController_batchResume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/batch/trigger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量触发任务
+         * @description 触发多个任务。部分失败不影响其他任务。
+         */
+        post: operations["TaskController_batchTrigger"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/executions/all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 全局执行记录
+         * @description 全局执行记录（跨任务）。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks、GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（status/taskId/taskName/executorAddress/startTime/endTime/projectId/runtime/triggerType）自由组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。
+         */
+        get: operations["TaskController_allExecutions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/executions/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 导出执行记录为 CSV（流式，仅管理员）
+         * @description 导出执行记录为 CSV 文件（UTF-8，RFC 4180）。支持与 GET /tasks/executions/all 完全相同的过滤条件（status/taskId/taskName/executorAddress/startTime/endTime/projectId/runtime/triggerType）——两处共用同一份过滤装配。**流式输出**：按 (createdAt DESC, id DESC) 逐页拉取并分块写出，不把全量结果拼进内存。行数达上限（默认硬顶 5 万行，可用 limit 调小）时在文件末尾追加 `# truncated at N rows` 注释行，便于识别截断。单元格做 CSV 公式注入防护（以 = + - @ 制表符 回车 开头的值前缀单引号）。列：id/taskId/taskName/status/triggerType/executorId/executorAddress/createdAt/startTime/endTime/durationMs/retryCount/exitCode/failureReason/errorMessage。
+         */
+        get: operations["TaskController_exportExecutions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/executions/{execId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 执行详情（按执行 ID）
+         * @description GET /tasks/:id/executions/:execId 的兼容别名——无需知道任务 ID，直接按执行自身的 ID 定位。acf-cli 与 mcp-server 使用它。
+         */
+        get: operations["TaskController_executionByExecId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/executions/{execId}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列出执行产物（manifest，仅管理员）
+         * @description 返回执行器终态回调上报并已落库的产物 manifest。需要管理员 JWT（全局 JwtAuthGuard + RolesGuard）。
+         */
+        get: operations["ArtifactsController_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/executions/{execId}/artifacts/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 下载单个执行产物（流式，仅管理员）
+         * @description 将已存储的产物以流式返回给已认证的管理员。强制校验裸文件名（防路径穿越），产物不存在时返回 404。
+         */
+        get: operations["ArtifactsController_download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/executions/{execId}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 执行日志（按执行 ID）
+         * @description GET /tasks/:id/executions/:execId/logs 的兼容别名——无需知道任务 ID，直接按执行自身的 ID 定位。acf-cli 与 mcp-server 使用它。
+         */
+        get: operations["TaskController_executionLogsByExecId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 导入任务定义（JSON 导出载荷）
+         * @description E-1：用 GET /tasks/:id/export 的载荷创建任务。校验走完整的 POST /tasks 创建链路。名称冲突绝不覆盖：追加 ' (imported)'，再依次尝试 ' (imported) 2'、' (imported) 3'……直到找到可用名称。密钥绝不参与传输（SEC-02 红线）：载荷中携带的 secrets 键会被忽略，导入的任务在无密钥状态下启动——warnings 中始终包含重新配置的提示。新任务初始为暂停状态。
+         */
+        post: operations["TaskController_importDefinition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/scheduler/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 调度器状态 */
+        get: operations["TaskController_schedulerStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 任务详情
+         * @description 获取单个任务的详细信息，包括配置、状态与执行统计。
+         */
+        get: operations["TaskController_findOne"];
+        put?: never;
+        post?: never;
+        /**
+         * 删除任务
+         * @description 删除任务。正在运行的执行会被强制终止。
+         */
+        delete: operations["TaskController_remove"];
+        options?: never;
+        head?: never;
+        /**
+         * 更新任务
+         * @description 更新任务配置。注意：正在运行的任务不会立即受影响。
+         */
+        patch: operations["TaskController_update"];
+        trace?: never;
+    };
+    "/tasks/{id}/executions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 执行记录
+         * @description 获取任务的执行历史列表。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。
+         */
+        get: operations["TaskController_executions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/executions/{execId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 执行详情
+         * @description 获取单次执行的详细信息，包括时间、状态与输出。
+         */
+        get: operations["TaskController_execution"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/executions/{execId}/analyze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * AI 分析执行
+         * @description 对某次执行触发按需 AI 分析。结果会落库并返回。
+         */
+        post: operations["TaskController_analyzeExecution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/executions/{execId}/kill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 取消执行
+         * @description 强制取消正在运行或等待中的执行记录。
+         */
+        post: operations["TaskController_killExecution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/executions/{execId}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 执行日志
+         * @description 获取执行日志，按行分页以避免内存过载。
+         */
+        get: operations["TaskController_executionLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/executions/{execId}/logs/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 执行日志 SSE 流
+         * @description 通过 Server-Sent Events 流式推送执行日志。完成时发送 [DONE] 事件。
+         */
+        get: operations["TaskController_streamLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/executions/{execId}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 执行报告 + 时间线
+         * @description OBS-04：供执行详情页「分析报告 / 时间线」页签一次性取数的载荷。返回执行行（其时间戳驱动时间线）、由这些数据库时间戳映射出的 created→started→finished 时间线，以及该执行所在日期的 execution_reports 日聚合行（不存在时 report=null——前端做优雅降级）。
+         */
+        get: operations["TaskController_executionReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 将任务定义导出为可下载的 JSON 文件
+         * @description E-1：以附件形式返回任务定义快照（name/description/runtime + 解释器版本/GLUE 脚本/params/超时与重试/依赖/部署约束/维护窗口/触发配置/git 源/应用与项目键），并带 schemaVersion \"1\" 与 exportedAt。SEC-02 红线：密钥绝不进入导出内容（整个键都被剔除——值与键名一并不保留）。该载荷可被 POST /tasks/import 原样接受。读取权限与 GET /tasks/:id 一致。
+         */
+        get: operations["TaskController_exportDefinition"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/glue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * 更新 GLUE 脚本
+         * @description 更新 GLUE 脚本源码，用于在线编辑执行逻辑。
+         */
+        put: operations["TaskController_updateGlue"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 暂停任务
+         * @description 暂停任务的调度执行。正在进行的执行不受影响。
+         */
+        post: operations["TaskController_pause"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 恢复任务
+         * @description 恢复任务的调度执行。
+         */
+        post: operations["TaskController_resume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Git 回滚（按 commit SHA）
+         * @description 把任务回滚到指定 gitCommit 指向的**代码版本**（仅 Git 类任务适用）。与 /tasks/:id/versions/:versionId/rollback（按任务配置快照回滚）本质不同：本端点动的是仓库代码 checkout 到该 commit，非任务配置。对照表见 docs/rollback-semantics.md。
+         */
+        post: operations["TaskController_rollback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 任务执行统计
+         * @description 获取任务的执行统计：成功率、平均耗时与最近 20 次执行。
+         */
+        get: operations["TaskController_getStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/suggest-schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * AI 调度建议
+         * @description 分析执行历史并返回 AI 推荐的 cron 表达式及推理说明
+         */
+        post: operations["TaskController_suggestSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/trigger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 手动触发
+         * @description 手动触发任务执行。自定义 params 可覆盖任务默认值。NF-01: 双凭据面——用户 JWT 或携带 task:trigger 扩展域的 API Key （Authorization: Bearer acf_，guard 分流见 jwt-auth.guard/api-key-auth.helper）；响应契约与 JWT 面完全一致。
+         */
+        post: operations["TaskController_trigger"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 版本列表
+         * @description 获取任务的历史版本列表。
+         */
+        get: operations["TaskController_getVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/versions/{versionId1}/compare/{versionId2}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 版本差异
+         * @description 比较两个版本之间的差异。
+         */
+        get: operations["TaskController_compareVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/versions/{versionId}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 版本回滚（按任务配置快照）
+         * @description 把任务**配置**整体回滚到指定历史版本快照（:versionId 路径参数）。与 /tasks/:id/rollback（按 gitCommit 回滚代码）本质不同：本端点动的是任务配置快照，不 checkout 仓库代码。对照表见 docs/rollback-semantics.md。
+         */
+        post: operations["TaskController_rollbackToVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取任务 Webhook 状态
+         * @description 返回 `{ enabled, url }`。密钥从不返回。
+         */
+        get: operations["TaskController_webhookStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/webhook/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 停用任务 Webhook
+         * @description 清除密钥；此后带签名的调用会返回 401。
+         */
+        post: operations["TaskController_webhookDisable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/webhook/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 启用任务 Webhook
+         * @description 签发新的 Webhook 密钥，仅在 `secret` 中返回一次。对已启用的任务再次启用会轮换密钥。
+         */
+        post: operations["TaskController_webhookEnable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/webhook/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 轮换任务 Webhook 密钥
+         * @description 旧密钥立即失效；新密钥只展示一次。
+         */
+        post: operations["TaskController_webhookRotate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 获取用户列表 */
+        get: operations["UsersController_findAll"];
+        put?: never;
+        /** 创建用户 */
+        post: operations["UsersController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 获取用户详情 */
+        get: operations["UsersController_findOne"];
+        put?: never;
+        post?: never;
+        /** 删除用户 */
+        delete: operations["UsersController_remove"];
+        options?: never;
+        head?: never;
+        /** 更新用户 */
+        patch: operations["UsersController_update"];
+        trace?: never;
+    };
+    "/webhooks/tasks/{taskId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 通过入站 Webhook 触发任务
+         * @description 公开的机器调用端点。需要 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头；签名是用该任务的 Webhook 密钥对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256（可通过 POST /api/tasks/:id/webhook/enable 启用）。请求体 `{ params }` 会覆盖该任务本次执行的默认参数。可加 `?wait=1&timeout=N` 让请求停驻到执行进入终态（N ≤ 300 秒；超时则返回 `completed:false` 及最新快照）。任务不存在 / Webhook 未启用 / 签名错误一律返回相同的 401。同一投递在 ±5 分钟窗内重复到达时返回 `{deduplicated:true}`（不重复触发；可用 `X-AutoFlow-Delivery` 提供投递幂等键，缺省以签名去重）。
+         */
+        post: operations["TaskWebhookController_trigger"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4147,14 +4168,792 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        LoginDto: {
-            /** @example admin */
-            username: string;
-            /** @example password123 */
-            password: string;
+        AgentBudgetResponseDto: {
+            maxSteps: number;
+            maxTokens: number;
+            maxToolCalls: number;
+            wallClockMs: number;
         };
-        RefreshTokenDto: {
-            refreshToken: string;
+        AgentCollabAckReplyDto: {
+            address: string;
+            /** Format: uuid */
+            clarificationId: string;
+        };
+        AgentCollabCapabilityDto: {
+            address: string;
+            capabilities: string[];
+            report?: {
+                [key: string]: unknown;
+            };
+        };
+        AgentCollabClarificationDto: {
+            address: string;
+            /** Format: uuid */
+            assignmentId: string;
+            clientClarificationId?: string;
+            context?: {
+                [key: string]: unknown;
+            };
+            mediaRefs?: Record<string, never>[];
+            question: string;
+            targetAgentSessionId?: string;
+        };
+        AgentCollabCompleteDto: {
+            address: string;
+            attempt?: number;
+            result?: {
+                [key: string]: unknown;
+            };
+            /** @enum {string} */
+            status: "completed" | "failed";
+        };
+        AgentCollabPollDto: {
+            /** @example office-pc-07:8002 */
+            address: string;
+            inflight?: string[];
+            resendAssignments?: boolean | string[];
+            /** @description 长轮询等待（服务端钳位 ≤25s） */
+            waitMs?: number;
+        };
+        AgentCollabProgressDto: {
+            address: string;
+            progressJson?: {
+                [key: string]: unknown;
+            };
+            targetAgentSessionId?: string;
+        };
+        AgentMediaDto: {
+            /** Format: uuid */
+            assignmentId: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            mime: string | null;
+            name: string;
+            sizeBytes: number;
+            /** @description 'executor:<id>' 或 'user:<id>' */
+            uploadedBy: string;
+        };
+        AgentSessionCreateResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** @description 创建时恒为 'pending' */
+            status: string;
+        };
+        AgentSessionDetailResponseDto: {
+            /** @description 子会话（parentSessionId = 本会话） */
+            children: components["schemas"]["AgentSessionDto"][];
+            session: components["schemas"]["AgentSessionDto"];
+            /** @description 按 seq 排序的推理轨迹 */
+            steps: components["schemas"]["AgentStepDto"][];
+            toolCalls: components["schemas"]["AgentToolCallDto"][];
+        };
+        AgentSessionDto: {
+            /** @description 入队时取的预算快照（审计看到的是当时被允许的额度） */
+            budgetJson: {
+                maxSteps?: number;
+                maxTokens?: number;
+                maxToolCalls?: number;
+                wallClockMs?: number;
+            } | null;
+            /** @description 会话目标/上下文对象 */
+            contextJson: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description 发起人（G4 四眼原则的数据基础）：'user:<username>' / 'system:<cron|event>'；存量行 null = 未知 */
+            createdBy: string | null;
+            errorMessage: string | null;
+            /** Format: date-time */
+            finishedAt: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "ops_watch" | "incident" | "sop_authoring" | "sop_review" | "app_scaffold" | "chat";
+            /**
+             * Format: uuid
+             * @description 子会话血缘（sop_review 会话在此串联）
+             */
+            parentSessionId: string | null;
+            /** @description 成功时的最终结构化结果 */
+            resultJson: {
+                [key: string]: unknown;
+            } | null;
+            /** @description 资源范围约束（03 §5.3）；为空 = 无资源访问权限 */
+            scopeJson: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: date-time */
+            startedAt: string | null;
+            /** @enum {string} */
+            status: "pending" | "running" | "waiting_input" | "succeeded" | "failed" | "aborted" | "budget_exceeded";
+            /** @description 由 LLM 撰写的收尾摘要 */
+            summary: string | null;
+            title: string | null;
+            totalSteps: number;
+            totalTokensIn: number;
+            totalTokensOut: number;
+            totalToolCalls: number;
+            /** @description 'user:<id>' / 'cron:<name>' / 'event:<type>'（触发来源） */
+            triggerSource: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** @description 会话当前等待的事项（审批/澄清/...） */
+            waitingFor: string | null;
+        };
+        AgentSessionListResponseDto: {
+            items: components["schemas"]["AgentSessionDto"][];
+            total: number;
+        };
+        AgentSessionResumeResponseDto: {
+            /** @description false = 会话已终态，应新建一个会话 */
+            ok: boolean;
+            /** @description ok=false 时出现 */
+            reason?: string;
+        };
+        AgentStepDto: {
+            content: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            latencyMs: number;
+            model: string | null;
+            provider: string | null;
+            /** @description 提供方暴露的推理通道内容 */
+            reasoning: string | null;
+            /** @enum {string} */
+            role: "system" | "user" | "assistant" | "tool";
+            /** @description 会话内从 1 开始的序号 */
+            seq: number;
+            /** Format: uuid */
+            sessionId: string;
+            /** @description 压缩后的步骤摘要（保留分级） */
+            summary: string | null;
+            tokensIn: number;
+            tokensOut: number;
+            toolCallId: string | null;
+            /** @description 助手工具调用请求原文 */
+            toolCallsJson: {
+                [key: string]: unknown;
+            }[] | null;
+        };
+        AgentToolCallDto: {
+            /**
+             * Format: uuid
+             * @description awaiting_approval / granted 流程的审批记录
+             */
+            approvalId: string | null;
+            argsJson: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: date-time */
+            createdAt: string;
+            durationMs: number;
+            errorMessage: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @description resultTruncated 为真时被单次调用大小上限截断 */
+            resultJson: {
+                [key: string]: unknown;
+            } | null;
+            resultTruncated: boolean;
+            /** Format: uuid */
+            sessionId: string;
+            /** Format: date-time */
+            stateChangedAt: string | null;
+            /** @enum {string} */
+            status: "ok" | "denied" | "awaiting_approval" | "in_flight" | "timeout" | "error" | "circuit_open";
+            /** Format: uuid */
+            stepId: string | null;
+            /** @enum {string} */
+            tier: "read" | "write" | "dangerous";
+            toolName: string;
+        };
+        AiConfigResponseDto: {
+            /** @description 当前 provider 是否已配置 API key（key 的**值**永不返回） */
+            hasApiKey: boolean;
+            ollamaHost: string;
+            ollamaModel: string;
+            openaiBaseUrl: string;
+            openaiModel: string;
+            /** @description AI 提供方，取值：'qwen' | 'openai' | 'ollama' | 'disabled' */
+            provider: string;
+            qwenBaseUrl: string;
+            /** @description 字符串编码的数字（配置存储中的值均为字符串） */
+            qwenMaxTokens: string;
+            qwenModel: string;
+            /** @description 字符串编码的数字（毫秒） */
+            qwenTimeoutMs: string;
+        };
+        AiConfigSaveResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
+        };
+        AiTestResponseDto: {
+            /** @description 样例提示词的回复文本，或降级状态下的提示信息 */
+            message: string;
+            /** @description provider 被禁用或返回空响应时为 false */
+            ok: boolean;
+        };
+        AlertmanagerAlertDto: {
+            /**
+             * @description 告警注解（含 runbook_url 惯例）
+             * @example {
+             *       "summary": "CPU > 90%"
+             *     }
+             */
+            annotations?: Record<string, never>;
+            /**
+             * @description 结束时间（resolved 时）
+             * @example 2026-09-14T06:05:00Z
+             */
+            endsAt?: string;
+            /** @description 告警指纹（去重用） */
+            fingerprint?: string;
+            /**
+             * @description 告警生成器 URL
+             * @example http://grafana/alert/1
+             */
+            generatorURL?: string;
+            /**
+             * @description 告警标签（含 alertname/labels.taskId 等）
+             * @example {
+             *       "alertname": "HighCPU",
+             *       "taskId": "uuid"
+             *     }
+             */
+            labels?: Record<string, never>;
+            /**
+             * @description 开始时间（ISO 字符串原样透出）
+             * @example 2026-09-14T06:00:00Z
+             */
+            startsAt?: string;
+            /**
+             * @description 告警状态 firing/resolved
+             * @example firing
+             */
+            status?: string;
+        };
+        AlertmanagerWebhookDto: {
+            /** @description 告警列表（空数组/缺失由控制器映射层以 400 NOTIFICATION_ALERT_PAYLOAD_EMPTY 拒绝） */
+            alerts?: components["schemas"]["AlertmanagerAlertDto"][];
+            /** @description 公共注解 */
+            commonAnnotations?: Record<string, never>;
+            /** @description 公共标签 */
+            commonLabels?: Record<string, never>;
+            /** @description Alertmanager 外部 URL */
+            externalURL?: string;
+            /** @description 告警分组键 */
+            groupKey?: string;
+            /** @description 组公共标签 */
+            groupLabels?: Record<string, never>;
+            /** @description 接收方名称 */
+            receiver?: string;
+            /** @description 组级状态 firing/resolved */
+            status?: string;
+            /** @description 截断的告警条数 */
+            truncatedAlerts?: number;
+            /**
+             * @description Alertmanager webhook 协议版本
+             * @example 4
+             */
+            version?: string;
+        };
+        AlertsWebhookResponseDto: {
+            /** @description 送达的通道数 */
+            delivered: number;
+            /** @enum {boolean} */
+            ok: true;
+            /** @description 逐通道投递状态 */
+            results: {
+                [key: string]: "sent" | "blocked" | "failed" | "skipped";
+            };
+        };
+        ApiKeyCreateResponseDto: {
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string | null;
+            id: number;
+            /** @description 'acf_' + 前缀若干字符——创建之后不再返回完整 key */
+            keyPrefix: string;
+            /**
+             * Format: date-time
+             * @description 刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）
+             */
+            lastUsedAt: string | null;
+            name: string;
+            /** @description 明文 key（'acf_<64 hex>'）仅展示一次——请立即保存 */
+            plaintext: string;
+            /**
+             * Format: date-time
+             * @description 有值 = 已吊销（软删除）
+             */
+            revokedAt: string | null;
+            /** @description 粗粒度范围桶 */
+            scope: string;
+            /** @description 额外的细粒度范围（词表，例如 'task:trigger'） */
+            scopes: string[];
+        };
+        ApiKeyRevokeResponseDto: {
+            apiKey: components["schemas"]["ApiKeyViewDto"];
+            /** @enum {boolean} */
+            success: true;
+        };
+        ApiKeyViewDto: {
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string | null;
+            id: number;
+            /** @description 'acf_' + 前缀若干字符——创建之后不再返回完整 key */
+            keyPrefix: string;
+            /**
+             * Format: date-time
+             * @description 刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）
+             */
+            lastUsedAt: string | null;
+            name: string;
+            /**
+             * Format: date-time
+             * @description 有值 = 已吊销（软删除）
+             */
+            revokedAt: string | null;
+            /** @description 粗粒度范围桶 */
+            scope: string;
+            /** @description 额外的细粒度范围（词表，例如 'task:trigger'） */
+            scopes: string[];
+        };
+        AppDeploymentEventRowDto: {
+            /** Format: uuid */
+            applicationId: string;
+            createdAt: string;
+            /** @description 动作发生时的版本事实（deploy/upgrade 写动作时 app.version；stop/remove/stuck 写行上 deployedVersion） */
+            deployedVersion: string | null;
+            /**
+             * Format: uuid
+             * @description 触发本事件的部署行 id；行可能已被删除（事件无外键、比行活得久）
+             */
+            deploymentId: string | null;
+            /** @description 短事实快照（reason/runMode/deletedStatus 等标量；写入侧保证不含 env 密钥） */
+            detail?: {
+                [key: string]: unknown;
+            } | null;
+            /** @enum {string} */
+            eventType: "deploy_created" | "redeploy_reused" | "approval_approved" | "approval_rejected" | "approval_cancelled" | "upgrade" | "stop" | "remove" | "stuck_failed";
+            executorAddress: string | null;
+            /** Format: uuid */
+            executorId: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @description 操作人（JWT 用户名）；系统路径为 null */
+            operator: string | null;
+            /**
+             * @description 动作语义（DeploymentTriggerType）；机器路径（如卡死扫描）为 null
+             * @enum {string|null}
+             */
+            triggerType: "manual" | "upgrade" | "rollback" | "approval" | null;
+        };
+        AppDeploymentEventsPageDto: {
+            data: components["schemas"]["AppDeploymentEventRowDto"][];
+            page: number;
+            /** @description 默认 50，上限 200 */
+            pageSize: number;
+            total: number;
+        };
+        AppDeploymentResponseDto: {
+            /** @description 父应用（已掩码读面 —— env 中的 secret 为 '***'） */
+            application?: components["schemas"]["ApplicationResponseDto"];
+            /** Format: uuid */
+            applicationId: string;
+            /** @description 审批轨迹（操作者/原因/时间戳） */
+            approvalMeta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * @description DEP-04 第二人审批状态；null = 无需审批
+             * @enum {string|null}
+             */
+            approvalStatus: "pending_approval" | "approved" | "rejected" | null;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description 最近一次部署完成时间
+             */
+            deployedAt: string | null;
+            /** @description 从 git 源部署时的 git commit */
+            deployedCommit: string | null;
+            /** @description 实际部署的版本（升级/回滚会改写它） */
+            deployedVersion: string | null;
+            /** @description 部署时刻的 env 快照，在所有读面均被掩码（QA1） */
+            env: {
+                [key: string]: string;
+            } | null;
+            /** @description 该应用运行所在执行器的地址 */
+            executorAddress: string;
+            /** Format: uuid */
+            executorId: string | null;
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: date-time
+             * @description 该部署对应的最近一次执行器心跳
+             */
+            lastHeartbeat: string | null;
+            /** @description 操作者的 JWT 用户名（FEAT-20） */
+            operator: string | null;
+            /** @description 应用进程在执行器上的 pid（由心跳维护） */
+            pid: number | null;
+            /** @description 金丝雀批次元数据（batchId/canaryIds/leasedBy...） */
+            rolloutMeta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * @description 金丝雀发布阶段（DEP-02）；null = 不属于任何批次
+             * @enum {string|null}
+             */
+            rolloutState: "pending" | "probing" | "promoted" | "failed" | "rolled_back" | null;
+            /** @enum {string} */
+            runMode: "once" | "daemon" | "scheduled";
+            /** @description 启动命令快照（回滚/升级可能改写它） */
+            startCommand: string | null;
+            /** @enum {string} */
+            status: "pending" | "deploying" | "running" | "stopped" | "failed" | "upgrading";
+            /** @description 最近一次状态跃迁消息（停滞/重复部署防护在此写入） */
+            statusMessage: string | null;
+            /**
+             * @description 触发语义（FEAT-20 持久化列）；null = legacy 行
+             * @enum {string|null}
+             */
+            triggerType: "manual" | "upgrade" | "rollback" | "approval" | null;
+            /** Format: date-time */
+            updatedAt: string;
+            /** @description 乐观锁 @VersionColumn（TypeORM 版本列） */
+            version: number;
+        };
+        AppDeploymentStatsDto: {
+            /** Format: uuid */
+            applicationId: string;
+            /** @description status='failed' 的部署行数 */
+            failed: number;
+            /** @description 最近一次部署活动时间（MAX(deployedAt ?? createdAt)）；该应用无部署行为 null */
+            lastDeployedAt: string | null;
+            /** @description status='running' 的部署行数 */
+            running: number;
+            /** @description 该应用全部部署行数（含 stopped/failed） */
+            total: number;
+        };
+        AppHealthAnalysisResponseDto: {
+            /** @description AI 评估文本（空字符串 = AI 不可用，fail-open 放行） */
+            analysis: string;
+            /** Format: uuid */
+            appId: string;
+            appName: string;
+            stats?: {
+                avgDuration: number;
+                avgSuccessRate: number;
+                criticalTasks: string[];
+                totalTasks: number;
+            };
+        };
+        AppReleaseDeviceDto: {
+            /** @description 该设备该应用 current 指向的版本（保留场景下可能与本行版本不同） */
+            currentVersion: string | null;
+            /** @description 执行器行 id */
+            executorId: string;
+            /** @description 执行器可读名（executors.appName）；行已删/未上报名时 null */
+            executorName: string | null;
+            /** @description executors.lastHeartbeat（设备最后上报时刻，ISO） */
+            lastHeartbeat: string | null;
+            /** @description executors.status === ONLINE（离线设备的版本事实可能已过期） */
+            online: boolean;
+            /** @description 本行版本 ∈ 设备 retainedVersions（设备磁盘仍持有该版本） */
+            retained: boolean;
+        };
+        AppReleaseRowDto: {
+            /** @description 最近一次部署完成时间（ISO 字符串 —— 本视图做了字符串化） */
+            deployedAt: string | null;
+            /** @description 该版本的部署次数 */
+            deploymentCount: number;
+            /** @enum {string|null} */
+            deploymentStatus: "pending" | "deploying" | "running" | "stopped" | "failed" | "upgrading" | null;
+            /** @description R3-A（§4.3）：正在运行或本地保留该版本的设备（设备心跳上报事实；无设备上报时为空数组）。deploymentStatus/executorAddress 等字段仍是部署行推断（渐进迁移），设备真实状态以本字段为准。响应字段只增不改 */
+            devices: components["schemas"]["AppReleaseDeviceDto"][];
+            executorAddress: string | null;
+            gitCommit: string | null;
+            /**
+             * Format: uuid
+             * @description application_versions.id；null = 纯部署历史（无快照行）
+             */
+            id: string | null;
+            /** Format: uuid */
+            latestDeploymentId: string | null;
+            /** @description 取 deployments.operator，回退到 versions.createdBy */
+            operator: string | null;
+            /** @description operator 为 null 时的原因（RELEASE_OPERATOR_MISSING_REASON） */
+            operatorMissingReason: string;
+            /** @enum {string} */
+            operatorSource: "deployments.operator" | "application_versions.createdBy";
+            /** @description 快照中的 packageUrl（部署时刻的值 —— 不回退到应用当前 URL） */
+            packageUrl: string | null;
+            /** @enum {string|null} */
+            runMode: "once" | "daemon" | "scheduled" | null;
+            /**
+             * @description 优先取持久化列，legacy 行推导得出（无法判定时为 unknown）
+             * @enum {string|null}
+             */
+            triggerType: "manual" | "upgrade" | "rollback" | "approval" | "unknown" | null;
+            version: string | null;
+        };
+        AppReleaseWebhookDto: {
+            /** @description 应用名称 */
+            appName: string;
+            /** @description Git 分支 */
+            gitBranch?: string;
+            /** @description Git 提交 SHA */
+            gitCommit?: string;
+            /**
+             * @description 是否对所有 RUNNING 状态的部署触发滚动升级
+             * @default false
+             */
+            triggerDeploy?: boolean;
+            /** @description 新版本号，例如 1.2.3 */
+            version: string;
+        };
+        AppReleasesResponseDto: {
+            data: components["schemas"]["AppReleaseRowDto"][];
+            page: number;
+            /** @description 默认 50，上限 200 */
+            pageSize: number;
+            /** @description P8-R（部署模型评审遗留）：truncated=true 吞掉被截版本的 devices 徽标时，列出「有设备保留（currentVersion 命中或 ∈ retainedVersions）但不在本页返回行中」的版本号（字母序）；truncated=false 恒空数组。响应字段只增不改 */
+            retainedButTruncated: string[];
+            total: number;
+            /** @description R4（§4.7）：synthetic 聚合扫描到达 5000 行上限（聚合以已扫描部分为准，可能不完整）时 true；未到上限或非第 1 页恒 false。响应字段只增不改 */
+            truncated: boolean;
+        };
+        AppendLogChunkDto: {
+            /**
+             * @description 本分片中首行的 0-based 行号偏移
+             * @example 0
+             */
+            fromLine: number;
+            /**
+             * @description 日志行字符串数组（最多 2000 行，每行最长 512 KB）
+             * @example [
+             *       "Starting task",
+             *       "Step 1 complete"
+             *     ]
+             */
+            lines: string[];
+        };
+        ApplicationResponseDto: {
+            /** @description 部署是否需要审批 */
+            approvalRequired: boolean;
+            /**
+             * Format: date-time
+             * @description 创建时间（ISO-8601）
+             */
+            createdAt: string;
+            /** @description 人类可读描述 */
+            description?: string | null;
+            /** @description 入口点路径 */
+            entrypoint?: string | null;
+            /**
+             * @description 环境变量映射；secret 类键在所有读面均被掩码为 ***
+             * @example {
+             *       "DB_PASSWORD": "***",
+             *       "LOG_LEVEL": "info"
+             *     }
+             */
+            env?: Record<string, never> | null;
+            /** @description Git 分支 */
+            gitBranch?: string | null;
+            /** @description 锁定的 git commit */
+            gitCommit?: string | null;
+            /** @description Git 仓库 URL */
+            gitRepo?: string | null;
+            /** @description 应用 ID（uuid） */
+            id: string;
+            /** @description 部署清单（jsonb） */
+            manifest?: Record<string, never> | null;
+            /** @description MUTEX-01：互斥组 ID（null = 该应用不参与按设备互斥） */
+            mutexGroupId?: string | null;
+            /** @description 唯一应用名称 */
+            name: string;
+            /** @description 属主用户 ID */
+            ownerUserId?: number | null;
+            /** @description 包下载 URL */
+            packageUrl?: string | null;
+            /** @description 所属项目 ID（null = 默认项目视图） */
+            projectId?: string | null;
+            /** @description 运行时标识（node / python / shell …） */
+            runtime: string;
+            /** @description 生命周期状态 */
+            status: string;
+            /**
+             * Format: date-time
+             * @description 最后更新时间（ISO-8601）
+             */
+            updatedAt: string;
+            /** @description 应用版本 */
+            version: string;
+            /** @description R7 实测出现性：create/update 等 save() 回程把 select:false 列 hydrated 成 null 带出；findAll/findById select 读取不含该键。值恒 null（secret 不回传）。首版头注的『不声明』裁定据此修订 */
+            webhookSecret?: string | null;
+        };
+        ApplicationRollbackResponseDto: {
+            failed: number;
+            ok: boolean;
+            /** @description 仅在 legacy 路径下出现（该路径下恒为 false —— R16） */
+            packageUrlRestored?: boolean;
+            /** @description 应用回滚到的版本（legacy 路径下取 deployedVersion） */
+            rolledBackTo: string;
+            /** @description 透传所触发的 upgrade-all 批次回执 */
+            rollout?: components["schemas"]["UpgradeAllResponseDto"];
+            succeeded: number;
+            total: number;
+            /** @description 恢复后的应用行（已掩码） */
+            updatedApp: components["schemas"]["ApplicationResponseDto"];
+            /**
+             * Format: uuid
+             * @description 走快照路径时为 application_versions.id；null = 走了 legacy 部署行路径
+             */
+            versionId: string | null;
+        };
+        ApplicationVersionHistoryRowDto: {
+            commit: string | null;
+            /** Format: date-time */
+            createdAt: string | null;
+            /** @description 该版本的部署次数（同版本多实例滚动分别单独计数） */
+            deployCount: number;
+            /**
+             * Format: date-time
+             * @description 快照行使用版本创建时间
+             */
+            deployedAt: string | null;
+            /**
+             * Format: uuid
+             * @description legacy 行携带部署 ID
+             */
+            deploymentId: string | null;
+            /** @description legacy 行携带该部署的执行器；快照行留为 null */
+            executorAddress: string | null;
+            /**
+             * Format: uuid
+             * @description application_versions.id；null = 由 legacy 部署派生的行
+             */
+            id: string | null;
+            /** @description 已掩码的版本快照（读面）；legacy 行为 null */
+            snapshot: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: uuid */
+            sourceDeploymentId: string | null;
+            /** @description 快照状态或 legacy 部署状态 */
+            status: string;
+            /** @description legacy 行回退到 '__unknown__' 桶键 */
+            version: string | null;
+        };
+        ApprovalActionDto: {
+            /** @description 可选的决策理由（≤200 字符），计入审计 */
+            reason?: string;
+        };
+        ArtifactManifestItemDto: {
+            /** @description 产物文件名（裸文件名，不含任何路径分隔符） */
+            name: string;
+            /** @description 产物内容的 sha256 十六进制摘要 */
+            sha256: string;
+            /** @description 产物字节数 */
+            size: number;
+        };
+        ArtifactUploadResponseDto: {
+            name: string;
+            /** @enum {boolean} */
+            ok: true;
+            sha256: string;
+            /** @description 字节 */
+            size: number;
+        };
+        AssignAiRouteDto: {
+            /** @description 覆盖模型名（可选） */
+            model?: string;
+            /** @description 目标 provider；空 = 跟随全局 */
+            providerId?: string;
+            /**
+             * @description 用途
+             * @enum {string}
+             */
+            purpose: "analysis" | "agent" | "video";
+        };
+        AssignSopDto: {
+            /** @description 按地址指派（executorId 缺省时的替代形态） */
+            executorAddress?: string;
+            /** Format: uuid */
+            executorId?: string;
+            /** @description 指派的具体版本；缺省 = currentVersion */
+            version?: string;
+        };
+        AuditActionsDto: {
+            /** @description 库里出现过（去重、按字母序）的审计动作取值。来源于 audit_logs.action 的历史写入，故可能包含已下线的动作。 */
+            actions: string[];
+        };
+        AuditLogDto: {
+            /** @description 点分格式的操作标识，例如 'task.trigger' / 'user.create' */
+            action: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description 自由格式的上下文（ip、明细载荷） */
+            detail: {
+                [key: string]: unknown;
+            } | null;
+            id: number;
+            ip: string | null;
+            resource: string | null;
+            resourceId: string | null;
+            /** @description 审计落库时记录的写入结果（缺省 'success'） */
+            result: string;
+            userId: number | null;
+            /** @description 操作人用户名的快照（用户被删除后仍保留） */
+            username: string | null;
+        };
+        AuthLogoutDto: {
+            /** @enum {boolean} */
+            success: true;
+        };
+        AuthProfileDto: {
+            email: string;
+            id: number;
+            isActive: boolean;
+            /** @enum {string} */
+            role: "admin" | "user";
+            /** @description 本 access token 所属会话的 refresh-token jti（旧令牌缺省） */
+            sid?: string;
+            username: string;
+        };
+        AuthSessionRowDto: {
+            /**
+             * Format: date-time
+             * @description 会话创建时间（ISO-8601）
+             */
+            createdAt: string;
+            /** @description 发起本次请求的会话为 true */
+            current: boolean;
+            /**
+             * Format: date-time
+             * @description 会话过期时间（ISO-8601）
+             */
+            expiresAt: string | null;
+            /** @description refresh_tokens 行 ID（不透明的会话句柄） */
+            id: string;
+            /** @description 登录时采集的客户端 IP */
+            ip: string | null;
+            /** @description 会话的 JWT id；同时也是撤销键 */
+            jti: string;
+            /** @description 登录时采集的 User-Agent */
+            userAgent: string | null;
         };
         AuthTokensDto: {
             /** @description JWT access token（缺省有效期 15 分钟，含 sid claim） */
@@ -4162,1050 +4961,11 @@ export interface components {
             /** @description 30 天有效期的 refresh token，jti 唯一 */
             refreshToken: string;
         };
-        AuthLogoutDto: {
-            /** @enum {boolean} */
-            success: true;
-        };
-        SseTicketResponseDto: {
-            /** @description SSE 专用短效票据；作为 ?ticket= 查询串使用，30 秒后失效，且只在三条 /stream 路由上被读取 */
-            ticket: string;
-            /** @description 票据过期时间（ISO 8601） */
-            expiresAt: string;
-        };
-        AuthProfileDto: {
-            id: number;
-            username: string;
-            email: string;
-            /** @enum {string} */
-            role: "admin" | "user";
-            isActive: boolean;
-            /** @description 本 access token 所属会话的 refresh-token jti（旧令牌缺省） */
-            sid?: string;
-        };
-        TotpSetupResponseDto: {
-            /** @description Base32 编码的 TOTP 密钥（暂存，尚未生效） */
-            secret: string;
-            /**
-             * @description 供认证器应用使用的 otpauth:// URL
-             * @example otpauth://totp/AutoCodeFlow:admin?secret=&issuer=AutoCodeFlow
-             */
-            otpauthUrl: string;
-        };
-        TotpCodeDto: {
-            /**
-             * @description 6 位 TOTP 动态验证码
-             * @example 123456
-             */
-            code: string;
-        };
-        TotpEnableResponseDto: {
-            /** @description 成功时恒为 true（否则返回 400） */
-            enabled: boolean;
-        };
-        TotpDisableDto: {
-            /**
-             * @description 确认密码（与 6 位动态码二选一）
-             * @example password123
-             */
-            password?: string;
-            /**
-             * @description 6 位 TOTP 动态验证码（与密码二选一）
-             * @example 123456
-             */
-            code?: string;
-        };
-        TotpDisableResponseDto: {
-            /** @description 本次调用确实关闭了 TOTP 时为 true；本来就未开启时为 false（幂等空操作） */
-            disabled: boolean;
-        };
-        TotpVerifyDto: {
-            /** @example admin */
-            username: string;
-            /** @example password123 */
-            password: string;
-            /**
-             * @description 6 位 TOTP 动态验证码
-             * @example 123456
-             */
-            code: string;
-        };
-        AuthSessionRowDto: {
-            /** @description refresh_tokens 行 ID（不透明的会话句柄） */
-            id: string;
-            /** @description 会话的 JWT id；同时也是撤销键 */
-            jti: string;
-            /**
-             * Format: date-time
-             * @description 会话创建时间（ISO-8601）
-             */
-            createdAt: string;
-            /**
-             * Format: date-time
-             * @description 会话过期时间（ISO-8601）
-             */
-            expiresAt: string | null;
-            /** @description 登录时采集的 User-Agent */
-            userAgent: string | null;
-            /** @description 登录时采集的客户端 IP */
-            ip: string | null;
-            /** @description 发起本次请求的会话为 true */
-            current: boolean;
-        };
-        SessionRevokeResponseDto: {
-            /** @description false = 非法 id（非整数）；true = 已吊销或本就不属于该用户路径的幂等结果 */
-            success: boolean;
-        };
-        RevokeOthersResponseDto: {
-            /** @description 已撤销的会话数 */
-            revoked: number;
-        };
-        OidcStatusResponseDto: {
-            /** @description false = OIDC 未配置，登录页隐藏 SSO 入口 */
-            enabled: boolean;
-        };
-        CreateUserDto: {
-            /** @example admin */
-            username: string;
-            /** @example admin@example.com */
-            email: string;
-            /** @description 至少 8 个字符，且必须包含大写字母、小写字母、数字和特殊字符 */
-            password: string;
-            /**
-             * @default user
-             * @enum {string}
-             */
-            role?: "admin" | "user";
-        };
-        UserResponseDto: {
-            id: number;
-            /** @description 1..128 字符，唯一 */
-            username: string;
-            /** @description 唯一 */
-            email: string;
-            /** @enum {string} */
-            role: "admin" | "user";
-            /** @description 软禁用开关（为 false 时拒绝登录） */
-            isActive: boolean;
-            /** @description 连续登录失败次数（锁定判定的输入） */
-            loginFailCount: number;
-            /**
-             * Format: date-time
-             * @description 锁定截止时间
-             */
-            lockedUntil: string | null;
-            totpEnabled: boolean;
-            /** @description 修改密码时递增——使旧的 refresh token 失效 */
-            sessionVersion: number;
-            lastTotpCounter: number | null;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-        };
-        Object: Record<string, never>;
-        PaginatedUsersDto: {
-            list: components["schemas"]["UserResponseDto"][];
-            items: components["schemas"]["UserResponseDto"][];
-            total: number;
-            page: number;
-            pageSize: number;
-            totalPages: number;
-        };
-        UpdateUserDto: {
-            /** @example admin */
-            username?: string;
-            /** @example admin@example.com */
-            email?: string;
-            /** @description 至少 8 个字符，且必须包含大写字母、小写字母、数字和特殊字符 */
-            password?: string;
-            /**
-             * @default user
-             * @enum {string}
-             */
-            role?: "admin" | "user";
-            /** @description 非 admin 用户修改自己的密码时必填（SEC-12）；service 落库前会剥离该字段（R19） */
-            currentPassword?: string;
-            /** @description 账号启用/禁用（ADMIN-only；禁用后登录 403 且在途会话立即失效） */
-            isActive?: boolean;
-        };
-        UserDeleteResponseDto: {
-            /** @enum {boolean} */
-            deleted: true;
-        };
-        TaskResponseDto: {
-            /** Format: uuid */
-            id: string;
-            /** @description 任务名（全局唯一） */
-            name: string;
-            /** @description 任务描述 */
-            description: string | null;
-            /**
-             * @description 已删除的行永不返回（软删除）
-             * @enum {string}
-             */
-            status: "active" | "paused" | "deleted";
-            /** @enum {string} */
-            triggerType: "cron" | "fixed_rate" | "api" | "manual";
-            /** @description 5 字段 cron 表达式（cron 任务） */
-            cronExpression: string | null;
-            /** @description 用于 cron 计算的 IANA 时区 */
-            timezone: string | null;
-            /** @description 固定频率间隔，单位毫秒（fixed_rate 任务） */
-            fixedRate: number | null;
-            /** @enum {string} */
-            runtime: "python" | "node" | "shell";
-            /** @description 声明的解释器版本（多版本 WS1） */
-            runtimeVersion: string | null;
-            /** @description 执行器在运行前安装的依赖规格（打包类任务） */
-            dependencies: {
-                [key: string]: string;
-            } | null;
-            /** @description G6 失败边：上游依赖进入失败终态时也触发本任务（补偿/清理链） */
-            runOnUpstreamFailure: boolean;
-            /** @description 包内的入口文件 */
-            entrypoint: string | null;
-            /** @description Python/node 依赖列表（uv pip install / npm install） */
-            requirements: string[] | null;
-            /** @description Git 仓库 URL（git 源任务） */
-            gitRepo: string | null;
-            gitBranch: string | null;
-            /** @description 当前检出的提交 */
-            gitCommit: string | null;
-            /** @description 最新的配置快照版本标签 */
-            currentVersion: string | null;
-            /** @description 执行超时秒数（0 = 不限） */
-            timeout: number;
-            /** @description 派发/执行失败后的重试次数上限 */
-            maxRetry: number;
-            /** @description 重试间隔秒数 */
-            retryDelay: number;
-            /** @description 可重试的失败关键词子串，不区分大小写；null/空 = 所有失败都重试 */
-            retryableErrors: string[] | null;
-            /** @enum {string} */
-            blockStrategy: "serial" | "discard" | "cover_early";
-            /** @enum {string} */
-            misfireStrategy: "ignore" | "fire_once";
-            /**
-             * @description 以 PG 枚举标签的形态存储（并返回）；写入时会把数字输入归一化
-             * @enum {string}
-             */
-            priority: "low" | "normal" | "high" | "critical";
-            /** @enum {string} */
-            executeMode: "single" | "broadcast";
-            /**
-             * Format: date-time
-             * @description 调度器最近一次将该任务入队的时间
-             */
-            lastTriggerTime: string | null;
-            alarmEmail: string | null;
-            /** @description 失败/超时告警使用的告警渠道名 */
-            alarmChannels: string[] | null;
-            /** @description 默认运行参数（纯运行时参数，不含凭据） */
-            params: {
-                [key: string]: unknown;
-            } | null;
-            /** @description 按名称固定到某个执行器应用 */
-            executorAppName: string | null;
-            /**
-             * Format: uuid
-             * @description 该任务运行所依赖的应用（zip 包）
-             */
-            applicationId: string | null;
-            /**
-             * @description 显式的代码来源通道（null = 历史遗留行，读取时按联合语义处理）
-             * @enum {number}
-             */
-            codeSource: [
-                "git",
-                "glue",
-                "application_zip"
-            ] | null;
-            /**
-             * Format: uuid
-             * @description 所属项目（null = 未分配/默认项目视图）
-             */
-            projectId: string | null;
-            /** @description 项目关联——当前读取路径不会加载它（普通仓储查询从不 join 该关联） */
-            project?: {
-                /** Format: uuid */
-                id?: string;
-                name?: string;
-            } | null;
-            /** @description 创建者用户 ID（null = 无归属的历史遗留行；鉴权按仅管理员可见处理） */
-            ownerUserId: number | null;
-            /** @description 任务密钥，始终打码：叶子值恒为 '******'（SEC-02）；明文永不出服务端 */
-            secrets: {
-                [key: string]: string;
-            } | null;
-            /** @description 执行器分组过滤条件（与标签按 AND 组合） */
-            executorGroup: string | null;
-            /** @description 必需的执行器标签（AND 子集语义） */
-            executorTags: string[] | null;
-            /** @description 亲和标签——命中任意一个即保留该执行器为候选（OR） */
-            executorAffinityTags: string[] | null;
-            /** @description 反亲和标签——命中任意一个即排除该执行器 */
-            executorAntiAffinityTags: string[] | null;
-            /**
-             * @description 任务级部署约束；null = 跟随全局 executor.deploymentPolicy
-             * @enum {string}
-             */
-            deploymentPolicy: "strict" | "prefer" | null;
-            /**
-             * Format: uuid
-             * @description 固定的执行器 ID（与广播互斥；不回退到执行器集群）
-             */
-            executorId: string | null;
-            /** @description 内联 GLUE 脚本源码（管理员可编辑） */
-            glueSource: string | null;
-            /** @description GLUE 语言：python/javascript/shell */
-            glueLanguage: string | null;
-            /** @description 维护窗口：5 字段 cron 的起止时间对，半开区间 [start, end) */
-            maintenanceWindows: {
-                start: string;
-                end: string;
-                description?: string;
-            }[] | null;
-            /** @description 失败时展示的 Markdown 运维手册，同时供告警路由消费 */
-            runbook: string | null;
-            /** @description 超时后的动作（默认 kill；kill_retry 重新入队一次；notify_only 跳过管理端 kill） */
-            timeoutAction: string | null;
-            /** @description 超时告警（WARNING）通知阈值，按超时时间的百分比计（0-90，null = 关闭） */
-            timeoutWarnRatio: number | null;
-            /** @description 预期持续时间，单位秒（负载评分输入；0/null = 未知） */
-            estimatedDurationSec: number | null;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-            /**
-             * Format: date-time
-             * @description 软删除列（所有读取均过滤掉）
-             */
-            deletedAt: string | null;
-            /** @description R7 实测出现性差异：save() 回程（create/update/pause/resume/rollbackToVersion）会把 select:false 列 hydrated 成 null 带出；findOne/列表等 select 读取不含该键。值恒 null 或掩码形态——明文只在 webhook enable/rotate 的一次性回显 */
-            webhookSecret?: string | null;
-        };
-        TaskExecutionResponseDto: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            taskId: string;
-            /** @description 派发时刻的任务名快照 */
-            taskName: string;
-            /** @enum {string} */
-            status: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
-            /** @description 是否为「为可见性而合成」的执行行（例如上游失败时，为「因上游坏而没跑」的下游建的那条 cancelled 行），而不是一次真实尝试。合成行从未真正运行、不参与依赖满足判定，但仍在执行列表里可见。 */
-            synthetic: boolean;
-            /** @description 任务关联——当前读取路径不会加载它 */
-            task?: {
-                [key: string]: unknown;
-            } | null;
-            /** @description 该次执行被派发到的执行器地址 */
-            executorAddress: string | null;
-            /** Format: uuid */
-            executorId: string | null;
-            /** @description 累积的日志文本（仅单次执行读取返回——列表读取排除该列） */
-            logs: string | null;
-            /** @description 日志后端的标记：'db' 或对象存储 */
-            logStorage: string | null;
-            /** @description 日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键 */
-            logObjectKey: string | null;
-            /** @description 任务返回的结构化结果载荷 */
-            result: {
-                [key: string]: unknown;
-            } | null;
-            /** @description 实际派发出去的合并后运行参数 */
-            params: {
-                [key: string]: unknown;
-            } | null;
-            /**
-             * Format: date-time
-             * @description 首次派发/到达执行器的时间
-             */
-            startTime: string | null;
-            /** Format: date-time */
-            endTime: string | null;
-            /** @description 挂钟耗时毫秒数（endTime - startTime） */
-            duration: number | null;
-            /** @description 截至目前已消耗的重试次数 */
-            retryCount: number;
-            /** @description 尝试世代：本执行行被 claim（认领并开始运行）过的次数，0 = 第一回合（存量行）。同一个执行可因重试/唤醒被重新 claim 成运行中；终态写入按本值做世代校验，迟到回合的结果不会覆盖新回合。 */
-            attemptSeq: number;
-            /**
-             * @description 本行因何被重试：`user` = 任务代码/配置失败（消耗用户的重试预算）；`internal` = 引擎内部抖动（网络瞬断、执行器重启、僵尸恢复）。NULL = 不知道（存量行，或不是重试行）。
-             * @enum {string|null}
-             */
-            retryKind?: "user" | "internal" | null;
-            /** @description `retryCount` 中由**用户类失败**消耗掉的次数（内部类已用 = `retryCount − 本值`）。NULL = 不知道（存量行 / 未记录）。 */
-            retryUserCount?: number | null;
-            errorMessage: string | null;
-            /**
-             * @description 归类后的失败标记（执行器可上报的子集 + 管理端内部标记）
-             * @enum {number}
-             */
-            failureReason: [
-                "package_fetch_failed",
-                "script_error",
-                "timeout",
-                "executor_offline",
-                "executor_restart",
-                "stale_recovered",
-                "dependency_install_failed",
-                "git_fetch_failed",
-                "runtime_missing",
-                "interpreter_unavailable",
-                "sandbox_unavailable",
-                "killed",
-                "unknown",
-                "application_missing",
-                "never_dispatched"
-            ] | null;
-            /** @description 进程退出码（执行器能给出时才有） */
-            exitCode: number | null;
-            /** @description AI 失败分析文本（空字符串 = 无分析） */
-            aiAnalysis: string | null;
-            /** @description 该次执行上传的产物 */
-            artifacts: {
-                name: string;
-                size: number;
-                sha256: string;
-            }[] | null;
-            /** @description manual/cron/webhook/api/dependency——本次运行的触发方式 */
-            triggerType: string | null;
-            /** @description 本次运行重放所固定的配置快照版本 */
-            taskVersion: string | null;
-            /** @description 随派发链路传递的 W3C trace-id */
-            traceId: string | null;
-            /** @description 打包类运行解析出的包 URL */
-            resolvedPackageUrl: string | null;
-            /** @description 打包类运行解析出的包版本 */
-            resolvedPackageVersion: string | null;
-            /** Format: date-time */
-            createdAt: string;
-            /**
-             * Format: date-time
-             * @description 依赖门禁触发本次执行的时间
-             */
-            depsFiredAt: string | null;
-            /**
-             * Format: uuid
-             * @description 该执行排队/运行所属的互斥组
-             */
-            mutexGroupId: string | null;
-            /** @description 乐观锁版本列 */
-            version: number;
-        };
-        ExecutionListItemDto: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            taskId: string;
-            /** @description 派发时刻的任务名快照 */
-            taskName: string;
-            /** @enum {string} */
-            status: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
-            /** @description 是否为「为可见性而合成」的执行行（例如上游失败时，为「因上游坏而没跑」的下游建的那条 cancelled 行），而不是一次真实尝试。合成行从未真正运行、不参与依赖满足判定，但仍在执行列表里可见。 */
-            synthetic: boolean;
-            /** @description 任务关联——当前读取路径不会加载它 */
-            task?: {
-                [key: string]: unknown;
-            } | null;
-            /** @description 该次执行被派发到的执行器地址 */
-            executorAddress: string | null;
-            /** Format: uuid */
-            executorId: string | null;
-            /** @description 列表/统计读取会排除该列（PERF-03）——请改用日志端点获取 */
-            logs?: string | null;
-            /** @description 日志后端的标记：'db' 或对象存储 */
-            logStorage: string | null;
-            /** @description 日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键 */
-            logObjectKey: string | null;
-            /** @description 列表读取会返回该列；统计端点的 recentExecutions 完全不含该列 */
-            result?: {
-                [key: string]: unknown;
-            } | null;
-            /** @description 实际派发出去的合并后运行参数 */
-            params: {
-                [key: string]: unknown;
-            } | null;
-            /**
-             * Format: date-time
-             * @description 首次派发/到达执行器的时间
-             */
-            startTime: string | null;
-            /** Format: date-time */
-            endTime: string | null;
-            /** @description 挂钟耗时毫秒数（endTime - startTime） */
-            duration: number | null;
-            /** @description 截至目前已消耗的重试次数 */
-            retryCount: number;
-            /** @description 尝试世代：本执行行被 claim（认领并开始运行）过的次数，0 = 第一回合（存量行）。同一个执行可因重试/唤醒被重新 claim 成运行中；终态写入按本值做世代校验，迟到回合的结果不会覆盖新回合。 */
-            attemptSeq: number;
-            /**
-             * @description 本行因何被重试：`user` = 任务代码/配置失败（消耗用户的重试预算）；`internal` = 引擎内部抖动（网络瞬断、执行器重启、僵尸恢复）。NULL = 不知道（存量行，或不是重试行）。
-             * @enum {string|null}
-             */
-            retryKind?: "user" | "internal" | null;
-            /** @description `retryCount` 中由**用户类失败**消耗掉的次数（内部类已用 = `retryCount − 本值`）。NULL = 不知道（存量行 / 未记录）。 */
-            retryUserCount?: number | null;
-            errorMessage: string | null;
-            /**
-             * @description 归类后的失败标记（执行器可上报的子集 + 管理端内部标记）
-             * @enum {number}
-             */
-            failureReason: [
-                "package_fetch_failed",
-                "script_error",
-                "timeout",
-                "executor_offline",
-                "executor_restart",
-                "stale_recovered",
-                "dependency_install_failed",
-                "git_fetch_failed",
-                "runtime_missing",
-                "interpreter_unavailable",
-                "sandbox_unavailable",
-                "killed",
-                "unknown",
-                "application_missing",
-                "never_dispatched"
-            ] | null;
-            /** @description 进程退出码（执行器能给出时才有） */
-            exitCode: number | null;
-            /** @description 列表/统计读取会排除该列（PERF-03） */
-            aiAnalysis?: string | null;
-            /** @description 该次执行上传的产物 */
-            artifacts: {
-                name: string;
-                size: number;
-                sha256: string;
-            }[] | null;
-            /** @description manual/cron/webhook/api/dependency——本次运行的触发方式 */
-            triggerType: string | null;
-            /** @description 本次运行重放所固定的配置快照版本 */
-            taskVersion: string | null;
-            /** @description 随派发链路传递的 W3C trace-id */
-            traceId: string | null;
-            /** @description 打包类运行解析出的包 URL */
-            resolvedPackageUrl: string | null;
-            /** @description 打包类运行解析出的包版本 */
-            resolvedPackageVersion: string | null;
-            /** Format: date-time */
-            createdAt: string;
-            /**
-             * Format: date-time
-             * @description 依赖门禁触发本次执行的时间
-             */
-            depsFiredAt: string | null;
-            /**
-             * Format: uuid
-             * @description 该执行排队/运行所属的互斥组
-             */
-            mutexGroupId: string | null;
-            /** @description 乐观锁版本列 */
-            version: number;
-        };
         BatchErrorItemDto: {
-            /** @description 请求中指定的任务 ID */
-            id: string;
             /** @description err.message——部分失败的标记 */
             error: string;
-        };
-        VersionDiffEntryDto: {
-            /** @description version1 中的值（任意 JSON） */
-            old: Record<string, never>;
-            /** @description version2 中的值（任意 JSON） */
-            new: Record<string, never>;
-        };
-        ExecutionTimelineEntryDto: {
-            /** @enum {string} */
-            phase: "created" | "started" | "finished";
-            /** @description ISO 时间戳，该阶段从未发生时为 null */
-            at: string | null;
-            /** @description 例如 'trigger=manual' */
-            detail?: string;
-        };
-        ExecutionReportSummaryDto: {
-            id: number;
-            /**
-             * Format: date-time
-             * @description DATE 列——该聚合行所属的日期
-             */
-            triggerDay: string;
-            runningCount: number;
-            successCount: number;
-            failCount: number;
-            timeoutCount: number;
-            cancelledCount: number;
-            avgDurationMs: number;
-            maxDurationMs: number;
-            minDurationMs: number;
-            /** Format: date-time */
-            updateTime: string;
-            /** Format: date-time */
-            createdAt: string;
-        };
-        MaintenanceWindowDto: {
-            /**
-             * @description 窗口开启 Cron（5 字段：分 时 日 月 周）
-             * @example 30 2 * * *
-             */
-            start: string;
-            /**
-             * @description 窗口关闭 Cron（5 字段：分 时 日 月 周）
-             * @example 0 4 * * *
-             */
-            end: string;
-            /** @description 窗口用途说明（展示/日志用） */
-            description?: string;
-        };
-        CreateTaskDto: {
-            id?: string;
-            /**
-             * @description 任务名称——允许任意语言（含中文/日文/emoji）。拒绝控制字符与首尾空白；长度上限 255 字符。全部任务（含软删除行）内全局唯一。
-             * @example 每日备份
-             */
-            name: string;
-            description?: string;
-            status?: string;
-            triggerType: string;
-            cronExpression?: string;
-            /** @description cron 调度使用的 IANA 时区，例如 Asia/Shanghai */
-            timezone?: string;
-            fixedRate?: number;
-            /** @description 任务级维护窗口：落在窗口内的定时触发会被跳过（手动/API 触发不受影响）。每项为 {start, end, description?}，start/end 均为 5 字段 cron；窗口在最近一次 start-cron 触达时开启、在最近一次 end-cron 触达时关闭。最多 10 条。 */
-            maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][];
-            runtime?: string;
-            /** @description 任务所需的 Python 解释器版本，格式为 \"major.minor\"（例如 \"3.7\"、\"3.12\"）。支持区间默认 3.7–3.14；3.7 仅支持离线预置（uv 无法在线下载）。仅在 runtime=python 时有意义。 */
-            runtimeVersion?: string;
-            /** @description 任务运行前由执行器安装的依赖声明——pip 依赖（python runtime，每任务独立 uv venv）或 npm 包（node runtime）。GLUE 脚本任务忽略该字段。示例：[\"requests>=2.31\", \"rich==13.7.1\"] */
-            requirements?: string[];
-            /**
-             * @description 上游任务依赖映射：{ 显示名: 上游任务id }——**value 才是依赖任务 id**（环检测、依赖满足、扇出匹配等所有消费方都读 value）。每个 value 必须是已存在的任务 id；自依赖与循环在写面即被拒绝。
-             * @example {
-             *       "task-a-name": "uuid-of-task-a"
-             *     }
-             */
-            dependencies?: {
-                [key: string]: string;
-            };
-            /** @description 失败边：上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时也触发本任务（默认 false） */
-            runOnUpstreamFailure?: boolean;
-            entrypoint?: string;
-            gitRepo?: string;
-            gitBranch?: string;
-            gitCommit?: string;
-            currentVersion?: string;
-            /** @description 任务执行超时秒数（遗留字段；建议使用 timeoutSeconds）。0 = 不限制；上限为执行器的 1..86400 窗口（executor-node 每次尝试都会以 400 拒绝更大的值）。 */
-            timeout?: number;
-            /** @description 任务执行超时秒数。0 = 不限制；上限为执行器的 1..86400 窗口（会归一化到 `timeout`，executor-node 对超过 86400 的值以 400 拒绝）。 */
-            timeoutSeconds?: number;
-            /**
-             * @description CORE-04：任务超时后的动作。kill（缺省）= 执行器按既有语义树杀进程；kill_retry = 同样树杀，但 admin 按任务的重试预算重新入队一次执行；notify_only = admin 只下发超时告警、不额外下发终止指令（执行器自身的硬超时仍然生效）。PATCH 时缺省 = 保留当前值；显式 null = 重置回 kill。
-             * @enum {string}
-             */
-            timeoutAction?: "kill" | "kill_retry" | "notify_only";
-            /** @description CORE-04：超时预警阈值，取 timeout 的百分数（整数 0-90）。运行时长达到 timeout × ratio/100 时发送一次 WARNING 预警通知（每个执行至多一次）。缺省/null = 未启用。 */
-            timeoutWarnRatio?: number;
-            maxRetry?: number;
-            retryDelay?: number;
-            /** @description CORE-05：预估执行时长（秒；0 或缺省 = 未知）。仅用于调度侧的 executor 负载评分（预估越长，对繁忙执行器的惩罚越大）；执行链路（心跳/超时/统计）从不消费该字段。PATCH 时显式 null = 重置为未知。 */
-            estimatedDurationSec?: number;
-            retryableErrors?: string[];
-            priority?: number;
-            /** @description 派发模式：single（在符合条件的执行器中选择负载最低的一台，缺省）或 broadcast（扇出到所有符合条件的在线执行器）。与 executorId 钉定互斥；当绑定应用带有互斥组时以 400 拒绝（broadcast 无法遵守组内并发上限）。 */
-            executeMode?: string;
-            blockStrategy?: string;
-            misfireStrategy?: string;
-            alarmEmail?: string;
-            alarmChannels?: string[];
-            /** @description 任务默认参数；序列化后体积不得超过 65536 字节（与 trigger/webhook 面同一上限）。 */
-            params?: Record<string, never>;
-            /**
-             * @description 任务级 secrets（凭据键值对，独立于 params 的普通运行参数；配置了 SEC_SECRETS_KEY 时以 AES-256-GCM 加密落库，未配置则降级明文并告警）。读路径一律以字面量 ****** 掩码。派发时走两条通道：合并进 params（AUTOFLOW_<KEY>，旧执行器通道）并作为独立载荷字段下发，使执行器按**原名**注入（第三方 SDK 要求规范名）。PATCH 时按**逐键合并**：键缺省或叶子值为 ****** 时保留已存值，叶子值为 null 时删除该键，其它值覆盖；整个字段显式 null 时清空全部 secret。
-             * @example {
-             *       "API_TOKEN": "sk-live-",
-             *       "DB_PASSWORD": "hunter2"
-             *     }
-             */
-            secrets?: {
-                [key: string]: string;
-            };
-            /**
-             * @description FEAT-22：任务级部署派发策略覆盖。'strict' 把候选收窄为显式部署了绑定应用的设备集合（running/stopped/upgrading）；当其中没有任何设备可承接该执行时，执行会以 WAITING 排队，而不是静默派发到别处。'prefer' 保留 ARCH-35 的软偏好（优先尝试已部署且运行中的设备，否则回落到全集群）。缺省/null = 跟随全局 executor.deploymentPolicy（EXECUTOR_DEPLOYMENT_POLICY）。优先级：executorId 钉定 > executorAppName > 部署约束 > 全集群；总开关 executor.preferDeployedExecutor=false 会彻底关闭部署感知。PATCH：缺省 = 保留；显式 null = 跟随全局。
-             * @enum {string|null}
-             */
-            deploymentPolicy?: "strict" | "prefer" | null;
-            executorAppName?: string;
-            executorGroup?: string;
-            executorTags?: string[];
-            /** @description NF-04：执行器标签亲和（OR 语义——持有其中**任一**标签的执行器即为候选；随后在命中集合内按 loadScore 择优）。broadcast 模式下扇出收窄为命中亲和标签的执行器子集。与 executorTags（硬性 AND 子集能力要求）正交。PATCH：缺省 = 保留；显式 null/[] = 清除。 */
-            executorAffinityTags?: string[];
-            /** @description NF-04：执行器标签反亲和（排除语义——持有其中**任一**标签的执行器即被排除）。单发与 broadcast 均生效；与亲和标签组合时，先取亲和命中集再在其上剔除。PATCH：缺省 = 保留；显式 null/[] = 清除。 */
-            executorAntiAffinityTags?: string[];
-            /** @description 把任务钉定到指定执行器：派发**只**发往该执行器（绕过分组/标签过滤）；它离线时快速失败。与 executeMode=broadcast 互斥。 */
-            executorId?: string;
-            glueSource?: string;
-            glueLanguage?: string;
-            applicationId?: string;
-            /**
-             * @description 代码来源渠道。gitRepo / glueSource / codeSource=application_zip（需配 applicationId）三者中只能设置一个。PATCH 时缺省 = 保留当前值；显式 null = 清除声明。requirements/PyPI 属于依赖型渠道，可与任一代码来源并存。
-             * @enum {string|null}
-             */
-            codeSource?: "git" | "glue" | "application_zip" | null;
-            /** @description FEAT-11：markdown 运维手册——展示在任务详情页，并随失败通知/告警一并附上。 */
-            runbook?: string;
-            /** @description 所属项目。缺省/null = 未分配（计入默认项目视图；与既有行为一致）。设置它需要 ADMIN 或该项目的 editor/admin。 */
-            projectId?: string;
-        };
-        ImportTaskDto: {
-            /**
-             * @description 本 API 接受的导出 schema 版本
-             * @example 1
-             * @enum {string}
-             */
-            schemaVersion: "1";
-            /** @description 源导出物的 exportedAt（仅供参考） */
-            exportedAt?: string;
-            /** @description 任务定义。secrets 绝不参与定义传输：携带的 secrets 键会被忽略（并给出告警），导入后的任务不带 secrets 启动。 */
-            task: components["schemas"]["CreateTaskDto"];
-        };
-        TaskImportResultDto: {
-            /** @description 新建任务的 id */
-            taskId: string;
-            /** @description 最终任务名（冲突时追加后缀 \" (imported)\" / \" (imported) N\"） */
-            name: string;
-            /** @description 总是包含「请重新配置 secrets」的提示（SEC-02 红线）；可能包含其它说明（例如被忽略的 secrets 键）。 */
-            warnings: string[];
-        };
-        PaginatedTaskListDto: {
-            list: components["schemas"]["TaskResponseDto"][];
-            items: components["schemas"]["TaskResponseDto"][];
-            total: number;
-            page: number;
-            pageSize: number;
-            totalPages: number;
-            /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。游标与默认排序（createdAt DESC, id DESC）绑定：与 sortBy 或 lastStatus 同时给出会返回 400。 */
-            nextCursor?: string | null;
-        };
-        PaginatedExecutionListDto: {
-            list: components["schemas"]["ExecutionListItemDto"][];
-            items: components["schemas"]["ExecutionListItemDto"][];
-            total: number;
-            page: number;
-            pageSize: number;
-            totalPages: number;
-            /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。 */
-            nextCursor?: string | null;
-        };
-        ExecutionLogsPageResponseDto: {
-            /** @description 从 fromLine 起的原始日志行（给定级别过滤时生效） */
-            lines: string[];
-            /** @description （过滤后）行集合的真实总数 */
-            totalLines: number;
-            /** @description fromLine + lines.length < totalLines 时为 true */
-            hasMore: boolean;
-        };
-        SchedulerStatsResponseDto: {
-            healthy: boolean;
-            /** @description LeaderGate：仅 leader 负责调度 */
-            isLeader: boolean;
-            activeTimers: number;
-            activeCronTasks: number;
-            runningTaskCount: number;
-            totalScheduledTasks: number;
-            /** @description process.uptime() 秒数 */
-            uptime: number;
-        };
-        ExecutionStatsResponseDto: {
-            /** @description 最近 20 次执行（列表投影去掉 result） */
-            recentExecutions: components["schemas"]["ExecutionListItemDto"][];
-            /** @description 最近 20 次窗口内的成功百分比（仅供参考） */
-            recentSuccessRate: number;
-            /** @description 全部运行的成功百分比（自 FIX-5.1 起为权威口径） */
-            successRate: number;
-            /** @description 历史累计 SUCCESS 次数 */
-            succeeded: number;
-            /** @description 历史累计 FAILED + TIMEOUT 次数（被 kill/取消的不计入） */
-            failed: number;
-            /** @description 最近窗口内的平均耗时毫秒数（无数据时为 0） */
-            avgDuration: number;
-            totalRuns: number;
-        };
-        SuggestScheduleResponseDto: {
-            /** Format: uuid */
-            taskId: string;
-            currentCron: string | null;
-            /** @description 推荐的 5 字段 cron 表达式 */
-            suggestedCron: string;
-            reasoning: string;
-            /** @description LLM 路径失败、已返回启发式建议时为 true */
-            fallback?: boolean;
-        };
-        TaskDefinitionDto: {
-            /**
-             * @description 任务名称
-             * @example Nightly DB sync
-             */
-            name: string;
-            description?: string;
-            /** @enum {string} */
-            triggerType: "cron" | "fixed_rate" | "api" | "manual";
-            /** @description 5 字段 cron 表达式（triggerType=cron 时生效） */
-            cronExpression?: string;
-            /** @description IANA 时区，例如 Asia/Shanghai */
-            timezone?: string;
-            /** @description 固定频率间隔秒数 */
-            fixedRate?: number;
-            /** @enum {string} */
-            runtime?: "python" | "node" | "shell";
-            /** @description 解释器版本 \"major.minor\"（python runtime） */
-            runtimeVersion?: string;
-            /** @description 执行器端依赖声明（pip/npm） */
-            requirements?: string[];
-            /** @description 上游任务依赖映射：{ 显示名: 上游任务id } */
-            dependencies?: {
-                [key: string]: string;
-            };
-            entrypoint?: string;
-            gitRepo?: string;
-            gitBranch?: string;
-            gitCommit?: string;
-            currentVersion?: string;
-            /** @description 超时秒数（0 = 不限制） */
-            timeout?: number;
-            /** @description 超时动作：kill / kill_retry / notify_only */
-            timeoutAction?: string;
-            /** @description 超时预警比例 0-90 */
-            timeoutWarnRatio?: number;
-            /** @description 预估执行时长（秒） */
-            estimatedDurationSec?: number;
-            maxRetry?: number;
-            retryDelay?: number;
-            /** @description 可重试错误白名单 */
-            retryableErrors?: string[];
-            /** @description 优先级：low/normal/high/critical */
-            priority?: Record<string, never>;
-            /** @enum {string} */
-            executeMode?: "single" | "broadcast";
-            /** @enum {string} */
-            blockStrategy?: "serial" | "discard" | "cover_early";
-            /** @enum {string} */
-            misfireStrategy?: "ignore" | "fire_once";
-            alarmEmail?: string;
-            alarmChannels?: string[];
-            /** @description 任务默认参数 */
-            params?: {
-                [key: string]: unknown;
-            };
-            /**
-             * @description 部署派发策略覆盖
-             * @enum {string|null}
-             */
-            deploymentPolicy?: "strict" | "prefer" | null;
-            /** @description 钉定的执行器 id */
-            executorId?: string;
-            executorAppName?: string;
-            executorGroup?: string;
-            executorTags?: string[];
-            executorAffinityTags?: string[];
-            executorAntiAffinityTags?: string[];
-            /** @description GLUE 脚本源码 */
-            glueSource?: string;
-            glueLanguage?: string;
-            /** @description 绑定的应用 id */
-            applicationId?: string;
-            /** @enum {string} */
-            codeSource?: "git" | "glue" | "application_zip";
-            /** @description 任务级维护窗口 */
-            maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][] | null;
-            /** @description Markdown 运维手册 */
-            runbook?: string;
-            /** @description 所属项目 id */
-            projectId?: string;
-        };
-        TaskExportPayloadDto: {
-            /**
-             * @description 导出 schema 版本（当前为 1）
-             * @example 1
-             * @enum {string}
-             */
-            schemaVersion: "1";
-            /**
-             * Format: date-time
-             * @description 导出生成时刻的 ISO-8601 时间戳
-             */
-            exportedAt: string;
-            /** @description 任务定义快照键。**绝不包含** secrets（SEC-02 红线：整键剔除，值与键名一律剔除）。 */
-            task: components["schemas"]["TaskDefinitionDto"];
-        };
-        UpdateTaskDto: {
-            id?: string;
-            /**
-             * @description 任务名称——允许任意语言（含中文/日文/emoji）。拒绝控制字符与首尾空白；长度上限 255 字符。全部任务（含软删除行）内全局唯一。
-             * @example 每日备份
-             */
-            name?: string;
-            description?: string;
-            status?: string;
-            triggerType?: string;
-            cronExpression?: string;
-            /** @description cron 调度使用的 IANA 时区，例如 Asia/Shanghai */
-            timezone?: string;
-            fixedRate?: number;
-            /** @description 任务级维护窗口：落在窗口内的定时触发会被跳过（手动/API 触发不受影响）。每项为 {start, end, description?}，start/end 均为 5 字段 cron；窗口在最近一次 start-cron 触达时开启、在最近一次 end-cron 触达时关闭。最多 10 条。 */
-            maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][];
-            runtime?: string;
-            /** @description 任务所需的 Python 解释器版本，格式为 \"major.minor\"（例如 \"3.7\"、\"3.12\"）。支持区间默认 3.7–3.14；3.7 仅支持离线预置（uv 无法在线下载）。仅在 runtime=python 时有意义。 */
-            runtimeVersion?: string;
-            /** @description 任务运行前由执行器安装的依赖声明——pip 依赖（python runtime，每任务独立 uv venv）或 npm 包（node runtime）。GLUE 脚本任务忽略该字段。示例：[\"requests>=2.31\", \"rich==13.7.1\"] */
-            requirements?: string[];
-            /**
-             * @description 上游任务依赖映射：{ 显示名: 上游任务id }——**value 才是依赖任务 id**（环检测、依赖满足、扇出匹配等所有消费方都读 value）。每个 value 必须是已存在的任务 id；自依赖与循环在写面即被拒绝。
-             * @example {
-             *       "task-a-name": "uuid-of-task-a"
-             *     }
-             */
-            dependencies?: {
-                [key: string]: string;
-            };
-            /** @description 失败边：上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时也触发本任务（默认 false） */
-            runOnUpstreamFailure?: boolean;
-            entrypoint?: string;
-            gitRepo?: string;
-            gitBranch?: string;
-            gitCommit?: string;
-            currentVersion?: string;
-            /** @description 任务执行超时秒数（遗留字段；建议使用 timeoutSeconds）。0 = 不限制；上限为执行器的 1..86400 窗口（executor-node 每次尝试都会以 400 拒绝更大的值）。 */
-            timeout?: number;
-            /** @description 任务执行超时秒数。0 = 不限制；上限为执行器的 1..86400 窗口（会归一化到 `timeout`，executor-node 对超过 86400 的值以 400 拒绝）。 */
-            timeoutSeconds?: number;
-            /**
-             * @description CORE-04：任务超时后的动作。kill（缺省）= 执行器按既有语义树杀进程；kill_retry = 同样树杀，但 admin 按任务的重试预算重新入队一次执行；notify_only = admin 只下发超时告警、不额外下发终止指令（执行器自身的硬超时仍然生效）。PATCH 时缺省 = 保留当前值；显式 null = 重置回 kill。
-             * @enum {string}
-             */
-            timeoutAction?: "kill" | "kill_retry" | "notify_only";
-            /** @description CORE-04：超时预警阈值，取 timeout 的百分数（整数 0-90）。运行时长达到 timeout × ratio/100 时发送一次 WARNING 预警通知（每个执行至多一次）。缺省/null = 未启用。 */
-            timeoutWarnRatio?: number;
-            maxRetry?: number;
-            retryDelay?: number;
-            /** @description CORE-05：预估执行时长（秒；0 或缺省 = 未知）。仅用于调度侧的 executor 负载评分（预估越长，对繁忙执行器的惩罚越大）；执行链路（心跳/超时/统计）从不消费该字段。PATCH 时显式 null = 重置为未知。 */
-            estimatedDurationSec?: number;
-            retryableErrors?: string[];
-            priority?: number;
-            /** @description 派发模式：single（在符合条件的执行器中选择负载最低的一台，缺省）或 broadcast（扇出到所有符合条件的在线执行器）。与 executorId 钉定互斥；当绑定应用带有互斥组时以 400 拒绝（broadcast 无法遵守组内并发上限）。 */
-            executeMode?: string;
-            blockStrategy?: string;
-            misfireStrategy?: string;
-            alarmEmail?: string;
-            alarmChannels?: string[];
-            /** @description 任务默认参数；序列化后体积不得超过 65536 字节（与 trigger/webhook 面同一上限）。 */
-            params?: Record<string, never>;
-            /**
-             * @description 任务级 secrets（凭据键值对，独立于 params 的普通运行参数；配置了 SEC_SECRETS_KEY 时以 AES-256-GCM 加密落库，未配置则降级明文并告警）。读路径一律以字面量 ****** 掩码。派发时走两条通道：合并进 params（AUTOFLOW_<KEY>，旧执行器通道）并作为独立载荷字段下发，使执行器按**原名**注入（第三方 SDK 要求规范名）。PATCH 时按**逐键合并**：键缺省或叶子值为 ****** 时保留已存值，叶子值为 null 时删除该键，其它值覆盖；整个字段显式 null 时清空全部 secret。
-             * @example {
-             *       "API_TOKEN": "sk-live-",
-             *       "DB_PASSWORD": "hunter2"
-             *     }
-             */
-            secrets?: {
-                [key: string]: string;
-            };
-            /**
-             * @description FEAT-22：任务级部署派发策略覆盖。'strict' 把候选收窄为显式部署了绑定应用的设备集合（running/stopped/upgrading）；当其中没有任何设备可承接该执行时，执行会以 WAITING 排队，而不是静默派发到别处。'prefer' 保留 ARCH-35 的软偏好（优先尝试已部署且运行中的设备，否则回落到全集群）。缺省/null = 跟随全局 executor.deploymentPolicy（EXECUTOR_DEPLOYMENT_POLICY）。优先级：executorId 钉定 > executorAppName > 部署约束 > 全集群；总开关 executor.preferDeployedExecutor=false 会彻底关闭部署感知。PATCH：缺省 = 保留；显式 null = 跟随全局。
-             * @enum {string|null}
-             */
-            deploymentPolicy?: "strict" | "prefer" | null;
-            executorAppName?: string;
-            executorGroup?: string;
-            executorTags?: string[];
-            /** @description NF-04：执行器标签亲和（OR 语义——持有其中**任一**标签的执行器即为候选；随后在命中集合内按 loadScore 择优）。broadcast 模式下扇出收窄为命中亲和标签的执行器子集。与 executorTags（硬性 AND 子集能力要求）正交。PATCH：缺省 = 保留；显式 null/[] = 清除。 */
-            executorAffinityTags?: string[];
-            /** @description NF-04：执行器标签反亲和（排除语义——持有其中**任一**标签的执行器即被排除）。单发与 broadcast 均生效；与亲和标签组合时，先取亲和命中集再在其上剔除。PATCH：缺省 = 保留；显式 null/[] = 清除。 */
-            executorAntiAffinityTags?: string[];
-            /** @description 把任务钉定到指定执行器：派发**只**发往该执行器（绕过分组/标签过滤）；它离线时快速失败。与 executeMode=broadcast 互斥。 */
-            executorId?: string;
-            glueSource?: string;
-            glueLanguage?: string;
-            applicationId?: string;
-            /**
-             * @description 代码来源渠道。gitRepo / glueSource / codeSource=application_zip（需配 applicationId）三者中只能设置一个。PATCH 时缺省 = 保留当前值；显式 null = 清除声明。requirements/PyPI 属于依赖型渠道，可与任一代码来源并存。
-             * @enum {string|null}
-             */
-            codeSource?: "git" | "glue" | "application_zip" | null;
-            /** @description FEAT-11：markdown 运维手册——展示在任务详情页，并随失败通知/告警一并附上。 */
-            runbook?: string;
-            /** @description 所属项目。缺省/null = 未分配（计入默认项目视图；与既有行为一致）。设置它需要 ADMIN 或该项目的 editor/admin。 */
-            projectId?: string;
-            /**
-             * @description 乐观锁预期值：编辑前读取的任务 updatedAt（ISO 时间串）。传入即启用并发检查，不匹配返回 409；缺省跳过检查。
-             * @example 2026-10-01T08:00:00.000Z
-             */
-            expectedUpdatedAt?: string;
-        };
-        DeleteTaskResponseDto: {
-            deleted: boolean;
-        };
-        TriggerTaskDto: {
-            /** @description 触发参数覆盖；序列化后体积不得超过 65536 字节（与 webhook 面同一上限） */
-            params?: Record<string, never>;
-            /** @example 3 */
-            version?: number;
-            /** @description 提前触发并消耗下一个 cron 计划落点：登记后到该落点时刻调度器跳过一次（一次性），并留痕。缺省 false ⇒ 行为不变（手动触发不覆盖计划落点）。仅 cron 任务可用；已有未消耗登记时返回 409。 */
-            consumeNextFirePoint?: boolean;
-        };
-        WebhookStatusResponseDto: {
-            enabled: boolean;
-            /** @description 带签名的入站触发 URL */
-            url: string;
-        };
-        WebhookSecretResponseDto: {
-            url: string;
-            /** @description 明文密钥仅回显一次；需要重发时用 rotate */
-            secret: string;
-        };
-        WebhookDisableResponseDto: {
-            enabled: boolean;
-        };
-        ExecutionReportResponseDto: {
-            execution: components["schemas"]["TaskExecutionResponseDto"];
-            timeline: components["schemas"]["ExecutionTimelineEntryDto"][];
-            /** @description 当日聚合行；不存在时为 null（正常状态，前端自行降级） */
-            report: components["schemas"]["ExecutionReportSummaryDto"] | null;
-        };
-        GitRollbackResponseDto: {
-            execution: components["schemas"]["TaskExecutionResponseDto"];
-            /** @description 回滚前仓库所在的提交 */
-            rolledBackFrom: string | null;
-            /** @description 回滚到的提交 */
-            rolledBackTo: string;
-        };
-        TaskVersionDto: {
-            /** Format: uuid */
+            /** @description 请求中指定的任务 ID */
             id: string;
-            /** Format: uuid */
-            taskId: string;
-            /** @description 可读标签，形如 'v3' */
-            version: string;
-            gitCommit: string | null;
-            /** @description 完整任务配置快照（供 rollbackToVersion 消费） */
-            snapshot: {
-                [key: string]: unknown;
-            };
-            createdBy: string | null;
-            description: string | null;
-            /** Format: date-time */
-            createdAt: string;
-        };
-        KillExecutionResponseDto: {
-            success: boolean;
-            message: string;
-        };
-        DeprecatedBatchItemDto: {
-            /** @description 失败项携带的任务 id（成功项是完整实体，无独立 id 字段名） */
-            id?: string;
-            /** @description 失败原因（partial-failure 标记） */
-            error?: string;
         };
         BatchTaskIdsDto: {
             /**
@@ -5217,49 +4977,27 @@ export interface components {
              */
             taskIds: string[];
         };
-        TaskWebhookTriggerResponseDto: {
-            /**
-             * Format: uuid
-             * @description 本次触发创建的执行行 id
-             */
-            executionId: string;
-            /** @description 执行行/终态载荷（wait=true 时为终态执行行，否则为已受理执行行） */
-            execution: {
-                [key: string]: unknown;
-            };
-        };
-        ArtifactManifestItemDto: {
-            /** @description 产物文件名（裸文件名，不含任何路径分隔符） */
-            name: string;
-            /** @description 产物字节数 */
-            size: number;
-            /** @description 产物内容的 sha256 十六进制摘要 */
-            sha256: string;
-        };
         CallbackItemDto: {
-            /**
-             * @description 执行 ID（UUID）
-             * @example f47ac10b-58cc-4372-a567-0e02b2c3d479
-             */
-            executionId: string;
-            /**
-             * @description 执行结果
-             * @enum {string}
-             */
-            status: "success" | "failed";
-            /** @description 执行器地址，用于按执行器校验 token */
-            executorAddress?: string;
+            /** @description FEAT-05：执行产物清单（best-effort，最多 20 条）。文件字节通过产物上传端点单独上传；清单在终态回调时持久化到 task_executions.artifacts。 */
+            artifacts?: components["schemas"]["ArtifactManifestItemDto"][];
             /**
              * @description ADR-017 阶段 3（protocol v6）：发起回调的执行器的稳定安装标识——sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符，与 register/heartbeat 同值。它是本次回调的**行身份**：共享/旧版 token 不绑定任何行，且当 pull 模式的执行器共用同一地址后，`executorAddress` 已无法唯一标识一行（ADR-017 §5）。admin 用它把回调归属到该执行实际派发到的那一行。可选——旧版执行器、采集失败以及 SDK 调用方会省略；此时 admin 依次回落到凭据持有行、再回落到地址相等（绝不因缺失而拒绝）。
              * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
              */
             deviceFingerprint?: string;
-            /** @description 进程退出码 */
-            exitCode?: number;
-            /** @description 原始日志输出（最大 500 KB） */
-            logs?: string;
+            /** @description 执行墙钟时长（毫秒） */
+            durationMs?: number;
             /** @description 失败时的错误信息（最大 4 KB） */
             errorMessage?: string;
+            /**
+             * @description 执行 ID（UUID）
+             * @example f47ac10b-58cc-4372-a567-0e02b2c3d479
+             */
+            executionId: string;
+            /** @description 执行器地址，用于按执行器校验 token */
+            executorAddress?: string;
+            /** @description 进程退出码 */
+            exitCode?: number;
             /**
              * @description 结构化的失败原因
              * @enum {number}
@@ -5278,63 +5016,494 @@ export interface components {
                 "killed",
                 "unknown"
             ];
-            /** @description 执行墙钟时长（毫秒） */
-            durationMs?: number;
-            /** @description FEAT-05：执行产物清单（best-effort，最多 20 条）。文件字节通过产物上传端点单独上传；清单在终态回调时持久化到 task_executions.artifacts。 */
-            artifacts?: components["schemas"]["ArtifactManifestItemDto"][];
+            /** @description 原始日志输出（最大 500 KB） */
+            logs?: string;
             /** @description python_task_multiversion（FR-12/AC-12a）：结构化的执行明细。当前承载解释器快照 { requested, resolved, reason, detail, pool }，使得 interpreter_unavailable 失败无需重跑任务即可定位。原样持久化到 task_executions.result。约束为对象，且序列化体积有上限（4 KB）。 */
             result?: {
                 [key: string]: unknown;
             };
+            /**
+             * @description 执行结果
+             * @enum {string}
+             */
+            status: "success" | "failed";
         };
         CallbackItemResultDto: {
+            /** @description success=false 时的原因 */
+            error?: string;
             /** Format: uuid */
             executionId: string;
             /** @description false = 该项未受理（执行不存在/未派发/地址不符/内部异常），error 说明原因 */
             success: boolean;
-            /** @description success=false 时的原因 */
-            error?: string;
         };
-        AppendLogChunkDto: {
+        ChannelTestResponseDto: {
+            message: string;
+            /** @description 逐通道投递状态 */
+            results?: {
+                [key: string]: "sent" | "blocked" | "failed" | "skipped";
+            };
+            /** @description 仅当每一个请求的渠道都真的投递成功（'sent'）时为 true；任一路为 'blocked'/'failed'/'skipped' 都是 false，逐通道结果见 results */
+            success: boolean;
+        };
+        ClarificationReplyResponseDto: {
+            /** @description 当 resolution=sop_amended 时设置（发布产出了新的不可变版本） */
+            newSopVersion?: string;
+            /** @description 成功时恒为 true（失败均为 4xx） */
+            ok: boolean;
+        };
+        CollabAssignmentItemDto: {
+            /** Format: uuid */
+            assignmentId: string;
+            clarificationRound: number;
+            /** @enum {string} */
+            kind: "assignment";
+            maxRounds: number;
+            /** @description SOP 全量快照（对账锚点 = contentHash） */
+            sop?: {
+                bodyMarkdown: string;
+                contentHash: string;
+                frontMatter: {
+                    [key: string]: unknown;
+                };
+                slug: string;
+                title: string;
+                version: string;
+            };
+        };
+        CollabCandidatePackageResponseDto: {
+            /** @description 形如 'sop-<slug>' 的包名 */
+            name: string;
+            /** Format: uuid */
+            packageId: string;
+            /** @description SOP 版本 + Agent 构建元数据（幂等重复投递） */
+            version: string;
+        };
+        CollabClarificationReplyItemDto: {
+            answer: string | null;
+            /** Format: uuid */
+            assignmentId: string;
+            /** Format: uuid */
+            clarificationId: string;
+            clientClarificationId: string | null;
+            /** @enum {string} */
+            kind: "clarification_reply";
+            /** @description 仅在 sop_amended 时出现 —— 供继续执行的修订后 SOP 载荷 */
+            newSop?: components["schemas"]["CollabAssignmentItemDto"];
+            newSopVersion: string | null;
+            /** @enum {string} */
+            resolution: "answered" | "sop_amended" | "escalated_to_human";
+            round: number;
+        };
+        CollabClarifyResponseDto: {
+            /** @description 提供了 clientClarificationId 时用它，否则用行 id */
+            clarificationId: string;
+            /** @description true = maxRounds 已耗尽，升级为人工通知（不会启动 sop_review 会话） */
+            escalated: boolean;
+            round: number;
+        };
+        CollabCompleteResponseDto: {
+            /** @description false = 重复尝试/幂等重放被忽略 */
+            accepted: boolean;
+        };
+        CollabLlmRelayResponseDto: {
+            /** @description 提供方被禁用/不可用时为空字符串（fail-open，执行器降级） */
+            content: string;
+            model: string;
+            /** @description 工具往返不向执行器暴露（恒为 null） */
+            toolCalls: string[] | null;
+            usage?: {
+                tokensIn: number;
+                tokensOut: number;
+            };
+        };
+        CollabMediaUploadResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** @description 平台路径 /api/sop/media/<id> —— mediaRefs 唯一合法形式 */
+            mediaPath: string;
+            mime: string | null;
+            name: string;
+            sizeBytes: number;
+        };
+        CollabPollResponseDto: {
+            /** @description 混合条目：指派（首次领取/重发）与澄清回复 */
+            items: (components["schemas"]["CollabAssignmentItemDto"] | components["schemas"]["CollabClarificationReplyItemDto"])[];
+            /** @description 每次轮询都会下发的企业策略（执行器本地配置无法覆盖） */
+            sopPolicy?: {
+                allowedProfiles: string[];
+                /** @example standard */
+                permissionPolicy: string;
+            };
+        };
+        ConfigDeleteResultDto: {
+            /** @description 成功时恒为 true —— 键不存在是 404，绝不会是 {deleted:false} */
+            deleted: boolean;
+        };
+        ConfigHistoryPageDto: {
+            /** @description 历史行分页，按最新在前（每行的 old/new 各自掩码） */
+            data: components["schemas"]["ConfigHistoryResponseDto"][];
+            /** @description 分页前的匹配总行数 */
+            total: number;
+        };
+        ConfigHistoryResponseDto: {
             /**
-             * @description 本分片中首行的 0-based 行号偏移
-             * @example 0
+             * @description 产生该行的动作（rollback 标记由回滚端点写入的行）
+             * @enum {string}
              */
-            fromLine: number;
+            action: "create" | "update" | "delete" | "rollback";
+            /** @description 该历史行所属的配置键 */
+            configKey: string;
             /**
-             * @description 日志行字符串数组（最多 2000 行，每行最长 512 KB）
-             * @example [
-             *       "Starting task",
-             *       "Step 1 complete"
-             *     ]
+             * Format: date-time
+             * @description 本次变更的记录时间（ISO-8601）
              */
-            lines: string[];
-        };
-        LogChunkAckDto: {
-            /** @description 落账行数 */
-            count: number;
-        };
-        ExecutorInterpreterDto: {
+            createdAt: string;
+            /** @description 记录本次变更时留下的描述快照 */
+            description?: string | null;
+            /** @description 历史行 ID（自增序列） */
+            id: number;
+            /** @description 操作客户端 IP */
+            ipAddress?: string | null;
+            /** @description 随该行持久化的 isSecret 快照（迁移 1790000000018）。null = 迁移前的旧行，元数据未知 —— 不要把 null 读作 false。为 true 时读面总会掩码 oldValue/newValue。 */
+            isSecret?: boolean | null;
+            /** @description 变更后的值。被掩码时为 '***'；该条目被本次变更删除（remove 记录 newValue=null）时为 null。 */
+            newValue?: string | null;
+            /** @description 变更前的值。被掩码时为 '***'（该行 isSecret=true，或该键当前为 secret）；此前不存在该条目时为 null。null 与掩码是两种不同语义，不得渲染为“已隐藏”。 */
+            oldValue?: string | null;
+            /** @description 操作者用户 ID（自迁移 1790000000023 起为整数）；操作者未知时为 null（例如在记录操作者上下文之前写入的行） */
+            userId?: number | null;
+            /** @description 操作者用户名 */
+            username?: string | null;
             /**
-             * @description 在解释器池中发现的完整补丁版本
-             * @example 3.7.9
+             * @description 随该行持久化的 valueType 快照（迁移 1790000000018）。null = 迁移前的旧行，元数据未知 —— 不要把 null 读作 'string'。
+             * @enum {string|null}
+             */
+            valueType?: "string" | "number" | "boolean" | "json" | null;
+        };
+        CreateAgentSessionDto: {
+            /** @enum {string} */
+            kind: "ops_watch" | "incident" | "sop_authoring" | "sop_review" | "app_scaffold" | "chat";
+            scope?: {
+                [key: string]: unknown;
+            };
+            title?: string;
+        };
+        CreateApiKeyDto: Record<string, never>;
+        CreateApplicationDto: {
+            /**
+             * @description DEP-04：新部署派发前是否需要第二人审批
+             * @default false
+             */
+            approvalRequired?: boolean;
+            /** @description 应用描述 */
+            description?: string;
+            entrypoint?: string;
+            env?: Record<string, never>;
+            gitBranch?: string;
+            gitCommit?: string;
+            gitRepo?: string;
+            manifest?: Record<string, never>;
+            /** @description MUTEX-01：该应用加入的互斥组 ID（null = 不参与互斥） */
+            mutexGroupId?: string | null;
+            /** @description 唯一应用名称 */
+            name: string;
+            packageUrl?: string;
+            /**
+             * @description 运行时类型（上限对齐 UploadApplicationDto.runtime）
+             * @example node
+             */
+            runtime: string;
+            /**
+             * @description 应用版本号（上限对齐 UploadApplicationDto.version）
+             * @example 1.0.0
              */
             version: string;
+        };
+        CreateDeploymentDto: {
+            /** @description 环境变量覆盖（≤50 个键，每个值 ≤4096 字节） */
+            env?: {
+                [key: string]: string;
+            };
+            /** @description 执行器 ID（留空则自动选择负载最低的在线执行器） */
+            executorId?: string;
             /**
-             * @description 池内的解释器绝对路径
-             * @example /data/interpreters/cpython-3.7.9-linux-x86_64-gnu-none/bin/python3
+             * @default daemon
+             * @enum {string}
              */
-            path?: string;
+            runMode?: "once" | "daemon" | "scheduled";
+            /** @description 启动命令覆盖（留空则使用 manifest 的 entrypoint） */
+            startCommand?: string;
+        };
+        CreateEventSubscriptionDto: {
             /**
-             * @description 探测结果（可执行且 --version 成功）
-             * @example true
+             * @description 要订阅的事件名
+             * @example [
+             *       "execution.failed"
+             *     ]
              */
-            available?: boolean;
+            eventTypes: ("execution.completed" | "execution.failed" | "executor.offline" | "deployment.completed")[];
+            /** @description HMAC 签名密钥。省略则由服务端生成 32 字节十六进制密钥（仅在创建响应中返回一次，之后不再展示）。 */
+            secret?: string;
             /**
-             * @description 探测时间戳（ISO 8601）
-             * @example 2026-09-16T10:00:00.000Z
+             * @description 回调 URL（公网 http(s) 端点；内网地址会被拒绝）
+             * @example https://ci.example.com/hooks/autoflow
              */
-            discoveredAt?: string;
+            url: string;
+        };
+        CreateMutexGroupDto: {
+            /** @description 组用途说明 */
+            description?: string;
+            /**
+             * @description 同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）
+             * @default 1
+             */
+            maxConcurrentPerDevice?: number;
+            /** @description 互斥组名（唯一），如 ziniao-browser */
+            name: string;
+            /**
+             * @description 组作用域：device=单点互斥（每台设备同时最多 N 条，跨设备并发）；global=全局互斥（全平台同时最多 N 条，单点登录顶号类场景）。默认 device
+             * @default device
+             * @enum {string}
+             */
+            scope?: "device" | "global";
+        };
+        CreateProjectDto: {
+            /** @description 项目描述 */
+            description?: string;
+            /** @description 项目名称 */
+            name: string;
+        };
+        CreateSilenceDto: {
+            /** @description scope=application 时必填：应用 UUID */
+            applicationId?: string;
+            /** @description 仅作范围记录（isSilenced 在渠道扇出前判定，无法按渠道裁剪投递，NETOPT-5① 如实化）；取值须为已注册渠道类型 */
+            channelType?: string;
+            /**
+             * @description 静默时长（分钟，1..5256000=10 年）；缺省走系统默认 TTL（P3-1 上界）
+             * @example 60
+             */
+            durationMinutes?: number;
+            /**
+             * @description 仅静默该级别（精确匹配，非「及以下」）；空 = 全部级别
+             * @enum {string}
+             */
+            level?: "info" | "warning" | "error" | "critical";
+            /** @description 静默原因（审计记录用） */
+            reason?: string;
+            /**
+             * @description 静默范围：global=全渠道；task=单任务；application=单应用
+             * @example task
+             * @enum {string}
+             */
+            scope: "global" | "task" | "application";
+            /** @description scope=task 时必填：任务 UUID */
+            taskId?: string;
+        };
+        CreateSopSessionDto: {
+            /** @description 首轮补充说明（可空） */
+            hint?: string;
+            /** @description 上传接口返回的 mediaId（UUID） */
+            mediaId: string;
+            /** @description 指定 provider（须勾选支持视频）；空 = 走 ai.routes.video */
+            providerId?: string;
+        };
+        CreateTaskDto: {
+            alarmChannels?: string[];
+            alarmEmail?: string;
+            applicationId?: string;
+            blockStrategy?: string;
+            /**
+             * @description 代码来源渠道。gitRepo / glueSource / codeSource=application_zip（需配 applicationId）三者中只能设置一个。PATCH 时缺省 = 保留当前值；显式 null = 清除声明。requirements/PyPI 属于依赖型渠道，可与任一代码来源并存。
+             * @enum {string|null}
+             */
+            codeSource?: "git" | "glue" | "application_zip" | null;
+            cronExpression?: string;
+            currentVersion?: string;
+            /**
+             * @description 上游任务依赖映射：{ 显示名: 上游任务id }——**value 才是依赖任务 id**（环检测、依赖满足、扇出匹配等所有消费方都读 value）。每个 value 必须是已存在的任务 id；自依赖与循环在写面即被拒绝。
+             * @example {
+             *       "task-a-name": "uuid-of-task-a"
+             *     }
+             */
+            dependencies?: {
+                [key: string]: string;
+            };
+            /**
+             * @description FEAT-22：任务级部署派发策略覆盖。'strict' 把候选收窄为显式部署了绑定应用的设备集合（running/stopped/upgrading）；当其中没有任何设备可承接该执行时，执行会以 WAITING 排队，而不是静默派发到别处。'prefer' 保留 ARCH-35 的软偏好（优先尝试已部署且运行中的设备，否则回落到全集群）。缺省/null = 跟随全局 executor.deploymentPolicy（EXECUTOR_DEPLOYMENT_POLICY）。优先级：executorId 钉定 > executorAppName > 部署约束 > 全集群；总开关 executor.preferDeployedExecutor=false 会彻底关闭部署感知。PATCH：缺省 = 保留；显式 null = 跟随全局。
+             * @enum {string|null}
+             */
+            deploymentPolicy?: "strict" | "prefer" | null;
+            description?: string;
+            entrypoint?: string;
+            /** @description CORE-05：预估执行时长（秒；0 或缺省 = 未知）。仅用于调度侧的 executor 负载评分（预估越长，对繁忙执行器的惩罚越大）；执行链路（心跳/超时/统计）从不消费该字段。PATCH 时显式 null = 重置为未知。 */
+            estimatedDurationSec?: number;
+            /** @description 派发模式：single（在符合条件的执行器中选择负载最低的一台，缺省）或 broadcast（扇出到所有符合条件的在线执行器）。与 executorId 钉定互斥；当绑定应用带有互斥组时以 400 拒绝（broadcast 无法遵守组内并发上限）。 */
+            executeMode?: string;
+            /** @description NF-04：执行器标签亲和（OR 语义——持有其中**任一**标签的执行器即为候选；随后在命中集合内按 loadScore 择优）。broadcast 模式下扇出收窄为命中亲和标签的执行器子集。与 executorTags（硬性 AND 子集能力要求）正交。PATCH：缺省 = 保留；显式 null/[] = 清除。 */
+            executorAffinityTags?: string[];
+            /** @description NF-04：执行器标签反亲和（排除语义——持有其中**任一**标签的执行器即被排除）。单发与 broadcast 均生效；与亲和标签组合时，先取亲和命中集再在其上剔除。PATCH：缺省 = 保留；显式 null/[] = 清除。 */
+            executorAntiAffinityTags?: string[];
+            executorAppName?: string;
+            executorGroup?: string;
+            /** @description 把任务钉定到指定执行器：派发**只**发往该执行器（绕过分组/标签过滤）；它离线时快速失败。与 executeMode=broadcast 互斥。 */
+            executorId?: string;
+            executorTags?: string[];
+            fixedRate?: number;
+            gitBranch?: string;
+            gitCommit?: string;
+            gitRepo?: string;
+            glueLanguage?: string;
+            glueSource?: string;
+            id?: string;
+            /** @description 任务级维护窗口：落在窗口内的定时触发会被跳过（手动/API 触发不受影响）。每项为 {start, end, description?}，start/end 均为 5 字段 cron；窗口在最近一次 start-cron 触达时开启、在最近一次 end-cron 触达时关闭。最多 10 条。 */
+            maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][];
+            maxRetry?: number;
+            misfireStrategy?: string;
+            /**
+             * @description 任务名称——允许任意语言（含中文/日文/emoji）。拒绝控制字符与首尾空白；长度上限 255 字符。全部任务（含软删除行）内全局唯一。
+             * @example 每日备份
+             */
+            name: string;
+            /** @description 任务默认参数；序列化后体积不得超过 65536 字节（与 trigger/webhook 面同一上限）。 */
+            params?: Record<string, never>;
+            priority?: number;
+            /** @description 所属项目。缺省/null = 未分配（计入默认项目视图；与既有行为一致）。设置它需要 ADMIN 或该项目的 editor/admin。 */
+            projectId?: string;
+            /** @description 任务运行前由执行器安装的依赖声明——pip 依赖（python runtime，每任务独立 uv venv）或 npm 包（node runtime）。GLUE 脚本任务忽略该字段。示例：[\"requests>=2.31\", \"rich==13.7.1\"] */
+            requirements?: string[];
+            retryDelay?: number;
+            retryableErrors?: string[];
+            /** @description 失败边：上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时也触发本任务（默认 false） */
+            runOnUpstreamFailure?: boolean;
+            /** @description FEAT-11：markdown 运维手册——展示在任务详情页，并随失败通知/告警一并附上。 */
+            runbook?: string;
+            runtime?: string;
+            /** @description 任务所需的 Python 解释器版本，格式为 \"major.minor\"（例如 \"3.7\"、\"3.12\"）。支持区间默认 3.7–3.14；3.7 仅支持离线预置（uv 无法在线下载）。仅在 runtime=python 时有意义。 */
+            runtimeVersion?: string;
+            /**
+             * @description 任务级 secrets（凭据键值对，独立于 params 的普通运行参数；配置了 SEC_SECRETS_KEY 时以 AES-256-GCM 加密落库，未配置则降级明文并告警）。读路径一律以字面量 ****** 掩码。派发时走两条通道：合并进 params（AUTOFLOW_<KEY>，旧执行器通道）并作为独立载荷字段下发，使执行器按**原名**注入（第三方 SDK 要求规范名）。PATCH 时按**逐键合并**：键缺省或叶子值为 ****** 时保留已存值，叶子值为 null 时删除该键，其它值覆盖；整个字段显式 null 时清空全部 secret。
+             * @example {
+             *       "API_TOKEN": "sk-live-",
+             *       "DB_PASSWORD": "hunter2"
+             *     }
+             */
+            secrets?: {
+                [key: string]: string;
+            };
+            status?: string;
+            /** @description 任务执行超时秒数（遗留字段；建议使用 timeoutSeconds）。0 = 不限制；上限为执行器的 1..86400 窗口（executor-node 每次尝试都会以 400 拒绝更大的值）。 */
+            timeout?: number;
+            /**
+             * @description CORE-04：任务超时后的动作。kill（缺省）= 执行器按既有语义树杀进程；kill_retry = 同样树杀，但 admin 按任务的重试预算重新入队一次执行；notify_only = admin 只下发超时告警、不额外下发终止指令（执行器自身的硬超时仍然生效）。PATCH 时缺省 = 保留当前值；显式 null = 重置回 kill。
+             * @enum {string}
+             */
+            timeoutAction?: "kill" | "kill_retry" | "notify_only";
+            /** @description 任务执行超时秒数。0 = 不限制；上限为执行器的 1..86400 窗口（会归一化到 `timeout`，executor-node 对超过 86400 的值以 400 拒绝）。 */
+            timeoutSeconds?: number;
+            /** @description CORE-04：超时预警阈值，取 timeout 的百分数（整数 0-90）。运行时长达到 timeout × ratio/100 时发送一次 WARNING 预警通知（每个执行至多一次）。缺省/null = 未启用。 */
+            timeoutWarnRatio?: number;
+            /** @description cron 调度使用的 IANA 时区，例如 Asia/Shanghai */
+            timezone?: string;
+            triggerType: string;
+        };
+        CreateTaskTemplateDto: {
+            /** @description 粗分类标签（备份/巡检/同步/清理/通知…），前端渲染为 Tag */
+            category?: string;
+            /**
+             * @description 合法 CreateTaskDto 子集（省略 name）；作为实例化任务的默认值
+             * @example {
+             *       "blockStrategy": "discard",
+             *       "cronExpression": "0 2 * * *",
+             *       "entrypoint": "backup.sh",
+             *       "maxRetry": 3,
+             *       "retryDelay": 60,
+             *       "runtime": "shell",
+             *       "timeoutSeconds": 3600,
+             *       "triggerType": "cron"
+             *     }
+             */
+            config: {
+                [key: string]: unknown;
+            };
+            /** @description 模板说明（可选） */
+            description?: string;
+            /**
+             * @description 稳定标识；缺省由 name 规整生成。官方模板保留 [a-z][a-z0-9_-]* 命名风格。
+             * @example daily_order_sync
+             */
+            key?: string;
+            /**
+             * @description 模板展示名
+             * @example 每日订单同步
+             */
+            name: string;
+        };
+        CreateUserDto: {
+            /** @example admin@example.com */
+            email: string;
+            /** @description 至少 8 个字符，且必须包含大写字母、小写字母、数字和特殊字符 */
+            password: string;
+            /**
+             * @default user
+             * @enum {string}
+             */
+            role?: "admin" | "user";
+            /** @example admin */
+            username: string;
+        };
+        DeleteTaskResponseDto: {
+            deleted: boolean;
+        };
+        DeployVersionDto: {
+            /** @description 仅对这些执行器对应的 RUNNING 部署行下发（重复 id 幂等去重）。缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 一致）。执行器无部署行/行状态不可下发的进响应 skipped 明细，不报错 */
+            executorIds?: string[];
+            /**
+             * Format: uuid
+             * @description application_versions.id（版本快照主键，非 version 号字符串）——status 必须为 released；下发前先按该快照恢复应用当前字段
+             */
+            versionId: string;
+        };
+        DeployVersionResponseDto: {
+            /** @description 恒 true——本端点就是下发动作（恢复+下发） */
+            dispatched: boolean;
+            ok: boolean;
+            skipped: components["schemas"]["DeployVersionSkippedEntryDto"][];
+            /** @description 恢复后的应用行（已掩码） */
+            updatedApp: components["schemas"]["ApplicationResponseDto"];
+            upgraded: components["schemas"]["DeployVersionUpgradedEntryDto"][];
+            /** @description 本次下发的目标版本（= 快照 version） */
+            version: string;
+            /**
+             * Format: uuid
+             * @description 命中的 application_versions.id
+             */
+            versionId: string;
+        };
+        DeployVersionSkippedEntryDto: {
+            /** Format: uuid */
+            deploymentId: string | null;
+            /** @description 跳过原因的机器可读补充（状态值 / 原始错误消息） */
+            detail?: string | null;
+            /**
+             * Format: uuid
+             * @description 显式点名路径下恒有值；缺省（全 RUNNING）路径下取部署行值
+             */
+            executorId: string | null;
+            /**
+             * @description no_deployment=该执行器在本应用下没有部署行；not_running=最新部署行状态非 running（detail 带实际 status）；upgrade_rejected=upgrade 链拒绝（detail 带原因）
+             * @enum {string}
+             */
+            reason: "no_deployment" | "not_running" | "upgrade_rejected";
+        };
+        DeployVersionUpgradedEntryDto: {
+            /** Format: uuid */
+            deploymentId: string;
+            executorAddress: string | null;
+            /**
+             * Format: uuid
+             * @description 部署行所在执行器（行无执行器时 null）
+             */
+            executorId: string | null;
         };
         DeployedAppDto: {
             /**
@@ -5343,15 +5512,20 @@ export interface components {
              */
             appId: string;
             /**
+             * @description current 软链指向的 release 目录名
+             * @example 1.2.0-3f9d2b7a-deploy-8t4
+             */
+            currentReleaseKey?: string | null;
+            /**
              * @description 设备 current 软链指向的版本；无 current（未部署成功）为 null
              * @example 1.2.0
              */
             currentVersion?: string | null;
             /**
-             * @description current 软链指向的 release 目录名
-             * @example 1.2.0-3f9d2b7a-deploy-8t4
+             * @description 最近一次部署完成时刻（ISO 8601）；无记录为 null
+             * @example 2026-10-24T08:00:00.000Z
              */
-            currentReleaseKey?: string | null;
+            lastDeployedAt?: string | null;
             /**
              * @description 设备 releases/ 下仍保留的版本集合（prune 后快照）
              * @example [
@@ -5366,216 +5540,395 @@ export interface components {
              * @enum {string|null}
              */
             runMode?: "once" | "daemon" | "scheduled" | null;
-            /**
-             * @description 最近一次部署完成时刻（ISO 8601）；无记录为 null
-             * @example 2026-10-24T08:00:00.000Z
-             */
-            lastDeployedAt?: string | null;
         };
-        InstalledPackageDto: {
-            /** @example python-runtime */
-            name: string;
-            /** @example uv */
-            type: string;
-            /** @example 0.7.12 */
-            version: string;
-        };
-        ExecutorRegisterDto: {
+        DeploymentHeartbeatDto: {
+            /** @description 部署 ID */
+            deploymentId: string;
+            /** @description 自由格式的进度信息（最长 2000 字符；写入 statusMessage 文本列并进入列表读面） */
+            message?: string;
+            /** @description 进程 PID */
+            pid?: number;
             /**
-             * @description 执行器应用名称
-             * @example executor-node
-             */
-            appName: string;
-            /**
-             * @description 执行器注册地址
-             * @example 192.168.1.100:3002
-             */
-            address: string;
-            /**
-             * @description 执行器类型
-             * @example node
-             */
-            type?: string;
-            /**
-             * @description 执行器版本
-             * @example 1.0.0
-             */
-            version?: string;
-            /**
-             * @description PROTOCOL-VER (B-3/U-2): 执行器线缆协议版本（与实现版本 version 解耦）。中台按兼容矩阵分支：低于 supportedMin 只 warn + 兜底，不拒绝注册。
-             * @example 1
-             */
-            protocolVersion?: number;
-            /**
-             * @description 声明的能力
-             * @example [
-             *       "docker",
-             *       "shell"
-             *     ]
-             */
-            capabilities?: string[];
-            /**
-             * @description 声明的运行时环境
-             * @example [
-             *       "nodejs",
-             *       "python3"
-             *     ]
-             */
-            runtime?: string[];
-            /**
-             * @description 最大并发任务数
-             * @example 10
-             */
-            maxConcurrentTasks?: number;
-            /**
-             * @description 最大并发数（legacy 别名）
-             * @example 10
-             */
-            maxConcurrent?: number;
-            /**
-             * @description 执行器分组名称
-             * @example production
-             */
-            groupName?: string | null;
-            /**
-             * @description 执行器标签
-             * @example [
-             *       "nodejs",
-             *       "prod"
-             *     ]
-             */
-            tags?: string[] | null;
-            /**
-             * @description 执行器描述
-             * @example Production Node.js executor
-             */
-            description?: string | null;
-            /**
-             * @description 重启时间戳（ISO 8601）
-             * @example 2026-09-14T08:00:00.000Z
-             */
-            restartedAt?: string | null;
-            /**
-             * @description 启动 ID（进程生命周期标识，用于幂等重复注册）
-             * @example uuid-of-this-executor-process-life
-             */
-            startupId?: string | null;
-            /**
-             * @description 派发模式（'push' | 'pull'；默认为 push）
-             * @example pull
+             * @description 运行状态
              * @enum {string}
              */
-            dispatchMode?: "push" | "pull";
-            /** @description python_task_multiversion：解释器缓存池清单。缺省 → 保留已存值；[] → 已上报且池为空；结构非法 → 整字段被拒绝。 */
-            interpreters?: components["schemas"]["ExecutorInterpreterDto"][];
-            /**
-             * @description ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：注册时先按指纹解析行（地址退化为可达性元数据）。缺省/非法 → 保留已存值并回退到按地址查找；从未上报过指纹的行会带上服务端生成的 `legacy:{address}` 兜底键。
-             * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
-             */
-            deviceFingerprint?: string | null;
-            /** @description R3-A（§4.3）：设备级应用版本事实（执行器启动时随注册上报一份，语义与心跳 deployedApps 完全一致：缺省 → 不动；[] → 设备无已部署应用；非法 → 整字段拒绝）。 */
-            deployedApps?: components["schemas"]["DeployedAppDto"][];
-            /** @description R3-A（§4.3/P10）：设备已安装的执行器包清单（语义与心跳 installedPackages 完全一致）。 */
-            installedPackages?: components["schemas"]["InstalledPackageDto"][];
+            status: "running" | "stopped" | "failed";
         };
-        ExecutorRegisterResponseDto: {
+        DeploymentRemoveResponseDto: {
+            /** @description 被删除的部署 ID */
+            deletedId: string;
+            /** @enum {boolean} */
+            ok: true;
+        };
+        DeprecatedBatchItemDto: {
+            /** @description 失败原因（partial-failure 标记） */
+            error?: string;
+            /** @description 失败项携带的任务 id（成功项是完整实体，无独立 id 字段名） */
+            id?: string;
+        };
+        DetailedHealthDto: {
+            /** @description 组件扁平清单 */
+            components: {
+                message?: string;
+                name: string;
+                /** @enum {string} */
+                status: "healthy" | "degraded" | "unhealthy";
+            }[];
+            metrics?: {
+                activeTasks: number;
+                onlineExecutors: number;
+                queueSize: number;
+                runningExecutions: number;
+                totalExecutors: number;
+                totalTasks: number;
+            };
+            /** @description 五组件健康（结构同 GET /health/services 的同名键） */
+            services: Record<string, never>;
+            /** @enum {string} */
+            status: "healthy" | "degraded" | "unhealthy";
+            timestamp: string;
+        };
+        DraftSopDto: {
+            bodyMarkdown?: string;
+            frontMatterYaml?: string;
+            /** @example daily-report */
+            slug: string;
+            title: string;
+        };
+        EventSubscriptionCreateResponseDto: {
+            /** @description 服务端生成的 32 字节十六进制 secret —— 仅在本响应中返回一次。调用方自带 secret 时不出现。 */
+            generatedSecret?: string;
+            /** @description 新建的订阅（secret 已掩码） */
+            subscription: components["schemas"]["EventSubscriptionResponseDto"];
+        };
+        EventSubscriptionDeadLetterPageDto: {
+            /** @description 死信分页，按最新在前 */
+            data: components["schemas"]["EventSubscriptionDeadLetterResponseDto"][];
+            /** @description 分页前的匹配总行数 */
+            total: number;
+        };
+        EventSubscriptionDeadLetterResponseDto: {
+            /** @description 实际投递尝试次数（首次尝试 + outbox 扫描器重试，受 MAX_OUTBOX_ATTEMPTS 限制） */
+            attempts: number;
+            /**
+             * Format: date-time
+             * @description 该死信的记录时间（ISO-8601）
+             */
+            createdAt: string;
+            /** @description 最近一次失败摘要（截断至 1024 字符） */
+            error: string;
+            /** @description 投递失败的事件名（例如 execution.failed） */
+            eventType: string;
+            /**
+             * Format: uuid
+             * @description 死信 UUID
+             */
+            id: string;
+            /** @description 发送时刻的完整外发信封（event/occurredAt/data） */
+            payload: {
+                [key: string]: unknown;
+            };
+            /**
+             * Format: uuid
+             * @description 所属订阅 UUID
+             */
+            subscriptionId: string;
+        };
+        EventSubscriptionResponseDto: {
+            /** @description 连续投递失败次数（任一次成功即重置为 0） */
+            consecutiveFailures: number;
+            /**
+             * Format: date-time
+             * @description 创建时间（ISO-8601）
+             */
+            createdAt: string;
+            /** @description 是否启用投递 */
+            enabled: boolean;
+            /**
+             * @description 订阅的事件名（稳定目录，只增不改）：execution.completed / execution.failed / executor.offline / deployment.completed
+             * @example [
+             *       "execution.failed"
+             *     ]
+             */
+            eventTypes: string[];
+            /**
+             * Format: uuid
+             * @description 订阅 UUID
+             */
+            id: string;
+            /**
+             * Format: date-time
+             * @description 最近一次投递失败的时间戳；null = 从未失败
+             */
+            lastFailureAt?: string | null;
+            /** @description 最近一次失败摘要（截断至 512 字符；绝不含 secret/payload） */
+            lastFailureError?: string | null;
+            /**
+             * @description HMAC 签名 secret —— 在所有读面恒为掩码占位符 '******'（明文仅在创建时以 generatedSecret 返回一次）
+             * @example ******
+             */
+            secret: string;
+            /**
+             * Format: date-time
+             * @description 最后更新时间（ISO-8601）
+             */
+            updatedAt: string;
+            /** @description 回调 URL（公网 http(s)；写入时做 SSRF 深度校验，并在每次外发投递前重新检查） */
+            url: string;
+            /** @description 属主用户 ID（整数）。null = 系统级订阅（由 ADMIN 管理，对所有管理员可见，并为排查问题向所有用户开放读权限）。 */
+            userId?: number | null;
+        };
+        ExecutionArtifactDto: {
+            name: string;
+            /** @description 对存储字节计算的 sha256 */
+            sha256: string;
+            /** @description 字节 */
+            size: number;
+        };
+        ExecutionArtifactRowDto: {
+            /** @description 所属应用 ID（冗余快照；null = 任务未挂应用或应用已删除——SET NULL 语义） */
+            applicationId?: string | null;
+            /**
+             * Format: date-time
+             * @description 索引行创建时间（ISO-8601，随终态回调写入）
+             */
+            createdAt: string;
+            /**
+             * Format: uuid
+             * @description 所属执行 ID
+             */
+            executionId: string;
             /** Format: uuid */
             id: string;
-            /** @description 执行器应用名（按进程的注册键） */
-            appName: string;
-            /** @description http://host:port，全局唯一 */
-            address: string;
-            /** @enum {string} */
-            status: "online" | "offline";
+            /** @description 产物裸文件名 */
+            name: string;
+            /** @description 存储字节的 sha256 */
+            sha256: string;
+            /** @description 字节数 */
+            size: number;
             /**
-             * @description 离线原因（在线时为 null）
-             * @enum {string|null}
+             * Format: uuid
+             * @description 所属任务 ID（冗余快照）
              */
-            offlineReason: "manual" | "stale_timeout" | null;
-            /** @description 连续丢失/失败的心跳次数（失联清扫输入） */
-            consecutiveHeartbeatMisses: number;
-            /** @enum {string} */
-            type: "python" | "node" | "universal";
-            /** @description 执行器自报的包版本 */
-            executorVersion: string | null;
-            /** @description 注册时协商的协议版本（pull 控制面门禁） */
-            protocolVersion: number | null;
-            /**
-             * @description push = 平台拨向执行器；pull = 执行器长轮询（受 NAT 约束）
-             * @enum {string}
-             */
-            dispatchMode: "push" | "pull";
-            /** @description 声明的运行时能力域 */
-            capabilities: string[] | null;
-            /**
-             * Format: date-time
-             * @description 最近一次被接受的心跳
-             */
-            lastHeartbeat: string | null;
-            /**
-             * Format: date-time
-             * @description 执行器进程启动时间（重启检测）
-             */
-            executorStartedAt: string | null;
-            /** @description 按进程的实例 ID（幂等令牌签发） */
-            executorStartupId: string | null;
-            /** @description 跨地址变更保持稳定的设备身份（= sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符）。ADR-017 第三阶段：迁移 1790000000054 之后为 NOT NULL —— 从未上报过指纹的执行器会以服务端生成的 `legacy:{address}` 兜底键存储。 */
-            deviceFingerprint: string;
-            /** @description 当前运行中的任务数（含已预留但未领取的 pull 槽位） */
-            runningTaskCount: number;
-            cpuUsage: number | null;
-            memUsage: number | null;
-            diskUsage: number | null;
-            /** @description 毫秒 */
-            networkLatency: number | null;
-            totalTaskCount: number;
-            failedTaskCount: number;
-            /** @description 派发门禁容量；null = 不限 */
-            maxConcurrentTasks: number | null;
-            /** @description 该执行器当前已领取的执行 ID（E-01-RPT 存活上报） */
-            runningExecutionIds: string[] | null;
-            /** @description 已预留但尚未领取的 pull 槽位（仅供展示/告警 —— 不是派发门禁） */
-            reservedSlots: number | null;
-            /** @description 滞留在死信队列中的控制面命令数 */
-            deadLetterCount: number | null;
-            /**
-             * @description S4-C4（协议 v9）：执行器的**任务沙箱姿态**——那台机器上的 TASK_SANDBOX 到底开没开。**三态（读面必须区分，塌成两态就退回「看不出来」）**：`null` = **未上报**（旧执行器 / 本列上线前的存量行——**不等于直跑**，详情页显示「未上报」）；`""` = 已上报且**直跑**（未沙箱）；`"bwrap"` = 已上报且在 fail-closed 沙箱里。取值域只有 `""` 与 `"bwrap"`（非法上报按未上报处理，见 ExecutorHeartbeatDto）。纯观测列：不参与派发/准入判定。
-             * @enum {string|null}
-             */
-            taskSandbox: "" | "bwrap" | null;
-            /** @description 执行器上报的解释器池（D5：null = 从未上报，[] = 上报为空） */
-            interpreters: {
-                version: string;
-                path?: string;
-                available?: boolean;
-                discoveredAt?: string;
+            taskId: string;
+        };
+        ExecutionListItemDto: {
+            /** @description 列表/统计读取会排除该列（PERF-03） */
+            aiAnalysis?: string | null;
+            /** @description 该次执行上传的产物 */
+            artifacts: {
+                name: string;
+                sha256: string;
+                size: number;
             }[] | null;
-            groupName: string | null;
-            tags: string[] | null;
-            description: string | null;
-            /** Format: uuid */
-            projectId: string | null;
+            /** @description 尝试世代：本执行行被 claim（认领并开始运行）过的次数，0 = 第一回合（存量行）。同一个执行可因重试/唤醒被重新 claim 成运行中；终态写入按本值做世代校验，迟到回合的结果不会覆盖新回合。 */
+            attemptSeq: number;
             /** Format: date-time */
             createdAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-            /** @description 乐观锁 @VersionColumn（TypeORM 版本列） */
-            version: number;
-            /** @description 仅 list 面（findAll）逐行附带：自报版本是否满足 EXECUTOR_MIN_VERSION 门禁 */
-            versionCompliant?: boolean;
-            /** @description R9 幂等语义：同 (address, startupId) 重注册返回 null（不轮换）；首次注册/真实重启才发新 token */
-            perExecutorToken?: string | null;
-            /** @description 回调鉴权 secret（HMAC 源），执行器侧持久化 */
-            tokenHash: string;
-            /** @description 协议版本是否 ≥ PROTOCOL_SUPPORTED_MIN（仅回显，不拒绝注册） */
-            protocolCompliant: boolean;
-            /** @description save() 回程 hydrated（R7 实测） */
-            agentCapabilities?: string[] | null;
             /**
              * Format: date-time
-             * @description save() 回程 hydrated（R7 实测）
+             * @description 依赖门禁触发本次执行的时间
              */
-            agentCapabilitiesUpdatedAt?: string | null;
+            depsFiredAt: string | null;
+            /** @description 挂钟耗时毫秒数（endTime - startTime） */
+            duration: number | null;
+            /** Format: date-time */
+            endTime: string | null;
+            errorMessage: string | null;
+            /** @description 该次执行被派发到的执行器地址 */
+            executorAddress: string | null;
+            /** Format: uuid */
+            executorId: string | null;
+            /** @description 进程退出码（执行器能给出时才有） */
+            exitCode: number | null;
+            /**
+             * @description 归类后的失败标记（执行器可上报的子集 + 管理端内部标记）
+             * @enum {number}
+             */
+            failureReason: [
+                "package_fetch_failed",
+                "script_error",
+                "timeout",
+                "executor_offline",
+                "executor_restart",
+                "stale_recovered",
+                "dependency_install_failed",
+                "git_fetch_failed",
+                "runtime_missing",
+                "interpreter_unavailable",
+                "sandbox_unavailable",
+                "killed",
+                "unknown",
+                "application_missing",
+                "never_dispatched"
+            ] | null;
+            /** Format: uuid */
+            id: string;
+            /** @description 日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键 */
+            logObjectKey: string | null;
+            /** @description 日志后端的标记：'db' 或对象存储 */
+            logStorage: string | null;
+            /** @description 列表/统计读取会排除该列（PERF-03）——请改用日志端点获取 */
+            logs?: string | null;
+            /**
+             * Format: uuid
+             * @description 该执行排队/运行所属的互斥组
+             */
+            mutexGroupId: string | null;
+            /** @description 实际派发出去的合并后运行参数 */
+            params: {
+                [key: string]: unknown;
+            } | null;
+            /** @description 打包类运行解析出的包 URL */
+            resolvedPackageUrl: string | null;
+            /** @description 打包类运行解析出的包版本 */
+            resolvedPackageVersion: string | null;
+            /** @description 列表读取会返回该列；统计端点的 recentExecutions 完全不含该列 */
+            result?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description 截至目前已消耗的重试次数 */
+            retryCount: number;
+            /**
+             * @description 本行因何被重试：`user` = 任务代码/配置失败（消耗用户的重试预算）；`internal` = 引擎内部抖动（网络瞬断、执行器重启、僵尸恢复）。NULL = 不知道（存量行，或不是重试行）。
+             * @enum {string|null}
+             */
+            retryKind?: "user" | "internal" | null;
+            /** @description `retryCount` 中由**用户类失败**消耗掉的次数（内部类已用 = `retryCount − 本值`）。NULL = 不知道（存量行 / 未记录）。 */
+            retryUserCount?: number | null;
+            /**
+             * Format: date-time
+             * @description 首次派发/到达执行器的时间
+             */
+            startTime: string | null;
+            /** @enum {string} */
+            status: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
+            /** @description 是否为「为可见性而合成」的执行行（例如上游失败时，为「因上游坏而没跑」的下游建的那条 cancelled 行），而不是一次真实尝试。合成行从未真正运行、不参与依赖满足判定，但仍在执行列表里可见。 */
+            synthetic: boolean;
+            /** @description 任务关联——当前读取路径不会加载它 */
+            task?: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: uuid */
+            taskId: string;
+            /** @description 派发时刻的任务名快照 */
+            taskName: string;
+            /** @description 本次运行重放所固定的配置快照版本 */
+            taskVersion: string | null;
+            /** @description 随派发链路传递的 W3C trace-id */
+            traceId: string | null;
+            /** @description manual/cron/webhook/api/dependency——本次运行的触发方式 */
+            triggerType: string | null;
+            /** @description 乐观锁版本列 */
+            version: number;
+        };
+        ExecutionLogsPageResponseDto: {
+            /** @description fromLine + lines.length < totalLines 时为 true */
+            hasMore: boolean;
+            /** @description 从 fromLine 起的原始日志行（给定级别过滤时生效） */
+            lines: string[];
+            /** @description （过滤后）行集合的真实总数 */
+            totalLines: number;
+        };
+        ExecutionReportResponseDto: {
+            execution: components["schemas"]["TaskExecutionResponseDto"];
+            /** @description 当日聚合行；不存在时为 null（正常状态，前端自行降级） */
+            report: components["schemas"]["ExecutionReportSummaryDto"] | null;
+            timeline: components["schemas"]["ExecutionTimelineEntryDto"][];
+        };
+        ExecutionReportSummaryDto: {
+            avgDurationMs: number;
+            cancelledCount: number;
+            /** Format: date-time */
+            createdAt: string;
+            failCount: number;
+            id: number;
+            maxDurationMs: number;
+            minDurationMs: number;
+            runningCount: number;
+            successCount: number;
+            timeoutCount: number;
+            /**
+             * Format: date-time
+             * @description DATE 列——该聚合行所属的日期
+             */
+            triggerDay: string;
+            /** Format: date-time */
+            updateTime: string;
+        };
+        ExecutionStatsResponseDto: {
+            /** @description 最近窗口内的平均耗时毫秒数（无数据时为 0） */
+            avgDuration: number;
+            /** @description 历史累计 FAILED + TIMEOUT 次数（被 kill/取消的不计入） */
+            failed: number;
+            /** @description 最近 20 次执行（列表投影去掉 result） */
+            recentExecutions: components["schemas"]["ExecutionListItemDto"][];
+            /** @description 最近 20 次窗口内的成功百分比（仅供参考） */
+            recentSuccessRate: number;
+            /** @description 历史累计 SUCCESS 次数 */
+            succeeded: number;
+            /** @description 全部运行的成功百分比（自 FIX-5.1 起为权威口径） */
+            successRate: number;
+            totalRuns: number;
+        };
+        ExecutionTimelineEntryDto: {
+            /** @description ISO 时间戳，该阶段从未发生时为 null */
+            at: string | null;
+            /** @description 例如 'trigger=manual' */
+            detail?: string;
+            /** @enum {string} */
+            phase: "created" | "started" | "finished";
+        };
+        ExecutorActionReasonDto: {
+            /**
+             * @description 可选的操作原因（≤200 字符），计入审计
+             * @example decommissioned host
+             */
+            reason?: string;
+        };
+        ExecutorCommandResultDto: {
+            /**
+             * @description 执行器注册地址
+             * @example http://10.0.0.5:9100
+             */
+            address: string;
+            /** @description 命令 id（中台入队时签发的 UUID v4，执行器原样回传；它同时是 acf:cmdres:/acf:cmdmeta: 键的成分） */
+            commandId: string;
+            /** @description ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——上报行定位与归属比对用 */
+            deviceFingerprint?: string | null;
+            /** @description 本地执行耗时（毫秒） */
+            durationMs?: number;
+            /** @description 失败原因（≤2000）。执行器侧自截 1000 字符，这里给双倍余量——闸的意义是堵住非受信上报面的自由文本写放大，不是复刻执行器侧的截断行为 */
+            error?: string | null;
+            /** @description 命令是否执行成功 */
+            ok: boolean;
+            /** @description 执行器本地路由的 HTTP 状态码 */
+            status?: number;
+            /**
+             * @description 命令类型（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）
+             * @example deploy
+             */
+            type: string;
+        };
+        ExecutorCommandResultResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
+        };
+        ExecutorConfigPayloadResponseDto: {
+            /** @description 仅在配置了 app.adminApiUrl 时出现 */
+            adminApiUrl?: string;
+            /** @description 心跳间隔（秒，取自 executor.heartbeatInterval/1000，最小 1） */
+            heartbeatIntervalSeconds: number;
+            /** @description 取自实体的按执行器容量；null = 不限 */
+            maxConcurrentTasks: number;
+        };
+        ExecutorExecutionsResponseDto: {
+            /** @description TaskExecution 行，按最新在前（本读面未排除大文本列） */
+            items: unknown[];
+            total: number;
+        };
+        ExecutorGroupsDto: {
+            groups: string[];
         };
         ExecutorHeartbeatDto: {
             /**
@@ -5589,45 +5942,61 @@ export interface components {
              */
             cpuUsage?: number;
             /**
-             * @description 内存使用率百分比
-             * @example 62.3
+             * @description 死信数量
+             * @example 0
              */
-            memUsage?: number;
+            deadLetterCount?: number;
+            /** @description R3-A（§4.3）：设备级应用版本事实（apps/ 目录扫描）。缺省 → 中台完全不动既有事实行（旧执行器）；[] → 设备上没有任何已部署应用（整替 = 全部既有行删除）；结构非法/超 50 项/同一 appId 重复 → 整字段拒绝采纳。落库语义：整替该执行器全部 executor_app_versions 行（数组外的应用 = 设备已卸载）。 */
+            deployedApps?: components["schemas"]["DeployedAppDto"][];
+            /**
+             * @description ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：register/heartbeat 先按指纹解析行，因此换了 IP 的机器会复用既有行，而不是新建幽灵行。缺省/非法 → 保留已存值（legacy 或采集失败的执行器绝不能把已存指纹清空），并回退到按地址查找。
+             * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
+             */
+            deviceFingerprint?: string | null;
             /**
              * @description 磁盘使用率百分比
              * @example 70
              */
             diskUsage?: number;
             /**
+             * @description 失败任务数
+             * @example 5
+             */
+            failedTaskCount?: number;
+            /** @description R3-A（§4.3/P10）：设备已安装的执行器包清单。三态语义与 interpreters 同款：缺省 → 保留 DB 旧值；[] → 已上报且无安装包；结构非法/超 100 项 → 整字段拒绝采纳。 */
+            installedPackages?: components["schemas"]["InstalledPackageDto"][];
+            /** @description python_task_multiversion：解释器缓存池清单。缺省 → 保留已存值；[] → 已上报且池为空；结构非法 → 整字段被拒绝。 */
+            interpreters?: components["schemas"]["ExecutorInterpreterDto"][];
+            /**
+             * @description E9：更新后的最大并发任务数（热更新容量）
+             * @example 10
+             */
+            maxConcurrentTasks?: number;
+            /**
+             * @description 内存使用率百分比
+             * @example 62.3
+             */
+            memUsage?: number;
+            /**
              * @description 网络延迟（毫秒）
              * @example 2
              */
             networkLatency?: number;
             /**
-             * @description 当前运行中的任务数
-             * @example 3
+             * @description 方案 b（协议 v8，接管自愈死锁修复）：执行器的 /token 409 慢性冲突自报——自最近一次 409 起持续至成功取回 token。三态：缺席 = 未上报（旧执行器/python，中台按旧语义不动活性判定）；false = 已上报且当前无冲突（executor-node 恒发送，含 false）；true = 冲突中——中台消费判据：true 且心跳指纹与行已存真实指纹错位 → 活性四列（status/offlineReason/consecutiveHeartbeatMisses/lastHeartbeat）不登记，心跳不再把冲突行保持 ONLINE（sweep 判死 → 接管窗 → E-1 CAS 收敛）。仅文档用：本类不挂 class-validator（内联 body 元类型 = Object），实际采纳在 controller F-7 白名单与 service 侧判据。
+             * @example false
              */
-            runningTaskCount?: number;
+            registrationConflict?: boolean;
             /**
-             * @description 累计执行的任务数
-             * @example 150
+             * @description E-01-RPT（协议 v4）：pull 长轮询已预留但尚未领取的槽位。runningTaskCount 统计的是已占用槽位（含本次预留，这正是 E-01 防超卖机制）；runningExecutionIds 只列出已领取的执行。因此详情页用 runningTaskCount - reservedSlots 展示实际运行数。仅供展示 —— 派发门禁从不读取该字段。总是发送（0 = 已上报且无预留）；缺失 = legacy 执行器。
+             * @example 1
              */
-            totalTaskCount?: number;
-            /**
-             * @description 失败任务数
-             * @example 5
-             */
-            failedTaskCount?: number;
+            reservedSlots?: number;
             /**
              * @description 重启时间戳（ISO 8601）
              * @example 2026-09-14T08:00:00.000Z
              */
             restartedAt?: string | null;
-            /**
-             * @description 启动 ID（进程生命周期标识）
-             * @example uuid-of-this-executor-process-life
-             */
-            startupId?: string | null;
             /**
              * @description CONSISTENCY-02：当前运行中的执行 ID
              * @example [
@@ -5637,137 +6006,35 @@ export interface components {
              */
             runningExecutionIds?: string[];
             /**
-             * @description E-01-RPT（协议 v4）：pull 长轮询已预留但尚未领取的槽位。runningTaskCount 统计的是已占用槽位（含本次预留，这正是 E-01 防超卖机制）；runningExecutionIds 只列出已领取的执行。因此详情页用 runningTaskCount - reservedSlots 展示实际运行数。仅供展示 —— 派发门禁从不读取该字段。总是发送（0 = 已上报且无预留）；缺失 = legacy 执行器。
-             * @example 1
+             * @description 当前运行中的任务数
+             * @example 3
              */
-            reservedSlots?: number;
+            runningTaskCount?: number;
             /**
-             * @description 死信数量
-             * @example 0
+             * @description 启动 ID（进程生命周期标识）
+             * @example uuid-of-this-executor-process-life
              */
-            deadLetterCount?: number;
-            /**
-             * @description E9：更新后的最大并发任务数（热更新容量）
-             * @example 10
-             */
-            maxConcurrentTasks?: number;
-            /**
-             * @description EXE-VER-1：执行器版本（用于最低版本门禁回显，不落库）
-             * @example 1.0.0
-             */
-            version?: string;
-            /** @description python_task_multiversion：解释器缓存池清单。缺省 → 保留已存值；[] → 已上报且池为空；结构非法 → 整字段被拒绝。 */
-            interpreters?: components["schemas"]["ExecutorInterpreterDto"][];
-            /**
-             * @description ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：register/heartbeat 先按指纹解析行，因此换了 IP 的机器会复用既有行，而不是新建幽灵行。缺省/非法 → 保留已存值（legacy 或采集失败的执行器绝不能把已存指纹清空），并回退到按地址查找。
-             * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
-             */
-            deviceFingerprint?: string | null;
-            /** @description R3-A（§4.3）：设备级应用版本事实（apps/ 目录扫描）。缺省 → 中台完全不动既有事实行（旧执行器）；[] → 设备上没有任何已部署应用（整替 = 全部既有行删除）；结构非法/超 50 项/同一 appId 重复 → 整字段拒绝采纳。落库语义：整替该执行器全部 executor_app_versions 行（数组外的应用 = 设备已卸载）。 */
-            deployedApps?: components["schemas"]["DeployedAppDto"][];
-            /** @description R3-A（§4.3/P10）：设备已安装的执行器包清单。三态语义与 interpreters 同款：缺省 → 保留 DB 旧值；[] → 已上报且无安装包；结构非法/超 100 项 → 整字段拒绝采纳。 */
-            installedPackages?: components["schemas"]["InstalledPackageDto"][];
-            /**
-             * @description 方案 b（协议 v8，接管自愈死锁修复）：执行器的 /token 409 慢性冲突自报——自最近一次 409 起持续至成功取回 token。三态：缺席 = 未上报（旧执行器/python，中台按旧语义不动活性判定）；false = 已上报且当前无冲突（executor-node 恒发送，含 false）；true = 冲突中——中台消费判据：true 且心跳指纹与行已存真实指纹错位 → 活性四列（status/offlineReason/consecutiveHeartbeatMisses/lastHeartbeat）不登记，心跳不再把冲突行保持 ONLINE（sweep 判死 → 接管窗 → E-1 CAS 收敛）。仅文档用：本类不挂 class-validator（内联 body 元类型 = Object），实际采纳在 controller F-7 白名单与 service 侧判据。
-             * @example false
-             */
-            registrationConflict?: boolean;
+            startupId?: string | null;
             /**
              * @description S4-C4（协议 v9，沙箱姿态在控制面可见）：执行器的任务沙箱姿态（取自执行器本地环境变量 TASK_SANDBOX，执行器恒发送该键）。**三态纪律（本项核心）**：① 键**缺席** = 旧执行器**未上报**（升级期新旧并存是常态）→ 落库 NULL、详情页显示「未上报」，**绝不当成直跑**——「不知道」与「确认没开」是两件事；② `''` = 已上报且**直跑**（未沙箱）；③ `'bwrap'` = 已上报且**在 fail-closed 沙箱里**。取值域只有这两个，其它值 → service 侧 warn + 按未上报处理（fail-safe：宁可显示「不知道」，也不把非法值猜成直跑或沙箱）。落库语义：缺省 → 保留 DB 旧值（旧执行器绝不清空已上报的姿态）；合法（含 `''`）→ 覆盖。仅文档用：本类不挂 class-validator（内联 body 元类型 = Object），实际采纳在 controller F-2 白名单与 service 侧判据。
              * @example bwrap
              * @enum {string}
              */
             taskSandbox?: "" | "bwrap";
+            /**
+             * @description 累计执行的任务数
+             * @example 150
+             */
+            totalTaskCount?: number;
+            /**
+             * @description EXE-VER-1：执行器版本（用于最低版本门禁回显，不落库）
+             * @example 1.0.0
+             */
+            version?: string;
         };
         ExecutorHeartbeatResponseDto: {
-            /** Format: uuid */
-            id: string;
-            /** @description 执行器应用名（按进程的注册键） */
-            appName: string;
             /** @description http://host:port，全局唯一 */
             address: string;
-            /** @enum {string} */
-            status: "online" | "offline";
-            /**
-             * @description 离线原因（在线时为 null）
-             * @enum {string|null}
-             */
-            offlineReason: "manual" | "stale_timeout" | null;
-            /** @description 连续丢失/失败的心跳次数（失联清扫输入） */
-            consecutiveHeartbeatMisses: number;
-            /** @enum {string} */
-            type: "python" | "node" | "universal";
-            /** @description 执行器自报的包版本 */
-            executorVersion: string | null;
-            /** @description 注册时协商的协议版本（pull 控制面门禁） */
-            protocolVersion: number | null;
-            /**
-             * @description push = 平台拨向执行器；pull = 执行器长轮询（受 NAT 约束）
-             * @enum {string}
-             */
-            dispatchMode: "push" | "pull";
-            /** @description 声明的运行时能力域 */
-            capabilities: string[] | null;
-            /**
-             * Format: date-time
-             * @description 最近一次被接受的心跳
-             */
-            lastHeartbeat: string | null;
-            /**
-             * Format: date-time
-             * @description 执行器进程启动时间（重启检测）
-             */
-            executorStartedAt: string | null;
-            /** @description 按进程的实例 ID（幂等令牌签发） */
-            executorStartupId: string | null;
-            /** @description 跨地址变更保持稳定的设备身份（= sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符）。ADR-017 第三阶段：迁移 1790000000054 之后为 NOT NULL —— 从未上报过指纹的执行器会以服务端生成的 `legacy:{address}` 兜底键存储。 */
-            deviceFingerprint: string;
-            /** @description 当前运行中的任务数（含已预留但未领取的 pull 槽位） */
-            runningTaskCount: number;
-            cpuUsage: number | null;
-            memUsage: number | null;
-            diskUsage: number | null;
-            /** @description 毫秒 */
-            networkLatency: number | null;
-            totalTaskCount: number;
-            failedTaskCount: number;
-            /** @description 派发门禁容量；null = 不限 */
-            maxConcurrentTasks: number | null;
-            /** @description 该执行器当前已领取的执行 ID（E-01-RPT 存活上报） */
-            runningExecutionIds: string[] | null;
-            /** @description 已预留但尚未领取的 pull 槽位（仅供展示/告警 —— 不是派发门禁） */
-            reservedSlots: number | null;
-            /** @description 滞留在死信队列中的控制面命令数 */
-            deadLetterCount: number | null;
-            /**
-             * @description S4-C4（协议 v9）：执行器的**任务沙箱姿态**——那台机器上的 TASK_SANDBOX 到底开没开。**三态（读面必须区分，塌成两态就退回「看不出来」）**：`null` = **未上报**（旧执行器 / 本列上线前的存量行——**不等于直跑**，详情页显示「未上报」）；`""` = 已上报且**直跑**（未沙箱）；`"bwrap"` = 已上报且在 fail-closed 沙箱里。取值域只有 `""` 与 `"bwrap"`（非法上报按未上报处理，见 ExecutorHeartbeatDto）。纯观测列：不参与派发/准入判定。
-             * @enum {string|null}
-             */
-            taskSandbox: "" | "bwrap" | null;
-            /** @description 执行器上报的解释器池（D5：null = 从未上报，[] = 上报为空） */
-            interpreters: {
-                version: string;
-                path?: string;
-                available?: boolean;
-                discoveredAt?: string;
-            }[] | null;
-            groupName: string | null;
-            tags: string[] | null;
-            description: string | null;
-            /** Format: uuid */
-            projectId: string | null;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-            /** @description 乐观锁 @VersionColumn（TypeORM 版本列） */
-            version: number;
-            /** @description 自报版本是否满足最低版本门禁 */
-            versionCompliant?: boolean;
-            /** @description 该执行器的回调鉴权 secret（机器面：持有令牌的一方可取回它来为执行回调签名） */
-            tokenHash: string;
-            /** @description EXECUTOR_MIN_VERSION 门禁值；'' = 门禁关闭 */
-            minVersion: string | null;
             /** @description save() 回程把 select:false 列 hydrated 带出（R7 实测）；findOne/列表读取不含 */
             agentCapabilities?: string[] | null;
             /**
@@ -5775,6 +6042,237 @@ export interface components {
              * @description 同上——save() 回程出现性
              */
             agentCapabilitiesUpdatedAt?: string | null;
+            /** @description 执行器应用名（按进程的注册键） */
+            appName: string;
+            /** @description 声明的运行时能力域 */
+            capabilities: string[] | null;
+            /** @description 连续丢失/失败的心跳次数（失联清扫输入） */
+            consecutiveHeartbeatMisses: number;
+            cpuUsage: number | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description 滞留在死信队列中的控制面命令数 */
+            deadLetterCount: number | null;
+            description: string | null;
+            /** @description 跨地址变更保持稳定的设备身份（= sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符）。ADR-017 第三阶段：迁移 1790000000054 之后为 NOT NULL —— 从未上报过指纹的执行器会以服务端生成的 `legacy:{address}` 兜底键存储。 */
+            deviceFingerprint: string;
+            diskUsage: number | null;
+            /**
+             * @description push = 平台拨向执行器；pull = 执行器长轮询（受 NAT 约束）
+             * @enum {string}
+             */
+            dispatchMode: "push" | "pull";
+            /**
+             * Format: date-time
+             * @description 执行器进程启动时间（重启检测）
+             */
+            executorStartedAt: string | null;
+            /** @description 按进程的实例 ID（幂等令牌签发） */
+            executorStartupId: string | null;
+            /** @description 执行器自报的包版本 */
+            executorVersion: string | null;
+            failedTaskCount: number;
+            groupName: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @description 执行器上报的解释器池（D5：null = 从未上报，[] = 上报为空） */
+            interpreters: {
+                available?: boolean;
+                discoveredAt?: string;
+                path?: string;
+                version: string;
+            }[] | null;
+            /**
+             * Format: date-time
+             * @description 最近一次被接受的心跳
+             */
+            lastHeartbeat: string | null;
+            /** @description 派发门禁容量；null = 不限 */
+            maxConcurrentTasks: number | null;
+            memUsage: number | null;
+            /** @description EXECUTOR_MIN_VERSION 门禁值；'' = 门禁关闭 */
+            minVersion: string | null;
+            /** @description 毫秒 */
+            networkLatency: number | null;
+            /**
+             * @description 离线原因（在线时为 null）
+             * @enum {string|null}
+             */
+            offlineReason: "manual" | "stale_timeout" | null;
+            /** Format: uuid */
+            projectId: string | null;
+            /** @description 注册时协商的协议版本（pull 控制面门禁） */
+            protocolVersion: number | null;
+            /** @description 已预留但尚未领取的 pull 槽位（仅供展示/告警 —— 不是派发门禁） */
+            reservedSlots: number | null;
+            /** @description 该执行器当前已领取的执行 ID（E-01-RPT 存活上报） */
+            runningExecutionIds: string[] | null;
+            /** @description 当前运行中的任务数（含已预留但未领取的 pull 槽位） */
+            runningTaskCount: number;
+            /** @enum {string} */
+            status: "online" | "offline";
+            tags: string[] | null;
+            /**
+             * @description S4-C4（协议 v9）：执行器的**任务沙箱姿态**——那台机器上的 TASK_SANDBOX 到底开没开。**三态（读面必须区分，塌成两态就退回「看不出来」）**：`null` = **未上报**（旧执行器 / 本列上线前的存量行——**不等于直跑**，详情页显示「未上报」）；`""` = 已上报且**直跑**（未沙箱）；`"bwrap"` = 已上报且在 fail-closed 沙箱里。取值域只有 `""` 与 `"bwrap"`（非法上报按未上报处理，见 ExecutorHeartbeatDto）。纯观测列：不参与派发/准入判定。
+             * @enum {string|null}
+             */
+            taskSandbox: "" | "bwrap" | null;
+            /** @description 该执行器的回调鉴权 secret（机器面：持有令牌的一方可取回它来为执行回调签名） */
+            tokenHash: string;
+            totalTaskCount: number;
+            /** @enum {string} */
+            type: "python" | "node" | "universal";
+            /** Format: date-time */
+            updatedAt: string;
+            /** @description 乐观锁 @VersionColumn（TypeORM 版本列） */
+            version: number;
+            /** @description 自报版本是否满足最低版本门禁 */
+            versionCompliant: boolean;
+        };
+        ExecutorInstallCmdDto: {
+            adminApiUrl: string;
+            /** @description curl … | bash -s -- 全命令行（含 --secret） */
+            cmd: string;
+            /** @description 共享机器凭据（ADMIN-only 面下发） */
+            token: string;
+        };
+        ExecutorInterpreterDto: {
+            /**
+             * @description 探测结果（可执行且 --version 成功）
+             * @example true
+             */
+            available?: boolean;
+            /**
+             * @description 探测时间戳（ISO 8601）
+             * @example 2026-09-16T10:00:00.000Z
+             */
+            discoveredAt?: string;
+            /**
+             * @description 池内的解释器绝对路径
+             * @example /data/interpreters/cpython-3.7.9-linux-x86_64-gnu-none/bin/python3
+             */
+            path?: string;
+            /**
+             * @description 在解释器池中发现的完整补丁版本
+             * @example 3.7.9
+             */
+            version: string;
+        };
+        ExecutorMetricsDto: {
+            current?: {
+                cpuUsage: number | null;
+                memUsage: number | null;
+                /** @description pull 队列深度；push 恒 0；Redis 故障按 0 呈现 */
+                pendingPullItems: number;
+                /** @description null = 执行器未上报（旧版）→ 前端回落旧口径 */
+                reservedSlots: number | null;
+                runningTaskCount: number;
+            };
+            executor?: {
+                address: string;
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                status: "online" | "offline";
+            };
+            history: {
+                cpuUsage: number | null;
+                memUsage: number | null;
+                runningTaskCount: number;
+                timestamp: string;
+            }[];
+            sevenDayStats?: {
+                failed: number;
+                successful: number;
+                totalExecutions: number;
+            };
+        };
+        ExecutorOfflineDto: {
+            /** @enum {boolean} */
+            success: true;
+        };
+        ExecutorPackageListDto: {
+            /** @description 包分页 */
+            items: components["schemas"]["ExecutorPackageResponseDto"][];
+            /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。 */
+            nextCursor?: string | null;
+            /** @description 匹配的包总数（分页前） */
+            total: number;
+        };
+        ExecutorPackagePushRecordDto: {
+            /** @description status=failed 时的失败原因 */
+            error?: string;
+            /** @description 目标执行器 ID */
+            executorId: string;
+            /**
+             * @description 推送结果
+             * @enum {string}
+             */
+            status: "downloaded" | "failed";
+            /** @description 本次推送尝试的时间（ISO-8601） */
+            timestamp: string;
+            /** @description 所推送的包版本 */
+            version: string;
+        };
+        ExecutorPackageResponseDto: {
+            /** @description SHA-256 校验和 */
+            checksum?: string | null;
+            /**
+             * Format: date-time
+             * @description 创建时间（ISO-8601）
+             */
+            createdAt: string;
+            /** @description 描述 */
+            description?: string | null;
+            /** @description 字节数 */
+            fileSize: number;
+            /** @description 存储文件名 */
+            filename?: string | null;
+            /** @description 包 ID（uuid） */
+            id: string;
+            /** @description MIME 类型 */
+            mimeType?: string | null;
+            /** @description 包名称 */
+            name: string;
+            /** @description 上传时的原始文件名 */
+            originalFilename?: string | null;
+            /** @description 目标平台（包与平台无关时为 null） */
+            platform?: string | null;
+            /** @description 所属项目 ID（null = 默认项目视图） */
+            projectId?: string | null;
+            /** @description 对各执行器的推送尝试记录 */
+            pushHistory?: components["schemas"]["ExecutorPackagePushRecordDto"][];
+            /** @description 生命周期状态（active / deprecated / …） */
+            status: string;
+            /** @description 包类型（runtime/tooling 分类） */
+            type: string;
+            /**
+             * Format: date-time
+             * @description 最后更新时间（ISO-8601）
+             */
+            updatedAt: string;
+            /** @description 上传者身份 */
+            uploadedBy?: string | null;
+            /** @description 包版本 */
+            version: string;
+        };
+        ExecutorPickerItemDto: {
+            address: string;
+            appName: string;
+            /** Format: uuid */
+            id: string;
+            maxConcurrentTasks: number | null;
+            runningTaskCount: number;
+            /** @enum {string} */
+            status: "online" | "offline";
+        };
+        ExecutorPickerResponseDto: {
+            items: components["schemas"]["ExecutorPickerItemDto"][];
+            /** @description 实际生效的上限 */
+            limit: number;
+            total: number;
+            /** @description 达到上限时为 true —— items 只是前缀，total 才是真实总数 */
+            truncated: boolean;
         };
         ExecutorPullDto: {
             /**
@@ -5782,16 +6280,6 @@ export interface components {
              * @example http://10.0.0.5:9100
              */
             address: string;
-            /**
-             * @description 客户端期望的长轮询等待窗口（毫秒）；服务端按 EXECUTOR_PULL_WAIT_MS 钳位（上限 55s）
-             * @example 25000
-             */
-            waitMs?: number;
-            /**
-             * @description 执行器当前空闲槽位数；0 = 满载（服务端只下发控制命令，不派任务）。缺省按有空槽处理
-             * @example 2
-             */
-            freeSlots?: number;
             /**
              * @description 稳定设备指纹 sha256(deviceId + ':' + installSalt)，64 位小写十六进制（协议 v3+）。pull 同址多行时用于唯一定位本行
              * @example ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
@@ -5802,121 +6290,174 @@ export interface components {
              * @example 3f2a1c9d-8b7e-6f50-a132-4b5c6d7e8f90
              */
             executorId?: string;
+            /**
+             * @description 执行器当前空闲槽位数；0 = 满载（服务端只下发控制命令，不派任务）。缺省按有空槽处理
+             * @example 2
+             */
+            freeSlots?: number;
+            /**
+             * @description 客户端期望的长轮询等待窗口（毫秒）；服务端按 EXECUTOR_PULL_WAIT_MS 钳位（上限 55s）
+             * @example 25000
+             */
+            waitMs?: number;
         };
         ExecutorPullResponseDto: {
-            /** @description 派发载荷（由 pull 服务构建的 ExecuteRequest 形状），无排队内容时为 null */
-            task: {
-                [key: string]: unknown;
-            } | null;
-            /** @enum {string} */
-            dispatchMode: "push" | "pull";
             /** @description 仅在支持控制面协议的 pull 模式执行器上出现（ARCH-33） */
             commands?: {
                 [key: string]: unknown;
             }[];
+            /** @enum {string} */
+            dispatchMode: "push" | "pull";
+            /** @description 派发载荷（由 pull 服务构建的 ExecuteRequest 形状），无排队内容时为 null */
+            task: {
+                [key: string]: unknown;
+            } | null;
         };
-        ExecutorCommandResultDto: {
-            /** @description 命令 id（中台入队时签发的 UUID v4，执行器原样回传；它同时是 acf:cmdres:/acf:cmdmeta: 键的成分） */
-            commandId: string;
-            /**
-             * @description 执行器注册地址
-             * @example http://10.0.0.5:9100
-             */
+        ExecutorPushResultDto: {
             address: string;
             /**
-             * @description 命令类型（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）
-             * @example deploy
+             * Format: uuid
+             * @description queued 时回填中台命令 ID（终态由 push-result 回调收敛）
              */
-            type: string;
-            /** @description 命令是否执行成功 */
-            ok: boolean;
-            /** @description 执行器本地路由的 HTTP 状态码 */
-            status?: number;
-            /** @description 失败原因（≤2000）。执行器侧自截 1000 字符，这里给双倍余量——闸的意义是堵住非受信上报面的自由文本写放大，不是复刻执行器侧的截断行为 */
-            error?: string | null;
-            /** @description 本地执行耗时（毫秒） */
-            durationMs?: number;
-            /** @description ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——上报行定位与归属比对用 */
-            deviceFingerprint?: string | null;
-        };
-        ExecutorCommandResultResponseDto: {
-            /** @enum {boolean} */
-            ok: true;
-        };
-        ExecutorConfigPayloadResponseDto: {
-            /** @description 取自实体的按执行器容量；null = 不限 */
-            maxConcurrentTasks: number;
-            /** @description 心跳间隔（秒，取自 executor.heartbeatInterval/1000，最小 1） */
-            heartbeatIntervalSeconds: number;
-            /** @description 仅在配置了 app.adminApiUrl 时出现 */
-            adminApiUrl?: string;
-        };
-        TerminalStateItemDto: {
+            commandId?: string;
+            /** @description error 时的失败原因 */
+            error?: string;
+            /** Format: uuid */
+            executorId: string;
             /**
-             * @description 执行 id（与 dispatch 下发、回调上报的 executionId 同源）
-             * @example b3f1c0de-1f2a-4c77-9a10-2f6d2c1e9a01
-             */
-            executionId: string;
-            /**
-             * @description 该执行当前的状态；本端点只回终态取值
-             * @example success
+             * @description queued=已入 pull 命令队列；success=push 同步 accepted；error=失败
              * @enum {string}
              */
-            status: "success" | "failed" | "timeout" | "killed" | "cancelled";
-            /**
-             * @description 终态时间（ISO 8601）。endTime 缺失时（如未启动即被取消）回 createdAt 兜底值
-             * @example 2026-09-14T08:12:33.120Z
-             */
-            endedAt: string;
+            status: "queued" | "success" | "error";
         };
-        TerminalStatesResponseDto: {
-            /** @description 已终态的执行清单，按终态时间**升序**（便于调用方按水印增量消费：处理到哪条就把下一条的时间当下次 since） */
-            items: components["schemas"]["TerminalStateItemDto"][];
+        ExecutorRegisterDto: {
             /**
-             * @description true 表示还有更多未返回（已达 limit）。调用方应在下一轮对账继续取，不要误判为「其余都还没终态」
-             * @example false
+             * @description 执行器注册地址
+             * @example 192.168.1.100:3002
              */
-            hasMore?: boolean;
+            address: string;
             /**
-             * @description 服务端当前时间（ISO 8601）。执行器用它校正自己的时钟偏差后再算 since ——执行器与 admin 时钟不一致会让 since 窗口错位，直接漏掉刚终态的行
-             * @example 2026-09-14T08:20:00.000Z
+             * @description 执行器应用名称
+             * @example executor-node
              */
-            serverTime: string;
-        };
-        ExecutorResponseDto: {
-            /** Format: uuid */
-            id: string;
-            /** @description 执行器应用名（按进程的注册键） */
             appName: string;
+            /**
+             * @description 声明的能力
+             * @example [
+             *       "docker",
+             *       "shell"
+             *     ]
+             */
+            capabilities?: string[];
+            /** @description R3-A（§4.3）：设备级应用版本事实（执行器启动时随注册上报一份，语义与心跳 deployedApps 完全一致：缺省 → 不动；[] → 设备无已部署应用；非法 → 整字段拒绝）。 */
+            deployedApps?: components["schemas"]["DeployedAppDto"][];
+            /**
+             * @description 执行器描述
+             * @example Production Node.js executor
+             */
+            description?: string | null;
+            /**
+             * @description ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：注册时先按指纹解析行（地址退化为可达性元数据）。缺省/非法 → 保留已存值并回退到按地址查找；从未上报过指纹的行会带上服务端生成的 `legacy:{address}` 兜底键。
+             * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
+             */
+            deviceFingerprint?: string | null;
+            /**
+             * @description 派发模式（'push' | 'pull'；默认为 push）
+             * @example pull
+             * @enum {string}
+             */
+            dispatchMode?: "push" | "pull";
+            /**
+             * @description 执行器分组名称
+             * @example production
+             */
+            groupName?: string | null;
+            /** @description R3-A（§4.3/P10）：设备已安装的执行器包清单（语义与心跳 installedPackages 完全一致）。 */
+            installedPackages?: components["schemas"]["InstalledPackageDto"][];
+            /** @description python_task_multiversion：解释器缓存池清单。缺省 → 保留已存值；[] → 已上报且池为空；结构非法 → 整字段被拒绝。 */
+            interpreters?: components["schemas"]["ExecutorInterpreterDto"][];
+            /**
+             * @description 最大并发数（legacy 别名）
+             * @example 10
+             */
+            maxConcurrent?: number;
+            /**
+             * @description 最大并发任务数
+             * @example 10
+             */
+            maxConcurrentTasks?: number;
+            /**
+             * @description PROTOCOL-VER (B-3/U-2): 执行器线缆协议版本（与实现版本 version 解耦）。中台按兼容矩阵分支：低于 supportedMin 只 warn + 兜底，不拒绝注册。
+             * @example 1
+             */
+            protocolVersion?: number;
+            /**
+             * @description 重启时间戳（ISO 8601）
+             * @example 2026-09-14T08:00:00.000Z
+             */
+            restartedAt?: string | null;
+            /**
+             * @description 声明的运行时环境
+             * @example [
+             *       "nodejs",
+             *       "python3"
+             *     ]
+             */
+            runtime?: string[];
+            /**
+             * @description 启动 ID（进程生命周期标识，用于幂等重复注册）
+             * @example uuid-of-this-executor-process-life
+             */
+            startupId?: string | null;
+            /**
+             * @description 执行器标签
+             * @example [
+             *       "nodejs",
+             *       "prod"
+             *     ]
+             */
+            tags?: string[] | null;
+            /**
+             * @description 执行器类型
+             * @example node
+             */
+            type?: string;
+            /**
+             * @description 执行器版本
+             * @example 1.0.0
+             */
+            version?: string;
+        };
+        ExecutorRegisterResponseDto: {
             /** @description http://host:port，全局唯一 */
             address: string;
-            /** @enum {string} */
-            status: "online" | "offline";
+            /** @description save() 回程 hydrated（R7 实测） */
+            agentCapabilities?: string[] | null;
             /**
-             * @description 离线原因（在线时为 null）
-             * @enum {string|null}
+             * Format: date-time
+             * @description save() 回程 hydrated（R7 实测）
              */
-            offlineReason: "manual" | "stale_timeout" | null;
+            agentCapabilitiesUpdatedAt?: string | null;
+            /** @description 执行器应用名（按进程的注册键） */
+            appName: string;
+            /** @description 声明的运行时能力域 */
+            capabilities: string[] | null;
             /** @description 连续丢失/失败的心跳次数（失联清扫输入） */
             consecutiveHeartbeatMisses: number;
-            /** @enum {string} */
-            type: "python" | "node" | "universal";
-            /** @description 执行器自报的包版本 */
-            executorVersion: string | null;
-            /** @description 注册时协商的协议版本（pull 控制面门禁） */
-            protocolVersion: number | null;
+            cpuUsage: number | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description 滞留在死信队列中的控制面命令数 */
+            deadLetterCount: number | null;
+            description: string | null;
+            /** @description 跨地址变更保持稳定的设备身份（= sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符）。ADR-017 第三阶段：迁移 1790000000054 之后为 NOT NULL —— 从未上报过指纹的执行器会以服务端生成的 `legacy:{address}` 兜底键存储。 */
+            deviceFingerprint: string;
+            diskUsage: number | null;
             /**
              * @description push = 平台拨向执行器；pull = 执行器长轮询（受 NAT 约束）
              * @enum {string}
              */
             dispatchMode: "push" | "pull";
-            /** @description 声明的运行时能力域 */
-            capabilities: string[] | null;
-            /**
-             * Format: date-time
-             * @description 最近一次被接受的心跳
-             */
-            lastHeartbeat: string | null;
             /**
              * Format: date-time
              * @description 执行器进程启动时间（重启检测）
@@ -5924,44 +6465,61 @@ export interface components {
             executorStartedAt: string | null;
             /** @description 按进程的实例 ID（幂等令牌签发） */
             executorStartupId: string | null;
-            /** @description 跨地址变更保持稳定的设备身份（= sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符）。ADR-017 第三阶段：迁移 1790000000054 之后为 NOT NULL —— 从未上报过指纹的执行器会以服务端生成的 `legacy:{address}` 兜底键存储。 */
-            deviceFingerprint: string;
-            /** @description 当前运行中的任务数（含已预留但未领取的 pull 槽位） */
-            runningTaskCount: number;
-            cpuUsage: number | null;
-            memUsage: number | null;
-            diskUsage: number | null;
-            /** @description 毫秒 */
-            networkLatency: number | null;
-            totalTaskCount: number;
+            /** @description 执行器自报的包版本 */
+            executorVersion: string | null;
             failedTaskCount: number;
+            groupName: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @description 执行器上报的解释器池（D5：null = 从未上报，[] = 上报为空） */
+            interpreters: {
+                available?: boolean;
+                discoveredAt?: string;
+                path?: string;
+                version: string;
+            }[] | null;
+            /**
+             * Format: date-time
+             * @description 最近一次被接受的心跳
+             */
+            lastHeartbeat: string | null;
             /** @description 派发门禁容量；null = 不限 */
             maxConcurrentTasks: number | null;
-            /** @description 该执行器当前已领取的执行 ID（E-01-RPT 存活上报） */
-            runningExecutionIds: string[] | null;
+            memUsage: number | null;
+            /** @description 毫秒 */
+            networkLatency: number | null;
+            /**
+             * @description 离线原因（在线时为 null）
+             * @enum {string|null}
+             */
+            offlineReason: "manual" | "stale_timeout" | null;
+            /** @description R9 幂等语义：同 (address, startupId) 重注册返回 null（不轮换）；首次注册/真实重启才发新 token */
+            perExecutorToken?: string | null;
+            /** Format: uuid */
+            projectId: string | null;
+            /** @description 协议版本是否 ≥ PROTOCOL_SUPPORTED_MIN（仅回显，不拒绝注册） */
+            protocolCompliant: boolean;
+            /** @description 注册时协商的协议版本（pull 控制面门禁） */
+            protocolVersion: number | null;
             /** @description 已预留但尚未领取的 pull 槽位（仅供展示/告警 —— 不是派发门禁） */
             reservedSlots: number | null;
-            /** @description 滞留在死信队列中的控制面命令数 */
-            deadLetterCount: number | null;
+            /** @description 该执行器当前已领取的执行 ID（E-01-RPT 存活上报） */
+            runningExecutionIds: string[] | null;
+            /** @description 当前运行中的任务数（含已预留但未领取的 pull 槽位） */
+            runningTaskCount: number;
+            /** @enum {string} */
+            status: "online" | "offline";
+            tags: string[] | null;
             /**
              * @description S4-C4（协议 v9）：执行器的**任务沙箱姿态**——那台机器上的 TASK_SANDBOX 到底开没开。**三态（读面必须区分，塌成两态就退回「看不出来」）**：`null` = **未上报**（旧执行器 / 本列上线前的存量行——**不等于直跑**，详情页显示「未上报」）；`""` = 已上报且**直跑**（未沙箱）；`"bwrap"` = 已上报且在 fail-closed 沙箱里。取值域只有 `""` 与 `"bwrap"`（非法上报按未上报处理，见 ExecutorHeartbeatDto）。纯观测列：不参与派发/准入判定。
              * @enum {string|null}
              */
             taskSandbox: "" | "bwrap" | null;
-            /** @description 执行器上报的解释器池（D5：null = 从未上报，[] = 上报为空） */
-            interpreters: {
-                version: string;
-                path?: string;
-                available?: boolean;
-                discoveredAt?: string;
-            }[] | null;
-            groupName: string | null;
-            tags: string[] | null;
-            description: string | null;
-            /** Format: uuid */
-            projectId: string | null;
-            /** Format: date-time */
-            createdAt: string;
+            /** @description 回调鉴权 secret（HMAC 源），执行器侧持久化 */
+            tokenHash: string;
+            totalTaskCount: number;
+            /** @enum {string} */
+            type: "python" | "node" | "universal";
             /** Format: date-time */
             updatedAt: string;
             /** @description 乐观锁 @VersionColumn（TypeORM 版本列） */
@@ -5969,1067 +6527,128 @@ export interface components {
             /** @description 仅 list 面（findAll）逐行附带：自报版本是否满足 EXECUTOR_MIN_VERSION 门禁 */
             versionCompliant?: boolean;
         };
-        ExecutorGroupsDto: {
-            groups: string[];
-        };
-        ExecutorTagsDto: {
-            tags: string[];
-        };
-        ExecutorRuntimeConfigDto: {
-            /** @description 心跳间隔（毫秒） */
-            heartbeatIntervalMs: number;
-            heartbeatTimeoutMultiplier: number;
-            heartbeatTimeoutMs: number;
-            staleOfflineConfirmations: number;
-            /** @description 连续 N 次未确认后才判离线的折算毫秒 */
-            effectiveOfflineAfterMs: number;
-            listLimit: number;
-            executorTotal: number;
-        };
-        ExecutorPickerItemDto: {
-            /** Format: uuid */
-            id: string;
-            appName: string;
-            address: string;
-            /** @enum {string} */
-            status: "online" | "offline";
-            runningTaskCount: number;
-            maxConcurrentTasks: number | null;
-        };
-        ExecutorPickerResponseDto: {
-            items: components["schemas"]["ExecutorPickerItemDto"][];
-            /** @description 达到上限时为 true —— items 只是前缀，total 才是真实总数 */
-            truncated: boolean;
-            total: number;
-            /** @description 实际生效的上限 */
-            limit: number;
-        };
-        ExecutorInstallCmdDto: {
-            /** @description curl … | bash -s -- 全命令行（含 --secret） */
-            cmd: string;
-            /** @description 共享机器凭据（ADMIN-only 面下发） */
-            token: string;
-            adminApiUrl: string;
-        };
         ExecutorReloadConfigResponseDto: {
-            /** @description true = pull 模式：已入队，在下次轮询（约 1 秒）时生效 */
-            queued?: boolean;
             /** Format: uuid */
             commandId?: string;
-            message?: string;
             /** @description push 模式：执行器自身 api/config/reload 的响应体，原样透传 */
             executorResponse?: {
                 [key: string]: unknown;
             };
+            message?: string;
+            /** @description true = pull 模式：已入队，在下次轮询（约 1 秒）时生效 */
+            queued?: boolean;
         };
-        ExecutorActionReasonDto: {
+        ExecutorRemovalImpactResponseDto: {
+            address: string;
+            appName: string;
+            /** @description 通过 task.executorAppName 绑定的任务数（精确匹配，不会静默故障转移） */
+            appNameBoundTasks: number;
+            /** @description pull 队列深度（acf:pull:{id} 的 LLEN）；仅 pull 模式执行器可能非零 */
+            pendingPullItems: number;
+            /** @description 通过 task.executorId 绑定到该执行器的任务数（派发无回退） */
+            pinnedTasks: number;
+            status: string;
+        };
+        ExecutorResponseDto: {
+            /** @description http://host:port，全局唯一 */
+            address: string;
+            /** @description 执行器应用名（按进程的注册键） */
+            appName: string;
+            /** @description 声明的运行时能力域 */
+            capabilities: string[] | null;
+            /** @description 连续丢失/失败的心跳次数（失联清扫输入） */
+            consecutiveHeartbeatMisses: number;
+            cpuUsage: number | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description 滞留在死信队列中的控制面命令数 */
+            deadLetterCount: number | null;
+            description: string | null;
+            /** @description 跨地址变更保持稳定的设备身份（= sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符）。ADR-017 第三阶段：迁移 1790000000054 之后为 NOT NULL —— 从未上报过指纹的执行器会以服务端生成的 `legacy:{address}` 兜底键存储。 */
+            deviceFingerprint: string;
+            diskUsage: number | null;
             /**
-             * @description 可选的操作原因（≤200 字符），计入审计
-             * @example decommissioned host
+             * @description push = 平台拨向执行器；pull = 执行器长轮询（受 NAT 约束）
+             * @enum {string}
              */
-            reason?: string;
+            dispatchMode: "push" | "pull";
+            /**
+             * Format: date-time
+             * @description 执行器进程启动时间（重启检测）
+             */
+            executorStartedAt: string | null;
+            /** @description 按进程的实例 ID（幂等令牌签发） */
+            executorStartupId: string | null;
+            /** @description 执行器自报的包版本 */
+            executorVersion: string | null;
+            failedTaskCount: number;
+            groupName: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @description 执行器上报的解释器池（D5：null = 从未上报，[] = 上报为空） */
+            interpreters: {
+                available?: boolean;
+                discoveredAt?: string;
+                path?: string;
+                version: string;
+            }[] | null;
+            /**
+             * Format: date-time
+             * @description 最近一次被接受的心跳
+             */
+            lastHeartbeat: string | null;
+            /** @description 派发门禁容量；null = 不限 */
+            maxConcurrentTasks: number | null;
+            memUsage: number | null;
+            /** @description 毫秒 */
+            networkLatency: number | null;
+            /**
+             * @description 离线原因（在线时为 null）
+             * @enum {string|null}
+             */
+            offlineReason: "manual" | "stale_timeout" | null;
+            /** Format: uuid */
+            projectId: string | null;
+            /** @description 注册时协商的协议版本（pull 控制面门禁） */
+            protocolVersion: number | null;
+            /** @description 已预留但尚未领取的 pull 槽位（仅供展示/告警 —— 不是派发门禁） */
+            reservedSlots: number | null;
+            /** @description 该执行器当前已领取的执行 ID（E-01-RPT 存活上报） */
+            runningExecutionIds: string[] | null;
+            /** @description 当前运行中的任务数（含已预留但未领取的 pull 槽位） */
+            runningTaskCount: number;
+            /** @enum {string} */
+            status: "online" | "offline";
+            tags: string[] | null;
+            /**
+             * @description S4-C4（协议 v9）：执行器的**任务沙箱姿态**——那台机器上的 TASK_SANDBOX 到底开没开。**三态（读面必须区分，塌成两态就退回「看不出来」）**：`null` = **未上报**（旧执行器 / 本列上线前的存量行——**不等于直跑**，详情页显示「未上报」）；`""` = 已上报且**直跑**（未沙箱）；`"bwrap"` = 已上报且在 fail-closed 沙箱里。取值域只有 `""` 与 `"bwrap"`（非法上报按未上报处理，见 ExecutorHeartbeatDto）。纯观测列：不参与派发/准入判定。
+             * @enum {string|null}
+             */
+            taskSandbox: "" | "bwrap" | null;
+            totalTaskCount: number;
+            /** @enum {string} */
+            type: "python" | "node" | "universal";
+            /** Format: date-time */
+            updatedAt: string;
+            /** @description 乐观锁 @VersionColumn（TypeORM 版本列） */
+            version: number;
+            /** @description 仅 list 面（findAll）逐行附带：自报版本是否满足 EXECUTOR_MIN_VERSION 门禁 */
+            versionCompliant?: boolean;
         };
         ExecutorRotateTokenDto: {
             /** @description 新共享凭据（仅此一次回显） */
             token: string;
         };
-        ExecutorTokenResponseDto: {
-            /** @description 明文令牌（每次取回时展示；轮换规则见 R9） */
-            token: string;
-            /** @description 存储的 bcrypt/sha 哈希，用于校验 */
-            tokenHash: string;
-        };
-        ExecutorOfflineDto: {
-            /** @enum {boolean} */
-            success: true;
-        };
-        ExecutorRemovalImpactResponseDto: {
-            appName: string;
-            address: string;
-            status: string;
-            /** @description 通过 task.executorId 绑定到该执行器的任务数（派发无回退） */
-            pinnedTasks: number;
-            /** @description 通过 task.executorAppName 绑定的任务数（精确匹配，不会静默故障转移） */
-            appNameBoundTasks: number;
-            /** @description pull 队列深度（acf:pull:{id} 的 LLEN）；仅 pull 模式执行器可能非零 */
-            pendingPullItems: number;
-        };
-        ExecutorExecutionsResponseDto: {
-            total: number;
-            /** @description TaskExecution 行，按最新在前（本读面未排除大文本列） */
-            items: unknown[];
-        };
-        ExecutorMetricsDto: {
-            executor?: {
-                /** Format: uuid */
-                id: string;
-                address: string;
-                /** @enum {string} */
-                status: "online" | "offline";
-            };
-            sevenDayStats?: {
-                totalExecutions: number;
-                successful: number;
-                failed: number;
-            };
-            current?: {
-                runningTaskCount: number;
-                /** @description null = 执行器未上报（旧版）→ 前端回落旧口径 */
-                reservedSlots: number | null;
-                cpuUsage: number | null;
-                memUsage: number | null;
-                /** @description pull 队列深度；push 恒 0；Redis 故障按 0 呈现 */
-                pendingPullItems: number;
-            };
-            history: {
-                timestamp: string;
-                cpuUsage: number | null;
-                memUsage: number | null;
-                runningTaskCount: number;
-            }[];
-        };
-        NotificationChannelDto: {
-            /** @enum {string} */
-            key: "email" | "dingtalk" | "wecom" | "slack" | "webhook" | "feishu";
-            name: string;
-            enabled: boolean;
-            /** @description 通道专属配置；读取时凭据值会被掩码 */
-            config: {
-                [key: string]: string;
-            };
-            description: string;
-        };
-        UpdateChannelDto: {
-            /** @description 启用/停用该渠道 */
-            enabled?: boolean;
-            /** @description 渠道配置覆盖（string → string 映射，哨兵 '***' 不覆盖真实机密） */
-            config?: Record<string, never>;
-        };
-        ChannelTestResponseDto: {
-            /** @description 仅当每一个请求的渠道都真的投递成功（'sent'）时为 true；任一路为 'blocked'/'failed'/'skipped' 都是 false，逐通道结果见 results */
-            success: boolean;
-            message: string;
-            /** @description 逐通道投递状态 */
-            results?: {
-                [key: string]: "sent" | "blocked" | "failed" | "skipped";
-            };
-        };
-        SendTestDto: {
-            /** @description 要扇出的渠道（取值域 = 已注册渠道枚举） */
-            channels: ("email" | "dingtalk" | "wecom" | "slack" | "webhook" | "feishu")[];
-            /** @description 测试通知标题 */
-            title: string;
-            /** @description 测试通知内容 */
-            content: string;
-        };
-        SendNotificationDto: {
-            /**
-             * @default info
-             * @enum {string}
-             */
-            level?: "info" | "warning" | "error" | "critical";
-            taskName?: string;
-            title?: string;
-            content: string;
-            channels?: ("email" | "dingtalk" | "wecom" | "slack" | "webhook" | "feishu")[];
-            webhookUrl?: string;
-            taskId?: string;
-        };
-        SendNotificationResultDto: {
-            /**
-             * @description 请求已受理；**不**等同于各通道均已投递成功
-             * @example true
-             */
-            success: boolean;
-            /**
-             * @description 逐通道投递结果：'sent' 已投递；'blocked' 被 SSRF 防护拒绝（目标为内网/环回/链路本地/benchmark/CGNAT）；'failed' 重试后仍传输失败；'skipped' 通道未配置（既无保存的配置也无环境变量缺省值）。
-             * @example {
-             *       "email": "sent",
-             *       "slack": "blocked",
-             *       "webhook": "failed",
-             *       "wecom": "skipped"
-             *     }
-             */
-            results: {
-                [key: string]: "sent" | "blocked" | "failed" | "skipped";
-            };
-        };
-        NotificationSilenceDto: {
-            /** Format: uuid */
-            id: string;
-            /** @enum {string} */
-            scope: "global" | "task" | "application";
-            channelType: string | null;
-            /**
-             * Format: uuid
-             * @description scope=task 时生效
-             */
-            taskId: string | null;
-            /**
-             * Format: uuid
-             * @description scope=application 时生效
-             */
-            applicationId: string | null;
-            /** @description 空 = 所有级别；否则 info/warning/critical 等 AlertLevel */
-            level: string | null;
-            reason: string | null;
-            /** Format: date-time */
-            startTime: string | null;
-            /**
-             * Format: date-time
-             * @description 空 = 不过期；durationMinutes 写入时折算
-             */
-            endTime: string | null;
-            durationMinutes: number | null;
-            createdBy: string | null;
-            /** Format: date-time */
-            createdAt: string;
-        };
-        CreateSilenceDto: {
-            /**
-             * @description 静默范围：global=全渠道；task=单任务；application=单应用
-             * @example task
-             * @enum {string}
-             */
-            scope: "global" | "task" | "application";
-            /** @description 仅作范围记录（isSilenced 在渠道扇出前判定，无法按渠道裁剪投递，NETOPT-5① 如实化）；取值须为已注册渠道类型 */
-            channelType?: string;
-            /** @description scope=task 时必填：任务 UUID */
-            taskId?: string;
-            /** @description scope=application 时必填：应用 UUID */
-            applicationId?: string;
-            /**
-             * @description 仅静默该级别（精确匹配，非「及以下」）；空 = 全部级别
-             * @enum {string}
-             */
-            level?: "info" | "warning" | "error" | "critical";
-            /** @description 静默原因（审计记录用） */
-            reason?: string;
-            /**
-             * @description 静默时长（分钟，1..5256000=10 年）；缺省走系统默认 TTL（P3-1 上界）
-             * @example 60
-             */
-            durationMinutes?: number;
-        };
-        AlertmanagerAlertDto: {
-            /**
-             * @description 告警状态 firing/resolved
-             * @example firing
-             */
-            status?: string;
-            /**
-             * @description 告警标签（含 alertname/labels.taskId 等）
-             * @example {
-             *       "alertname": "HighCPU",
-             *       "taskId": "uuid"
-             *     }
-             */
-            labels?: Record<string, never>;
-            /**
-             * @description 告警注解（含 runbook_url 惯例）
-             * @example {
-             *       "summary": "CPU > 90%"
-             *     }
-             */
-            annotations?: Record<string, never>;
-            /**
-             * @description 开始时间（ISO 字符串原样透出）
-             * @example 2026-09-14T06:00:00Z
-             */
-            startsAt?: string;
-            /**
-             * @description 结束时间（resolved 时）
-             * @example 2026-09-14T06:05:00Z
-             */
-            endsAt?: string;
-            /**
-             * @description 告警生成器 URL
-             * @example http://grafana/alert/1
-             */
-            generatorURL?: string;
-            /** @description 告警指纹（去重用） */
-            fingerprint?: string;
-        };
-        AlertmanagerWebhookDto: {
-            /**
-             * @description Alertmanager webhook 协议版本
-             * @example 4
-             */
-            version?: string;
-            /** @description 告警分组键 */
-            groupKey?: string;
-            /** @description 截断的告警条数 */
-            truncatedAlerts?: number;
-            /** @description 组级状态 firing/resolved */
-            status?: string;
-            /** @description 接收方名称 */
-            receiver?: string;
-            /** @description 组公共标签 */
-            groupLabels?: Record<string, never>;
-            /** @description 公共标签 */
-            commonLabels?: Record<string, never>;
-            /** @description 公共注解 */
-            commonAnnotations?: Record<string, never>;
-            /** @description Alertmanager 外部 URL */
-            externalURL?: string;
-            /** @description 告警列表（空数组/缺失由控制器映射层以 400 NOTIFICATION_ALERT_PAYLOAD_EMPTY 拒绝） */
-            alerts?: components["schemas"]["AlertmanagerAlertDto"][];
-        };
-        AlertsWebhookResponseDto: {
-            /** @enum {boolean} */
-            ok: true;
-            /** @description 送达的通道数 */
-            delivered: number;
-            /** @description 逐通道投递状态 */
-            results: {
-                [key: string]: "sent" | "blocked" | "failed" | "skipped";
-            };
-        };
-        AiConfigResponseDto: {
-            /** @description AI 提供方，取值：'qwen' | 'openai' | 'ollama' | 'disabled' */
-            provider: string;
-            openaiModel: string;
-            openaiBaseUrl: string;
-            ollamaHost: string;
-            ollamaModel: string;
-            qwenModel: string;
-            qwenBaseUrl: string;
-            /** @description 字符串编码的数字（配置存储中的值均为字符串） */
-            qwenMaxTokens: string;
-            /** @description 字符串编码的数字（毫秒） */
-            qwenTimeoutMs: string;
-            /** @description 当前 provider 是否已配置 API key（key 的**值**永不返回） */
-            hasApiKey: boolean;
-        };
-        SaveAiConfigDto: Record<string, never>;
-        AiConfigSaveResponseDto: {
-            /** @enum {boolean} */
-            ok: true;
-        };
-        AiTestResponseDto: {
-            /** @description provider 被禁用或返回空响应时为 false */
-            ok: boolean;
-            /** @description 样例提示词的回复文本，或降级状态下的提示信息 */
-            message: string;
-        };
-        SaveAiProviderDto: {
-            /**
-             * @description 引用名（进配置键名，形态封闭）
-             * @example qwen-vl
-             */
-            id: string;
-            /** @description 展示名 */
-            label?: string;
-            /**
-             * @description 协议形态，默认 openai
-             * @enum {string}
-             */
-            transport?: "openai" | "ollama";
-            /**
-             * @description OpenAI 兼容端点基址（须 http(s)）
-             * @example https://dashscope.aliyuncs.com/compatible-mode/v1
-             */
-            baseUrl: string;
-            /**
-             * @description 模型名
-             * @example qwen-vl-max
-             */
-            model: string;
-            /** @description 单次最大输出 token */
-            maxTokens?: number;
-            /** @description 请求超时（毫秒） */
-            timeoutMs?: number;
-            /** @description 是否支持视频理解（能力位） */
-            supportsVideo?: boolean;
-            /** @description 是否启用 */
-            enabled?: boolean;
-            /** @description API Key；不传或传 *** 保持原值，空串表示清除 */
-            apiKey?: string;
-        };
-        AssignAiRouteDto: {
-            /**
-             * @description 用途
-             * @enum {string}
-             */
-            purpose: "analysis" | "agent" | "video";
-            /** @description 目标 provider；空 = 跟随全局 */
-            providerId?: string;
-            /** @description 覆盖模型名（可选） */
-            model?: string;
-        };
-        SopDraftFromVideoDto: {
-            /** @description 上传接口返回的 mediaId（UUID） */
-            mediaId: string;
-            /** @description 指定 provider（须勾选支持视频）；空 = 走 ai.routes.video */
-            providerId?: string;
-            /** @description 一句话补充意图（可空） */
-            hint?: string;
-        };
-        CreateSopSessionDto: {
-            /** @description 上传接口返回的 mediaId（UUID） */
-            mediaId: string;
-            /** @description 指定 provider（须勾选支持视频）；空 = 走 ai.routes.video */
-            providerId?: string;
-            /** @description 首轮补充说明（可空） */
-            hint?: string;
-        };
-        SopSessionTurnDto: {
-            /** @description 文字补充（与 mediaId 至少给一个） */
-            text?: string;
-            /** @description 中途补录的视频 mediaId（UUID） */
-            mediaId?: string;
-        };
-        AgentSessionDto: {
-            /** Format: uuid */
-            id: string;
-            /** @enum {string} */
-            kind: "ops_watch" | "incident" | "sop_authoring" | "sop_review" | "app_scaffold" | "chat";
-            /** @enum {string} */
-            status: "pending" | "running" | "waiting_input" | "succeeded" | "failed" | "aborted" | "budget_exceeded";
-            title: string | null;
-            /** @description 'user:<id>' / 'cron:<name>' / 'event:<type>'（触发来源） */
-            triggerSource: string;
-            /** @description 发起人（G4 四眼原则的数据基础）：'user:<username>' / 'system:<cron|event>'；存量行 null = 未知 */
-            createdBy: string | null;
-            /**
-             * Format: uuid
-             * @description 子会话血缘（sop_review 会话在此串联）
-             */
-            parentSessionId: string | null;
-            /** @description 会话目标/上下文对象 */
-            contextJson: {
-                [key: string]: unknown;
-            } | null;
-            /** @description 资源范围约束（03 §5.3）；为空 = 无资源访问权限 */
-            scopeJson: {
-                [key: string]: unknown;
-            } | null;
-            /** @description 入队时取的预算快照（审计看到的是当时被允许的额度） */
-            budgetJson: {
-                maxSteps?: number;
-                maxTokens?: number;
-                wallClockMs?: number;
-                maxToolCalls?: number;
-            } | null;
-            /** @description 成功时的最终结构化结果 */
-            resultJson: {
-                [key: string]: unknown;
-            } | null;
-            /** @description 由 LLM 撰写的收尾摘要 */
-            summary: string | null;
-            errorMessage: string | null;
-            totalSteps: number;
-            totalTokensIn: number;
-            totalTokensOut: number;
-            totalToolCalls: number;
-            /** @description 会话当前等待的事项（审批/澄清/...） */
-            waitingFor: string | null;
-            /** Format: date-time */
-            startedAt: string | null;
-            /** Format: date-time */
-            finishedAt: string | null;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-        };
-        AgentSessionListResponseDto: {
-            items: components["schemas"]["AgentSessionDto"][];
-            total: number;
-        };
-        AgentStepDto: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            sessionId: string;
-            /** @description 会话内从 1 开始的序号 */
-            seq: number;
-            /** @enum {string} */
-            role: "system" | "user" | "assistant" | "tool";
-            content: string | null;
-            /** @description 提供方暴露的推理通道内容 */
-            reasoning: string | null;
-            /** @description 助手工具调用请求原文 */
-            toolCallsJson: {
-                [key: string]: unknown;
-            }[] | null;
-            toolCallId: string | null;
-            tokensIn: number;
-            tokensOut: number;
-            latencyMs: number;
-            provider: string | null;
-            model: string | null;
-            /** @description 压缩后的步骤摘要（保留分级） */
-            summary: string | null;
-            /** Format: date-time */
-            createdAt: string;
-        };
-        AgentToolCallDto: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            sessionId: string;
-            /** Format: uuid */
-            stepId: string | null;
-            toolName: string;
-            /** @enum {string} */
-            tier: "read" | "write" | "dangerous";
-            argsJson: {
-                [key: string]: unknown;
-            } | null;
-            /** @description resultTruncated 为真时被单次调用大小上限截断 */
-            resultJson: {
-                [key: string]: unknown;
-            } | null;
-            resultTruncated: boolean;
-            /** @enum {string} */
-            status: "ok" | "denied" | "awaiting_approval" | "in_flight" | "timeout" | "error" | "circuit_open";
-            errorMessage: string | null;
-            /**
-             * Format: uuid
-             * @description awaiting_approval / granted 流程的审批记录
-             */
-            approvalId: string | null;
-            durationMs: number;
-            /** Format: date-time */
-            stateChangedAt: string | null;
-            /** Format: date-time */
-            createdAt: string;
-        };
-        AgentSessionDetailResponseDto: {
-            session: components["schemas"]["AgentSessionDto"];
-            /** @description 按 seq 排序的推理轨迹 */
-            steps: components["schemas"]["AgentStepDto"][];
-            toolCalls: components["schemas"]["AgentToolCallDto"][];
-            /** @description 子会话（parentSessionId = 本会话） */
-            children: components["schemas"]["AgentSessionDto"][];
-        };
-        CreateAgentSessionDto: {
-            /** @enum {string} */
-            kind: "ops_watch" | "incident" | "sop_authoring" | "sop_review" | "app_scaffold" | "chat";
-            title?: string;
-            scope?: {
-                [key: string]: unknown;
-            };
-        };
-        AgentSessionCreateResponseDto: {
-            /** Format: uuid */
-            id: string;
-            /** @description 创建时恒为 'pending' */
-            status: string;
-        };
-        AgentSessionResumeResponseDto: {
-            /** @description false = 会话已终态，应新建一个会话 */
-            ok: boolean;
-            /** @description ok=false 时出现 */
-            reason?: string;
-        };
-        AgentBudgetResponseDto: {
-            maxSteps: number;
-            maxTokens: number;
-            wallClockMs: number;
-            maxToolCalls: number;
-        };
-        SopResponseDto: {
-            /** Format: uuid */
-            id: string;
-            /** @description 1..128 个 [a-z0-9-] 字符，全局唯一 */
-            slug: string;
-            title: string;
-            /** @description 最近发布的版本标签，null = 从未发布 */
-            currentVersion: string | null;
-            /** @enum {string} */
-            status: "draft" | "published" | "deprecated";
-            /**
-             * Format: uuid
-             * @description 该 SOP 运行时对应的应用 zip 包
-             */
-            applicationId: string | null;
-            /** @description 解析后的 front-matter（capabilities/权限档案的权威来源） */
-            frontMatterJson: {
-                [key: string]: unknown;
-            } | null;
-            bodyMarkdown: string | null;
-            /** @description 'user:<id>' 或 'agent:<sessionId>' */
-            createdBy: string;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-        };
-        SopVersionDto: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            sopId: string;
-            /** @description 例如 '1.2.3' */
-            version: string;
-            frontMatterJson: {
-                [key: string]: unknown;
-            };
-            bodyMarkdown: string;
-            changelog: string | null;
-            /** @description 对 front-matter + body 计算的 sha；交付对账锚点 */
-            contentHash: string;
-            publishedBy: string;
-            /** Format: date-time */
-            publishedAt: string;
-            /** Format: date-time */
-            createdAt: string;
-        };
-        SopAssignmentDto: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            sopId: string;
-            /** @description 本次指派锁定的 SOP 版本 */
-            sopVersion: string;
-            /** Format: uuid */
-            targetExecutorId: string | null;
-            /** @description 驱动该指派的对话/Agent 会话 */
-            targetAgentSessionId: string | null;
-            /** @enum {string} */
-            status: "assigned" | "in_progress" | "blocked" | "completed" | "failed" | "cancelled" | "stalled";
-            /** @description 当前澄清轮次（从 0 开始的计数器） */
-            clarificationRound: number;
-            maxRounds: number;
-            /** @description 执行器上报的交付结果 */
-            resultJson: {
-                [key: string]: unknown;
-            } | null;
-            /**
-             * Format: uuid
-             * @description 负责处理澄清的 sop_review 对话会话
-             */
-            parentSessionId: string | null;
-            /**
-             * Format: date-time
-             * @description 首次成功轮询领取的时间
-             */
-            pulledAt: string | null;
-            /**
-             * Format: date-time
-             * @description 最近一次进度心跳（停滞检测输入）
-             */
-            lastProgressAt: string | null;
-            progressJson: {
-                [key: string]: unknown;
-            } | null;
-            /** @description 最终报告的投递尝试次数（complete 幂等键） */
-            attempt: number;
-            /**
-             * Format: date-time
-             * @description 最近一次澄清回复推送（至少一次投递游标）
-             */
-            lastReplyDeliveredAt: string | null;
-            /** @description 领取时刻的 agentCapabilities 快照 */
-            capabilitySnapshotJson: {
-                [key: string]: unknown;
-            } | null;
-            /** @description 领取时生效的权限档案 */
-            permissionProfileAtPull: string | null;
-            assignedBy: string;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-        };
-        SopListResponseDto: {
-            items: components["schemas"]["SopResponseDto"][];
-            total: number;
-        };
-        SopClarificationDto: {
-            /** @description 执行器生成的幂等键（重试时去重） */
-            clientClarificationId: string | null;
-            /** Format: uuid */
-            assignmentId: string;
-            round: number;
-            /** @description 来自执行器的不可信陈述 —— 入库时已净化 */
-            question: string;
-            questionContextJson: {
-                [key: string]: unknown;
-            } | null;
-            answer: string | null;
-            /** @enum {string|null} */
-            resolution: "answered" | "sop_amended" | "escalated_to_human" | null;
-            /** @description 仅在 sop_amended 回复时设置 */
-            newSopVersion: string | null;
-            /** @description 截图/录屏引用（仅平台路径） */
-            mediaRefsJson: unknown[] | null;
-            /**
-             * Format: uuid
-             * @description 作答该澄清的 sop_review 会话
-             */
-            reviewSessionId: string | null;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-        };
-        SopAssignmentDetailResponseDto: {
-            assignment: components["schemas"]["SopAssignmentDto"];
-            clarifications: components["schemas"]["SopClarificationDto"][];
-        };
-        AgentMediaDto: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            assignmentId: string;
-            name: string;
-            mime: string | null;
-            sizeBytes: number;
-            /** @description 'executor:<id>' 或 'user:<id>' */
-            uploadedBy: string;
-            /** Format: date-time */
-            createdAt: string;
-        };
-        SopCapableExecutorDto: {
-            /** Format: uuid */
-            id: string;
-            appName: string;
-            address: string;
-            status: string;
-            /** Format: date-time */
-            lastHeartbeat: string | null;
-            /** @description 租约声明的能力域（短租约，不是快照） */
-            agentCapabilities: string[];
-        };
-        HumanReplyDto: {
-            /** @enum {string} */
-            resolution: "answered" | "sop_amended";
-            answer: string;
-            amendedFrontMatterYaml?: string;
-            amendedBodyMarkdown?: string;
-            changelog?: string;
-        };
-        ClarificationReplyResponseDto: {
-            /** @description 成功时恒为 true（失败均为 4xx） */
-            ok: boolean;
-            /** @description 当 resolution=sop_amended 时设置（发布产出了新的不可变版本） */
-            newSopVersion?: string;
-        };
-        DraftSopDto: {
-            /** @example daily-report */
-            slug: string;
-            title: string;
-            frontMatterYaml?: string;
-            bodyMarkdown?: string;
-        };
-        UpdateSopDto: {
-            title?: string;
-            frontMatterYaml?: string;
-            bodyMarkdown?: string;
-        };
-        PublishSopDto: {
-            /** @enum {string} */
-            bump?: "patch" | "minor" | "major";
-            changelog?: string;
-        };
-        SopPublishResponseDto: {
-            sop: components["schemas"]["SopResponseDto"];
-            version: components["schemas"]["SopVersionDto"];
-        };
-        AssignSopDto: {
-            /** @description 指派的具体版本；缺省 = currentVersion */
-            version?: string;
-            /** Format: uuid */
-            executorId?: string;
-            /** @description 按地址指派（executorId 缺省时的替代形态） */
-            executorAddress?: string;
-        };
-        SopCancelAssignmentsResponseDto: {
-            /**
-             * @description 实际取消的条数（0 = 本来就没有未结束指派）
-             * @example 2
-             */
-            cancelled: number;
-        };
-        CollabAssignmentItemDto: {
-            /** @enum {string} */
-            kind: "assignment";
-            /** Format: uuid */
-            assignmentId: string;
-            /** @description SOP 全量快照（对账锚点 = contentHash） */
-            sop?: {
-                slug: string;
-                title: string;
-                version: string;
-                contentHash: string;
-                frontMatter: {
-                    [key: string]: unknown;
-                };
-                bodyMarkdown: string;
-            };
-            maxRounds: number;
-            clarificationRound: number;
-        };
-        CollabClarificationReplyItemDto: {
-            /** @enum {string} */
-            kind: "clarification_reply";
-            /** Format: uuid */
-            assignmentId: string;
-            /** Format: uuid */
-            clarificationId: string;
-            clientClarificationId: string | null;
-            round: number;
-            /** @enum {string} */
-            resolution: "answered" | "sop_amended" | "escalated_to_human";
-            answer: string | null;
-            newSopVersion: string | null;
-            /** @description 仅在 sop_amended 时出现 —— 供继续执行的修订后 SOP 载荷 */
-            newSop?: components["schemas"]["CollabAssignmentItemDto"];
-        };
-        AgentCollabPollDto: {
-            /** @example office-pc-07:8002 */
-            address: string;
-            /** @description 长轮询等待（服务端钳位 ≤25s） */
-            waitMs?: number;
-            resendAssignments?: boolean | string[];
-            inflight?: string[];
-        };
-        CollabPollResponseDto: {
-            /** @description 混合条目：指派（首次领取/重发）与澄清回复 */
-            items: (components["schemas"]["CollabAssignmentItemDto"] | components["schemas"]["CollabClarificationReplyItemDto"])[];
-            /** @description 每次轮询都会下发的企业策略（执行器本地配置无法覆盖） */
-            sopPolicy?: {
-                /** @example standard */
-                permissionPolicy: string;
-                allowedProfiles: string[];
-            };
-        };
-        AgentCollabCapabilityDto: {
-            address: string;
-            capabilities: string[];
-            report?: {
-                [key: string]: unknown;
-            };
-        };
-        AgentCollabClarificationDto: {
-            address: string;
-            /** Format: uuid */
-            assignmentId: string;
-            clientClarificationId?: string;
-            question: string;
-            context?: {
-                [key: string]: unknown;
-            };
-            mediaRefs?: Record<string, never>[];
-            targetAgentSessionId?: string;
-        };
-        CollabClarifyResponseDto: {
-            /** @description 提供了 clientClarificationId 时用它，否则用行 id */
-            clarificationId: string;
-            round: number;
-            /** @description true = maxRounds 已耗尽，升级为人工通知（不会启动 sop_review 会话） */
-            escalated: boolean;
-        };
-        AgentCollabProgressDto: {
-            address: string;
-            progressJson?: {
-                [key: string]: unknown;
-            };
-            targetAgentSessionId?: string;
-        };
-        AgentCollabCompleteDto: {
-            address: string;
-            /** @enum {string} */
-            status: "completed" | "failed";
-            result?: {
-                [key: string]: unknown;
-            };
-            attempt?: number;
-        };
-        CollabCompleteResponseDto: {
-            /** @description false = 重复尝试/幂等重放被忽略 */
-            accepted: boolean;
-        };
-        AgentCollabAckReplyDto: {
-            address: string;
-            /** Format: uuid */
-            clarificationId: string;
-        };
-        CollabLlmRelayResponseDto: {
-            /** @description 提供方被禁用/不可用时为空字符串（fail-open，执行器降级） */
-            content: string;
-            /** @description 工具往返不向执行器暴露（恒为 null） */
-            toolCalls: string[] | null;
-            usage?: {
-                tokensIn: number;
-                tokensOut: number;
-            };
-            model: string;
-        };
-        CollabMediaUploadResponseDto: {
-            /** Format: uuid */
-            id: string;
-            name: string;
-            mime: string | null;
-            sizeBytes: number;
-            /** @description 平台路径 /api/sop/media/<id> —— mediaRefs 唯一合法形式 */
-            mediaPath: string;
-        };
-        CollabCandidatePackageResponseDto: {
-            /** Format: uuid */
-            packageId: string;
-            /** @description 形如 'sop-<slug>' 的包名 */
-            name: string;
-            /** @description SOP 版本 + Agent 构建元数据（幂等重复投递） */
-            version: string;
-        };
-        MetricsSummaryResponseDto: {
-            totalTasks: number;
-            totalExecutors: number;
-            /** @description status=online 的执行器数量 */
-            onlineExecutors: number;
-            /** @description 本地零点以来创建的执行数 */
-            todayRuns: number;
-            /** @description 聚合窗口内的状态计数 */
-            executions?: {
-                total: number;
-                success: number;
-                failed: number;
-                running: number;
-            };
-            /** @description 百分比（保留两位小数），无执行时为 0 */
-            successRate: number;
-            /** @description 窗口内成功执行的平均耗时（毫秒） */
-            avgDurationMs: number;
-        };
-        MetricsTrendRowDto: {
-            /** @description 本地日期分桶（createdAt 的 ISO yyyy-mm-dd） */
-            date: string;
-            success: number;
-            failed: number;
-            timeout: number;
-        };
-        MetricsExecutorStatsRowDto: {
-            /** Format: uuid */
-            id: string;
-            appName: string;
-            address: string;
-            /** @enum {string} */
-            status: "online" | "offline";
-            cpuUsage: number | null;
-            memUsage: number | null;
-            runningTaskCount: number;
-            /** Format: date-time */
-            lastHeartbeat: string | null;
-        };
-        MetricsRecentFailureDto: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            taskId: string;
-            taskName: string;
-            errorMessage: string | null;
-            /** @description 归类后的失败原因标识 */
-            failureReason: string | null;
-            /** @description 执行器上报的原始退出码（可观测性回填） */
-            exitCode: number | null;
-            /** Format: date-time */
-            createdAt: string;
-            duration: number | null;
-        };
-        MetricsSchedulerResponseDto: {
-            /** @description 原始调度器指标计数器快照（SchedulerMetricsSnapshot） */
-            counters: {
-                [key: string]: number;
-            };
-            /** @description 由计数器推导出的比率/速率 */
-            derived: {
-                [key: string]: number;
-            };
-            /** @description BullMQ 队列深度（值为 null 表示 Redis 不可用，**不是**空队列） */
-            queue?: {
-                waiting: number | null;
-                active: number | null;
-                delayed: number | null;
-                failed: number | null;
-                completed: number | null;
-            };
-            /** @description 调度器存活快照（getStats） */
-            scheduler: {
-                [key: string]: unknown;
-            };
-            /** @description 上报进程的身份标识 */
-            instance?: {
-                pid: number;
-                hostname: string;
-            };
-        };
-        SystemConfigResponseDto: {
-            /** @description 配置行 ID（自增序列） */
-            id: number;
-            /**
-             * @description 唯一配置键（例如 executor.sharedToken）
-             * @example executor.sharedToken
-             */
-            key: string;
-            /**
-             * @description 存储值。读面（GET /config、GET /config/{key}）在 isSecret=true 时把它替换为掩码哨兵 '***'；写面/回滚面（PUT /config、POST /config/batch、POST /config/history/{id}/rollback）返回真实持久化的值。若该行写入时未带值，则可能为 null。
-             * @example ***
-             */
-            value?: string | null;
-            /** @description 人类可读描述。同时也是 GET /config 的 `tag` 查询过滤所匹配的字段（对 description 做正则）—— 并不存在单独的 tag 列。 */
-            description?: string | null;
-            /**
-             * @description 值类型。所有写入路径都按这个封闭集合校验（SystemConfigService.validateConfig），因此库中任何值都来自该集合。
-             * @enum {string}
-             */
-            valueType: "string" | "number" | "boolean" | "json";
-            /** @description 值为 secret 时为 true：读面将其掩码为 '***'，而提交 '***' 表示“保持已存值”而非“写入该掩码” */
-            isSecret: boolean;
-            /**
-             * Format: date-time
-             * @description 创建时间（ISO-8601）
-             */
-            createdAt: string;
-            /**
-             * Format: date-time
-             * @description 最后更新时间（ISO-8601）
-             */
-            updatedAt: string;
-        };
-        ConfigHistoryResponseDto: {
-            /** @description 历史行 ID（自增序列） */
-            id: number;
-            /** @description 该历史行所属的配置键 */
-            configKey: string;
-            /** @description 变更前的值。被掩码时为 '***'（该行 isSecret=true，或该键当前为 secret）；此前不存在该条目时为 null。null 与掩码是两种不同语义，不得渲染为“已隐藏”。 */
-            oldValue?: string | null;
-            /** @description 变更后的值。被掩码时为 '***'；该条目被本次变更删除（remove 记录 newValue=null）时为 null。 */
-            newValue?: string | null;
-            /** @description 记录本次变更时留下的描述快照 */
-            description?: string | null;
-            /**
-             * @description 随该行持久化的 valueType 快照（迁移 1790000000018）。null = 迁移前的旧行，元数据未知 —— 不要把 null 读作 'string'。
-             * @enum {string|null}
-             */
-            valueType?: "string" | "number" | "boolean" | "json" | null;
-            /** @description 随该行持久化的 isSecret 快照（迁移 1790000000018）。null = 迁移前的旧行，元数据未知 —— 不要把 null 读作 false。为 true 时读面总会掩码 oldValue/newValue。 */
-            isSecret?: boolean | null;
-            /**
-             * @description 产生该行的动作（rollback 标记由回滚端点写入的行）
-             * @enum {string}
-             */
-            action: "create" | "update" | "delete" | "rollback";
-            /** @description 操作者用户 ID（自迁移 1790000000023 起为整数）；操作者未知时为 null（例如在记录操作者上下文之前写入的行） */
-            userId?: number | null;
-            /** @description 操作者用户名 */
-            username?: string | null;
-            /** @description 操作客户端 IP */
-            ipAddress?: string | null;
-            /**
-             * Format: date-time
-             * @description 本次变更的记录时间（ISO-8601）
-             */
-            createdAt: string;
-        };
-        ConfigHistoryPageDto: {
-            /** @description 历史行分页，按最新在前（每行的 old/new 各自掩码） */
-            data: components["schemas"]["ConfigHistoryResponseDto"][];
-            /** @description 分页前的匹配总行数 */
-            total: number;
+        ExecutorRuntimeConfigDto: {
+            /** @description 连续 N 次未确认后才判离线的折算毫秒 */
+            effectiveOfflineAfterMs: number;
+            executorTotal: number;
+            /** @description 心跳间隔（毫秒） */
+            heartbeatIntervalMs: number;
+            heartbeatTimeoutMs: number;
+            heartbeatTimeoutMultiplier: number;
+            listLimit: number;
+            staleOfflineConfirmations: number;
         };
         ExecutorSharedTokenDto: {
             /**
@@ -7039,1066 +6658,134 @@ export interface components {
             token: string;
         };
         ExecutorSharedTokenStatusDto: {
-            /** @description 当前共享令牌的明文（仅 ADMIN）。未存储令牌时为 null —— 本端点对缺失的键绝不返回 404。 */
-            token?: string | null;
             /** @description 存储了非空令牌时为 true（token !== null） */
             hasToken: boolean;
+            /** @description 当前共享令牌的明文（仅 ADMIN）。未存储令牌时为 null —— 本端点对缺失的键绝不返回 404。 */
+            token?: string | null;
         };
-        RuntimeVersionContractDto: {
-            /**
-             * @description 当前生效的可声明下界（PYTHON_RUNTIME_VERSION_MIN，默认 3.7）
-             * @example 3.7
-             */
-            min: string;
-            /**
-             * @description 当前生效的可声明上界（PYTHON_RUNTIME_VERSION_MAX，默认 3.14）
-             * @example 3.14
-             */
-            max: string;
-            /**
-             * @description 在线下载下限（契约常量，不可配置）：uv 无法下载低于该版本的解释器，因此这些版本需要预置好的离线缓存卷
-             * @example 3.8
-             */
-            onlineMin: string;
-            /**
-             * @description legacy 执行器未上报解释器列表时的兜底解释器
-             * @example 3.12
-             */
-            legacyDefaultInterpreter: string;
+        ExecutorTagsDto: {
+            tags: string[];
         };
-        UpsertConfigDto: {
-            key: string;
-            value?: string;
-            description?: string;
-            /** @default string */
-            valueType?: string;
-            /** @default false */
-            isSecret?: boolean;
+        ExecutorTokenResponseDto: {
+            /** @description 明文令牌（每次取回时展示；轮换规则见 R9） */
+            token: string;
+            /** @description 存储的 bcrypt/sha 哈希，用于校验 */
+            tokenHash: string;
         };
-        ConfigDeleteResultDto: {
-            /** @description 成功时恒为 true —— 键不存在是 404，绝不会是 {deleted:false} */
-            deleted: boolean;
-        };
-        AuditLogDto: {
-            id: number;
-            userId: number | null;
-            /** @description 操作人用户名的快照（用户被删除后仍保留） */
-            username: string | null;
-            /** @description 点分格式的操作标识，例如 'task.trigger' / 'user.create' */
-            action: string;
-            resource: string | null;
-            resourceId: string | null;
-            /** @description 自由格式的上下文（ip、明细载荷） */
-            detail: {
-                [key: string]: unknown;
-            } | null;
-            ip: string | null;
-            /** @description 审计落库时记录的写入结果（缺省 'success'） */
-            result: string;
-            /** Format: date-time */
-            createdAt: string;
-        };
-        PaginatedAuditLogsDto: {
-            data: components["schemas"]["AuditLogDto"][];
-            total: number;
-            /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。游标绑定本端点固定排序（createdAt DESC, id DESC）。 */
-            nextCursor?: string | null;
-        };
-        AuditActionsDto: {
-            /** @description 库里出现过（去重、按字母序）的审计动作取值。来源于 audit_logs.action 的历史写入，故可能包含已下线的动作。 */
-            actions: string[];
-        };
-        PublicHealthDto: {
-            /** @enum {string} */
-            status: "healthy" | "degraded" | "unhealthy";
-            timestamp: string;
-        };
-        DetailedHealthDto: {
-            /** @enum {string} */
-            status: "healthy" | "degraded" | "unhealthy";
-            timestamp: string;
-            /** @description 五组件健康（结构同 GET /health/services 的同名键） */
-            services: Record<string, never>;
-            metrics?: {
-                totalTasks: number;
-                activeTasks: number;
-                runningExecutions: number;
-                totalExecutors: number;
-                onlineExecutors: number;
-                queueSize: number;
-            };
-            /** @description 组件扁平清单 */
-            components: {
-                name: string;
-                /** @enum {string} */
-                status: "healthy" | "degraded" | "unhealthy";
-                message?: string;
-            }[];
+        GitRollbackResponseDto: {
+            execution: components["schemas"]["TaskExecutionResponseDto"];
+            /** @description 回滚前仓库所在的提交 */
+            rolledBackFrom: string | null;
+            /** @description 回滚到的提交 */
+            rolledBackTo: string;
         };
         HealthComponentDto: {
+            details?: string;
             /** @enum {string} */
             status: "healthy" | "degraded" | "unhealthy";
-            details?: string;
+        };
+        HealthMetricsDto: {
+            onlineExecutors: number;
+            queueSize: number;
+            totalExecutors: number;
         };
         HealthServicesDto: {
             database: components["schemas"]["HealthComponentDto"];
-            redis: components["schemas"]["HealthComponentDto"];
-            /** @description healthy/degraded/unhealthy + size（队列长度） */
-            queue: Record<string, never>;
             /** @description healthy/degraded/unhealthy + onlineCount/totalCount（在线数/总数） */
             executors: Record<string, never>;
+            /** @description healthy/degraded/unhealthy + size（队列长度） */
+            queue: Record<string, never>;
+            redis: components["schemas"]["HealthComponentDto"];
             scheduler: components["schemas"]["HealthComponentDto"];
         };
-        HealthMetricsDto: {
-            totalExecutors: number;
-            onlineExecutors: number;
-            queueSize: number;
-        };
-        ApplicationResponseDto: {
-            /** @description 应用 ID（uuid） */
-            id: string;
-            /** @description 唯一应用名称 */
-            name: string;
-            /** @description 人类可读描述 */
-            description?: string | null;
-            /** @description 应用版本 */
-            version: string;
-            /** @description 运行时标识（node / python / shell …） */
-            runtime: string;
-            /** @description 生命周期状态 */
-            status: string;
-            /** @description Git 仓库 URL */
-            gitRepo?: string | null;
-            /** @description Git 分支 */
-            gitBranch?: string | null;
-            /** @description 锁定的 git commit */
-            gitCommit?: string | null;
-            /** @description 部署清单（jsonb） */
-            manifest?: Record<string, never> | null;
-            /**
-             * @description 环境变量映射；secret 类键在所有读面均被掩码为 ***
-             * @example {
-             *       "LOG_LEVEL": "info",
-             *       "DB_PASSWORD": "***"
-             *     }
-             */
-            env?: Record<string, never> | null;
-            /** @description 入口点路径 */
-            entrypoint?: string | null;
-            /** @description 包下载 URL */
-            packageUrl?: string | null;
-            /** @description 部署是否需要审批 */
-            approvalRequired: boolean;
-            /** @description 所属项目 ID（null = 默认项目视图） */
-            projectId?: string | null;
-            /** @description MUTEX-01：互斥组 ID（null = 该应用不参与按设备互斥） */
-            mutexGroupId?: string | null;
-            /** @description 属主用户 ID */
-            ownerUserId?: number | null;
-            /**
-             * Format: date-time
-             * @description 创建时间（ISO-8601）
-             */
-            createdAt: string;
-            /**
-             * Format: date-time
-             * @description 最后更新时间（ISO-8601）
-             */
-            updatedAt: string;
-            /** @description R7 实测出现性：create/update 等 save() 回程把 select:false 列 hydrated 成 null 带出；findAll/findById select 读取不含该键。值恒 null（secret 不回传）。首版头注的『不声明』裁定据此修订 */
-            webhookSecret?: string | null;
-        };
-        CreateApplicationDto: {
-            /** @description 唯一应用名称 */
-            name: string;
-            /** @description 应用描述 */
-            description?: string;
-            /**
-             * @description 应用版本号（上限对齐 UploadApplicationDto.version）
-             * @example 1.0.0
-             */
-            version: string;
-            /**
-             * @description 运行时类型（上限对齐 UploadApplicationDto.runtime）
-             * @example node
-             */
-            runtime: string;
-            gitRepo?: string;
-            gitBranch?: string;
-            gitCommit?: string;
-            manifest?: Record<string, never>;
-            env?: Record<string, never>;
-            entrypoint?: string;
-            packageUrl?: string;
-            /**
-             * @description DEP-04：新部署派发前是否需要第二人审批
-             * @default false
-             */
-            approvalRequired?: boolean;
-            /** @description MUTEX-01：该应用加入的互斥组 ID（null = 不参与互斥） */
-            mutexGroupId?: string | null;
-        };
-        UpdateApplicationDto: {
-            /** @description 唯一应用名称 */
-            name?: string;
-            /** @description 应用描述 */
-            description?: string;
-            /**
-             * @description 应用版本号（上限对齐 UploadApplicationDto.version）
-             * @example 1.0.0
-             */
-            version?: string;
-            /**
-             * @description 运行时类型（上限对齐 UploadApplicationDto.runtime）
-             * @example node
-             */
-            runtime?: string;
-            gitRepo?: string;
-            gitBranch?: string;
-            gitCommit?: string;
-            manifest?: Record<string, never>;
-            env?: Record<string, never>;
-            entrypoint?: string;
-            packageUrl?: string;
-            /**
-             * @description DEP-04：新部署派发前是否需要第二人审批
-             * @default false
-             */
-            approvalRequired?: boolean;
-            /** @description MUTEX-01：该应用加入的互斥组 ID（null = 不参与互斥） */
-            mutexGroupId?: string | null;
-            /**
-             * @description 应用状态
-             * @enum {string}
-             */
-            status?: "active" | "deploying" | "failed";
-            /** @description 用于 Webhook 签名校验的 HMAC-SHA256 secret。置为空字符串即关闭。 */
-            webhookSecret?: string;
-        };
-        RemovalImpactResponseDto: {
-            applicationName: string;
-            /** @description 失去代码来源的任务数（全量统计，不按页截断 —— DEEP-AUDIT B·4.1） */
-            tasksLosingSource: number;
-            /** @description 随级联删除的部署行数 */
-            deploymentCount: number;
-            /** @description 磁盘上已上传的包文件是否会被删除 */
-            packageFileWillBeDeleted: boolean;
-        };
-        AppReleaseWebhookDto: {
-            /** @description 应用名称 */
-            appName: string;
-            /** @description 新版本号，例如 1.2.3 */
-            version: string;
-            /** @description Git 提交 SHA */
-            gitCommit?: string;
-            /** @description Git 分支 */
-            gitBranch?: string;
-            /**
-             * @description 是否对所有 RUNNING 状态的部署触发滚动升级
-             * @default false
-             */
-            triggerDeploy?: boolean;
-        };
-        ReleaseWebhookResponseDto: {
-            /** @enum {boolean} */
-            ok: true;
-            updatedApp: components["schemas"]["ApplicationResponseDto"];
-            /** @description triggerDeploy=true 时被升级的 RUNNING 部署数；否则为 0 */
-            triggeredDeployments: number;
-        };
-        ApplicationVersionHistoryRowDto: {
-            /**
-             * Format: uuid
-             * @description application_versions.id；null = 由 legacy 部署派生的行
-             */
-            id: string | null;
-            /**
-             * Format: uuid
-             * @description legacy 行携带部署 ID
-             */
-            deploymentId: string | null;
-            /** Format: uuid */
-            sourceDeploymentId: string | null;
-            /** @description legacy 行回退到 '__unknown__' 桶键 */
-            version: string | null;
-            commit: string | null;
-            /** @description 快照状态或 legacy 部署状态 */
-            status: string;
-            /**
-             * Format: date-time
-             * @description 快照行使用版本创建时间
-             */
-            deployedAt: string | null;
-            /** Format: date-time */
-            createdAt: string | null;
-            /** @description legacy 行携带该部署的执行器；快照行留为 null */
-            executorAddress: string | null;
-            /** @description 该版本的部署次数（同版本多实例滚动分别单独计数） */
-            deployCount: number;
-            /** @description 已掩码的版本快照（读面）；legacy 行为 null */
-            snapshot: {
-                [key: string]: unknown;
-            } | null;
-        };
-        AppReleaseDeviceDto: {
-            /** @description 执行器行 id */
-            executorId: string;
-            /** @description 执行器可读名（executors.appName）；行已删/未上报名时 null */
-            executorName: string | null;
-            /** @description 该设备该应用 current 指向的版本（保留场景下可能与本行版本不同） */
-            currentVersion: string | null;
-            /** @description 本行版本 ∈ 设备 retainedVersions（设备磁盘仍持有该版本） */
-            retained: boolean;
-            /** @description executors.status === ONLINE（离线设备的版本事实可能已过期） */
-            online: boolean;
-            /** @description executors.lastHeartbeat（设备最后上报时刻，ISO） */
-            lastHeartbeat: string | null;
-        };
-        AppReleaseRowDto: {
-            /**
-             * Format: uuid
-             * @description application_versions.id；null = 纯部署历史（无快照行）
-             */
-            id: string | null;
-            version: string | null;
-            /** @description 快照中的 packageUrl（部署时刻的值 —— 不回退到应用当前 URL） */
-            packageUrl: string | null;
-            gitCommit: string | null;
-            /** @description 最近一次部署完成时间（ISO 字符串 —— 本视图做了字符串化） */
-            deployedAt: string | null;
-            /** Format: uuid */
-            latestDeploymentId: string | null;
-            /** @enum {string|null} */
-            deploymentStatus: "pending" | "deploying" | "running" | "stopped" | "failed" | "upgrading" | null;
-            /** @description 该版本的部署次数 */
-            deploymentCount: number;
-            executorAddress: string | null;
-            /** @enum {string|null} */
-            runMode: "once" | "daemon" | "scheduled" | null;
-            /**
-             * @description 优先取持久化列，legacy 行推导得出（无法判定时为 unknown）
-             * @enum {string|null}
-             */
-            triggerType: "manual" | "upgrade" | "rollback" | "approval" | "unknown" | null;
-            /** @description 取 deployments.operator，回退到 versions.createdBy */
-            operator: string | null;
+        HumanReplyDto: {
+            amendedBodyMarkdown?: string;
+            amendedFrontMatterYaml?: string;
+            answer: string;
+            changelog?: string;
             /** @enum {string} */
-            operatorSource: "deployments.operator" | "application_versions.createdBy";
-            /** @description operator 为 null 时的原因（RELEASE_OPERATOR_MISSING_REASON） */
-            operatorMissingReason: string;
-            /** @description R3-A（§4.3）：正在运行或本地保留该版本的设备（设备心跳上报事实；无设备上报时为空数组）。deploymentStatus/executorAddress 等字段仍是部署行推断（渐进迁移），设备真实状态以本字段为准。响应字段只增不改 */
-            devices: components["schemas"]["AppReleaseDeviceDto"][];
+            resolution: "answered" | "sop_amended";
         };
-        AppReleasesResponseDto: {
-            data: components["schemas"]["AppReleaseRowDto"][];
-            total: number;
-            page: number;
-            /** @description 默认 50，上限 200 */
-            pageSize: number;
-            /** @description R4（§4.7）：synthetic 聚合扫描到达 5000 行上限（聚合以已扫描部分为准，可能不完整）时 true；未到上限或非第 1 页恒 false。响应字段只增不改 */
-            truncated: boolean;
-            /** @description P8-R（部署模型评审遗留）：truncated=true 吞掉被截版本的 devices 徽标时，列出「有设备保留（currentVersion 命中或 ∈ retainedVersions）但不在本页返回行中」的版本号（字母序）；truncated=false 恒空数组。响应字段只增不改 */
-            retainedButTruncated: string[];
-        };
-        RolloutStrategyDto: Record<string, never>;
-        UpgradeAllDto: {
-            rollout?: components["schemas"]["RolloutStrategyDto"];
-            /** @description 本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本。注意：该参数等价于 set-current-version + deploy-version 的组合（先按快照恢复应用当前字段，再下发），且会改写中台当前版本——R1（§4.2）拆分出的这两个端点是更明确的表达，建议改用新端点 */
-            version?: string;
-            /** @description all 策略下把 stopped 部署行一并纳入升级（缺省 false——stopped 可能是人为停用）。pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细；failed 行恒排除（应走显式重新部署）。canary 策略忽略本参数 */
-            includeStopped?: boolean;
-        };
-        UpgradeAllCoverageDto: {
-            /** @description RUNNING 且 runMode≠scheduled 的行数（活进程语义：daemon/once） */
-            running: number;
-            /** @description RUNNING 且 runMode=scheduled 的行数（仅部署待触发——实证口径：scheduled 部署完成即上报 running，行稳态就是 RUNNING，默认与 running 一并覆盖） */
-            scheduled: number;
-            /** @description STOPPED 行数（仅 includeStopped=true 时纳入升级；计数恒回显） */
-            stopped: number;
-            /** @description FAILED 行数（恒排除，应走显式重新部署） */
-            failed: number;
-            /** @description pending/deploying/upgrading 在途行数（恒跳过，逐行进 skipped 明细） */
-            inFlight: number;
-        };
-        UpgradeAllSkippedItemDto: {
-            /** Format: uuid */
-            deploymentId: string;
-            /** Format: uuid */
-            executorId: string | null;
-            /** @enum {string} */
-            status: "pending" | "deploying" | "upgrading";
+        ImportTaskDto: {
+            /** @description 源导出物的 exportedAt（仅供参考） */
+            exportedAt?: string;
             /**
-             * @description in_flight=在途部署/升级不可重入；awaiting_approval=待审批行（DEP-04，复用 pending 占坑）
+             * @description 本 API 接受的导出 schema 版本
+             * @example 1
              * @enum {string}
              */
-            reason: "in_flight" | "awaiting_approval";
-        };
-        UpgradeAllResponseDto: {
-            /** @description false = 金丝雀批次被拒绝（ARCH-31 在途互斥）或全部失败 */
-            ok: boolean;
-            /** @description 版本定向灰度时回显实际目标版本（快照恢复后的 app.version）；缺省（latest）不带 */
-            version?: string;
-            /** @description 触发时刻运行中的部署数 */
-            total: number;
-            succeeded: number;
-            failed: number;
-            /** @description 该应用部署行按状态分组的计数（R2 §4.4）。running+scheduled 为默认覆盖面；stopped 仅 includeStopped=true 时升级；failed 恒排除；inFlight 恒跳过 */
-            coverage?: components["schemas"]["UpgradeAllCoverageDto"];
-            /** @description 在途行（pending/deploying/upgrading）的跳过明细——不抛错，逐行给出原因（R2 §4.4） */
-            skipped?: components["schemas"]["UpgradeAllSkippedItemDto"][];
-            /** @description 在实际启动了金丝雀批次（或被阻塞）时出现 */
-            rollout?: {
-                batchId?: string;
-                /** @enum {string} */
-                strategy?: "canary" | "all";
-                canaryIds?: string[];
-                promotedIds?: string[];
-                /** @description ARCH-31：同一应用上存在在途批次（跨实例互斥，不是异常） */
-                blockedReason?: string;
-            };
-        };
-        SyncTasksResponseDto: {
-            /** @enum {boolean} */
-            ok: true;
-            /** @description 本次同步注册的任务定义数量 */
-            registeredCount: number;
-        };
-        AppHealthAnalysisResponseDto: {
-            /** Format: uuid */
-            appId: string;
-            appName: string;
-            /** @description AI 评估文本（空字符串 = AI 不可用，fail-open 放行） */
-            analysis: string;
-            stats?: {
-                totalTasks: number;
-                avgSuccessRate: number;
-                avgDuration: number;
-                criticalTasks: string[];
-            };
-        };
-        SetCurrentVersionDto: {
-            /**
-             * Format: uuid
-             * @description application_versions.id（版本快照主键，非 version 号字符串）——status 必须为 released
-             */
-            versionId: string;
-        };
-        SetCurrentVersionResponseDto: {
-            ok: boolean;
-            /** @description 恒 false——本端点不下发任何设备（下发走 deploy-version） */
-            dispatched: boolean;
-            /** @description 恢复后的应用 version（= 快照 version） */
-            version: string;
-            /**
-             * Format: uuid
-             * @description 命中的 application_versions.id
-             */
-            versionId: string;
-            /** @description 恢复后的应用行（已掩码） */
-            updatedApp: components["schemas"]["ApplicationResponseDto"];
-        };
-        DeployVersionDto: {
-            /**
-             * Format: uuid
-             * @description application_versions.id（版本快照主键，非 version 号字符串）——status 必须为 released；下发前先按该快照恢复应用当前字段
-             */
-            versionId: string;
-            /** @description 仅对这些执行器对应的 RUNNING 部署行下发（重复 id 幂等去重）。缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 一致）。执行器无部署行/行状态不可下发的进响应 skipped 明细，不报错 */
-            executorIds?: string[];
-        };
-        DeployVersionUpgradedEntryDto: {
-            /** Format: uuid */
-            deploymentId: string;
-            /**
-             * Format: uuid
-             * @description 部署行所在执行器（行无执行器时 null）
-             */
-            executorId: string | null;
-            executorAddress: string | null;
-        };
-        DeployVersionSkippedEntryDto: {
-            /**
-             * Format: uuid
-             * @description 显式点名路径下恒有值；缺省（全 RUNNING）路径下取部署行值
-             */
-            executorId: string | null;
-            /** Format: uuid */
-            deploymentId: string | null;
-            /**
-             * @description no_deployment=该执行器在本应用下没有部署行；not_running=最新部署行状态非 running（detail 带实际 status）；upgrade_rejected=upgrade 链拒绝（detail 带原因）
-             * @enum {string}
-             */
-            reason: "no_deployment" | "not_running" | "upgrade_rejected";
-            /** @description 跳过原因的机器可读补充（状态值 / 原始错误消息） */
-            detail?: string | null;
-        };
-        DeployVersionResponseDto: {
-            ok: boolean;
-            /** @description 恒 true——本端点就是下发动作（恢复+下发） */
-            dispatched: boolean;
-            /** @description 本次下发的目标版本（= 快照 version） */
-            version: string;
-            /**
-             * Format: uuid
-             * @description 命中的 application_versions.id
-             */
-            versionId: string;
-            upgraded: components["schemas"]["DeployVersionUpgradedEntryDto"][];
-            skipped: components["schemas"]["DeployVersionSkippedEntryDto"][];
-            /** @description 恢复后的应用行（已掩码） */
-            updatedApp: components["schemas"]["ApplicationResponseDto"];
-        };
-        ApplicationRollbackResponseDto: {
-            ok: boolean;
-            total: number;
-            succeeded: number;
-            failed: number;
-            /** @description 透传所触发的 upgrade-all 批次回执 */
-            rollout?: components["schemas"]["UpgradeAllResponseDto"];
-            /** @description 应用回滚到的版本（legacy 路径下取 deployedVersion） */
-            rolledBackTo: string;
-            /**
-             * Format: uuid
-             * @description 走快照路径时为 application_versions.id；null = 走了 legacy 部署行路径
-             */
-            versionId: string | null;
-            /** @description 仅在 legacy 路径下出现（该路径下恒为 false —— R16） */
-            packageUrlRestored?: boolean;
-            /** @description 恢复后的应用行（已掩码） */
-            updatedApp: components["schemas"]["ApplicationResponseDto"];
-        };
-        AppDeploymentResponseDto: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            applicationId: string;
-            /** @description 父应用（已掩码读面 —— env 中的 secret 为 '***'） */
-            application?: components["schemas"]["ApplicationResponseDto"];
-            /** @description 该应用运行所在执行器的地址 */
-            executorAddress: string;
-            /** Format: uuid */
-            executorId: string | null;
-            /** @enum {string} */
-            status: "pending" | "deploying" | "running" | "stopped" | "failed" | "upgrading";
-            /** @enum {string} */
-            runMode: "once" | "daemon" | "scheduled";
-            /** @description 从 git 源部署时的 git commit */
-            deployedCommit: string | null;
-            /** @description 实际部署的版本（升级/回滚会改写它） */
-            deployedVersion: string | null;
-            /** @description 启动命令快照（回滚/升级可能改写它） */
-            startCommand: string | null;
-            /** @description 部署时刻的 env 快照，在所有读面均被掩码（QA1） */
-            env: {
-                [key: string]: string;
-            } | null;
-            /** @description 应用进程在执行器上的 pid（由心跳维护） */
-            pid: number | null;
-            /**
-             * Format: date-time
-             * @description 该部署对应的最近一次执行器心跳
-             */
-            lastHeartbeat: string | null;
-            /** @description 最近一次状态跃迁消息（停滞/重复部署防护在此写入） */
-            statusMessage: string | null;
-            /**
-             * Format: date-time
-             * @description 最近一次部署完成时间
-             */
-            deployedAt: string | null;
-            /**
-             * @description 金丝雀发布阶段（DEP-02）；null = 不属于任何批次
-             * @enum {string|null}
-             */
-            rolloutState: "pending" | "probing" | "promoted" | "failed" | "rolled_back" | null;
-            /** @description 金丝雀批次元数据（batchId/canaryIds/leasedBy...） */
-            rolloutMeta: {
-                [key: string]: unknown;
-            } | null;
-            /**
-             * @description DEP-04 第二人审批状态；null = 无需审批
-             * @enum {string|null}
-             */
-            approvalStatus: "pending_approval" | "approved" | "rejected" | null;
-            /** @description 审批轨迹（操作者/原因/时间戳） */
-            approvalMeta: {
-                [key: string]: unknown;
-            } | null;
-            /**
-             * @description 触发语义（FEAT-20 持久化列）；null = legacy 行
-             * @enum {string|null}
-             */
-            triggerType: "manual" | "upgrade" | "rollback" | "approval" | null;
-            /** @description 操作者的 JWT 用户名（FEAT-20） */
-            operator: string | null;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-            /** @description 乐观锁 @VersionColumn（TypeORM 版本列） */
-            version: number;
-        };
-        PaginatedAppDeploymentsDto: {
-            data: components["schemas"]["AppDeploymentResponseDto"][];
-            total: number;
-        };
-        AppDeploymentStatsDto: {
-            /** Format: uuid */
-            applicationId: string;
-            /** @description 该应用全部部署行数（含 stopped/failed） */
-            total: number;
-            /** @description status='running' 的部署行数 */
-            running: number;
-            /** @description status='failed' 的部署行数 */
-            failed: number;
-            /** @description 最近一次部署活动时间（MAX(deployedAt ?? createdAt)）；该应用无部署行为 null */
-            lastDeployedAt: string | null;
-        };
-        AppDeploymentEventRowDto: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            applicationId: string;
-            /**
-             * Format: uuid
-             * @description 触发本事件的部署行 id；行可能已被删除（事件无外键、比行活得久）
-             */
-            deploymentId: string | null;
-            /** Format: uuid */
-            executorId: string | null;
-            executorAddress: string | null;
-            /** @enum {string} */
-            eventType: "deploy_created" | "redeploy_reused" | "approval_approved" | "approval_rejected" | "approval_cancelled" | "upgrade" | "stop" | "remove" | "stuck_failed";
-            /** @description 动作发生时的版本事实（deploy/upgrade 写动作时 app.version；stop/remove/stuck 写行上 deployedVersion） */
-            deployedVersion: string | null;
-            /**
-             * @description 动作语义（DeploymentTriggerType）；机器路径（如卡死扫描）为 null
-             * @enum {string|null}
-             */
-            triggerType: "manual" | "upgrade" | "rollback" | "approval" | null;
-            /** @description 操作人（JWT 用户名）；系统路径为 null */
-            operator: string | null;
-            /** @description 短事实快照（reason/runMode/deletedStatus 等标量；写入侧保证不含 env 密钥） */
-            detail?: {
-                [key: string]: unknown;
-            } | null;
-            createdAt: string;
-        };
-        AppDeploymentEventsPageDto: {
-            data: components["schemas"]["AppDeploymentEventRowDto"][];
-            total: number;
-            page: number;
-            /** @description 默认 50，上限 200 */
-            pageSize: number;
-        };
-        CreateDeploymentDto: {
-            /** @description 执行器 ID（留空则自动选择负载最低的在线执行器） */
-            executorId?: string;
-            /**
-             * @default daemon
-             * @enum {string}
-             */
-            runMode?: "once" | "daemon" | "scheduled";
-            /** @description 环境变量覆盖（≤50 个键，每个值 ≤4096 字节） */
-            env?: {
-                [key: string]: string;
-            };
-            /** @description 启动命令覆盖（留空则使用 manifest 的 entrypoint） */
-            startCommand?: string;
-        };
-        ApprovalActionDto: {
-            /** @description 可选的决策理由（≤200 字符），计入审计 */
-            reason?: string;
-        };
-        DeploymentRemoveResponseDto: {
-            /** @enum {boolean} */
-            ok: true;
-            /** @description 被删除的部署 ID */
-            deletedId: string;
-        };
-        DeploymentHeartbeatDto: {
-            /** @description 部署 ID */
-            deploymentId: string;
-            /**
-             * @description 运行状态
-             * @enum {string}
-             */
-            status: "running" | "stopped" | "failed";
-            /** @description 进程 PID */
-            pid?: number;
-            /** @description 自由格式的进度信息（最长 2000 字符；写入 statusMessage 文本列并进入列表读面） */
-            message?: string;
-        };
-        MutexGroupResponseDto: {
-            /** @description 组 id (uuid) */
-            id: string;
-            /** @description 组名（唯一） */
-            name: string;
-            /** @description 同设备内允许的并发执行数（≥1） */
-            maxConcurrentPerDevice: number;
-            /**
-             * @description 组作用域：device=单点互斥（每台设备同时最多 N 条）；global=全局互斥（全平台同时最多 N 条）
-             * @enum {string}
-             */
-            scope: "device" | "global";
-            /** @description 组用途说明 */
-            description?: string | null;
-            /** @description 当前挂在该组上的应用数 */
-            applicationCount?: number;
-            /**
-             * Format: date-time
-             * @description 创建时间
-             */
-            createdAt: string;
-            /**
-             * Format: date-time
-             * @description 更新时间
-             */
-            updatedAt: string;
-        };
-        CreateMutexGroupDto: {
-            /** @description 互斥组名（唯一），如 ziniao-browser */
-            name: string;
-            /**
-             * @description 同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）
-             * @default 1
-             */
-            maxConcurrentPerDevice?: number;
-            /**
-             * @description 组作用域：device=单点互斥（每台设备同时最多 N 条，跨设备并发）；global=全局互斥（全平台同时最多 N 条，单点登录顶号类场景）。默认 device
-             * @default device
-             * @enum {string}
-             */
-            scope?: "device" | "global";
-            /** @description 组用途说明 */
-            description?: string;
-        };
-        UpdateMutexGroupDto: {
-            /** @description 互斥组名（唯一），如 ziniao-browser */
-            name?: string;
-            /**
-             * @description 同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）
-             * @default 1
-             */
-            maxConcurrentPerDevice?: number;
-            /**
-             * @description 组作用域：device=单点互斥（每台设备同时最多 N 条，跨设备并发）；global=全局互斥（全平台同时最多 N 条，单点登录顶号类场景）。默认 device
-             * @default device
-             * @enum {string}
-             */
-            scope?: "device" | "global";
-            /** @description 组用途说明 */
-            description?: string;
-        };
-        ExecutorPackagePushRecordDto: {
-            /** @description 目标执行器 ID */
-            executorId: string;
-            /**
-             * @description 推送结果
-             * @enum {string}
-             */
-            status: "downloaded" | "failed";
-            /** @description 所推送的包版本 */
-            version: string;
-            /** @description status=failed 时的失败原因 */
-            error?: string;
-            /** @description 本次推送尝试的时间（ISO-8601） */
-            timestamp: string;
-        };
-        ExecutorPackageResponseDto: {
-            /** @description 包 ID（uuid） */
-            id: string;
-            /** @description 包名称 */
-            name: string;
-            /** @description 包版本 */
-            version: string;
-            /** @description 包类型（runtime/tooling 分类） */
-            type: string;
-            /** @description 目标平台（包与平台无关时为 null） */
-            platform?: string | null;
-            /** @description 存储文件名 */
-            filename?: string | null;
-            /** @description 上传时的原始文件名 */
-            originalFilename?: string | null;
-            /** @description MIME 类型 */
-            mimeType?: string | null;
-            /** @description 字节数 */
-            fileSize: number;
-            /** @description SHA-256 校验和 */
-            checksum?: string | null;
-            /** @description 描述 */
-            description?: string | null;
-            /** @description 生命周期状态（active / deprecated / …） */
-            status: string;
-            /** @description 上传者身份 */
-            uploadedBy?: string | null;
-            /** @description 对各执行器的推送尝试记录 */
-            pushHistory?: components["schemas"]["ExecutorPackagePushRecordDto"][];
-            /** @description 所属项目 ID（null = 默认项目视图） */
-            projectId?: string | null;
-            /**
-             * Format: date-time
-             * @description 创建时间（ISO-8601）
-             */
-            createdAt: string;
-            /**
-             * Format: date-time
-             * @description 最后更新时间（ISO-8601）
-             */
-            updatedAt: string;
-        };
-        ExecutorPackageListDto: {
-            /** @description 包分页 */
-            items: components["schemas"]["ExecutorPackageResponseDto"][];
-            /** @description 匹配的包总数（分页前） */
-            total: number;
-            /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。 */
-            nextCursor?: string | null;
-        };
-        UpdateExecutorPackageDto: {
-            /** @description 包名称 */
-            name?: string;
-            /** @description 包版本 */
-            version?: string;
-            /**
-             * @description 包类型
-             * @enum {string}
-             */
-            type?: "node" | "python" | "universal";
-            /** @description 目标平台 */
-            platform?: string;
-            /** @description 校验和 */
-            checksum?: string;
-            /** @description 包描述 */
-            description?: string;
-            /** @description 文件路径 */
-            filePath?: string;
-            /** @description 文件字节数 */
-            fileSize?: number;
-            /**
-             * @description 包状态
-             * @enum {string}
-             */
-            status?: "active" | "deprecated" | "uploading";
-        };
-        ExecutorPushResultDto: {
-            /** Format: uuid */
-            executorId: string;
-            address: string;
-            /**
-             * @description queued=已入 pull 命令队列；success=push 同步 accepted；error=失败
-             * @enum {string}
-             */
-            status: "queued" | "success" | "error";
-            /**
-             * Format: uuid
-             * @description queued 时回填中台命令 ID（终态由 push-result 回调收敛）
-             */
-            commandId?: string;
-            /** @description error 时的失败原因 */
-            error?: string;
-        };
-        RegistryPackagesResponseDto: {
-            /** @description Package names parsed from the upstream index (empty = upstream reachable but no packages; 上游非 2xx/超时会以 502/504 透出而非空 200——失败与空态语义分离) */
-            packages: string[];
-        };
-        RegistryNpmPackageDto: {
-            /** @description 包名 */
-            name: string;
-            /** @description 最新版本（上游 version/latest，缺失时省略） */
-            latest?: string;
-            /** @description 包描述（上游未提供时省略） */
-            description?: string;
-        };
-        RegistryNpmPackagesResponseDto: {
-            /** @description Verdaccio 包数组映射（empty = upstream reachable but no packages；上游非 2xx/非 JSON/形状漂移以 502 透出，超时 504） */
-            packages: components["schemas"]["RegistryNpmPackageDto"][];
-        };
-        RegistryUploadResponseDto: {
-            success: boolean;
-        };
-        ArtifactUploadResponseDto: {
-            /** @enum {boolean} */
-            ok: true;
-            name: string;
-            /** @description 字节 */
-            size: number;
-            sha256: string;
-        };
-        ExecutionArtifactRowDto: {
-            /** Format: uuid */
-            id: string;
-            /**
-             * Format: uuid
-             * @description 所属执行 ID
-             */
-            executionId: string;
-            /**
-             * Format: uuid
-             * @description 所属任务 ID（冗余快照）
-             */
-            taskId: string;
-            /** @description 所属应用 ID（冗余快照；null = 任务未挂应用或应用已删除——SET NULL 语义） */
-            applicationId?: string | null;
-            /** @description 产物裸文件名 */
-            name: string;
-            /** @description 字节数 */
-            size: number;
-            /** @description 存储字节的 sha256 */
-            sha256: string;
-            /**
-             * Format: date-time
-             * @description 索引行创建时间（ISO-8601，随终态回调写入）
-             */
-            createdAt: string;
-        };
-        ExecutionArtifactDto: {
-            name: string;
-            /** @description 字节 */
-            size: number;
-            /** @description 对存储字节计算的 sha256 */
-            sha256: string;
-        };
-        TaskTemplateResponseDto: {
-            /**
-             * Format: uuid
-             * @description 模板 UUID
-             */
-            id: string;
-            /**
-             * @description 稳定唯一键。官方模板使用固定键（scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping），与 MCP 的 TASK_TEMPLATES 对齐；自定义键由用户建议。
-             * @example scheduled_backup
-             */
-            key: string;
-            /** @description 显示名称 */
-            name: string;
-            /** @description 模板卡片上展示的人类可读描述 */
-            description?: string | null;
-            /** @description Coarse category tag (备份/巡检/同步/清理/通知…) rendered as a Tag */
-            category?: string | null;
-            /**
-             * @description 合法的 CreateTaskDto 子集（不含 `name`；在实例化时提供）。从此模板实例化任务时用作默认值。
-             * @example {
-             *       "triggerType": "cron",
-             *       "cronExpression": "0 2 * * *",
-             *       "runtime": "shell",
-             *       "entrypoint": "backup.sh",
-             *       "timeoutSeconds": 3600,
-             *       "maxRetry": 3,
-             *       "retryDelay": 60,
-             *       "blockStrategy": "discard"
-             *     }
-             */
-            config: {
-                [key: string]: unknown;
-            };
-            /** @description 迁移预置的官方预设为 true（只读，不可删除） */
-            isOfficial: boolean;
-            /** @description 创建者的用户名（JWT 用户名）。null = legacy 行/官方 seed；属主为 null 的行仅 ADMIN 可删除。 */
-            createdBy?: string | null;
-            /**
-             * Format: date-time
-             * @description 创建时间（ISO-8601）
-             */
-            createdAt: string;
-            /**
-             * Format: date-time
-             * @description 最后更新时间（ISO-8601）
-             */
-            updatedAt: string;
-        };
-        CreateTaskTemplateDto: {
-            /**
-             * @description 模板展示名
-             * @example 每日订单同步
-             */
-            name: string;
-            /** @description 模板说明（可选） */
-            description?: string;
-            /** @description 粗分类标签（备份/巡检/同步/清理/通知…），前端渲染为 Tag */
-            category?: string;
-            /**
-             * @description 稳定标识；缺省由 name 规整生成。官方模板保留 [a-z][a-z0-9_-]* 命名风格。
-             * @example daily_order_sync
-             */
-            key?: string;
-            /**
-             * @description 合法 CreateTaskDto 子集（省略 name）；作为实例化任务的默认值
-             * @example {
-             *       "triggerType": "cron",
-             *       "cronExpression": "0 2 * * *",
-             *       "runtime": "shell",
-             *       "entrypoint": "backup.sh",
-             *       "timeoutSeconds": 3600,
-             *       "maxRetry": 3,
-             *       "retryDelay": 60,
-             *       "blockStrategy": "discard"
-             *     }
-             */
-            config: {
-                [key: string]: unknown;
-            };
+            schemaVersion: "1";
+            /** @description 任务定义。secrets 绝不参与定义传输：携带的 secrets 键会被忽略（并给出告警），导入后的任务不带 secrets 启动。 */
+            task: components["schemas"]["CreateTaskDto"];
         };
         ImportTaskTemplateManifestDto: {
+            /** @description 能力域数组；取值复用 SOP front-matter 的四值域（browser/gui/filesystem/http） */
+            capabilities: ("browser" | "gui" | "filesystem" | "http")[];
+            /**
+             * @description 可执行内容载体（合法 CreateTaskDto 子集，落库到 `task_templates.config`）。清单本身刻意不携带它；省略时按 name 取官方模板常量，非官方 key 省略即 400
+             * @example {
+             *       "fixedRate": 60,
+             *       "glueLanguage": "javascript",
+             *       "glueSource": "console.log('hi');",
+             *       "runtime": "node",
+             *       "triggerType": "fixed_rate"
+             *     }
+             */
+            config?: {
+                [key: string]: unknown;
+            };
+            /** @description 清单内容锚（来自 registry 条目；给了就必须等于 sha256(稳定序列化后的清单)，否则 400） */
+            contentHash?: string;
+            /** @description 清单说明（逐字落库到 `task_templates.description`） */
+            description: string;
+            /**
+             * @description 相对本模板目录的入口文件路径数组（任务模板允许为空）；不接受绝对路径与 ../ 越界段
+             * @example []
+             */
+            entrypoints: string[];
             /**
              * @description 清单标识：与所在目录名逐字一致，同时就是落库后的 `task_templates.key`（全局唯一；已存在即 409）
              * @example health_check
              */
             name: string;
             /**
-             * @description 清单版本（语义化 x.y.z）。只做校验与审计留痕：`task_templates` 表没有版本列，不落库
-             * @example 1.0.0
-             */
-            version: string;
-            /** @description 清单说明（逐字落库到 `task_templates.description`） */
-            description: string;
-            /** @description 能力域数组；取值复用 SOP front-matter 的四值域（browser/gui/filesystem/http） */
-            capabilities: ("browser" | "gui" | "filesystem" | "http")[];
-            /**
              * @description 用户可配参数的声明（可为空对象）；每项照 `plugin.json` 的 userConfig 形状，未知键即 400
              * @example {
              *       "url": {
-             *         "type": "string",
-             *         "title": "巡检地址",
+             *         "default": "https://example.com",
              *         "description": "要 GET 的地址；缺省为 https://example.com。",
              *         "required": false,
-             *         "default": "https://example.com"
+             *         "title": "巡检地址",
+             *         "type": "string"
              *       }
              *     }
              */
             params: {
                 [key: string]: {
+                    default?: unknown;
+                    description?: string;
+                    options?: unknown[];
+                    required?: boolean;
+                    title?: string;
                     /** @enum {string} */
                     type?: "string" | "number" | "boolean";
-                    title?: string;
-                    description?: string;
-                    required?: boolean;
-                    default?: unknown;
-                    options?: unknown[];
                 };
             };
-            /**
-             * @description 相对本模板目录的入口文件路径数组（任务模板允许为空）；不接受绝对路径与 ../ 越界段
-             * @example []
-             */
-            entrypoints: string[];
             /** @description 清单所在路径（来自 registry 条目的附加事实；给了就要求其目录名逐字等于 name） */
             path?: string;
-            /** @description 清单内容锚（来自 registry 条目；给了就必须等于 sha256(稳定序列化后的清单)，否则 400） */
-            contentHash?: string;
             /**
-             * @description 可执行内容载体（合法 CreateTaskDto 子集，落库到 `task_templates.config`）。清单本身刻意不携带它；省略时按 name 取官方模板常量，非官方 key 省略即 400
-             * @example {
-             *       "triggerType": "fixed_rate",
-             *       "fixedRate": 60,
-             *       "runtime": "node",
-             *       "glueLanguage": "javascript",
-             *       "glueSource": "console.log('hi');"
-             *     }
+             * @description 清单版本（语义化 x.y.z）。只做校验与审计留痕：`task_templates` 表没有版本列，不落库
+             * @example 1.0.0
              */
-            config?: {
-                [key: string]: unknown;
-            };
+            version: string;
+        };
+        InstalledPackageDto: {
+            /** @example python-runtime */
+            name: string;
+            /** @example uv */
+            type: string;
+            /** @example 0.7.12 */
+            version: string;
         };
         InstantiateTaskOverlayDto: {
             /**
@@ -8112,12 +6799,22 @@ export interface components {
         };
         InstantiateTaskResponseDto: {
             /**
+             * Format: date-time
+             * @description 创建时间（ISO-8601）
+             */
+            createdAt: string;
+            /**
              * Format: uuid
              * @description 已创建任务的 UUID
              */
             id: string;
             /** @description 任务名称（取自 overlay 请求体；在全部任务中唯一） */
             name: string;
+            /**
+             * @description 执行器将使用的运行时
+             * @enum {string}
+             */
+            runtime: "python" | "node" | "shell";
             /**
              * @description 所创建任务的生命周期状态
              * @enum {string}
@@ -8128,324 +6825,1762 @@ export interface components {
              * @enum {string}
              */
             triggerType: "cron" | "fixed_rate" | "api" | "manual";
-            /**
-             * @description 执行器将使用的运行时
-             * @enum {string}
-             */
-            runtime: "python" | "node" | "shell";
-            /**
-             * Format: date-time
-             * @description 创建时间（ISO-8601）
-             */
-            createdAt: string;
         };
-        SimpleOkResponseDto: {
-            /** @enum {boolean} */
-            ok: true;
+        KillExecutionResponseDto: {
+            message: string;
+            success: boolean;
         };
-        EventSubscriptionResponseDto: {
+        LogChunkAckDto: {
+            /** @description 落账行数 */
+            count: number;
+        };
+        LoginDto: {
+            /** @example password123 */
+            password: string;
+            /** @example admin */
+            username: string;
+        };
+        MaintenanceWindowDto: {
+            /** @description 窗口用途说明（展示/日志用） */
+            description?: string;
             /**
-             * Format: uuid
-             * @description 订阅 UUID
+             * @description 窗口关闭 Cron（5 字段：分 时 日 月 周）
+             * @example 0 4 * * *
              */
+            end: string;
+            /**
+             * @description 窗口开启 Cron（5 字段：分 时 日 月 周）
+             * @example 30 2 * * *
+             */
+            start: string;
+        };
+        MetricsExecutorStatsRowDto: {
+            address: string;
+            appName: string;
+            cpuUsage: number | null;
+            /** Format: uuid */
             id: string;
-            /** @description 属主用户 ID（整数）。null = 系统级订阅（由 ADMIN 管理，对所有管理员可见，并为排查问题向所有用户开放读权限）。 */
-            userId?: number | null;
-            /**
-             * @description 订阅的事件名（稳定目录，只增不改）：execution.completed / execution.failed / executor.offline / deployment.completed
-             * @example [
-             *       "execution.failed"
-             *     ]
-             */
-            eventTypes: string[];
-            /** @description 回调 URL（公网 http(s)；写入时做 SSRF 深度校验，并在每次外发投递前重新检查） */
-            url: string;
-            /**
-             * @description HMAC 签名 secret —— 在所有读面恒为掩码占位符 '******'（明文仅在创建时以 generatedSecret 返回一次）
-             * @example ******
-             */
-            secret: string;
-            /** @description 是否启用投递 */
-            enabled: boolean;
-            /** @description 连续投递失败次数（任一次成功即重置为 0） */
-            consecutiveFailures: number;
-            /**
-             * Format: date-time
-             * @description 最近一次投递失败的时间戳；null = 从未失败
-             */
-            lastFailureAt?: string | null;
-            /** @description 最近一次失败摘要（截断至 512 字符；绝不含 secret/payload） */
-            lastFailureError?: string | null;
-            /**
-             * Format: date-time
-             * @description 创建时间（ISO-8601）
-             */
+            /** Format: date-time */
+            lastHeartbeat: string | null;
+            memUsage: number | null;
+            runningTaskCount: number;
+            /** @enum {string} */
+            status: "online" | "offline";
+        };
+        MetricsRecentFailureDto: {
+            /** Format: date-time */
             createdAt: string;
-            /**
-             * Format: date-time
-             * @description 最后更新时间（ISO-8601）
-             */
-            updatedAt: string;
-        };
-        CreateEventSubscriptionDto: {
-            /**
-             * @description 回调 URL（公网 http(s) 端点；内网地址会被拒绝）
-             * @example https://ci.example.com/hooks/autoflow
-             */
-            url: string;
-            /**
-             * @description 要订阅的事件名
-             * @example [
-             *       "execution.failed"
-             *     ]
-             */
-            eventTypes: ("execution.completed" | "execution.failed" | "executor.offline" | "deployment.completed")[];
-            /** @description HMAC 签名密钥。省略则由服务端生成 32 字节十六进制密钥（仅在创建响应中返回一次，之后不再展示）。 */
-            secret?: string;
-        };
-        EventSubscriptionCreateResponseDto: {
-            /** @description 新建的订阅（secret 已掩码） */
-            subscription: components["schemas"]["EventSubscriptionResponseDto"];
-            /** @description 服务端生成的 32 字节十六进制 secret —— 仅在本响应中返回一次。调用方自带 secret 时不出现。 */
-            generatedSecret?: string;
-        };
-        UpdateSubscriptionBody: {
-            /** @description 是否启用投递（true=启用，false=停用） */
-            enabled?: boolean;
-            /** @description 新的回调 URL */
-            url?: string;
-            /** @description 替换订阅的事件集合 */
-            eventTypes?: string[];
-            /** @description 轮换签名密钥 */
-            secret?: string;
-        };
-        EventSubscriptionDeadLetterResponseDto: {
-            /**
-             * Format: uuid
-             * @description 死信 UUID
-             */
+            duration: number | null;
+            errorMessage: string | null;
+            /** @description 执行器上报的原始退出码（可观测性回填） */
+            exitCode: number | null;
+            /** @description 归类后的失败原因标识 */
+            failureReason: string | null;
+            /** Format: uuid */
             id: string;
-            /**
-             * Format: uuid
-             * @description 所属订阅 UUID
-             */
-            subscriptionId: string;
-            /** @description 投递失败的事件名（例如 execution.failed） */
-            eventType: string;
-            /** @description 发送时刻的完整外发信封（event/occurredAt/data） */
-            payload: {
+            /** Format: uuid */
+            taskId: string;
+            taskName: string;
+        };
+        MetricsSchedulerResponseDto: {
+            /** @description 原始调度器指标计数器快照（SchedulerMetricsSnapshot） */
+            counters: {
+                [key: string]: number;
+            };
+            /** @description 由计数器推导出的比率/速率 */
+            derived: {
+                [key: string]: number;
+            };
+            /** @description 上报进程的身份标识 */
+            instance?: {
+                hostname: string;
+                pid: number;
+            };
+            /** @description BullMQ 队列深度（值为 null 表示 Redis 不可用，**不是**空队列） */
+            queue?: {
+                active: number | null;
+                completed: number | null;
+                delayed: number | null;
+                failed: number | null;
+                waiting: number | null;
+            };
+            /** @description 调度器存活快照（getStats） */
+            scheduler: {
                 [key: string]: unknown;
             };
-            /** @description 最近一次失败摘要（截断至 1024 字符） */
-            error: string;
-            /** @description 实际投递尝试次数（首次尝试 + outbox 扫描器重试，受 MAX_OUTBOX_ATTEMPTS 限制） */
-            attempts: number;
+        };
+        MetricsSummaryResponseDto: {
+            /** @description 窗口内成功执行的平均耗时（毫秒） */
+            avgDurationMs: number;
+            /** @description 聚合窗口内的状态计数 */
+            executions?: {
+                failed: number;
+                running: number;
+                success: number;
+                total: number;
+            };
+            /** @description status=online 的执行器数量 */
+            onlineExecutors: number;
+            /** @description 百分比（保留两位小数），无执行时为 0 */
+            successRate: number;
+            /** @description 本地零点以来创建的执行数 */
+            todayRuns: number;
+            totalExecutors: number;
+            totalTasks: number;
+        };
+        MetricsTrendRowDto: {
+            /** @description 本地日期分桶（createdAt 的 ISO yyyy-mm-dd） */
+            date: string;
+            failed: number;
+            success: number;
+            timeout: number;
+        };
+        MutexGroupResponseDto: {
+            /** @description 当前挂在该组上的应用数 */
+            applicationCount?: number;
             /**
              * Format: date-time
-             * @description 该死信的记录时间（ISO-8601）
+             * @description 创建时间
              */
             createdAt: string;
-        };
-        EventSubscriptionDeadLetterPageDto: {
-            /** @description 死信分页，按最新在前 */
-            data: components["schemas"]["EventSubscriptionDeadLetterResponseDto"][];
-            /** @description 分页前的匹配总行数 */
-            total: number;
-        };
-        ReplayDeadLetterResponseDto: {
-            /** @description 本次单次重放投递是否成功 */
-            ok: boolean;
-            /** @description ok=false 时的失败摘要（该行会保留以便再次尝试） */
-            error?: string;
-        };
-        ApiKeyViewDto: {
-            id: number;
-            name: string;
-            /** @description 'acf_' + 前缀若干字符——创建之后不再返回完整 key */
-            keyPrefix: string;
-            /** @description 粗粒度范围桶 */
-            scope: string;
-            /** @description 额外的细粒度范围（词表，例如 'task:trigger'） */
-            scopes: string[];
-            /** Format: date-time */
-            expiresAt: string | null;
-            /**
-             * Format: date-time
-             * @description 有值 = 已吊销（软删除）
-             */
-            revokedAt: string | null;
-            /**
-             * Format: date-time
-             * @description 刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）
-             */
-            lastUsedAt: string | null;
-            /** Format: date-time */
-            createdAt: string;
-        };
-        CreateApiKeyDto: Record<string, never>;
-        ApiKeyCreateResponseDto: {
-            id: number;
-            name: string;
-            /** @description 'acf_' + 前缀若干字符——创建之后不再返回完整 key */
-            keyPrefix: string;
-            /** @description 粗粒度范围桶 */
-            scope: string;
-            /** @description 额外的细粒度范围（词表，例如 'task:trigger'） */
-            scopes: string[];
-            /** Format: date-time */
-            expiresAt: string | null;
-            /**
-             * Format: date-time
-             * @description 有值 = 已吊销（软删除）
-             */
-            revokedAt: string | null;
-            /**
-             * Format: date-time
-             * @description 刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）
-             */
-            lastUsedAt: string | null;
-            /** Format: date-time */
-            createdAt: string;
-            /** @description 明文 key（'acf_<64 hex>'）仅展示一次——请立即保存 */
-            plaintext: string;
-        };
-        ApiKeyRevokeResponseDto: {
-            /** @enum {boolean} */
-            success: true;
-            apiKey: components["schemas"]["ApiKeyViewDto"];
-        };
-        ProjectViewDto: {
-            /** @description 项目 ID（uuid） */
-            id: string;
-            /** @description 项目名称 */
-            name: string;
-            /** @description 描述 */
+            /** @description 组用途说明 */
             description?: string | null;
+            /** @description 组 id (uuid) */
+            id: string;
+            /** @description 同设备内允许的并发执行数（≥1） */
+            maxConcurrentPerDevice: number;
+            /** @description 组名（唯一） */
+            name: string;
             /**
-             * Format: date-time
-             * @description 创建时间（ISO-8601）
+             * @description 组作用域：device=单点互斥（每台设备同时最多 N 条）；global=全局互斥（全平台同时最多 N 条）
+             * @enum {string}
              */
-            createdAt: string;
+            scope: "device" | "global";
             /**
              * Format: date-time
-             * @description 最后更新时间（ISO-8601）
+             * @description 更新时间
              */
             updatedAt: string;
-            /**
-             * @description 调用主体在该项目中的角色；非成员为 null。ADMIN 也会在这里拿到其真实的成员行（如实返回，不做合成）。
-             * @enum {string|null}
-             */
-            myRole?: "viewer" | "editor" | "admin" | null;
         };
-        ProjectListPageDto: {
-            /** @description 分页行（items 的 legacy 别名） */
-            list: components["schemas"]["ProjectViewDto"][];
-            /** @description 分页行 */
-            items: components["schemas"]["ProjectViewDto"][];
-            /** @description 可见项目总数 */
+        MyProjectRolesDto: {
+            /** @description 调用方为 ADMIN 时为 true（admin-web 据此渲染全部项目） */
+            isAdmin: boolean;
+            /** @description 调用方在所有项目中的成员关系行 */
+            memberships: components["schemas"]["ProjectMemberViewDto"][];
+            /** @description 调用方用户 ID；请求未携带用户时为 null */
+            userId?: number | null;
+        };
+        NotificationChannelDto: {
+            /** @description 通道专属配置；读取时凭据值会被掩码 */
+            config: {
+                [key: string]: string;
+            };
+            description: string;
+            enabled: boolean;
+            /** @enum {string} */
+            key: "email" | "dingtalk" | "wecom" | "slack" | "webhook" | "feishu";
+            name: string;
+        };
+        NotificationSilenceDto: {
+            /**
+             * Format: uuid
+             * @description scope=application 时生效
+             */
+            applicationId: string | null;
+            channelType: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string | null;
+            durationMinutes: number | null;
+            /**
+             * Format: date-time
+             * @description 空 = 不过期；durationMinutes 写入时折算
+             */
+            endTime: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @description 空 = 所有级别；否则 info/warning/critical 等 AlertLevel */
+            level: string | null;
+            reason: string | null;
+            /** @enum {string} */
+            scope: "global" | "task" | "application";
+            /** Format: date-time */
+            startTime: string | null;
+            /**
+             * Format: uuid
+             * @description scope=task 时生效
+             */
+            taskId: string | null;
+        };
+        Object: Record<string, never>;
+        OidcStatusResponseDto: {
+            /** @description false = OIDC 未配置，登录页隐藏 SSO 入口 */
+            enabled: boolean;
+        };
+        PaginatedAppDeploymentsDto: {
+            data: components["schemas"]["AppDeploymentResponseDto"][];
             total: number;
-            /** @description 当前页（从 1 开始） */
+        };
+        PaginatedAuditLogsDto: {
+            data: components["schemas"]["AuditLogDto"][];
+            /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。游标绑定本端点固定排序（createdAt DESC, id DESC）。 */
+            nextCursor?: string | null;
+            total: number;
+        };
+        PaginatedExecutionListDto: {
+            items: components["schemas"]["ExecutionListItemDto"][];
+            list: components["schemas"]["ExecutionListItemDto"][];
+            /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。 */
+            nextCursor?: string | null;
             page: number;
-            /** @description 每页条数（限制在 1..100） */
             pageSize: number;
-            /** @description 总页数 */
+            total: number;
             totalPages: number;
         };
-        ProjectEntityDto: {
-            /** @description 项目 ID（uuid） */
-            id: string;
-            /** @description 唯一项目名称 */
-            name: string;
-            /** @description 描述 */
-            description?: string | null;
-            /**
-             * Format: date-time
-             * @description 创建时间（ISO-8601）
-             */
-            createdAt: string;
-            /**
-             * Format: date-time
-             * @description 最后更新时间（ISO-8601）
-             */
-            updatedAt: string;
+        PaginatedTaskListDto: {
+            items: components["schemas"]["TaskResponseDto"][];
+            list: components["schemas"]["TaskResponseDto"][];
+            /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。游标与默认排序（createdAt DESC, id DESC）绑定：与 sortBy 或 lastStatus 同时给出会返回 400。 */
+            nextCursor?: string | null;
+            page: number;
+            pageSize: number;
+            total: number;
+            totalPages: number;
         };
-        CreateProjectDto: {
-            /** @description 项目名称 */
-            name: string;
-            /** @description 项目描述 */
-            description?: string;
-        };
-        UpdateProjectDto: {
-            /** @description 项目名称 */
-            name?: string;
-            /** @description 项目描述 */
-            description?: string;
-        };
-        ProjectRemovalImpactResponseDto: {
-            /** @description 项目名称（确认框标题回显） */
-            projectName: string;
-            /** @description 该项目下未软删除的任务数（status != deleted）。这些任务删除后会退回「未分配」视图 */
-            taskCount: number;
-            /** @description 其中处于 active 状态的任务数——删除后仍会被 cron 触发，是真正会持续产生副作用的那部分 */
-            activeTaskCount: number;
-            /** @description 项目成员关系行数（删除时由 FK ON DELETE CASCADE 一并清除） */
-            memberCount: number;
-            /** @description 是否可删；默认项目恒为 false（remove 会返回 404 PROJECT_DEFAULT_IMMUTABLE） */
-            deletable: boolean;
+        PaginatedUsersDto: {
+            items: components["schemas"]["UserResponseDto"][];
+            list: components["schemas"]["UserResponseDto"][];
+            page: number;
+            pageSize: number;
+            total: number;
+            totalPages: number;
         };
         ProjectDeleteResponseDto: {
             /** @description true = 删除/移除生效 */
             deleted: boolean;
         };
-        ProjectMemberViewDto: {
-            /** @description 成员关系行 ID（uuid） */
-            id: string;
-            /** @description 项目 ID（uuid） */
-            projectId: string;
-            /** @description 用户 ID */
-            userId: number;
+        ProjectEntityDto: {
             /**
-             * @description 授予该成员的角色
-             * @enum {string}
+             * Format: date-time
+             * @description 创建时间（ISO-8601）
              */
-            role: "viewer" | "editor" | "admin";
+            createdAt: string;
+            /** @description 描述 */
+            description?: string | null;
+            /** @description 项目 ID（uuid） */
+            id: string;
+            /** @description 唯一项目名称 */
+            name: string;
+            /**
+             * Format: date-time
+             * @description 最后更新时间（ISO-8601）
+             */
+            updatedAt: string;
+        };
+        ProjectListPageDto: {
+            /** @description 分页行 */
+            items: components["schemas"]["ProjectViewDto"][];
+            /** @description 分页行（items 的 legacy 别名） */
+            list: components["schemas"]["ProjectViewDto"][];
+            /** @description 当前页（从 1 开始） */
+            page: number;
+            /** @description 每页条数（限制在 1..100） */
+            pageSize: number;
+            /** @description 可见项目总数 */
+            total: number;
+            /** @description 总页数 */
+            totalPages: number;
+        };
+        ProjectMemberViewDto: {
             /**
              * Format: date-time
              * @description 成员关系创建时间（ISO-8601）
              */
             createdAt: string;
-            /** @description 用户名；null = 用户已被删除，缺席 = 身份补全不可用 */
-            username?: string | null;
             /** @description 邮箱；与 username 同三态语义 */
             email?: string | null;
-            /** @description 属主账号是否启用（禁用账号的成员行仍存在，但已无法登录） */
-            userActive?: boolean | null;
-        };
-        UpsertProjectMemberDto: {
-            /** @description 用户 ID */
-            userId: number;
+            /** @description 成员关系行 ID（uuid） */
+            id: string;
+            /** @description 项目 ID（uuid） */
+            projectId: string;
             /**
-             * @description 项目角色
+             * @description 授予该成员的角色
              * @enum {string}
              */
             role: "viewer" | "editor" | "admin";
+            /** @description 属主账号是否启用（禁用账号的成员行仍存在，但已无法登录） */
+            userActive?: boolean | null;
+            /** @description 用户 ID */
+            userId: number;
+            /** @description 用户名；null = 用户已被删除，缺席 = 身份补全不可用 */
+            username?: string | null;
+        };
+        ProjectRemovalImpactResponseDto: {
+            /** @description 其中处于 active 状态的任务数——删除后仍会被 cron 触发，是真正会持续产生副作用的那部分 */
+            activeTaskCount: number;
+            /** @description 是否可删；默认项目恒为 false（remove 会返回 404 PROJECT_DEFAULT_IMMUTABLE） */
+            deletable: boolean;
+            /** @description 项目成员关系行数（删除时由 FK ON DELETE CASCADE 一并清除） */
+            memberCount: number;
+            /** @description 项目名称（确认框标题回显） */
+            projectName: string;
+            /** @description 该项目下未软删除的任务数（status != deleted）。这些任务删除后会退回「未分配」视图 */
+            taskCount: number;
+        };
+        ProjectSummaryRecentExecutionDto: {
+            /**
+             * Format: date-time
+             * @description 执行创建时间（ISO-8601）
+             */
+            createdAt: string;
+            /** @description 执行耗时（毫秒）；未跑完/合成行为 null */
+            duration?: number | null;
+            /** @description 执行记录 ID（uuid） */
+            id: string;
+            /**
+             * @description 执行状态
+             * @enum {string}
+             */
+            status: "pending" | "running" | "success" | "failed" | "timeout" | "killed" | "cancelled" | "package_fetch_failed";
+            /** @description 所属任务 ID（uuid） */
+            taskId: string;
+            /** @description 执行时快照的任务名 */
+            taskName: string;
+        };
+        ProjectSummaryRecentFailureDto: {
+            /**
+             * Format: date-time
+             * @description 执行创建时间（ISO-8601）
+             */
+            createdAt: string;
+            /** @description 执行耗时（毫秒）；未跑完/合成行为 null */
+            duration?: number | null;
+            /** @description 失败错误信息（截断后的可读文本；无则 null） */
+            errorMessage?: string | null;
+            /** @description 失败成因标签（失败/超时行有值，其余为 null） */
+            failureReason?: string | null;
+            /** @description 执行记录 ID（uuid） */
+            id: string;
+            /**
+             * @description 执行终态状态
+             * @enum {string}
+             */
+            status: "pending" | "running" | "success" | "failed" | "timeout" | "killed" | "cancelled" | "package_fetch_failed";
+            /** @description 所属任务 ID（uuid） */
+            taskId: string;
+            /** @description 执行时快照的任务名 */
+            taskName: string;
+        };
+        ProjectSummaryResponseDto: {
+            /** @description 归属本项目的应用数（按 applications.projectId；默认项目含 NULL 行。当前应用写入口尚未开放项目归属，非默认项目预期为 0） */
+            applicationCount: number;
+            /** @description 近 7 天执行数（经 taskId 关联 tasks.projectId 统计） */
+            executionsLast7d: number;
+            /** @description 近 7 天失败执行数（status=failed） */
+            failedExecutionsLast7d: number;
+            /** @description 近 7 天失败率（failed / 执行总数，百分比保留两位）；窗口内无执行为 null，前端显示暂无数据 */
+            failureRate?: number | null;
+            /** @description 项目成员关系行数 */
+            memberCount: number;
+            /** @description 项目 ID（uuid） */
+            projectId: string;
+            /** @description 项目名称（详情页标题回显） */
+            projectName: string;
+            /** @description 最近 5 条执行（按 createdAt DESC，不限终态与窗口） */
+            recentExecutions: components["schemas"]["ProjectSummaryRecentExecutionDto"][];
+            /** @description 最近 5 条失败/超时执行（按 createdAt DESC，不限 7 天窗口） */
+            recentFailures: components["schemas"]["ProjectSummaryRecentFailureDto"][];
+            /** @description 未软删除的任务数（排除 status=deleted；默认项目含未分配 NULL 行） */
+            taskCount: number;
+            /** @description 近 7 天超时执行数（status=timeout） */
+            timeoutExecutionsLast7d: number;
+        };
+        ProjectViewDto: {
+            /**
+             * Format: date-time
+             * @description 创建时间（ISO-8601）
+             */
+            createdAt: string;
+            /** @description 描述 */
+            description?: string | null;
+            /** @description 项目 ID（uuid） */
+            id: string;
+            /**
+             * @description 调用主体在该项目中的角色；非成员为 null。ADMIN 也会在这里拿到其真实的成员行（如实返回，不做合成）。
+             * @enum {string|null}
+             */
+            myRole?: "viewer" | "editor" | "admin" | null;
+            /** @description 项目名称 */
+            name: string;
+            /**
+             * Format: date-time
+             * @description 最后更新时间（ISO-8601）
+             */
+            updatedAt: string;
+        };
+        PublicHealthDto: {
+            /** @enum {string} */
+            status: "healthy" | "degraded" | "unhealthy";
+            timestamp: string;
+        };
+        PublishSopDto: {
+            /** @enum {string} */
+            bump?: "patch" | "minor" | "major";
+            changelog?: string;
+        };
+        RefreshTokenDto: {
+            refreshToken: string;
+        };
+        RegistryNpmPackageDto: {
+            /** @description 包描述（上游未提供时省略） */
+            description?: string;
+            /** @description 最新版本（上游 version/latest，缺失时省略） */
+            latest?: string;
+            /** @description 包名 */
+            name: string;
+        };
+        RegistryNpmPackagesResponseDto: {
+            /** @description Verdaccio 包数组映射（empty = upstream reachable but no packages；上游非 2xx/非 JSON/形状漂移以 502 透出，超时 504） */
+            packages: components["schemas"]["RegistryNpmPackageDto"][];
+        };
+        RegistryPackagesResponseDto: {
+            /** @description Package names parsed from the upstream index (empty = upstream reachable but no packages; 上游非 2xx/超时会以 502/504 透出而非空 200——失败与空态语义分离) */
+            packages: string[];
+        };
+        RegistryUploadResponseDto: {
+            success: boolean;
+        };
+        ReleaseWebhookResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
+            /** @description triggerDeploy=true 时被升级的 RUNNING 部署数；否则为 0 */
+            triggeredDeployments: number;
+            updatedApp: components["schemas"]["ApplicationResponseDto"];
+        };
+        RemovalImpactResponseDto: {
+            applicationName: string;
+            /** @description 随级联删除的部署行数 */
+            deploymentCount: number;
+            /** @description 磁盘上已上传的包文件是否会被删除 */
+            packageFileWillBeDeleted: boolean;
+            /** @description 失去代码来源的任务数（全量统计，不按页截断 —— DEEP-AUDIT B·4.1） */
+            tasksLosingSource: number;
+        };
+        ReplayDeadLetterResponseDto: {
+            /** @description ok=false 时的失败摘要（该行会保留以便再次尝试） */
+            error?: string;
+            /** @description 本次单次重放投递是否成功 */
+            ok: boolean;
+        };
+        RevokeOthersResponseDto: {
+            /** @description 已撤销的会话数 */
+            revoked: number;
+        };
+        RolloutStrategyDto: Record<string, never>;
+        RuntimeVersionContractDto: {
+            /**
+             * @description legacy 执行器未上报解释器列表时的兜底解释器
+             * @example 3.12
+             */
+            legacyDefaultInterpreter: string;
+            /**
+             * @description 当前生效的可声明上界（PYTHON_RUNTIME_VERSION_MAX，默认 3.14）
+             * @example 3.14
+             */
+            max: string;
+            /**
+             * @description 当前生效的可声明下界（PYTHON_RUNTIME_VERSION_MIN，默认 3.7）
+             * @example 3.7
+             */
+            min: string;
+            /**
+             * @description 在线下载下限（契约常量，不可配置）：uv 无法下载低于该版本的解释器，因此这些版本需要预置好的离线缓存卷
+             * @example 3.8
+             */
+            onlineMin: string;
+        };
+        SaveAiConfigDto: Record<string, never>;
+        SaveAiProviderDto: {
+            /** @description API Key；不传或传 *** 保持原值，空串表示清除 */
+            apiKey?: string;
+            /**
+             * @description OpenAI 兼容端点基址（须 http(s)）
+             * @example https://dashscope.aliyuncs.com/compatible-mode/v1
+             */
+            baseUrl: string;
+            /** @description 是否启用 */
+            enabled?: boolean;
+            /**
+             * @description 引用名（进配置键名，形态封闭）
+             * @example qwen-vl
+             */
+            id: string;
+            /** @description 展示名 */
+            label?: string;
+            /** @description 单次最大输出 token */
+            maxTokens?: number;
+            /**
+             * @description 模型名
+             * @example qwen-vl-max
+             */
+            model: string;
+            /** @description 是否支持视频理解（能力位） */
+            supportsVideo?: boolean;
+            /** @description 请求超时（毫秒） */
+            timeoutMs?: number;
+            /**
+             * @description 协议形态，默认 openai
+             * @enum {string}
+             */
+            transport?: "openai" | "ollama";
+        };
+        SchedulerStatsResponseDto: {
+            activeCronTasks: number;
+            activeTimers: number;
+            healthy: boolean;
+            /** @description LeaderGate：仅 leader 负责调度 */
+            isLeader: boolean;
+            runningTaskCount: number;
+            totalScheduledTasks: number;
+            /** @description process.uptime() 秒数 */
+            uptime: number;
+        };
+        SendNotificationDto: {
+            channels?: ("email" | "dingtalk" | "wecom" | "slack" | "webhook" | "feishu")[];
+            content: string;
+            /**
+             * @default info
+             * @enum {string}
+             */
+            level?: "info" | "warning" | "error" | "critical";
+            taskId?: string;
+            taskName?: string;
+            title?: string;
+            webhookUrl?: string;
+        };
+        SendNotificationResultDto: {
+            /**
+             * @description 逐通道投递结果：'sent' 已投递；'blocked' 被 SSRF 防护拒绝（目标为内网/环回/链路本地/benchmark/CGNAT）；'failed' 重试后仍传输失败；'skipped' 通道未配置（既无保存的配置也无环境变量缺省值）。
+             * @example {
+             *       "email": "sent",
+             *       "slack": "blocked",
+             *       "webhook": "failed",
+             *       "wecom": "skipped"
+             *     }
+             */
+            results: {
+                [key: string]: "sent" | "blocked" | "failed" | "skipped";
+            };
+            /**
+             * @description 请求已受理；**不**等同于各通道均已投递成功
+             * @example true
+             */
+            success: boolean;
+        };
+        SendTestDto: {
+            /** @description 要扇出的渠道（取值域 = 已注册渠道枚举） */
+            channels: ("email" | "dingtalk" | "wecom" | "slack" | "webhook" | "feishu")[];
+            /** @description 测试通知内容 */
+            content: string;
+            /** @description 测试通知标题 */
+            title: string;
+        };
+        SessionRevokeResponseDto: {
+            /** @description false = 非法 id（非整数）；true = 已吊销或本就不属于该用户路径的幂等结果 */
+            success: boolean;
+        };
+        SetCurrentVersionDto: {
+            /**
+             * Format: uuid
+             * @description application_versions.id（版本快照主键，非 version 号字符串）——status 必须为 released
+             */
+            versionId: string;
+        };
+        SetCurrentVersionResponseDto: {
+            /** @description 恒 false——本端点不下发任何设备（下发走 deploy-version） */
+            dispatched: boolean;
+            ok: boolean;
+            /** @description 恢复后的应用行（已掩码） */
+            updatedApp: components["schemas"]["ApplicationResponseDto"];
+            /** @description 恢复后的应用 version（= 快照 version） */
+            version: string;
+            /**
+             * Format: uuid
+             * @description 命中的 application_versions.id
+             */
+            versionId: string;
+        };
+        SimpleOkResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
+        };
+        SopAssignmentDetailResponseDto: {
+            assignment: components["schemas"]["SopAssignmentDto"];
+            clarifications: components["schemas"]["SopClarificationDto"][];
+        };
+        SopAssignmentDto: {
+            assignedBy: string;
+            /** @description 最终报告的投递尝试次数（complete 幂等键） */
+            attempt: number;
+            /** @description 领取时刻的 agentCapabilities 快照 */
+            capabilitySnapshotJson: {
+                [key: string]: unknown;
+            } | null;
+            /** @description 当前澄清轮次（从 0 开始的计数器） */
+            clarificationRound: number;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: date-time
+             * @description 最近一次进度心跳（停滞检测输入）
+             */
+            lastProgressAt: string | null;
+            /**
+             * Format: date-time
+             * @description 最近一次澄清回复推送（至少一次投递游标）
+             */
+            lastReplyDeliveredAt: string | null;
+            maxRounds: number;
+            /**
+             * Format: uuid
+             * @description 负责处理澄清的 sop_review 对话会话
+             */
+            parentSessionId: string | null;
+            /** @description 领取时生效的权限档案 */
+            permissionProfileAtPull: string | null;
+            progressJson: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Format: date-time
+             * @description 首次成功轮询领取的时间
+             */
+            pulledAt: string | null;
+            /** @description 执行器上报的交付结果 */
+            resultJson: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: uuid */
+            sopId: string;
+            /** @description 本次指派锁定的 SOP 版本 */
+            sopVersion: string;
+            /** @enum {string} */
+            status: "assigned" | "in_progress" | "blocked" | "completed" | "failed" | "cancelled" | "stalled";
+            /** @description 驱动该指派的对话/Agent 会话 */
+            targetAgentSessionId: string | null;
+            /** Format: uuid */
+            targetExecutorId: string | null;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        SopCancelAssignmentsResponseDto: {
+            /**
+             * @description 实际取消的条数（0 = 本来就没有未结束指派）
+             * @example 2
+             */
+            cancelled: number;
+        };
+        SopCapableExecutorDto: {
+            address: string;
+            /** @description 租约声明的能力域（短租约，不是快照） */
+            agentCapabilities: string[];
+            appName: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            lastHeartbeat: string | null;
+            status: string;
+        };
+        SopClarificationDto: {
+            answer: string | null;
+            /** Format: uuid */
+            assignmentId: string;
+            /** @description 执行器生成的幂等键（重试时去重） */
+            clientClarificationId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description 截图/录屏引用（仅平台路径） */
+            mediaRefsJson: unknown[] | null;
+            /** @description 仅在 sop_amended 回复时设置 */
+            newSopVersion: string | null;
+            /** @description 来自执行器的不可信陈述 —— 入库时已净化 */
+            question: string;
+            questionContextJson: {
+                [key: string]: unknown;
+            } | null;
+            /** @enum {string|null} */
+            resolution: "answered" | "sop_amended" | "escalated_to_human" | null;
+            /**
+             * Format: uuid
+             * @description 作答该澄清的 sop_review 会话
+             */
+            reviewSessionId: string | null;
+            round: number;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        SopDraftFromVideoDto: {
+            /** @description 一句话补充意图（可空） */
+            hint?: string;
+            /** @description 上传接口返回的 mediaId（UUID） */
+            mediaId: string;
+            /** @description 指定 provider（须勾选支持视频）；空 = 走 ai.routes.video */
+            providerId?: string;
+        };
+        SopListResponseDto: {
+            items: components["schemas"]["SopResponseDto"][];
+            total: number;
+        };
+        SopPublishResponseDto: {
+            sop: components["schemas"]["SopResponseDto"];
+            version: components["schemas"]["SopVersionDto"];
+        };
+        SopResponseDto: {
+            /**
+             * Format: uuid
+             * @description 该 SOP 运行时对应的应用 zip 包
+             */
+            applicationId: string | null;
+            bodyMarkdown: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description 'user:<id>' 或 'agent:<sessionId>' */
+            createdBy: string;
+            /** @description 最近发布的版本标签，null = 从未发布 */
+            currentVersion: string | null;
+            /** @description 解析后的 front-matter（capabilities/权限档案的权威来源） */
+            frontMatterJson: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: uuid */
+            id: string;
+            /** @description 1..128 个 [a-z0-9-] 字符，全局唯一 */
+            slug: string;
+            /** @enum {string} */
+            status: "draft" | "published" | "deprecated";
+            title: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        SopSessionTurnDto: {
+            /** @description 中途补录的视频 mediaId（UUID） */
+            mediaId?: string;
+            /** @description 文字补充（与 mediaId 至少给一个） */
+            text?: string;
+        };
+        SopVersionDto: {
+            bodyMarkdown: string;
+            changelog: string | null;
+            /** @description 对 front-matter + body 计算的 sha；交付对账锚点 */
+            contentHash: string;
+            /** Format: date-time */
+            createdAt: string;
+            frontMatterJson: {
+                [key: string]: unknown;
+            };
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            publishedAt: string;
+            publishedBy: string;
+            /** Format: uuid */
+            sopId: string;
+            /** @description 例如 '1.2.3' */
+            version: string;
+        };
+        SseTicketResponseDto: {
+            /** @description 票据过期时间（ISO 8601） */
+            expiresAt: string;
+            /** @description SSE 专用短效票据；作为 ?ticket= 查询串使用，30 秒后失效，且只在三条 /stream 路由上被读取 */
+            ticket: string;
+        };
+        SuggestScheduleResponseDto: {
+            currentCron: string | null;
+            /** @description LLM 路径失败、已返回启发式建议时为 true */
+            fallback?: boolean;
+            reasoning: string;
+            /** @description 推荐的 5 字段 cron 表达式 */
+            suggestedCron: string;
+            /** Format: uuid */
+            taskId: string;
+        };
+        SyncTasksResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
+            /** @description 本次同步注册的任务定义数量 */
+            registeredCount: number;
+        };
+        SystemConfigResponseDto: {
+            /**
+             * Format: date-time
+             * @description 创建时间（ISO-8601）
+             */
+            createdAt: string;
+            /** @description 人类可读描述。同时也是 GET /config 的 `tag` 查询过滤所匹配的字段（对 description 做正则）—— 并不存在单独的 tag 列。 */
+            description?: string | null;
+            /** @description 配置行 ID（自增序列） */
+            id: number;
+            /** @description 值为 secret 时为 true：读面将其掩码为 '***'，而提交 '***' 表示“保持已存值”而非“写入该掩码” */
+            isSecret: boolean;
+            /**
+             * @description 唯一配置键（例如 executor.sharedToken）
+             * @example executor.sharedToken
+             */
+            key: string;
+            /**
+             * Format: date-time
+             * @description 最后更新时间（ISO-8601）
+             */
+            updatedAt: string;
+            /**
+             * @description 存储值。读面（GET /config、GET /config/{key}）在 isSecret=true 时把它替换为掩码哨兵 '***'；写面/回滚面（PUT /config、POST /config/batch、POST /config/history/{id}/rollback）返回真实持久化的值。若该行写入时未带值，则可能为 null。
+             * @example ***
+             */
+            value?: string | null;
+            /**
+             * @description 值类型。所有写入路径都按这个封闭集合校验（SystemConfigService.validateConfig），因此库中任何值都来自该集合。
+             * @enum {string}
+             */
+            valueType: "string" | "number" | "boolean" | "json";
+        };
+        TaskDefinitionDto: {
+            alarmChannels?: string[];
+            alarmEmail?: string;
+            /** @description 绑定的应用 id */
+            applicationId?: string;
+            /** @enum {string} */
+            blockStrategy?: "serial" | "discard" | "cover_early";
+            /** @enum {string} */
+            codeSource?: "git" | "glue" | "application_zip";
+            /** @description 5 字段 cron 表达式（triggerType=cron 时生效） */
+            cronExpression?: string;
+            currentVersion?: string;
+            /** @description 上游任务依赖映射：{ 显示名: 上游任务id } */
+            dependencies?: {
+                [key: string]: string;
+            };
+            /**
+             * @description 部署派发策略覆盖
+             * @enum {string|null}
+             */
+            deploymentPolicy?: "strict" | "prefer" | null;
+            description?: string;
+            entrypoint?: string;
+            /** @description 预估执行时长（秒） */
+            estimatedDurationSec?: number;
+            /** @enum {string} */
+            executeMode?: "single" | "broadcast";
+            executorAffinityTags?: string[];
+            executorAntiAffinityTags?: string[];
+            executorAppName?: string;
+            executorGroup?: string;
+            /** @description 钉定的执行器 id */
+            executorId?: string;
+            executorTags?: string[];
+            /** @description 固定频率间隔秒数 */
+            fixedRate?: number;
+            gitBranch?: string;
+            gitCommit?: string;
+            gitRepo?: string;
+            glueLanguage?: string;
+            /** @description GLUE 脚本源码 */
+            glueSource?: string;
+            /** @description 任务级维护窗口 */
+            maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][] | null;
+            maxRetry?: number;
+            /** @enum {string} */
+            misfireStrategy?: "ignore" | "fire_once";
+            /**
+             * @description 任务名称
+             * @example Nightly DB sync
+             */
+            name: string;
+            /** @description 任务默认参数 */
+            params?: {
+                [key: string]: unknown;
+            };
+            /** @description 优先级：low/normal/high/critical */
+            priority?: Record<string, never>;
+            /** @description 所属项目 id */
+            projectId?: string;
+            /** @description 执行器端依赖声明（pip/npm） */
+            requirements?: string[];
+            retryDelay?: number;
+            /** @description 可重试错误白名单 */
+            retryableErrors?: string[];
+            /** @description Markdown 运维手册 */
+            runbook?: string;
+            /** @enum {string} */
+            runtime?: "python" | "node" | "shell";
+            /** @description 解释器版本 \"major.minor\"（python runtime） */
+            runtimeVersion?: string;
+            /** @description 超时秒数（0 = 不限制） */
+            timeout?: number;
+            /** @description 超时动作：kill / kill_retry / notify_only */
+            timeoutAction?: string;
+            /** @description 超时预警比例 0-90 */
+            timeoutWarnRatio?: number;
+            /** @description IANA 时区，例如 Asia/Shanghai */
+            timezone?: string;
+            /** @enum {string} */
+            triggerType: "cron" | "fixed_rate" | "api" | "manual";
+        };
+        TaskExecutionResponseDto: {
+            /** @description AI 失败分析文本（空字符串 = 无分析） */
+            aiAnalysis: string | null;
+            /** @description 该次执行上传的产物 */
+            artifacts: {
+                name: string;
+                sha256: string;
+                size: number;
+            }[] | null;
+            /** @description 尝试世代：本执行行被 claim（认领并开始运行）过的次数，0 = 第一回合（存量行）。同一个执行可因重试/唤醒被重新 claim 成运行中；终态写入按本值做世代校验，迟到回合的结果不会覆盖新回合。 */
+            attemptSeq: number;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description 依赖门禁触发本次执行的时间
+             */
+            depsFiredAt: string | null;
+            /** @description 挂钟耗时毫秒数（endTime - startTime） */
+            duration: number | null;
+            /** Format: date-time */
+            endTime: string | null;
+            errorMessage: string | null;
+            /** @description 该次执行被派发到的执行器地址 */
+            executorAddress: string | null;
+            /** Format: uuid */
+            executorId: string | null;
+            /** @description 进程退出码（执行器能给出时才有） */
+            exitCode: number | null;
+            /**
+             * @description 归类后的失败标记（执行器可上报的子集 + 管理端内部标记）
+             * @enum {number}
+             */
+            failureReason: [
+                "package_fetch_failed",
+                "script_error",
+                "timeout",
+                "executor_offline",
+                "executor_restart",
+                "stale_recovered",
+                "dependency_install_failed",
+                "git_fetch_failed",
+                "runtime_missing",
+                "interpreter_unavailable",
+                "sandbox_unavailable",
+                "killed",
+                "unknown",
+                "application_missing",
+                "never_dispatched"
+            ] | null;
+            /** Format: uuid */
+            id: string;
+            /** @description 日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键 */
+            logObjectKey: string | null;
+            /** @description 日志后端的标记：'db' 或对象存储 */
+            logStorage: string | null;
+            /** @description 累积的日志文本（仅单次执行读取返回——列表读取排除该列） */
+            logs: string | null;
+            /**
+             * Format: uuid
+             * @description 该执行排队/运行所属的互斥组
+             */
+            mutexGroupId: string | null;
+            /** @description 实际派发出去的合并后运行参数 */
+            params: {
+                [key: string]: unknown;
+            } | null;
+            /** @description 打包类运行解析出的包 URL */
+            resolvedPackageUrl: string | null;
+            /** @description 打包类运行解析出的包版本 */
+            resolvedPackageVersion: string | null;
+            /** @description 任务返回的结构化结果载荷 */
+            result: {
+                [key: string]: unknown;
+            } | null;
+            /** @description 截至目前已消耗的重试次数 */
+            retryCount: number;
+            /**
+             * @description 本行因何被重试：`user` = 任务代码/配置失败（消耗用户的重试预算）；`internal` = 引擎内部抖动（网络瞬断、执行器重启、僵尸恢复）。NULL = 不知道（存量行，或不是重试行）。
+             * @enum {string|null}
+             */
+            retryKind?: "user" | "internal" | null;
+            /** @description `retryCount` 中由**用户类失败**消耗掉的次数（内部类已用 = `retryCount − 本值`）。NULL = 不知道（存量行 / 未记录）。 */
+            retryUserCount?: number | null;
+            /**
+             * Format: date-time
+             * @description 首次派发/到达执行器的时间
+             */
+            startTime: string | null;
+            /** @enum {string} */
+            status: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
+            /** @description 是否为「为可见性而合成」的执行行（例如上游失败时，为「因上游坏而没跑」的下游建的那条 cancelled 行），而不是一次真实尝试。合成行从未真正运行、不参与依赖满足判定，但仍在执行列表里可见。 */
+            synthetic: boolean;
+            /** @description 任务关联——当前读取路径不会加载它 */
+            task?: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: uuid */
+            taskId: string;
+            /** @description 派发时刻的任务名快照 */
+            taskName: string;
+            /** @description 本次运行重放所固定的配置快照版本 */
+            taskVersion: string | null;
+            /** @description 随派发链路传递的 W3C trace-id */
+            traceId: string | null;
+            /** @description manual/cron/webhook/api/dependency——本次运行的触发方式 */
+            triggerType: string | null;
+            /** @description 乐观锁版本列 */
+            version: number;
+        };
+        TaskExportPayloadDto: {
+            /**
+             * Format: date-time
+             * @description 导出生成时刻的 ISO-8601 时间戳
+             */
+            exportedAt: string;
+            /**
+             * @description 导出 schema 版本（当前为 1）
+             * @example 1
+             * @enum {string}
+             */
+            schemaVersion: "1";
+            /** @description 任务定义快照键。**绝不包含** secrets（SEC-02 红线：整键剔除，值与键名一律剔除）。 */
+            task: components["schemas"]["TaskDefinitionDto"];
+        };
+        TaskImportResultDto: {
+            /** @description 最终任务名（冲突时追加后缀 \" (imported)\" / \" (imported) N\"） */
+            name: string;
+            /** @description 新建任务的 id */
+            taskId: string;
+            /** @description 总是包含「请重新配置 secrets」的提示（SEC-02 红线）；可能包含其它说明（例如被忽略的 secrets 键）。 */
+            warnings: string[];
+        };
+        TaskLastExecutionSummaryDto: {
+            /**
+             * Format: date-time
+             * @description 执行行创建时间；startTime 为空时作为相对时间兜底
+             */
+            createdAt: string;
+            /** @description 挂钟耗时毫秒数（endTime - startTime），与执行行 duration 同口径 */
+            duration: number | null;
+            /**
+             * Format: date-time
+             * @description 终态落定时间
+             */
+            endTime: string | null;
+            /**
+             * Format: uuid
+             * @description 最近一次真实执行的 id（前端用于深链该次执行详情）
+             */
+            id: string;
+            /**
+             * Format: date-time
+             * @description 首次认领/开始时间（排队中的执行可能为空）
+             */
+            startTime: string | null;
+            /**
+             * @description 最近一次真实执行的状态（终态或在途）
+             * @enum {string}
+             */
+            status: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
+        };
+        TaskResponseDto: {
+            /** @description 失败/超时告警使用的告警渠道名 */
+            alarmChannels: string[] | null;
+            alarmEmail: string | null;
+            /**
+             * Format: uuid
+             * @description 该任务运行所依赖的应用（zip 包）
+             */
+            applicationId: string | null;
+            /** @enum {string} */
+            blockStrategy: "serial" | "discard" | "cover_early";
+            /**
+             * @description 显式的代码来源通道（null = 历史遗留行，读取时按联合语义处理）
+             * @enum {number}
+             */
+            codeSource: [
+                "git",
+                "glue",
+                "application_zip"
+            ] | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description 5 字段 cron 表达式（cron 任务） */
+            cronExpression: string | null;
+            /** @description 最新的配置快照版本标签 */
+            currentVersion: string | null;
+            /**
+             * Format: date-time
+             * @description 软删除列（所有读取均过滤掉）
+             */
+            deletedAt: string | null;
+            /** @description 执行器在运行前安装的依赖规格（打包类任务） */
+            dependencies: {
+                [key: string]: string;
+            } | null;
+            /**
+             * @description 任务级部署约束；null = 跟随全局 executor.deploymentPolicy
+             * @enum {string}
+             */
+            deploymentPolicy: "strict" | "prefer" | null;
+            /** @description 任务描述 */
+            description: string | null;
+            /** @description 包内的入口文件 */
+            entrypoint: string | null;
+            /** @description 预期持续时间，单位秒（负载评分输入；0/null = 未知） */
+            estimatedDurationSec: number | null;
+            /** @enum {string} */
+            executeMode: "single" | "broadcast";
+            /** @description 亲和标签——命中任意一个即保留该执行器为候选（OR） */
+            executorAffinityTags: string[] | null;
+            /** @description 反亲和标签——命中任意一个即排除该执行器 */
+            executorAntiAffinityTags: string[] | null;
+            /** @description 按名称固定到某个执行器应用 */
+            executorAppName: string | null;
+            /** @description 执行器分组过滤条件（与标签按 AND 组合） */
+            executorGroup: string | null;
+            /**
+             * Format: uuid
+             * @description 固定的执行器 ID（与广播互斥；不回退到执行器集群）
+             */
+            executorId: string | null;
+            /** @description 必需的执行器标签（AND 子集语义） */
+            executorTags: string[] | null;
+            /** @description 固定频率间隔，单位毫秒（fixed_rate 任务） */
+            fixedRate: number | null;
+            gitBranch: string | null;
+            /** @description 当前检出的提交 */
+            gitCommit: string | null;
+            /** @description Git 仓库 URL（git 源任务） */
+            gitRepo: string | null;
+            /** @description GLUE 语言：python/javascript/shell */
+            glueLanguage: string | null;
+            /** @description 内联 GLUE 脚本源码（管理员可编辑） */
+            glueSource: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @description 列表行内联的最近一次真实执行摘要（按当前页批量回填，非 N+1）；无真实执行时为 null。合成行（synthetic=true）不参与，与 lastStatus 筛选同口径。 */
+            lastExecution?: components["schemas"]["TaskLastExecutionSummaryDto"] | null;
+            /**
+             * Format: date-time
+             * @description 调度器最近一次将该任务入队的时间
+             */
+            lastTriggerTime: string | null;
+            /** @description 维护窗口：5 字段 cron 的起止时间对，半开区间 [start, end) */
+            maintenanceWindows: {
+                description?: string;
+                end: string;
+                start: string;
+            }[] | null;
+            /** @description 派发/执行失败后的重试次数上限 */
+            maxRetry: number;
+            /** @enum {string} */
+            misfireStrategy: "ignore" | "fire_once";
+            /** @description 任务名（全局唯一） */
+            name: string;
+            /** @description 创建者用户 ID（null = 无归属的历史遗留行；鉴权按仅管理员可见处理） */
+            ownerUserId: number | null;
+            /** @description 默认运行参数（纯运行时参数，不含凭据） */
+            params: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * @description 以 PG 枚举标签的形态存储（并返回）；写入时会把数字输入归一化
+             * @enum {string}
+             */
+            priority: "low" | "normal" | "high" | "critical";
+            /** @description 项目关联——当前读取路径不会加载它（普通仓储查询从不 join 该关联） */
+            project?: {
+                /** Format: uuid */
+                id?: string;
+                name?: string;
+            } | null;
+            /**
+             * Format: uuid
+             * @description 所属项目（null = 未分配/默认项目视图）
+             */
+            projectId: string | null;
+            /** @description Python/node 依赖列表（uv pip install / npm install） */
+            requirements: string[] | null;
+            /** @description 重试间隔秒数 */
+            retryDelay: number;
+            /** @description 可重试的失败关键词子串，不区分大小写；null/空 = 所有失败都重试 */
+            retryableErrors: string[] | null;
+            /** @description G6 失败边：上游依赖进入失败终态时也触发本任务（补偿/清理链） */
+            runOnUpstreamFailure: boolean;
+            /** @description 失败时展示的 Markdown 运维手册，同时供告警路由消费 */
+            runbook: string | null;
+            /** @enum {string} */
+            runtime: "python" | "node" | "shell";
+            /** @description 声明的解释器版本（多版本 WS1） */
+            runtimeVersion: string | null;
+            /** @description 任务密钥，始终打码：叶子值恒为 '******'（SEC-02）；明文永不出服务端 */
+            secrets: {
+                [key: string]: string;
+            } | null;
+            /**
+             * @description 已删除的行永不返回（软删除）
+             * @enum {string}
+             */
+            status: "active" | "paused" | "deleted";
+            /** @description 执行超时秒数（0 = 不限） */
+            timeout: number;
+            /** @description 超时后的动作（默认 kill；kill_retry 重新入队一次；notify_only 跳过管理端 kill） */
+            timeoutAction: string | null;
+            /** @description 超时告警（WARNING）通知阈值，按超时时间的百分比计（0-90，null = 关闭） */
+            timeoutWarnRatio: number | null;
+            /** @description 用于 cron 计算的 IANA 时区 */
+            timezone: string | null;
+            /** @enum {string} */
+            triggerType: "cron" | "fixed_rate" | "api" | "manual";
+            /** Format: date-time */
+            updatedAt: string;
+            /** @description R7 实测出现性差异：save() 回程（create/update/pause/resume/rollbackToVersion）会把 select:false 列 hydrated 成 null 带出；findOne/列表等 select 读取不含该键。值恒 null 或掩码形态——明文只在 webhook enable/rotate 的一次性回显 */
+            webhookSecret?: string | null;
+        };
+        TaskTemplateResponseDto: {
+            /** @description Coarse category tag (备份/巡检/同步/清理/通知…) rendered as a Tag */
+            category?: string | null;
+            /**
+             * @description 合法的 CreateTaskDto 子集（不含 `name`；在实例化时提供）。从此模板实例化任务时用作默认值。
+             * @example {
+             *       "blockStrategy": "discard",
+             *       "cronExpression": "0 2 * * *",
+             *       "entrypoint": "backup.sh",
+             *       "maxRetry": 3,
+             *       "retryDelay": 60,
+             *       "runtime": "shell",
+             *       "timeoutSeconds": 3600,
+             *       "triggerType": "cron"
+             *     }
+             */
+            config: {
+                [key: string]: unknown;
+            };
+            /**
+             * Format: date-time
+             * @description 创建时间（ISO-8601）
+             */
+            createdAt: string;
+            /** @description 创建者的用户名（JWT 用户名）。null = legacy 行/官方 seed；属主为 null 的行仅 ADMIN 可删除。 */
+            createdBy?: string | null;
+            /** @description 模板卡片上展示的人类可读描述 */
+            description?: string | null;
+            /**
+             * Format: uuid
+             * @description 模板 UUID
+             */
+            id: string;
+            /** @description 迁移预置的官方预设为 true（只读，不可删除） */
+            isOfficial: boolean;
+            /**
+             * @description 稳定唯一键。官方模板使用固定键（scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping），与 MCP 的 TASK_TEMPLATES 对齐；自定义键由用户建议。
+             * @example scheduled_backup
+             */
+            key: string;
+            /** @description 显示名称 */
+            name: string;
+            /**
+             * Format: date-time
+             * @description 最后更新时间（ISO-8601）
+             */
+            updatedAt: string;
+        };
+        TaskVersionDto: {
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string | null;
+            description: string | null;
+            gitCommit: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @description 完整任务配置快照（供 rollbackToVersion 消费） */
+            snapshot: {
+                [key: string]: unknown;
+            };
+            /** Format: uuid */
+            taskId: string;
+            /** @description 可读标签，形如 'v3' */
+            version: string;
+        };
+        TaskWebhookTriggerResponseDto: {
+            /** @description 执行行/终态载荷（wait=true 时为终态执行行，否则为已受理执行行） */
+            execution: {
+                [key: string]: unknown;
+            };
+            /**
+             * Format: uuid
+             * @description 本次触发创建的执行行 id
+             */
+            executionId: string;
+        };
+        TerminalStateItemDto: {
+            /**
+             * @description 终态时间（ISO 8601）。endTime 缺失时（如未启动即被取消）回 createdAt 兜底值
+             * @example 2026-09-14T08:12:33.120Z
+             */
+            endedAt: string;
+            /**
+             * @description 执行 id（与 dispatch 下发、回调上报的 executionId 同源）
+             * @example b3f1c0de-1f2a-4c77-9a10-2f6d2c1e9a01
+             */
+            executionId: string;
+            /**
+             * @description 该执行当前的状态；本端点只回终态取值
+             * @example success
+             * @enum {string}
+             */
+            status: "success" | "failed" | "timeout" | "killed" | "cancelled";
+        };
+        TerminalStatesResponseDto: {
+            /**
+             * @description true 表示还有更多未返回（已达 limit）。调用方应在下一轮对账继续取，不要误判为「其余都还没终态」
+             * @example false
+             */
+            hasMore?: boolean;
+            /** @description 已终态的执行清单，按终态时间**升序**（便于调用方按水印增量消费：处理到哪条就把下一条的时间当下次 since） */
+            items: components["schemas"]["TerminalStateItemDto"][];
+            /**
+             * @description 服务端当前时间（ISO 8601）。执行器用它校正自己的时钟偏差后再算 since ——执行器与 admin 时钟不一致会让 since 窗口错位，直接漏掉刚终态的行
+             * @example 2026-09-14T08:20:00.000Z
+             */
+            serverTime: string;
+        };
+        TotpCodeDto: {
+            /**
+             * @description 6 位 TOTP 动态验证码
+             * @example 123456
+             */
+            code: string;
+        };
+        TotpDisableDto: {
+            /**
+             * @description 6 位 TOTP 动态验证码（与密码二选一）
+             * @example 123456
+             */
+            code?: string;
+            /**
+             * @description 确认密码（与 6 位动态码二选一）
+             * @example password123
+             */
+            password?: string;
+        };
+        TotpDisableResponseDto: {
+            /** @description 本次调用确实关闭了 TOTP 时为 true；本来就未开启时为 false（幂等空操作） */
+            disabled: boolean;
+        };
+        TotpEnableResponseDto: {
+            /** @description 成功时恒为 true（否则返回 400） */
+            enabled: boolean;
+        };
+        TotpSetupResponseDto: {
+            /**
+             * @description 供认证器应用使用的 otpauth:// URL
+             * @example otpauth://totp/AutoCodeFlow:admin?secret=&issuer=AutoCodeFlow
+             */
+            otpauthUrl: string;
+            /** @description Base32 编码的 TOTP 密钥（暂存，尚未生效） */
+            secret: string;
+        };
+        TotpVerifyDto: {
+            /**
+             * @description 6 位 TOTP 动态验证码
+             * @example 123456
+             */
+            code: string;
+            /** @example password123 */
+            password: string;
+            /** @example admin */
+            username: string;
+        };
+        TriggerTaskDto: {
+            /** @description 提前触发并消耗下一个 cron 计划落点：登记后到该落点时刻调度器跳过一次（一次性），并留痕。缺省 false ⇒ 行为不变（手动触发不覆盖计划落点）。仅 cron 任务可用；已有未消耗登记时返回 409。 */
+            consumeNextFirePoint?: boolean;
+            /** @description 触发参数覆盖；序列化后体积不得超过 65536 字节（与 webhook 面同一上限） */
+            params?: Record<string, never>;
+            /** @example 3 */
+            version?: number;
+        };
+        UpdateApplicationDto: {
+            /**
+             * @description DEP-04：新部署派发前是否需要第二人审批
+             * @default false
+             */
+            approvalRequired?: boolean;
+            /** @description 应用描述 */
+            description?: string;
+            entrypoint?: string;
+            env?: Record<string, never>;
+            gitBranch?: string;
+            gitCommit?: string;
+            gitRepo?: string;
+            manifest?: Record<string, never>;
+            /** @description MUTEX-01：该应用加入的互斥组 ID（null = 不参与互斥） */
+            mutexGroupId?: string | null;
+            /** @description 唯一应用名称 */
+            name?: string;
+            packageUrl?: string;
+            /**
+             * @description 运行时类型（上限对齐 UploadApplicationDto.runtime）
+             * @example node
+             */
+            runtime?: string;
+            /**
+             * @description 应用状态
+             * @enum {string}
+             */
+            status?: "active" | "deploying" | "failed";
+            /**
+             * @description 应用版本号（上限对齐 UploadApplicationDto.version）
+             * @example 1.0.0
+             */
+            version?: string;
+            /** @description 用于 Webhook 签名校验的 HMAC-SHA256 secret。置为空字符串即关闭。 */
+            webhookSecret?: string;
+        };
+        UpdateChannelDto: {
+            /** @description 渠道配置覆盖（string → string 映射，哨兵 '***' 不覆盖真实机密） */
+            config?: Record<string, never>;
+            /** @description 启用/停用该渠道 */
+            enabled?: boolean;
+        };
+        UpdateExecutorPackageDto: {
+            /** @description 校验和 */
+            checksum?: string;
+            /** @description 包描述 */
+            description?: string;
+            /** @description 文件路径 */
+            filePath?: string;
+            /** @description 文件字节数 */
+            fileSize?: number;
+            /** @description 包名称 */
+            name?: string;
+            /** @description 目标平台 */
+            platform?: string;
+            /**
+             * @description 包状态
+             * @enum {string}
+             */
+            status?: "active" | "deprecated" | "uploading";
+            /**
+             * @description 包类型
+             * @enum {string}
+             */
+            type?: "node" | "python" | "universal";
+            /** @description 包版本 */
+            version?: string;
+        };
+        UpdateMutexGroupDto: {
+            /** @description 组用途说明 */
+            description?: string;
+            /**
+             * @description 同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）
+             * @default 1
+             */
+            maxConcurrentPerDevice?: number;
+            /** @description 互斥组名（唯一），如 ziniao-browser */
+            name?: string;
+            /**
+             * @description 组作用域：device=单点互斥（每台设备同时最多 N 条，跨设备并发）；global=全局互斥（全平台同时最多 N 条，单点登录顶号类场景）。默认 device
+             * @default device
+             * @enum {string}
+             */
+            scope?: "device" | "global";
+        };
+        UpdateProjectDto: {
+            /** @description 项目描述 */
+            description?: string;
+            /** @description 项目名称 */
+            name?: string;
         };
         UpdateProjectMemberDto: {
-            /** @description 用户 ID */
-            userId?: number;
             /**
              * @description 项目角色
              * @enum {string}
              */
             role?: "viewer" | "editor" | "admin";
+            /** @description 用户 ID */
+            userId?: number;
         };
-        MyProjectRolesDto: {
-            /** @description 调用方用户 ID；请求未携带用户时为 null */
-            userId?: number | null;
-            /** @description 调用方为 ADMIN 时为 true（admin-web 据此渲染全部项目） */
-            isAdmin: boolean;
-            /** @description 调用方在所有项目中的成员关系行 */
-            memberships: components["schemas"]["ProjectMemberViewDto"][];
+        UpdateSopDto: {
+            bodyMarkdown?: string;
+            frontMatterYaml?: string;
+            title?: string;
+        };
+        UpdateSubscriptionBody: {
+            /** @description 是否启用投递（true=启用，false=停用） */
+            enabled?: boolean;
+            /** @description 替换订阅的事件集合 */
+            eventTypes?: string[];
+            /** @description 轮换签名密钥 */
+            secret?: string;
+            /** @description 新的回调 URL */
+            url?: string;
+        };
+        UpdateTaskDto: {
+            alarmChannels?: string[];
+            alarmEmail?: string;
+            applicationId?: string;
+            blockStrategy?: string;
+            /**
+             * @description 代码来源渠道。gitRepo / glueSource / codeSource=application_zip（需配 applicationId）三者中只能设置一个。PATCH 时缺省 = 保留当前值；显式 null = 清除声明。requirements/PyPI 属于依赖型渠道，可与任一代码来源并存。
+             * @enum {string|null}
+             */
+            codeSource?: "git" | "glue" | "application_zip" | null;
+            cronExpression?: string;
+            currentVersion?: string;
+            /**
+             * @description 上游任务依赖映射：{ 显示名: 上游任务id }——**value 才是依赖任务 id**（环检测、依赖满足、扇出匹配等所有消费方都读 value）。每个 value 必须是已存在的任务 id；自依赖与循环在写面即被拒绝。
+             * @example {
+             *       "task-a-name": "uuid-of-task-a"
+             *     }
+             */
+            dependencies?: {
+                [key: string]: string;
+            };
+            /**
+             * @description FEAT-22：任务级部署派发策略覆盖。'strict' 把候选收窄为显式部署了绑定应用的设备集合（running/stopped/upgrading）；当其中没有任何设备可承接该执行时，执行会以 WAITING 排队，而不是静默派发到别处。'prefer' 保留 ARCH-35 的软偏好（优先尝试已部署且运行中的设备，否则回落到全集群）。缺省/null = 跟随全局 executor.deploymentPolicy（EXECUTOR_DEPLOYMENT_POLICY）。优先级：executorId 钉定 > executorAppName > 部署约束 > 全集群；总开关 executor.preferDeployedExecutor=false 会彻底关闭部署感知。PATCH：缺省 = 保留；显式 null = 跟随全局。
+             * @enum {string|null}
+             */
+            deploymentPolicy?: "strict" | "prefer" | null;
+            description?: string;
+            entrypoint?: string;
+            /** @description CORE-05：预估执行时长（秒；0 或缺省 = 未知）。仅用于调度侧的 executor 负载评分（预估越长，对繁忙执行器的惩罚越大）；执行链路（心跳/超时/统计）从不消费该字段。PATCH 时显式 null = 重置为未知。 */
+            estimatedDurationSec?: number;
+            /** @description 派发模式：single（在符合条件的执行器中选择负载最低的一台，缺省）或 broadcast（扇出到所有符合条件的在线执行器）。与 executorId 钉定互斥；当绑定应用带有互斥组时以 400 拒绝（broadcast 无法遵守组内并发上限）。 */
+            executeMode?: string;
+            /** @description NF-04：执行器标签亲和（OR 语义——持有其中**任一**标签的执行器即为候选；随后在命中集合内按 loadScore 择优）。broadcast 模式下扇出收窄为命中亲和标签的执行器子集。与 executorTags（硬性 AND 子集能力要求）正交。PATCH：缺省 = 保留；显式 null/[] = 清除。 */
+            executorAffinityTags?: string[];
+            /** @description NF-04：执行器标签反亲和（排除语义——持有其中**任一**标签的执行器即被排除）。单发与 broadcast 均生效；与亲和标签组合时，先取亲和命中集再在其上剔除。PATCH：缺省 = 保留；显式 null/[] = 清除。 */
+            executorAntiAffinityTags?: string[];
+            executorAppName?: string;
+            executorGroup?: string;
+            /** @description 把任务钉定到指定执行器：派发**只**发往该执行器（绕过分组/标签过滤）；它离线时快速失败。与 executeMode=broadcast 互斥。 */
+            executorId?: string;
+            executorTags?: string[];
+            /**
+             * @description 乐观锁预期值：编辑前读取的任务 updatedAt（ISO 时间串）。传入即启用并发检查，不匹配返回 409；缺省跳过检查。
+             * @example 2026-10-01T08:00:00.000Z
+             */
+            expectedUpdatedAt?: string;
+            fixedRate?: number;
+            gitBranch?: string;
+            gitCommit?: string;
+            gitRepo?: string;
+            glueLanguage?: string;
+            glueSource?: string;
+            id?: string;
+            /** @description 任务级维护窗口：落在窗口内的定时触发会被跳过（手动/API 触发不受影响）。每项为 {start, end, description?}，start/end 均为 5 字段 cron；窗口在最近一次 start-cron 触达时开启、在最近一次 end-cron 触达时关闭。最多 10 条。 */
+            maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][];
+            maxRetry?: number;
+            misfireStrategy?: string;
+            /**
+             * @description 任务名称——允许任意语言（含中文/日文/emoji）。拒绝控制字符与首尾空白；长度上限 255 字符。全部任务（含软删除行）内全局唯一。
+             * @example 每日备份
+             */
+            name?: string;
+            /** @description 任务默认参数；序列化后体积不得超过 65536 字节（与 trigger/webhook 面同一上限）。 */
+            params?: Record<string, never>;
+            priority?: number;
+            /** @description 所属项目。缺省/null = 未分配（计入默认项目视图；与既有行为一致）。设置它需要 ADMIN 或该项目的 editor/admin。 */
+            projectId?: string;
+            /** @description 任务运行前由执行器安装的依赖声明——pip 依赖（python runtime，每任务独立 uv venv）或 npm 包（node runtime）。GLUE 脚本任务忽略该字段。示例：[\"requests>=2.31\", \"rich==13.7.1\"] */
+            requirements?: string[];
+            retryDelay?: number;
+            retryableErrors?: string[];
+            /** @description 失败边：上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时也触发本任务（默认 false） */
+            runOnUpstreamFailure?: boolean;
+            /** @description FEAT-11：markdown 运维手册——展示在任务详情页，并随失败通知/告警一并附上。 */
+            runbook?: string;
+            runtime?: string;
+            /** @description 任务所需的 Python 解释器版本，格式为 \"major.minor\"（例如 \"3.7\"、\"3.12\"）。支持区间默认 3.7–3.14；3.7 仅支持离线预置（uv 无法在线下载）。仅在 runtime=python 时有意义。 */
+            runtimeVersion?: string;
+            /**
+             * @description 任务级 secrets（凭据键值对，独立于 params 的普通运行参数；配置了 SEC_SECRETS_KEY 时以 AES-256-GCM 加密落库，未配置则降级明文并告警）。读路径一律以字面量 ****** 掩码。派发时走两条通道：合并进 params（AUTOFLOW_<KEY>，旧执行器通道）并作为独立载荷字段下发，使执行器按**原名**注入（第三方 SDK 要求规范名）。PATCH 时按**逐键合并**：键缺省或叶子值为 ****** 时保留已存值，叶子值为 null 时删除该键，其它值覆盖；整个字段显式 null 时清空全部 secret。
+             * @example {
+             *       "API_TOKEN": "sk-live-",
+             *       "DB_PASSWORD": "hunter2"
+             *     }
+             */
+            secrets?: {
+                [key: string]: string;
+            };
+            status?: string;
+            /** @description 任务执行超时秒数（遗留字段；建议使用 timeoutSeconds）。0 = 不限制；上限为执行器的 1..86400 窗口（executor-node 每次尝试都会以 400 拒绝更大的值）。 */
+            timeout?: number;
+            /**
+             * @description CORE-04：任务超时后的动作。kill（缺省）= 执行器按既有语义树杀进程；kill_retry = 同样树杀，但 admin 按任务的重试预算重新入队一次执行；notify_only = admin 只下发超时告警、不额外下发终止指令（执行器自身的硬超时仍然生效）。PATCH 时缺省 = 保留当前值；显式 null = 重置回 kill。
+             * @enum {string}
+             */
+            timeoutAction?: "kill" | "kill_retry" | "notify_only";
+            /** @description 任务执行超时秒数。0 = 不限制；上限为执行器的 1..86400 窗口（会归一化到 `timeout`，executor-node 对超过 86400 的值以 400 拒绝）。 */
+            timeoutSeconds?: number;
+            /** @description CORE-04：超时预警阈值，取 timeout 的百分数（整数 0-90）。运行时长达到 timeout × ratio/100 时发送一次 WARNING 预警通知（每个执行至多一次）。缺省/null = 未启用。 */
+            timeoutWarnRatio?: number;
+            /** @description cron 调度使用的 IANA 时区，例如 Asia/Shanghai */
+            timezone?: string;
+            triggerType?: string;
+        };
+        UpdateTaskTemplateDto: {
+            /** @description 粗分类标签（备份/巡检/同步/清理/通知…）；传 null 清空 */
+            category?: string | null;
+            /** @description 合法 CreateTaskDto 子集（省略 name）；整体替换现有 config */
+            config?: {
+                [key: string]: unknown;
+            };
+            /** @description 模板说明；传 null 清空 */
+            description?: string | null;
+            /**
+             * @description 模板展示名
+             * @example 每日订单同步
+             */
+            name?: string;
+        };
+        UpdateUserDto: {
+            /** @description 非 admin 用户修改自己的密码时必填（SEC-12）；service 落库前会剥离该字段（R19） */
+            currentPassword?: string;
+            /** @example admin@example.com */
+            email?: string;
+            /** @description 账号启用/禁用（ADMIN-only；禁用后登录 403 且在途会话立即失效） */
+            isActive?: boolean;
+            /** @description 至少 8 个字符，且必须包含大写字母、小写字母、数字和特殊字符 */
+            password?: string;
+            /**
+             * @default user
+             * @enum {string}
+             */
+            role?: "admin" | "user";
+            /** @example admin */
+            username?: string;
+        };
+        UpgradeAllCoverageDto: {
+            /** @description FAILED 行数（恒排除，应走显式重新部署） */
+            failed: number;
+            /** @description pending/deploying/upgrading 在途行数（恒跳过，逐行进 skipped 明细） */
+            inFlight: number;
+            /** @description RUNNING 且 runMode≠scheduled 的行数（活进程语义：daemon/once） */
+            running: number;
+            /** @description RUNNING 且 runMode=scheduled 的行数（仅部署待触发——实证口径：scheduled 部署完成即上报 running，行稳态就是 RUNNING，默认与 running 一并覆盖） */
+            scheduled: number;
+            /** @description STOPPED 行数（仅 includeStopped=true 时纳入升级；计数恒回显） */
+            stopped: number;
+        };
+        UpgradeAllDto: {
+            /** @description all 策略下把 stopped 部署行一并纳入升级（缺省 false——stopped 可能是人为停用）。pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细；failed 行恒排除（应走显式重新部署）。canary 策略忽略本参数 */
+            includeStopped?: boolean;
+            rollout?: components["schemas"]["RolloutStrategyDto"];
+            /** @description 本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本。注意：该参数等价于 set-current-version + deploy-version 的组合（先按快照恢复应用当前字段，再下发），且会改写中台当前版本——R1（§4.2）拆分出的这两个端点是更明确的表达，建议改用新端点 */
+            version?: string;
+        };
+        UpgradeAllResponseDto: {
+            /** @description 该应用部署行按状态分组的计数（R2 §4.4）。running+scheduled 为默认覆盖面；stopped 仅 includeStopped=true 时升级；failed 恒排除；inFlight 恒跳过 */
+            coverage?: components["schemas"]["UpgradeAllCoverageDto"];
+            failed: number;
+            /** @description false = 金丝雀批次被拒绝（ARCH-31 在途互斥）或全部失败 */
+            ok: boolean;
+            /** @description 在实际启动了金丝雀批次（或被阻塞）时出现 */
+            rollout?: {
+                batchId?: string;
+                /** @description ARCH-31：同一应用上存在在途批次（跨实例互斥，不是异常） */
+                blockedReason?: string;
+                canaryIds?: string[];
+                promotedIds?: string[];
+                /** @enum {string} */
+                strategy?: "canary" | "all";
+            };
+            /** @description 在途行（pending/deploying/upgrading）的跳过明细——不抛错，逐行给出原因（R2 §4.4） */
+            skipped?: components["schemas"]["UpgradeAllSkippedItemDto"][];
+            succeeded: number;
+            /** @description 触发时刻运行中的部署数 */
+            total: number;
+            /** @description 版本定向灰度时回显实际目标版本（快照恢复后的 app.version）；缺省（latest）不带 */
+            version?: string;
+        };
+        UpgradeAllSkippedItemDto: {
+            /** Format: uuid */
+            deploymentId: string;
+            /** Format: uuid */
+            executorId: string | null;
+            /**
+             * @description in_flight=在途部署/升级不可重入；awaiting_approval=待审批行（DEP-04，复用 pending 占坑）
+             * @enum {string}
+             */
+            reason: "in_flight" | "awaiting_approval";
+            /** @enum {string} */
+            status: "pending" | "deploying" | "upgrading";
+        };
+        UpsertConfigDto: {
+            description?: string;
+            /** @default false */
+            isSecret?: boolean;
+            key: string;
+            value?: string;
+            /** @default string */
+            valueType?: string;
+        };
+        UpsertProjectMemberDto: {
+            /**
+             * @description 项目角色
+             * @enum {string}
+             */
+            role: "viewer" | "editor" | "admin";
+            /** @description 用户 ID */
+            userId: number;
+        };
+        UserDeleteResponseDto: {
+            /** @enum {boolean} */
+            deleted: true;
+        };
+        UserResponseDto: {
+            /** Format: date-time */
+            createdAt: string;
+            /** @description 唯一 */
+            email: string;
+            id: number;
+            /** @description 软禁用开关（为 false 时拒绝登录） */
+            isActive: boolean;
+            lastTotpCounter: number | null;
+            /**
+             * Format: date-time
+             * @description 锁定截止时间
+             */
+            lockedUntil: string | null;
+            /** @description 连续登录失败次数（锁定判定的输入） */
+            loginFailCount: number;
+            /** @enum {string} */
+            role: "admin" | "user";
+            /** @description 修改密码时递增——使旧的 refresh token 失效 */
+            sessionVersion: number;
+            totpEnabled: boolean;
+            /** Format: date-time */
+            updatedAt: string;
+            /** @description 1..128 字符，唯一 */
+            username: string;
+        };
+        VersionDiffEntryDto: {
+            /** @description version2 中的值（任意 JSON） */
+            new: Record<string, never>;
+            /** @description version1 中的值（任意 JSON） */
+            old: Record<string, never>;
+        };
+        WebhookDisableResponseDto: {
+            enabled: boolean;
+        };
+        WebhookSecretResponseDto: {
+            /** @description 明文密钥仅回显一次；需要重发时用 rotate */
+            secret: string;
+            url: string;
+        };
+        WebhookStatusResponseDto: {
+            enabled: boolean;
+            /** @description 带签名的入站触发 URL */
+            url: string;
         };
     };
     responses: never;
@@ -8456,1827 +8591,87 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    AuthController_login: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LoginDto"];
-            };
-        };
-        responses: {
-            /** @description 双 token 或 {totpRequired:true}（SEC-03 二段登录） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuthTokensDto"] | {
-                        /** @enum {boolean} */
-                        totpRequired: true;
-                    };
-                };
-            };
-            /** @description 用户名或密码错误 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 请求过于频繁，已触发限流 */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_refreshToken: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RefreshTokenDto"];
-            };
-        };
-        responses: {
-            /** @description token rotation：旧 refresh 立即失效 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuthTokensDto"];
-                };
-            };
-            /** @description Refresh Token 无效或已过期 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_logout: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuthLogoutDto"];
-                };
-            };
-            /** @description 未认证 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_issueSseTicket: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 票据已签发 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SseTicketResponseDto"];
-                };
-            };
-            /** @description 未认证 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_getProfile: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description AuthUser 原样（roles 不在 AuthUser——role 单值） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuthProfileDto"];
-                };
-            };
-            /** @description 未认证 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_totpSetup: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 已预登记的密钥 + otpauth URL */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TotpSetupResponseDto"];
-                };
-            };
-            /** @description TOTP 已启用 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_totpEnable: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TotpCodeDto"];
-            };
-        };
-        responses: {
-            /** @description TOTP 已启用 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TotpEnableResponseDto"];
-                };
-            };
-            /** @description 验证码错误，或没有预登记的密钥 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_totpDisable: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TotpDisableDto"];
-            };
-        };
-        responses: {
-            /** @description TOTP 已停用（或本来未启用） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TotpDisableResponseDto"];
-                };
-            };
-            /** @description 确认失败 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_totpVerifyLogin: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TotpVerifyDto"];
-            };
-        };
-        responses: {
-            /** @description 双 token（二段登录成功） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuthTokensDto"];
-                };
-            };
-            /** @description 凭据或 TOTP 验证码错误 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_listSessions: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 会话列表 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuthSessionRowDto"][];
-                };
-            };
-        };
-    };
-    AuthController_revokeSession: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 会话已撤销 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SessionRevokeResponseDto"];
-                };
-            };
-            /** @description 会话不存在或已吊销 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_revokeOtherSessions: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 撤销数量 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RevokeOthersResponseDto"];
-                };
-            };
-        };
-    };
-    OidcController_status: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OidcStatusResponseDto"];
-                };
-            };
-        };
-    };
-    OidcController_login: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 302 重定向到 IdP 授权 URL（Res 直传） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
-            };
-        };
-    };
-    OidcController_callback: {
-        parameters: {
-            query: {
-                code: string;
-                state: string;
-                error: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 302 重定向并写入会话 Cookie；失败时返回 502 JSON（Res 直传） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
-            };
-        };
-    };
-    UsersController_findAll: {
-        parameters: {
-            query?: {
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
-                /** @description 按用户名或邮箱模糊搜索（不区分大小写） */
-                search?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PaginatedUsersDto"];
-                };
-            };
-        };
-    };
-    UsersController_create: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateUserDto"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UserResponseDto"];
-                };
-            };
-        };
-    };
-    UsersController_findOne: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UserResponseDto"];
-                };
-            };
-        };
-    };
-    UsersController_remove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UserDeleteResponseDto"];
-                };
-            };
-        };
-    };
-    UsersController_update: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateUserDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UserResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_findAll: {
-        parameters: {
-            query?: {
-                /** @description 页码，默认 1 */
-                page?: components["schemas"]["Object"];
-                /** @description 每页条数，默认 20 */
-                pageSize?: components["schemas"]["Object"];
-                /** @description 仅按任务名称模糊搜索（向后兼容通道；CLI/MCP 使用它）。控制台搜索框改用 `q`，因为其占位符承诺搜索名称或描述。 */
-                name?: string;
-                /** @description 按状态过滤（active/paused/inactive） */
-                status?: string;
-                /** @description 按运行时过滤（python/node/shell） */
-                runtime?: string;
-                /** @description 同时按任务名称与描述做关键字搜索。LIKE 元字符（% 与 _）按字面匹配，因此搜索 `daily_report` 不会同时命中 `dailyXreport`。可与其他所有列表过滤条件组合。 */
-                q?: string;
-                /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。仅与默认排序组合——与 sortBy 或 lastStatus 同时给出返回 400。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。 */
-                cursor?: string;
-                /** @description F-10：逗号分隔的投影白名单（例如 'id,name'）。只查询白名单内的轻量列——跳过 params/secrets/glueSource 等重型列。非法字段 → 400。 */
-                fields?: unknown;
-                /** @description P2-18：过滤「最近一次执行」处于该状态的任务（每个任务取最新一行 task_executions：createdAt DESC、id DESC）。取值：pending/running/waiting/success/failed/timeout/killed/cancelled。最近一次执行仍在进行中（pending/running）时按原样匹配。以 EXISTS 子查询实现——可与其他列表过滤条件组合。 */
-                lastStatus?: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 分页列表（list/items 双键，R-21）。默认投影 = 完整实体但密钥已掩码；?fields= 会裁剪 items（F-10）。带 cursor 时额外含 nextCursor。 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PaginatedTaskListDto"];
-                };
-            };
-        };
-    };
-    TaskController_create: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateTaskDto"];
-            };
-        };
-        responses: {
-            /** @description 任务创建成功（初始为暂停状态） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_importDefinition: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ImportTaskDto"];
-            };
-        };
-        responses: {
-            /** @description 任务已导入（暂停状态）。warnings 中始终包含重新配置密钥的提示。 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskImportResultDto"];
-                };
-            };
-            /** @description 载荷非法（缺少必填键、params 超大、未知字段（全局白名单）、cron/时区/枚举非法等） */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 载荷指定的项目调用者无权写入（需要 ADMIN，或该项目的 editor/admin 角色） */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 所有候选名称都与已有任务冲突（或其他唯一性冲突） */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_batchTrigger: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description 批量触发参数 */
-        requestBody: {
-            content: {
-                "application/json": unknown;
-            };
-        };
-        responses: {
-            /** @description 各任务的触发结果（成功项 = 完整执行记录；失败项 = {id, error}） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": (components["schemas"]["TaskExecutionResponseDto"] | components["schemas"]["BatchErrorItemDto"])[];
-                };
-            };
-        };
-    };
-    TaskController_batchPause: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description 批量暂停参数 */
-        requestBody: {
-            content: {
-                "application/json": unknown;
-            };
-        };
-        responses: {
-            /** @description 各任务的暂停结果（成功项 = 完整任务；失败项 = {id, error}） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": (components["schemas"]["TaskResponseDto"] | components["schemas"]["BatchErrorItemDto"])[];
-                };
-            };
-        };
-    };
-    TaskController_batchResume: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description 批量恢复参数 */
-        requestBody: {
-            content: {
-                "application/json": unknown;
-            };
-        };
-        responses: {
-            /** @description 各任务的恢复结果（成功项 = 完整任务；失败项 = {id, error}） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": (components["schemas"]["TaskResponseDto"] | components["schemas"]["BatchErrorItemDto"])[];
-                };
-            };
-        };
-    };
-    TaskController_batchDelete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description 批量删除参数 */
-        requestBody: {
-            content: {
-                "application/json": unknown;
-            };
-        };
-        responses: {
-            /** @description 各任务的删除结果（成功项 = {deleted: true}；失败项 = {id, error}） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": (components["schemas"]["DeleteTaskResponseDto"] | components["schemas"]["BatchErrorItemDto"])[];
-                };
-            };
-        };
-    };
-    TaskController_allExecutions: {
-        parameters: {
-            query?: {
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
-                /** @description 按任务名模糊搜索 */
-                name?: string;
-                /** @description 按执行状态过滤 */
-                status?: string;
-                /** @description 按 runtime 过滤（python/node/shell） */
-                runtime?: string;
-                /** @description 按任务 id 过滤 */
-                taskId?: string;
-                /** @description 按任务名模糊搜索 */
-                taskName?: string;
-                /** @description 按执行器地址模糊过滤 */
-                executorAddress?: string;
-                /** @description 仅返回在该时刻及之后创建的执行（ISO 8601） */
-                startTime?: string;
-                /** @description 仅返回在该时刻及之前创建的执行（ISO 8601） */
-                endTime?: string;
-                /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器组合，非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。 */
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 全局执行记录（已排除大文本列） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PaginatedExecutionListDto"];
-                };
-            };
-        };
-    };
-    TaskController_exportExecutions: {
-        parameters: {
-            query?: {
-                /** @description 按执行状态过滤（同列表端点） */
-                status?: string;
-                /** @description 按任务 id 过滤 */
-                taskId?: string;
-                /** @description 按任务名模糊搜索（命中执行行自身或 tasks.name） */
-                taskName?: string;
-                /** @description 按执行器地址模糊过滤 */
-                executorAddress?: string;
-                /** @description 仅返回在该时刻及之后创建的执行（ISO 8601） */
-                startTime?: string;
-                /** @description 仅返回在该时刻及之前创建的执行（ISO 8601） */
-                endTime?: string;
-                /** @description 本次导出的行数上限（安全阀，不是分页）。可调小；超过硬顶（50000）按硬顶处理，达上限时 CSV 末尾追加截断注释行。 */
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description CSV 文本导出（Res 直传，流动写出，最多 50 000 行） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/csv": string;
-                };
-            };
-        };
-    };
-    TaskController_executionLogsByExecId: {
-        parameters: {
-            query?: {
-                /** @description 起始行号，默认 0 */
-                fromLine?: string;
-                /** @description 每页行数，默认 500，最多 2000 */
-                limit?: string;
-                /** @description 按推断出的日志级别过滤（在 SQL 层完成）；级别未知（NULL）的行会被排除。指定 level 时，fromLine 是过滤后序列内的偏移，totalLines 是过滤后的条数。 */
-                level?: "ERROR" | "WARN" | "INFO" | "DEBUG";
-            };
-            header?: never;
-            path: {
-                /** @description 执行记录 ID */
-                execId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutionLogsPageResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_executionByExecId: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 执行记录 ID */
-                execId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskExecutionResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_schedulerStats: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SchedulerStatsResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_getStats: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description FIX-5.1 起 successRate/succeeded/failed 均为全量执行口径；recentSuccessRate 仍保留最近 20 次窗口 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutionStatsResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_suggestSchedule: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description AI 推荐结果；fallback=true 表示走了启发式降级路径 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SuggestScheduleResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_findOne: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 完整任务实体，密钥已掩码 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskResponseDto"];
-                };
-            };
-            /** @description 任务不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_remove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 已软删除（status=deleted + deletedAt） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeleteTaskResponseDto"];
-                };
-            };
-            /** @description 任务不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_update: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateTaskDto"];
-            };
-        };
-        responses: {
-            /** @description 更新成功（密钥已掩码） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskResponseDto"];
-                };
-            };
-            /** @description 任务不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_exportDefinition: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 任务定义导出载荷（与 POST /tasks/import 的请求体同形态） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskExportPayloadDto"];
-                };
-            };
-            /** @description 任务不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_updateGlue: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    source?: string;
-                    language?: string;
-                };
-            };
-        };
-        responses: {
-            /** @description 脚本已更新 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskResponseDto"];
-                };
-            };
-            /** @description 任务不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_trigger: {
+    SopCollabController_uploadCandidatePackage: {
         parameters: {
             query?: never;
             header: {
-                "idempotency-key": string;
-                /** @description G10 幂等键（8-128 字符，字母/数字/._:-）：同键同参 24h 内只触发一次（重放返回 409 TASK_IDEMPOTENCY_REPLAY）；同键不同参返回 409 TASK_IDEMPOTENCY_KEY_REUSED。缺省不做去重。 */
-                "Idempotency-Key"?: string;
+                authorization: string;
             };
             path: {
-                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollabCandidatePackageResponseDto"];
+                };
+            };
+        };
+    };
+    SopCollabController_ackClarificationReply: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path: {
                 id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TriggerTaskDto"];
+                "application/json": components["schemas"]["AgentCollabAckReplyDto"];
             };
         };
         responses: {
-            /** @description 已创建执行记录并已入队 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskExecutionResponseDto"];
-                };
-            };
-            /** @description 触发被拒绝：已存在参数相同的活跃执行（blockStrategy=discard） */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_webhookStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Webhook 状态（密钥从不返回） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WebhookStatusResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_webhookEnable: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Webhook URL + 一次性密钥 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WebhookSecretResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_webhookRotate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Webhook URL + 一次性密钥 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WebhookSecretResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_webhookDisable: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 停用后的响应：`{ enabled: false }` */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WebhookDisableResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_executions: {
-        parameters: {
-            query?: {
-                /** @description 页码 */
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
-                /** @description 按任务名模糊搜索 */
-                name?: string;
-                /** @description 按执行状态过滤 */
-                status?: string;
-                /** @description 按 runtime 过滤（python/node/shell） */
-                runtime?: string;
-                /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时行为与引入该参数前完全一致。 */
-                cursor?: string;
-                /** @description 每页条数 */
-                limit?: unknown;
-            };
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 执行历史（已排除大文本列） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PaginatedExecutionListDto"];
-                };
-            };
-        };
-    };
-    TaskController_execution: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-                /** @description 执行记录 ID */
-                execId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 完整执行行（包含 logs/aiAnalysis） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskExecutionResponseDto"];
-                };
-            };
-            /** @description 执行记录不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_executionReport: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-                /** @description 执行记录 ID */
-                execId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutionReportResponseDto"];
-                };
-            };
-            /** @description 执行记录不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_executionLogs: {
-        parameters: {
-            query?: {
-                /** @description 起始行号，默认 0 */
-                fromLine?: string;
-                /** @description 每页行数，默认 500，最多 2000 */
-                limit?: string;
-                /** @description 按推断出的日志级别过滤（在 SQL 层完成）；级别未知（NULL）的行会被排除。指定 level 时，fromLine 是过滤后序列内的偏移，totalLines 是过滤后的条数。 */
-                level?: "ERROR" | "WARN" | "INFO" | "DEBUG";
-            };
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-                /** @description 执行记录 ID */
-                execId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutionLogsPageResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_streamLogs: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-                /** @description 执行记录 ID */
-                execId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description SSE 流（Res 直传） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": string;
-                };
-            };
-        };
-    };
-    TaskController_rollback: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        /** @description 回滚参数 */
-        requestBody: {
-            content: {
-                "application/json": unknown;
-            };
-        };
-        responses: {
-            /** @description 已在目标 commit 上派发新的执行（POST 默认 201） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitRollbackResponseDto"];
-                };
-            };
-            /** @description 非 Git 任务不支持回滚 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_rollbackToVersion: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-                /** @description 版本 ID */
-                versionId: string;
-            };
-            cookie?: never;
-        };
-        /** @description 无请求体——回滚目标即 :versionId 路径参数 */
-        requestBody?: {
-            content: {
-                "application/json": string;
-            };
-        };
-        responses: {
-            /** @description 任务配置已回滚到该快照（POST 默认 201） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskResponseDto"];
-                };
-            };
-            /** @description 任务或版本不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_getVersions: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 最近 100 个快照 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskVersionDto"][];
-                };
-            };
-        };
-    };
-    TaskController_compareVersions: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-                /** @description 版本 ID 1 */
-                versionId1: string;
-                /** @description 版本 ID 2 */
-                versionId2: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 按字段键组织的差异——仅包含发生变化的字段，每项为 {old, new} */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": {
-                        [key: string]: components["schemas"]["VersionDiffEntryDto"];
+                        /** @enum {boolean} */
+                        ok: true;
                     };
                 };
             };
-            /** @description 任务或版本不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
         };
     };
-    TaskController_pause: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 已暂停（POST 默认 201） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskResponseDto"];
-                };
-            };
-            /** @description 任务已处于暂停状态 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 任务不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_resume: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 已恢复（POST 默认 201） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskResponseDto"];
-                };
-            };
-            /** @description 任务已在运行中 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 任务不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskController_analyzeExecution: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-                /** @description 执行记录 ID */
-                execId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 已更新执行记录并持久化 aiAnalysis（POST 默认 201） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskExecutionResponseDto"];
-                };
-            };
-        };
-    };
-    TaskController_killExecution: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 任务 ID */
-                id: string;
-                /** @description 执行记录 ID */
-                execId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 已取消（POST 默认 201） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["KillExecutionResponseDto"];
-                };
-            };
-            /** @description 执行当前状态不可取消 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 执行记录不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskBatchController_batchTrigger: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description 批量触发参数 */
-        requestBody: {
-            content: {
-                "application/json": unknown;
-            };
-        };
-        responses: {
-            /**
-             * @description 批量触发结果
-             *
-             *     与 /tasks/batch/* 同形态：逐任务结果数组（成功=execution 行 | 失败={id,error}）
-             */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeprecatedBatchItemDto"][];
-                };
-            };
-        };
-    };
-    TaskBatchController_batchPause: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BatchTaskIdsDto"];
-            };
-        };
-        responses: {
-            /**
-             * @description 批量暂停结果
-             *
-             *     同 /tasks/batch/pause
-             */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeprecatedBatchItemDto"][];
-                };
-            };
-        };
-    };
-    TaskBatchController_batchResume: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BatchTaskIdsDto"];
-            };
-        };
-        responses: {
-            /**
-             * @description 批量恢复结果
-             *
-             *     同 /tasks/batch/resume
-             */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeprecatedBatchItemDto"][];
-                };
-            };
-        };
-    };
-    TaskBatchController_batchDelete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BatchTaskIdsDto"];
-            };
-        };
-        responses: {
-            /**
-             * @description 批量删除结果
-             *
-             *     同 /tasks/batch/delete
-             */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeprecatedBatchItemDto"][];
-                };
-            };
-        };
-    };
-    TaskWebhookController_trigger: {
-        parameters: {
-            query?: {
-                /** @description '1'/'true' = 同步等待终态（缺省入队即返回） */
-                wait?: string;
-                /** @description wait 模式超时秒数（1-300，缺省 60） */
-                timeout?: string;
-            };
-            header: {
-                "x-hub-signature-256": string;
-                "x-autocodeflow-timestamp": string;
-                "x-autoflow-delivery": string;
-            };
-            path: {
-                /** @description 任务 UUID */
-                taskId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TriggerTaskDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskWebhookTriggerResponseDto"];
-                };
-            };
-        };
-    };
-    ExecutionCallbackController_callback: {
+    SopCollabController_complete: {
         parameters: {
             query?: never;
             header: {
                 authorization: string;
-                traceparent: string;
             };
-            path?: never;
+            path: {
+                id: string;
+            };
             cookie?: never;
         };
-        /** @description 执行回调条目数组（最多 100 条） */
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CallbackItemDto"][];
+                "application/json": components["schemas"]["AgentCollabCompleteDto"];
             };
         };
         responses: {
-            /** @description 逐项受理结果（{executionId, success, error?}）；HTTP 200 由 @HttpCode 决定 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CallbackItemResultDto"][];
+                    "application/json": components["schemas"]["CollabCompleteResponseDto"];
                 };
-            };
-            /** @description 请求体非法 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 共享令牌无效 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };
-    ExecutionCallbackController_appendLogChunk: {
+    SopCollabController_uploadMedia: {
         parameters: {
             query?: never;
             header: {
@@ -10287,152 +8682,32 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description 带 0 起始行偏移的日志块及其内容行 */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AppendLogChunkDto"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description {count} 落账行数 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LogChunkAckDto"];
-                };
-            };
-            /** @description 请求体非法 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 执行器令牌无效 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 执行记录不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_register: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        /** @description 注册信息 */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ExecutorRegisterDto"];
-            };
-        };
-        responses: {
-            /** @description Registered；含 perExecutorToken/tokenHash 回调凭据与 protocolCompliant 协议门禁读数 */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExecutorRegisterResponseDto"];
+                    "application/json": components["schemas"]["CollabMediaUploadResponseDto"];
                 };
             };
         };
     };
-    ExecutorController_heartbeat: {
+    SopCollabController_progress: {
         parameters: {
             query?: never;
             header: {
                 authorization: string;
             };
-            path?: never;
-            cookie?: never;
-        };
-        /** @description 心跳数据 */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ExecutorHeartbeatDto"];
+            path: {
+                id: string;
             };
-        };
-        responses: {
-            /** @description 已保存的执行器 + 回调鉴权密钥 + 版本闸门读数（POST 默认 201） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorHeartbeatResponseDto"];
-                };
-            };
-            /** @description 执行器令牌无效 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_pullDispatch: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        /** @description Pull 长轮询请求体 */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ExecutorPullDto"];
-            };
-        };
-        responses: {
-            /** @description waitMs 内无任务入队时 task=null */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorPullResponseDto"];
-                };
-            };
-            /** @description 执行器令牌无效 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_reportCommandResult: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ExecutorCommandResultDto"];
+                "application/json": components["schemas"]["AgentCollabProgressDto"];
             };
         };
         responses: {
@@ -10441,39 +8716,70 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExecutorCommandResultResponseDto"];
+                    "application/json": {
+                        /** @enum {boolean} */
+                        ok: true;
+                    };
                 };
-            };
-            /** @description 载荷形态非法（DTO 白名单校验） */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 执行器令牌无效 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 命令不属于该执行器（跨行回报） */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };
-    ExecutorController_pullExecutorConfig: {
+    SopCollabController_capability: {
         parameters: {
-            query: {
-                address: string;
-                deviceFingerprint: string;
-                executorId: string;
+            query?: never;
+            header: {
+                authorization: string;
             };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentCollabCapabilityDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        ok: true;
+                    };
+                };
+            };
+        };
+    };
+    SopCollabController_clarify: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentCollabClarificationDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollabClarifyResponseDto"];
+                };
+            };
+        };
+    };
+    SopCollabController_llmRelay: {
+        parameters: {
+            query?: never;
             header: {
                 authorization: string;
             };
@@ -10487,204 +8793,12 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExecutorConfigPayloadResponseDto"];
-                };
-            };
-            /** @description 执行器令牌无效 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_getTerminalStates: {
-        parameters: {
-            query: {
-                /** @description ISO-8601 水位线；仅返回终态时间（COALESCE(endTime, createdAt)）>= since 的执行记录。默认最近 24 小时；最多钳制到 30 天。 */
-                since?: string;
-                /** @description 每页条数（1..2000，默认 500）。hasMore=true 表示还有更多数据。 */
-                limit?: string;
-                deviceFingerprint: string;
-                executorId: string;
-            };
-            header: {
-                authorization: string;
-            };
-            path: {
-                /** @description 执行器注册地址（与心跳使用同一个值） */
-                address: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 终态记录分页 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TerminalStatesResponseDto"];
-                };
-            };
-            /** @description 执行器令牌无效 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_findAll: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorResponseDto"][];
+                    "application/json": components["schemas"]["CollabLlmRelayResponseDto"];
                 };
             };
         };
     };
-    ExecutorController_getGroups: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorGroupsDto"];
-                };
-            };
-        };
-    };
-    ExecutorController_getTags: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorTagsDto"];
-                };
-            };
-        };
-    };
-    ExecutorController_getRuntimeConfig: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorRuntimeConfigDto"];
-                };
-            };
-        };
-    };
-    ExecutorController_findPickerOptions: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /**
-             * @description 带显式截断标记的执行器选择器选项
-             *
-             *     truncated=true 时 items 是前缀、total 是真实总数
-             */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorPickerResponseDto"];
-                };
-            };
-        };
-    };
-    ExecutorController_getInstallCmd: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorInstallCmdDto"];
-                };
-            };
-            /** @description 服务端未配置 ADMIN_API_URL——无法生成可用的安装命令 */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_getInstallScript: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description shell 脚本文本（Res 直传） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/x-shellscript": string;
-                };
-            };
-        };
-    };
-    ExecutorController_getExecutorArtifact: {
+    SopCollabController_poll: {
         parameters: {
             query?: never;
             header: {
@@ -10693,117 +8807,9 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
-        responses: {
-            /**
-             * @description tar.gz 产物（application/gzip）
-             *
-             *     tar.gz 二进制内容（Res 直传）
-             */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/gzip": string;
-                };
-            };
-            /** @description 共享令牌缺失或无效 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 产物未生成 / 不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_findOne: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 执行器 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorResponseDto"];
-                };
-            };
-            /** @description 执行器不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_removeExecutor: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 执行器 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        /** @description AUTH-05：可选的删除原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["ExecutorActionReasonDto"];
-            };
-        };
-        responses: {
-            /**
-             * @description 执行器已删除
-             *
-             *     已移除（无内容）
-             */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 执行器不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_update: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 执行器 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        /** @description 更新参数 */
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["AgentCollabPollDto"];
             };
         };
         responses: {
@@ -10812,285 +8818,12 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExecutorResponseDto"];
-                };
-            };
-            /** @description 既不是 ADMIN，也没有该执行器所属项目的 editor 及以上角色 */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 执行器不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_reloadConfig: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 执行器 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        /** @description 配置参数 */
-        requestBody: {
-            content: {
-                "application/json": unknown;
-            };
-        };
-        responses: {
-            /** @description pull 模式 = {queued,commandId,message}；push 模式 = 执行器自身响应原样透传（additionalProperties） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorReloadConfigResponseDto"];
-                };
-            };
-            /** @description 执行器不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 执行器拒收了配置推送（其持有的令牌与签发的令牌不一致） */
-            502: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 执行器离线或不可达（配置推送未能送达） */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_rotateToken: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 执行器 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        /** @description AUTH-05：可选的轮换原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["ExecutorActionReasonDto"];
-            };
-        };
-        responses: {
-            /** @description 新凭据一次性回显 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorRotateTokenDto"];
+                    "application/json": components["schemas"]["CollabPollResponseDto"];
                 };
             };
         };
     };
-    ExecutorController_getToken: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        /** @description 获取令牌参数 */
-        requestBody: {
-            content: {
-                "application/json": unknown;
-            };
-        };
-        responses: {
-            /** @description 令牌获取（或复用）成功——R9 幂等签发 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorTokenResponseDto"];
-                };
-            };
-            /** @description 共享令牌无效 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_offline: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        /** @description 下线参数 */
-        requestBody: {
-            content: {
-                "application/json": unknown;
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorOfflineDto"];
-                };
-            };
-            /** @description 执行器令牌无效 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_setOffline: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 执行器 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description offlineReason=manual 的执行器行（POST 默认 201） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorResponseDto"];
-                };
-            };
-            /** @description 执行器不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_removalImpact: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 执行器 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorRemovalImpactResponseDto"];
-                };
-            };
-            /** @description 执行器不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorController_getExecutorExecutions: {
-        parameters: {
-            query?: {
-                /** @description 页码 */
-                page?: components["schemas"]["Object"];
-                /** @description 每页条数 */
-                pageSize?: components["schemas"]["Object"];
-                /** @description 按任务名模糊搜索 */
-                name?: string;
-                /** @description 按任务状态过滤 */
-                status?: string;
-                /** @description 按 runtime 过滤（python/node/shell） */
-                runtime?: string;
-            };
-            header?: never;
-            path: {
-                /** @description 执行器 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 裸 {total,items} 分页 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorExecutionsResponseDto"];
-                };
-            };
-        };
-    };
-    ExecutorController_getExecutorMetrics: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 执行器 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorMetricsDto"];
-                };
-            };
-        };
-    };
-    NotificationConfigController_getChannels: {
+    AgentController_budgetInfo: {
         parameters: {
             query?: never;
             header?: never;
@@ -11104,521 +8837,8 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NotificationChannelDto"][];
+                    "application/json": components["schemas"]["AgentBudgetResponseDto"];
                 };
-            };
-        };
-    };
-    NotificationConfigController_updateChannel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                key: string;
-            };
-            cookie?: never;
-        };
-        /** @description 渠道配置更新体 */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateChannelDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["NotificationChannelDto"];
-                };
-            };
-        };
-    };
-    NotificationConfigController_testChannel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                key: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChannelTestResponseDto"];
-                };
-            };
-        };
-    };
-    NotificationConfigController_sendTest: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SendTestDto"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChannelTestResponseDto"];
-                };
-            };
-        };
-    };
-    NotificationConfigController_send: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SendNotificationDto"];
-            };
-        };
-        responses: {
-            /** @description 无论各渠道结果如何均返回 2xx；各渠道投递情况见 `results`（sent | blocked | failed | skipped）。 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SendNotificationResultDto"];
-                };
-            };
-        };
-    };
-    NotificationConfigController_listSilences: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 全部静默规则 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["NotificationSilenceDto"][];
-                };
-            };
-        };
-    };
-    NotificationConfigController_createSilence: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description 静默规则创建体 */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateSilenceDto"];
-            };
-        };
-        responses: {
-            /** @description 已创建的静默规则 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["NotificationSilenceDto"];
-                };
-            };
-        };
-    };
-    NotificationConfigController_removeSilence: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description removed=false = 该 id 不存在（幂等语义） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": boolean;
-                };
-            };
-        };
-    };
-    AlertsController_webhook: {
-        parameters: {
-            query?: never;
-            header: {
-                "x-hub-signature-256": string;
-                "x-autocodeflow-timestamp": string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        /** @description Alertmanager v2 Webhook 请求体 */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AlertmanagerWebhookDto"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AlertsWebhookResponseDto"];
-                };
-            };
-        };
-    };
-    AiController_getConfig: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AiConfigResponseDto"];
-                };
-            };
-        };
-    };
-    AiController_saveConfig: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SaveAiConfigDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AiConfigSaveResponseDto"];
-                };
-            };
-        };
-    };
-    AiController_testConfig: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AiTestResponseDto"];
-                };
-            };
-        };
-    };
-    AiController_listProviders: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AiController_saveProvider: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SaveAiProviderDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AiController_deleteProvider: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AiController_assignRoute: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AssignAiRouteDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AiMediaController_upload: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AiMediaController_download: {
-        parameters: {
-            query: {
-                exp: string;
-                sig: string;
-            };
-            header?: never;
-            path: {
-                mediaId: string;
-                fileName: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AiSopDraftController_fromVideo: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SopDraftFromVideoDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AiSopSessionController_list: {
-        parameters: {
-            query: {
-                page: string;
-                pageSize: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AiSopSessionController_create: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateSopSessionDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AiSopSessionController_detail: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AiSopSessionController_turn: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SopSessionTurnDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AiSopSessionController_turnStream: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SopSessionTurnDto"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AiSopSessionController_markSaved: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };
@@ -11726,81 +8946,12 @@ export interface operations {
             };
         };
     };
-    AgentController_exportSession: {
+    AgentController_listApprovals: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** Format: date-time */
-                        exportedAt?: string;
-                        session?: Record<string, never>;
-                        steps?: Record<string, never>[];
-                        toolCalls?: Record<string, never>[];
-                        approvals?: Record<string, never>[];
-                    };
-                };
-            };
-        };
-    };
-    AgentController_resume: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentSessionResumeResponseDto"];
-                };
-            };
-        };
-    };
-    AgentController_budgetInfo: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentBudgetResponseDto"];
-                };
-            };
-        };
-    };
-    AgentController_grantApproval: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-                approvalKey: string;
             };
             cookie?: never;
         };
@@ -11813,7 +8964,7 @@ export interface operations {
                 content: {
                     "application/json": {
                         [key: string]: unknown;
-                    };
+                    }[];
                 };
             };
         };
@@ -11842,7 +8993,31 @@ export interface operations {
             };
         };
     };
-    AgentController_listApprovals: {
+    AgentController_grantApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                approvalKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    AgentController_exportSession: {
         parameters: {
             query?: never;
             header?: never;
@@ -11859,16 +9034,222 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        [key: string]: unknown;
-                    }[];
+                        approvals?: Record<string, never>[];
+                        /** Format: date-time */
+                        exportedAt?: string;
+                        session?: Record<string, never>;
+                        steps?: Record<string, never>[];
+                        toolCalls?: Record<string, never>[];
+                    };
                 };
             };
         };
     };
-    SopController_list: {
+    AgentController_resume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSessionResumeResponseDto"];
+                };
+            };
+        };
+    };
+    AiController_getConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AiConfigResponseDto"];
+                };
+            };
+        };
+    };
+    AiController_saveConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveAiConfigDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AiConfigSaveResponseDto"];
+                };
+            };
+        };
+    };
+    AiMediaController_upload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiMediaController_download: {
         parameters: {
             query: {
-                status: string;
+                exp: string;
+                sig: string;
+            };
+            header?: never;
+            path: {
+                mediaId: string;
+                fileName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiController_listProviders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiController_saveProvider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveAiProviderDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiController_deleteProvider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiController_assignRoute: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssignAiRouteDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiSopDraftController_fromVideo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SopDraftFromVideoDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiSopSessionController_list: {
+        parameters: {
+            query: {
                 page: string;
                 pageSize: string;
             };
@@ -11882,13 +9263,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["SopListResponseDto"];
-                };
+                content?: never;
             };
         };
     };
-    SopController_draft: {
+    AiSopSessionController_create: {
         parameters: {
             query?: never;
             header?: never;
@@ -11897,585 +9276,11 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["DraftSopDto"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SopResponseDto"];
-                };
-            };
-        };
-    };
-    SopController_assignment: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                assignmentId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SopAssignmentDetailResponseDto"];
-                };
-            };
-        };
-    };
-    SopController_downloadMedia: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                mediaId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
-            };
-        };
-    };
-    SopController_mediaList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                assignmentId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentMediaDto"][];
-                };
-            };
-        };
-    };
-    SopController_assignableExecutors: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 空列表 = 没有任何机器开着 Agent（指派对话框据此渲染，而非 assign 报错兜圈） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SopCapableExecutorDto"][];
-                };
-            };
-        };
-    };
-    SopController_humanReply: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                assignmentId: string;
-                clarificationId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["HumanReplyDto"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ClarificationReplyResponseDto"];
-                };
-            };
-        };
-    };
-    SopController_detail: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SopResponseDto"];
-                };
-            };
-        };
-    };
-    SopController_update: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateSopDto"];
-            };
-        };
-        responses: {
-            /** @description 编辑后的工作副本（published 行的 currentVersion 不变） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SopResponseDto"];
-                };
-            };
-        };
-    };
-    SopController_publish: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PublishSopDto"];
-            };
-        };
-        responses: {
-            /** @description 内容与当前版本完全一致 → 400（修订必须真的改了什么） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SopPublishResponseDto"];
-                };
-            };
-        };
-    };
-    SopController_assign: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AssignSopDto"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SopAssignmentDto"];
-                };
-            };
-        };
-    };
-    SopController_versions: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SopVersionDto"][];
-                };
-            };
-        };
-    };
-    SopController_assignments: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 最近 100 条，createdAt 降序 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SopAssignmentDto"][];
-                };
-            };
-        };
-    };
-    SopController_deprecate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SopResponseDto"];
-                };
-            };
-        };
-    };
-    SopController_cancelAssignments: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SopCancelAssignmentsResponseDto"];
-                };
-            };
-        };
-    };
-    SopController_restore: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SopResponseDto"];
-                };
-            };
-        };
-    };
-    SopCollabController_poll: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AgentCollabPollDto"];
+                "application/json": components["schemas"]["CreateSopSessionDto"];
             };
         };
         responses: {
             200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CollabPollResponseDto"];
-                };
-            };
-        };
-    };
-    SopCollabController_capability: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AgentCollabCapabilityDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @enum {boolean} */
-                        ok: true;
-                    };
-                };
-            };
-        };
-    };
-    SopCollabController_clarify: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AgentCollabClarificationDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CollabClarifyResponseDto"];
-                };
-            };
-        };
-    };
-    SopCollabController_progress: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AgentCollabProgressDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @enum {boolean} */
-                        ok: true;
-                    };
-                };
-            };
-        };
-    };
-    SopCollabController_complete: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AgentCollabCompleteDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CollabCompleteResponseDto"];
-                };
-            };
-        };
-    };
-    SopCollabController_ackClarificationReply: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AgentCollabAckReplyDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @enum {boolean} */
-                        ok: true;
-                    };
-                };
-            };
-        };
-    };
-    SopCollabController_llmRelay: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CollabLlmRelayResponseDto"];
-                };
-            };
-        };
-    };
-    SopCollabController_uploadMedia: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CollabMediaUploadResponseDto"];
-                };
-            };
-        };
-    };
-    SopCollabController_uploadCandidatePackage: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CollabCandidatePackageResponseDto"];
-                };
-            };
-        };
-    };
-    MetricsController_getPrometheusMetrics: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Prometheus 文本 exposition 格式 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description 端点已通过 METRICS_PROMETHEUS_ENABLED=false 关闭 */
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12483,7 +9288,91 @@ export interface operations {
             };
         };
     };
-    MetricsController_getSummary: {
+    AiSopSessionController_detail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiSopSessionController_markSaved: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiSopSessionController_turn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SopSessionTurnDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiSopSessionController_turnStream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SopSessionTurnDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiController_testConfig: {
         parameters: {
             query?: never;
             header?: never;
@@ -12497,33 +9386,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MetricsSummaryResponseDto"];
+                    "application/json": components["schemas"]["AiTestResponseDto"];
                 };
             };
         };
     };
-    MetricsController_getDailyTrend: {
+    AlertsController_webhook: {
         parameters: {
-            query: {
-                days: string;
+            query?: never;
+            header: {
+                "x-hub-signature-256": string;
+                "x-autocodeflow-timestamp": string;
             };
-            header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description Alertmanager v2 Webhook 请求体 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertmanagerWebhookDto"];
+            };
+        };
         responses: {
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MetricsTrendRowDto"][];
+                    "application/json": components["schemas"]["AlertsWebhookResponseDto"];
                 };
             };
         };
     };
-    MetricsController_getExecutorStats: {
+    ApiKeysController_list: {
         parameters: {
             query?: never;
             header?: never;
@@ -12537,113 +9432,12 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MetricsExecutorStatsRowDto"][];
+                    "application/json": components["schemas"]["ApiKeyViewDto"][];
                 };
             };
         };
     };
-    MetricsController_getRecentFailures: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MetricsRecentFailureDto"][];
-                };
-            };
-        };
-    };
-    MetricsController_getSchedulerMetrics: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MetricsSchedulerResponseDto"];
-                };
-            };
-        };
-    };
-    MetricsStreamController_stream: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Server-Sent Events 流（Res 直传；绕过统一响应包装拦截器） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": string;
-                };
-            };
-        };
-    };
-    ExecutionsStreamController_stream: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Server-Sent Events 流（Res 直传；绕过统一响应包装拦截器） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": string;
-                };
-            };
-        };
-    };
-    ConfigController_findAll: {
-        parameters: {
-            query: {
-                prefix: string;
-                tag: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 按 key 排序的配置行（可选按前缀/标签过滤）。敏感行的值替换为掩码 '***'。 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SystemConfigResponseDto"][];
-                };
-            };
-        };
-    };
-    ConfigController_upsert: {
+    ApiKeysController_create: {
         parameters: {
             query?: never;
             header?: never;
@@ -12652,78 +9446,22 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UpsertConfigDto"];
+                "application/json": components["schemas"]["CreateApiKeyDto"];
             };
         };
         responses: {
-            /** @description upsert 后已持久化的配置行（真实值，未掩码——对已存在的敏感 key 提交 '***' 表示「保留已存储的值」） */
-            200: {
+            /** @description 明文 key 一次性回显 */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SystemConfigResponseDto"];
+                    "application/json": components["schemas"]["ApiKeyCreateResponseDto"];
                 };
             };
         };
     };
-    ConfigController_getHistory: {
-        parameters: {
-            query?: {
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
-                /** @description 按配置 key 过滤历史记录 */
-                key?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 分页历史，最新在前。持久化 isSecret=true 的行（或该 key 当前为敏感配置）其 oldValue/newValue 会掩码为 '***'；null 仍为 null。 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConfigHistoryPageDto"];
-                };
-            };
-        };
-    };
-    ConfigController_getHistoryByKey: {
-        parameters: {
-            query?: {
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
-                /** @description 按任务名模糊搜索 */
-                name?: string;
-                /** @description 按任务状态过滤 */
-                status?: string;
-                /** @description 按 runtime 过滤（python/node/shell） */
-                runtime?: string;
-            };
-            header?: never;
-            path: {
-                key: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 单个 key 的分页历史。持久化 isSecret=true 的行（或该 key 当前为敏感配置）其 oldValue/newValue 会掩码为 '***'；null 仍为 null。 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConfigHistoryPageDto"];
-                };
-            };
-        };
-    };
-    ConfigController_rollback: {
+    ApiKeysController_revoke: {
         parameters: {
             query?: never;
             header?: never;
@@ -12734,38 +9472,195 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 回滚后的配置行；若目标历史行是该 key 的创建记录，则返回 {deleted:true}（回滚 = 撤销创建） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
+                };
+            };
+        };
+    };
+    ApiKeysController_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
+                };
+            };
+        };
+    };
+    ApiKeysController_revokeAlias: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SystemConfigResponseDto"] | components["schemas"]["ConfigDeleteResultDto"];
+                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
                 };
             };
         };
     };
-    ConfigController_generateExecutorSharedToken: {
+    AppDeploymentController_findAll: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description 按应用 ID 过滤 */
+                applicationId?: string;
+                /** @description DEP-04：按审批状态过滤（例如用 pending_approval 拉取审批收件箱） */
+                approvalStatus?: "pending_approval" | "approved" | "rejected" | "cancelled";
+                page?: number;
+                pageSize?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description 新生成的 64 位十六进制令牌，仅返回一次。存储时 isSecret=true，因此之后 GET /config 对它返回 '***'。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedAppDeploymentsDto"];
+                };
+            };
+        };
+    };
+    AppDeploymentController_deploy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                appId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDeploymentDto"];
+            };
+        };
+        responses: {
+            /** @description 脱敏后的部署行（需要审批的应用返回 pending_approval 请求行） */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExecutorSharedTokenDto"];
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
                 };
             };
         };
     };
-    ConfigController_getExecutorSharedToken: {
+    AppDeploymentController_listApplicationEvents: {
+        parameters: {
+            query?: {
+                page?: number;
+                pageSize?: number;
+                /** @description 按事件类型过滤（AppDeploymentEventType 九值单值；直等命中 (applicationId, eventType) 复合索引） */
+                eventType?: "deploy_created" | "redeploy_reused" | "approval_approved" | "approval_rejected" | "approval_cancelled" | "upgrade" | "stop" | "remove" | "stuck_failed";
+                /** @description 起始时间（ISO 8601）；半开区间含头：createdAt >= since */
+                since?: string;
+                /** @description 结束时间（ISO 8601）；半开区间不含尾：createdAt < until */
+                until?: string;
+            };
+            header?: never;
+            path: {
+                appId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 裸四键信封（data/total/page/pageSize），同 /releases 形态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentEventsPageDto"];
+                };
+            };
+        };
+    };
+    AppDeploymentController_listPendingApprovals: {
+        parameters: {
+            query?: {
+                /** @description 按应用 ID 过滤 */
+                applicationId?: string;
+                /** @description DEP-04：按审批状态过滤（例如用 pending_approval 拉取审批收件箱） */
+                approvalStatus?: "pending_approval" | "approved" | "rejected" | "cancelled";
+                page?: number;
+                pageSize?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedAppDeploymentsDto"];
+                };
+            };
+        };
+    };
+    AppDeploymentController_heartbeat: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description 执行器令牌（按执行器的或共享的） */
+                "x-executor-token": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeploymentHeartbeatDto"];
+            };
+        };
+        responses: {
+            /** @description 状态已记录；信封 data 为 null */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    AppDeploymentController_findStats: {
         parameters: {
             query?: never;
             header?: never;
@@ -12774,82 +9669,199 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 以明文返回当前令牌。key 不存在并不是 404：会降级为 {token:null, hasToken:false}（admin-web 依赖该形态渲染「尚未配置」状态）。 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExecutorSharedTokenStatusDto"];
+                    "application/json": components["schemas"]["AppDeploymentStatsDto"][];
                 };
             };
         };
     };
-    ConfigController_getRuntimeVersion: {
+    AppDeploymentController_findById: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
+            };
+        };
+    };
+    AppDeploymentController_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentRemoveResponseDto"];
+                };
+            };
+        };
+    };
+    AppDeploymentController_approve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalActionDto"];
+            };
+        };
+        responses: {
+            /** @description 已审批通过并已派发的行 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
+            };
+        };
+    };
+    AppDeploymentController_cancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已撤销的行 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
+            };
+        };
+    };
+    AppDeploymentController_reject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalActionDto"];
+            };
+        };
+        responses: {
+            /** @description 已驳回的行 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
+            };
+        };
+    };
+    AppDeploymentController_stop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已停止的行 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
+            };
+        };
+    };
+    AppDeploymentController_upgrade: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 处于 upgrading 状态的行 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_findAll: {
+        parameters: {
+            query: {
+                projectId: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description 仅返回生效的契约常量（不含配置存储的值，也不含密钥）。刻意不做 ADMIN 限制——每个能创建任务的用户都需要表单里有正确的范围。 */
+            /** @description 应用列表（env 已掩码，webhookSecret 从不查询） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RuntimeVersionContractDto"];
+                    "application/json": components["schemas"]["ApplicationResponseDto"][];
                 };
             };
         };
     };
-    ConfigController_findOne: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                key: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 该 key 的配置行。敏感配置的 value 替换为 '***'。key 不存在时返回 404。 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SystemConfigResponseDto"];
-                };
-            };
-        };
-    };
-    ConfigController_remove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                key: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 成功时始终返回 {deleted:true}；key 不存在时返回 404（没有 {deleted:false} 分支）。 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConfigDeleteResultDto"];
-                };
-            };
-        };
-    };
-    ConfigController_batchUpsert: {
+    ApplicationController_create: {
         parameters: {
             query?: never;
             header?: never;
@@ -12858,18 +9870,390 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": string[];
+                "application/json": components["schemas"]["CreateApplicationDto"];
             };
         };
         responses: {
-            /** @description 按提交顺序持久化的行（事务性：任一条失败整批回滚）。真实值，未掩码。 */
+            /** @description 已创建的应用 */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SystemConfigResponseDto"][];
+                    "application/json": components["schemas"]["ApplicationResponseDto"];
                 };
+            };
+        };
+    };
+    ApplicationController_upload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                    name: string;
+                    runtime?: string;
+                };
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_webhook: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-hub-signature-256": string;
+                "x-autocodeflow-timestamp": string;
+                "x-autoflow-delivery": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppReleaseWebhookDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseWebhookResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_findById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 应用详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateApplicationDto"];
+            };
+        };
+        responses: {
+            /** @description 已更新的应用 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已移除；信封 data 为 null */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    ApplicationController_analyzeHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppHealthAnalysisResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_deployVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeployVersionDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployVersionResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_listReleases: {
+        parameters: {
+            query?: {
+                page?: number;
+                pageSize?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 裸四键信封（data/total/page/pageSize），非 paginate() 双键形态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppReleasesResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_removalImpact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovalImpactResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_rollback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                deploymentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationRollbackResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_setCurrentVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetCurrentVersionDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetCurrentVersionResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_syncTasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncTasksResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_upgradeAll: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpgradeAllDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpgradeAllResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_getVersionHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationVersionHistoryRowDto"][];
+                };
+            };
+        };
+    };
+    ArtifactsController_listArtifactRows: {
+        parameters: {
+            query?: {
+                page?: number;
+                pageSize?: number;
+                /** @description 按应用过滤（冗余自任务行 tasks.applicationId 的写时快照；任务未挂应用/应用已删的产物行不命中） */
+                applicationId?: string;
+                /** @description 按任务过滤（冗余自执行行 task_executions.taskId） */
+                taskId?: string;
+                /** @description 文件名关键字（name ILIKE 不区分大小写模糊匹配；长度上限 100，trim 后空串视为未传） */
+                q?: string;
+                /** @description 仅返回 createdAt >= 该时刻的产物（ISO-8601 闭区间起点；非法格式 400 VALIDATION_FAILED） */
+                from?: string;
+                /** @description 仅返回 createdAt <= 该时刻的产物（ISO-8601 闭区间终点；起始时间晚于终点时返回 400 VALIDATION_FAILED） */
+                to?: string;
+                /** @description 按扩展名过滤（小写、不带点；命中文件名末尾的 .<ext>；不在白名单 400 VALIDATION_FAILED） */
+                ext?: "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "pdf" | "zip" | "json" | "txt" | "log" | "md" | "csv" | "xlsx" | "html";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionArtifactRowDto"][];
+                };
+            };
+            /** @description 调用者不是管理员 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -12985,145 +10369,7 @@ export interface operations {
             };
         };
     };
-    HealthController_health: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PublicHealthDto"];
-                };
-            };
-        };
-    };
-    HealthController_detailed: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DetailedHealthDto"];
-                };
-            };
-        };
-    };
-    HealthController_live: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description {status:'healthy'}——恒 200 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PublicHealthDto"];
-                };
-            };
-        };
-    };
-    HealthController_ready: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description status=ready|not_ready + timestamp；503 由 passthrough 状态码承载 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PublicHealthDto"];
-                };
-            };
-        };
-    };
-    HealthController_services: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HealthServicesDto"];
-                };
-            };
-        };
-    };
-    HealthController_metrics: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HealthMetricsDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_findAll: {
-        parameters: {
-            query: {
-                projectId: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 应用列表（env 已掩码，webhookSecret 从不查询） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApplicationResponseDto"][];
-                };
-            };
-        };
-    };
-    ApplicationController_create: {
+    AuthController_login: {
         parameters: {
             query?: never;
             header?: never;
@@ -13132,762 +10378,560 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateApplicationDto"];
+                "application/json": components["schemas"]["LoginDto"];
             };
         };
         responses: {
-            /** @description 已创建的应用 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApplicationResponseDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_findById: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 应用详情 */
+            /** @description 双 token 或 {totpRequired:true}（SEC-03 二段登录） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApplicationResponseDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_update: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateApplicationDto"];
-            };
-        };
-        responses: {
-            /** @description 已更新的应用 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApplicationResponseDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_remove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 已移除；信封 data 为 null */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    ApplicationController_removalImpact: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RemovalImpactResponseDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_upload: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "multipart/form-data": {
-                    /** Format: binary */
-                    file: string;
-                    name: string;
-                    runtime?: string;
-                };
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApplicationResponseDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_webhook: {
-        parameters: {
-            query?: never;
-            header: {
-                "x-hub-signature-256": string;
-                "x-autocodeflow-timestamp": string;
-                "x-autoflow-delivery": string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AppReleaseWebhookDto"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ReleaseWebhookResponseDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_getVersionHistory: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApplicationVersionHistoryRowDto"][];
-                };
-            };
-        };
-    };
-    ApplicationController_listReleases: {
-        parameters: {
-            query?: {
-                page?: number;
-                pageSize?: number;
-            };
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 裸四键信封（data/total/page/pageSize），非 paginate() 双键形态 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppReleasesResponseDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_upgradeAll: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpgradeAllDto"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UpgradeAllResponseDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_syncTasks: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SyncTasksResponseDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_analyzeHealth: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppHealthAnalysisResponseDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_setCurrentVersion: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SetCurrentVersionDto"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SetCurrentVersionResponseDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_deployVersion: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DeployVersionDto"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeployVersionResponseDto"];
-                };
-            };
-        };
-    };
-    ApplicationController_rollback: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-                deploymentId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApplicationRollbackResponseDto"];
-                };
-            };
-        };
-    };
-    AppDeploymentController_findAll: {
-        parameters: {
-            query?: {
-                /** @description 按应用 ID 过滤 */
-                applicationId?: string;
-                /** @description DEP-04：按审批状态过滤（例如用 pending_approval 拉取审批收件箱） */
-                approvalStatus?: "pending_approval" | "approved" | "rejected" | "cancelled";
-                page?: number;
-                pageSize?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PaginatedAppDeploymentsDto"];
-                };
-            };
-        };
-    };
-    AppDeploymentController_findStats: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppDeploymentStatsDto"][];
-                };
-            };
-        };
-    };
-    AppDeploymentController_listApplicationEvents: {
-        parameters: {
-            query?: {
-                page?: number;
-                pageSize?: number;
-                /** @description 按事件类型过滤（AppDeploymentEventType 九值单值；直等命中 (applicationId, eventType) 复合索引） */
-                eventType?: "deploy_created" | "redeploy_reused" | "approval_approved" | "approval_rejected" | "approval_cancelled" | "upgrade" | "stop" | "remove" | "stuck_failed";
-                /** @description 起始时间（ISO 8601）；半开区间含头：createdAt >= since */
-                since?: string;
-                /** @description 结束时间（ISO 8601）；半开区间不含尾：createdAt < until */
-                until?: string;
-            };
-            header?: never;
-            path: {
-                appId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 裸四键信封（data/total/page/pageSize），同 /releases 形态 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppDeploymentEventsPageDto"];
-                };
-            };
-        };
-    };
-    AppDeploymentController_findById: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
-                };
-            };
-        };
-    };
-    AppDeploymentController_remove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeploymentRemoveResponseDto"];
-                };
-            };
-        };
-    };
-    AppDeploymentController_deploy: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                appId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateDeploymentDto"];
-            };
-        };
-        responses: {
-            /** @description 脱敏后的部署行（需要审批的应用返回 pending_approval 请求行） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
-                };
-            };
-        };
-    };
-    AppDeploymentController_listPendingApprovals: {
-        parameters: {
-            query?: {
-                /** @description 按应用 ID 过滤 */
-                applicationId?: string;
-                /** @description DEP-04：按审批状态过滤（例如用 pending_approval 拉取审批收件箱） */
-                approvalStatus?: "pending_approval" | "approved" | "rejected" | "cancelled";
-                page?: number;
-                pageSize?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PaginatedAppDeploymentsDto"];
-                };
-            };
-        };
-    };
-    AppDeploymentController_approve: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ApprovalActionDto"];
-            };
-        };
-        responses: {
-            /** @description 已审批通过并已派发的行 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
-                };
-            };
-        };
-    };
-    AppDeploymentController_reject: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ApprovalActionDto"];
-            };
-        };
-        responses: {
-            /** @description 已驳回的行 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
-                };
-            };
-        };
-    };
-    AppDeploymentController_cancel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 已撤销的行 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
-                };
-            };
-        };
-    };
-    AppDeploymentController_upgrade: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 处于 upgrading 状态的行 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
-                };
-            };
-        };
-    };
-    AppDeploymentController_stop: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 已停止的行 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
-                };
-            };
-        };
-    };
-    AppDeploymentController_heartbeat: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description 执行器令牌（按执行器的或共享的） */
-                "x-executor-token": string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DeploymentHeartbeatDto"];
-            };
-        };
-        responses: {
-            /** @description 状态已记录；信封 data 为 null */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    MutexGroupController_findAll: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutexGroupResponseDto"][];
-                };
-            };
-        };
-    };
-    MutexGroupController_create: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateMutexGroupDto"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutexGroupResponseDto"];
-                };
-            };
-        };
-    };
-    MutexGroupController_update: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateMutexGroupDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutexGroupResponseDto"];
-                };
-            };
-        };
-    };
-    MutexGroupController_remove: {
-        parameters: {
-            query?: {
-                /** @description 组上仍挂应用时需显式 force=true 才允许删除 */
-                force?: boolean;
-            };
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
+                    "application/json": components["schemas"]["AuthTokensDto"] | {
                         /** @enum {boolean} */
-                        ok: true;
+                        totpRequired: true;
                     };
                 };
             };
+            /** @description 用户名或密码错误 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 请求过于频繁，已触发限流 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
-    ExecutorPackageController_findAll: {
+    AuthController_logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthLogoutDto"];
+                };
+            };
+            /** @description 未认证 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    OidcController_callback: {
+        parameters: {
+            query: {
+                code: string;
+                state: string;
+                error: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 302 重定向并写入会话 Cookie；失败时返回 502 JSON（Res 直传） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                };
+            };
+        };
+    };
+    OidcController_login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 302 重定向到 IdP 授权 URL（Res 直传） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                };
+            };
+        };
+    };
+    OidcController_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OidcStatusResponseDto"];
+                };
+            };
+        };
+    };
+    AuthController_getProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description AuthUser 原样（roles 不在 AuthUser——role 单值） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthProfileDto"];
+                };
+            };
+            /** @description 未认证 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_refreshToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefreshTokenDto"];
+            };
+        };
+        responses: {
+            /** @description token rotation：旧 refresh 立即失效 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthTokensDto"];
+                };
+            };
+            /** @description Refresh Token 无效或已过期 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_listSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 会话列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthSessionRowDto"][];
+                };
+            };
+        };
+    };
+    AuthController_revokeOtherSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 撤销数量 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevokeOthersResponseDto"];
+                };
+            };
+        };
+    };
+    AuthController_revokeSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 会话已撤销 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionRevokeResponseDto"];
+                };
+            };
+            /** @description 会话不存在或已吊销 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_issueSseTicket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 票据已签发 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SseTicketResponseDto"];
+                };
+            };
+            /** @description 未认证 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_totpDisable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpDisableDto"];
+            };
+        };
+        responses: {
+            /** @description TOTP 已停用（或本来未启用） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TotpDisableResponseDto"];
+                };
+            };
+            /** @description 确认失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_totpEnable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpCodeDto"];
+            };
+        };
+        responses: {
+            /** @description TOTP 已启用 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TotpEnableResponseDto"];
+                };
+            };
+            /** @description 验证码错误，或没有预登记的密钥 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_totpSetup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已预登记的密钥 + otpauth URL */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TotpSetupResponseDto"];
+                };
+            };
+            /** @description TOTP 已启用 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_totpVerifyLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpVerifyDto"];
+            };
+        };
+        responses: {
+            /** @description 双 token（二段登录成功） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthTokensDto"];
+                };
+            };
+            /** @description 凭据或 TOTP 验证码错误 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ConfigController_findAll: {
+        parameters: {
+            query: {
+                prefix: string;
+                tag: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 按 key 排序的配置行（可选按前缀/标签过滤）。敏感行的值替换为掩码 '***'。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemConfigResponseDto"][];
+                };
+            };
+        };
+    };
+    ConfigController_upsert: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpsertConfigDto"];
+            };
+        };
+        responses: {
+            /** @description upsert 后已持久化的配置行（真实值，未掩码——对已存在的敏感 key 提交 '***' 表示「保留已存储的值」） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemConfigResponseDto"];
+                };
+            };
+        };
+    };
+    ConfigController_batchUpsert: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": string[];
+            };
+        };
+        responses: {
+            /** @description 按提交顺序持久化的行（事务性：任一条失败整批回滚）。真实值，未掩码。 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemConfigResponseDto"][];
+                };
+            };
+        };
+    };
+    ConfigController_getExecutorSharedToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 以明文返回当前令牌。key 不存在并不是 404：会降级为 {token:null, hasToken:false}（admin-web 依赖该形态渲染「尚未配置」状态）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorSharedTokenStatusDto"];
+                };
+            };
+        };
+    };
+    ConfigController_generateExecutorSharedToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 新生成的 64 位十六进制令牌，仅返回一次。存储时 isSecret=true，因此之后 GET /config 对它返回 '***'。 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorSharedTokenDto"];
+                };
+            };
+        };
+    };
+    ConfigController_getHistory: {
+        parameters: {
+            query?: {
+                page?: components["schemas"]["Object"];
+                pageSize?: components["schemas"]["Object"];
+                /** @description 按配置 key 过滤历史记录 */
+                key?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 分页历史，最新在前。持久化 isSecret=true 的行（或该 key 当前为敏感配置）其 oldValue/newValue 会掩码为 '***'；null 仍为 null。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigHistoryPageDto"];
+                };
+            };
+        };
+    };
+    ConfigController_rollback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 回滚后的配置行；若目标历史行是该 key 的创建记录，则返回 {deleted:true}（回滚 = 撤销创建） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemConfigResponseDto"] | components["schemas"]["ConfigDeleteResultDto"];
+                };
+            };
+        };
+    };
+    ConfigController_getHistoryByKey: {
         parameters: {
             query?: {
                 page?: components["schemas"]["Object"];
@@ -13898,341 +10942,27 @@ export interface operations {
                 status?: string;
                 /** @description 按 runtime 过滤（python/node/shell） */
                 runtime?: string;
-                /** @description 不透明的 keyset 游标（上一页响应的 nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并在响应中追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器（name/type/status/platform）组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。 */
-                cursor?: string;
             };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 包列表 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorPackageListDto"];
-                };
-            };
-        };
-    };
-    ExecutorPackageController_create: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description 执行器包文件与元数据 */
-        requestBody: {
-            content: {
-                "multipart/form-data": {
-                    /** @example python-runner */
-                    name: string;
-                    /** @example 1.0.0 */
-                    version: string;
-                    /** @example python */
-                    type?: string;
-                    /** @example linux */
-                    platform?: string;
-                    description?: string;
-                    /** Format: binary */
-                    file: string;
-                };
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
-                };
-            };
-        };
-    };
-    ExecutorPackageController_findLatest: {
-        parameters: {
-            query: {
-                /** @description 执行器包类型 */
-                type: string;
-                /** @description 平台（可选） */
-                platform?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 最新包信息（无匹配时为 null） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
-                };
-            };
-        };
-    };
-    ExecutorPackageController_findOne: {
-        parameters: {
-            query?: never;
             header?: never;
             path: {
-                /** @description 包 ID */
-                id: string;
+                key: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description 包详情 */
+            /** @description 单个 key 的分页历史。持久化 isSecret=true 的行（或该 key 当前为敏感配置）其 oldValue/newValue 会掩码为 '***'；null 仍为 null。 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
-                };
-            };
-            /** @description 包不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorPackageController_remove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 包 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 删除成功 */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 包不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorPackageController_update: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 包 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateExecutorPackageDto"];
-            };
-        };
-        responses: {
-            /** @description 更新成功 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
-                };
-            };
-            /** @description 包不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorPackageController_download: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-                "if-none-match": string;
-            };
-            path: {
-                /** @description 包 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /**
-             * @description 包二进制内容（Res 直传）
-             *
-             *     包二进制内容（Res 直传）
-             */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/octet-stream": string;
-                };
-            };
-            /** @description access JWT 或执行器令牌无效 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 包或文件不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ExecutorPackageController_deprecate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 包 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
+                    "application/json": components["schemas"]["ConfigHistoryPageDto"];
                 };
             };
         };
     };
-    ExecutorPackageController_activate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 包 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
-                };
-            };
-        };
-    };
-    ExecutorPackageController_pushResult: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    packageId: string;
-                    executorId: string;
-                    /** @enum {string} */
-                    status: "downloaded" | "failed";
-                    version?: string;
-                    error?: string;
-                };
-            };
-        };
-        responses: {
-            /**
-             * @description 结果入账回执 {ok:true}
-             *
-             *     结果入账回执 {ok:true}
-             */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @enum {boolean} */
-                        ok: true;
-                    };
-                };
-            };
-        };
-    };
-    ExecutorPackageController_push: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 包 ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        /** @description 推送目标（为空 = 推送到全部在线执行器） */
-        requestBody: {
-            content: {
-                "application/json": {
-                    /** @description 目标执行器 ID 列表，为空 = 全部 */
-                    executorIds?: string[];
-                };
-            };
-        };
-        responses: {
-            /**
-             * @description 逐台结果（queued/success/error）
-             *
-             *     逐台结果（queued/success/error）
-             */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutorPushResultDto"][];
-                };
-            };
-        };
-    };
-    RegistryController_listPypiPackages: {
+    ConfigController_getRuntimeVersion: {
         parameters: {
             query?: never;
             header?: never;
@@ -14241,425 +10971,58 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description 仅返回生效的契约常量（不含配置存储的值，也不含密钥）。刻意不做 ADMIN 限制——每个能创建任务的用户都需要表单里有正确的范围。 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RegistryPackagesResponseDto"];
+                    "application/json": components["schemas"]["RuntimeVersionContractDto"];
                 };
             };
         };
     };
-    RegistryController_listNpmPackages: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RegistryNpmPackagesResponseDto"];
-                };
-            };
-        };
-    };
-    RegistryController_uploadPypiPackage: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RegistryUploadResponseDto"];
-                };
-            };
-        };
-    };
-    ArtifactsController_upload: {
-        parameters: {
-            query?: {
-                /** @description 期望的 sha256 十六进制值 */
-                sha256?: string;
-            };
-            header: {
-                authorization: string;
-            };
-            path: {
-                /** @description 执行 ID（UUID） */
-                execId: string;
-                /** @description 裸产物文件名 */
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ArtifactUploadResponseDto"];
-                };
-            };
-            /** @description 文件名非法 / 超出上限 / sha256 不匹配 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 执行器凭据无效 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 共享令牌被拒绝（SEC-1，需 per-executor 令牌）、或执行行未绑定执行器地址（fail-closed） */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 执行记录不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ArtifactsController_listArtifactRows: {
-        parameters: {
-            query?: {
-                page?: number;
-                pageSize?: number;
-                /** @description 按应用过滤（冗余自任务行 tasks.applicationId 的写时快照；任务未挂应用/应用已删的产物行不命中） */
-                applicationId?: string;
-                /** @description 按任务过滤（冗余自执行行 task_executions.taskId） */
-                taskId?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutionArtifactRowDto"][];
-                };
-            };
-            /** @description 调用者不是管理员 */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ArtifactsController_list: {
+    ConfigController_findOne: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description 执行 ID（UUID） */
-                execId: string;
+                key: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
+            /** @description 该 key 的配置行。敏感配置的 value 替换为 '***'。key 不存在时返回 404。 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExecutionArtifactDto"][];
+                    "application/json": components["schemas"]["SystemConfigResponseDto"];
                 };
-            };
-            /** @description 调用者不是管理员 */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 执行记录不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };
-    ArtifactsController_download: {
+    ConfigController_remove: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description 执行 ID（UUID） */
-                execId: string;
-                /** @description 裸产物文件名 */
-                name: string;
+                key: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /**
-             * @description 产物二进制内容（Res 直传）
-             *
-             *     产物二进制内容（Res 直传）
-             */
+            /** @description 成功时始终返回 {deleted:true}；key 不存在时返回 404（没有 {deleted:false} 分支）。 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/octet-stream": string;
+                    "application/json": components["schemas"]["ConfigDeleteResultDto"];
                 };
-            };
-            /** @description 调用者不是管理员 */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 产物不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskTemplateController_list: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 模板列表 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskTemplateResponseDto"][];
-                };
-            };
-        };
-    };
-    TaskTemplateController_create: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateTaskTemplateDto"];
-            };
-        };
-        responses: {
-            /** @description 已创建的自定义模板 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
-                };
-            };
-            /** @description config / key 非法 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 模板 key 已存在 */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskTemplateController_one: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 模板 UUID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 模板 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
-                };
-            };
-            /** @description 模板不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskTemplateController_remove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 模板 UUID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SimpleOkResponseDto"];
-                };
-            };
-            /** @description 官方模板不可删除 */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 模板不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskTemplateController_importTemplate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description 一份清单（或 registry 里的一条），可另附 config */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ImportTaskTemplateManifestDto"];
-            };
-        };
-        responses: {
-            /** @description 已落库的任务模板 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
-                };
-            };
-            /** @description 清单结构非法 / config 非法 / 非官方 key 且未提供 config */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 模板 key 已存在（不复用既有行） */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    TaskTemplateController_instantiate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 模板 UUID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        /** @description 模板覆盖体（自由字段，合并后校验 CreateTaskDto） */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["InstantiateTaskOverlayDto"];
-            };
-        };
-        responses: {
-            /** @description 已创建的任务（最小字段面：标识/状态/触发字段） */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["InstantiateTaskResponseDto"];
-                };
-            };
-            /** @description 缺少 name / 合并后的载荷非法 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 模板不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };
@@ -14856,7 +11219,49 @@ export interface operations {
             };
         };
     };
-    ApiKeysController_list: {
+    ExecutionCallbackController_callback: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+                traceparent: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 执行回调条目数组（最多 100 条） */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CallbackItemDto"][];
+            };
+        };
+        responses: {
+            /** @description 逐项受理结果（{executionId, success, error?}）；HTTP 200 由 @HttpCode 决定 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallbackItemResultDto"][];
+                };
+            };
+            /** @description 请求体非法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 共享令牌无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutionsStreamController_stream: {
         parameters: {
             query?: never;
             header?: never;
@@ -14865,17 +11270,217 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Server-Sent Events 流（Res 直传；绕过统一响应包装拦截器） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiKeyViewDto"][];
+                    "text/event-stream": string;
                 };
             };
         };
     };
-    ApiKeysController_create: {
+    ArtifactsController_upload: {
+        parameters: {
+            query?: {
+                /** @description 期望的 sha256 十六进制值 */
+                sha256?: string;
+            };
+            header: {
+                authorization: string;
+            };
+            path: {
+                /** @description 执行 ID（UUID） */
+                execId: string;
+                /** @description 裸产物文件名 */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactUploadResponseDto"];
+                };
+            };
+            /** @description 文件名非法 / 超出上限 / sha256 不匹配 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 执行器凭据无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 共享令牌被拒绝（SEC-1，需 per-executor 令牌）、或执行行未绑定执行器地址（fail-closed） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 执行记录不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutionCallbackController_appendLogChunk: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description 带 0 起始行偏移的日志块及其内容行 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppendLogChunkDto"];
+            };
+        };
+        responses: {
+            /** @description {count} 落账行数 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogChunkAckDto"];
+                };
+            };
+            /** @description 请求体非法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 执行器令牌无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 执行记录不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorPackageController_findAll: {
+        parameters: {
+            query?: {
+                page?: components["schemas"]["Object"];
+                pageSize?: components["schemas"]["Object"];
+                /** @description 按任务名模糊搜索 */
+                name?: string;
+                /** @description 按任务状态过滤 */
+                status?: string;
+                /** @description 按 runtime 过滤（python/node/shell） */
+                runtime?: string;
+                /** @description 不透明的 keyset 游标（上一页响应的 nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并在响应中追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器（name/type/status/platform）组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。 */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 包列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorPackageListDto"];
+                };
+            };
+        };
+    };
+    ExecutorPackageController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 执行器包文件与元数据 */
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    description?: string;
+                    /** Format: binary */
+                    file: string;
+                    /** @example python-runner */
+                    name: string;
+                    /** @example linux */
+                    platform?: string;
+                    /** @example python */
+                    type?: string;
+                    /** @example 1.0.0 */
+                    version: string;
+                };
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
+                };
+            };
+        };
+    };
+    ExecutorPackageController_findLatest: {
+        parameters: {
+            query: {
+                /** @description 执行器包类型 */
+                type: string;
+                /** @description 平台（可选） */
+                platform?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 最新包信息（无匹配时为 null） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
+                };
+            };
+        };
+    };
+    ExecutorPackageController_pushResult: {
         parameters: {
             query?: never;
             header?: never;
@@ -14884,27 +11489,134 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateApiKeyDto"];
+                "application/json": {
+                    error?: string;
+                    executorId: string;
+                    packageId: string;
+                    /** @enum {string} */
+                    status: "downloaded" | "failed";
+                    version?: string;
+                };
             };
         };
         responses: {
-            /** @description 明文 key 一次性回显 */
-            201: {
+            /**
+             * @description 结果入账回执 {ok:true}
+             *
+             *     结果入账回执 {ok:true}
+             */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiKeyCreateResponseDto"];
+                    "application/json": {
+                        /** @enum {boolean} */
+                        ok: true;
+                    };
                 };
             };
         };
     };
-    ApiKeysController_revoke: {
+    ExecutorPackageController_findOne: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                id: number;
+                /** @description 包 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 包详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
+                };
+            };
+            /** @description 包不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorPackageController_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 包 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 删除成功 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 包不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorPackageController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 包 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateExecutorPackageDto"];
+            };
+        };
+        responses: {
+            /** @description 更新成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
+                };
+            };
+            /** @description 包不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorPackageController_activate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 包 ID */
+                id: string;
             };
             cookie?: never;
         };
@@ -14915,38 +11627,18 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
+                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
                 };
             };
         };
     };
-    ApiKeysController_revokeAlias: {
+    ExecutorPackageController_deprecate: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
-                };
-            };
-        };
-    };
-    ApiKeysController_remove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: number;
+                /** @description 包 ID */
+                id: string;
             };
             cookie?: never;
         };
@@ -14957,7 +11649,1389 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
+                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
+                };
+            };
+        };
+    };
+    ExecutorPackageController_download: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+                "if-none-match": string;
+            };
+            path: {
+                /** @description 包 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description 包二进制内容（Res 直传）
+             *
+             *     包二进制内容（Res 直传）
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description access JWT 或执行器令牌无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 包或文件不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorPackageController_push: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 包 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description 推送目标（为空 = 推送到全部在线执行器） */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description 目标执行器 ID 列表，为空 = 全部 */
+                    executorIds?: string[];
+                };
+            };
+        };
+        responses: {
+            /**
+             * @description 逐台结果（queued/success/error）
+             *
+             *     逐台结果（queued/success/error）
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorPushResultDto"][];
+                };
+            };
+        };
+    };
+    ExecutorController_findAll: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorResponseDto"][];
+                };
+            };
+        };
+    };
+    ExecutorController_getExecutorArtifact: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description tar.gz 产物（application/gzip）
+             *
+             *     tar.gz 二进制内容（Res 直传）
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/gzip": string;
+                };
+            };
+            /** @description 共享令牌缺失或无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 产物未生成 / 不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_reportCommandResult: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecutorCommandResultDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorCommandResultResponseDto"];
+                };
+            };
+            /** @description 载荷形态非法（DTO 白名单校验） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 执行器令牌无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 命令不属于该执行器（跨行回报） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_pullExecutorConfig: {
+        parameters: {
+            query: {
+                address: string;
+                deviceFingerprint: string;
+                executorId: string;
+            };
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorConfigPayloadResponseDto"];
+                };
+            };
+            /** @description 执行器令牌无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_getGroups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorGroupsDto"];
+                };
+            };
+        };
+    };
+    ExecutorController_heartbeat: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 心跳数据 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecutorHeartbeatDto"];
+            };
+        };
+        responses: {
+            /** @description 已保存的执行器 + 回调鉴权密钥 + 版本闸门读数（POST 默认 201） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorHeartbeatResponseDto"];
+                };
+            };
+            /** @description 执行器令牌无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_getInstallCmd: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorInstallCmdDto"];
+                };
+            };
+            /** @description 服务端未配置 ADMIN_API_URL——无法生成可用的安装命令 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_getInstallScript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description shell 脚本文本（Res 直传） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/x-shellscript": string;
+                };
+            };
+        };
+    };
+    ExecutorController_offline: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 下线参数 */
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorOfflineDto"];
+                };
+            };
+            /** @description 执行器令牌无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_findPickerOptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description 带显式截断标记的执行器选择器选项
+             *
+             *     truncated=true 时 items 是前缀、total 是真实总数
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorPickerResponseDto"];
+                };
+            };
+        };
+    };
+    ExecutorController_pullDispatch: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Pull 长轮询请求体 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecutorPullDto"];
+            };
+        };
+        responses: {
+            /** @description waitMs 内无任务入队时 task=null */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorPullResponseDto"];
+                };
+            };
+            /** @description 执行器令牌无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_register: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 注册信息 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecutorRegisterDto"];
+            };
+        };
+        responses: {
+            /** @description Registered；含 perExecutorToken/tokenHash 回调凭据与 protocolCompliant 协议门禁读数 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorRegisterResponseDto"];
+                };
+            };
+        };
+    };
+    ExecutorController_getRuntimeConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorRuntimeConfigDto"];
+                };
+            };
+        };
+    };
+    ExecutorController_getTags: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorTagsDto"];
+                };
+            };
+        };
+    };
+    ExecutorController_getToken: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 获取令牌参数 */
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            /** @description 令牌获取（或复用）成功——R9 幂等签发 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorTokenResponseDto"];
+                };
+            };
+            /** @description 共享令牌无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_getTerminalStates: {
+        parameters: {
+            query: {
+                /** @description ISO-8601 水位线；仅返回终态时间（COALESCE(endTime, createdAt)）>= since 的执行记录。默认最近 24 小时；最多钳制到 30 天。 */
+                since?: string;
+                /** @description 每页条数（1..2000，默认 500）。hasMore=true 表示还有更多数据。 */
+                limit?: string;
+                deviceFingerprint: string;
+                executorId: string;
+            };
+            header: {
+                authorization: string;
+            };
+            path: {
+                /** @description 执行器注册地址（与心跳使用同一个值） */
+                address: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 终态记录分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TerminalStatesResponseDto"];
+                };
+            };
+            /** @description 执行器令牌无效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_findOne: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 执行器 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorResponseDto"];
+                };
+            };
+            /** @description 执行器不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_removeExecutor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 执行器 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description AUTH-05：可选的删除原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ExecutorActionReasonDto"];
+            };
+        };
+        responses: {
+            /**
+             * @description 执行器已删除
+             *
+             *     已移除（无内容）
+             */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 执行器不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 执行器 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description 更新参数 */
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorResponseDto"];
+                };
+            };
+            /** @description 既不是 ADMIN，也没有该执行器所属项目的 editor 及以上角色 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 执行器不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_getExecutorExecutions: {
+        parameters: {
+            query?: {
+                /** @description 页码 */
+                page?: components["schemas"]["Object"];
+                /** @description 每页条数 */
+                pageSize?: components["schemas"]["Object"];
+                /** @description 按任务名模糊搜索 */
+                name?: string;
+                /** @description 按任务状态过滤 */
+                status?: string;
+                /** @description 按 runtime 过滤（python/node/shell） */
+                runtime?: string;
+            };
+            header?: never;
+            path: {
+                /** @description 执行器 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 裸 {total,items} 分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorExecutionsResponseDto"];
+                };
+            };
+        };
+    };
+    ExecutorController_getExecutorMetrics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 执行器 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorMetricsDto"];
+                };
+            };
+        };
+    };
+    ExecutorController_reloadConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 执行器 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description 配置参数 */
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            /** @description pull 模式 = {queued,commandId,message}；push 模式 = 执行器自身响应原样透传（additionalProperties） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorReloadConfigResponseDto"];
+                };
+            };
+            /** @description 执行器不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 执行器拒收了配置推送（其持有的令牌与签发的令牌不一致） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 执行器离线或不可达（配置推送未能送达） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_removalImpact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 执行器 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorRemovalImpactResponseDto"];
+                };
+            };
+            /** @description 执行器不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_rotateToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 执行器 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description AUTH-05：可选的轮换原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ExecutorActionReasonDto"];
+            };
+        };
+        responses: {
+            /** @description 新凭据一次性回显 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorRotateTokenDto"];
+                };
+            };
+        };
+    };
+    ExecutorController_setOffline: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 执行器 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description offlineReason=manual 的执行器行（POST 默认 201） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorResponseDto"];
+                };
+            };
+            /** @description 执行器不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    HealthController_health: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicHealthDto"];
+                };
+            };
+        };
+    };
+    HealthController_detailed: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DetailedHealthDto"];
+                };
+            };
+        };
+    };
+    HealthController_live: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description {status:'healthy'}——恒 200 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicHealthDto"];
+                };
+            };
+        };
+    };
+    HealthController_metrics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HealthMetricsDto"];
+                };
+            };
+        };
+    };
+    HealthController_ready: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description status=ready|not_ready + timestamp；503 由 passthrough 状态码承载 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicHealthDto"];
+                };
+            };
+        };
+    };
+    HealthController_services: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HealthServicesDto"];
+                };
+            };
+        };
+    };
+    MetricsController_getPrometheusMetrics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Prometheus 文本 exposition 格式 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description 端点已通过 METRICS_PROMETHEUS_ENABLED=false 关闭 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MetricsController_getExecutorStats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsExecutorStatsRowDto"][];
+                };
+            };
+        };
+    };
+    MetricsController_getRecentFailures: {
+        parameters: {
+            query: {
+                projectId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsRecentFailureDto"][];
+                };
+            };
+        };
+    };
+    MetricsController_getSchedulerMetrics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsSchedulerResponseDto"];
+                };
+            };
+        };
+    };
+    MetricsStreamController_stream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-Sent Events 流（Res 直传；绕过统一响应包装拦截器） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+        };
+    };
+    MetricsController_getSummary: {
+        parameters: {
+            query: {
+                projectId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsSummaryResponseDto"];
+                };
+            };
+        };
+    };
+    MetricsController_getDailyTrend: {
+        parameters: {
+            query: {
+                days: string;
+                projectId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsTrendRowDto"][];
+                };
+            };
+        };
+    };
+    MutexGroupController_findAll: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutexGroupResponseDto"][];
+                };
+            };
+        };
+    };
+    MutexGroupController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateMutexGroupDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutexGroupResponseDto"];
+                };
+            };
+        };
+    };
+    MutexGroupController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMutexGroupDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutexGroupResponseDto"];
+                };
+            };
+        };
+    };
+    MutexGroupController_remove: {
+        parameters: {
+            query?: {
+                /** @description 组上仍挂应用时需显式 force=true 才允许删除 */
+                force?: boolean;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        ok: true;
+                    };
+                };
+            };
+        };
+    };
+    NotificationConfigController_getChannels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationChannelDto"][];
+                };
+            };
+        };
+    };
+    NotificationConfigController_updateChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        /** @description 渠道配置更新体 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateChannelDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationChannelDto"];
+                };
+            };
+        };
+    };
+    NotificationConfigController_testChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelTestResponseDto"];
+                };
+            };
+        };
+    };
+    NotificationConfigController_send: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendNotificationDto"];
+            };
+        };
+        responses: {
+            /** @description 无论各渠道结果如何均返回 2xx；各渠道投递情况见 `results`（sent | blocked | failed | skipped）。 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SendNotificationResultDto"];
+                };
+            };
+        };
+    };
+    NotificationConfigController_listSilences: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 全部静默规则 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationSilenceDto"][];
+                };
+            };
+        };
+    };
+    NotificationConfigController_createSilence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 静默规则创建体 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSilenceDto"];
+            };
+        };
+        responses: {
+            /** @description 已创建的静默规则 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationSilenceDto"];
+                };
+            };
+        };
+    };
+    NotificationConfigController_removeSilence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description removed=false = 该 id 不存在（幂等语义） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": boolean;
+                };
+            };
+        };
+    };
+    NotificationConfigController_sendTest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendTestDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelTestResponseDto"];
                 };
             };
         };
@@ -14967,6 +13041,7 @@ export interface operations {
             query: {
                 page: string;
                 pageSize: string;
+                q: string;
             };
             header?: never;
             path?: never;
@@ -14974,7 +13049,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 不带 page/pageSize 查询参数时返回完整的 ProjectViewRow 数组（旧形态）；带任一参数时返回分页信封（list/items/total/page/pageSize/totalPages），范围为调用者可见的项目 */
+            /** @description 不带 page/pageSize 查询参数时返回完整的 ProjectViewRow 数组（旧形态）；带任一参数时返回分页信封（list/items/total/page/pageSize/totalPages），范围为调用者可见的项目；q 对名称/描述做字面量模糊匹配 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -15005,6 +13080,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectEntityDto"];
+                };
+            };
+        };
+    };
+    ProjectsController_myRoles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 调用者角色 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyProjectRolesDto"];
                 };
             };
         };
@@ -15074,27 +13169,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectEntityDto"];
-                };
-            };
-        };
-    };
-    ProjectsController_describeRemovalImpact: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ProjectRemovalImpactResponseDto"];
                 };
             };
         };
@@ -15196,7 +13270,49 @@ export interface operations {
             };
         };
     };
-    ProjectsController_myRoles: {
+    ProjectsController_describeRemovalImpact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRemovalImpactResponseDto"];
+                };
+            };
+        };
+    };
+    ProjectsController_getSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectSummaryResponseDto"];
+                };
+            };
+        };
+    };
+    RegistryController_listNpmPackages: {
         parameters: {
             query?: never;
             header?: never;
@@ -15205,13 +13321,2125 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 调用者角色 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MyProjectRolesDto"];
+                    "application/json": components["schemas"]["RegistryNpmPackagesResponseDto"];
+                };
+            };
+        };
+    };
+    RegistryController_listPypiPackages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistryPackagesResponseDto"];
+                };
+            };
+        };
+    };
+    RegistryController_uploadPypiPackage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistryUploadResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_list: {
+        parameters: {
+            query: {
+                status: string;
+                page: string;
+                pageSize: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopListResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_draft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DraftSopDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_assignableExecutors: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 空列表 = 没有任何机器开着 Agent（指派对话框据此渲染，而非 assign 报错兜圈） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopCapableExecutorDto"][];
+                };
+            };
+        };
+    };
+    SopController_assignment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assignmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopAssignmentDetailResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_humanReply: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assignmentId: string;
+                clarificationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HumanReplyDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClarificationReplyResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_mediaList: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assignmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentMediaDto"][];
+                };
+            };
+        };
+    };
+    SopController_downloadMedia: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mediaId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                };
+            };
+        };
+    };
+    SopController_detail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSopDto"];
+            };
+        };
+        responses: {
+            /** @description 编辑后的工作副本（published 行的 currentVersion 不变） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_assign: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssignSopDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopAssignmentDto"];
+                };
+            };
+        };
+    };
+    SopController_assignments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 最近 100 条，createdAt 降序 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopAssignmentDto"][];
+                };
+            };
+        };
+    };
+    SopController_cancelAssignments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopCancelAssignmentsResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_deprecate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_publish: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishSopDto"];
+            };
+        };
+        responses: {
+            /** @description 内容与当前版本完全一致 → 400（修订必须真的改了什么） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopPublishResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_restore: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_versions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopVersionDto"][];
+                };
+            };
+        };
+    };
+    TaskTemplateController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 模板列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"][];
+                };
+            };
+        };
+    };
+    TaskTemplateController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTaskTemplateDto"];
+            };
+        };
+        responses: {
+            /** @description 已创建的自定义模板 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
+                };
+            };
+            /** @description config / key 非法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 模板 key 已存在 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskTemplateController_importTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 一份清单（或 registry 里的一条），可另附 config */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportTaskTemplateManifestDto"];
+            };
+        };
+        responses: {
+            /** @description 已落库的任务模板 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
+                };
+            };
+            /** @description 清单结构非法 / config 非法 / 非官方 key 且未提供 config */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 模板 key 已存在（不复用既有行） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskTemplateController_one: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 模板 UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 模板 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
+                };
+            };
+            /** @description 模板不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskTemplateController_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 模板 UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimpleOkResponseDto"];
+                };
+            };
+            /** @description 官方模板不可删除 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 模板不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskTemplateController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 模板 UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description 待更新字段（局部） */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTaskTemplateDto"];
+            };
+        };
+        responses: {
+            /** @description 更新后的模板 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
+                };
+            };
+            /** @description 字段 / config 非法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 官方只读 / 非属主 / 历史行仅管理员 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 模板不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskTemplateController_instantiate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 模板 UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description 模板覆盖体（自由字段，合并后校验 CreateTaskDto） */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InstantiateTaskOverlayDto"];
+            };
+        };
+        responses: {
+            /** @description 已创建的任务（最小字段面：标识/状态/触发字段） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstantiateTaskResponseDto"];
+                };
+            };
+            /** @description 缺少 name / 合并后的载荷非法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 模板不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_findAll: {
+        parameters: {
+            query?: {
+                /** @description 页码，默认 1 */
+                page?: components["schemas"]["Object"];
+                /** @description 每页条数，默认 20 */
+                pageSize?: components["schemas"]["Object"];
+                /** @description 仅按任务名称模糊搜索（向后兼容通道；CLI/MCP 使用它）。控制台搜索框改用 `q`，因为其占位符承诺搜索名称或描述。 */
+                name?: string;
+                /** @description 按状态过滤（active/paused/inactive） */
+                status?: string;
+                /** @description 按运行时过滤（python/node/shell） */
+                runtime?: string;
+                /** @description 同时按任务名称与描述做关键字搜索。LIKE 元字符（% 与 _）按字面匹配，因此搜索 `daily_report` 不会同时命中 `dailyXreport`。可与其他所有列表过滤条件组合。 */
+                q?: string;
+                /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。仅与默认排序组合——与 sortBy 或 lastStatus 同时给出返回 400。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。 */
+                cursor?: string;
+                /** @description F-10：逗号分隔的投影白名单（例如 'id,name'）。只查询白名单内的轻量列——跳过 params/secrets/glueSource 等重型列。非法字段 → 400。 */
+                fields?: unknown;
+                /** @description P2-18：过滤「最近一次执行」处于该状态的任务（每个任务取最新一行 task_executions：createdAt DESC、id DESC）。取值：pending/running/waiting/success/failed/timeout/killed/cancelled。最近一次执行仍在进行中（pending/running）时按原样匹配。以 EXISTS 子查询实现——可与其他列表过滤条件组合。 */
+                lastStatus?: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 分页列表（list/items 双键，R-21）。默认投影 = 完整实体但密钥已掩码；?fields= 会裁剪 items（F-10）。带 cursor 时额外含 nextCursor。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedTaskListDto"];
+                };
+            };
+        };
+    };
+    TaskController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTaskDto"];
+            };
+        };
+        responses: {
+            /** @description 任务创建成功（初始为暂停状态） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
+            };
+        };
+    };
+    TaskBatchController_batchDelete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchTaskIdsDto"];
+            };
+        };
+        responses: {
+            /**
+             * @description 批量删除结果
+             *
+             *     同 /tasks/batch/delete
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeprecatedBatchItemDto"][];
+                };
+            };
+        };
+    };
+    TaskBatchController_batchPause: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchTaskIdsDto"];
+            };
+        };
+        responses: {
+            /**
+             * @description 批量暂停结果
+             *
+             *     同 /tasks/batch/pause
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeprecatedBatchItemDto"][];
+                };
+            };
+        };
+    };
+    TaskBatchController_batchResume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchTaskIdsDto"];
+            };
+        };
+        responses: {
+            /**
+             * @description 批量恢复结果
+             *
+             *     同 /tasks/batch/resume
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeprecatedBatchItemDto"][];
+                };
+            };
+        };
+    };
+    TaskBatchController_batchTrigger: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 批量触发参数 */
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            /**
+             * @description 批量触发结果
+             *
+             *     与 /tasks/batch/* 同形态：逐任务结果数组（成功=execution 行 | 失败={id,error}）
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeprecatedBatchItemDto"][];
+                };
+            };
+        };
+    };
+    TaskController_batchDelete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 批量删除参数 */
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            /** @description 各任务的删除结果（成功项 = {deleted: true}；失败项 = {id, error}） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": (components["schemas"]["DeleteTaskResponseDto"] | components["schemas"]["BatchErrorItemDto"])[];
+                };
+            };
+        };
+    };
+    TaskController_batchPause: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 批量暂停参数 */
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            /** @description 各任务的暂停结果（成功项 = 完整任务；失败项 = {id, error}） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": (components["schemas"]["TaskResponseDto"] | components["schemas"]["BatchErrorItemDto"])[];
+                };
+            };
+        };
+    };
+    TaskController_batchResume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 批量恢复参数 */
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            /** @description 各任务的恢复结果（成功项 = 完整任务；失败项 = {id, error}） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": (components["schemas"]["TaskResponseDto"] | components["schemas"]["BatchErrorItemDto"])[];
+                };
+            };
+        };
+    };
+    TaskController_batchTrigger: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 批量触发参数 */
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            /** @description 各任务的触发结果（成功项 = 完整执行记录；失败项 = {id, error}） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": (components["schemas"]["TaskExecutionResponseDto"] | components["schemas"]["BatchErrorItemDto"])[];
+                };
+            };
+        };
+    };
+    TaskController_allExecutions: {
+        parameters: {
+            query?: {
+                page?: components["schemas"]["Object"];
+                pageSize?: components["schemas"]["Object"];
+                /** @description 按任务名模糊搜索 */
+                name?: string;
+                /** @description 按执行状态过滤 */
+                status?: string;
+                /** @description 按任务运行时过滤（经任务关联派生，tasks.runtime；python/node/shell）。 */
+                runtime?: "python" | "node" | "shell";
+                /** @description 按任务 id 过滤 */
+                taskId?: string;
+                /** @description 按所属项目过滤（经任务关联派生）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。 */
+                projectId?: string;
+                /** @description 按任务名模糊搜索 */
+                taskName?: string;
+                /** @description 按执行器地址模糊过滤 */
+                executorAddress?: string;
+                /** @description 仅返回在该时刻及之后创建的执行（ISO 8601） */
+                startTime?: string;
+                /** @description 仅返回在该时刻及之前创建的执行（ISO 8601） */
+                endTime?: string;
+                /** @description 按执行行记录的触发方式精确匹配（task_executions.triggerType，自由 varchar；实测取值 cron/fixed_rate/misfire/manual/dependency/rollback/webhook/agent）。 */
+                triggerType?: string;
+                /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器组合，非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。 */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 全局执行记录（已排除大文本列） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedExecutionListDto"];
+                };
+            };
+        };
+    };
+    TaskController_exportExecutions: {
+        parameters: {
+            query?: {
+                /** @description 按执行状态过滤（同列表端点） */
+                status?: string;
+                /** @description 按任务 id 过滤 */
+                taskId?: string;
+                /** @description 按所属项目过滤（经任务关联派生，与列表端点同口径）。传 `default` 命中未分配与默认项目两类行；省略 = 全部项目。 */
+                projectId?: string;
+                /** @description 按任务名模糊搜索（命中执行行自身或 tasks.name） */
+                taskName?: string;
+                /** @description 按执行器地址模糊过滤 */
+                executorAddress?: string;
+                /** @description 仅返回在该时刻及之后创建的执行（ISO 8601） */
+                startTime?: string;
+                /** @description 仅返回在该时刻及之前创建的执行（ISO 8601） */
+                endTime?: string;
+                /** @description 按任务运行时过滤（经任务关联派生，tasks.runtime；python/node/shell）。 */
+                runtime?: "python" | "node" | "shell";
+                /** @description 按执行行记录的触发方式精确匹配（task_executions.triggerType，自由 varchar；实测取值 cron/fixed_rate/misfire/manual/dependency/rollback/webhook/agent）。 */
+                triggerType?: string;
+                /** @description 本次导出的行数上限（安全阀，不是分页）。可调小；超过硬顶（50000）按硬顶处理，达上限时 CSV 末尾追加截断注释行。 */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description CSV 文本导出（Res 直传，流动写出，最多 50 000 行） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+        };
+    };
+    TaskController_executionByExecId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 执行记录 ID */
+                execId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskExecutionResponseDto"];
+                };
+            };
+        };
+    };
+    ArtifactsController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 执行 ID（UUID） */
+                execId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionArtifactDto"][];
+                };
+            };
+            /** @description 调用者不是管理员 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 执行记录不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ArtifactsController_download: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 执行 ID（UUID） */
+                execId: string;
+                /** @description 裸产物文件名 */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description 产物二进制内容（Res 直传）
+             *
+             *     产物二进制内容（Res 直传）
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description 调用者不是管理员 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 产物不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_executionLogsByExecId: {
+        parameters: {
+            query?: {
+                /** @description 起始行号，默认 0 */
+                fromLine?: string;
+                /** @description 每页行数，默认 500，最多 2000 */
+                limit?: string;
+                /** @description 按推断出的日志级别过滤（在 SQL 层完成）；级别未知（NULL）的行会被排除。指定 level 时，fromLine 是过滤后序列内的偏移，totalLines 是过滤后的条数。 */
+                level?: "ERROR" | "WARN" | "INFO" | "DEBUG";
+            };
+            header?: never;
+            path: {
+                /** @description 执行记录 ID */
+                execId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionLogsPageResponseDto"];
+                };
+            };
+        };
+    };
+    TaskController_importDefinition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportTaskDto"];
+            };
+        };
+        responses: {
+            /** @description 任务已导入（暂停状态）。warnings 中始终包含重新配置密钥的提示。 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskImportResultDto"];
+                };
+            };
+            /** @description 载荷非法（缺少必填键、params 超大、未知字段（全局白名单）、cron/时区/枚举非法等） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 载荷指定的项目调用者无权写入（需要 ADMIN，或该项目的 editor/admin 角色） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 所有候选名称都与已有任务冲突（或其他唯一性冲突） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_schedulerStats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulerStatsResponseDto"];
+                };
+            };
+        };
+    };
+    TaskController_findOne: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 完整任务实体，密钥已掩码 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
+            };
+            /** @description 任务不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已软删除（status=deleted + deletedAt） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteTaskResponseDto"];
+                };
+            };
+            /** @description 任务不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTaskDto"];
+            };
+        };
+        responses: {
+            /** @description 更新成功（密钥已掩码） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
+            };
+            /** @description 任务不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_executions: {
+        parameters: {
+            query?: {
+                /** @description 页码 */
+                page?: components["schemas"]["Object"];
+                pageSize?: components["schemas"]["Object"];
+                /** @description 按任务名模糊搜索 */
+                name?: string;
+                /** @description 按执行状态过滤 */
+                status?: string;
+                /** @description 按 runtime 过滤（python/node/shell） */
+                runtime?: string;
+                /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时行为与引入该参数前完全一致。 */
+                cursor?: string;
+                /** @description 每页条数 */
+                limit?: unknown;
+            };
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 执行历史（已排除大文本列） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedExecutionListDto"];
+                };
+            };
+        };
+    };
+    TaskController_execution: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+                /** @description 执行记录 ID */
+                execId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 完整执行行（包含 logs/aiAnalysis） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskExecutionResponseDto"];
+                };
+            };
+            /** @description 执行记录不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_analyzeExecution: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+                /** @description 执行记录 ID */
+                execId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已更新执行记录并持久化 aiAnalysis（POST 默认 201） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskExecutionResponseDto"];
+                };
+            };
+        };
+    };
+    TaskController_killExecution: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+                /** @description 执行记录 ID */
+                execId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已取消（POST 默认 201） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KillExecutionResponseDto"];
+                };
+            };
+            /** @description 执行当前状态不可取消 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 执行记录不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_executionLogs: {
+        parameters: {
+            query?: {
+                /** @description 起始行号，默认 0 */
+                fromLine?: string;
+                /** @description 每页行数，默认 500，最多 2000 */
+                limit?: string;
+                /** @description 按推断出的日志级别过滤（在 SQL 层完成）；级别未知（NULL）的行会被排除。指定 level 时，fromLine 是过滤后序列内的偏移，totalLines 是过滤后的条数。 */
+                level?: "ERROR" | "WARN" | "INFO" | "DEBUG";
+            };
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+                /** @description 执行记录 ID */
+                execId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionLogsPageResponseDto"];
+                };
+            };
+        };
+    };
+    TaskController_streamLogs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+                /** @description 执行记录 ID */
+                execId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SSE 流（Res 直传） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+        };
+    };
+    TaskController_executionReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+                /** @description 执行记录 ID */
+                execId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionReportResponseDto"];
+                };
+            };
+            /** @description 执行记录不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_exportDefinition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 任务定义导出载荷（与 POST /tasks/import 的请求体同形态） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskExportPayloadDto"];
+                };
+            };
+            /** @description 任务不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_updateGlue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    language?: string;
+                    source?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 脚本已更新 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
+            };
+            /** @description 任务不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_pause: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已暂停（POST 默认 201） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
+            };
+            /** @description 任务已处于暂停状态 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 任务不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_resume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已恢复（POST 默认 201） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
+            };
+            /** @description 任务已在运行中 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 任务不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_rollback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description 回滚参数 */
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            /** @description 已在目标 commit 上派发新的执行（POST 默认 201） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitRollbackResponseDto"];
+                };
+            };
+            /** @description 非 Git 任务不支持回滚 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_getStats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description FIX-5.1 起 successRate/succeeded/failed 均为全量执行口径；recentSuccessRate 仍保留最近 20 次窗口 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionStatsResponseDto"];
+                };
+            };
+        };
+    };
+    TaskController_suggestSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description AI 推荐结果；fallback=true 表示走了启发式降级路径 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestScheduleResponseDto"];
+                };
+            };
+        };
+    };
+    TaskController_trigger: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description G10 幂等键（8-128 字符，字母/数字/._:-）：同键同参 24h 内只触发一次（重放返回 409 TASK_IDEMPOTENCY_REPLAY）；同键不同参返回 409 TASK_IDEMPOTENCY_KEY_REUSED。缺省不做去重。 */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TriggerTaskDto"];
+            };
+        };
+        responses: {
+            /** @description 已创建执行记录并已入队 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskExecutionResponseDto"];
+                };
+            };
+            /** @description 触发被拒绝：已存在参数相同的活跃执行（blockStrategy=discard） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_getVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 最近 100 个快照 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskVersionDto"][];
+                };
+            };
+        };
+    };
+    TaskController_compareVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+                /** @description 版本 ID 1 */
+                versionId1: string;
+                /** @description 版本 ID 2 */
+                versionId2: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 按字段键组织的差异——仅包含发生变化的字段，每项为 {old, new} */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: components["schemas"]["VersionDiffEntryDto"];
+                    };
+                };
+            };
+            /** @description 任务或版本不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_rollbackToVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 任务 ID */
+                id: string;
+                /** @description 版本 ID */
+                versionId: string;
+            };
+            cookie?: never;
+        };
+        /** @description 无请求体——回滚目标即 :versionId 路径参数 */
+        requestBody?: {
+            content: {
+                "application/json": string;
+            };
+        };
+        responses: {
+            /** @description 任务配置已回滚到该快照（POST 默认 201） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
+            };
+            /** @description 任务或版本不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_webhookStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Webhook 状态（密钥从不返回） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookStatusResponseDto"];
+                };
+            };
+        };
+    };
+    TaskController_webhookDisable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 停用后的响应：`{ enabled: false }` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDisableResponseDto"];
+                };
+            };
+        };
+    };
+    TaskController_webhookEnable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Webhook URL + 一次性密钥 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookSecretResponseDto"];
+                };
+            };
+        };
+    };
+    TaskController_webhookRotate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Webhook URL + 一次性密钥 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookSecretResponseDto"];
+                };
+            };
+        };
+    };
+    UsersController_findAll: {
+        parameters: {
+            query?: {
+                page?: components["schemas"]["Object"];
+                pageSize?: components["schemas"]["Object"];
+                /** @description 按用户名或邮箱模糊搜索（不区分大小写） */
+                search?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedUsersDto"];
+                };
+            };
+        };
+    };
+    UsersController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateUserDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserResponseDto"];
+                };
+            };
+        };
+    };
+    UsersController_findOne: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserResponseDto"];
+                };
+            };
+        };
+    };
+    UsersController_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserDeleteResponseDto"];
+                };
+            };
+        };
+    };
+    UsersController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateUserDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserResponseDto"];
+                };
+            };
+        };
+    };
+    TaskWebhookController_trigger: {
+        parameters: {
+            query?: {
+                /** @description '1'/'true' = 同步等待终态（缺省入队即返回） */
+                wait?: string;
+                /** @description wait 模式超时秒数（1-300，缺省 60） */
+                timeout?: string;
+            };
+            header: {
+                "x-hub-signature-256": string;
+                "x-autocodeflow-timestamp": string;
+                "x-autoflow-delivery": string;
+            };
+            path: {
+                /** @description 任务 UUID */
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TriggerTaskDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskWebhookTriggerResponseDto"];
                 };
             };
         };

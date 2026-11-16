@@ -27,7 +27,7 @@ AutoCodeFlow 是一个**分布式任务调度与执行平台**：在管理后台
 ┌─ 生态入口 ────────────────────────────────────────────────┐
 │ admin-web 管理台 / acf CLI / MCP Server(AI Agent)          │
 │ Python SDK(autoflow-sdk) / Node SDK(@autocodeflow/sdk)     │
-│ AI 辅助(OpenAI/Ollama): 脚本生成 + 失败分析                 │
+│ AI 辅助(OpenAI/Ollama/Qwen): 失败分析 + 排程建议 + 健康检查 │
 └──────────────────────────────────────────────────────────┘
 ```
 

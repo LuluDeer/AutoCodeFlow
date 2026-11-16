@@ -17,6 +17,8 @@ import '../i18n';
 import { BRAND_GRADIENT } from '../theme/tokens';
 // BRAND（2026-11-02）：登录页的品牌位用狐狸（产品形象），不再用绿方块 + 闪电。
 import BrandFox from '../components/BrandFox';
+// P1-9：页脚版本号由构建期注入（单一事实源 version.txt），见 src/version.ts。
+import { APP_VERSION } from '../version';
 
 const { Title, Text } = Typography;
 
@@ -334,7 +336,11 @@ export default function LoginPage() {
         </Card>
 
         <div style={{ textAlign: 'center', marginTop: 24 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>{t('brand.edition')}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {APP_VERSION
+              ? `AutoCodeFlow v${APP_VERSION} · ${t('brand.edition')}`
+              : `AutoCodeFlow · ${t('brand.edition')}`}
+          </Text>
         </div>
       </div>
     </div>

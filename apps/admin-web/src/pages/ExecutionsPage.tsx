@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Table,
   Typography,
   Badge,
@@ -34,6 +34,7 @@ import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 // URL-SYNC-02（审计 P2）：双向 URL 同步（外部深链/前进后退真正生效）
 import { useUrlStateSync } from '../hooks/useUrlStateSync';
+import { useProjectFilter } from '../hooks/useProjectFilter';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 // ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析（id 优先、地址回落）。
 // 阶段 3 起 pull 允许同址多行并存，仅显示 IP:端口 无法回答「哪台机器」。
@@ -49,6 +50,8 @@ import { useIsMobile } from '../hooks/useIsMobile';
 // 与同列相邻的中文状态 Badge 中英混排。收敛到 utils/trigger-label 唯一事实源，
 // 与 TaskListPage/TaskDetailPage/ApplicationDetailPage 同一份映射。
 import { triggerLabel } from '../utils/trigger-label';
+// P2-2：运行时筛选下拉复用 runtimeLabel 唯一事实源（python/node/shell）。
+import { runtimeLabel, RUNTIME_T_KEYS } from '../utils/runtime-label';
 // 2026-10-23：失败原因聚合（本页已加载行，非全量——见 util 头注口径）
 import { aggregateFailureReasons } from '../utils/failure-reason-aggregate';
 import { failureReasonLabel } from '../utils/failure-reason-label';
@@ -78,6 +81,25 @@ const STATUS_MAP = (t: (k: string) => string): Record<string, { badge: BadgeStat
   killed:    { badge: 'error',      label: t('execs.status.killed') },
   cancelled: { badge: 'default',    label: t('execs.status.cancelled') },
 });
+
+/**
+ * P2-2：触发方式筛选下拉的候选取值。执行行 `task_executions.triggerType` 是自由
+ * varchar（与任务调度枚举不同套值域），取值来自各触发入口实测写入：
+ * cron（调度 cron slot）/ fixed_rate（周期）/ misfire（调度补偿）/ manual（手动与
+ * API-Key 落行）/ dependency（依赖扇出）/ rollback（回滚重放）/ webhook / agent。
+ * 标签走 triggerLabel：已知值本地化，未知值回退原始 token；下拉未列出的取值仍可
+ * 由深链 URL 传入并精确匹配（后端不做白名单拦截）。
+ */
+const TRIGGER_OPTIONS = [
+  'cron',
+  'fixed_rate',
+  'misfire',
+  'manual',
+  'dependency',
+  'rollback',
+  'webhook',
+  'agent',
+] as const;
 
 /** CSV 单元格转义：逗号/引号/换行任一出现即整体加引号，内部引号翻倍（RFC 4180）。 */
 function csvCell(value: string | number | null | undefined): string {
@@ -187,7 +209,7 @@ export default function ExecutionsPage() {
   // ① Dashboard「失败 Top 任务 → 全部失败」链到 /executions?status=failed，
   //    此前页面从不读 URL 参数，深链被静默丢弃；
   // ② 刷新/分享页面后筛选与页码全部丢失。
-  // 时间范围不在 URL（Dayjs 序列化噪音大、深链价值低），仍仅存会话内。
+  // P2-2：运行时 / 触发方式 / 时间范围起止也纳入 URL 同步（ISO 串），整组筛选可深链分享。
   const [searchParams] = useSearchParams();
   const [page, setPage] = useState(() => {
     const p = Number(searchParams.get('page'));
@@ -200,7 +222,17 @@ export default function ExecutionsPage() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>(() => searchParams.get('status') || undefined);
   const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [executorFilter, setExecutorFilter] = useState(() => searchParams.get('executor') || '');
-  const [timeRange, setTimeRange] = useState<[Dayjs, Dayjs] | null>(null);
+  const [runtimeFilter, setRuntimeFilter] = useState<string | undefined>(() => searchParams.get('runtime') || undefined);
+  const [triggerTypeFilter, setTriggerTypeFilter] = useState<string | undefined>(() => searchParams.get('triggerType') || undefined);
+  // 时间范围从 URL 起止 ISO 串还原（P2-2 起纳入深链）；任一时刻非法/缺失则回落空区间。
+  const [timeRange, setTimeRange] = useState<[Dayjs, Dayjs] | null>(() => {
+    const start = searchParams.get('startTime');
+    const end = searchParams.get('endTime');
+    const sd = start ? dayjs(start) : null;
+    const ed = end ? dayjs(end) : null;
+    if (sd && ed && sd.isValid() && ed.isValid()) return [sd, ed];
+    return null;
+  });
   const [killingId, setKillingId] = useState<string | null>(null);
   /** 全量导出的在途标记（流式下载可能几十秒，必须给反馈并防重复触发）。 */
   const [exportingAll, setExportingAll] = useState(false);
@@ -230,6 +262,9 @@ export default function ExecutionsPage() {
    * 就是不同的值，不在渲染期用 `??` 糊成同一个——那样 keyset 起点永远进不去。
    */
   const [cursorState, setCursorState] = useState<CursorStack>(() => initialCursorStack(undefined));
+
+  // P1-2：全局当前项目上下文（?project=）；后端执行列表经 taskId 关联任务派生项目归属。
+  const { backendProjectId } = useProjectFilter();
 
   /**
    * 重置游标栈（回到第 1 页）。
@@ -270,7 +305,7 @@ export default function ExecutionsPage() {
   // 翻页/筛选变化后当前页数据会变，跨页选中行不再可见——清空选中防误比
   useEffect(() => {
     setSelectedIds([]);
-  }, [page, pageSize, statusFilter, search, executorFilter, timeRange, cursorState]);
+  }, [page, pageSize, statusFilter, search, executorFilter, runtimeFilter, triggerTypeFilter, timeRange, cursorState, backendProjectId]);
 
   const handleKill = async (r: TaskExecution) => {
     setKillingId(r.id);
@@ -307,6 +342,27 @@ export default function ExecutionsPage() {
   // 里——若只改筛选而不清栈，keyset 模式下载第 3 页的游标会带着新的 status
   // 继续请求，结果是"从旧筛选某个不相干位置往后"的错乱数据。故这里给 URL→state
   // 的 setter 包一层：任何筛选/页码的外部写入都顺带把栈重置回起点。
+  // P2-2：时间范围起止也进 URL。URL→state 方向按单边还原：只改一端时保留另一端，
+  // 避免另一端被默认值 undefined 清掉；非法时刻回落原区间（不抛错、不空屏）。
+  const applyUrlTimeSide = (side: 'start' | 'end') => (v: string | undefined) => {
+    setTimeRange((prev) => {
+      const curStart = prev?.[0] ?? null;
+      const curEnd = prev?.[1] ?? null;
+      if (side === 'start') {
+        if (!v) return curEnd ? [curEnd, curEnd] : null;
+        const sd = dayjs(v);
+        if (!sd.isValid()) return prev;
+        return [sd, curEnd ?? sd];
+      }
+      if (!v) return curStart ? [curStart, curStart] : null;
+      const ed = dayjs(v);
+      if (!ed.isValid()) return prev;
+      return [curStart ?? ed, ed];
+    });
+    setPage(1);
+    resetCursorStack(stablePaging);
+  };
+
   useUrlStateSync(
     {
       page,
@@ -314,14 +370,22 @@ export default function ExecutionsPage() {
       status: statusFilter,
       q: debouncedSearch,
       executor: executorFilter,
+      runtime: runtimeFilter,
+      triggerType: triggerTypeFilter,
+      startTime: timeRange?.[0]?.toISOString(),
+      endTime: timeRange?.[1]?.toISOString(),
     },
-    { page: 1, pageSize: 20, status: undefined, q: '', executor: '' },
+    { page: 1, pageSize: 20, status: undefined, q: '', executor: '', runtime: undefined, triggerType: undefined, startTime: undefined, endTime: undefined },
     {
       page: (v) => { setPage(v); resetCursorStack(stablePaging); },
       pageSize: (v) => { setPageSize(v); resetCursorStack(stablePaging); },
       status: (v) => { setStatusFilter(v); resetCursorStack(stablePaging); },
       q: (v) => { setSearch(v); resetCursorStack(stablePaging); },
       executor: (v) => { setExecutorFilter(v); resetCursorStack(stablePaging); },
+      runtime: (v) => { setRuntimeFilter(v); setPage(1); resetCursorStack(stablePaging); },
+      triggerType: (v) => { setTriggerTypeFilter(v); setPage(1); resetCursorStack(stablePaging); },
+      startTime: applyUrlTimeSide('start'),
+      endTime: applyUrlTimeSide('end'),
     },
   );
 
@@ -348,6 +412,11 @@ export default function ExecutionsPage() {
       executorAddress: executorFilter || undefined,
       startTime: timeRange?.[0]?.toISOString(),
       endTime: timeRange?.[1]?.toISOString(),
+      // P2-2：运行时（tasks.runtime）/ 触发方式（执行行 triggerType）等值过滤。
+      runtime: runtimeFilter || undefined,
+      triggerType: triggerTypeFilter || undefined,
+      // P1-2：项目维度透传；'all' → undefined（不传），'default' / UUID 原样发后端。
+      projectId: backendProjectId,
       // keyset 三态的**唯一**出口，落在下面这个三元里：
       //   · 关闭开关 → 整个 `cursor` 键都不出现（`{}`），请求与改动前完全一致；
       //   · 打开开关 → 空串（`?cursor=`，keyset 起点）或上一页返回的不透明游标。
@@ -359,6 +428,17 @@ export default function ExecutionsPage() {
     },
     { refetchInterval: sseFallbackRefetchInterval(SSE_STATUS_KEYS.executionsStream) },
   );
+
+  // P1-2：切换项目上下文后回到第一页并清游标栈——旧项目的页码/游标对新项目结果集
+  // 无意义（与其它改变结果集的入口同口径，见 resetCursorStack 头注）。
+  // 首次挂载不重置：否则深链 ?page=N 会被打回第 1 页；仅在项目实际切换时回退。
+  const prevProjectRef = useRef(backendProjectId);
+  useEffect(() => {
+    if (prevProjectRef.current === backendProjectId) return;
+    prevProjectRef.current = backendProjectId;
+    setPage(1);
+    resetCursorStack(stablePaging);
+  }, [backendProjectId, stablePaging]);
 
   // FEAT-16: 执行终态推送流——SSE live 时终态事件即时 invalidate 列表+汇总
   // 缓存（<3s 刷新验收），断线时上方 refetchInterval 兜底轮询自动成为唯一
@@ -424,7 +504,7 @@ export default function ExecutionsPage() {
     setCursorState((s) => (s.index > 0 ? { ...s, index: s.index - 1 } : s));
   };
 
-  const hasFilters = !!(search || statusFilter || executorFilter || timeRange);
+  const hasFilters = !!(search || statusFilter || executorFilter || runtimeFilter || triggerTypeFilter || timeRange);
 
   // F-48（UIAUDIT P3）：越界页（如 ?page=999）——本页无行但 total>0 时，旧文案
   // 「暂无执行记录 共 17452 条」自相矛盾（数据明明存在，只是请求页越过了末页）。
@@ -476,6 +556,8 @@ export default function ExecutionsPage() {
     setSearch('');
     setStatusFilter(undefined);
     setExecutorFilter('');
+    setRuntimeFilter(undefined);
+    setTriggerTypeFilter(undefined);
     setTimeRange(null);
     setPage(1);
     // §2.1：清除筛选 = 全新的结果集，游标必须一起归零（否则会带着旧筛选的
@@ -507,6 +589,8 @@ export default function ExecutionsPage() {
    * | `statusFilter`    | `status`          | 等值                        |
    * | `debouncedSearch` | `taskName`        | **模糊**匹配任务名          |
    * | `executorFilter`  | `executorAddress` | **模糊**匹配执行器地址      |
+   * | `runtimeFilter`   | `runtime`         | 等值匹配任务运行时（tasks.runtime） |
+   * | `triggerTypeFilter` | `triggerType`  | 等值匹配执行行记录的触发方式  |
    * | `timeRange[0/1]`  | `startTime`/`endTime` | **createdAt** 范围（ISO 8601） |
    *
    * 三处易错点，都在这里钉死：
@@ -544,6 +628,11 @@ export default function ExecutionsPage() {
         executorAddress: executorFilter || undefined,
         startTime: timeRange?.[0]?.toISOString(),
         endTime: timeRange?.[1]?.toISOString(),
+        // P2-2：与列表同一运行时 / 触发方式口径，避免导出全量而页面只显示某一批。
+        runtime: runtimeFilter || undefined,
+        triggerType: triggerTypeFilter || undefined,
+        // P1-2：导出与列表同一项目口径，避免导出全量而页面只显示某项目。
+        projectId: backendProjectId,
       });
       message.success(t('execs.exportAll.success'));
     } catch (err: unknown) {
@@ -816,6 +905,24 @@ export default function ExecutionsPage() {
             { value: 'killed',    label: t('execs.status.killed') },
             { value: 'cancelled', label: t('execs.status.cancelled') },
           ]}
+        />
+        <Select
+          placeholder={t('execs.runtimeAll')}
+          allowClear
+          style={{ width: 140, maxWidth: '100%' }}
+          value={runtimeFilter}
+          onChange={v => { setRuntimeFilter(v); setPage(1); resetCursorStack(stablePaging); }}
+          suffixIcon={<FilterOutlined />}
+          options={Object.keys(RUNTIME_T_KEYS).map(v => ({ value: v, label: runtimeLabel(v, t) }))}
+        />
+        <Select
+          placeholder={t('execs.triggerAll')}
+          allowClear
+          style={{ width: 160, maxWidth: '100%' }}
+          value={triggerTypeFilter}
+          onChange={v => { setTriggerTypeFilter(v); setPage(1); resetCursorStack(stablePaging); }}
+          suffixIcon={<FilterOutlined />}
+          options={TRIGGER_OPTIONS.map(v => ({ value: v, label: triggerLabel(v, t) }))}
         />
         <Input
           placeholder={t('execs.executorPlaceholder')}

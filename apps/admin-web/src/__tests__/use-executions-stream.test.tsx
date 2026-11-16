@@ -82,7 +82,7 @@ function seedListCache(qc: QueryClient) {
     items: [],
     total: 0,
   });
-  qc.setQueryData(queryKeys.metrics.summary, { totalTasks: 0 });
+  qc.setQueryData(queryKeys.metrics.summary(), { totalTasks: 0 });
 }
 
 describe('useExecutionsStream 流行为', () => {
@@ -152,7 +152,7 @@ describe('useExecutionsStream 流行为', () => {
     }
     function SummaryObserverProbe() {
       useQuery({
-        queryKey: queryKeys.metrics.summary,
+        queryKey: queryKeys.metrics.summary(),
         queryFn: summarySpy,
       });
       return null;
@@ -169,7 +169,7 @@ describe('useExecutionsStream 流行为', () => {
     // staleTime 内复用，不触发 queryFn——先手动 refetch 一次建立 spy 计数）
     await act(async () => {
       await qc.refetchQueries({ queryKey: listKey });
-      await qc.refetchQueries({ queryKey: queryKeys.metrics.summary });
+      await qc.refetchQueries({ queryKey: queryKeys.metrics.summary() });
     });
     const callsBefore = listSpy.mock.calls.length;
 
@@ -203,7 +203,7 @@ describe('useExecutionsStream 流行为', () => {
       return null;
     }
     function SummaryObserverProbe() {
-      useQuery({ queryKey: queryKeys.metrics.summary, queryFn: summarySpy });
+      useQuery({ queryKey: queryKeys.metrics.summary(), queryFn: summarySpy });
       return null;
     }
 
@@ -216,7 +216,7 @@ describe('useExecutionsStream 流行为', () => {
     );
     await act(async () => {
       await qc.refetchQueries({ queryKey: listKey });
-      await qc.refetchQueries({ queryKey: queryKeys.metrics.summary });
+      await qc.refetchQueries({ queryKey: queryKeys.metrics.summary() });
     });
     const callsBefore = listSpy.mock.calls.length;
 

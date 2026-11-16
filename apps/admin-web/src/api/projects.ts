@@ -1,4 +1,7 @@
 import { client } from './client';
+// P1-2：summary 响应走生成类型（与后端 ProjectSummaryResponseDto 同源），
+// 后端 DTO 改动时 gen:api-types 同步——统计口径漂移是「中台显示不可信」高发区。
+import type { components } from '../types/generated/api-types';
 
 /**
  * AUTH-02 后续：项目与成员前端契约。
@@ -63,6 +66,17 @@ export interface ProjectRemovalImpact {
   deletable: boolean;
 }
 
+/**
+ * P1-2：项目详情统计（GET /projects/:id/summary）。
+ * 字段口径以后端 `ProjectSummaryResponseDto` 注释为准；`failureRate` 为 null
+ * 表示窗口内无执行，前端必须显示「暂无数据」，不得渲染 0%。
+ */
+export type ProjectSummary = components['schemas']['ProjectSummaryResponseDto'];
+export type ProjectSummaryRecentFailure =
+  components['schemas']['ProjectSummaryRecentFailureDto'];
+export type ProjectSummaryRecentExecution =
+  components['schemas']['ProjectSummaryRecentExecutionDto'];
+
 export interface ProjectMemberRow {
   id: string;
   projectId: string;
@@ -108,11 +122,33 @@ export const projectsApi = {
   /**
    * 服务端分页（仅 ProjectsPage 使用）：传 page/pageSize → 后端返回分页信封。
    * 后端钳制 page≥1、pageSize≤100（非法值回落缺省，不 400）。
+   * `q` 为可选关键字（名称/描述字面量模糊匹配）；空串/不传时后端不过滤。
    */
-  listPaged: (page: number, pageSize: number, signal?: AbortSignal) =>
+  listPaged: (
+    page: number,
+    pageSize: number,
+    signal?: AbortSignal,
+    q?: string,
+  ) => {
+    const params: Record<string, unknown> = { page, pageSize };
+    if (q) params.q = q;
+    return signal
+      ? client.get<ProjectListPage>('/projects', { params, signal })
+      : client.get<ProjectListPage>('/projects', { params });
+  },
+  /** 单个项目实体（GET /projects/:id）：详情页标题/描述回显。 */
+  getOne: (projectId: string, signal?: AbortSignal) =>
     signal
-      ? client.get<ProjectListPage>('/projects', { params: { page, pageSize }, signal })
-      : client.get<ProjectListPage>('/projects', { params: { page, pageSize } }),
+      ? client.get<ProjectEntityRow>(`/projects/${projectId}`, { signal })
+      : client.get<ProjectEntityRow>(`/projects/${projectId}`),
+  /**
+   * P1-2：项目详情统计（GET /projects/:id/summary）。
+   * 读面与 GET /projects/:id 同口径（ADMIN ∪ 默认项目 ∪ 成员；非成员 404）。
+   */
+  summary: (projectId: string, signal?: AbortSignal) =>
+    signal
+      ? client.get<ProjectSummary>(`/projects/${projectId}/summary`, { signal })
+      : client.get<ProjectSummary>(`/projects/${projectId}/summary`),
   /**
    * 新建项目（ADMIN-only）。
    *

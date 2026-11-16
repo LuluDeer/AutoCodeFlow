@@ -51,9 +51,6 @@ import type { TFunction } from 'i18next';
 import '../i18n';
 import { Input, Modal, Typography, theme } from 'antd';
 import { message } from '../utils/toast';
-// P3-2（2026-10-26 审计）：执行记录行的开始时间此前裸 ISO 串（与全站格式
-// 不一致），统一走共享 formatDateTime（locale 跟随 i18n）。
-import { formatDateTime } from '../utils/timeFormat';
 import { LAYOUT_TOKENS } from '../theme/tokens';
 import type { InputRef } from 'antd';
 import {
@@ -63,11 +60,14 @@ import {
   ClusterOutlined,
   DatabaseOutlined,
   FileTextOutlined,
+  FolderOpenOutlined,
   HistoryOutlined,
   HomeOutlined,
+  MailOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
   PlusOutlined,
+  RobotOutlined,
   SearchOutlined,
   SettingOutlined,
   TeamOutlined,
@@ -76,19 +76,24 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
-import type { Task, TaskExecution } from '../api/tasks';
 import { executorsApi } from '../api/executors';
-import type { Executor } from '../api/executors';
 import { applicationsApi } from '../api/applications';
-import type { Application } from '../api/applications';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
+import { computeSections, GROUP_ORDER, IDLE_RESULTS, LOADING_RESULTS } from './palette-sections';
+import type {
+  EntityKind,
+  EntityResultsKind,
+  PaletteItem,
+  TaskActionKind,
+  StaticAction,
+  SearchResults,
+  Section,
+} from './palette-sections';
 
 const { Text } = Typography;
 
-/** 每组最多展示条数（组内截断，不做虚拟滚动） */
-const MAX_PER_GROUP = 5;
 /** tasks 列表单页条数：后端 name ILIKE 预过滤后的候选池 */
 const TASK_PAGE_SIZE = 50;
 /** 执行记录候选池条数（服务端按 taskName ILIKE 预过滤后取一页，组内再截断到 5） */
@@ -118,14 +123,10 @@ const SR_ONLY_STYLE: React.CSSProperties = {
   borderWidth: 0,
 };
 
-type EntityKind = 'action' | 'task' | 'execution' | 'executor' | 'application';
-
-/** 分组渲染顺序：操作 → 任务 → 执行记录 → 执行器 → 应用 */
-const GROUP_ORDER: EntityKind[] = ['action', 'task', 'execution', 'executor', 'application'];
-
 /** 分组图标（标题文案走 i18n 键，渲染处用 t() 求值） */
 const GROUP_ICON: Record<EntityKind, ReactNode> = {
   action: <PlusOutlined />,
+  page: <HomeOutlined />,
   task: <ThunderboltOutlined />,
   execution: <HistoryOutlined />,
   executor: <ClusterOutlined />,
@@ -134,25 +135,12 @@ const GROUP_ICON: Record<EntityKind, ReactNode> = {
 
 const GROUP_TITLE_KEY: Record<EntityKind, string> = {
   action: 'palette.group.action',
+  page: 'palette.group.pages',
   task: 'palette.group.task',
   execution: 'palette.group.execution',
   executor: 'palette.group.executor',
   application: 'palette.group.application',
 };
-
-interface PaletteItem {
-  key: string;
-  id: string;
-  title: string;
-  description?: string;
-  /** execution 跳转需要所属任务 id */
-  taskId?: string;
-  /** task 条目按 status 动态附带的行内动作键（触发/暂停/恢复） */
-  actions?: TaskActionKind[];
-}
-
-/** UI-11 任务行内动作键 */
-type TaskActionKind = 'trigger' | 'pause' | 'resume';
 
 const TASK_ACTION_ICON: Record<TaskActionKind, ReactNode> = {
   trigger: <ThunderboltOutlined />,
@@ -165,19 +153,6 @@ const TASK_ACTION_LABEL_KEY: Record<TaskActionKind, string> = {
   pause: 'palette.action.pause',
   resume: 'palette.action.resume',
 };
-
-/** 静态动作（操作分组，始终可见） */
-interface StaticAction {
-  key: string;
-  /** 与 PaletteItem.id 对齐，供扁平条目占位复用 */
-  id: string;
-  title: string;
-  description: string;
-  to?: string;
-  /** admin-only 动作（写面后端全链 @Roles(ADMIN)，对齐 ApplicationListPage 门控） */
-  adminOnly?: boolean;
-  icon: ReactNode;
-}
 
 const getStaticActions = (t: TFunction): StaticAction[] => [
   {
@@ -200,70 +175,32 @@ const getStaticActions = (t: TFunction): StaticAction[] => [
 ];
 
 /**
- * P2-5（UX 审计）：静态页面导航。
+ * P1-6：静态页面导航（「管理页面」分组）。
  *
- * 命令面板此前只覆盖四类**后端实体**（任务/执行记录/执行器/应用）——审计日志、
- * 用户管理、通知设置、系统设置、项目、包注册中心等**静态页面**既无后端搜索
- * 端点、也不在结果分组里，用户搜不到也到不了。这里把这些页面路由作为「操作」
- * 分组的补充条目（零后端改动）。
- *
- * 与主操作（getStaticActions）的区别：主操作**始终可见**；这些页面导航条目
- * **仅在有输入关键词时按标题/描述做客户端包含匹配后出现**——避免零输入时操作
- * 分组被 10 个页面入口淹没，同时让「搜索某页」真正可命中。admin-only 页面按
- * 角色过滤（与主操作同策，优于跳转后 403）。
+ * 命令面板覆盖侧边栏全部一级/分组页面路由，折叠导航下的页面也能 ⌘K 直达。
+ * admin-only 页面与路由级 RequireAdmin 门控一一对齐（/users、/notifications、
+ * /audit、/executor-packages、/sops、/agent-sessions）；/projects、/settings
+ * 为普通用户可达，不做门控。角色过滤优于跳转后 403。
  */
 const getPageNavActions = (t: TFunction): StaticAction[] => [
   { key: 'nav-dashboard', id: 'nav-dashboard', title: t('nav.dashboard'), description: t('palette.pageNav.dashboardDesc'), to: '/dashboard', icon: <HomeOutlined /> },
+  { key: 'nav-tasks', id: 'nav-tasks', title: t('nav.tasks'), description: t('palette.pageNav.tasksDesc'), to: '/tasks', icon: <ThunderboltOutlined /> },
   { key: 'nav-task-templates', id: 'nav-task-templates', title: t('nav.taskTemplates'), description: t('palette.pageNav.taskTemplatesDesc'), to: '/task-templates', icon: <FileTextOutlined /> },
   { key: 'nav-executions', id: 'nav-executions', title: t('nav.executions'), description: t('palette.pageNav.executionsDesc'), to: '/executions', icon: <HistoryOutlined /> },
+  { key: 'nav-artifacts', id: 'nav-artifacts', title: t('nav.artifacts'), description: t('palette.pageNav.artifactsDesc'), to: '/artifacts', adminOnly: true, icon: <FolderOpenOutlined /> },
   { key: 'nav-executors', id: 'nav-executors', title: t('nav.executors'), description: t('palette.pageNav.executorsDesc'), to: '/executors', icon: <ClusterOutlined /> },
+  { key: 'nav-executor-packages', id: 'nav-executor-packages', title: t('nav.executorPackages'), description: t('palette.pageNav.executorPackagesDesc'), to: '/executor-packages', adminOnly: true, icon: <DatabaseOutlined /> },
+  { key: 'nav-applications', id: 'nav-applications', title: t('nav.applications'), description: t('palette.pageNav.applicationsDesc'), to: '/applications', icon: <AppstoreOutlined /> },
   { key: 'nav-registry', id: 'nav-registry', title: t('nav.registry'), description: t('palette.pageNav.registryDesc'), to: '/registry', icon: <DatabaseOutlined /> },
-  { key: 'nav-projects', id: 'nav-projects', title: t('nav.projects'), description: t('palette.pageNav.projectsDesc'), to: '/projects', icon: <TeamOutlined /> },
-  { key: 'nav-settings', id: 'nav-settings', title: t('nav.settings'), description: t('palette.pageNav.settingsDesc'), to: '/settings', icon: <SettingOutlined /> },
   { key: 'nav-users', id: 'nav-users', title: t('nav.users'), description: t('palette.pageNav.usersDesc'), to: '/users', adminOnly: true, icon: <UserOutlined /> },
-  { key: 'nav-notifications', id: 'nav-notifications', title: t('nav.notifications'), description: t('palette.pageNav.notificationsDesc'), to: '/notifications', adminOnly: true, icon: <BellOutlined /> },
+  { key: 'nav-projects', id: 'nav-projects', title: t('nav.projects'), description: t('palette.pageNav.projectsDesc'), to: '/projects', icon: <TeamOutlined /> },
   { key: 'nav-audit', id: 'nav-audit', title: t('nav.audit'), description: t('palette.pageNav.auditDesc'), to: '/audit', adminOnly: true, icon: <AuditOutlined /> },
+  { key: 'nav-notifications', id: 'nav-notifications', title: t('nav.notifications'), description: t('palette.pageNav.notificationsDesc'), to: '/notifications', adminOnly: true, icon: <BellOutlined /> },
+  { key: 'nav-settings', id: 'nav-settings', title: t('nav.settings'), description: t('palette.pageNav.settingsDesc'), to: '/settings', icon: <SettingOutlined /> },
+  { key: 'nav-sops', id: 'nav-sops', title: t('nav.sops'), description: t('palette.pageNav.sopsDesc'), to: '/sops', adminOnly: true, icon: <FileTextOutlined /> },
+  { key: 'nav-agent-sessions', id: 'nav-agent-sessions', title: t('nav.agents'), description: t('palette.pageNav.agentsDesc'), to: '/agent-sessions', adminOnly: true, icon: <RobotOutlined /> },
+  { key: 'nav-inbox', id: 'nav-inbox', title: t('inbox.title'), description: t('inbox.description'), to: '/inbox', adminOnly: true, icon: <MailOutlined /> },
 ];
-
-interface GroupResult<T> {
-  status: 'idle' | 'loading' | 'ok' | 'error';
-  items: T[];
-}
-
-interface SearchResults {
-  task: GroupResult<Task>;
-  execution: GroupResult<TaskExecution>;
-  executor: GroupResult<Executor>;
-  application: GroupResult<Application>;
-}
-
-interface Section {
-  kind: EntityKind;
-  items: PaletteItem[];
-  /**
-   * R195（P3-2）：本组**实际命中**的条数（截断**前**的真实数量）。
-   * 与 `items.length` 的差 = 被 `.slice(0, MAX_PER_GROUP)` 截掉的部分 ⇒
-   * 用来告诉用户「还剩多少、怎么找全」，避免把「只列 5 条」读成「**系统里就这么些**」。
-   */
-  total?: number;
-  /** 静态动作分组专用（kind==='action' 时生效） */
-  statics?: StaticAction[];
-  offset: number;
-}
-
-const IDLE_RESULTS: SearchResults = {
-  task: { status: 'idle', items: [] },
-  execution: { status: 'idle', items: [] },
-  executor: { status: 'idle', items: [] },
-  application: { status: 'idle', items: [] },
-};
-
-const LOADING_RESULTS: SearchResults = {
-  task: { status: 'loading', items: [] },
-  execution: { status: 'loading', items: [] },
-  executor: { status: 'loading', items: [] },
-  application: { status: 'loading', items: [] },
-};
 
 export interface CommandPaletteProps {
   open: boolean;
@@ -410,85 +347,27 @@ export default function CommandPalette({
     [isAdmin, t],
   );
 
-  // P2-5：静态页面导航——仅在有输入关键词时按标题/描述客户端包含匹配，
-  // 零输入时为空（操作分组只留两个主操作，不被页面入口淹没）。
+  // P1-6：静态页面导航——角色过滤后始终出现在「管理页面」分组；
+  // 有关键词时再按标题/描述客户端包含匹配收窄，零输入时列出全部可达页面。
   const pageNavActions = useMemo(
     () =>
       getPageNavActions(t)
         .filter((a) => !a.adminOnly || isAdmin)
         .filter(
           (a) =>
-            !!kwLower &&
-            ((a.title || '').toLowerCase().includes(kwLower) ||
-              (a.description || '').toLowerCase().includes(kwLower)),
+            !kwLower ||
+            (a.title || '').toLowerCase().includes(kwLower) ||
+            (a.description || '').toLowerCase().includes(kwLower),
         ),
     [isAdmin, t, kwLower],
   );
 
-  // 客户端包含匹配（小写化）已返回页数据，每组截断前 5 条，并计算扁平索引偏移
-  const sections = useMemo<Section[]>(() => {
-    const contains = (s?: string | null) => !!s && s.toLowerCase().includes(kwLower);
-    // R195（P3-2）：每组**命中数**（截断前）——`.slice` 之前先量一次，否则「被截掉多少」
-    // 在渲染期就再也算不出来。`hit` 记下命中数并返回**截断后**的数组（四组共用一处实现）。
-    const matched: Record<EntityKind, number> = { action: 0, task: 0, execution: 0, executor: 0, application: 0 };
-    const hit = <T,>(kind: EntityKind, arr: T[]): T[] => (matched[kind] = arr.length, arr.slice(0, MAX_PER_GROUP));
-    const byKind: Record<EntityKind, PaletteItem[]> = {
-      action: [],
-      task: hit("task", results.task.items.filter((t) => contains(t.name) || contains(t.description)))
-        .map((t) => ({
-          key: `task-${t.id}`,
-          id: t.id,
-          title: t.name,
-          description: [t.status, t.triggerType].filter(Boolean).join(' · '),
-          // UI-11 行内动作：触发不限 status（对齐 TaskListPage 列表按钮）；
-          // 暂停/恢复按 status 二选一（active→暂停，paused→恢复）
-          actions:
-            t.status === 'paused'
-              ? ['trigger', 'resume']
-              : ['trigger', 'pause'],
-        })),
-      execution: hit("execution", results.execution.items.filter((x) => contains(x.taskName) || contains(x.id)))
-        .map((x) => ({
-          key: `execution-${x.id}`,
-          id: x.id,
-          taskId: x.taskId,
-          title: x.taskName || x.taskId,
-          // P3-2：startTime 此前裸 ISO 串（如 `failed · 2026-10-25T15:35:00.014Z`），
-          // 与全站时间格式不一致——统一 formatDateTime（locale 跟随 i18n）。
-          description: [x.status, x.startTime ? formatDateTime(x.startTime) : null]
-            .filter(Boolean)
-            .join(' · '),
-        })),
-      executor: hit("executor", results.executor.items.filter((e) => contains(e.appName) || contains(e.address)))
-        .map((e) => ({
-          key: `executor-${e.id}`,
-          id: e.id,
-          title: e.appName,
-          description: [e.address, e.status].filter(Boolean).join(' · '),
-        })),
-      application: hit("application", results.application.items.filter((a) => contains(a.name) || contains(a.description)))
-        .map((a) => ({
-          key: `application-${a.id}`,
-          id: a.id,
-          title: a.name,
-          description: a.description || a.version,
-        })),
-    };
-    let offset = 0;
-    return GROUP_ORDER.map((kind) => {
-      const section: Section = {
-        kind,
-        items: byKind[kind],
-        // R195（P3-2）：命中数（截断前）——给「组内截断提示」用。
-        total: matched[kind],
-        // P2-5：操作分组 = 始终可见的主操作 + 关键词命中的静态页面导航
-        statics: kind === 'action' ? [...visibleActions, ...pageNavActions] : undefined,
-        offset,
-      };
-      offset += byKind[kind].length;
-      return section;
-    });
-  }, [results, kwLower, visibleActions, pageNavActions]);
+  // 客户端包含匹配（小写化）已返回页数据，每组截断前 5 条，并计算扁平索引偏移。
+  // 归并逻辑抽到模块级 computeSections（纯派生），组件体只持有依赖数组。
+  const sections = useMemo<Section[]>(
+    () => computeSections({ results, kwLower, visibleActions, pageNavActions }),
+    [results, kwLower, visibleActions, pageNavActions],
+  );
 
   /** 扁平条目：kind + 实体 item（action 组为占位）+ 可选静态动作引用 */
   interface FlatEntry {
@@ -500,7 +379,7 @@ export default function CommandPalette({
   const flatItems = useMemo<FlatEntry[]>(
     () =>
       sections.flatMap<FlatEntry>((s) =>
-        s.kind === 'action'
+        s.kind === 'action' || s.kind === 'page'
           ? (s.statics ?? []).map((action) => ({
               kind: s.kind,
               // 占位 item（静态动作不携带实体详情，title 供键盘执行无歧义）
@@ -601,8 +480,8 @@ export default function CommandPalette({
       e.preventDefault();
       const entry = flatItems[Math.min(activeIndex, Math.max(flatItems.length - 1, 0))];
       if (!entry) return;
-      // UI-11 操作分组条目走静态动作执行器（to 路由各异），其余走详情跳转
-      if (entry.kind === 'action' && entry.action) runStaticAction(entry.action);
+      // 操作 / 管理页面分组条目走静态动作执行器（to 路由各异），其余走详情跳转
+      if ((entry.kind === 'action' || entry.kind === 'page') && entry.action) runStaticAction(entry.action);
       else go(entry.kind, entry.item);
     } else if (e.key === 'Escape') {
       // 显式关闭（与 Modal keyboard 行为幂等，保证任意 antd 版本下 Esc 均生效）
@@ -613,15 +492,15 @@ export default function CommandPalette({
   const renderSection = (section: Section) => {
     const metaTitle = t(GROUP_TITLE_KEY[section.kind]);
     const metaIcon = GROUP_ICON[section.kind];
-    // 操作分组：静态动作始终可见（角色过滤后非空即渲染）
-    if (section.kind === 'action') {
+    // 操作 / 管理页面分组：静态条目始终可见（角色过滤后非空即渲染）
+    if (section.kind === 'action' || section.kind === 'page') {
       if (!section.statics?.length) return null;
       return (
         <div key={section.kind} style={{ marginBottom: 4 }}>
           <Text type="secondary" style={{ fontSize: 12, paddingLeft: 4 }}>
             {metaIcon} {metaTitle}
           </Text>
-          <div role="group" aria-label={t('palette.aria.quickAction')}>
+          <div role="group" aria-label={section.kind === 'action' ? t('palette.aria.quickAction') : metaTitle}>
             {section.statics.map((action, idx) => {
               const flatIdx = section.offset + idx;
               const active = flatIdx === activeIndex;
@@ -808,17 +687,18 @@ export default function CommandPalette({
     );
   };
 
+  const STATIC_KINDS = new Set<EntityKind>(['action', 'page']);
   const hasError = GROUP_ORDER.some(
-    (kind) => kind !== 'action' && results[kind].status === 'error',
+    (kind) => !STATIC_KINDS.has(kind) && results[kind as EntityResultsKind].status === 'error',
   );
   const allSettled = GROUP_ORDER.every(
-    (kind) => kind === 'action' || results[kind].status === 'ok',
+    (kind) => STATIC_KINDS.has(kind) || results[kind as EntityResultsKind].status === 'ok',
   );
   // PALETTE-EMPTY-01：全局空态判定。原实现 `flatItems.length === 0` **恒为
   // false**——操作分组（新建任务/创建应用）始终兜底至少 2 条，导致搜索无
   // 匹配时列表静默无反馈。改为：有关键词 + 四路请求均已 ok + 无实体命中
   // 时显示「无结果」；零输入（idle）不提示，error 态由各组的加载失败行兜底。
-  const hasEntityResults = sections.some((s) => s.kind !== 'action' && s.items.length > 0);
+  const hasEntityResults = sections.some((s) => !STATIC_KINDS.has(s.kind) && s.items.length > 0);
   const showGlobalEmpty = allSettled && !hasError && !hasEntityResults && !!kwLower;
 
   return (

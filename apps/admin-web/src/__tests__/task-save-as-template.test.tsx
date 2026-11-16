@@ -105,6 +105,12 @@ afterEach(() => {
   cleanup();
 });
 
+/** P1-7：次级动作收进页头「更多」下拉——先开菜单再点条目。 */
+async function openMoreMenu() {
+  fireEvent.click(await screen.findByRole('button', { name: /更多/ }));
+  await screen.findByRole('menu');
+}
+
 /** 打开「保存为模板」弹窗并等表单出现 */
 async function openTplModal() {
   render(
@@ -112,6 +118,7 @@ async function openTplModal() {
         <TaskDetailPage />
       </QueryClientProvider>,
     );
+  await openMoreMenu();
   fireEvent.click(await screen.findByTestId('save-as-template'));
   await screen.findByTestId('tpl-name-input');
 }
@@ -195,7 +202,8 @@ describe('TaskDetailPage「保存为模板」交互（CORE-03）', () => {
     // jsdom 无布局引擎，antd Modal 关闭动画（transitionend）不触发——
     // 关闭语义改为断言触发弹窗入口恢复可用（saveAsTemplate 流程已终态），
     // DOM 摘除由 destroyOnHidden 在真浏览器完成，此处不追动画。
-    expect(screen.getByTestId('save-as-template')).toBeTruthy();
+    // P1-7：入口在「更多」下拉内——断言触发器仍在页头（菜单项随浮层闭合）。
+    expect(await screen.findByRole('button', { name: /更多/ })).toBeTruthy();
     expect(vi.mocked(taskTemplatesApi.create).mock.calls[0][0].name).toBe('nightly-report 模板');
   });
 
@@ -225,6 +233,7 @@ describe('TaskDetailPage「保存为模板」交互（CORE-03）', () => {
         <TaskDetailPage />
       </QueryClientProvider>,
     );
+    await openMoreMenu();
     fireEvent.click(await screen.findByTestId('save-as-template'));
     await screen.findByTestId('tpl-name-input');
     fireEvent.change(screen.getByTestId('tpl-name-input'), { target: { value: '夜报模板' } });
@@ -248,14 +257,14 @@ describe('遗留 P1-5：非管理员禁用「保存为模板」与「AI 建议�
         <TaskDetailPage />
       </QueryClientProvider>,
     );
-    await screen.findByTestId('save-as-template');
-    const saveBtn = screen.getByTestId('save-as-template') as HTMLButtonElement;
-    expect(saveBtn.disabled).toBe(true);
-    // AI 建议按钮无 data-testid，按图标类名定位
-    const aiBtn = Array.from(document.body.querySelectorAll('button')).find((b) =>
-      b.querySelector('.anticon-robot'),
-    ) as HTMLButtonElement | undefined;
-    expect(aiBtn).toBeTruthy();
-    expect(aiBtn!.disabled).toBe(true);
+    await openMoreMenu();
+    const saveItem = screen.getByTestId('save-as-template').closest('.ant-dropdown-menu-item')!;
+    expect(saveItem.classList.contains('ant-dropdown-menu-item-disabled')).toBe(true);
+    // AI 建议菜单项无 data-testid，按图标类名定位；禁用态同样落在 li 禁用类上
+    const aiItem = Array.from(document.querySelectorAll('.ant-dropdown-menu-item')).find((el) =>
+      el.querySelector('.anticon-robot'),
+    );
+    expect(aiItem).toBeTruthy();
+    expect(aiItem!.classList.contains('ant-dropdown-menu-item-disabled')).toBe(true);
   });
 });

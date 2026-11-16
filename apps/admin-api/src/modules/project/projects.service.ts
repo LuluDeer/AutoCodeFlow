@@ -1,6 +1,6 @@
 import { Injectable, Logger, Optional } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Not, Repository } from "typeorm";
+import { ILike, In, IsNull, Not, Or, Repository } from "typeorm";
 import {
   Project,
   DEFAULT_PROJECT_ID,
@@ -16,7 +16,56 @@ import { ErrorCode } from "../../common/errors/error-codes";
 // 与 task.module 的 TASK-PROJ-01 同款**跨模块 forFeature**——只取连接与元数据，
 // 无运行时依赖环（ProjectsModule 不 import TaskModule，反之亦然）。
 import { Task, TaskStatus } from "../task/entities/task.entity";
+// P1-2 项目详情统计：执行行经 taskId 关联任务归属；应用按 projectId 计数。
+import {
+  TaskExecution,
+  ExecutionStatus,
+} from "../task/entities/task-execution.entity";
+import { Application } from "../application/entities/application.entity";
 import { ProjectMember } from "./entities/project-member.entity";
+// NETOPT-3⑤：ILIKE 的 `_`/`%` 一律转义按字面量匹配（与 task/audit 同款工具）。
+import { escapeLikePattern } from "../audit/audit.service";
+
+/**
+ * P1-2：项目详情统计（GET /projects/:id/summary）单行「最近失败」记录。
+ * 字段投影与 metrics.service.getRecentFailures 对齐；可空字段如实透出 null。
+ */
+export interface ProjectSummaryRecentFailure {
+  id: string;
+  taskId: string;
+  taskName: string;
+  status: string;
+  failureReason: string | null;
+  errorMessage: string | null;
+  createdAt: Date;
+  duration: number | null;
+}
+
+/** P1-2：项目详情统计单行「最近活动」执行记录（不限终态）。 */
+export interface ProjectSummaryRecentExecution {
+  id: string;
+  taskId: string;
+  taskName: string;
+  status: string;
+  createdAt: Date;
+  duration: number | null;
+}
+
+/** P1-2：项目详情统计响应（口径逐字写在 DTO 注释里，前端不得补假统计）。 */
+export interface ProjectSummary {
+  projectId: string;
+  projectName: string;
+  taskCount: number;
+  applicationCount: number;
+  memberCount: number;
+  executionsLast7d: number;
+  failedExecutionsLast7d: number;
+  timeoutExecutionsLast7d: number;
+  /** 窗口内无执行为 null——前端显示「暂无数据」，不渲染 0%。 */
+  failureRate: number | null;
+  recentFailures: ProjectSummaryRecentFailure[];
+  recentExecutions: ProjectSummaryRecentExecution[];
+}
 
 /** PROJECT-IMPACT-01：删除影响面（与 application/executor 的 removal-impact 同构）。 */
 export interface ProjectRemovalImpact {
@@ -60,6 +109,9 @@ export interface ProjectRemovalImpact {
 export class ProjectsService {
   private readonly logger = new Logger(ProjectsService.name);
 
+  /** P1-2：summary 执行聚合的时间窗（天）——与 metrics 趋势视图同族的近况口径。 */
+  private static readonly SUMMARY_WINDOW_DAYS = 7;
+
   constructor(
     @InjectRepository(Project)
     private readonly repo: Repository<Project>,
@@ -76,6 +128,14 @@ export class ProjectsService {
     @Optional()
     @InjectRepository(ProjectMember)
     private readonly memberRepo: Repository<ProjectMember> | null,
+    // P1-2 项目详情统计：应用计数 + 执行聚合两条只读仓储。同为 @Optional——
+    // 单测装配缺省时 summary 按 0 / 空列表降级，不抛错（与上面同一姿态）。
+    @Optional()
+    @InjectRepository(Application)
+    private readonly appRepo: Repository<Application> | null,
+    @Optional()
+    @InjectRepository(TaskExecution)
+    private readonly execRepo: Repository<TaskExecution> | null,
   ) {}
 
   async create(dto: CreateProjectDto): Promise<Project> {
@@ -104,8 +164,20 @@ export class ProjectsService {
   // 的分页收敛在 controller（可选 page/pageSize 信封，不传参数仍全量数组）。
   // 无界的是线上载荷而非这一次 DB 读；若未来项目数到达千级，再把切片下推
   // 到 QueryBuilder skip/take（届时 page@Max(10000) 纪律已在 controller 备好）。
-  async findAll(): Promise<Project[]> {
-    return this.repo.find({ order: { createdAt: "ASC" } });
+  //
+  // P1-2：可选 `q` 按名称/描述做 ILIKE 字面量匹配（元字符转义）；无 q 时
+  // 保持原单对象路径，既有行为逐字节不变。
+  async findAll(q?: string): Promise<Project[]> {
+    const keyword = q?.trim();
+    if (!keyword) {
+      return this.repo.find({ order: { createdAt: "ASC" } });
+    }
+    const like = `%${escapeLikePattern(keyword)}%`;
+    // 数组 where = 元素间 OR、元素内 AND；description 可空，NULL ILIKE 自然不命中。
+    return this.repo.find({
+      where: [{ name: ILike(like) }, { description: ILike(like) }],
+      order: { createdAt: "ASC" },
+    });
   }
 
   async findOne(id: string): Promise<Project> {
@@ -228,6 +300,237 @@ export class ProjectsService {
       );
       return 0;
     }
+  }
+
+  /**
+   * 归属条件（summary 口径）：默认项目视图 = `projectId IS NULL` ∪ 默认项目行，
+   * 与 task.service / application.service 的 `projectId="default"` 过滤口径一致；
+   * 具体 uuid 则精确匹配。
+   */
+  private projectOwnershipWhere(projectId: string): Record<string, unknown> {
+    if (projectId === DEFAULT_PROJECT_ID) {
+      return { projectId: Or(IsNull(), In([DEFAULT_PROJECT_ID])) };
+    }
+    return { projectId };
+  }
+
+  /**
+   * P1-2：项目详情统计（GET /projects/:id/summary）。
+   *
+   * 只读、无副作用；项目不存在先 404（与 findOne 一致），不返回一堆 0。
+   * 各计数口径逐字写在 `ProjectSummaryResponseDto` 注释里；任一仓储缺席或
+   * 查询失败按 0 / 空列表降级并记 warn，失败率在窗口无执行时为 null（前端
+   * 显示「暂无数据」，不补 0%）。
+   */
+  async getSummary(id: string): Promise<ProjectSummary> {
+    const project = await this.findOne(id);
+    const [taskCount, applicationCount, memberCount, exec] = await Promise.all([
+      this.countSummaryTasks(id),
+      this.countApplications(id),
+      this.countMembers(id),
+      this.executionSummary(id),
+    ]);
+    const failureRate =
+      exec.total > 0
+        ? Math.round((exec.failed / exec.total) * 10000) / 100
+        : null;
+    return {
+      projectId: project.id,
+      projectName: project.name,
+      taskCount,
+      applicationCount,
+      memberCount,
+      executionsLast7d: exec.total,
+      failedExecutionsLast7d: exec.failed,
+      timeoutExecutionsLast7d: exec.timeout,
+      failureRate,
+      recentFailures: exec.recentFailures,
+      recentExecutions: exec.recentExecutions,
+    };
+  }
+
+  /** summary 任务数：排除软删，默认项目含未分配 NULL 行（口径见 DTO 注释）。 */
+  private async countSummaryTasks(projectId: string): Promise<number> {
+    if (!this.taskRepo) {
+      this.logger.warn(
+        `[project-summary] Task 仓储未注入，任务数按 0 返回（project ${projectId}）`,
+      );
+      return 0;
+    }
+    try {
+      return await this.taskRepo.count({
+        where: {
+          ...this.projectOwnershipWhere(projectId),
+          status: Not(TaskStatus.DELETED),
+        },
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `[project-summary] 任务计数失败（按 0 返回）: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return 0;
+    }
+  }
+
+  /** summary 应用数：按 applications.projectId；默认项目含 NULL 行。 */
+  private async countApplications(projectId: string): Promise<number> {
+    if (!this.appRepo) {
+      this.logger.warn(
+        `[project-summary] Application 仓储未注入，应用数按 0 返回（project ${projectId}）`,
+      );
+      return 0;
+    }
+    try {
+      return await this.appRepo.count({
+        where: this.projectOwnershipWhere(projectId),
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `[project-summary] 应用计数失败（按 0 返回）: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return 0;
+    }
+  }
+
+  /**
+   * 执行聚合：近 7 天分状态计数 + 最近失败/最近活动各 5 条。
+   *
+   * task_executions 表上没有 projectId 列（见任务实体注释），归属经
+   * `taskId` 内连接 tasks 判定；默认项目同样纳入 NULL 归属任务的执行。
+   */
+  private async executionSummary(projectId: string): Promise<{
+    total: number;
+    failed: number;
+    timeout: number;
+    recentFailures: ProjectSummaryRecentFailure[];
+    recentExecutions: ProjectSummaryRecentExecution[];
+  }> {
+    const empty = {
+      total: 0,
+      failed: 0,
+      timeout: 0,
+      recentFailures: [] as ProjectSummaryRecentFailure[],
+      recentExecutions: [] as ProjectSummaryRecentExecution[],
+    };
+    if (!this.execRepo) {
+      this.logger.warn(
+        `[project-summary] TaskExecution 仓储未注入，执行统计按空返回（project ${projectId}）`,
+      );
+      return empty;
+    }
+    const windowStart = new Date(
+      Date.now() - ProjectsService.SUMMARY_WINDOW_DAYS * 86_400_000,
+    );
+    const { condition, params } = this.executionProjectCondition(projectId);
+    try {
+      const stats = await this.execRepo
+        .createQueryBuilder("e")
+        .innerJoin(Task, "t", 'e."taskId" = t."id"')
+        .select("e.status", "status")
+        .addSelect("COUNT(*)", "count")
+        .where(condition, params)
+        .andWhere('e."createdAt" >= :windowStart', { windowStart })
+        .groupBy("e.status")
+        .getRawMany();
+      const statMap: Record<string, number> = {};
+      for (const row of stats) {
+        statMap[row.status] = parseInt(row.count, 10);
+      }
+      const total = Object.values(statMap).reduce((a, b) => a + b, 0);
+      const failed = statMap[ExecutionStatus.FAILED] ?? 0;
+      const timeout = statMap[ExecutionStatus.TIMEOUT] ?? 0;
+
+      const failureRows = await this.execRepo
+        .createQueryBuilder("e")
+        .innerJoin(Task, "t", 'e."taskId" = t."id"')
+        .where(condition, params)
+        .andWhere("e.status IN (:...failStatuses)", {
+          failStatuses: [ExecutionStatus.FAILED, ExecutionStatus.TIMEOUT],
+        })
+        .orderBy("e.createdAt", "DESC")
+        .addOrderBy("e.id", "DESC")
+        .take(5)
+        .select([
+          "e.id",
+          "e.taskId",
+          "e.taskName",
+          "e.status",
+          "e.failureReason",
+          "e.errorMessage",
+          "e.createdAt",
+          "e.duration",
+        ])
+        .getMany();
+
+      const activityRows = await this.execRepo
+        .createQueryBuilder("e")
+        .innerJoin(Task, "t", 'e."taskId" = t."id"')
+        .where(condition, params)
+        .orderBy("e.createdAt", "DESC")
+        .addOrderBy("e.id", "DESC")
+        .take(5)
+        .select([
+          "e.id",
+          "e.taskId",
+          "e.taskName",
+          "e.status",
+          "e.createdAt",
+          "e.duration",
+        ])
+        .getMany();
+
+      return {
+        total,
+        failed,
+        timeout,
+        recentFailures: failureRows.map((e) => ({
+          id: e.id,
+          taskId: e.taskId,
+          taskName: e.taskName,
+          status: e.status,
+          failureReason: e.failureReason ?? null,
+          errorMessage: e.errorMessage ?? null,
+          createdAt: e.createdAt,
+          duration: e.duration ?? null,
+        })),
+        recentExecutions: activityRows.map((e) => ({
+          id: e.id,
+          taskId: e.taskId,
+          taskName: e.taskName,
+          status: e.status,
+          createdAt: e.createdAt,
+          duration: e.duration ?? null,
+        })),
+      };
+    } catch (err: unknown) {
+      this.logger.warn(
+        `[project-summary] 执行聚合失败（按空返回）: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return empty;
+    }
+  }
+
+  /** 执行归属条件（原生 SQL 片段 + 参数），默认项目含 NULL 归属任务。 */
+  private executionProjectCondition(projectId: string): {
+    condition: string;
+    params: Record<string, string>;
+  } {
+    if (projectId === DEFAULT_PROJECT_ID) {
+      return {
+        condition: '(t."projectId" IS NULL OR t."projectId" = :defaultId)',
+        params: { defaultId: DEFAULT_PROJECT_ID },
+      };
+    }
+    return {
+      condition: 't."projectId" = :pid',
+      params: { pid: projectId },
+    };
   }
 
   async remove(id: string): Promise<{ deleted: boolean }> {

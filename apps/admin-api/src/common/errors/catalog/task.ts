@@ -384,18 +384,18 @@ export const TASK_CODES = {
   },
   TASK_TEMPLATE_OFFICIAL_READONLY: {
     status: 403,
-    zh: "官方模板不可删除",
-    en: "Official templates cannot be deleted",
+    zh: "官方模板不可修改或删除",
+    en: "Official templates cannot be edited or deleted",
   },
   TASK_TEMPLATE_LEGACY_ADMIN_ONLY: {
     status: 403,
-    zh: "历史模板仅管理员可删除",
-    en: "Legacy templates can only be deleted by administrators",
+    zh: "历史模板仅管理员可修改或删除",
+    en: "Legacy templates can only be edited or deleted by administrators",
   },
   TASK_TEMPLATE_NOT_OWNER: {
     status: 403,
-    zh: "仅属主或管理员可删除该模板",
-    en: "Only the owner or an administrator can delete this template",
+    zh: "仅属主或管理员可修改或删除该模板",
+    en: "Only the owner or an administrator can edit or delete this template",
   },
   // ── 任务 Webhook（FEAT-07） ──────────────────────────────────────────────
   /**

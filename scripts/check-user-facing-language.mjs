@@ -805,6 +805,10 @@ function isProseText(t) {
   if (!t) return false;
   if (!/[A-Za-z\u4e00-\u9fff]/.test(t)) return false;
   if (/[{}()=;|&<>$]/.test(t)) return false; // 表达式/泛型/箭头片段
+  // 对象字面量夹在相邻 JSX 标签之间时，会被 tag 扫描误当成文本节点
+  // （实测：TaskDetailPage 的多行 menu item 产生 `, disabled: !isAdmin, label:`）。
+  // 这是代码键值对，不是文案；只拦这一种形态，不放松普通标点。
+  if (/\b(?:disabled|label|key|icon|className|data-testid|style|onClick)\s*:/.test(t)) return false;
   if (/^\s*[.,;:!?)\]]+\s*$/.test(t)) return false;
   return t.trim().length > 1;
 }

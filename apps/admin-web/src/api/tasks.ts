@@ -124,6 +124,12 @@ export interface Task {
    * 「任务其实早就不跑了」这种静默故障在上百个任务里根本发现不了。
    */
   lastTriggerTime?: string | null;
+  /**
+   * P1-1（UX 评审 2026-11-15）：最近一次**真实执行**的行内摘要（后端按当前页
+   * 批量查询回填，非 N+1）。无真实执行时为 null；合成行（synthetic=true）不参与，
+   * 与 lastStatus 筛选同口径。列表「上次执行」列的结果/耗时/深链数据源。
+   */
+  lastExecution?: TaskLastExecution | null;
   fixedRate?: number;
   cronExpression?: string;
   timezone?: string | null;
@@ -247,6 +253,14 @@ export type TaskExecutionStatus =
   | 'killed'
   | 'cancelled';
 
+/**
+ * P1-1：任务列表行内联的最近一次真实执行摘要。类型直接派生自生成 schema
+ * `TaskLastExecutionSummaryDto`（不另建手写 interface，避免 web-type-drift 棘轮）。
+ * duration 单位毫秒，与执行行 duration 同口径；startTime 可能为空（排队中），
+ * createdAt 作为相对时间兜底。
+ */
+export type TaskLastExecution = components['schemas']['TaskLastExecutionSummaryDto'];
+
 export interface TaskExecution {
   id: string;
   taskId: string;
@@ -364,6 +378,12 @@ export interface ExecutionExportFilters {
   startTime?: string;
   /** createdAt <= 该 ISO 8601 时刻 */
   endTime?: string;
+  /** P1-2：所属项目过滤（"default" = 未分配 + 默认项目；省略 = 全部项目）。 */
+  projectId?: string;
+  /** P2-2：任务运行时等值过滤（经任务关联派生，tasks.runtime；python/node/shell）。 */
+  runtime?: string;
+  /** P2-2：执行行记录的触发方式精确匹配（task_executions.triggerType，自由 varchar）。 */
+  triggerType?: string;
   /** 行数上限（安全阀，不是分页）；只能调小，后端硬顶 50000 */
   limit?: number;
 }
@@ -408,6 +428,11 @@ export type TaskListParams = {
    * 待 openapi 重导出后并入生成类型。
    */
   lastStatus?: string;
+  /**
+   * P1-2：按所属项目过滤。`"default"` 命中未分配 + 默认项目两类任务；
+   * 省略 = 全部项目。后端 GET /tasks 已支持（list-tasks-query.dto.ts）。
+   */
+  projectId?: string;
   /**
    * §2.1 keyset（游标）分页令牌——**三态**，且三态必须在状态层就分开：
    *
@@ -790,6 +815,18 @@ export const tasksApi = {
       : client.get(`/tasks/${id}`) as Promise<Task>,
   create: (data: components["schemas"]["CreateTaskDto"]) =>
     client.post('/tasks', data) as Promise<Task>,
+  /**
+   * P1-5：导入任务定义（`POST /tasks/import`）。
+   *
+   * 后端契约（不可在前端假装超出）：**单条**定义创建；名称冲突由后端自动追加
+   * ` (imported)` 后缀、**绝不覆盖**既有任务；无 dry-run、无批量跳过/覆盖选项；
+   * 新任务初始为暂停状态。响应 `{ taskId, name, warnings }`，warnings 始终含
+   * 「重新配置密钥」提示。
+   */
+  importDefinition: (data: components["schemas"]["ImportTaskDto"]) =>
+    client.post('/tasks/import', data) as Promise<
+      components["schemas"]["TaskImportResultDto"]
+    >,
   update: (id: string, data: components["schemas"]["UpdateTaskDto"]) =>
     client.patch(`/tasks/${id}`, data) as Promise<Task>,
   delete: (id: string) => client.delete(`/tasks/${id}`),
@@ -928,7 +965,7 @@ export const tasksApi = {
    * 未成文行为——旧路径逐字节不变是硬要求，不该押在别人身上。
    */
   allExecutions: (
-    params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string; startTime?: string; endTime?: string; executorAddress?: string; cursor?: string },
+    params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string; startTime?: string; endTime?: string; executorAddress?: string; projectId?: string; runtime?: string; triggerType?: string; cursor?: string },
     signal?: AbortSignal,
   ) => {
     // 显式归一：三态里的第 ① 态落在这里，二/三态（含空串）原样透传。
@@ -947,8 +984,8 @@ export const tasksApi = {
    * GET /tasks/executions/export —— **全量**执行记录 CSV（后端 4cc26327，真流式）。
    *
    * 与 `allExecutions` 的关系：**过滤器同源**（status/taskId/taskName/
-   * executorAddress/startTime/endTime，后端由 `applyAllExecutionFilters` 保证
-   * 两条路径的谓词逐字相同），但**不共享分页语义**——导出是"把整个结果集带走"，
+   * executorAddress/startTime/endTime/projectId/runtime/triggerType，后端由
+   * `applyAllExecutionFilters` 保证两条路径的谓词逐字相同），但**不共享分页语义**——导出是"把整个结果集带走"，
    * 没有第 N 页。
    *
    * ## 为什么用 axios blob + objectURL 而不是 `<a href>`
@@ -973,6 +1010,9 @@ export const tasksApi = {
       if (filters.executorAddress) params.executorAddress = filters.executorAddress;
       if (filters.startTime) params.startTime = filters.startTime;
       if (filters.endTime) params.endTime = filters.endTime;
+      if (filters.projectId) params.projectId = filters.projectId;
+      if (filters.runtime) params.runtime = filters.runtime;
+      if (filters.triggerType) params.triggerType = filters.triggerType;
       if (typeof filters.limit === 'number') params.limit = filters.limit;
     }
     const blob = await client.get<Blob>('/tasks/executions/export', {

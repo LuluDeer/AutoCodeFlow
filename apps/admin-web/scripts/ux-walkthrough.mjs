@@ -40,7 +40,7 @@
 
 import { chromium } from 'playwright-core';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -69,26 +69,31 @@ const TASKS = [
     runbook: '## 失败排障\n1. 检查对象存储凭据\n2. 检查 pg_dump 版本', gitRepo: 'https://git.example.com/ops/jobs.git', gitBranch: 'main',
     gitCommit: 'a1b2c3d', currentVersion: 'v7', runtimeVersion: '3.12', codeSource: 'git', alarmEmail: 'oncall@example.com', alarmChannels: ['email'],
     lastTriggerTime: ISO(-90 * MIN), createdAt: ISO(-40 * 24 * 3600e3), updatedAt: ISO(-2 * 24 * 3600e3),
+    // 夹具镜像后端新契约 lastExecution（最近一次真实执行摘要，批量回填，非 N+1）；非产品数据。
+    lastExecution: { id: 'e-9001', status: 'failed', startTime: ISO(-95 * MIN), endTime: ISO(-94 * MIN), duration: 61_230, createdAt: ISO(-95 * MIN) },
     params: { target: 'pg-prod-1', compress: true }, secrets: { OSS_AK: '******', OSS_SK: '******' },
   },
   {
     id: 't-1002', name: '应用日志滚动清理', runtime: 'shell', entrypoint: 'cleanup.sh', status: 'active', triggerType: 'fixed_rate', fixedRate: 30,
     priority: 'P3', maxRetry: 1, timeout: 600, projectId: null, executorAppName: '北京联通节点-02', lastTriggerTime: ISO(-35 * MIN),
+    lastExecution: { id: 'e-9002b', status: 'success', startTime: ISO(-40 * MIN), endTime: ISO(-38 * MIN), duration: 48_500, createdAt: ISO(-40 * MIN) },
     createdAt: ISO(-90 * 24 * 3600e3), updatedAt: ISO(-5 * 24 * 3600e3),
   },
   {
     id: 't-1003', name: '用户画像宽表同步', runtime: 'node', entrypoint: 'sync_profile.mjs', status: 'paused', triggerType: 'cron', cronExpression: '0 */2 * * *',
     priority: 1, maxRetry: 5, timeout: 1800, projectId: 'p-1001', executorAppName: '华东云节点-03', lastTriggerTime: ISO(-26 * 3600e3),
+    lastExecution: { id: 'e-9004', status: 'cancelled', startTime: ISO(-27 * 3600e3), endTime: ISO(-27 * 3600e3), duration: null, createdAt: ISO(-27 * 3600e3) },
     createdAt: ISO(-60 * 24 * 3600e3), updatedAt: ISO(-1 * 24 * 3600e3), alarmEmail: 'data-team@example.com', alarmChannels: ['email', 'dingtalk'],
   },
   {
     id: 't-1004', name: 'Glue 脚本-临时对账任务', runtime: 'glue', entrypoint: '', status: 'active', triggerType: 'manual', glueSource: 'print("对账中")',
-    glueLanguage: 'python', priority: 3, maxRetry: 0, timeout: 300, projectId: null, createdAt: ISO(-3 * 24 * 3600e3), updatedAt: ISO(-1 * 24 * 3600e3),
+    glueLanguage: 'python', priority: 3, maxRetry: 0, timeout: 300, projectId: null, lastExecution: null, createdAt: ISO(-3 * 24 * 3600e3), updatedAt: ISO(-1 * 24 * 3600e3),
   },
   {
     id: 't-1005', name: '数据采集平台-巡检上报', runtime: 'python', entrypoint: 'inspect/main.py', status: 'active', triggerType: 'cron',
     cronExpression: '*/10 * * * *', priority: 2, maxRetry: 2, timeout: 900, projectId: 'p-1002', applicationId: 'app-2001',
     codeSource: 'application_zip', executorAppName: '上海电信机房-生产执行器-01-长名称', lastTriggerTime: ISO(-12 * MIN),
+    lastExecution: { id: 'e-9002', status: 'success', startTime: ISO(-20 * MIN), endTime: ISO(-18 * MIN), duration: 121_000, createdAt: ISO(-20 * MIN) },
     createdAt: ISO(-20 * 24 * 3600e3), updatedAt: ISO(-6 * 3600e3),
   },
 ];
@@ -96,9 +101,10 @@ const TASKS = [
 const EXECUTIONS = [
   { id: 'e-9001', taskId: 't-1001', taskName: TASKS[0].name, status: 'failed', triggerType: 'cron', executorAddress: 'http://192.168.4.54:9001', startTime: ISO(-95 * MIN), endTime: ISO(-94 * MIN), duration: 61_230, params: { target: 'pg-prod-1' }, logs: '[2026-10-03 02:00:01] 开始备份\n[2026-10-03 02:00:44] FATAL: OSS 凭据失效', errorMessage: 'OSS 上传失败: SignatureDoesNotMatch', failureReason: 'credential', exitCode: 2, aiAnalysis: '疑似对象存储凭据轮换后未同步到任务级 secrets。', retryCount: 2, taskVersion: 'v7', traceId: '4bf92f3577b34da6a3ce929d0e0e4736', resolvedPackageVersion: null, result: { interpreter: { requested: '3.12', resolved: '3.12.13', reason: 'match', pool: 'uv' } }, createdAt: ISO(-95 * MIN) },
   { id: 'e-9002', taskId: 't-1005', taskName: TASKS[4].name, status: 'success', triggerType: 'cron', executorAddress: 'http://192.168.4.54:9001', startTime: ISO(-20 * MIN), endTime: ISO(-18 * MIN), duration: 121_000, exitCode: 0, logs: '巡检完成,7/7 通过', createdAt: ISO(-20 * MIN), retryCount: 0, taskVersion: 'v2' },
-  { id: 'e-9003', taskId: 't-1001', taskName: TASKS[0].name, status: 'running', triggerType: 'api', executorAddress: 'http://192.168.4.60:9001', startTime: ISO(-2 * MIN), logs: '备份进行中 34%', createdAt: ISO(-2 * MIN) },
+  { id: 'e-9003', taskId: 't-1001', taskName: TASKS[0].name, status: 'running', triggerType: 'manual', executorAddress: 'http://192.168.4.60:9001', startTime: ISO(-2 * MIN), logs: '备份进行中 34%', createdAt: ISO(-2 * MIN) },
   { id: 'e-9004', taskId: 't-1002', taskName: TASKS[1].name, status: 'timeout', triggerType: 'fixed_rate', executorAddress: 'http://192.168.4.61:9001', startTime: ISO(-3 * 3600e3), endTime: ISO(-3 * 3600e3 + 600e3), duration: 600_000, errorMessage: '执行超时(600s)', failureReason: 'timeout', exitCode: null, createdAt: ISO(-3 * 3600e3) },
   { id: 'e-9005', taskId: 't-1003', taskName: TASKS[2].name, status: 'killed', triggerType: 'cron', executorAddress: 'http://192.168.4.62:9001', startTime: ISO(-26 * 3600e3), endTime: ISO(-25 * 3600e3), duration: 2100e3, errorMessage: '管理员手动终止', createdAt: ISO(-26 * 3600e3), exitCode: 137 },
+  { id: 'e-9006', taskId: 't-1005', taskName: TASKS[4].name, status: 'success', triggerType: 'webhook', executorAddress: 'http://192.168.4.54:9001', startTime: ISO(-6 * MIN), endTime: ISO(-5 * MIN), duration: 88_000, exitCode: 0, createdAt: ISO(-6 * MIN), retryCount: 0, taskVersion: 'v2' },
 ];
 
 const EXECUTORS = [
@@ -114,6 +120,17 @@ const APPLICATIONS = [
   { id: 'app-2002', name: '报表服务', description: '日报/周报导出', version: '1.0.0', runtime: 'node', status: 'stopped', gitRepo: 'https://git.example.com/bi/report.git', gitBranch: 'master', gitCommit: 'beef1234', entrypoint: 'index.js', createdAt: ISO(-120 * 24 * 3600e3), updatedAt: ISO(-30 * 24 * 3600e3) },
   { id: 'app-2003', name: '运维工具箱', description: null, version: '0.9.2', runtime: 'shell', status: 'running', createdAt: ISO(-50 * 24 * 3600e3), updatedAt: ISO(-4 * 24 * 3600e3) },
   { id: 'app-2004', name: '爬虫集群-电商价格监控', description: '多站点价格抓取', version: '3.7.0', runtime: 'python', status: 'failed', createdAt: ISO(-15 * 24 * 3600e3), updatedAt: ISO(-1 * 24 * 3600e3) },
+];
+
+// P1-3：GET /artifacts 跨执行产物索引行（镜像后端 ExecutionArtifactRowDto 契约 +
+// paginate 信封：list/items/total/page/pageSize/totalPages；支持 applicationId / taskId /
+// q（文件名关键字）/ from / to（createdAt 闭区间）/ ext（扩展名后缀）过滤，total 为过滤后总数）。
+const ARTIFACT_ROWS = [
+  { id: 'ar-1', executionId: 'e-9001', taskId: 't-1001', applicationId: null, name: 'backup-dump.sql.gz', size: 1_288_490_188, sha256: 'aa'.repeat(32), createdAt: ISO(-94 * MIN) },
+  { id: 'ar-2', executionId: 'e-9001', taskId: 't-1001', applicationId: null, name: '备份日志-中文文件名.txt', size: 4096, sha256: 'bb'.repeat(32), createdAt: ISO(-94 * MIN) },
+  { id: 'ar-3', executionId: 'e-9002', taskId: 't-1005', applicationId: 'app-2001', name: 'inspection-report.json', size: 8192, sha256: 'cc'.repeat(32), createdAt: ISO(-18 * MIN) },
+  { id: 'ar-4', executionId: 'e-9002', taskId: 't-1005', applicationId: 'app-2001', name: 'screenshot-dashboard.png', size: 245_760, sha256: 'dd'.repeat(32), createdAt: ISO(-18 * MIN) },
+  { id: 'ar-5', executionId: 'e-9004', taskId: 't-1002', applicationId: null, name: 'cleanup-summary.csv', size: 1024, sha256: 'ee'.repeat(32), createdAt: ISO(-3 * 3600e3) },
 ];
 
 const APP_DEPLOYMENTS = [
@@ -229,6 +246,47 @@ const TREND = Array.from({ length: 7 }, (_, i) => ({
   success: 180 + i * 12, failed: 8 + (i % 3) * 4, timeout: 2 + (i % 2),
 }));
 
+// P2-1（Dashboard 口径分离）：metrics 夹具按 projectId 区分数值，镜像真实契约——
+// summary / trend / failures 随项目过滤；executors / scheduler 无项目归属，数值恒定。
+// 深链探针用两个 UUID 形状项目（useProjectFilter 只放行 UUID / all / default）。
+const PROJ_A = 'aaaaaaaa-0000-4000-8000-000000000001';
+const PROJ_B = 'aaaaaaaa-0000-4000-8000-000000000002';
+
+const SUMMARY_GLOBAL = {
+  totalTasks: 128, todayRuns: 342, totalExecutors: 12, onlineExecutors: 9,
+  executions: { total: 15230, success: 14520, failed: 512, running: 7 },
+  successRate: 96.4, avgDurationMs: 5230,
+};
+// 执行器计数（totalExecutors/onlineExecutors）在三个口径下恒定——后端 executorRepo.count()
+// 不带项目条件（metrics.service.ts 114–123），夹具与该语义对齐。
+const SUMMARY_BY_PROJECT = {
+  [PROJ_A]: {
+    totalTasks: 18, todayRuns: 64, totalExecutors: 12, onlineExecutors: 9,
+    executions: { total: 412, success: 388, failed: 21, running: 3 },
+    successRate: 94.2, avgDurationMs: 6840,
+  },
+  [PROJ_B]: {
+    totalTasks: 7, todayRuns: 12, totalExecutors: 12, onlineExecutors: 9,
+    executions: { total: 96, success: 88, failed: 7, running: 1 },
+    successRate: 91.7, avgDurationMs: 2410,
+  },
+};
+
+const TREND_BY_PROJECT = {
+  [PROJ_A]: TREND.map((d, i) => ({ ...d, success: 40 + i * 3, failed: 2 + (i % 2), timeout: 1 })),
+  [PROJ_B]: TREND.map((d, i) => ({ ...d, success: 8 + i, failed: 1, timeout: 0 })),
+};
+
+const FAILURES_GLOBAL = [
+  { id: 'e-9001', taskId: 't-1001', taskName: TASKS[0].name, errorMessage: 'OSS 上传失败: SignatureDoesNotMatch', failureReason: 'credential', exitCode: 2, createdAt: ISO(-95 * MIN), duration: 61_230 },
+  { id: 'e-9004', taskId: 't-1002', taskName: TASKS[1].name, errorMessage: '执行超时(600s)', failureReason: 'timeout', exitCode: null, createdAt: ISO(-3 * 3600e3), duration: 600_000 },
+  { id: 'e-9006', taskId: 't-1003', taskName: TASKS[2].name, errorMessage: '源库连接被拒绝', failureReason: 'network', exitCode: 1, createdAt: ISO(-6 * 3600e3), duration: 2100 },
+];
+const FAILURES_BY_PROJECT = {
+  [PROJ_A]: [FAILURES_GLOBAL[0], FAILURES_GLOBAL[1]],
+  [PROJ_B]: [FAILURES_GLOBAL[2]],
+};
+
 const EXEC_METRICS_HISTORY = Array.from({ length: 24 }, (_, i) => ({
   timestamp: new Date(Date.now() - (23 - i) * 3600e3).toISOString(),
   cpuUsage: i % 7 === 3 ? null : 30 + ((i * 7) % 50),
@@ -269,6 +327,40 @@ const TASKS_PAGED = (q) => {
   return { ...env, list: env.items }; // projects 同款 list/items 双键兼容,防未来漂移
 };
 
+// P2-2：执行列表夹具按后端同源口径真过滤（status / taskId / taskName /
+// executorAddress / projectId / runtime / triggerType / startTime / endTime）。
+// runtime 经任务关联派生（task.runtime），triggerType 取执行行记录值；
+// projectId 口径与后端一致（`default` = 未分配 + 默认项目）。
+const TASK_BY_ID = Object.fromEntries(TASKS.map((t) => [t.id, t]));
+const filterExecutions = (q) => {
+  const eq = (k) => (q.get(k) || '').trim();
+  const status = eq('status');
+  const taskId = eq('taskId');
+  const taskName = eq('taskName').toLowerCase();
+  const executorAddress = eq('executorAddress').toLowerCase();
+  const projectId = eq('projectId');
+  const runtime = eq('runtime');
+  const triggerType = eq('triggerType');
+  const startTime = q.get('startTime');
+  const endTime = q.get('endTime');
+  return EXECUTIONS.filter((e) => {
+    const task = TASK_BY_ID[e.taskId];
+    if (status && e.status !== status) return false;
+    if (taskId && e.taskId !== taskId) return false;
+    if (taskName && !`${e.taskName ?? ''} ${task?.name ?? ''}`.toLowerCase().includes(taskName)) return false;
+    if (executorAddress && !String(e.executorAddress ?? '').toLowerCase().includes(executorAddress)) return false;
+    if (projectId) {
+      if (projectId === 'default') { if (task?.projectId != null) return false; }
+      else if (task?.projectId !== projectId) return false;
+    }
+    if (runtime && task?.runtime !== runtime) return false;
+    if (triggerType && e.triggerType !== triggerType) return false;
+    if (startTime && new Date(e.createdAt) < new Date(startTime)) return false;
+    if (endTime && new Date(e.createdAt) > new Date(endTime)) return false;
+    return true;
+  });
+};
+
 const ROUTES = [
   // ── auth ──
   ['GET', /^\/auth\/oidc\/status$/, () => ({ enabled: false })],
@@ -277,14 +369,10 @@ const ROUTES = [
   ['POST', /^\/auth\/sse-ticket$/, () => ({ ticket: 'mock-sse-ticket', expiresAt: ISO(30e3) })],
   ['GET', /^\/auth\/sessions$/, () => AUTH_SESSIONS],
   // ── metrics / dashboard ──
-  ['GET', /^\/metrics\/summary$/, () => ({ totalTasks: 128, todayRuns: 342, totalExecutors: 12, onlineExecutors: 9, executions: { total: 15230, success: 14520, failed: 512, running: 7 }, successRate: 96.4, avgDurationMs: 5230 })],
-  ['GET', /^\/metrics\/trend$/, () => TREND],
+  ['GET', /^\/metrics\/summary$/, (u, q) => SUMMARY_BY_PROJECT[q.get('projectId')] || SUMMARY_GLOBAL],
+  ['GET', /^\/metrics\/trend$/, (u, q) => TREND_BY_PROJECT[q.get('projectId')] || TREND],
   ['GET', /^\/metrics\/executors$/, () => EXECUTORS.slice(0, 5).map((e) => ({ id: e.id, appName: e.appName, address: e.address, status: e.status, cpuUsage: e.cpuUsage, memUsage: e.memUsage, runningTaskCount: e.runningTaskCount, lastHeartbeat: e.lastHeartbeat }))],
-  ['GET', /^\/metrics\/failures$/, () => [
-    { id: 'e-9001', taskId: 't-1001', taskName: TASKS[0].name, errorMessage: 'OSS 上传失败: SignatureDoesNotMatch', failureReason: 'credential', exitCode: 2, createdAt: ISO(-95 * MIN), duration: 61_230 },
-    { id: 'e-9004', taskId: 't-1002', taskName: TASKS[1].name, errorMessage: '执行超时(600s)', failureReason: 'timeout', exitCode: null, createdAt: ISO(-3 * 3600e3), duration: 600_000 },
-    { id: 'e-9006', taskId: 't-1003', taskName: TASKS[2].name, errorMessage: '源库连接被拒绝', failureReason: 'network', exitCode: 1, createdAt: ISO(-6 * 3600e3), duration: 2100 },
-  ]],
+  ['GET', /^\/metrics\/failures$/, (u, q) => FAILURES_BY_PROJECT[q.get('projectId')] || FAILURES_GLOBAL],
   ['GET', /^\/metrics\/scheduler$/, () => ({
     counters: { ticks: 86400, tickDurationMsTotal: 432000, lastTickDurationMs: 4, lastTickAt: ISO(-1e3), triggersClaimed: 1520, triggersSkippedLockHeld: 3, triggersSkippedDbClaim: 1, triggersSkippedInactive: 42, triggersSkippedBlockStrategy: 6, triggersSkippedMaintenance: 12, triggersFailed: 2, dependencyTriggersClaimed: 30, dependencyTriggersSkipped: 2, triggerLatencyCount: 1520, triggerLatencySumMs: 456000, triggerLatencyBuckets: [1200, 220, 60, 25, 10, 5], lastTriggerLatencyMs: 180, startedAt: ISO(-24 * 3600e3) },
     derived: { avgTickDurationMs: 5, tickRatePerSec: 1, triggerClaimRatePerSec: 0.017, avgTriggerLatencyMs: 300, p99TriggerLatencyMs: 820 },
@@ -295,8 +383,26 @@ const ROUTES = [
   ['GET', /^\/tasks\/scheduler\/stats$/, () => ({ healthy: true, activeTimers: 96, activeCronTasks: 64, runningTaskCount: 7, totalScheduledTasks: 128, uptime: 864000 })],
   // ── tasks ──
   ['GET', /^\/tasks$/, (u, q) => TASKS_PAGED(q)],
-  ['GET', /^\/tasks\/executions\/all$/, (u, q) => pagedEnvelope(EXECUTIONS, q)],
+  ['GET', /^\/tasks\/executions\/all$/, (u, q) => pagedEnvelope(filterExecutions(q), q)],
   ['GET', /^\/tasks\/executions\/([^/]+)\/artifacts$/, () => [{ name: 'backup-dump.sql.gz', size: 1_288_490_188, sha256: 'aa'.repeat(20) }, { name: '备份日志-中文文件名.txt', size: 4096, sha256: 'bb'.repeat(20) }]],
+  // P1-3：GET /artifacts 索引（镜像真实契约：paginate 信封；应用/任务/关键字/时间闭区间/扩展名可筛）
+  ['GET', /^\/artifacts$/, (u, q) => {
+    const appId = q.get('applicationId');
+    const taskId = q.get('taskId');
+    const kw = (q.get('q') || '').trim().toLowerCase();
+    const from = q.get('from');
+    const to = q.get('to');
+    const ext = (q.get('ext') || '').trim().toLowerCase();
+    let pool = ARTIFACT_ROWS;
+    if (appId) pool = pool.filter((r) => r.applicationId === appId);
+    if (taskId) pool = pool.filter((r) => r.taskId === taskId);
+    if (kw) pool = pool.filter((r) => r.name.toLowerCase().includes(kw));
+    if (from) pool = pool.filter((r) => new Date(r.createdAt) >= new Date(from));
+    if (to) pool = pool.filter((r) => new Date(r.createdAt) <= new Date(to));
+    if (ext) pool = pool.filter((r) => r.name.toLowerCase().endsWith('.' + ext));
+    const env = pagedEnvelope(pool, q);
+    return { ...env, list: env.items };
+  }],
   ['GET', /^\/tasks\/([^/]+)$/, (u, q, m) => TASKS.find((t) => t.id === m[1]) || TASKS[0]],
   ['GET', /^\/tasks\/([^/]+)\/executions$/, (u, q, m) => {
     const pool = EXECUTIONS.filter((e) => e.taskId === m[1]);
@@ -375,6 +481,18 @@ const ROUTES = [
   ]],
   ['GET', /^\/applications\/([^/]+)\/removal-impact$/, () => ({ applicationName: APPLICATIONS[0].name, tasksLosingSource: 4, deploymentCount: 3, packageFileWillBeDeleted: true })],
   ['GET', /^\/applications\/([^/]+)$/, (u, q, m) => APPLICATIONS.find((a) => a.id === m[1]) || APPLICATIONS[0]],
+  // P1-4 收件箱夹具：部署审批待办（GET /app-deployments/approvals/pending，Paginated 信封）
+  ['GET', /^\/app-deployments\/approvals\/pending$/, () => ({
+    data: [{
+      ...APP_DEPLOYMENTS[0],
+      id: 'dep-pending-1',
+      status: 'pending',
+      approvalStatus: 'pending_approval',
+      application: APPLICATIONS[0],
+      approvalMeta: { requestedBy: 2, requestedByName: '王运维', requestedAt: ISO(-40 * MIN) },
+    }],
+    total: 1,
+  })],
   ['GET', /^\/app-deployments$/, (u, q) => {
     const appId = q.get('applicationId');
     const pool = appId ? APP_DEPLOYMENTS.filter((d) => d.applicationId === appId) : APP_DEPLOYMENTS;
@@ -392,6 +510,27 @@ const ROUTES = [
     { id: 'pm-2', projectId: 'p-1001', userId: 2, role: 'editor', createdAt: ISO(-90 * 24 * 3600e3) },
     { id: 'pm-3', projectId: 'p-1001', userId: 4, role: 'viewer', createdAt: ISO(-3 * 24 * 3600e3) },
   ]],
+  // P1-2 项目详情:实体回显 + 统计摘要(GET /projects/:id、/projects/:id/summary)。
+  ['GET', /^\/projects\/([^/]+)\/summary$/, (u, q, m) => {
+    const proj = PROJECTS.find((p) => p.id === m[1]) ?? PROJECTS[1];
+    return {
+      projectId: proj.id,
+      projectName: proj.name,
+      taskCount: 2,
+      applicationCount: 0,
+      memberCount: 3,
+      executionsLast7d: 5,
+      failedExecutionsLast7d: 1,
+      timeoutExecutionsLast7d: 1,
+      failureRate: 20.0,
+      recentFailures: [{ id: 'e-9004', taskId: 't-1002', taskName: TASKS[1].name, status: 'timeout', failureReason: 'timeout', errorMessage: '执行超时(600s)', createdAt: ISO(-3 * 3600e3), duration: 600_000 }],
+      recentExecutions: [
+        { id: 'e-9002b', taskId: 't-1002', taskName: TASKS[1].name, status: 'success', createdAt: ISO(-2 * 3600e3), duration: 48_500 },
+        { id: 'e-9004', taskId: 't-1002', taskName: TASKS[1].name, status: 'timeout', createdAt: ISO(-3 * 3600e3), duration: 600_000 },
+      ],
+    };
+  }],
+  ['GET', /^\/projects\/([^/]+)$/, (u, q, m) => PROJECTS.find((p) => p.id === m[1]) ?? PROJECTS[0]],
   // projectsApi.list(无 page 参数)→ 裸数组;listPaged(带 page)→ 分页信封
   // (list/items 双键为后端 R-21 遗留,前端只消费 list,双键都给)。
   ['GET', /^\/projects$/, (u, q) => {
@@ -419,6 +558,23 @@ const ROUTES = [
     const env = pagedEnvelope(AGENT_SESSIONS, q);
     return { items: env.items, total: env.total };
   }],
+  // P1-4 收件箱夹具（镜像真实契约；backlogged / queue-stall 在 openapi 未公示 200 schema，
+  // 结构按 admin-api 控制器返回值镜像）。声明在会话详情单段正则之前，避免被吞。
+  ['GET', /^\/agent\/sessions\/backlogged$/, () => ({
+    sessionIds: ['ag-6004'],
+    count: 1,
+    probed: 1,
+    truncated: false,
+  })],
+  ['GET', /^\/agent\/sessions\/queue-stall$/, () => ({
+    stalled: true,
+    reason: '调度器心跳超时：执行器离线，待派发任务滞留队列。',
+    pendingJobs: 2,
+    degraded: false,
+  })],
+  ['GET', /^\/agent\/sessions\/([^/]+)\/approvals$/, (u, q, m) => [
+    { id: 'apr-1', approvalKey: `apr-${m[1]}-write`, sessionId: m[1], toolName: 'shell.exec', reason: 'write 类操作需要人工点头（审批策略 writeRequiresApproval=true）', status: 'pending', decidedBy: null, decidedAt: null, consumedAt: null, createdAt: ISO(-30 * MIN) },
+  ]],
   ['GET', /^\/agent\/sessions\/([^/]+)$/, (u, q, m) => ({
     session: AGENT_SESSIONS.find((s) => s.id === m[1]) || AGENT_SESSIONS[0],
     steps: [
@@ -454,6 +610,27 @@ const ROUTES = [
   ['GET', /^\/audit$/, () => ({ data: AUDIT_LOGS, total: AUDIT_LOGS.length })],
   // ── task templates ──
   ['GET', /^\/task-templates$/, () => TEMPLATES],
+  // P1-5 夹具镜像契约（真实后端：POST /tasks/import 单条创建，返回 { taskId, name, warnings }；
+  // POST /task-templates/import 落一行自定义模板；PATCH /task-templates/:id 局部更新）。
+  ['POST', /^\/tasks\/import$/, () => ({
+    taskId: 't-import-1',
+    name: '导入任务（夹具）',
+    warnings: ['重新配置密钥后再启用任务'],
+  })],
+  ['POST', /^\/task-templates\/import$/, () => ({
+    id: 'tpl-7',
+    key: 'custom-imported-fixture',
+    name: '夹具导入模板',
+    description: '由导入弹窗落库的自定义模板',
+    category: '同步',
+    config: { triggerType: 'manual', runtime: 'python', entrypoint: 'imported.py' },
+    createdBy: 'admin',
+    createdAt: ISO(-1 * 3600e3),
+  })],
+  ['PATCH', /^\/task-templates\/([^/]+)$/, (u, q, m) => {
+    const hit = TEMPLATES.find((t) => t.id === m[1]) ?? TEMPLATES[0];
+    return { ...hit, name: `${hit.name}（已编辑）` };
+  }],
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -520,9 +697,13 @@ const PAGES = [
   { key: 'task-detail', path: '/tasks/t-1001' },
   { key: 'execution-detail', path: '/tasks/t-1001/executions/e-9001' },
   { key: 'executions', path: '/executions' },
+  { key: 'artifacts', path: '/artifacts' },
+  { key: 'artifacts-task', path: '/artifacts?taskId=t-1001' },
   { key: 'agent-sessions', path: '/agent-sessions' },
+  { key: 'inbox', path: '/inbox' },
   { key: 'sops', path: '/sops' },
   { key: 'projects', path: '/projects' },
+  { key: 'project-detail', path: '/projects/p-1001' },
   { key: 'users', path: '/users' },
   { key: 'registry', path: '/registry' },
   { key: 'settings-token', path: '/settings' },
@@ -629,6 +810,27 @@ async function detectOverflow(page, rootSelector = null) {
   }, rootSelector);
 }
 
+// 1280 桌面端:列表容器横滚手量。区分「表格/列表容器内部横滚」与「body 级视口溢出」。
+async function measureListContainers(page) {
+  return page.evaluate(() => {
+    const vw = window.innerWidth;
+    const doc = document.documentElement;
+    const docSw = Math.max(doc.scrollWidth, document.body ? document.body.scrollWidth : 0);
+    const pick = (sel, rank) => [...document.querySelectorAll(sel)].map((el) => ({ el, rank }));
+    const nodes = [...pick('.ant-table-content', 0), ...pick('.ant-list', 1), ...pick('.ant-card', 2)];
+    const containers = nodes.map(({ el, rank }) => ({
+      rank,
+      sel: (typeof el.className === 'string' && el.className
+        ? el.className.trim().split(/\s+/).slice(0, 2).join('.') : el.tagName.toLowerCase()),
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      overflowX: getComputedStyle(el).overflowX,
+    })).filter((c) => c.clientWidth > 0)
+      .sort((a, b) => a.rank - b.rank);
+    return { vw, docScrollWidth: docSw, bodyOverflow: docSw > vw + 1, containers };
+  });
+}
+
 // 暗色白底残留自动扫描(辅助信号,非结论):data-theme=dark 下,可见且
 // backgroundColor ≥245 的元素(经典硬编码 #fff 残留)。只报面积 ≥40×14 的
 // 前几个,人工目检以 report.md「人工目检」小节为准。
@@ -713,8 +915,12 @@ async function visitPage(browser, pageDef, viewport, opts = {}) {
   let overflowInfo = null;
   let renderSmoke = null;
   let lightBlocks = [];
+  let tableMetrics = null;
   if (OVERFLOW_W(viewport.w)) {
     try { overflowInfo = await detectOverflow(page); } catch { /* 页面已崩则跳过 */ }
+  }
+  if (viewport.w === 1280) {
+    try { tableMetrics = await measureListContainers(page); } catch { tableMetrics = null; }
   }
   try {
     renderSmoke = await page.evaluate(() => ({
@@ -743,7 +949,7 @@ async function visitPage(browser, pageDef, viewport, opts = {}) {
 
   return {
     key: pageDef.key, path: pageDef.path, viewport: viewport.w, dark,
-    gotoError, overflowInfo, renderSmoke, shot, lightBlocks,
+    gotoError, overflowInfo, renderSmoke, shot, lightBlocks, tableMetrics,
     errors: consoleErrors.map((c) => c.text),
     warnCount: consoleWarns.length,
     notableWarns: notableWarns.map((c) => ({ flags: classifyConsole('warning', c.text), text: c.text.slice(0, 200) })),
@@ -989,6 +1195,30 @@ async function testInteraction(browser, ix, viewport, opts = {}) {
 // 主流程
 // ─────────────────────────────────────────────────────────────────────────────
 
+// 1280 桌面端列表容器横滚手量表(脚本只在 ≤600 判 body 溢出;这里补桌面容器度量)。
+const DESKTOP_LIST_KEYS = ['tasks', 'executions', 'applications', 'projects', 'artifacts', 'inbox'];
+function pushDesktopMetrics(lines, results) {
+  lines.push(`## 1280 桌面端列表容器横滚手量`);
+  lines.push('');
+  lines.push(`| 页面 | 主列表容器 | 容器 scrollWidth | 容器 clientWidth | 表格内部横滚 | body scrollWidth / innerWidth | body 级视口溢出 |`);
+  lines.push(`|---|---|---|---|---|---|---|`);
+  for (const key of DESKTOP_LIST_KEYS) {
+    const r = results.find((x) => x.key === key && x.viewport === 1280 && !x.dark);
+    if (!r || !r.tableMetrics) {
+      lines.push(`| ${key} | n/a | — | — | — | — | n/a |`);
+      continue;
+    }
+    const m = r.tableMetrics;
+    const c = m.containers[0];
+    const inner = c
+      ? (c.scrollWidth > c.clientWidth + 1 ? `是 (${c.scrollWidth} > ${c.clientWidth}, overflowX=${c.overflowX})` : '否')
+      : '无表格/列表容器';
+    const body = m.bodyOverflow ? `是 (${m.docScrollWidth} > ${m.vw})` : `否 (${m.docScrollWidth} ≤ ${m.vw})`;
+    lines.push(`| ${key} | ${c ? c.sel : '—'} | ${c ? c.scrollWidth : '—'} | ${c ? c.clientWidth : '—'} | ${inner} | ${m.docScrollWidth} / ${m.vw} | ${body} |`);
+  }
+  lines.push('');
+}
+
 async function main() {
   const runStartedAt = new Date().toISOString();
   // 本机只装了 chromium-1234 完整版(chrome-win64),playwright-core 1.63 默认
@@ -1101,6 +1331,8 @@ async function main() {
     lines.push(`| ${r.key} (${r.path}) | ${r.viewport} | ${overflowCell} | ${offender} | ${errCell} | ${warnCell} | ${gapCell} |`);
   }
   lines.push('');
+
+  pushDesktopMetrics(lines, results);
 
   if (errPages.length || blankPages.length) {
     lines.push(`## 错误详情`);
@@ -1271,7 +1503,15 @@ async function main() {
   process.stdout.write(`\n[ux-walkthrough] report written to ${join(OUT_DIR, 'report.md')}${round1 ? ' (首轮内容已保留)' : ''}\n`);
 }
 
-main().catch((err) => {
-  console.error('[ux-walkthrough] fatal:', err);
-  process.exit(1);
-});
+// 直接执行时跑完整走查;被截图探针等脚本 import 时只复用 apiHandler / USER,不触发 main。
+const isDirectEntry =
+  process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+
+if (isDirectEntry) {
+  main().catch((err) => {
+    console.error('[ux-walkthrough] fatal:', err);
+    process.exit(1);
+  });
+}
+
+export { apiHandler, USER, PROJ_A, PROJ_B, TASKS, EXECUTIONS, filterExecutions };

@@ -1,12 +1,12 @@
 /**
- * COLSET-01：任务列表列设置（显隐过滤 + localStorage 持久化）。
+ * COLSET-01 / P1-1：任务列表列设置（显隐过滤 + localStorage 持久化）。
  *
  * 覆盖：
- *  1. 缺省全显（零行为差异）：未配置时 11 列（勾选 1 + 数据 10）全部渲染，
- *     且不写入任何持久化值；
- *  2. 取消勾选「调度」→ 表头消失 + tasklist.columns.v1 写入隐藏键集合；
- *  3. 持久化生效：重挂载后列保持隐藏；重新勾选恢复显示且存量清空；
- *  4. 脏值防御：非法 JSON / 含未知列键的存量 → 按缺省全显 / 剔除未知键处理；
+ *  1. 缺省核心六列：未配置时只渲染名称/状态/上次执行/下次执行/启用/操作 + 勾选列，
+ *     触发方式/优先级/调度/运行时按 DEFAULT_HIDDEN_COLUMNS 收起，且不写持久化值；
+ *  2. 勾选「调度」恢复显示 → 表头出现，隐藏键集合相应剔除；取消勾选再次隐藏；
+ *  3. 持久化生效：重挂载后列保持隐藏/恢复；
+ *  4. 脏值防御：非法 JSON / 含未知列键的存量 → 按缺省收起 / 剔除未知键处理；
  *  5. 防死面：仅剩最后一个可见列时其勾选框禁用。
  *
  * 口径对齐 task-list-deep：mock api 层、QueryClientProvider + MemoryRouter；
@@ -121,68 +121,84 @@ afterEach(() => {
   localStorage.removeItem(TASKLIST_COLUMNS_STORAGE_KEY);
 });
 
-describe('TaskListPage 列设置 — 缺省全显（COLSET-01 零行为差异）', () => {
-  it('未配置时不写存储、11 列全渲染（勾选 1 + 数据 10）', async () => {
+describe('TaskListPage 列设置 — 缺省核心六列（P1-1 首屏治理）', () => {
+  it('未配置时不写存储；勾选列 + 核心六列渲染，四个辅助列收起', async () => {
     renderPage();
     await screen.findByText('备份任务');
     expect(localStorage.getItem(TASKLIST_COLUMNS_STORAGE_KEY)).toBeNull();
     const headers = headerTexts();
-    expect(headers.length).toBe(11);
-    for (const key of ['name', 'status', 'trigger', 'priority', 'schedule', 'nextRun', 'lastRun', 'runtime', 'toggle', 'actions']) {
+    expect(headers.length).toBe(7); // 勾选 1 + 核心数据 6
+    for (const key of ['name', 'status', 'lastRun', 'nextRun', 'toggle', 'actions']) {
       expect(headers).toContain(col(key));
+    }
+    for (const key of ['trigger', 'priority', 'schedule', 'runtime']) {
+      expect(headers).not.toContain(col(key));
     }
   });
 });
 
 describe('TaskListPage 列设置 — 显隐过滤与持久化（COLSET-01）', () => {
-  it('取消勾选「调度」→ 表头消失，隐藏键写入 localStorage', async () => {
-    renderPage();
-    await screen.findByText('备份任务');
-    const scheduleCheckbox = await openColumnSettings();
-
-    fireEvent.click(scheduleCheckbox);
-    await waitFor(() => {
-      expect(headerTexts()).not.toContain(col('schedule'));
-    });
-    expect(JSON.parse(localStorage.getItem(TASKLIST_COLUMNS_STORAGE_KEY) ?? '')).toEqual(['schedule']);
-    // 其余列不受影响
-    expect(headerTexts()).toContain(col('name'));
-    expect(headerTexts()).toContain(col('runtime'));
-  });
-
-  it('持久化生效：重挂载后列保持隐藏；重新勾选恢复显示且存量清空', async () => {
-    const first = renderPage();
-    await screen.findByText('备份任务');
-    const scheduleCheckbox = await openColumnSettings();
-    fireEvent.click(scheduleCheckbox);
-    await waitFor(() => expect(headerTexts()).not.toContain(col('schedule')));
-    first.unmount();
-
-    // 重挂载：从 localStorage 恢复隐藏偏好
+  it('勾选「调度」恢复显示 → 表头出现，隐藏键集合剔除 schedule；再取消勾选重新收起', async () => {
     renderPage();
     await screen.findByText('备份任务');
     expect(headerTexts()).not.toContain(col('schedule'));
+    const scheduleCheckbox = await openColumnSettings();
+    expect(scheduleCheckbox.checked).toBe(false);
 
-    // 重新勾选 → 恢复显示 + 存量清空（= 缺省全显形态）
+    fireEvent.click(scheduleCheckbox);
+    await waitFor(() => {
+      expect(headerTexts()).toContain(col('schedule'));
+    });
+    // 缺省收起的其余三列仍隐藏；隐藏集合 = DEFAULT_HIDDEN_COLUMNS 剔除 schedule
+    expect(JSON.parse(localStorage.getItem(TASKLIST_COLUMNS_STORAGE_KEY) ?? '')).toEqual(['trigger', 'priority', 'runtime']);
+    expect(headerTexts()).not.toContain(col('runtime'));
+    expect(headerTexts()).toContain(col('name'));
+
+    // 再取消勾选 → 重新收起，隐藏集合回到缺省四列
     const scheduleCheckbox2 = (await openColumnSettings()) as HTMLInputElement;
-    expect(scheduleCheckbox2.checked).toBe(false);
     fireEvent.click(scheduleCheckbox2);
-    await waitFor(() => expect(headerTexts()).toContain(col('schedule')));
-    expect(JSON.parse(localStorage.getItem(TASKLIST_COLUMNS_STORAGE_KEY) ?? '')).toEqual([]);
+    await waitFor(() => {
+      expect(headerTexts()).not.toContain(col('schedule'));
+    });
+    expect(JSON.parse(localStorage.getItem(TASKLIST_COLUMNS_STORAGE_KEY) ?? '')).toEqual(['trigger', 'priority', 'schedule', 'runtime']);
   });
 
-  it('脏值防御：非法 JSON 按缺省全显；未知列键剔除、合法键保留', async () => {
-    localStorage.setItem(TASKLIST_COLUMNS_STORAGE_KEY, 'not-json{{{');
+  it('持久化生效：重挂载后保持恢复显示的「调度」；取消勾选后回到缺省收起', async () => {
+    // 模拟已持久化的偏好：调度被手动恢复（隐藏集合缺省四列剔除 schedule）
+    localStorage.setItem(TASKLIST_COLUMNS_STORAGE_KEY, JSON.stringify(['trigger', 'priority', 'runtime']));
+    const first = renderPage();
+    await screen.findByText('备份任务');
+    expect(headerTexts()).toContain(col('schedule'));
+    first.unmount();
+
+    // 重挂载：从 localStorage 恢复偏好，调度仍可见
     renderPage();
     await screen.findByText('备份任务');
     expect(headerTexts()).toContain(col('schedule'));
+
+    // 取消勾选 → 重新收起，隐藏集合回到缺省四列
+    const scheduleCheckbox2 = (await openColumnSettings()) as HTMLInputElement;
+    expect(scheduleCheckbox2.checked).toBe(true);
+    fireEvent.click(scheduleCheckbox2);
+    await waitFor(() => expect(headerTexts()).not.toContain(col('schedule')));
+    expect(JSON.parse(localStorage.getItem(TASKLIST_COLUMNS_STORAGE_KEY) ?? '')).toEqual(['trigger', 'priority', 'schedule', 'runtime']);
+  });
+
+  it('脏值防御：非法 JSON 按缺省收起；未知列键剔除、合法键保留', async () => {
+    localStorage.setItem(TASKLIST_COLUMNS_STORAGE_KEY, 'not-json{{{');
+    renderPage();
+    await screen.findByText('备份任务');
+    // 缺省收起的辅助列不可见
+    expect(headerTexts()).not.toContain(col('schedule'));
     cleanup();
 
     localStorage.setItem(TASKLIST_COLUMNS_STORAGE_KEY, JSON.stringify(['bogus-column', 'runtime']));
     renderPage();
     await screen.findByText('备份任务');
+    // 未知键剔除；存量隐藏集以合法键为准（仅 runtime 隐藏），其余列按存量可见
     expect(headerTexts()).not.toContain(col('runtime'));
     expect(headerTexts()).toContain(col('schedule'));
+    expect(headerTexts()).toContain(col('name'));
   });
 
   it('防死面：仅剩最后一个可见列时其勾选框禁用', async () => {
@@ -190,6 +206,7 @@ describe('TaskListPage 列设置 — 显隐过滤与持久化（COLSET-01）', (
       TASKLIST_COLUMNS_STORAGE_KEY,
       JSON.stringify(['status', 'trigger', 'priority', 'schedule', 'nextRun', 'lastRun', 'runtime', 'toggle', 'actions']),
     );
+    // 注：隐藏集合含全部非名称列 → 仅剩名称列可见，其勾选框禁用。
     renderPage();
     await screen.findByText('备份任务');
     fireEvent.click(screen.getByTestId('tasklist-column-settings'));

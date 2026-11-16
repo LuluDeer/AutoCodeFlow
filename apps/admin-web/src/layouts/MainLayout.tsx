@@ -15,7 +15,8 @@ import {
   memo,
   type ReactNode,
 } from 'react';
-import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
+import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip, Select } from 'antd';
+import type { MenuProps } from 'antd';
 import { message } from '../utils/toast';
 import {
   DashboardOutlined,
@@ -40,6 +41,8 @@ import {
   DesktopOutlined,
   TranslationOutlined,
   RobotOutlined,
+  FolderOpenOutlined,
+  MoreOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -52,6 +55,7 @@ import { logoutRemote } from '../api/logout';
 const CommandPalette = lazy(() => import('../components/CommandPalette'));
 // HOTKEY-01：全站快捷键（g 前缀跳转 + ? 速查 Modal）——在本壳层挂载一次
 import useGlobalHotkeys from '../hooks/useGlobalHotkeys';
+import { useIsMobile } from '../hooks/useIsMobile';
 const ShortcutHelpModal = lazy(
   () => import('../components/ShortcutHelpModal'),
 );
@@ -62,6 +66,8 @@ import { BRAND_GRADIENT, LAYOUT_TOKENS } from '../theme/tokens';
 import type { ThemeMode } from '../theme/store';
 // BELL-01：通知铃升级为近期失败速览面板（组件内含未读红点逻辑）
 import NotificationBell from '../components/NotificationBell';
+// P1-4：待办收件箱顶栏入口（聚合审批/接管待办计数），同通知铃按 ADMIN 门控
+import InboxBadge from '../components/InboxBadge';
 // BRAND（2026-11-02）：狐狸是中台的**产品形象**（侧边栏标志位），六边形留给托盘与
 // 状态指示——分层见 design-system/brand/README.md §4。
 import BrandFox from '../components/BrandFox';
@@ -69,6 +75,9 @@ import BrandFox from '../components/BrandFox';
 // P0-7（UX 审计）：setLanguage 此前导出但全站零调用——此处是它的第一个入口。
 import '../i18n';
 import { setLanguage, availableLanguages } from '../i18n';
+import { useProjectFilter, PROJECT_FILTER_ALL, PROJECT_FILTER_DEFAULT } from '../hooks/useProjectFilter';
+import { projectsApi, type ProjectViewRow } from '../api/projects';
+import { DEFAULT_PROJECT_ID } from '../constants/project';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -77,8 +86,9 @@ const { Text } = Typography;
 // 无需 zustand 重量级方案；key 命名对齐 autoflow-theme 惯例）
 const SIDER_COLLAPSED_KEY = 'autoflow-sider-collapsed';
 const MENU_OPEN_KEYS_KEY = 'autoflow-menu-open-keys';
-// 默认展开「任务」「执行」两组（计划书指定），首次进入即见高频入口
-const DEFAULT_OPEN_KEYS = ['g-tasks', 'g-executions'];
+// 默认展开「自动化」组（计划书指定），首次进入即见高频入口；
+// 控制台 / 执行记录为直达一级入口，不需要分组展开态。
+const DEFAULT_OPEN_KEYS = ['g-tasks'];
 
 // F-25（DEEP_REVIEW 0ef3bbe）：按平台动态显示搜索快捷键（Mac ⌘K / 其他 Ctrl K），
 // 与 CommandPalette 实际监听的 metaKey||ctrlKey 保持一致。判定逻辑抽到
@@ -127,36 +137,41 @@ const THEME_BUTTON_META: Record<ThemeMode, { icon: ReactNode; labelKey: string; 
   system: { icon: <DesktopOutlined />, labelKey: 'nav.theme.system', ariaKey: 'nav.theme.system.aria' },
 };
 
-// UI-03：菜单分组结构（新导航 IA：概览/任务/执行/执行器/应用/系统）——
-// 渲染时按角色过滤（R5 RBAC），分组键不带 '/'，页面键以路由开头。
+// P1-6：菜单 IA（扁平化 + 场景分组）。
+// - 控制台、执行记录是高频直达入口，不再包「单子项折叠组」（消除双击路径）；
+// - 原「系统」杂烩拆为 组织 / 治理 / 辅助 三组，每组 ≤3 项；
+// - 分组节点不再挂图标（图标只留给叶子页面项），从构造上去掉父子同图标；
+// - 分组键不带 '/'，页面键以路由开头；渲染时按角色过滤（R5 RBAC）。
 // 分组用 antd Menu 的 submenu 形态（非 type:'group'），保证分组可折叠/展开并持久化。
 // UI-10：label 由 buildMenuItems(t) 在组件内构造（语言切换即时生效）。
-function buildMenuItems(t: (k: string) => string) {
+interface MenuLeaf {
+  key: string;
+  icon: ReactNode;
+  label: string;
+}
+interface MenuGroup {
+  key: string;
+  label: string;
+  children: MenuLeaf[];
+}
+type MenuEntry = MenuLeaf | MenuGroup;
+
+function buildMenuItems(t: (k: string) => string): MenuEntry[] {
   return [
-    {
-      key: 'g-overview',
-      icon: <DashboardOutlined />,
-      label: t('nav.group.overview'),
-      children: [{ key: '/dashboard', icon: <DashboardOutlined />, label: t('nav.dashboard') }],
-    },
+    // 直达一级入口（无子分组）
+    { key: '/dashboard', icon: <DashboardOutlined />, label: t('nav.dashboard') },
     {
       key: 'g-tasks',
-      icon: <ThunderboltOutlined />,
       label: t('nav.group.tasks'),
       children: [
         { key: '/tasks', icon: <ThunderboltOutlined />, label: t('nav.tasks') },
         { key: '/task-templates', icon: <FileTextOutlined />, label: t('nav.taskTemplates') },
+        { key: '/artifacts', icon: <FolderOpenOutlined />, label: t('nav.artifacts') },
       ],
     },
-    {
-      key: 'g-executions',
-      icon: <HistoryOutlined />,
-      label: t('nav.group.executions'),
-      children: [{ key: '/executions', icon: <HistoryOutlined />, label: t('nav.executions') }],
-    },
+    { key: '/executions', icon: <HistoryOutlined />, label: t('nav.executions') },
     {
       key: 'g-executors',
-      icon: <ClusterOutlined />,
       label: t('nav.group.executors'),
       children: [
         { key: '/executors', icon: <ClusterOutlined />, label: t('nav.executors') },
@@ -165,25 +180,38 @@ function buildMenuItems(t: (k: string) => string) {
     },
     {
       key: 'g-applications',
-      icon: <AppstoreOutlined />,
       label: t('nav.group.applications'),
       children: [
         { key: '/applications', icon: <AppstoreOutlined />, label: t('nav.applications') },
         { key: '/registry', icon: <DatabaseOutlined />, label: t('nav.registry') },
       ],
     },
+    // 组织：成员与项目
     {
-      key: 'g-system',
-      icon: <SettingOutlined />,
-      label: t('nav.group.system'),
+      key: 'g-org',
+      label: t('nav.group.org'),
       children: [
         { key: '/users', icon: <UserOutlined />, label: t('nav.users') },
+        { key: '/projects', icon: <TeamOutlined />, label: t('nav.projects') },
+      ],
+    },
+    // 治理：审计 / 通知 / 设置
+    {
+      key: 'g-gov',
+      label: t('nav.group.gov'),
+      children: [
+        { key: '/audit', icon: <AuditOutlined />, label: t('nav.audit') },
+        { key: '/notifications', icon: <BellOutlined />, label: t('nav.notifications') },
+        { key: '/settings', icon: <SettingOutlined />, label: t('nav.settings') },
+      ],
+    },
+    // 辅助：SOP / Agent 会话
+    {
+      key: 'g-assist',
+      label: t('nav.group.assist'),
+      children: [
         { key: '/sops', icon: <FileTextOutlined />, label: t('nav.sops') },
         { key: '/agent-sessions', icon: <RobotOutlined />, label: t('nav.agents') },
-        { key: '/notifications', icon: <BellOutlined />, label: t('nav.notifications') },
-        { key: '/audit', icon: <AuditOutlined />, label: t('nav.audit') },
-        { key: '/projects', icon: <TeamOutlined />, label: t('nav.projects') },
-        { key: '/settings', icon: <SettingOutlined />, label: t('nav.settings') },
       ],
     },
   ];
@@ -191,7 +219,7 @@ function buildMenuItems(t: (k: string) => string) {
 
 // ADMIN-only 菜单入口：普通用户不渲染（后端对应接口均 @Roles(ADMIN)）
 // R6：/notifications 收紧——GET/PATCH /notification/channels 为 ADMIN-only
-const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', '/notifications', '/sops', '/agent-sessions']);
+const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', '/notifications', '/sops', '/agent-sessions', '/artifacts']);
 
 // F-12（DEEP_REVIEW 0ef3bbe）: 实时时钟提取为独立 memoized 子组件。
 // 此前 setInterval 每秒触发 MainLayout 整棵组件树重渲；现在时钟自管 state
@@ -252,6 +280,9 @@ export default function MainLayout() {
   const { t, i18n } = useTranslation();
   const { user, setUser, setProfileError } = useAuthStore();
   const isAdmin = user?.role === 'admin';
+  // 375 头部收敛：≤768px 把主题/语言/搜索三个次要控件收进「更多」下拉，
+  // 顶栏只留高频入口（项目切换/待办/通知/用户），不隐藏任何可达入口。
+  const isMobile = useIsMobile();
   // UI-03：折叠态持久化到 localStorage（跨会话记忆用户偏好）
   const [collapsed, setCollapsedState] = useState<boolean>(() => readCollapsedPreference());
   const setCollapsed = (v: boolean) => {
@@ -277,6 +308,20 @@ export default function MainLayout() {
   const themeMeta = THEME_BUTTON_META[themeMode];
   const themeLabel = t(themeMeta.labelKey);
   const themeAria = t(themeMeta.ariaKey);
+
+  // P1-2：全局「当前项目」上下文（四工作面共用 ?project= 参数，hook 内部读写 URL）。
+  const { projectId, setProjectId } = useProjectFilter();
+  // 切换器数据源：全量可见项目（后端按权限裁剪：ADMIN 全量，普通用户默认项目 ∪ 成员）。
+  // 拉取失败不阻塞壳层——仅保留「全部 / 默认项目」两项降级渲染。
+  const [projectOptions, setProjectOptions] = useState<ProjectViewRow[]>([]);
+  useEffect(() => {
+    let alive = true;
+    projectsApi
+      .list()
+      .then((rows) => { if (alive) setProjectOptions(rows); })
+      .catch(() => { /* 降级：见上注 */ });
+    return () => { alive = false; };
+  }, []);
 
   /**
    * P0-7（UX 审计）：界面语言。
@@ -335,13 +380,15 @@ export default function MainLayout() {
   // UI-10：菜单项 label 经 t() 构造（语言切换即时生效）；过滤在构造后展开无关。
   const allMenuItems = buildMenuItems(t);
   const menuItems = allMenuItems
-    .map((group) => ({
-      ...group,
-      children: isAdmin
-        ? group.children
-        : group.children.filter((c) => !ADMIN_ONLY_MENU_KEYS.has(c.key)),
-    }))
-    .filter((group) => group.children.length > 0);
+    .map((entry) => {
+      // 直达一级入口（叶子）原样保留；分组按角色裁掉 ADMIN-only 子项
+      if (!('children' in entry)) return entry;
+      const children = isAdmin
+        ? entry.children
+        : entry.children.filter((c) => !ADMIN_ONLY_MENU_KEYS.has(c.key));
+      return { ...entry, children };
+    })
+    .filter((entry) => !('children' in entry) || entry.children.length > 0);
 
 
 
@@ -407,7 +454,7 @@ export default function MainLayout() {
   // 持久化，不干扰用户对其他分组的手动折叠；用户随后手动收起也仍被尊重
   // （effect 只在分组归属变化时触发，不会立刻又弹开）。
   const selectedGroupKey = menuItems.find((g) =>
-    g.children.some((c) => c.key === selectedKey),
+    'children' in g && g.children.some((c) => c.key === selectedKey),
   )?.key;
   useEffect(() => {
     if (!selectedGroupKey) return;
@@ -423,6 +470,7 @@ export default function MainLayout() {
     tasks: t('nav.tasks'),
     'task-templates': t('nav.taskTemplates'),
     executions: t('nav.executions'),
+    artifacts: t('nav.artifacts'),
     executors: t('nav.executors'),
     'executor-packages': t('nav.executorPackages'),
     registry: t('nav.registry'),
@@ -431,6 +479,8 @@ export default function MainLayout() {
     audit: t('nav.audit'),
     projects: t('nav.projects'),
     settings: t('nav.settings'),
+    sops: t('nav.sops'),
+    'agent-sessions': t('nav.agents'),
     install: t('nav.install'),
     new: t('nav.new'),
     edit: t('nav.edit'),
@@ -478,16 +528,36 @@ export default function MainLayout() {
     }
   };
 
-  // 渲染带 tooltip 的菜单项（折叠时）
+  // 窄屏「更多」下拉：主题 / 语言 / 搜索三个次要控件的收纳位。
+  // 菜单项保留原行为与可读标签；桌面端这些仍是顶栏直达按钮，不下沉。
+  const handleMoreMenu = ({ key }: { key: string }) => {
+    if (key === 'theme') cycleThemeMode();
+    else if (key === 'lang') handleLanguageToggle();
+    else if (key === 'search') setPaletteOpen((v) => !v);
+  };
+  const moreMenuItems: MenuProps['items'] = [
+    { key: 'theme', icon: themeMeta.icon, label: themeLabel },
+    { key: 'lang', icon: <TranslationOutlined />, label: t(`nav.lang.${currentLang}`) },
+    { key: 'search', icon: <SearchOutlined />, label: t('nav.search.aria') },
+  ];
+
+  // 渲染带 tooltip 的菜单项（折叠时）；叶子入口与分组分别包 Tooltip
   const menuItemsWithTooltip = collapsed
-    ? menuItems.map(item => ({
-        ...item,
-        label: <Tooltip placement="right" title={item.label}>{item.label}</Tooltip>,
-        children: item.children?.map(child => ({
-          ...child,
-          label: <Tooltip placement="right" title={child.label}>{child.label}</Tooltip>,
-        })),
-      }))
+    ? menuItems.map((item) =>
+        'children' in item
+          ? {
+              ...item,
+              label: <Tooltip placement="right" title={item.label}>{item.label}</Tooltip>,
+              children: item.children.map((child) => ({
+                ...child,
+                label: <Tooltip placement="right" title={child.label}>{child.label}</Tooltip>,
+              })),
+            }
+          : {
+              ...item,
+              label: <Tooltip placement="right" title={item.label}>{item.label}</Tooltip>,
+            },
+      )
     : menuItems;
 
   return (
@@ -557,7 +627,7 @@ export default function MainLayout() {
             selectedKeys={[selectedKey]}
             openKeys={openKeys}
             onOpenChange={setOpenKeys}
-            items={menuItemsWithTooltip}
+            items={menuItemsWithTooltip as MenuProps['items']}
             onClick={({ key }) => nav(key)}
             style={{ border: 'none', marginTop: 8, paddingBottom: 56 }}
           />
@@ -631,24 +701,48 @@ export default function MainLayout() {
             )}
           </Space>
 
-          <Space size={4}>
+          <Space size={isMobile ? 2 : 4} className="header-controls">
+            {/* P1-2：全局「当前项目」切换器——Dashboard / 任务 / 执行 / 应用四面共用
+                ?project= 上下文。默认项目实体行从具体列表剔除：独立的「默认项目」选项
+                表达「未分配 + 默认项目」合并视图（后端 "default" 字面量口径）。 */}
+            <Select
+              className="header-project"
+              data-testid="project-switcher"
+              aria-label={t('projectCtx.aria')}
+              showSearch
+              optionFilterProp="label"
+              value={projectId}
+              onChange={(value: string) => setProjectId(value)}
+              placeholder={t('projectCtx.placeholder')}
+              options={[
+                { value: PROJECT_FILTER_ALL, label: t('projectCtx.all') },
+                { value: PROJECT_FILTER_DEFAULT, label: t('projectCtx.default') },
+                ...projectOptions
+                  .filter((p) => p.id !== DEFAULT_PROJECT_ID)
+                  .map((p) => ({ value: p.id, label: p.name })),
+              ]}
+            />
+
             {/* 时间显示（UI-09：≤768px 隐藏——头部仅留高频操作按钮）
                 UI-12：纯装饰信息，对读屏隐藏（每分每秒变化会持续打断朗读）
                 F-12：提取为 memoized <Clock />，自管 setInterval 不波及父 Layout */}
             <Clock colorText={token.colorText} colorTextSecondary={token.colorTextSecondary} />
 
             {/* UI-02：明暗主题切换——light → dark → system 三态循环，
-                图标随当前态变化，aria-label 随态更新（可达性） */}
-            <Tooltip title={t('nav.theme.tooltip', { label: themeLabel })}>
-              <Button
-                type="text"
-                icon={themeMeta.icon}
-                aria-label={themeAria}
-                data-testid="theme-toggle"
-                style={{ fontSize: 16, color: token.colorTextSecondary }}
-                onClick={cycleThemeMode}
-              />
-            </Tooltip>
+                图标随当前态变化，aria-label 随态更新（可达性）。
+                窄屏下沉「更多」下拉（见下方 header-more），桌面端直达。 */}
+            {!isMobile && (
+              <Tooltip title={t('nav.theme.tooltip', { label: themeLabel })}>
+                <Button
+                  type="text"
+                  icon={themeMeta.icon}
+                  aria-label={themeAria}
+                  data-testid="theme-toggle"
+                  style={{ fontSize: 16, color: token.colorTextSecondary }}
+                  onClick={cycleThemeMode}
+                />
+              </Tooltip>
+            )}
 
             {/* P0-7（UX 审计）：界面语言切换入口。
                 此前 i18n 基础设施完整（setLanguage / availableLanguages / en 按需
@@ -656,28 +750,51 @@ export default function MainLayout() {
                 localStorage，而没有任何 UI 能写入它，2300+ 行英文词条是死代码，
                 英文用户永远看不到英文界面。此处按主题切换同款形态补上入口。
                 aria 随当前语言变化（读屏可播报），tooltip 说明点击行为。 */}
-            <Tooltip title={t('nav.lang.tooltip', { label: t(`nav.lang.${currentLang}`) })}>
-              <Button
-                type="text"
-                icon={<TranslationOutlined />}
-                aria-label={t('nav.lang.switch.aria', { label: t(`nav.lang.${currentLang}`) })}
-                data-testid="lang-toggle"
-                style={{ fontSize: 16, color: token.colorTextSecondary }}
-                onClick={handleLanguageToggle}
-              />
-            </Tooltip>
+            {!isMobile && (
+              <Tooltip title={t('nav.lang.tooltip', { label: t(`nav.lang.${currentLang}`) })}>
+                <Button
+                  type="text"
+                  icon={<TranslationOutlined />}
+                  aria-label={t('nav.lang.switch.aria', { label: t(`nav.lang.${currentLang}`) })}
+                  data-testid="lang-toggle"
+                  style={{ fontSize: 16, color: token.colorTextSecondary }}
+                  onClick={handleLanguageToggle}
+                />
+              </Tooltip>
+            )}
 
-            {/* FEAT-09: 全局搜索入口——点击行为与 ⌘K/Ctrl+K 一致（再按切换） */}
-            {/* F-25（DEEP_REVIEW 0ef3bbe）：tooltip 按平台动态显示 ⌘K / Ctrl K */}
-            <Tooltip title={SEARCH_SHORTCUT_HINT}>
-              <Button
-                type="text"
-                icon={<SearchOutlined />}
-                aria-label={t('nav.search.aria')}
-                style={{ fontSize: 16, color: token.colorTextSecondary }}
-                onClick={() => setPaletteOpen((v) => !v)}
-              />
-            </Tooltip>
+            {/* FEAT-09: 全局搜索入口——点击行为与 ⌘K/Ctrl+K 一致（再按切换）
+                F-25（DEEP_REVIEW 0ef3bbe）：tooltip 按平台动态显示 ⌘K / Ctrl K。
+                窄屏下沉「更多」下拉，桌面端直达。 */}
+            {!isMobile && (
+              <Tooltip title={SEARCH_SHORTCUT_HINT}>
+                <Button
+                  type="text"
+                  icon={<SearchOutlined />}
+                  aria-label={t('nav.search.aria')}
+                  style={{ fontSize: 16, color: token.colorTextSecondary }}
+                  onClick={() => setPaletteOpen((v) => !v)}
+                />
+              </Tooltip>
+            )}
+
+            {/* 375 头部收敛：窄屏把上述三个次要控件汇成一个「更多」下拉；
+                下拉内条目保留图标 + 可读标签，键盘可 Tab 聚焦、Enter 展开。 */}
+            {isMobile && (
+              <Dropdown
+                menu={{ items: moreMenuItems, onClick: handleMoreMenu }}
+                placement="bottomRight"
+                trigger={['click']}
+              >
+                <Button
+                  type="text"
+                  aria-label={t('nav.more.aria')}
+                  data-testid="header-more"
+                  icon={<MoreOutlined />}
+                  style={{ fontSize: 16, color: token.colorTextSecondary }}
+                />
+              </Dropdown>
+            )}
 
             {/* F-24（DEEP_REVIEW 0ef3bbe）：原帮助按钮无 onClick（纯摆设、有 aria-label 却无行为），
                 且项目无文档/关于落地页——按评审建议移除该占位按钮，避免误导。 */}
@@ -686,6 +803,7 @@ export default function MainLayout() {
                 对普通用户隐藏该快捷入口，避免点击后落入 403 页。
                 BELL-01：升级为近期失败速览面板（未读红点 + 面板内跳转），
                 此前是零反馈的纯跳转。 */}
+            {isAdmin && <InboxBadge />}
             {isAdmin && <NotificationBell />}
 
             {/* 用户头像下拉 */}
@@ -707,15 +825,16 @@ export default function MainLayout() {
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 8,
+                  gap: isMobile ? 4 : 8,
                   cursor: 'pointer',
-                  padding: '4px 8px',
+                  padding: isMobile ? '4px 4px' : '4px 8px',
                   borderRadius: 8,
                   border: 'none',
                   background: 'transparent',
                   transition: 'background 0.2s',
                 }}
                 className="user-dropdown-trigger"
+                data-testid="user-dropdown-trigger"
               >
                 <Avatar
                   size={30}
@@ -723,7 +842,9 @@ export default function MainLayout() {
                 >
                   {user?.username?.[0]?.toUpperCase() || 'U'}
                 </Avatar>
-                <div style={{ lineHeight: 1.3 }}>
+                {/* 窄屏隐藏用户名/角色文本（账号信息仍在下拉菜单内可读），
+                    触发器保留头像 + aria-label，键盘可达不受影响。 */}
+                <div className="header-user-meta" style={{ lineHeight: 1.3 }}>
                   <div style={{ fontSize: 13, fontWeight: 500, color: token.colorText }}>{user?.username || t('nav.user')}</div>
                   <div style={{ fontSize: 11, color: token.colorTextSecondary }}>{user?.role === 'admin' ? t('nav.role.admin') : t('nav.role.user')}</div>
                 </div>

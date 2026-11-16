@@ -85,7 +85,7 @@ main.ts
 | executor-package | 执行器安装包分发（`/executor-packages`） | [executor-package.md](modules/executor-package.md) |
 | artifacts | 执行产物存储/下载 + ARTIFACTS-INDEX-46 索引查询面（本地盘 `uploads/artifacts`；MinIO/S3 对象存储只用于 task 模块日志通道，见 [task 模块](modules/task.md)） | [产物模块](modules/artifacts.md) |
 | notification | 通知渠道配置 + 告警入口（`/notification`、`/alerts`） | [通知模块](modules/notification.md) |
-| ai | AI 辅助（脚本生成/失败分析，OpenAI/Ollama） | [AI 模块](modules/ai.md) |
+| ai | AI 辅助（失败根因分析 / 排程建议 / 应用健康分析 / 视频转 SOP 草稿，OpenAI / Ollama / Qwen） | [AI 模块](modules/ai.md) |
 | task-template | 任务模板（`/task-templates`） | [任务模板模块](modules/task-template.md) |
 | registry | 私有 npm/PyPI 仓库代理（Verdaccio/自建 PyPI 转发） | [registry 模块](modules/registry.md) |
 | event-subscriptions | 出站事件订阅（DomainEventBus → webhook） | [出站订阅模块](modules/event-subscriptions.md) |

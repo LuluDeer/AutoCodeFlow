@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Table,
   Button,
   Tag,
@@ -21,7 +21,7 @@ import { Table,
 import { message } from '../utils/toast';
 import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
-  DeleteOutlined, EyeOutlined, EditOutlined,
+  DeleteOutlined, EyeOutlined, EditOutlined, ImportOutlined,
   CheckSquareOutlined, FileTextOutlined, ColumnWidthOutlined,
   LeftOutlined, RightOutlined,
 } from '@ant-design/icons';
@@ -37,6 +37,7 @@ import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 // URL-SYNC-02（审计 P2）：双向 URL 同步（外部深链/前进后退真正生效）
 import { useUrlStateSync } from '../hooks/useUrlStateSync';
+import { useProjectFilter } from '../hooks/useProjectFilter';
 import { useAuthStore, isAdminUser } from '../store/auth';
 // D-P2-02a（设计审计）：运行时枚举本地化唯一事实源（与 status/priority 同范式）
 import { runtimeLabel } from '../utils/runtime-label';
@@ -55,6 +56,7 @@ import {
   type TaskColumnKey,
 } from '../utils/taskColumns';
 import ParamsEditor from '../components/ParamsEditor';
+import TaskImportModal from '../components/TaskImportModal';
 import PageHeader from '../components/PageHeader';
 // UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
 import PageSkeleton from '../components/PageSkeleton';
@@ -166,6 +168,8 @@ export default function TaskListPage() {
   const [triggering, setTriggering] = useState(false);
   const [consumeNextFirePoint, setConsumeNextFirePoint] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  // P1-5：任务定义导入弹窗（上传 JSON / 粘贴定义 → 客户端校验 + 冲突预览 → 结果呈现）。
+  const [importOpen, setImportOpen] = useState(false);
   const [batchLoading, setBatchLoading] = useState(false);
   // COLSET-01：隐藏列集合（缺省空 = 全显，与既有渲染零行为差异；只过滤显隐不动列定义）
   const [hiddenColumns, setHiddenColumns] = useState<TaskColumnKey[]>(() => readHiddenColumns());
@@ -305,6 +309,9 @@ export default function TaskListPage() {
     },
   );
 
+  // P1-2：全局当前项目上下文（?project=）；后端 GET /tasks 已支持 projectId 过滤。
+  const { backendProjectId } = useProjectFilter();
+
   const { data, isLoading: loading, error, refetch } = useTasksList({
     page,
     pageSize,
@@ -313,6 +320,8 @@ export default function TaskListPage() {
     q: debouncedSearch || undefined,
     status: statusFilter,
     triggerType: triggerFilter,
+    // P1-2：项目维度透传；'all' → undefined（不传），'default' / UUID 原样发后端。
+    projectId: backendProjectId,
     // §2.1：keyset 模式下恒为 undefined（后端契约：cursor 与 lastStatus 互斥，
     // 同时带 = 400）。关闭开关时原样透传，行为不变。
     lastStatus: effectiveLastStatus,
@@ -325,6 +334,18 @@ export default function TaskListPage() {
     // axios 的序列化细节上等于把风险外包给库版本。
     ...(activeCursor === undefined ? {} : { cursor: activeCursor }),
   });
+
+  // P1-2：切换项目上下文后回到第一页并清游标栈——旧项目的页码/游标对新项目结果集
+  // 无意义（与其它改变结果集的入口同口径，见 resetCursorStack 头注）。
+  // 首次挂载不重置：否则深链 ?page=N 会被打回第 1 页；仅在项目实际切换时回退。
+  const prevProjectRef = useRef(backendProjectId);
+  useEffect(() => {
+    if (prevProjectRef.current === backendProjectId) return;
+    prevProjectRef.current = backendProjectId;
+    setPage(1);
+    resetCursorStack(stablePaging);
+  }, [backendProjectId, stablePaging]);
+
   // FEAT-17: 写后失效句柄（原 useRequest refresh → invalidate 面收口）
   const queryClient = useQueryClient();
   const refresh = () => void invalidateTaskData(queryClient);
@@ -665,6 +686,12 @@ export default function TaskListPage() {
             <Button icon={<FileTextOutlined />} onClick={() => nav('/task-templates')}>
               {t('taskList.templates')}
             </Button>
+            {/* P1-5：任务定义导入（导出 JSON 回灌）；写操作与新建同口径，非管理员禁用。 */}
+            <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
+              <Button icon={<ImportOutlined />} disabled={!isAdmin} onClick={() => setImportOpen(true)}>
+                {t('taskList.import')}
+              </Button>
+            </Tooltip>
             <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
             <Button type="primary" icon={<PlusOutlined />} disabled={!isAdmin} onClick={() => nav('/tasks/new')}>
               {t('taskList.create')}
@@ -948,15 +975,11 @@ export default function TaskListPage() {
         columns={visibleColumns}
         dataSource={tasks}
         loading={loading}
-        // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ scroll.x 横向滚动兜底
-        // UX-WALK 2026-10 回归修复：scroll.x 必须 ≥ 固定列宽合计（含勾选 32）+ 名称列
-        // 弹性下限 220。此前 P1-1/P1-2 增列（下次/上次执行）后固定列合计已达 1172
-        // （status90/trigger100/priority80/schedule190/nextRun170/lastRun150/runtime80/
-        // enabled70/actions210 + 勾选32），追平旧 scroll.x=1140 → antd 宽度填充
-        // （@rc-component/table useWidthColumns）把唯一无 width 的名称列压到 ~1px，
-        // 1280×800 桌面首列逐字竖排不可读。新增/加宽固定列时必须同步上调 scroll.x
-        // （task-list-deep 列宽契约测试钉住）。
-        scroll={{ x: 1428 }}
+        // P1-1（UX 评审 2026-11-15）：不再用固定 scroll.x=1428 硬塞全部列。
+        // 缺省只渲染核心六列（名称/状态/上次执行/下次执行/启用/操作），低频辅助列
+        // 收进列设置（DEFAULT_HIDDEN_COLUMNS）；固定列宽合计在 1280 内容区内即可放下，
+        // 名称列弹性吸收剩余宽度。操作列 fixed right 常驻。若用户在列设置里恢复辅助列
+        // 导致超宽，由表格自身布局压缩/省略号承担，不再靠一条 1428px 的横滚兜底。
         /* §2.1：keyset 模式 = `false`（页码器整体消失，改由下方自绘「上一页 /
            下一页」承担），OFFSET 模式 = 原有配置（逐字节不变）。
 
@@ -1032,6 +1055,15 @@ export default function TaskListPage() {
           </Button>
         </div>
       )}
+
+      <TaskImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        existing={tasks}
+        currentProjectId={backendProjectId}
+        onImported={refresh}
+        onViewDetail={(id) => nav(`/tasks/${id}`)}
+      />
     </div>
   );
 }

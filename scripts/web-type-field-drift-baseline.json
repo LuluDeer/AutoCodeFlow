@@ -698,6 +698,60 @@
       "reason": "待处置（未配对）：VersionDiff 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
       "owner": "arch-core",
       "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/artifacts.ts\tArtifactIndexQuery",
+      "reason": "待处置（未配对）：ArtifactIndexQuery 是 GET /artifacts 查询参数视图模型；OpenAPI query 参数不生成 components schema，无字段可比面。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/inbox.ts\tInboxItem",
+      "reason": "待处置（未配对）：InboxItem 是聚合 deployment/session/approval/failure 多源引用的归一化视图模型，后端无对应 DTO。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/inbox.ts\tInboxSectionState",
+      "reason": "待处置（未配对）：InboxSectionState 是小节装载状态（loading/ready/error）纯前端状态形状，无后端 schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/inbox.ts\tInboxSections",
+      "reason": "待处置（未配对）：InboxSections 是 Record<小节键, InboxSectionState> 前端聚合容器，无后端 schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/inbox.ts\tInboxCountMap",
+      "reason": "待处置（未配对）：InboxCountMap 是 Record<小节键, number|null> 未知态计数口径（null=读不到），纯前端模型，无后端 schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/inbox.ts\tPendingDeploymentsResponse",
+      "reason": "待处置（未配对）：PendingDeploymentsResponse 是前端把 PaginatedAppDeploymentsDto 归一化为 {data,total} 的自有信封，非后端原始 DTO。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/inbox.ts\tQueueStallSnapshot",
+      "reason": "待处置（未配对）：QueueStallSnapshot 是队列停摆观测快照；后端 inspect-queue-stall 200 响应 content 无 schema，前端自行建模。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/inbox.ts\tAgentWaitingResult",
+      "reason": "待处置（未配对）：AgentWaitingResult 是内部判别联合 {approvals,sessions} | {error}，非 API 响应体，无后端 schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/inbox.ts\tStallResult",
+      "reason": "待处置（未配对）：StallResult 是内部判别联合 {snapshot} | {error}，非 API 响应体，无后端 schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     }
   ]
 }

@@ -132,7 +132,7 @@ describe('useMetricsStream 流行为', () => {
       });
     });
 
-    expect(qc.getQueryData(queryKeys.metrics.summary)).toEqual(summaryPayload);
+    expect(qc.getQueryData(queryKeys.metrics.summary())).toEqual(summaryPayload);
     expect(qc.getQueryData(queryKeys.metrics.executorStats)).toEqual([
       { id: 'e1', cpuUsage: 10 },
     ]);
@@ -243,7 +243,7 @@ describe('useMetricsStream 流行为', () => {
         es.onmessage?.({ data: 'not-json{{' });
       }),
     ).not.toThrow();
-    expect(qc.getQueryData(queryKeys.metrics.summary)).toBeUndefined();
+    expect(qc.getQueryData(queryKeys.metrics.summary())).toBeUndefined();
   });
 
   // ── A-4（审计降级黑洞）：具名 error 帧 = 后端快照查询降级 ────────────────
@@ -264,7 +264,7 @@ describe('useMetricsStream 流行为', () => {
       es.emit('error', { data: JSON.stringify({ failed: ['summary'], at: 'now' }) });
     });
     expect(screen.getByTestId('stream-degraded').textContent).toBe('degraded');
-    expect(refetchSpy).toHaveBeenCalledWith({ queryKey: queryKeys.metrics.summary });
+    expect(refetchSpy).toHaveBeenCalledWith({ queryKey: queryKeys.metrics.summary() });
 
     // 未列出的失败段不补拉（executors 不在 failed 数组）
     refetchSpy.mockClear();
@@ -291,7 +291,7 @@ describe('useMetricsStream 流行为', () => {
     });
     expect(screen.getByTestId('stream-degraded').textContent).toBe('degraded');
     // 降级拍不覆盖缓存（summary 为 null 不写入），旧值保留
-    expect(qc.getQueryData(queryKeys.metrics.summary)).toBeUndefined();
+    expect(qc.getQueryData(queryKeys.metrics.summary())).toBeUndefined();
 
     act(() => {
       es.onmessage?.({
@@ -299,7 +299,7 @@ describe('useMetricsStream 流行为', () => {
       });
     });
     expect(screen.getByTestId('stream-degraded').textContent).toBe('fresh');
-    expect(qc.getQueryData(queryKeys.metrics.summary)).toEqual(summaryPayload);
+    expect(qc.getQueryData(queryKeys.metrics.summary())).toEqual(summaryPayload);
   });
 
   it('A-4：畸形 error 帧按整体降级处理（置标志、不炸、不补拉）', async () => {

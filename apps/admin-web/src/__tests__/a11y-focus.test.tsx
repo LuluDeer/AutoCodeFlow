@@ -73,7 +73,7 @@ if (!window.matchMedia) {
   })) as unknown as typeof window.matchMedia;
 }
 
-const SEARCH_PLACEHOLDER = '搜索任务、执行记录、执行器、应用，或输入指令…';
+const SEARCH_PLACEHOLDER = '搜索页面、任务、执行记录、执行器、应用，或输入指令…';
 
 const taskFixture = {
   id: 'task-1',
@@ -321,7 +321,7 @@ describe('UI-12 CommandPalette — dialog 语义与焦点', () => {
     expect(input.getAttribute('role')).toBe('combobox');
     expect(input.getAttribute('aria-autocomplete')).toBe('list');
     expect(input.getAttribute('aria-controls')).toBe('command-palette-listbox');
-    expect(input.getAttribute('aria-label')).toBe('搜索任务、执行记录、执行器、应用');
+    expect(input.getAttribute('aria-label')).toBe('搜索页面、任务、执行记录、执行器、应用');
 
     const listbox = screen.getByRole('listbox', { name: '搜索结果' });
     expect(listbox.getAttribute('id')).toBe('command-palette-listbox');

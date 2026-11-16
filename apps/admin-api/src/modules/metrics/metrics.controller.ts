@@ -71,19 +71,22 @@ export class MetricsController {
 
   @Get("summary")
   @ApiOkResponse({ type: MetricsSummaryResponseDto })
-  getSummary() {
-    return this.svc.getSummary();
+  getSummary(@Query("projectId") projectId?: string) {
+    return this.svc.getSummary(projectId);
   }
 
   @Get("trend")
   @ApiOkResponse({ type: [MetricsTrendRowDto] })
-  getDailyTrend(@Query("days") days?: string) {
+  getDailyTrend(
+    @Query("days") days?: string,
+    @Query("projectId") projectId?: string,
+  ) {
     // Cap at 90 days to prevent full-table scans from unconstrained caller input
     const parsed = days ? parseInt(days, 10) : 7;
     const safeDays = Number.isNaN(parsed)
       ? 7
       : Math.min(Math.max(parsed, 1), 90);
-    return this.svc.getDailyTrend(safeDays);
+    return this.svc.getDailyTrend(safeDays, projectId);
   }
 
   @Get("executors")
@@ -94,8 +97,8 @@ export class MetricsController {
 
   @Get("failures")
   @ApiOkResponse({ type: [MetricsRecentFailureDto] })
-  getRecentFailures() {
-    return this.svc.getRecentFailures();
+  getRecentFailures(@Query("projectId") projectId?: string) {
+    return this.svc.getRecentFailures(projectId);
   }
 
   /** R4-§5.5: 调度可观测性（tick / trigger 计数器 + BullMQ 队列深度） */

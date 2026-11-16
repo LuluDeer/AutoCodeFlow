@@ -30,10 +30,13 @@ import {
   ApplicationListPage,
   ApplicationDetailPage,
   ExecutionsPage,
+  ArtifactsPage,
   ProjectsPage,
+  ProjectDetailPage,
   SopsPage,
   SopFromVideoPage,
   AgentSessionsPage,
+  InboxPage,
 } from './router-pages';
 
 const withSuspense = (children: ReactNode) => (
@@ -75,6 +78,8 @@ export const router = createBrowserRouter(
         { path: 'tasks/:id/edit', element: withSuspense(<TaskFormPage />) },
         { path: 'tasks/:taskId/executions/:execId', element: withSuspense(<ExecutionDetailPage />) },
         { path: 'executions', element: withSuspense(<ExecutionsPage />) },
+        // P1-3：产物库（GET /artifacts 为 ADMIN-only，路由级门控同 /audit）
+        { path: 'artifacts', element: <RequireAdmin>{withSuspense(<ArtifactsPage />)}</RequireAdmin> },
         { path: 'executors', element: withSuspense(<ExecutorListPage />) },
         // R5 RBAC: 安装向导依赖 ADMIN-only 的 install-cmd / executor-shared-token
         { path: 'executors/install', element: <RequireAdmin>{withSuspense(<ExecutorInstallWizardPage />)}</RequireAdmin> },
@@ -88,6 +93,9 @@ export const router = createBrowserRouter(
         { path: 'audit', element: <RequireAdmin>{withSuspense(<AuditLogPage />)}</RequireAdmin> },
         { path: 'applications', element: withSuspense(<ApplicationListPage />) },
         { path: 'projects', element: withSuspense(<ProjectsPage />) },
+        // P1-2：项目详情统计。置于静态 `projects` 之后；`projects/:id` 单段动态，
+        // 与 `projects/me/roles`（两段）不冲突。
+        { path: 'projects/:id', element: withSuspense(<ProjectDetailPage />) },
         { path: 'applications/:id', element: withSuspense(<ApplicationDetailPage />) },
         { path: 'executor-packages', element: <RequireAdmin>{withSuspense(<ExecutorPackagesPage />)}</RequireAdmin> },
         { path: 'sops', element: <RequireAdmin>{withSuspense(<SopsPage />)}</RequireAdmin> },
@@ -96,6 +104,8 @@ export const router = createBrowserRouter(
           element: <RequireAdmin>{withSuspense(<SopFromVideoPage />)}</RequireAdmin>,
         },
         { path: 'agent-sessions', element: <RequireAdmin>{withSuspense(<AgentSessionsPage />)}</RequireAdmin> },
+        // P1-4：待办收件箱（数据源全为 ADMIN-only 接口，路由级门控同会话页）
+        { path: 'inbox', element: <RequireAdmin>{withSuspense(<InboxPage />)}</RequireAdmin> },
       ],
     },
   ],

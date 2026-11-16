@@ -1,0 +1,435 @@
+{
+  "meta": {
+    "generatedAt": "2026-11-16T03:46:26.033Z",
+    "baseUrl": "http://localhost:5176",
+    "shotDir": "after",
+    "dark": false,
+    "evidenceDir": "E:\\softwareData\\coding\\AutoCodeFlow\\docs\\archive\\audits\\assets\\product-ui-remediation-2026-11-15\\visual-1280",
+    "viewports": [
+      {
+        "w": 375,
+        "h": 812,
+        "label": "375x812"
+      }
+    ],
+    "criteria": {
+      "clipped": "bottom > 视口高+1 且 doc/Content/祖先链均无可纵向滚动容器",
+      "overlap": "两个可交互元素 rect 相交 >2px 且互不包含",
+      "truncated": "scrollWidth > clientWidth+1 且 overflow hidden/ellipsis/nowrap;无 ellipsis 的硬截断计入偏差,ellipsis 省略号单列参考",
+      "fontMismatch": "同一层级标签出现 ≥2 种 computed font-size",
+      "spacing": "相邻块间距为 0 或 >2 倍中位数"
+    }
+  },
+  "summary": {
+    "pages": 4,
+    "viewports": [
+      "375x812"
+    ],
+    "totalRuns": 4,
+    "pageerrorPages": [],
+    "hOverflowPages": [],
+    "findingCounts": {
+      "clipped": 0,
+      "overlap": 0,
+      "truncated": 0,
+      "truncatedEllipsis": 7,
+      "fontMismatch": 0,
+      "spacing": 1
+    }
+  },
+  "pages": {
+    "dashboard": {
+      "path": "/dashboard",
+      "viewports": {
+        "375x812": {
+          "dark": false,
+          "gotoError": null,
+          "shot": "dashboard-375x812.png",
+          "pageErrors": [],
+          "consoleErrors": [],
+          "metrics": {
+            "viewport": {
+              "width": 375,
+              "height": 812
+            },
+            "doc": {
+              "scrollWidth": 375,
+              "clientWidth": 375,
+              "scrollHeight": 2658,
+              "clientHeight": 812
+            },
+            "body": {
+              "scrollWidth": 375,
+              "scrollHeight": 2658
+            },
+            "bodyHOverflow": false,
+            "bodyVOverflow": true,
+            "header": {
+              "top": 0,
+              "height": 56,
+              "bottom": 56
+            },
+            "content": {
+              "top": 56,
+              "bottom": 2658,
+              "clientWidth": 375,
+              "clientHeight": 2602,
+              "scrollWidth": 375,
+              "scrollHeight": 2602,
+              "scrollableY": false,
+              "scrollableX": false
+            },
+            "firstBlock": {
+              "sel": "div",
+              "top": 68,
+              "bottom": 201,
+              "height": 133
+            },
+            "tableRows": null,
+            "fixedOverlays": [
+              {
+                "sel": "aside.ant-layout-sider.ant-layout-sider-dark",
+                "top": 0,
+                "bottom": 812,
+                "left": -220,
+                "right": 0,
+                "zIndex": "1000"
+              },
+              {
+                "sel": "div.go1434192219.go1754112896",
+                "top": 752,
+                "bottom": 800,
+                "left": 315,
+                "right": 363,
+                "zIndex": "100000"
+              }
+            ],
+            "findings": {
+              "clipped": [],
+              "overlapPairs": [],
+              "truncated": [],
+              "truncatedEllipsis": [
+                {
+                  "sel": "div.ant-select-content.ant-select-content-has-value",
+                  "text": "全部项目",
+                  "scrollWidth": 56,
+                  "clientWidth": 46,
+                  "whiteSpace": "nowrap",
+                  "overflowX": "hidden",
+                  "textOverflow": "ellipsis",
+                  "width": "46px"
+                },
+                {
+                  "sel": "span.ant-typography.ant-typography-ellipsis",
+                  "text": "生产库每日全量备份-含超长名称验证用例-上海金融中心机房-primary",
+                  "scrollWidth": 369,
+                  "clientWidth": 189,
+                  "whiteSpace": "nowrap",
+                  "overflowX": "hidden",
+                  "textOverflow": "ellipsis",
+                  "width": "188.531px"
+                }
+              ],
+              "fontMismatch": [],
+              "spacing": [
+                {
+                  "kind": "gap-outlier",
+                  "top": 1847,
+                  "gap": 94,
+                  "median": 16
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "tasks": {
+      "path": "/tasks",
+      "viewports": {
+        "375x812": {
+          "dark": false,
+          "gotoError": null,
+          "shot": "tasks-375x812.png",
+          "pageErrors": [],
+          "consoleErrors": [],
+          "metrics": {
+            "viewport": {
+              "width": 375,
+              "height": 812
+            },
+            "doc": {
+              "scrollWidth": 375,
+              "clientWidth": 375,
+              "scrollHeight": 1107,
+              "clientHeight": 812
+            },
+            "body": {
+              "scrollWidth": 375,
+              "scrollHeight": 1107
+            },
+            "bodyHOverflow": false,
+            "bodyVOverflow": true,
+            "header": {
+              "top": 0,
+              "height": 56,
+              "bottom": 56
+            },
+            "content": {
+              "top": 56,
+              "bottom": 1107,
+              "clientWidth": 375,
+              "clientHeight": 1051,
+              "scrollWidth": 375,
+              "scrollHeight": 1051,
+              "scrollableY": false,
+              "scrollableX": false
+            },
+            "firstBlock": {
+              "sel": "div",
+              "top": 68,
+              "bottom": 179,
+              "height": 111
+            },
+            "tableRows": null,
+            "fixedOverlays": [
+              {
+                "sel": "aside.ant-layout-sider.ant-layout-sider-dark",
+                "top": 0,
+                "bottom": 812,
+                "left": -220,
+                "right": 0,
+                "zIndex": "1000"
+              },
+              {
+                "sel": "div.go1434192219.go1754112896",
+                "top": 752,
+                "bottom": 800,
+                "left": 315,
+                "right": 363,
+                "zIndex": "100000"
+              }
+            ],
+            "findings": {
+              "clipped": [],
+              "overlapPairs": [],
+              "truncated": [],
+              "truncatedEllipsis": [
+                {
+                  "sel": "div.ant-select-content.ant-select-content-has-value",
+                  "text": "全部项目",
+                  "scrollWidth": 56,
+                  "clientWidth": 46,
+                  "whiteSpace": "nowrap",
+                  "overflowX": "hidden",
+                  "textOverflow": "ellipsis",
+                  "width": "46px"
+                }
+              ],
+              "fontMismatch": [],
+              "spacing": []
+            }
+          }
+        }
+      }
+    },
+    "executions": {
+      "path": "/executions",
+      "viewports": {
+        "375x812": {
+          "dark": false,
+          "gotoError": null,
+          "shot": "executions-375x812.png",
+          "pageErrors": [],
+          "consoleErrors": [],
+          "metrics": {
+            "viewport": {
+              "width": 375,
+              "height": 812
+            },
+            "doc": {
+              "scrollWidth": 375,
+              "clientWidth": 375,
+              "scrollHeight": 1469,
+              "clientHeight": 812
+            },
+            "body": {
+              "scrollWidth": 375,
+              "scrollHeight": 1469
+            },
+            "bodyHOverflow": false,
+            "bodyVOverflow": true,
+            "header": {
+              "top": 0,
+              "height": 56,
+              "bottom": 56
+            },
+            "content": {
+              "top": 56,
+              "bottom": 1469,
+              "clientWidth": 375,
+              "clientHeight": 1413,
+              "scrollWidth": 375,
+              "scrollHeight": 1413,
+              "scrollableY": false,
+              "scrollableX": false
+            },
+            "firstBlock": {
+              "sel": "div",
+              "top": 68,
+              "bottom": 179,
+              "height": 111
+            },
+            "tableRows": null,
+            "fixedOverlays": [
+              {
+                "sel": "aside.ant-layout-sider.ant-layout-sider-dark",
+                "top": 0,
+                "bottom": 812,
+                "left": -220,
+                "right": 0,
+                "zIndex": "1000"
+              },
+              {
+                "sel": "div.go1434192219.go1754112896",
+                "top": 752,
+                "bottom": 800,
+                "left": 315,
+                "right": 363,
+                "zIndex": "100000"
+              }
+            ],
+            "findings": {
+              "clipped": [],
+              "overlapPairs": [],
+              "truncated": [],
+              "truncatedEllipsis": [
+                {
+                  "sel": "div.ant-select-content.ant-select-content-has-value",
+                  "text": "全部项目",
+                  "scrollWidth": 56,
+                  "clientWidth": 46,
+                  "whiteSpace": "nowrap",
+                  "overflowX": "hidden",
+                  "textOverflow": "ellipsis",
+                  "width": "46px"
+                },
+                {
+                  "sel": "a.a",
+                  "text": "生产库每日全量备份-含超长名称验证用例-上海金融中心机房-primary",
+                  "scrollWidth": 431,
+                  "clientWidth": 289,
+                  "whiteSpace": "nowrap",
+                  "overflowX": "hidden",
+                  "textOverflow": "ellipsis",
+                  "width": "288.844px"
+                },
+                {
+                  "sel": "a.a",
+                  "text": "生产库每日全量备份-含超长名称验证用例-上海金融中心机房-primary",
+                  "scrollWidth": 431,
+                  "clientWidth": 281,
+                  "whiteSpace": "nowrap",
+                  "overflowX": "hidden",
+                  "textOverflow": "ellipsis",
+                  "width": "280.547px"
+                }
+              ],
+              "fontMismatch": [],
+              "spacing": []
+            }
+          }
+        }
+      }
+    },
+    "inbox": {
+      "path": "/inbox",
+      "viewports": {
+        "375x812": {
+          "dark": false,
+          "gotoError": null,
+          "shot": "inbox-375x812.png",
+          "pageErrors": [],
+          "consoleErrors": [],
+          "metrics": {
+            "viewport": {
+              "width": 375,
+              "height": 812
+            },
+            "doc": {
+              "scrollWidth": 375,
+              "clientWidth": 375,
+              "scrollHeight": 2743,
+              "clientHeight": 812
+            },
+            "body": {
+              "scrollWidth": 375,
+              "scrollHeight": 2743
+            },
+            "bodyHOverflow": false,
+            "bodyVOverflow": true,
+            "header": {
+              "top": 0,
+              "height": 56,
+              "bottom": 56
+            },
+            "content": {
+              "top": 56,
+              "bottom": 2743,
+              "clientWidth": 375,
+              "clientHeight": 2687,
+              "scrollWidth": 375,
+              "scrollHeight": 2687,
+              "scrollableY": false,
+              "scrollableX": false
+            },
+            "firstBlock": {
+              "sel": "div",
+              "top": 68,
+              "bottom": 201,
+              "height": 133
+            },
+            "tableRows": null,
+            "fixedOverlays": [
+              {
+                "sel": "aside.ant-layout-sider.ant-layout-sider-dark",
+                "top": 0,
+                "bottom": 812,
+                "left": -220,
+                "right": 0,
+                "zIndex": "1000"
+              },
+              {
+                "sel": "div.go1434192219.go1754112896",
+                "top": 752,
+                "bottom": 800,
+                "left": 315,
+                "right": 363,
+                "zIndex": "100000"
+              }
+            ],
+            "findings": {
+              "clipped": [],
+              "overlapPairs": [],
+              "truncated": [],
+              "truncatedEllipsis": [
+                {
+                  "sel": "div.ant-select-content.ant-select-content-has-value",
+                  "text": "全部项目",
+                  "scrollWidth": 56,
+                  "clientWidth": 46,
+                  "whiteSpace": "nowrap",
+                  "overflowX": "hidden",
+                  "textOverflow": "ellipsis",
+                  "width": "46px"
+                }
+              ],
+              "fontMismatch": [],
+              "spacing": []
+            }
+          }
+        }
+      }
+    }
+  }
+}

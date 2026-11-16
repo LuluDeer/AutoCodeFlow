@@ -1,4 +1,31 @@
 import { client } from './client';
+import type { components } from '../types/generated/api-types';
+import type { PageResult } from './tasks';
+
+/**
+ * P1-3：GET /artifacts 索引行（契约派生类型，与 openapi ExecutionArtifactRowDto 对齐；
+ * 后端 DTO 改动时随 `gen:api-types` 同步）。
+ */
+export type ArtifactRow = components['schemas']['ExecutionArtifactRowDto'];
+
+/**
+ * GET /artifacts 查询参数。后端支持：page / pageSize / applicationId / taskId /
+ * q（文件名关键字）/ from / to（createdAt 闭区间，ISO-8601）/ ext（扩展名白名单）。
+ */
+export interface ArtifactIndexQuery {
+  page?: number;
+  pageSize?: number;
+  applicationId?: string;
+  taskId?: string;
+  /** 文件名关键字（name ILIKE 模糊匹配，trim 后空串视为未传）。 */
+  q?: string;
+  /** createdAt >= 该 ISO-8601 时刻（闭区间起点）。 */
+  from?: string;
+  /** createdAt <= 该 ISO-8601 时刻（闭区间终点）。 */
+  to?: string;
+  /** 扩展名（小写、不带点；后端白名单外 400）。 */
+  ext?: string;
+}
 
 /**
  * FEAT-05（UI 半场）：执行产物（artifact）清单条目。
@@ -53,6 +80,26 @@ export const artifactsApi = {
     a.remove();
     URL.revokeObjectURL(url);
   },
+
+  /**
+   * P1-3：跨执行产物索引（GET /artifacts，ADMIN-only）。
+   *
+   * 契约事实：返回 `paginate()` 分页信封（list/items/total/page/pageSize/totalPages），
+   * `total` 是**过滤后**总数；query 支持 applicationId / taskId / q / from / to / ext
+   * 组合过滤，全部在 execution_artifacts 索引表上生效。
+   */
+  listIndex: (query: ArtifactIndexQuery, signal?: AbortSignal) =>
+    client.get<PageResult<ArtifactRow>>('/artifacts', { params: query, signal }),
+
+  /**
+   * 取产物原始字节（预览用；与 downloadArtifact 同一下载端点，区别是不触发保存、
+   * 由调用方持有 objectURL 并在关闭时 revoke）。
+   */
+  fetchBlob: (execId: string, name: string, signal?: AbortSignal) =>
+    client.get<Blob>(
+      `/tasks/executions/${execId}/artifacts/${encodeURIComponent(name)}`,
+      { responseType: 'blob', signal },
+    ),
 };
 
 // Named exports for convenience（对齐 executor-packages.ts 的导出风格）

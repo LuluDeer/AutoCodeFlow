@@ -572,10 +572,10 @@
     "apps/admin-api/src/modules/scheduler/__tests__/scheduler.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 3699,
-      "why": "2026-11-04 实测 nonCommentLines=3663 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6（+4 例：补偿窗口收紧/抑制可观测）+ A6b（+1 例：被消耗的落点不算漏跑）两批共 +34 非注释行；本轮 T2-B4 第一刀未动本文件。 | **R9 flaky 修正（+2 行，已复核批准）**：`A6: fixed_rate 退回一个真实周期作窗口起点`的判据原为 `ageMs = Date.now() - windowStart` ≤ `60_001` —— 它把**两次独立的墙钟采样**相减，量的是 `checkMisfires()` 的 await 链 + 事件循环排队，**不是窗口语义**；11 个 worker 跑 456 套件时这段间隔涨到几 ms 就红（实测 60_001 → 60_003，全量套件下 ~1/4 轮复现）。改为**采样窗口不变式** `windowStart ∈ [before - PERIOD_MS, after)`（与机器快慢无关）。**+2 非注释行**来自 `before`/`after` 两个采样点与命名常量 `PERIOD_MS`（被长注释多次引用，内联会与注释脱节）。⇒ 这是**修正判据**而非新增功能，不属棘轮想防的「无上限增长」；已作为复核人批准。",
+      "maxLines": 3751,
+      "why": "2026-11-04 实测 nonCommentLines=3663 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6（+4 例：补偿窗口收紧/抑制可观测）+ A6b（+1 例：被消耗的落点不算漏跑）两批共 +34 非注释行；本轮 T2-B4 第一刀未动本文件。 | **R9 flaky 修正（+2 行，已复核批准）**：`A6: fixed_rate 退回一个真实周期作窗口起点`的判据原为 `ageMs = Date.now() - windowStart` ≤ `60_001` —— 它把**两次独立的墙钟采样**相减，量的是 `checkMisfires()` 的 await 链 + 事件循环排队，**不是窗口语义**；11 个 worker 跑 456 套件时这段间隔涨到几 ms 就红（实测 60_001 → 60_003，全量套件下 ~1/4 轮复现）。改为**采样窗口不变式** `windowStart ∈ [before - PERIOD_MS, after)`（与机器快慢无关）。**+2 非注释行**来自 `before`/`after` 两个采样点与命名常量 `PERIOD_MS`（被长注释多次引用，内联会与注释脱节）。⇒ 这是**修正判据**而非新增功能，不属棘轮想防的「无上限增长」；已作为复核人批准。 | **2026-11-15 本轮重签（+52 非注释行）**：INCIDENT-2026-11-10 多点 cron 跨夜空档成批漏单修复（24b5e98b，`estimateCronPeriodMs` 由「最近一次触达间隔」改为「回看窗口内相邻落点最小间隔」）补 8 条回归用例（`INCIDENT-2026-11-10` 分组），锁定 6 种 cron 形状的真实周期与「TTL 严格小于最小落点间隔」不变式；ceiling.nonCommentLines 3699→3751，函数体/密度/exports 未变。",
       "ceiling": {
-        "nonCommentLines": 3699,
+        "nonCommentLines": 3751,
         "functionLines": 30,
         "ctorParams": 0,
         "exports": 0,
@@ -590,14 +590,14 @@
     "apps/admin-api/src/modules/scheduler/scheduler.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1875,
-      "why": "2026-11-04 实测 nonCommentLines=1828、functionLines=405 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6（补偿窗口收紧）+ A6b（显式消耗下一计划点入口）两批共 +47 非注释行（闸 3 窗口起点收紧 / 到点跳过一次 / 补偿互认闸 / 登记与消费的条件 UPDATE / 节流表）。本轮 T2-B4 第一刀（执行记录读面搬出）**净减** 47 行（见 commit 说明），但 A6/A6b 的净增仍在。",
+      "maxLines": 1884,
+      "why": "2026-11-04 实测 nonCommentLines=1828、functionLines=405 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6（补偿窗口收紧）+ A6b（显式消耗下一计划点入口）两批共 +47 非注释行（闸 3 窗口起点收紧 / 到点跳过一次 / 补偿互认闸 / 登记与消费的条件 UPDATE / 节流表）。本轮 T2-B4 第一刀（执行记录读面搬出）**净减** 47 行（见 commit 说明），但 A6/A6b 的净增仍在。 | **2026-11-15 本轮重签（+9 非注释行）**：同一 INCIDENT-2026-11-10 修复（24b5e98b）——周期估算改取回看窗口相邻落点最小间隔，含由近及远枚举、2 天跨度上限与 10 分钟 (表达式|时区) 缓存；ceiling.nonCommentLines 1875→1884，分支密度 19.4→19.5（分母变小的被动上升，判定点数未增；<20 阈值仅记录），函数体 405 未变。",
       "ceiling": {
-        "nonCommentLines": 1875,
+        "nonCommentLines": 1884,
         "functionLines": 405,
         "ctorParams": 0,
         "exports": 26,
-        "branchDensity": 19.4
+        "branchDensity": 19.5
       },
       "firstRun": {
         "bad": [
@@ -645,14 +645,14 @@
     "apps/admin-api/src/modules/task/task.controller.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1355,
-      "why": "2026-11-04 实测 nonCommentLines=1354 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6b 把 `consumeNextFirePoint` 纳入幂等键的 payload hash（漏掉它 ⇒ 同键同参的 replay 会静默吞掉「勾选消耗」）⇒ 1354 → 1355。本行是**功能必需的判据**，不是结构恶化。",
+      "maxLines": 1394,
+      "why": "2026-11-04 实测 nonCommentLines=1354 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6b 把 `consumeNextFirePoint` 纳入幂等键的 payload hash（漏掉它 ⇒ 同键同参的 replay 会静默吞掉「勾选消耗」）⇒ 1354 → 1355。本行是**功能必需的判据**，不是结构恶化。 | **2026-11-15 本轮重签（+13 非注释行）**：P1-2 项目上下文过滤贯通（878812db）——任务查询路由/查询 DTO 接项目上下文参数，与执行/应用/指标查询同一套项目过滤口径；ceiling.nonCommentLines 1355→1368，函数体 68、密度 5.1（较基线 5.2 净降）、exports 1 未变。 | **2026-11-16 P2-2 重签（+24 非注释行）**：执行列表/导出端点白名单透传新增 runtime（tasks.runtime 枚举）与 triggerType（执行行自由 varchar）两个查询参数；ceiling.nonCommentLines 1368→1392，函数体 68、exports 1 未变，密度 5.0 较 5.1 净降。 | **2026-11-16 二次重签（+2 非注释行）**：admin-api lint 的 Prettier 对两处 runtime `@ApiQuery` description 自动折行；纯格式化、无新增语义，ceiling.nonCommentLines 1392→1394，函数体/密度/exports 未变。",
       "ceiling": {
-        "nonCommentLines": 1355,
+        "nonCommentLines": 1394,
         "functionLines": 68,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 5.2
+        "branchDensity": 5.1
       },
       "firstRun": {
         "bad": [
@@ -681,14 +681,14 @@
     "apps/admin-api/src/modules/task/task.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 2863,
-      "why": "R125 广播释放依赖改为必填（漏接线变 TS2345 而非静默 no-op，+3）；回滚值 2860",
+      "maxLines": 2929,
+      "why": "R125 广播释放依赖改为必填（漏接线变 TS2345 而非静默 no-op，+3）；回滚值 2860。 | **2026-11-15 本轮重签（+62 非注释行）**：P1-1 列表行批量回填最近一次真实执行摘要 lastExecution（8ccf6c42：响应 DTO 补 lastExecution 字段 + 服务层按任务 id 批量查询最近执行摘要，是前端任务列表「上次执行结果/耗时/深链」的数据来源）；P1-2 项目上下文过滤（878812db）另带 2 行查询条件。ceiling.nonCommentLines 2863→2925，函数体 316、exports 16 未变，密度 20.9 较基线 21 净降。 | **2026-11-16 P2-2 重签（+4 非注释行）**：执行列表/导出两路共享的过滤器入参类型补 runtime/triggerType 两个字段透传（谓词在 collaborator 唯一真值源，本文件仅接线）；ceiling.nonCommentLines 2925→2929，函数体 316、exports 16 未变，密度 20.9→21.0（分母变小的被动上升，判定点数未增）。",
       "ceiling": {
-        "nonCommentLines": 2863,
+        "nonCommentLines": 2929,
         "functionLines": 316,
         "ctorParams": 0,
         "exports": 16,
-        "branchDensity": 21
+        "branchDensity": 21.0
       },
       "firstRun": {
         "bad": [
@@ -737,14 +737,14 @@
     "apps/admin-web/scripts/ux-walkthrough.mjs": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1055,
-      "why": "2026-11-04 实测 nonCommentLines=1055 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1261,
+      "why": "2026-11-04 实测 nonCommentLines=1055 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。2026-11-15 P1-5 补三条导入/PATCH 夹具路由（POST /tasks/import、POST /task-templates/import、PATCH /task-templates/:id），实测 nonCommentLines=1078，棘轮上限按实测上调。 | **2026-11-15 本轮重签（+46 非注释行）**：P1-3/P1-4 产物库与待办收件箱两个新值班入口（1fe742e1）——走查矩阵补 /artifacts、/inbox 页面及其任务深链的夹具路由、视口与暗色用例；ceiling.nonCommentLines 1078→1124，函数体 281、密度 24.8（较基线 25.7 净降）未变口径。 | **2026-11-15 收口轮重签（+67 非注释行）**：C 部分全站浏览器回归补齐 /projects/:id 项目详情页夹具（GET /projects/:id 实体回显、GET /projects/:id/summary 统计摘要）与三视口用例，并新增 1280 桌面端列表容器横滚手量探针（measureListContainers 度量 .ant-table-content/.ant-list 的 scrollWidth/clientWidth，pushDesktopMetrics 落报告小节，区分表格内部横滚与 body 级视口溢出）；ceiling.nonCommentLines 1124→1191、functionLines 281→283、branchDensity 24.8→24.9，exports/ctorParams 仍为 0。 | **2026-11-15 P1-3 筛选补齐重签（+12 非注释行）**：/artifacts 夹具路由补 q（文件名关键字）/from/to（createdAt 闭区间）/ext（扩展名后缀）过滤并对齐 paginate 信封（list/items 双键兼容）；为让本地截图探针复用 apiHandler/USER，补直接执行守卫（与 docs-screenshots.mjs 同型）与尾部 export 列表。实测 nonCommentLines 1191→1203、exports 0→1，functionLines 283、branchDensity 24.9、ctorParams 0 未变口径。 | **2026-11-16 P2-1 指标口径分离重签（+28 非注释行）**：metrics 夹具按 projectId 分流——summary/trend/failures 新增两套按项目映射的夹具值，executors/scheduler 保持恒定（镜像真实契约：执行器机队与调度计数器无项目归属）；供 Dashboard A/B 项目对比截图探针复用 apiHandler。实测 nonCommentLines 1203→1231、functionLines 283、exports 1、branchDensity 24.9→24.6（净降）、ctorParams 0 未变口径。 | **2026-11-16 P2-2 执行筛选夹具重签（+30 非注释行）**：/tasks/executions/all 路由补与后端同源的真过滤（status/taskId/taskName/executorAddress/projectId/runtime/triggerType/startTime/endTime，runtime/projectId 经 taskId 映射任务派生），并补 1 条 webhook 执行夹具行；实测 nonCommentLines 1231→1261、functionLines 283、exports 1 未变，branchDensity 24.6→26.1（过滤谓词分支点集中在新 helper 内）。",
       "ceiling": {
-        "nonCommentLines": 1055,
-        "functionLines": 281,
+        "nonCommentLines": 1261,
+        "functionLines": 283,
         "ctorParams": 0,
-        "exports": 0,
-        "branchDensity": 25.7
+        "exports": 1,
+        "branchDensity": 26.1
       },
       "firstRun": {
         "bad": [
@@ -756,7 +756,7 @@
       "owner": "guard-smith",
       "review_by": "2026-12-15",
       "maxLines": 709,
-      "why": "2026-11-04 实测 functionLines=614 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "why": "2026-11-04 实测 functionLines=614 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | **2026-11-15 本轮处置：外提瘦身，未放宽天花板**。P1-6 导航 IA 扁平化命令面板全路由覆盖（82454f0d）+ P1-3/P1-4 产物库/收件箱两条命令（1fe742e1）带来增长；分组归并纯数据层（类型/空态常量/computeSections）整体外提到 `components/palette-sections.ts`，本文件非注释行 723→626、函数体 616→557，均回落到既有天花板 709/614 以内；ceiling 数值一概不动。",
       "ceiling": {
         "nonCommentLines": 709,
         "functionLines": 614,
@@ -827,14 +827,14 @@
     "apps/admin-web/src/layouts/MainLayout.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 608,
-      "why": "2026-11-04 实测 functionLines=531 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 704,
+      "why": "2026-11-04 实测 functionLines=531 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | **2026-11-15 本轮重签（+57 非注释行 / 函数体 +48）**：P1-6 导航 IA 扁平化（82454f0d）菜单分组与全路由侧栏导航；P1-2 项目上下文选择器贯通（878812db）；P1-3/P1-4（1fe742e1）产物库/收件箱两个侧栏入口与徽标位。ceiling.nonCommentLines 608→665、functionLines 531→579，密度 11.7 较基线 11.8 净降。 | **2026-11-15 二次重签（+39 非注释行 / 函数体 +45）**：375 头部收敛——≤768px 把主题/语言/搜索三个次要控件收进「更多」下拉（header-more），窄屏隐藏用户触发器文本块、收窄项目切换器；未隐藏任何可达入口。ceiling.nonCommentLines 665→704、functionLines 579→624、密度 11.7→12.5（仍低于阈值 20，比值豁免）。",
       "ceiling": {
-        "nonCommentLines": 608,
-        "functionLines": 531,
+        "nonCommentLines": 704,
+        "functionLines": 624,
         "ctorParams": 0,
         "exports": 4,
-        "branchDensity": 11.8
+        "branchDensity": 12.5
       },
       "firstRun": {
         "bad": [
@@ -902,14 +902,14 @@
     "apps/admin-web/src/pages/ApplicationListPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 965,
-      "why": "2026-11-04 实测 nonCommentLines=993、functionLines=1118 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R188 重签：把互斥组表单区外提，本文件**净减**（993 → 965 / 1118 → 1091）】** R188 审计实测本文件 `nonCommentLines` 993、`functionLines` 1118 **双顶格** ⇒ 修 P3-3（互斥组下拉读失败 ⇒ 空下拉 ⇒ 用户以为没配 ⇒ 上线不带互斥约束的应用 ⇒ 撞机）**就地加代码必然破顶** ⇒ 按 R176 的 `ExecutionContextParams` 先例**外提**成 `components/ApplicationMutexGroupField.tsx`（87 行）⇒ 本文件**净减 28 行 / 函数体净减 27 行**。⚠️ 顺带试过「抽一个页内局部小组件」⇒ **反而 +11 行**（组件定义本身要 11 行、只省 2 行调用）⇒ 撤回，改为外提成独立文件。**其它度量一概不动**。",
+      "maxLines": 1052,
+      "why": "2026-11-04 实测 nonCommentLines=993、functionLines=1118 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R188 重签：把互斥组表单区外提，本文件**净减**（993 → 965 / 1118 → 1091）】** R188 审计实测本文件 `nonCommentLines` 993、`functionLines` 1118 **双顶格** ⇒ 修 P3-3（互斥组下拉读失败 ⇒ 空下拉 ⇒ 用户以为没配 ⇒ 上线不带互斥约束的应用 ⇒ 撞机）**就地加代码必然破顶** ⇒ 按 R176 的 `ExecutionContextParams` 先例**外提**成 `components/ApplicationMutexGroupField.tsx`（87 行）⇒ 本文件**净减 28 行 / 函数体净减 27 行**。⚠️ 顺带试过「抽一个页内局部小组件」⇒ **反而 +11 行**（组件定义本身要 11 行、只省 2 行调用）⇒ 撤回，改为外提成独立文件。**其它度量一概不动**。 | **2026-11-15 本轮重签（+87 非注释行 / 函数体 +90）**：P1-8 应用列表主链路与辅助统计解耦（485a370e，stats 失败原位降级不拖垮整页，统计读面抽到 application-list-stats.ts；+155/−74）；P1-2 项目上下文过滤（878812db，应用列表接项目上下文参数；+16/−7）。ceiling.nonCommentLines 965→1052、functionLines 1091→1181，密度 11.4 较基线 12 净降。",
       "ceiling": {
-        "nonCommentLines": 965,
-        "functionLines": 1091,
+        "nonCommentLines": 1052,
+        "functionLines": 1181,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 12
+        "branchDensity": 11.4
       },
       "firstRun": {
         "bad": [
@@ -921,14 +921,14 @@
     "apps/admin-web/src/pages/DashboardPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 497,
-      "why": "2026-11-04 实测 functionLines=479 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 550,
+      "why": "2026-11-04 实测 functionLines=479 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | **2026-11-15 本轮重签（+10 非注释行 / 函数体 +24）**：P1-2 项目上下文过滤贯通指标查询（878812db，Dashboard 卡片/趋势按当前项目上下文收口，+38/−10）。ceiling.nonCommentLines 497→507、functionLines 479→503、密度 19.1→19.9（仍 <20 阈值，比值记录口径）。 | **2026-11-16 P2-1 指标口径分离重签（+43 非注释行 / 函数体 +1）**：指标区拆「随当前项目」「全局口径（机队/调度）」两组分区标题 + 逐卡口径徽章（ScopeBadge/ScopeSectionHeader 本地组件，文字+图标双编码，全局卡 hover 说明口径）；summary 拆随项目/全局两路查询——在线执行器计数改走不带 projectId 的全局 summary 键（后端 executorRepo.count 无项目条件），其余随项目卡按 projectId 收口。实测 nonCommentLines 507→550、functionLines 503→504、exports 3、ctorParams 0 未变，branchDensity 19.9→18.7（净降，<20 阈值豁免记录口径）。",
       "ceiling": {
-        "nonCommentLines": 497,
-        "functionLines": 479,
+        "nonCommentLines": 550,
+        "functionLines": 504,
         "ctorParams": 0,
         "exports": 3,
-        "branchDensity": 19.1
+        "branchDensity": 18.7
       },
       "firstRun": {
         "bad": [
@@ -957,11 +957,11 @@
     "apps/admin-web/src/pages/ExecutionsPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 694,
-      "why": "2026-11-04 实测 functionLines=898 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[128,694],\"branchDensity\":[10.2,1.9]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-04 全指标重签：{\"exports\":[0,1]}。**阈值未动**（非注释行 900 / 函数体 300 / export 25 / 密度 20），改的是被记错的实测值 —— 根因是剥注释状态机不认正则字面量（正则里的引号让状态机误入字符串态，而字符串态从不置 hasCode ⇒ 非注释行/export 双双少算）。",
+      "maxLines": 771,
+      "why": "2026-11-04 实测 functionLines=898 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[128,694],\"branchDensity\":[10.2,1.9]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-04 全指标重签：{\"exports\":[0,1]}。**阈值未动**（非注释行 900 / 函数体 300 / export 25 / 密度 20），改的是被记错的实测值 —— 根因是剥注释状态机不认正则字面量（正则里的引号让状态机误入字符串态，而字符串态从不置 hasCode ⇒ 非注释行/export 双双少算）。 | **2026-11-15 本轮重签（+7 非注释行 / 函数体 +14）**：P1-2 项目上下文过滤贯通执行记录查询（878812db，执行列表与任务/应用/指标同一套项目过滤口径，+21/−2）。ceiling.nonCommentLines 694→701、functionLines 898→912，密度 1.9 未变。 | **2026-11-16 P2-2 重签（+70 非注释行 / 函数体 +67）**：执行记录页补状态/运行时/触发方式/时间范围四个筛选控件，筛选状态双向进 URL（含 startTime/endTime ISO 深链），列表与导出同源带上 runtime/triggerType，重置清空整组；最长编排函数体随控件与 URL 同步分支增大。ceiling.nonCommentLines 701→771、functionLines 912→979，exports 1 未变，密度 1.9→1.7（净降）。",
       "ceiling": {
-        "nonCommentLines": 694,
-        "functionLines": 898,
+        "nonCommentLines": 771,
+        "functionLines": 979,
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 1.9
@@ -975,10 +975,10 @@
     "apps/admin-web/src/pages/ExecutorDetailPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 863,
-      "why": "2026-11-04 实测 functionLines=996 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R18 重签（+2 非注释行 / +1 函数体）：展示口径收敛到纯函数 `utils/executor-metrics.ts::resolveRunningCount`（下限钳 0），页面里两处内联三元改成两次调用（含 import 与两行说明注释）。逻辑净减（原本各 3 行的三元），增量只来自 import 与调用点。回滚：revert R18-A ⇒ 条目回落 861/996。】",
+      "maxLines": 865,
+      "why": "2026-11-04 实测 functionLines=996 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R18 重签（+2 非注释行 / +1 函数体）：展示口径收敛到纯函数 `utils/executor-metrics.ts::resolveRunningCount`（下限钳 0），页面里两处内联三元改成两次调用（含 import 与两行说明注释）。逻辑净减（原本各 3 行的三元），增量只来自 import 与调用点。回滚：revert R18-A ⇒ 条目回落 861/996。】 | **2026-11-15 本轮重签（+2 非注释行）**：P1-7 任务/执行器详情动作分级与 Runbook Markdown 渲染（877d5b5b，危险动作二次确认分级 + MarkdownView 外提后详情动作区重排，+88/−83）。函数体 991 较基线 997 净降、密度 18.7 较基线 19.5 净降，这两项不再上调；ceiling.nonCommentLines 863→865。",
       "ceiling": {
-        "nonCommentLines": 863,
+        "nonCommentLines": 865,
         "functionLines": 997,
         "ctorParams": 0,
         "exports": 1,
@@ -1047,14 +1047,14 @@
     "apps/admin-web/src/pages/LoginPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 280,
-      "why": "2026-11-04 实测 functionLines=320 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 285,
+      "why": "2026-11-04 实测 functionLines=320 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | **2026-11-15 本轮重签（+5 非注释行 / 函数体 +4）**：P1-9 登录页页脚版本段对齐构建期注入的真实版本机制（7ac2cb9c，版本号单一事实源 version.txt，副标题/tooltip 同口径，+7/−1）。ceiling.nonCommentLines 280→285、functionLines 320→324、密度 9.3→9.5（<20 阈值，比值记录口径）。",
       "ceiling": {
-        "nonCommentLines": 280,
-        "functionLines": 320,
+        "nonCommentLines": 285,
+        "functionLines": 324,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 9.3
+        "branchDensity": 9.5
       },
       "firstRun": {
         "bad": [
@@ -1065,14 +1065,14 @@
     "apps/admin-web/src/pages/ProjectsPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 812,
-      "why": "2026-11-04 实测 functionLines=487 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 863,
+      "why": "2026-11-04 实测 functionLines=487 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | **2026-11-15 本轮重签（+51 非注释行 / 函数体 +57）**：P1-2 项目列表关键字搜索（ebca602f，列表 q 防抖进 URL 可分享；详情六卡/近期表属 ProjectDetailPage，不在本文件；+68/−10）。ceiling.nonCommentLines 812→863、functionLines 487→544、密度 12.3→12.7（<20 阈值，比值记录口径）。",
       "ceiling": {
-        "nonCommentLines": 812,
-        "functionLines": 487,
+        "nonCommentLines": 863,
+        "functionLines": 544,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 12.3
+        "branchDensity": 12.7
       },
       "firstRun": {
         "bad": [
@@ -1157,14 +1157,14 @@
     "apps/admin-web/src/pages/TaskListPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 715,
-      "why": "2026-11-04 实测 nonCommentLines=907、functionLines=1116 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**R6 (a2) 收紧**：234 行 columns 纯声明外提到 pages/task-list-columns.tsx（纯搬移，依赖全显式参数化，零行为变更），本文件实测降至 nonCommentLines=715、functionLines=893（最长 TaskListPage）、总行 1250→1027；棘轮上限同步下调。branchDensity 实测 16.5（较首跑 16.3 微升，因判定点密度随体积下降而上升）——上限**保持 16.3 不调高**（只许降不升，且更严）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[16.3,16.5]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "maxLines": 737,
+      "why": "2026-11-04 实测 nonCommentLines=907、functionLines=1116 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**R6 (a2) 收紧**：234 行 columns 纯声明外提到 pages/task-list-columns.tsx（纯搬移，依赖全显式参数化，零行为变更）。 | 2026-11-15 P1-5 任务导入闭环：工具栏补「导入」入口并挂载 TaskImportModal（弹窗本体拆到 components/TaskImportModal.tsx），实测 nonCommentLines=737、functionLines=923（最长 TaskListPage），棘轮上限按实测上调；branchDensity 16.7（密度 <20，仅记录）。",
       "ceiling": {
-        "nonCommentLines": 715,
-        "functionLines": 893,
+        "nonCommentLines": 737,
+        "functionLines": 923,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 16.5
+        "branchDensity": 16.7
       },
       "firstRun": {
         "bad": [
@@ -1194,10 +1194,10 @@
     "apps/admin-web/src/pages/audit/index.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 560,
-      "why": "2026-11-04 实测 functionLines=637 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**唯一一次提额**：A6b 新增审计动作 `task.fire_point_consumed` ⇒ 前端必须补一行标签映射（`check-interface-maps` 要求每个审计动作都有前端标签，否则审计列表显示原始码）⇒ 559 → 560。本行是**功能必需的标签**，不是结构恶化。",
+      "maxLines": 561,
+      "why": "2026-11-04 实测 functionLines=637 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**提额**：A6b 新增审计动作 `task.fire_point_consumed` ⇒ 前端补一行标签映射 ⇒ 559 → 560。2026-11-15 P1-5 新增审计动作 `task_template.update` ⇒ 再补一行标签映射 ⇒ 560 → 561。两行均为功能必需的标签，不是结构恶化。",
       "ceiling": {
-        "nonCommentLines": 560,
+        "nonCommentLines": 561,
         "functionLines": 637,
         "ctorParams": 0,
         "exports": 1,

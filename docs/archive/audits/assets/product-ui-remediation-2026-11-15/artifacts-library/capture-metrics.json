@@ -1,0 +1,121 @@
+{
+  "capturedAt": "2026-11-15T16:27:17.231Z",
+  "baseUrl": "http://localhost:5177",
+  "screenshots": [
+    {
+      "file": "artifacts-filters-1280.png",
+      "path": "/artifacts",
+      "viewport": 1280,
+      "rows": 5,
+      "cards": 0,
+      "totalText": "共 5 条",
+      "scrollWidth": 1080,
+      "clientWidth": 1012,
+      "docScrollWidth": 1280,
+      "viewportWidth": 1280
+    },
+    {
+      "file": "artifacts-filters-375.png",
+      "path": "/artifacts",
+      "viewport": 375,
+      "rows": 0,
+      "cards": 5,
+      "totalText": null,
+      "scrollWidth": null,
+      "clientWidth": null,
+      "docScrollWidth": 375,
+      "viewportWidth": 375
+    },
+    {
+      "file": "artifacts-filter-empty-1280.png",
+      "path": "/artifacts?q=__no_such_keyword__",
+      "viewport": 1280,
+      "rows": 0,
+      "cards": 0,
+      "totalText": null,
+      "scrollWidth": null,
+      "clientWidth": null,
+      "docScrollWidth": 1280,
+      "viewportWidth": 1280
+    }
+  ],
+  "combos": [
+    {
+      "key": "default",
+      "path": "/artifacts",
+      "rows": 5,
+      "cards": 0,
+      "totalText": "共 5 条",
+      "scrollWidth": 1080,
+      "clientWidth": 1012,
+      "docScrollWidth": 1280,
+      "viewportWidth": 1280
+    },
+    {
+      "key": "taskId=t-1001",
+      "path": "/artifacts?taskId=t-1001",
+      "rows": 2,
+      "cards": 0,
+      "totalText": "共 2 条",
+      "scrollWidth": 1080,
+      "clientWidth": 1012,
+      "docScrollWidth": 1280,
+      "viewportWidth": 1280
+    },
+    {
+      "key": "applicationId=app-2001",
+      "path": "/artifacts?applicationId=app-2001",
+      "rows": 2,
+      "cards": 0,
+      "totalText": "共 2 条",
+      "scrollWidth": 1080,
+      "clientWidth": 1012,
+      "docScrollWidth": 1280,
+      "viewportWidth": 1280
+    },
+    {
+      "key": "ext=png",
+      "path": "/artifacts?ext=png",
+      "rows": 1,
+      "cards": 0,
+      "totalText": "共 1 条",
+      "scrollWidth": 1080,
+      "clientWidth": 1012,
+      "docScrollWidth": 1280,
+      "viewportWidth": 1280
+    },
+    {
+      "key": "ext=csv",
+      "path": "/artifacts?ext=csv",
+      "rows": 1,
+      "cards": 0,
+      "totalText": "共 1 条",
+      "scrollWidth": 1080,
+      "clientWidth": 1012,
+      "docScrollWidth": 1280,
+      "viewportWidth": 1280
+    },
+    {
+      "key": "q=report",
+      "path": "/artifacts?q=report",
+      "rows": 1,
+      "cards": 0,
+      "totalText": "共 1 条",
+      "scrollWidth": 1080,
+      "clientWidth": 1012,
+      "docScrollWidth": 1280,
+      "viewportWidth": 1280
+    },
+    {
+      "key": "q=__no_such_keyword__",
+      "path": "/artifacts?q=__no_such_keyword__",
+      "rows": 0,
+      "cards": 0,
+      "totalText": null,
+      "scrollWidth": null,
+      "clientWidth": null,
+      "docScrollWidth": 1280,
+      "viewportWidth": 1280
+    }
+  ]
+}

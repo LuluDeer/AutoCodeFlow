@@ -1,0 +1,60 @@
+{
+  "slice": "P1-3 产物库 /artifacts",
+  "capturedAt": "2026-11-16T00:12:00+08:00",
+  "baseUrl": "http://localhost:5177 (vite dev, Playwright route 拦 /api 夹具, 无后端)",
+  "viewport": { "desktop": "1280x800", "mobile": "375x812" },
+  "tableMetrics1280": {
+    "selector": ".ant-table-content",
+    "scrollWidth": 1080,
+    "clientWidth": 1012,
+    "internalHorizontalScrollPx": 68,
+    "docScrollWidth": 1280,
+    "viewportWidth": 1280,
+    "bodyLevelOverflow": false,
+    "note": "68px 为表格容器内部横向滚动(与既有 ExecutionsPage x=1080 同基线);页面级文档宽度等于视口,无 body 级越界。"
+  },
+  "mobile375": {
+    "cards": 5,
+    "docScrollWidth": 375,
+    "viewportWidth": 375,
+    "bodyLevelOverflow": false,
+    "note": "本轮复测移动卡片列表 5 张,文档级滚动宽度等于视口 375,无 body 级横向越界;顶栏为共享 MainLayout 外壳基线,各既有页面同型。"
+  },
+  "scenarios": [
+    { "key": "artifacts-1280-light", "path": "/artifacts", "theme": "light", "viewport": 1280, "expect": "列表有数据:5 行,文件名/类型大小/来源执行/任务应用/产出时间/操作齐全", "status": "passed" },
+    { "key": "artifacts-375-light", "path": "/artifacts", "theme": "light", "viewport": 375, "expect": "移动卡片列表,文件名换行,操作按钮换行右对齐", "status": "passed" },
+    { "key": "artifacts-1280-dark", "path": "/artifacts", "theme": "dark", "viewport": 1280, "expect": "暗色表壳/表格,无白底残留", "status": "passed" },
+    { "key": "artifacts-task-1280", "path": "/artifacts?taskId=t-1001", "theme": "light", "viewport": 1280, "expect": "任务筛选预填,仅 t-1001 两行", "status": "passed" },
+    { "key": "artifacts-app-1280", "path": "/artifacts?applicationId=app-2001", "theme": "light", "viewport": 1280, "expect": "应用筛选预填,仅 app-2001 两行", "status": "passed" },
+    { "key": "artifacts-empty-1280", "path": "/artifacts?taskId=t-1004", "theme": "light", "viewport": 1280, "expect": "无匹配空态 + 清除筛选按钮", "status": "passed" },
+    { "key": "artifacts-preview-1280", "path": "/artifacts", "theme": "light", "viewport": 1280, "expect": "预览弹窗:gz 判为不支持内联,提示下载;显示 SHA-256", "status": "passed" },
+    { "key": "artifacts-filters-1280", "path": "/artifacts", "theme": "light", "viewport": 1280, "expect": "新增文件名关键字/时间范围/类型三个筛选控件可见;真实 total 渲染『共 5 条』;表格 5 行", "rows": 5, "total": 5, "status": "passed" },
+    { "key": "artifacts-filters-375", "path": "/artifacts", "theme": "light", "viewport": 375, "expect": "移动视图筛选控件纵向堆叠,5 张卡片,无 body 级横向溢出", "cards": 5, "status": "passed" },
+    { "key": "artifacts-filter-empty-1280", "path": "/artifacts?q=__no_such_keyword__", "theme": "light", "viewport": 1280, "expect": "关键字无匹配空态:空插画 + 调整提示 + 清除筛选按钮;无分页器、不假显示总数", "rows": 0, "total": 0, "status": "passed" }
+  ],
+  "filterComboResults1280": [
+    { "key": "default", "path": "/artifacts", "rows": 5, "total": 5, "totalText": "共 5 条" },
+    { "key": "taskId=t-1001", "path": "/artifacts?taskId=t-1001", "rows": 2, "total": 2, "totalText": "共 2 条" },
+    { "key": "applicationId=app-2001", "path": "/artifacts?applicationId=app-2001", "rows": 2, "total": 2, "totalText": "共 2 条" },
+    { "key": "ext=png", "path": "/artifacts?ext=png", "rows": 1, "total": 1, "totalText": "共 1 条" },
+    { "key": "ext=csv", "path": "/artifacts?ext=csv", "rows": 1, "total": 1, "totalText": "共 1 条" },
+    { "key": "q=report", "path": "/artifacts?q=report", "rows": 1, "total": 1, "totalText": "共 1 条" },
+    { "key": "q=__no_such_keyword__", "path": "/artifacts?q=__no_such_keyword__", "rows": 0, "total": 0, "totalText": null }
+  ],
+  "console": {
+    "pageErrors": 0,
+    "fixtureGap404Endpoints": [
+      "/agent/sessions",
+      "/agent/sessions/backlogged",
+      "/agent/sessions/queue-stall",
+      "/projects",
+      "/app-deployments/approvals/pending",
+      "/metrics/failures"
+    ],
+    "deprecationWarning": "Warning: [antd: Alert] `message` is deprecated. Please use `title` instead. (既有页面同型 antd v6 告警,非本切片新增缺陷)",
+    "note": "单产物 blob 端点 GET /tasks/executions/:execId/artifacts/:name 在夹具为 404(已知夹具缺口,非产品缺陷);浏览器内图片/文本预览会命中 loadFailed 提示,二进制/未知后缀走 unsupported 提示。"
+  },
+  "filtersSupportedByBackend": ["applicationId", "taskId", "q", "from", "to", "ext", "page", "pageSize"],
+  "filtersNotSupportedByBackend": ["executionId"],
+  "contractNotes": "GET /artifacts 返回 6 键分页信封(list/items/total/page/pageSize/totalPages);前端读取过滤后的真实 total 渲染『共 N 条』与分页器,不再用『本页行数 == pageSize』推断下一页,空结果不假显示总数。过滤全部走 execution_artifacts 索引表,不回落 jsonb;ext 取自文件名扩展名白名单,索引行无 content-type 字段。"
+}

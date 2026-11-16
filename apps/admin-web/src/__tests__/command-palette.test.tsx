@@ -74,7 +74,7 @@ function stubMatchMedia() {
   })) as unknown as typeof window.matchMedia;
 }
 
-const PLACEHOLDER = '搜索任务、执行记录、执行器、应用，或输入指令…';
+const PLACEHOLDER = '搜索页面、任务、执行记录、执行器、应用，或输入指令…';
 
 // 四组 fixture 名称均含 'service' —— 单一关键词可同时命中全部分组
 const taskFixture = {
@@ -342,10 +342,11 @@ describe('CommandPalette — 分组渲染与跳转', () => {
   it('UI-11 静态动作：零输入即可见（操作分组不参与过滤），键盘 Enter 直达新建任务', async () => {
     const { container } = renderPalette();
     const input = getPaletteInput();
-    // 不输入任何关键词：操作分组照常渲染（原搜索四组隐藏）
+    // 不输入任何关键词：操作分组照常渲染；后端实体搜索组隐藏
     expect(screen.getByText('新建任务')).toBeTruthy();
     expect(screen.getByText('创建应用')).toBeTruthy();
-    expect(screen.queryByText('任务')).toBeNull();
+    // 实体任务组此时无结果（fixture 名称不会零输入出现）
+    expect(screen.queryByText('Deploy Service')).toBeNull();
 
     // 高亮默认第一项=新建任务，Enter 直接跳 /tasks/new
     fireEvent.keyDown(input, { key: 'Enter', keyCode: 13, bubbles: true });
@@ -630,52 +631,54 @@ describe('CommandPalette — 数据流（防抖 / 降级 / 守卫）', () => {
   });
 });
 
-describe('CommandPalette — P2-5 静态页面导航（UX 审计）', () => {
-  // 旧实现只覆盖任务/执行记录/执行器/应用四类后端实体；审计日志/用户/设置等
-  // 静态页面无搜索路径、在面板里搜不到。现把静态页面路由作为「操作」分组补充，
-  // 仅在有关键词时按标题/描述客户端匹配出现（零输入仍只留两个主操作）。
-  it('零输入只渲染两个主操作，不出现静态页面导航', () => {
+describe('CommandPalette — P1-6 管理页面分组（UX 审计）', () => {
+  // P1-6：静态页面路由独立成「管理页面」分组，零输入即可见全部可达页面，
+  // 折叠导航下的页面也能 ⌘K 到达；关键词命中时再收窄。admin-only 与路由门控对齐。
+  it('零输入列出全部可达页面（含折叠分组内的 SOP / Agent 会话 / 执行器包）', () => {
     renderPalette();
-    expect(screen.getByText('新建任务')).toBeTruthy();
-    expect(screen.getByText('创建应用')).toBeTruthy();
-    // 旧缺陷：静态页面本来就无处可搜；修复后也不应零输入即铺满操作分组
-    expect(screen.queryByText('审计日志')).toBeNull();
-    expect(screen.queryByText('系统设置')).toBeNull();
+    expect(screen.getByText('管理页面')).toBeTruthy();
+    for (const page of ['控制台', '任务', '模板', '执行记录', '执行器', '执行器包', '应用', '注册中心', '用户', '项目', '审计', '通知', '设置', 'SOP', 'Agent 会话']) {
+      expect(screen.getByText(page)).toBeTruthy();
+    }
   });
 
-  it('输入关键词命中静态页面 -> 出现入口，点击直达该页面', async () => {
+  it('输入关键词命中静态页面 -> 收窄到该入口，点击直达', async () => {
     const { container } = renderPalette();
     const input = getPaletteInput();
     fireEvent.change(input, { target: { value: '审计' } });
 
     await waitFor(() => {
-      expect(screen.getByText('审计日志')).toBeTruthy();
+      expect(screen.getByText('审计')).toBeTruthy();
     }, { timeout: 5000 });
-    fireEvent.click(screen.getByText('审计日志'));
+    fireEvent.click(screen.getByText('审计'));
     await waitFor(() => {
       expect(container.textContent).toContain('route:/audit');
     });
   });
 
-  it('另一个静态页面（系统设置）同样可被关键词命中并直达', async () => {
+  it('另一个静态页面（设置）同样可被关键词命中并直达', async () => {
     const { container } = renderPalette();
     const input = getPaletteInput();
     fireEvent.change(input, { target: { value: '设置' } });
     await waitFor(() => {
-      expect(screen.getByText('系统设置')).toBeTruthy();
+      expect(screen.getByText('设置')).toBeTruthy();
     }, { timeout: 5000 });
-    fireEvent.click(screen.getByText('系统设置'));
+    fireEvent.click(screen.getByText('设置'));
     await waitFor(() => {
       expect(container.textContent).toContain('route:/settings');
     });
   });
 
-  it('admin-only 静态页面（审计日志）对普通用户隐藏', async () => {
+  it('admin-only 静态页面（审计 / SOP / Agent 会话 / 执行器包）对普通用户隐藏', async () => {
     useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } as never });
     renderPalette();
-    const input = getPaletteInput();
-    fireEvent.change(input, { target: { value: '审计' } });
-    await new Promise((r) => setTimeout(r, 400));
-    expect(screen.queryByText('审计日志')).toBeNull();
+    // 零输入即可判定：普通用户的管理页面分组不含 admin-only 项
+    expect(screen.queryByText('审计')).toBeNull();
+    expect(screen.queryByText('SOP')).toBeNull();
+    expect(screen.queryByText('Agent 会话')).toBeNull();
+    expect(screen.queryByText('执行器包')).toBeNull();
+    // 普通用户可达页面仍在列
+    expect(screen.getByText('项目')).toBeTruthy();
+    expect(screen.getByText('设置')).toBeTruthy();
   });
 });

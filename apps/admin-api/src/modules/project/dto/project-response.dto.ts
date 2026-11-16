@@ -195,6 +195,178 @@ export class ProjectRemovalImpactResponseDto {
 }
 
 /**
+ * GET /projects/:id/summary —— 项目详情统计的单行「最近失败」记录。
+ *
+ * 字段与 metrics.service.getRecentFailures 的投影对齐（执行行上冗余的
+ * taskName 直接带出，免二次回表 tasks）；`failureReason`/`errorMessage`/
+ * `duration` 均可空，前端按三态渲染，不编造。
+ */
+export class ProjectSummaryRecentFailureDto {
+  @ApiProperty({ description: "执行记录 ID（uuid）" })
+  id: string;
+
+  @ApiProperty({ description: "所属任务 ID（uuid）" })
+  taskId: string;
+
+  @ApiProperty({ description: "执行时快照的任务名" })
+  taskName: string;
+
+  @ApiProperty({
+    enum: [
+      "pending",
+      "running",
+      "success",
+      "failed",
+      "timeout",
+      "killed",
+      "cancelled",
+      "package_fetch_failed",
+    ],
+    description: "执行终态状态",
+  })
+  status: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "失败成因标签（失败/超时行有值，其余为 null）",
+  })
+  failureReason?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "失败错误信息（截断后的可读文本；无则 null）",
+  })
+  errorMessage?: string | null;
+
+  @ApiProperty({ description: "执行创建时间（ISO-8601）" })
+  createdAt: Date;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "执行耗时（毫秒）；未跑完/合成行为 null",
+  })
+  duration?: number | null;
+}
+
+/** GET /projects/:id/summary —— 单行「最近活动」执行记录（不限终态）。 */
+export class ProjectSummaryRecentExecutionDto {
+  @ApiProperty({ description: "执行记录 ID（uuid）" })
+  id: string;
+
+  @ApiProperty({ description: "所属任务 ID（uuid）" })
+  taskId: string;
+
+  @ApiProperty({ description: "执行时快照的任务名" })
+  taskName: string;
+
+  @ApiProperty({
+    enum: [
+      "pending",
+      "running",
+      "success",
+      "failed",
+      "timeout",
+      "killed",
+      "cancelled",
+      "package_fetch_failed",
+    ],
+    description: "执行状态",
+  })
+  status: string;
+
+  @ApiProperty({ description: "执行创建时间（ISO-8601）" })
+  createdAt: Date;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "执行耗时（毫秒）；未跑完/合成行为 null",
+  })
+  duration?: number | null;
+}
+
+/**
+ * GET /projects/:id/summary —— 项目详情统计（P1-2 闭环）。
+ *
+ * ## 取数口径（每项可在界面上核对，禁止补假统计）
+ *
+ * - `taskCount`：tasks 表按 `projectId` 归属，**排除** `status = deleted`
+ *   （软删任务对用户不可见，计入会报出界面上数不出来的数字，与
+ *   removal-impact 同口径）。默认项目额外纳入 `projectId IS NULL` 的未分配行
+ *   （与 task.service 的 `projectId="default"` 视图一致）。
+ * - `applicationCount`：applications 表按 `projectId` 归属；默认项目同样纳入
+ *   NULL 行。**注意**：当前应用写入口（Create/UpdateApplicationDto）尚未开放
+ *   projectId 字段，该列在运行期实际恒为 NULL——非默认项目此计数预期为 0，
+ *   这是真实查询结果而非占位；默认项目的 NULL 应用计入本视图。
+ * - `memberCount`：project_members 成员关系行数。
+ * - `executionsLast7d`：task_executions 经 `taskId` 关联 tasks，按任务归属统计
+ *   近 7 天（`createdAt >= now - 7d`）的执行数；窗口内无执行记 0。
+ * - `failedExecutionsLast7d` / `timeoutExecutionsLast7d`：同一窗口内
+ *   `status = failed` / `timeout` 的行数（TIMEOUT 单列透出，对齐告警口径
+ *   failed|timeout，见 metrics.service A-10 注释）。
+ * - `failureRate`：窗口内 `failed / executionsLast7d`（百分比，保留两位小数）；
+ *   **窗口内无执行时为 null**——前端显示「暂无数据」，不渲染 0%。
+ * - `recentFailures`：该项目任务下最近 5 条失败/超时执行（不限 7 天窗口，
+ *   按 createdAt DESC）；`recentExecutions`：最近 5 条执行（不限终态）。
+ *   列表为空时返回空数组，前端渲染空态。
+ */
+export class ProjectSummaryResponseDto {
+  @ApiProperty({ description: "项目 ID（uuid）" })
+  projectId: string;
+
+  @ApiProperty({ description: "项目名称（详情页标题回显）" })
+  projectName: string;
+
+  @ApiProperty({
+    description:
+      "未软删除的任务数（排除 status=deleted；默认项目含未分配 NULL 行）",
+  })
+  taskCount: number;
+
+  @ApiProperty({
+    description:
+      "归属本项目的应用数（按 applications.projectId；默认项目含 NULL 行。当前应用写入口尚未开放项目归属，非默认项目预期为 0）",
+  })
+  applicationCount: number;
+
+  @ApiProperty({ description: "项目成员关系行数" })
+  memberCount: number;
+
+  @ApiProperty({
+    description: "近 7 天执行数（经 taskId 关联 tasks.projectId 统计）",
+  })
+  executionsLast7d: number;
+
+  @ApiProperty({
+    description: "近 7 天失败执行数（status=failed）",
+  })
+  failedExecutionsLast7d: number;
+
+  @ApiProperty({
+    description: "近 7 天超时执行数（status=timeout）",
+  })
+  timeoutExecutionsLast7d: number;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      "近 7 天失败率（failed / 执行总数，百分比保留两位）；窗口内无执行为 null，前端显示暂无数据",
+  })
+  failureRate: number | null;
+
+  @ApiProperty({
+    type: [ProjectSummaryRecentFailureDto],
+    description: "最近 5 条失败/超时执行（按 createdAt DESC，不限 7 天窗口）",
+  })
+  recentFailures: ProjectSummaryRecentFailureDto[];
+
+  @ApiProperty({
+    type: [ProjectSummaryRecentExecutionDto],
+    description: "最近 5 条执行（按 createdAt DESC，不限终态与窗口）",
+  })
+  recentExecutions: ProjectSummaryRecentExecutionDto[];
+}
+
+/**
  * GET /projects/me/roles 的响应。
  *
  * 字段按 `projects.controller.ts:myRoles` 的**实际返回**逐一对齐（查证后修正了

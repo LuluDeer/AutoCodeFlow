@@ -141,6 +141,13 @@ a:hover {
   transition: background-color 200ms ease, border-color 200ms ease;
 }
 
+/* P1-2：顶栏「当前项目」切换器宽度——桌面常规；中宽屏/移动端在各自媒体查询内收紧，
+   避免把主题/语言/通知/头像等右侧控件挤出 Header（高 56px，不换行）。 */
+.header-project {
+  width: 176px;
+  min-width: 120px;
+}
+
 /* OBS-03: 执行日志行级高亮——ERROR 红 / WARN 黄。
    作用于 ExecutionDetailPage 日志 pre 内按行前缀推断的 span
    （utils/logLevel.ts logLineHighlightClass，规则与 admin-api
@@ -202,6 +209,16 @@ html[data-theme='dark'] mark.log-search-hit {
   }
   .header-time,
   .header-breadcrumb {
+    display: none;
+  }
+  .header-project {
+    /* 375 头部收敛：项目切换器收窄（长名称省略号，完整名在下拉选项内），
+       给待办/通知/用户头像留出宽度，不再把右侧控件顶出 375 视口。 */
+    width: 88px;
+    min-width: 0;
+  }
+  /* 窄屏隐藏用户触发器的用户名/角色文本（下拉菜单内仍可读）；头像保留 */
+  .header-user-meta {
     display: none;
   }
 
@@ -352,6 +369,9 @@ html[data-theme='dark'] mark.log-search-hit {
 @media (min-width: 769px) and (max-width: 1024px) {
   .header-time {
     display: none !important;
+  }
+  .header-project {
+    width: 136px;
   }
   .header-breadcrumb {
     min-width: 0;

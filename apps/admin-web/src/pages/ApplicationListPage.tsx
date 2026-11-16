@@ -17,22 +17,26 @@ import { Table,
   Card,
   Pagination,
   Switch,
-  InputNumber } from 'antd';
+  InputNumber,
+  Alert } from 'antd';
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
 import { Modal as confirmModal } from '../utils/modal';
 import {
   PlusOutlined, UploadOutlined, ReloadOutlined, GithubOutlined,
   SearchOutlined, FilterOutlined, EyeOutlined, RocketOutlined,
-  InfoCircleOutlined,
+  InfoCircleOutlined, CopyOutlined,
 } from '@ant-design/icons';
 import { applicationsApi, Application, deploymentsApi, mutexGroupsApi, MutexGroup } from '../api/applications';
+import type { AppDeploymentStats } from '../api/applications';
 import { executorsApi } from '../api/executors';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { isFormValidationError, showApiError } from '../utils/error';
 import { normFileList } from '../utils/upload';
 import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
+import { mergeAppsWithStats, describeStatsError, type AppWithStats } from './application-list-stats';
+import { copyText } from '../utils/clipboard';
 // D-P2-02b（设计审计 2026-09-22）：runtime 读面走唯一事实源 runtimeLabel
 // （与筛选下拉同源；未知值回退原始 token）。
 import { runtimeLabel } from '../utils/runtime-label';
@@ -41,6 +45,7 @@ import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级，CSS 做不到）
 import { useIsMobile } from '../hooks/useIsMobile';
+import { useProjectFilter } from '../hooks/useProjectFilter';
 import StateError from '../components/StateError';
 import ApplicationMutexGroupField from '../components/ApplicationMutexGroupField';
 import DeployModeFields from '../components/DeployModeFields';
@@ -92,22 +97,31 @@ const statusLabels = (t: (k: string) => string): Record<string, string> => ({
   failed: t('appList.status.failed'),
 });
 
-interface AppWithStats extends Application {
-  runningCount: number;
-  /** P1-13：失败部署数——部署失败后列表页仍显示"运行中"的假象要靠它破。 */
-  failedCount: number;
-  totalDeployments: number;
-  lastDeployedAt: string | null;
-}
+// AppWithStats（含 statsAvailable 降级标记）与合并/错误描述纯函数见
+// ./application-list-stats.ts（P1-8：主列表与辅助统计解耦）。
 
 export default function ApplicationListPage() {
   const nav = useNavigate();
   const { t } = useTranslation();
   const isAdmin = useIsAdmin();
-  const [apps, setApps] = useState<AppWithStats[]>([]);
+  // P1-8：主列表（rawApps）与辅助统计（statsRows）两条独立链路。统计失败不再
+  // 拖垮主列表——statsRows 置 null，合并结果的 statsAvailable=false，统计列显示
+  // 「暂不可用 + 重试」；主列表自身失败才进入整页错误态（loadError）。
+  const [rawApps, setRawApps] = useState<Application[]>([]);
   const [loading, setLoading] = useState(false);
   // UI-08：首屏加载失败不再只弹一次性 toast——记录错误并原位呈现「重试+复制」错误块
   const [loadError, setLoadError] = useState<unknown>(null);
+  const [statsRows, setStatsRows] = useState<AppDeploymentStats[] | null>(null);
+  const [statsError, setStatsError] = useState<unknown>(null);
+  // 仅统计重试按钮的 loading——不带动主列表整页 Spin。
+  const [statsLoading, setStatsLoading] = useState(false);
+  // P3-06 同源：技术详情（URL/状态码/原始消息）默认折叠，展开后才可见。
+  const [statsDetailOpen, setStatsDetailOpen] = useState(false);
+
+  const apps = useMemo(
+    () => mergeAppsWithStats(rawApps, statsRows),
+    [rawApps, statsRows],
+  );
   const [modalOpen, setModalOpen] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [editingApp, setEditingApp] = useState<Application | null>(null);
@@ -154,53 +168,42 @@ export default function ApplicationListPage() {
     }
   }, []);
 
-  const fetchApps = useCallback(async () => {
+  // 统计口径（2026-10-13 生产报障重做）：聚合端点 GET /app-deployments/stats，
+  // 服务端 GROUP BY——无论多少应用只发 1 个请求（旧实现逐应用扇出 26 个请求，
+  // 共享同一个 60/min 限流桶 → 整页 429）。字段口径见后端 findStats 注释与
+  // AppDeploymentStatsDto。
+  const fetchStats = useCallback(async () => {
+    setStatsLoading(true);
+    try {
+      const stats = await deploymentsApi.stats();
+      setStatsRows(stats);
+      setStatsError(null);
+    } catch (err: unknown) {
+      // P1-8：辅助统计失败**不阻断**主列表。该请求在 api/applications.ts 已带
+      // skipGlobalToast——原始 URL/技术串不走全局错误 toast，原位 Warning Banner
+      // 是唯一错误出口（摘要 + 折叠技术详情）；不另调 showApiError。统计列走
+      // 「暂不可用」，不把未取到静默回落成 0/暂无部署（P1-13「中台显示不可信」
+      // 同类：一个真有 2 台在跑的应用不能显示「暂无部署」）。
+      setStatsError(err);
+      setStatsRows(null);
+    } finally {
+      setStatsLoading(false);
+    }
+  }, []);
+
+  // P1-2：全局当前项目上下文（?project=）；后端 /applications 已支持 projectId
+  // 真过滤（含 "default" = 未分配 + 默认项目）。
+  const { backendProjectId } = useProjectFilter();
+
+  const fetchApps = useCallback(async (projectId?: string) => {
     setLoading(true);
     setLoadError(null);
     try {
-      // 统计口径（2026-10-13 生产报障重做）：此前对**每个应用各发一个**
-      // `deploymentsApi.list(app.id, 1, 100)` 现算「运行 X/Y 台」——26 个应用
-      // = 26 个请求，而全局限流按「路由 handler + IP」计桶（ThrottlerGuard
-      // 默认 generateKey = 类名-方法名-IP），这 26 个请求共享同一个 60/min
-      // 预算：进页面(26) + 返回页面(26) + 部署后自动刷新(26) = 78 > 60 → 整页
-      // 部署列 429，且限流器进入 block（时长=ttl=60s），block 期内**连第 1 个
-      // 请求也 429**——这就是用户看到的「刷新页面也弹 ThrottlerException」。
-      //
-      // 现改为一次聚合查询（GET /app-deployments/stats，服务端 GROUP BY）：
-      // 无论多少应用都只发 1 个请求，不再有任何扇出。
-      //
-      // 口径保持（与旧实现逐项对齐，见后端 findStats 注释）：
-      //   · 分母 totalDeployments = 该应用**全部**部署行数（旧实现已修为
-      //     响应的 total，不再是本页长度——>100 个部署时仍如实）；
-      //   · runningCount/failedCount = 按 status 计数；
-      //   · lastDeployedAt = 最近一次部署活动时间。
-      // 无部署行的应用不在 stats 结果里 → 回落 0/null（与旧实现同显示）。
-      //
-      // 刻意**不用** allSettled 兜住 stats 失败：旧实现逐应用拉取时单个应用
-      // 失败只影响那一行（其余照常），但代价是失败行的统计静默变成 0——一个真
-      // 有 2 台在跑的应用会显示「暂无部署」。本列回答的就是「我的应用在跑吗」，
-      // 在这里给出错误答案比给出错误提示更坏（P1-13「中台显示不可信」同类）。
-      // 故 stats 失败 → 整页错误态 + 重试（StateError），不谎报 0。聚合端点
-      // 本身是单条 GROUP BY 查询，比 26 个并发请求更不容易失败。
-      const [data, stats] = await Promise.all([
-        applicationsApi.list(),
-        deploymentsApi.stats(),
-      ]);
-
-      const statsByApp = new Map(stats.map((s) => [s.applicationId, s]));
-
-      const enriched: AppWithStats[] = data.map((app) => {
-        const s = statsByApp.get(app.id);
-        return {
-          ...app,
-          runningCount: s?.running ?? 0,
-          failedCount: s?.failed ?? 0,
-          totalDeployments: s?.total ?? 0,
-          lastDeployedAt: s?.lastDeployedAt ?? null,
-        };
-      });
-
-      setApps(enriched);
+      const data = await applicationsApi.list(
+        undefined,
+        projectId ? { projectId } : undefined,
+      );
+      setRawApps(data);
     } catch (err: unknown) {
       setLoadError(err);
       showApiError(err, t('appList.loadFail'));
@@ -213,7 +216,27 @@ export default function ApplicationListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { fetchApps(); }, [fetchApps]);
+  // P1-8：两条链路独立触发——stats reject 不再把已取到的主列表拖进错误态。
+  // P1-2：项目上下文变化后主列表按新项目重取（stats 聚合端点无项目维度，见下）。
+  useEffect(() => {
+    void fetchApps(backendProjectId);
+    void fetchStats();
+  }, [fetchApps, fetchStats, backendProjectId]);
+
+  // 写面变更（删除/保存/上传/部署）后：主列表与统计一起后台刷新。stats 若仍
+  // 失败只落 Banner，不影响列表渲染；刷新按钮同理走这里。
+  const refreshAfterMutation = useCallback(() => {
+    void fetchApps(backendProjectId);
+    void fetchStats();
+  }, [fetchApps, fetchStats, backendProjectId]);
+
+  // Banner 技术详情复制（P3-06：原始 URL/技术串与本地化摘要分开，复制内容含原文）。
+  const handleCopyStatsError = async () => {
+    const tech = describeStatsError(statsError);
+    const ok = await copyText(tech || t('stateError.requestFailed'));
+    if (ok) message.success(t('stateError.copySuccess'));
+    else message.error(t('stateError.copyFailed'));
+  };
 
   // MOBILE-CARD-01：≤768px 表格 → 卡片列表（客户端分页与桌面 Table 同容量）
   const isMobile = useIsMobile();
@@ -281,7 +304,7 @@ export default function ApplicationListPage() {
     try {
       await applicationsApi.delete(id);
       message.success(t('appList.deleted'));
-      fetchApps();
+      refreshAfterMutation();
     } catch (err: unknown) {
       showApiError(err, t('appList.deleteFail'));
     }
@@ -354,7 +377,7 @@ export default function ApplicationListPage() {
         message.success(t('appList.created'));
       }
       setModalOpen(false);
-      fetchApps();
+      refreshAfterMutation();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
       showApiError(err, t('appList.saveFail'));
@@ -382,7 +405,7 @@ export default function ApplicationListPage() {
       message.success(t('appList.uploaded'));
       setUploadModalOpen(false);
       uploadForm.resetFields();
-      fetchApps();
+      refreshAfterMutation();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
       showApiError(err, t('appList.uploadFail'));
@@ -461,7 +484,7 @@ export default function ApplicationListPage() {
         message.success(t('appDeploy.msg.deployStarted'));
       }
       setQuickDeployApp(null);
-      fetchApps();
+      refreshAfterMutation();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
       showApiError(err, t('appList.deployFail'));
@@ -534,6 +557,10 @@ export default function ApplicationListPage() {
       // LAYOUT-01：150px——「1 / 1 台运行中」+ Badge 在 130px 内折行成两行
       width: 150,
       render: (_: unknown, record: AppWithStats) => {
+        // P1-8：统计未取到 → 列内显示「暂不可用」，绝不用 0/暂无部署伪装成功。
+        if (!record.statsAvailable) {
+          return <Text type="secondary">{t('appList.statsUnavailable.column')}</Text>;
+        }
         if (record.totalDeployments === 0) return <Text type="secondary">{t('appList.noDeploy')}</Text>;
         // P1-13：旧实现无条件显示绿色"运行中 X/Y"——部署全部失败后仍显示绿色，
         // 用户以为服务正常。runningCount===0 且有部署时：
@@ -563,13 +590,18 @@ export default function ApplicationListPage() {
       title: t('appList.col.lastDeploy'),
       key: 'lastDeployedAt',
       width: 110,
-      render: (_: unknown, record: AppWithStats) => (
-        <Tooltip title={record.lastDeployedAt ? formatDateTime(record.lastDeployedAt) : t('appList.notDeployed')}>
-          <Text type={record.lastDeployedAt ? undefined : 'secondary'}>
-            {formatRelativeTime(record.lastDeployedAt, t)}
-          </Text>
-        </Tooltip>
-      ),
+      render: (_: unknown, record: AppWithStats) => {
+        if (!record.statsAvailable) {
+          return <Text type="secondary">{t('appList.statsUnavailable.column')}</Text>;
+        }
+        return (
+          <Tooltip title={record.lastDeployedAt ? formatDateTime(record.lastDeployedAt) : t('appList.notDeployed')}>
+            <Text type={record.lastDeployedAt ? undefined : 'secondary'}>
+              {formatRelativeTime(record.lastDeployedAt, t)}
+            </Text>
+          </Tooltip>
+        );
+      },
     },
     {
       title: t('appList.col.actions'),
@@ -651,14 +683,65 @@ export default function ApplicationListPage() {
                 {t('appList.uploadZip')}
               </Button>
             </Tooltip>
-            <Button icon={<ReloadOutlined />} onClick={fetchApps} loading={loading}>{t('appList.refresh')}</Button>
+            <Button icon={<ReloadOutlined />} onClick={refreshAfterMutation} loading={loading}>{t('appList.refresh')}</Button>
           </>
         }
       />
 
       {/* UI-08：首屏错误态（重试+复制错误信息） */}
       {loadError !== null && !loading && (
-        <StateError error={loadError} onRetry={fetchApps} style={{ marginBottom: 16 }} />
+        <StateError error={loadError} onRetry={() => fetchApps(backendProjectId)} style={{ marginBottom: 16 }} />
+      )}
+
+      {/* P1-8 / P3-06：辅助统计失败的原位 Warning——主列表照常渲染。
+          主文案是用户可读摘要；原始 URL/状态码/技术串收进可展开的技术详情；
+          重试只重拉 stats，不带动主列表整页 loading。 */}
+      {statsError !== null && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          title={t('appList.statsUnavailable.title')}
+          description={
+            <div>
+              <Space wrap size={8}>
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  loading={statsLoading}
+                  onClick={() => void fetchStats()}
+                >
+                  {t('appList.statsUnavailable.retry')}
+                </Button>
+                <Button
+                  size="small"
+                  onClick={() => setStatsDetailOpen((v) => !v)}
+                >
+                  {statsDetailOpen
+                    ? t('appList.statsUnavailable.detailCollapse')
+                    : t('appList.statsUnavailable.detailToggle')}
+                </Button>
+                {statsDetailOpen && (
+                  <Button
+                    size="small"
+                    icon={<CopyOutlined />}
+                    onClick={() => void handleCopyStatsError()}
+                  >
+                    {t('appList.statsUnavailable.copy')}
+                  </Button>
+                )}
+              </Space>
+              {statsDetailOpen && (
+                <Typography.Text
+                  type="secondary"
+                  style={{ display: 'block', fontSize: 12, wordBreak: 'break-all', marginTop: 8 }}
+                >
+                  {describeStatsError(statsError) || t('stateError.requestFailed')}
+                </Typography.Text>
+              )}
+            </div>
+          }
+        />
       )}
 
       {/* 搜索/筛选栏 */}
@@ -735,15 +818,22 @@ export default function ApplicationListPage() {
                   <Tag color="blue" style={{ marginInlineEnd: 0 }}>{runtimeLabel(record.runtime, t)}</Tag>
                 </div>
                 <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                  {record.totalDeployments === 0
-                    ? t('appList.noDeploy')
-                    : record.runningCount > 0
-                      ? t('appList.runningInstances', { running: record.runningCount, total: record.totalDeployments })
-                      : record.failedCount > 0
-                        ? t('appList.deployFailed', { failed: record.failedCount, total: record.totalDeployments })
-                        : t('appList.deployNotRunning', { total: record.totalDeployments })}
+                  {!record.statsAvailable
+                    ? t('appList.statsUnavailable.column')
+                    : record.totalDeployments === 0
+                      ? t('appList.noDeploy')
+                      : record.runningCount > 0
+                        ? t('appList.runningInstances', { running: record.runningCount, total: record.totalDeployments })
+                        : record.failedCount > 0
+                          ? t('appList.deployFailed', { failed: record.failedCount, total: record.totalDeployments })
+                          : t('appList.deployNotRunning', { total: record.totalDeployments })}
                   {' · '}
-                  {t('appList.col.lastDeploy_colon')}{record.lastDeployedAt ? formatRelativeTime(record.lastDeployedAt, t) : t('appList.notDeployed')}
+                  {t('appList.col.lastDeploy_colon')}
+                  {!record.statsAvailable
+                    ? t('appList.statsUnavailable.column')
+                    : record.lastDeployedAt
+                      ? formatRelativeTime(record.lastDeployedAt, t)
+                      : t('appList.notDeployed')}
                 </div>
                 <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                   <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => nav(`/applications/${record.id}`)}>

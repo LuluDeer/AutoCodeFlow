@@ -230,9 +230,57 @@ export function findJsonPayload(line: string | null | undefined): JsonPayloadSli
  * 构造对象**的调用方（测试/未来的 SSE 结构化载荷）兜底——需求明确要求
  * 「循环结构 → 回落原始文本，绝不抛错」。
  */
+/**
+ * 迭代判环（**不用递归**，也不走 replacer）。
+ *
+ * 为什么需要这一步：`JSON.stringify` 一旦带 replacer 回调，V8 就从「迭代式
+ * 原生实现」切到「逐层递归」，1500 层嵌套的合法 JSON（`JSON.parse` 完全可以
+ * 产出）会直接把栈打爆 —— 表现为 `RangeError` 被 catch → 整行回落纯文本，
+ * 而调用方拿到的 `pretty` 是 `null`（LOG-JSON-01 的 deep 用例即此形态）。
+ *
+ * 无环是绝大多数输入（日志载荷来自 `JSON.parse`），此时用不带 replacer 的
+ * 原生路径，深嵌套不再吃 JS 栈；只有真有环的对象才回到 replacer 分支，保住
+ * 「循环引用 → `"[Circular]"`、绝不抛错」的既有契约。
+ *
+ * 实现是显式栈的 enter/exit 双阶段 DFS：节点进入时若仍在当前路径上 ⇒ 有环；
+ * 已完整验证过的节点记入 done，避免 DAG 重复展开成指数级。
+ */
+function hasCycle(root: unknown): boolean {
+  if (root === null || typeof root !== 'object') return false;
+  const onPath = new WeakSet<object>();
+  const done = new WeakSet<object>();
+  const stack: Array<{ node: object; exit: boolean }> = [
+    { node: root as object, exit: false },
+  ];
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.exit) {
+      onPath.delete(frame.node);
+      done.add(frame.node);
+      continue;
+    }
+    if (onPath.has(frame.node)) return true;
+    if (done.has(frame.node)) continue;
+    onPath.add(frame.node);
+    stack.push({ node: frame.node, exit: true });
+    for (const key of Object.keys(frame.node)) {
+      const child = (frame.node as Record<string, unknown>)[key];
+      if (child !== null && typeof child === 'object') {
+        stack.push({ node: child as object, exit: false });
+      }
+    }
+  }
+  return false;
+}
+
 function safeStringify(value: unknown, indent?: number): string | null {
-  const seen = new WeakSet<object>();
   try {
+    // 快路径：无环 ⇒ 不挂 replacer，V8 走迭代实现，深嵌套不吃栈。
+    if (!hasCycle(value)) {
+      const fast = JSON.stringify(value, undefined, indent);
+      return typeof fast === 'string' ? fast : null;
+    }
+    const seen = new WeakSet<object>();
     const out = JSON.stringify(
       value,
       function replacer(this: unknown, _key: string, val: unknown) {
