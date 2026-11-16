@@ -1,5 +1,45 @@
 # Changelog
 
+## [2.2.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v2.1.1...v2.2.0) (2026-11-09)
+
+
+### Features
+
+* **ci:** 真机 PG 并发自检接入 CI 与全链（R99，链 97→98） ([d1c7df7](https://github.com/LuluDeer/AutoCodeFlow/commit/d1c7df715ff6239b67bbb3bfda76953a7d01a49b))
+* **cli:** `task trigger` 支持 --consume-next-fire-point（A6b 残差，R143） ([4d961b8](https://github.com/LuluDeer/AutoCodeFlow/commit/4d961b86b4972acb949107fdf697bb8741325669))
+* **desktop:** 三段独立 eslint 配齐 —— 登记表清空，`noLintEntry` 1 → 0（R176） ([c77010a](https://github.com/LuluDeer/AutoCodeFlow/commit/c77010ad9d5810458ee73f793689d4c34fb16ed5))
+* **guards:** `lint:api` 接进门禁链（102 → 103 段）+ 修一个「门禁永远绿」的根因（R173） ([4c4d067](https://github.com/LuluDeer/AutoCodeFlow/commit/4c4d0677909c95c345f7442793184a09f9b67d75))
+* **guards:** `lint:node` / `lint:web` 也接进门禁链（103 → 105 段）+ 判据④（R174） ([5855812](https://github.com/LuluDeer/AutoCodeFlow/commit/5855812e5dfa85d5d35a170a0e0445446e3ec550))
+* **guards:** 3 条零自检守卫补自检并登记，覆盖计数 25 → 28（R155） ([b3dbec6](https://github.com/LuluDeer/AutoCodeFlow/commit/b3dbec6f86f9d7146f8eedf155f0d2b550d67d82))
+* **guards:** 4 个 agent-* 守卫补 --selftest 并接进两面（R160） ([0df0d73](https://github.com/LuluDeer/AutoCodeFlow/commit/0df0d73185ecff7849f0665c0841fa2e32fe8b3a))
+* **guards:** MCP 错误提示表 ↔ 后端码表的漂移闸（R146，链 101 → 102） ([a13f0b8](https://github.com/LuluDeer/AutoCodeFlow/commit/a13f0b889d2dc575505f25a8126f2d3f85b0ec8d))
+* **guards:** posture matrix meta 守卫（R68，链 93→94） ([6a53c8e](https://github.com/LuluDeer/AutoCodeFlow/commit/6a53c8e847898e8a25ca530235979b985c74ce0c))
+* **guards:** V8 coverage 死判据守卫（R73，链 94→95） ([5f58c51](https://github.com/LuluDeer/AutoCodeFlow/commit/5f58c518855d9255d7e9619663b24c16b9de9c64))
+* **guards:** 三个 package 配齐 eslint + 进 CI 与门禁链（兑现 R175 登记）（R175 续） ([8e9cd46](https://github.com/LuluDeer/AutoCodeFlow/commit/8e9cd46f82d9507eba946cb525783a2994a153f7))
+* **guards:** 判据扫描面扩到 agent-* 族（自检面 91/90 → 97/96）（R162） ([0a1577f](https://github.com/LuluDeer/AutoCodeFlow/commit/0a1577fd661df0982fde45ef26b90550beac2a27))
+* **guards:** 可选依赖静默 no-op 守卫 + ADR-038 运维段落（R126，链 99→100） ([8cb188f](https://github.com/LuluDeer/AutoCodeFlow/commit/8cb188f34eaee5ac276cbac9b47905bb0b4ae8de))
+* **guards:** 禁止通配/前缀式破坏性命令（R114，链 98→99） ([03d8913](https://github.com/LuluDeer/AutoCodeFlow/commit/03d89138afd79d4295e6725100f4065a014dbe87))
+* **guards:** 类别单一来源守卫（R92，ADR-034 步骤 5，链 96→97） ([8988fdb](https://github.com/LuluDeer/AutoCodeFlow/commit/8988fdbeb3022d6253e2845e4f18eb8e97c44131))
+* **guards:** 覆盖率下限棘轮（R137，链 100→101） ([119165b](https://github.com/LuluDeer/AutoCodeFlow/commit/119165b465d77865bfa6557d44e0e053ed406c2d))
+* **guards:** 覆盖率棘轮扩到 admin-api（第三端）+ 双 step 选步确定性（R142） ([176ef68](https://github.com/LuluDeer/AutoCodeFlow/commit/176ef68efdbe2988a56a68fb7e4ec3c8f12f0d0c))
+* **guards:** 覆盖率棘轮扩到 admin-web（第四端）+ 修掉一条间歇失败（R158） ([69ea2e3](https://github.com/LuluDeer/AutoCodeFlow/commit/69ea2e31bc136177922a7af482f3700b03608c4c))
+* **guards:** 覆盖率棘轮扩到 executor-node + 修「测量失败仍绿」（R138） ([47b6325](https://github.com/LuluDeer/AutoCodeFlow/commit/47b632536677cf4cfa5dd9b34a8e7b4e75339b5d))
+* **guards:** 跨端出站姿态一致性判据（R83，三端真跑，链 95→96） ([e8e043f](https://github.com/LuluDeer/AutoCodeFlow/commit/e8e043f28902bf96ccff1e10f18d41b784446bca))
+* **guards:** 错误响应格式文档与代码对齐 + 新增守卫防再漂（R178） ([c2d0c39](https://github.com/LuluDeer/AutoCodeFlow/commit/c2d0c39631f6f27d2e869d0b2b5c9bda509402b9))
+* **harness:** 钉住不变量 counter&lt;=openRows + 慢通道入口（R118b） ([fcaeb47](https://github.com/LuluDeer/AutoCodeFlow/commit/fcaeb4706152e364b9fb3cfb8e7567a2dad9b423))
+* **mcp:** trigger_task 支持 consumeNextFirePoint（A6b 残差，R143） ([6a3f02a](https://github.com/LuluDeer/AutoCodeFlow/commit/6a3f02ad9a4dcd5bd3614b48033f1d53024de859))
+* **mcp:** 已知后端错误码补「成因 + 下一步」（R145） ([dc23ad9](https://github.com/LuluDeer/AutoCodeFlow/commit/dc23ad9be56164d0388e327bc02870ad5cde5de4))
+* **scripts:** DSN 三种形式兼容 + atlas:refresh 显式入口（R100） ([127bf65](https://github.com/LuluDeer/AutoCodeFlow/commit/127bf652222f0f8a79ea44c7119b3dec0de1a6d0))
+
+
+### Bug Fixes
+
+* **api,cli,docs:** 补 R201–R206 批次的三处接线缺口（openapi 产物 / 英文映射 / CLI 错误码） ([0f5bb21](https://github.com/LuluDeer/AutoCodeFlow/commit/0f5bb214d11103892a29d98b3278984f208ed94b))
+* **api:** 「暂时没有可用执行器」族从 500/409 统一到 503 —— 让前端能自动重试（R178） ([cd6a96f](https://github.com/LuluDeer/AutoCodeFlow/commit/cd6a96fecbefa7d4e7bd227b00ddbe010b5090af))
+* **cli:** acf executor 的「Running Tasks」不再是谎报——已占槽位与实际在跑分列（R68-A） ([c884633](https://github.com/LuluDeer/AutoCodeFlow/commit/c8846331fb6e396ddc8903f8b0c275a099d8990d))
+* **packages:** 同步三个 package 的 lockfile + 清 2 处死导入（R175 收尾） ([8629338](https://github.com/LuluDeer/AutoCodeFlow/commit/862933852795699de7320f4a8d40b0843808b9fa))
+* **selftest:** rollout 自检对齐契约（部署包源/执行器地址改私网）+ 抽共用 helper ([fae7215](https://github.com/LuluDeer/AutoCodeFlow/commit/fae7215433825bcb37efc83ac669985dff6dd2cf))
+
 ## [2.1.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v2.1.0...v2.1.1) (2026-11-02)
 
 
