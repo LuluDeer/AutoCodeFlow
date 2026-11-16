@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.3.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v2.2.0...v2.3.0) (2026-11-16)
+
+
+### Features
+
+* **admin-web:** 管理台展示版本号改由构建期注入，单一事实源 version.txt（P1-9） ([b95318b](https://github.com/LuluDeer/AutoCodeFlow/commit/b95318b8122c785bc17fef1f8d4764e102b4fde7))
+
+
+### Bug Fixes
+
+* **api:** 稳定 openapi 导出键序并修复 lint/audit ([88003c8](https://github.com/LuluDeer/AutoCodeFlow/commit/88003c8f657b577bbc24d324409a679ad97c8791))
+* **ci:** 修复依赖集成后的 secret-scan / bundle-drift / openapi-drift ([4b8f647](https://github.com/LuluDeer/AutoCodeFlow/commit/4b8f64784a75752e9768bcf6b3155147622bdc97))
+* **deps:** 将 acf-cli/mcp-server 的 minimatch override 提升到 11.0.8（GHSA-g3hv-75wg-m249） ([050d0bb](https://github.com/LuluDeer/AutoCodeFlow/commit/050d0bb3f7b4997999c913a58350e3418862d479))
+* **deps:** 收敛 acf-cli/mcp-server 的 minimatch 到 11.0.8 ([2facdbc](https://github.com/LuluDeer/AutoCodeFlow/commit/2facdbc43f934971924f206acdf3d4d6424c63db))
+* **registry:** admin 侧改用独立键 —— 修「包注册中心」页恒 502（R207 真机缺陷） ([ebf6597](https://github.com/LuluDeer/AutoCodeFlow/commit/ebf65974019bd5492e8e3453799dfacb66d28f35))
+
 ## [2.2.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v2.1.1...v2.2.0) (2026-11-09)
 
 
