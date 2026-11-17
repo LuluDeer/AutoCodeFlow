@@ -1565,5 +1565,9 @@
   "最老 job 是否「曾开始过又回到 waiting」": "Whether the oldest job started before and returned to waiting",
   "本条判据让位给别的判据时说明成因；null = 本判据是这一格的最终结论": "Why this criterion deferred to another one; null means this criterion is the final word for its slot",
   "是否读不到观测量——此时 idleStuck 恒 false（**不完整的判定**）": "Whether the observations could not be read — idleStuck is always false then (an INCOMPLETE verdict)",
-  "阈值推导依据（运营问「这个数哪来的」时的答案）": "Threshold derivation basis (the answer when ops asks where the number came from)"
+  "阈值推导依据（运营问「这个数哪来的」时的答案）": "Threshold derivation basis (the answer when ops asks where the number came from)",
+  "判定为「积压」的会话 id（pending 但队列里没有任何指向它的 job）": "Session IDs identified as backlogged (pending but with no corresponding job in the queue)",
+  "积压条数（= sessionIds.length）": "Backlog count (= sessionIds.length)",
+  "本次实际对账了多少条 pending 会话（诊断用：为 0 说明没有 pending）": "How many pending sessions were actually probed (0 means no pending sessions)",
+  "是否因上限截断（pending 会话数 > BACKLOG_PROBE_LIMIT 或预算耗尽）。⚠️ 截断时数字带「下界」语义：实际可能更多": "Whether the result was truncated (pending count > BACKLOG_PROBE_LIMIT or budget exhausted). When truncated, the count is a lower bound — the real backlog may be larger"
 }

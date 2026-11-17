@@ -4185,6 +4185,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AgentBacklogResponseDto: {
+            /** @description 积压条数（= sessionIds.length） */
+            count: number;
+            /** @description 本次实际对账了多少条 pending 会话（诊断用：为 0 说明没有 pending） */
+            probed: number;
+            /** @description 判定为「积压」的会话 id（pending 但队列里没有任何指向它的 job） */
+            sessionIds: string[];
+            /** @description 是否因上限截断（pending 会话数 > BACKLOG_PROBE_LIMIT 或预算耗尽）。⚠️ 截断时数字带「下界」语义：实际可能更多 */
+            truncated: boolean;
+        };
         AgentBudgetResponseDto: {
             maxSteps: number;
             maxTokens: number;
@@ -8965,7 +8975,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AgentBacklogResponseDto"];
+                };
             };
         };
     };

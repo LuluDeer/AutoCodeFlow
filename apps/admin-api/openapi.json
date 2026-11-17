@@ -1,6 +1,40 @@
 {
   "components": {
     "schemas": {
+      "AgentBacklogResponseDto": {
+        "properties": {
+          "count": {
+            "description": "积压条数（= sessionIds.length）",
+            "type": "number",
+            "x-i18n-en": "Backlog count (= sessionIds.length)"
+          },
+          "probed": {
+            "description": "本次实际对账了多少条 pending 会话（诊断用：为 0 说明没有 pending）",
+            "type": "number",
+            "x-i18n-en": "How many pending sessions were actually probed (0 means no pending sessions)"
+          },
+          "sessionIds": {
+            "description": "判定为「积压」的会话 id（pending 但队列里没有任何指向它的 job）",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Session IDs identified as backlogged (pending but with no corresponding job in the queue)"
+          },
+          "truncated": {
+            "description": "是否因上限截断（pending 会话数 > BACKLOG_PROBE_LIMIT 或预算耗尽）。⚠️ 截断时数字带「下界」语义：实际可能更多",
+            "type": "boolean",
+            "x-i18n-en": "Whether the result was truncated (pending count > BACKLOG_PROBE_LIMIT or budget exhausted). When truncated, the count is a lower bound — the real backlog may be larger"
+          }
+        },
+        "required": [
+          "sessionIds",
+          "count",
+          "probed",
+          "truncated"
+        ],
+        "type": "object"
+      },
       "AgentBudgetResponseDto": {
         "properties": {
           "maxSteps": {
@@ -12618,6 +12652,13 @@
         "parameters": [],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentBacklogResponseDto"
+                }
+              }
+            },
             "description": ""
           }
         },

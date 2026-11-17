@@ -56,6 +56,7 @@ import {
 } from "class-validator";
 // ARCH-23 / N-12: Agent HTTP 面响应契约。
 import {
+  AgentBacklogResponseDto,
   AgentBudgetResponseDto,
   AgentQueueIdleResponseDto,
   AgentQueueStallResponseDto,
@@ -192,6 +193,8 @@ export class AgentController {
   @ApiOperation({
     summary: "列出「调度积压」的会话（pending 但队列里没有对应 job）",
   })
+  // R221：补 response schema（此前只有 {"200":{"description":""}}）。
+  @ApiOkResponse({ type: AgentBacklogResponseDto })
   async backlogged(): Promise<{
     sessionIds: string[];
     count: number;
