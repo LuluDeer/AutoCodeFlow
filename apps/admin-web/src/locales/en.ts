@@ -3786,6 +3786,8 @@ export default {
   'agents.queueStall.degradedHint': 'Some queue observations could not be read (the verdict is INCOMPLETE) — this does NOT mean the queue is fine. Click to retry.',
   'agents.queueStall.pausedHint': 'The queue is PAUSED while {{pending}} job(s) are waiting — check whether it was paused by mistake; it only resumes consuming once unpaused.',
   'agents.queueStall.noWorkerHint': '{{pending}} job(s) are queued but NO worker is registered (a worker heartbeat may have expired) — check whether the admin-api / worker processes are still alive.',
+  'agents.queueStall.countsPartialHint': 'The queued count may be LARGER than this (some counts could not be read — this is a lower bound).',
+  'agents.queueStall.workerUnknownHint': '{{pending}} job(s) are queued, but the worker registry could NOT be read (this does NOT mean there is no worker) — verify whether the admin-api / worker processes are still alive.',
   'agents.queueIdle.label': 'Queue may be idle-stuck',
   'agents.queueIdle.loadFail': 'Consumption state unknown',
   'agents.queueIdle.loadFailHint': "This does NOT mean the queue is consuming normally — we could not read it. Click to retry.",

@@ -3775,6 +3775,8 @@ export default {
   'agents.queueStall.degradedHint': '部分队列观测量读取失败（判定**不完整**）—— 这**不代表队列正常**。点一下重新获取。',
   'agents.queueStall.pausedHint': '队列被**暂停**了，且有 {{pending}} 个任务在等 —— 去确认是否误暂停，恢复后队列才会继续消费。',
   'agents.queueStall.noWorkerHint': '有 {{pending}} 个任务在排队，但**没有 worker 注册**（worker 心跳可能已失效）—— 请检查 admin-api / Worker 进程是否还活着。',
+  'agents.queueStall.countsPartialHint': '在排队数**可能不止这些**（部分计数读取失败，这是下界）。',
+  'agents.queueStall.workerUnknownHint': '有 {{pending}} 个任务在排队，但**没读到** worker 注册情况（这不等于「没有 worker」）—— 请先确认 admin-api / Worker 进程是否还活着。',
   'agents.queueIdle.label': '队列可能空转',
   'agents.queueIdle.loadFail': '消费状态未知',
   'agents.queueIdle.loadFailHint': '这不是「队列在正常消费」——是**没读到**。点一下重新获取，别据此认为无需处理。',

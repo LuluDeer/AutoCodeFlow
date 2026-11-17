@@ -136,7 +136,7 @@ describe("R205 · 队列停摆观测（接线层）", () => {
     expect(r.reason).toBe("no-worker");
   });
 
-  it("④ 六个全读失败 ⇒ `degraded: true` 且**不**谎报「正常」也不谎报「停摆」", async () => {
+  it("④ 六个全读失败 ⇒ `degraded` **与** `degradedCounts` **都**为 true，且不谎报「停摆」", async () => {
     const { svc } = makeService({
       failFor: [
         "waiting",
@@ -148,9 +148,61 @@ describe("R205 · 队列停摆观测（接线层）", () => {
       ],
     });
     const r = await svc.inspect();
+    // R211：两个位都要亮 —— 结构性的（可能误报）与计数类的（可能漏报）**分开记**。
     expect(r.degraded).toBe(true);
+    expect(r.degradedCounts).toBe(true);
     // 计数全按 0 处理 ⇒ 没有活 ⇒ 不是停摆（**不是**「队列停摆」）
     expect(r.stalled).toBe(false);
     expect(r.pendingJobs).toBe(0);
+  });
+
+  it("④b **R211 方向拆分**：只有计数类读失败 ⇒ `degradedCounts` 亮、`degraded` **不**亮", async () => {
+    // 计数类读失败只会让 `pendingJobs` 变小（更难判停摆）⇒ 那是**漏报**风险，
+    // **不是**「结论可能错报」⇒ 不得让前端显示「未知」（那会把一条真实停摆也说成不确定）。
+    const { svc } = makeService({
+      waiting: 5,
+      active: 0,
+      workers: 0,
+      failFor: ["delayed", "prioritized"],
+    });
+    const r = await svc.inspect();
+    expect(r.degraded).toBe(false);
+    expect(r.degradedCounts).toBe(true);
+    // 判定**不受影响**：workers 真的读到 0、有待办 ⇒ 该报就报。
+    expect(r.stalled).toBe(true);
+    expect(r.reason).toBe("no-worker");
+  });
+
+  it("④c **R211 方向拆分**：只有结构性量读失败 ⇒ `degraded` 亮、`degradedCounts` **不**亮", async () => {
+    const { svc } = makeService({
+      waiting: 5,
+      active: 0,
+      failFor: ["active"],
+    });
+    const r = await svc.inspect();
+    expect(r.degraded).toBe(true);
+    expect(r.degradedCounts).toBe(false);
+    // `active` 读失败 ⇒ 不知道有没有人在干活 ⇒ 不得断言停摆（可能误报）。
+    expect(r.stalled).toBe(false);
+  });
+
+  it("④d `workersKnown`：workers 读到 0 ⇒ true；读失败 ⇒ **false**（「0」与「未知」不再同形）", async () => {
+    const ok = await makeService({
+      waiting: 5,
+      active: 0,
+      workers: 0,
+    }).svc.inspect();
+    expect(ok.workersKnown).toBe(true);
+    expect(ok.snapshot.workers).toBe(0);
+
+    const bad = await makeService({
+      waiting: 5,
+      active: 0,
+      failFor: ["workers"],
+    }).svc.inspect();
+    expect(bad.workersKnown).toBe(false);
+    // ⚠️ 回落值仍是 0，但调用方**不得**把它当事实 —— 这正是 `workersKnown` 存在的理由。
+    expect(bad.snapshot.workers).toBe(0);
+    expect(bad.stalled).toBe(false);
   });
 });

@@ -6,6 +6,7 @@
 > （R205：`agent-queue-stall.service.ts` / `GET /agent/sessions/queue-stall` / `QueueStallBadge`）。
 > **R210 真机修正**：§2/§3.2 里「事件循环阻塞 ⇒ `workers` 可能漏成 0 ⇒ 误报」这个前提
 > **被实测推翻**，见 §3.2 的修正框。
+> **R211**：`degraded` 把两种**风险方向相反**的失败压成了同一个布尔，见 §3.5 的拆分。
 
 ## 1. 这是**第四个**缺陷，与另三个都不重叠
 
@@ -87,6 +88,46 @@ R198–R203 已经把「异常接管台」的三件套做齐，但**都刻意不
 
 这样把「心跳过期但仍在干活」这一大类误报**挡掉**（它们 `active > 0`）。
 
+### 3.5 ⚠️ `degraded` 压掉了「风险方向」（R211 拆分）
+
+R205 起，任何**一个**观测量读失败都置 `degraded: true`。但六个观测量读失败时，
+对**判定结论**的影响方向是**相反**的 —— 压成同一个布尔，前端就没法据它决定「该不该紧张」：
+
+| 读失败的观测量 | 对 `stalled` 的影响 | 后果 | 风险方向 |
+|---|---|---|---|
+| `waiting` / `delayed` / `prioritized` | `pendingJobs` 变小 ⇒ **更难**判停摆 | 可能**漏报** | 漏报 |
+| `active` | 变小 ⇒ **更容易**判停摆 | 可能**误报** | 误报 |
+| **`workers`** | 回落 0 ⇒ **更容易**判停摆 | 可能**误报** | **误报** |
+| `paused` | 回落 false ⇒ **更难**判停摆 | 可能**漏报** | 漏报 |
+
+⇒ 同一个 `degraded: true` 既可能是「我们可能漏了」也可能是「我们可能错报了」，
+而**运营的动作完全不同**（前者可等，后者要么去查、要么被告知别信）。
+
+**R210 的修法只解决了「不许把读失败算成停摆」**（`workers` 那一路要求它自己读到了），
+但**契约没变**：`workers` 仍是 `number`，「真的 0」与「读不到回落成 0」在响应里**同形**。
+
+**R211 的裁定**（最小、向后兼容）——**已落地**（2026-11-18）：
+- **`degraded` 语义收窄为「可能导致**误报**的观测失败」** —— 即 `active` / `workers` / `paused`
+  这三个**直接参与停摆判定**的量。它们的失败必须让前端说「**未知**」（不敢报也**不敢说正常**）；
+- **可能漏报的那三个**（计数类）**不再**把 `degraded` 置 true，而是记在
+  **`degradedCounts: boolean`**（新增字段）—— 前端在**已报停摆**时用它补一句
+  「在排队数可能不止这些」，**不停摆时它不改变结论**（宁可漏报，不制造假警）；
+- **`workers` 读失败**额外用新增字段 **`workersKnown: boolean`** 显式表达
+  —— 「`workers === 0`」与「`workers` 未知」**从此不同形**。
+
+**落地后的可观测事实**（R211 真 HTTP 探针断言）：`GET /agent/sessions/queue-stall` 线上响应
+= `{stalled, reason, pendingJobs, degraded, degradedCounts, workersKnown}` 六个字段。
+徽标据此**分支选文案**：`workersKnown === false` 时用「**没读到** worker 注册情况」，
+**不得**说「没有 worker」（那会把回落值说成事实）。
+⚠️ 顺带补上了该端点的 **response schema**（此前 `openapi.json` 里只有
+`{"200":{"description":""}}` ⇒ 新增字段在契约面完全不可见、前端只能手写类型），
+以及 `queue-idle` 的同款缺口 ⇒ OpenAPI 覆盖率 **244 → 246**（棘轮已上探）。
+
+⚠️ **为什么是新增字段而不是改 `workers: number | null`**：后者会让既有
+`QueueStallSnapshot` 的**所有**消费者（`isQueueStalled` / `pendingJobCount` /
+`queueStallReason` / 前端 `QueueStallSnapshot` / 既有 14 条 spec）都要处理 null，
+且 `queue.getWorkersCount()` 的返回值语义会漂移。**新增只读布尔是最小面。**
+
 ### 3.4 已被别的判据覆盖的情形（**本条不重复覆盖**）
 
 - **worker 在、job 也在，但 handler 挂死**（`active > 0` 长期不动）：
@@ -105,9 +146,11 @@ R198–R203 已经把「异常接管台」的三件套做齐，但**都刻意不
 - **`getWorkers()` 的真实语义是「数 Redis `CLIENT LIST` 里的 worker 连接」**，不是「读心跳注册表」
   （R210 真机坐实，见 §3.2）。升级 BullMQ 后要**重跑** `npm run test:r210-stall-live`
   —— 它会断言「阻塞不降 / 断开才降」这两条，版本语义一变就红。
-- **`getWorkersCount()` 抛错 ⇒ 接线层回落 0 ⇒ 可能假报停摆**（已用 `degraded` 标出，
-  但 `stalled` 仍可能为 true）。这是当前实现里**唯一**已确认的误报路径；要彻底消除得让
-  判据函数区分「0」与「未知」，属独立立项（改动会波及 R205 的已发布契约）。
+- **`getWorkersCount()` 抛错**：R210 已让**它自己读不到时不判停摆**（`workersKnown === false`），
+  R211 又把这个事实**透出到契约**。⇒ 当前实现里**没有**已知的「读失败 ⇒ 假报停摆」路径。
+  ⚠️ 但它仍**不是**「万无一失」：`CLIENT LIST` 跨节点看不到别的节点上的 worker、
+  GCP 不支持 `SETNAME` 时 `baseGetClients` 的 catch 会返回 1 条假 worker ——
+  这两条需要多节点/托管环境才能复现，**只登记不声称**。
 - **无状态**：本判据**不做**时间平滑（不比较两次采样）⇒ 单次请求内的瞬时停顿
   （例如恰好在两批 job 之间）**可能**被报出来。§3.3 的 `active === 0` 要求挡掉了大部分。
 - **未覆盖**：若 worker 注册正常、`active === 0`、`pending > 0`，但 worker 其实在

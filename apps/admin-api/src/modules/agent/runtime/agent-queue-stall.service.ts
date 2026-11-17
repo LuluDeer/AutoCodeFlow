@@ -50,13 +50,31 @@ export interface QueueStallReport {
   /** 观测量快照（供前端展示/诊断；字段与判据文档 §3 一致）。 */
   snapshot: QueueStallSnapshot;
   /**
-   * 是否**读不到观测量**（某个 BullMQ 调用抛错）。
+   * 是否有**可能导致误报**的观测失败（`active` / `workers` / `paused` 之一读失败）。
    *
-   * ⚠️ 这个字段是**防假事实**的：若某个计数读失败而我们仍返回 `stalled: false`，
-   * 运营会以为「队列正常」⇒ **静默的谎报**。⇒ 读失败时必须**显式**标出来，
-   * 由调用方（前端）显示「未知」而不是「正常」。
+   * ⚠️ R211 语义**收窄**（原先「任一个观测量读失败」都置 true）：六个观测量对结论的影响
+   * **方向相反** —— 计数类（`waiting`/`delayed`/`prioritized`）读失败只会让
+   * `pendingJobs` 变小（**更难**判停摆 ⇒ 漏报）；而 `active`/`workers`/`paused` 读失败
+   * 会让判定**更容易**成立（误报）。混在同一个布尔里，前端没法据它决定「该不该紧张」。
+   * ⇒ 本字段只表示「**结论可能错报**」⇒ 前端显示「未知」，既不敢报也**不敢说正常**。
+   * 可能导致**漏报**的失败请看 `degradedCounts`。
    */
   degraded: boolean;
+  /**
+   * 是否有**可能导致漏报**的计数类观测失败（`waiting` / `delayed` / `prioritized`）。
+   *
+   * ⚠️ 它**不改变结论**（宁可漏报，不制造假警）：只在**已报停摆**时用来补一句
+   * 「在排队数可能不止这些」。
+   */
+  degradedCounts: boolean;
+  /**
+   * `workers` 是否**读到了**（R211）。
+   *
+   * ⚠️ 这就是「`workers === 0`」与「`workers` 未知」**同形**问题的解药：
+   * `workersKnown === false` 时，`snapshot.workers` 里的 `0` **不是事实**，只是回落值
+   * ⇒ 调用方**不得**据此认为「没有 worker」。
+   */
+  workersKnown: boolean;
 }
 
 @Injectable()
@@ -76,22 +94,38 @@ export class AgentQueueStallService {
    * 但**不**因为一个计数读失败就断言「停摆」（那会是**误报**，代价更大）。
    */
   async inspect(): Promise<QueueStallReport> {
+    /**
+     * 两个**方向相反**的失败位（R211）：
+     * · `degraded`      —— 可能**误报**（`active` / `workers` / `paused` 读失败）；
+     * · `degradedCounts` —— 可能**漏报**（计数类读失败）。
+     * 分开的理由见 `QueueStallReport.degraded` 的注释与判据文档 §3.5。
+     */
     let degraded = false;
+    let degradedCounts = false;
     /** `workers` 这个观测量是否读失败（决定能不能用它判停摆，见下面的注释）。 */
     let workersUnknown = false;
     const read = async <T>(
       fn: () => Promise<T>,
       fallback: T,
+      /**
+       * 该观测量读失败时记到哪个方向：
+       * · `"verdict"` ⇒ 可能**误报**（参与判定的结构性量）；
+       * · `"counts"`  ⇒ 可能**漏报**（只影响 `pendingJobs` 大小）。
+       */
+      direction: "verdict" | "counts" = "verdict",
       /** 该观测量读失败时是否要额外标记（目前只有 `workers` 用）。 */
       markUnknown?: () => void,
     ): Promise<T> => {
       try {
         return await fn();
       } catch (err: unknown) {
-        degraded = true;
+        if (direction === "counts") degradedCounts = true;
+        else degraded = true;
         markUnknown?.();
         this.logger.warn(
-          `Queue observation failed: ${err instanceof Error ? err.message : String(err)}`,
+          `Queue observation failed (${direction}): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
         );
         return fallback;
       }
@@ -99,18 +133,21 @@ export class AgentQueueStallService {
 
     const [waiting, delayed, prioritized, active, workers, paused] =
       await Promise.all([
-        read(() => this.queue.getWaitingCount(), 0),
-        read(() => this.queue.getDelayedCount(), 0),
-        read(() => this.queue.getPrioritizedCount(), 0),
-        read(() => this.queue.getActiveCount(), 0),
+        // 计数类：读失败只会让 `pendingJobs` 变小 ⇒ 可能**漏报**（不影响「误报」位）。
+        read(() => this.queue.getWaitingCount(), 0, "counts"),
+        read(() => this.queue.getDelayedCount(), 0, "counts"),
+        read(() => this.queue.getPrioritizedCount(), 0, "counts"),
+        // 结构性量：参与判定 ⇒ 读失败可能**误报**。
+        read(() => this.queue.getActiveCount(), 0, "verdict"),
         read(
           () => this.queue.getWorkersCount(),
           0,
+          "verdict",
           () => {
             workersUnknown = true;
           },
         ),
-        read(() => this.queue.isPaused(), false),
+        read(() => this.queue.isPaused(), false, "verdict"),
       ]);
 
     const snapshot: QueueStallSnapshot = {
@@ -157,6 +194,8 @@ export class AgentQueueStallService {
       pendingJobs: pendingJobCount(snapshot),
       snapshot,
       degraded,
+      degradedCounts,
+      workersKnown: !workersUnknown,
     };
   }
 }

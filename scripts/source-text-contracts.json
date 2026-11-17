@@ -2163,6 +2163,22 @@
       "dispositionNote": "R194 新增。⚠️ 该断言**依赖源码文本形态**（参数名 `expectedStatus`、默认值 `DeploymentStatus.PENDING`、两条路径的显式传参）⇒ **改这些调用点时必须同步改这条**。⚠️ 为什么用**源码文本判据**而不是驱动真实的 `pushDeployToExecutor`：实测它内部会调 `failDeploymentIfInFlight` / `persistDeployProgress` / `saveVersionSnapshot` 等**一串协作者方法**，缺一个就抛 TypeError 并被 push 的 `catch` 吞掉 ⇒ **失败会伪装成「CAS 没命中」**（实测踩了三轮）。⇒ 这里要防的恰恰是「某个调用点的那个参数写错了」，**源码文本面正是它的稳定断言面**。",
       "owner": "arch-core",
       "reviewBy": "2026-12-31"
+    },
+    {
+      "id": "STC-126",
+      "tier": "P2",
+      "spec": "apps/admin-web/src/__tests__/queue-stall-badge.test.tsx",
+      "specLine": 113,
+      "needle": "join(__dirname, '..', 'components', 'QueueStallBadge.tsx')",
+      "reads": [
+        "apps/admin-web/src/components/QueueStallBadge.tsx"
+      ],
+      "asserts": "R211：断言徽标**按 `workersKnown` 分支选 tooltip key** —— 未知时必须用 `agents.queueStall.workerUnknownHint`，已知时必须用 `agents.queueStall.noWorkerHint`。**为什么用源码断言**：antd Tooltip 的内容在 vitest 里**懒挂载**（hover 时序 + portal），逐字断言不稳定（实测 10s 超时后 `textContent` 仍为空）；而「措辞」在测试里唯一稳定可观察的形态就是**请求了哪个 key**。判据同时要求**两条 key 都出现**且**以 `state.workersKnown` 为条件**（防「两条并列写死」的假绿）。",
+      "disposition": "keep-and-accept",
+      "owner": "agent-runtime",
+      "reviewBy": "2027-02-28",
+      "triageStatus": "triaged",
+      "dispositionNote": "**已知脆弱面**：它锚定的是 `QueueStallBadge.tsx` 里的分支形态 ⇒ 若把 tooltip 文案改成组件外传入（props / context），本条会红并**要求重新评估措辞判据该放哪里**（那正是应该被注意到的事）。**为什么接受这个脆弱性**：措辞差异承载的是「『workers===0』是不是事实」这一语义区别（R210/R211 的核心），比「测试稳定」更重要；而它的失效方式是**红**（不是静默），符合本仓对源码断言的纪律（R157/R310：失效必须可见）。"
     }
   ],
   "discipline": [

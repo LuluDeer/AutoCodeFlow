@@ -220,6 +220,130 @@
         ],
         "type": "object"
       },
+      "AgentQueueIdleResponseDto": {
+        "properties": {
+          "basis": {
+            "description": "阈值推导依据（运营问「这个数哪来的」时的答案）",
+            "properties": {
+              "concurrency": {
+                "type": "number"
+              },
+              "formula": {
+                "type": "string"
+              },
+              "thresholdMs": {
+                "type": "number"
+              },
+              "tickMs": {
+                "type": "number"
+              },
+              "wallClockMs": {
+                "type": "number"
+              }
+            },
+            "type": "object",
+            "x-i18n-en": "Threshold derivation basis (the answer when ops asks where the number came from)"
+          },
+          "degraded": {
+            "description": "是否读不到观测量——此时 idleStuck 恒 false（**不完整的判定**）",
+            "type": "boolean",
+            "x-i18n-en": "Whether the observations could not be read — idleStuck is always false then (an INCOMPLETE verdict)"
+          },
+          "idleStuck": {
+            "description": "是否空转（worker 在册却不再消费新 job）",
+            "type": "boolean",
+            "x-i18n-en": "Whether the queue is idle-stuck (workers are registered but no longer consuming new jobs)"
+          },
+          "oldestAgeMs": {
+            "description": "最老 waiting job 的年龄（毫秒）；无 job 或读失败时为 0",
+            "type": "number",
+            "x-i18n-en": "Age in milliseconds of the oldest waiting job; 0 when there is no job or the read failed"
+          },
+          "retried": {
+            "description": "最老 job 是否「曾开始过又回到 waiting」",
+            "type": "boolean",
+            "x-i18n-en": "Whether the oldest job started before and returned to waiting"
+          },
+          "suppressedBy": {
+            "description": "本条判据让位给别的判据时说明成因；null = 本判据是这一格的最终结论",
+            "enum": [
+              "queue-stall"
+            ],
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Why this criterion deferred to another one; null means this criterion is the final word for its slot"
+          },
+          "thresholdMs": {
+            "description": "判定用的阈值（毫秒）—— 由墙钟预算 × 并发槽位数 + 一拍推导",
+            "type": "number",
+            "x-i18n-en": "Threshold used for the verdict (ms) — derived from the wall-clock budget x concurrency slots + one tick"
+          },
+          "waitingCount": {
+            "description": "当前 waiting 计数（读失败时为 0 且 degraded 为 true）",
+            "type": "number",
+            "x-i18n-en": "Current waiting count (0 with degraded=true when the read failed)"
+          }
+        },
+        "required": [
+          "idleStuck",
+          "oldestAgeMs",
+          "thresholdMs",
+          "waitingCount",
+          "retried",
+          "suppressedBy",
+          "degraded",
+          "basis"
+        ],
+        "type": "object"
+      },
+      "AgentQueueStallResponseDto": {
+        "properties": {
+          "degraded": {
+            "description": "是否有**可能导致误报**的观测失败（active/workers/paused 读失败）——前端据此显示「未知」，既不敢报也不敢说正常",
+            "type": "boolean",
+            "x-i18n-en": "Whether an observation failure could cause a FALSE POSITIVE (active/workers/paused unreadable) — the UI shows UNKNOWN rather than reporting or clearing"
+          },
+          "degradedCounts": {
+            "description": "是否有**可能导致漏报**的计数类观测失败（waiting/delayed/prioritized）——**不改变结论**，只在已报停摆时说明「在排队数可能更大」",
+            "type": "boolean",
+            "x-i18n-en": "Whether a count observation failure could cause a FALSE NEGATIVE (waiting/delayed/prioritized) — it does NOT change the verdict; when stalled it only notes that the queued count may be larger"
+          },
+          "pendingJobs": {
+            "description": "在排队等消费的 job 数（waiting + delayed + prioritized，不含 active）",
+            "type": "number",
+            "x-i18n-en": "Jobs queued for consumption (waiting + delayed + prioritized; excludes active)"
+          },
+          "reason": {
+            "description": "成因；不停摆时为 null。两者的处置不同（前者 resume，后者查进程）",
+            "enum": [
+              "paused",
+              "no-worker"
+            ],
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Cause; null when not stalled. The two differ in remediation (resume vs. check the process)"
+          },
+          "stalled": {
+            "description": "是否停摆（有活排队但结构上没人能消费）",
+            "type": "boolean",
+            "x-i18n-en": "Whether the queue has stalled (work is queued, but structurally nobody can consume it)"
+          },
+          "workersKnown": {
+            "description": "workers 是否读到了。false 时 snapshot 里的 workers=0 **不是事实**，只是回落值",
+            "type": "boolean",
+            "x-i18n-en": "Whether workers was actually read. When false, workers=0 in the snapshot is NOT a fact — only a fallback value"
+          }
+        },
+        "required": [
+          "stalled",
+          "reason",
+          "pendingJobs",
+          "degraded",
+          "degradedCounts",
+          "workersKnown"
+        ],
+        "type": "object"
+      },
       "AgentSessionCreateResponseDto": {
         "properties": {
           "id": {
@@ -12517,6 +12641,13 @@
         "parameters": [],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentQueueIdleResponseDto"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -12540,6 +12671,13 @@
         "parameters": [],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentQueueStallResponseDto"
+                }
+              }
+            },
             "description": ""
           }
         },

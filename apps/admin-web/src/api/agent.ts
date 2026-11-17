@@ -185,7 +185,12 @@ export const agentApi = {
       stalled: boolean;
       reason: string | null;
       pendingJobs: number;
+      /** ⚠️ R211：**可能误报**（结构性量读失败）⇒ 前端显示「未知」，既不敢报也不敢说正常。 */
       degraded: boolean;
+      /** ⚠️ R211：**可能漏报**（计数类读失败）⇒ 不改变结论，只在已报停摆时补一句。 */
+      degradedCounts: boolean;
+      /** ⚠️ R211：`workers === 0` 是否**是事实**（false ⇒ 那只是回落值）。 */
+      workersKnown: boolean;
     }>,
   /**
    * R207：**队列是否空转**（worker 在册却不再消费新 job）。

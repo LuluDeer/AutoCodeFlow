@@ -213,7 +213,12 @@ export interface QueueStallSnapshot {
   stalled: boolean;
   reason: string | null;
   pendingJobs: number;
+  /** ⚠️ R211：可能**误报**（结构性量读失败）。 */
   degraded: boolean;
+  /** ⚠️ R211：可能**漏报**（计数类读失败）—— 不改变结论，只影响「数字可能更大」。 */
+  degradedCounts: boolean;
+  /** ⚠️ R211：`workers === 0` 是否是事实。 */
+  workersKnown: boolean;
 }
 
 async function loadQueueStall(): Promise<QueueStallSnapshot | null> {
@@ -299,11 +304,14 @@ export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
 }
 
 function queueStallBannerItem(snapshot: QueueStallSnapshot): InboxItem {
+  // R211：计数类读失败 ⇒ 在排队数**可能更大**。用 `+` 表达「这是下界」，而不是
+  // 让运营把 `pendingJobs=3` 当成「一共就 3 条」（与 R395 的 backlog `3+` 同款口径）。
+  const pending = snapshot.degradedCounts ? `${snapshot.pendingJobs}+` : `${snapshot.pendingJobs}`;
   return {
     id: 'queue-stall-banner',
     section: 'queueStall',
     title: snapshot.reason ?? 'queue-stall',
-    subtitle: `pendingJobs=${snapshot.pendingJobs}`,
+    subtitle: `pendingJobs=${pending}`,
     waitingSince: null,
     detailUrl: '/agent-sessions',
   };

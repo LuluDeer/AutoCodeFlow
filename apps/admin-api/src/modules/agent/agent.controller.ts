@@ -56,6 +56,8 @@ import {
 // ARCH-23 / N-12: Agent HTTP 面响应契约。
 import {
   AgentBudgetResponseDto,
+  AgentQueueIdleResponseDto,
+  AgentQueueStallResponseDto,
   AgentSessionCreateResponseDto,
   AgentSessionDetailResponseDto,
   AgentSessionListResponseDto,
@@ -208,17 +210,28 @@ export class AgentController {
    *
    * 判据见 `docs/observability/agent-queue-stall-criterion.md`。
    *
-   * ⚠️ **`degraded` 字段是防假事实的**：某个观测量读失败时我们会返回 `stalled: false`
-   * （不因一个计数读失败就断言停摆 —— **误报**代价更大），但**必须**用 `degraded: true`
-   * 告诉调用方「这个判定**不完整**」⇒ 前端据此显示「**未知**」而不是「正常」。
+   * ⚠️ **`degraded` 字段是防假事实的**：结构性观测量（`active`/`workers`/`paused`）读失败时
+   * 我们会返回 `stalled: false`（不因一个计数读失败就断言停摆 —— **误报**代价更大），
+   * 但**必须**用 `degraded: true` 告诉调用方「这个判定**不完整**」⇒ 前端据此显示「**未知**」。
+   *
+   * ⚠️ R211：`degraded` 的语义**收窄**为「可能**误报**」。计数类（`waiting`/`delayed`/
+   * `prioritized`）读失败只会让 `pendingJobs` 变小（**更难**判停摆 ⇒ 漏报），记在
+   * `degradedCounts` —— 它**不改变结论**，只在已报停摆时补「在排队数可能不止这些」。
+   * `workersKnown: false` 表示 `workers === 0` **不是事实**（只是回落值）。
+   * 三者的方向差异见判据文档 §3.5。
    */
   @Get("sessions/queue-stall")
   @ApiOperation({ summary: "队列是否停摆（有活排队但结构上没人能消费）" })
+  // R211：补 response schema —— 此前该端点只有 `{"200":{"description":""}}`，
+  // 新增字段在契约面**完全不可见**（前端只能手写类型，且漂移无人发现）。
+  @ApiOkResponse({ type: AgentQueueStallResponseDto })
   async inspectQueueStall(): Promise<{
     stalled: boolean;
     reason: string | null;
     pendingJobs: number;
     degraded: boolean;
+    degradedCounts: boolean;
+    workersKnown: boolean;
   }> {
     if (!this.queueStall) {
       // ⚠️ 服务缺席 ⇒ **显式报不可用**，绝不谎报「队列正常」。
@@ -229,7 +242,10 @@ export class AgentController {
       stalled: r.stalled,
       reason: r.reason,
       pendingJobs: r.pendingJobs,
+      // R211：三个位**都要透出**，少一个前端就没法区分「可能误报」/「可能漏报」/「workers 未知」。
       degraded: r.degraded,
+      degradedCounts: r.degradedCounts,
+      workersKnown: r.workersKnown,
     };
   }
 
@@ -250,6 +266,7 @@ export class AgentController {
   @ApiOperation({
     summary: "队列是否空转（worker 在册却不再消费新 job）",
   })
+  @ApiOkResponse({ type: AgentQueueIdleResponseDto })
   async inspectQueueIdle(): Promise<{
     idleStuck: boolean;
     oldestAgeMs: number;

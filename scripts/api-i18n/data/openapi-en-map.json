@@ -1551,5 +1551,19 @@
   "同时按项目名称与描述做关键字搜索。LIKE 元字符（% 与 _）按字面匹配。": "Keyword search over both project name and description. LIKE wildcards (% and _) are matched literally.",
   "项目详情统计（任务/应用/近 7 天执行/失败率/成员）": "Project detail stats (tasks/applications/executions in the last 7 days/failure rate/members)",
   "项目详情统计（任务/应用/近 7 天执行/失败率/成员 + 最近失败与最近活动列表）": "Project detail stats (tasks/applications/executions in the last 7 days/failure rate/members, plus recent failures and recent activity lists)",
-  "队列是否空转（worker 在册却不再消费新 job）": "Whether the queue is idle-stuck (workers are registered but no longer consuming new jobs)"
+  "队列是否空转（worker 在册却不再消费新 job）": "Whether the queue is idle-stuck (workers are registered but no longer consuming new jobs)",
+  "是否停摆（有活排队但结构上没人能消费）": "Whether the queue has stalled (work is queued, but structurally nobody can consume it)",
+  "成因；不停摆时为 null。两者的处置不同（前者 resume，后者查进程）": "Cause; null when not stalled. The two differ in remediation (resume vs. check the process)",
+  "在排队等消费的 job 数（waiting + delayed + prioritized，不含 active）": "Jobs queued for consumption (waiting + delayed + prioritized; excludes active)",
+  "是否有**可能导致误报**的观测失败（active/workers/paused 读失败）——前端据此显示「未知」，既不敢报也不敢说正常": "Whether an observation failure could cause a FALSE POSITIVE (active/workers/paused unreadable) — the UI shows UNKNOWN rather than reporting or clearing",
+  "是否有**可能导致漏报**的计数类观测失败（waiting/delayed/prioritized）——**不改变结论**，只在已报停摆时说明「在排队数可能更大」": "Whether a count observation failure could cause a FALSE NEGATIVE (waiting/delayed/prioritized) — it does NOT change the verdict; when stalled it only notes that the queued count may be larger",
+  "workers 是否读到了。false 时 snapshot 里的 workers=0 **不是事实**，只是回落值": "Whether workers was actually read. When false, workers=0 in the snapshot is NOT a fact — only a fallback value",
+  "是否空转（worker 在册却不再消费新 job）": "Whether the queue is idle-stuck (workers are registered but no longer consuming new jobs)",
+  "最老 waiting job 的年龄（毫秒）；无 job 或读失败时为 0": "Age in milliseconds of the oldest waiting job; 0 when there is no job or the read failed",
+  "判定用的阈值（毫秒）—— 由墙钟预算 × 并发槽位数 + 一拍推导": "Threshold used for the verdict (ms) — derived from the wall-clock budget x concurrency slots + one tick",
+  "当前 waiting 计数（读失败时为 0 且 degraded 为 true）": "Current waiting count (0 with degraded=true when the read failed)",
+  "最老 job 是否「曾开始过又回到 waiting」": "Whether the oldest job started before and returned to waiting",
+  "本条判据让位给别的判据时说明成因；null = 本判据是这一格的最终结论": "Why this criterion deferred to another one; null means this criterion is the final word for its slot",
+  "是否读不到观测量——此时 idleStuck 恒 false（**不完整的判定**）": "Whether the observations could not be read — idleStuck is always false then (an INCOMPLETE verdict)",
+  "阈值推导依据（运营问「这个数哪来的」时的答案）": "Threshold derivation basis (the answer when ops asks where the number came from)"
 }

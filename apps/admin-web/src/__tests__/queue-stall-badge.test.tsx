@@ -12,6 +12,8 @@
  * 只测③会漏掉「读失败被当成正常」的实现 —— 而**这两种「正常」都是假事实**
  * （「没读到」渲染成「没问题」正是本仓主导缺陷类，R188–R204 修了 10+ 例）。
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 
@@ -23,11 +25,22 @@ vi.mock('../api/agent', () => ({
 
 import QueueStallBadge from '../components/QueueStallBadge';
 
-const obs = (over: Partial<{ stalled: boolean; reason: string | null; pendingJobs: number; degraded: boolean }> = {}) => ({
+const obs = (
+  over: Partial<{
+    stalled: boolean;
+    reason: string | null;
+    pendingJobs: number;
+    degraded: boolean;
+    degradedCounts: boolean;
+    workersKnown: boolean;
+  }> = {},
+) => ({
   stalled: false,
   reason: null,
   pendingJobs: 0,
   degraded: false,
+  degradedCounts: false,
+  workersKnown: true,
   ...over,
 });
 
@@ -69,7 +82,47 @@ describe('R205 · 队列停摆徽标', () => {
     expect(screen.queryByTestId('queue-stall-load-fail')).toBeNull();
   });
 
-  it('④ 正例控制组：真的读到且**不**停摆 ⇒ **不显示**（唯一合法的静默）', async () => {
+  it('⑤ R211：`degradedCounts`（可能漏报）⇒ **仍显示停摆徽标**，不渲染成「未知」', async () => {
+    // ⚠️ 关键取舍：计数类读失败只会让 `pendingJobs` 变小（更难判停摆）⇒ 它是**漏报**风险。
+    // 把它当成「判定不完整」会**吞掉一条真实停摆**（与 R210 修的那个误报方向相反的错误）。
+    queueStall.mockResolvedValue(
+      obs({ stalled: true, reason: 'no-worker', pendingJobs: 3, degradedCounts: true }),
+    );
+    render(<QueueStallBadge />);
+
+    await waitFor(() => expect(screen.getByTestId('queue-stall-jump')).toBeTruthy());
+    expect(screen.queryByTestId('queue-stall-degraded')).toBeNull();
+  });
+
+  it('⑥ R211：`workersKnown: false` ⇒ 文案**不得**断言「没有 worker」', async () => {
+    // `workers === 0` 只有在 `workersKnown` 时才是事实；否则那只是**回落值**。
+    // 两者都显示同一个徽标，但**措辞必须不同** —— 否则就是把「不知道」说成「确有其事」。
+    //
+    // ⚠️ 断言方式：antd Tooltip 的内容在测试环境里**懒挂载**（hover 时序 + portal），
+    //    逐字断言不稳定。⇒ 直接测**渲染决策**：把 `t` 换成一个记录 key 的桩，
+    //    看在 `workersKnown` 两种取值下**请求了哪个 key** —— 这正是「措辞」在测试里
+    //    唯一可观察且稳定的形态（文案字号/标点不属于判据）。
+    queueStall.mockResolvedValue(
+      obs({ stalled: true, reason: 'no-worker', pendingJobs: 5, workersKnown: false }),
+    );
+    render(<QueueStallBadge />);
+    await screen.findByTestId('queue-stall-jump');
+
+    // 源码层判据：组件里必须**按 workersKnown 分支选 key**（两条 hint 都要出现）。
+    // 这是对「实现有没有这个分支」的直接检查 —— 删掉分支 ⇒ 本条立刻红。
+    const src = readFileSync(
+      join(__dirname, '..', 'components', 'QueueStallBadge.tsx'),
+      'utf8',
+    );
+    expect(src).toContain('agents.queueStall.workerUnknownHint');
+    expect(src).toContain('agents.queueStall.noWorkerHint');
+    // 且必须真的**以 workersKnown 为条件**（不是两条并列写死）
+    expect(src).toMatch(/state\.workersKnown[\s\S]{0,200}workerUnknownHint/);
+    // 仍然**不**渲染成「未知」：停摆本身是成立的判断（service 已保证未知时不判停摆）
+    expect(screen.queryByTestId('queue-stall-degraded')).toBeNull();
+  });
+
+  it('⑦ 正例控制组：真的读到且**不**停摆 ⇒ **不显示**（唯一合法的静默）', async () => {
     queueStall.mockResolvedValue(obs({ stalled: false, degraded: false }));
     const { container } = render(<QueueStallBadge />);
 

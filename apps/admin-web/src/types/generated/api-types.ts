@@ -4252,6 +4252,50 @@ export interface components {
             /** @description 'executor:<id>' 或 'user:<id>' */
             uploadedBy: string;
         };
+        AgentQueueIdleResponseDto: {
+            /** @description 阈值推导依据（运营问「这个数哪来的」时的答案） */
+            basis: {
+                concurrency?: number;
+                formula?: string;
+                thresholdMs?: number;
+                tickMs?: number;
+                wallClockMs?: number;
+            };
+            /** @description 是否读不到观测量——此时 idleStuck 恒 false（**不完整的判定**） */
+            degraded: boolean;
+            /** @description 是否空转（worker 在册却不再消费新 job） */
+            idleStuck: boolean;
+            /** @description 最老 waiting job 的年龄（毫秒）；无 job 或读失败时为 0 */
+            oldestAgeMs: number;
+            /** @description 最老 job 是否「曾开始过又回到 waiting」 */
+            retried: boolean;
+            /**
+             * @description 本条判据让位给别的判据时说明成因；null = 本判据是这一格的最终结论
+             * @enum {string|null}
+             */
+            suppressedBy: "queue-stall" | null;
+            /** @description 判定用的阈值（毫秒）—— 由墙钟预算 × 并发槽位数 + 一拍推导 */
+            thresholdMs: number;
+            /** @description 当前 waiting 计数（读失败时为 0 且 degraded 为 true） */
+            waitingCount: number;
+        };
+        AgentQueueStallResponseDto: {
+            /** @description 是否有**可能导致误报**的观测失败（active/workers/paused 读失败）——前端据此显示「未知」，既不敢报也不敢说正常 */
+            degraded: boolean;
+            /** @description 是否有**可能导致漏报**的计数类观测失败（waiting/delayed/prioritized）——**不改变结论**，只在已报停摆时说明「在排队数可能更大」 */
+            degradedCounts: boolean;
+            /** @description 在排队等消费的 job 数（waiting + delayed + prioritized，不含 active） */
+            pendingJobs: number;
+            /**
+             * @description 成因；不停摆时为 null。两者的处置不同（前者 resume，后者查进程）
+             * @enum {string|null}
+             */
+            reason: "paused" | "no-worker" | null;
+            /** @description 是否停摆（有活排队但结构上没人能消费） */
+            stalled: boolean;
+            /** @description workers 是否读到了。false 时 snapshot 里的 workers=0 **不是事实**，只是回落值 */
+            workersKnown: boolean;
+        };
         AgentSessionCreateResponseDto: {
             /** Format: uuid */
             id: string;
@@ -8938,7 +8982,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AgentQueueIdleResponseDto"];
+                };
             };
         };
     };
@@ -8955,7 +9001,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AgentQueueStallResponseDto"];
+                };
             };
         };
     };

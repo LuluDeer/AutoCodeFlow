@@ -224,6 +224,18 @@ async function main() {
       s1?.stalled === true && s1?.reason === "paused",
       `stalled=${s1?.stalled} reason=${s1?.reason} pendingJobs=${s1?.pendingJobs}`,
     );
+    // R211：三个"不完整"位必须**都在线上响应里** —— 少一个，前端就没法区分
+    // 「可能误报」/「可能漏报」/「workers 未知」（判据文档 §3.5）。
+    check(
+      "⑩b R211：`queue-stall` 线上响应含 `degradedCounts` 与 `workersKnown`",
+      "degradedCounts" in (s1 ?? {}) && "workersKnown" in (s1 ?? {}),
+      `keys=${s1 ? Object.keys(s1).join(",") : "?"}`,
+    );
+    check(
+      "⑩c R211：一切正常时 `workersKnown === true`（`workers=0` 若是回落值就不该是 true）",
+      s1?.workersKnown === true,
+      `workersKnown=${s1?.workersKnown} degradedCounts=${s1?.degradedCounts}`,
+    );
     check(
       "⑪ 让位**不是**「读不到」：`degraded:false`（两者都会让徽标不显示，但语义相反）",
       d1?.degraded === false,

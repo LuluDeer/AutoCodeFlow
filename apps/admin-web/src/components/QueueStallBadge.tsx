@@ -39,8 +39,12 @@ export interface QueueStallBadgeProps {
 
 interface State {
   stalled: boolean;
-  /** ⚠️ 判定**不完整**（某个观测量读失败）—— 不是「正常」。 */
+  /** ⚠️ 判定**可能误报**（结构性量读失败）—— 不是「正常」。 */
   degraded: boolean;
+  /** ⚠️ R211：在排队数**可能更大**（计数类读失败）—— 不改变结论。 */
+  degradedCounts: boolean;
+  /** ⚠️ R211：`workers === 0` 是否是事实。 */
+  workersKnown: boolean;
   /** 成因（`paused` / `no-worker`）。 */
   reason: string | null;
   /** 在排队的 job 数。 */
@@ -53,6 +57,8 @@ export default function QueueStallBadge({ onJump, refreshToken = 0 }: QueueStall
   const [state, setState] = useState<State>({
     stalled: false,
     degraded: false,
+    degradedCounts: false,
+    workersKnown: true,
     reason: null,
     pendingJobs: 0,
     error: null,
@@ -69,13 +75,24 @@ export default function QueueStallBadge({ onJump, refreshToken = 0 }: QueueStall
       setState({
         stalled: r.stalled,
         degraded: r.degraded,
+        // ⚠️ 兼容旧后端（字段缺席 ⇒ false）：本徽标是**增强**功能，不因一个字段缺失而崩。
+        degradedCounts: r.degradedCounts === true,
+        workersKnown: r.workersKnown !== false,
         reason: r.reason,
         pendingJobs: r.pendingJobs,
         error: null,
       });
     } catch (err: unknown) {
       if (signal?.aborted) return;
-      setState({ stalled: false, degraded: true, reason: null, pendingJobs: 0, error: err });
+      setState({
+        stalled: false,
+        degraded: true,
+        degradedCounts: false,
+        workersKnown: false,
+        reason: null,
+        pendingJobs: 0,
+        error: err,
+      });
     }
   }, []);
 
@@ -112,11 +129,20 @@ export default function QueueStallBadge({ onJump, refreshToken = 0 }: QueueStall
 
   return (
     <Tooltip
-      title={
+      title={[
         state.reason === "paused"
           ? t("agents.queueStall.pausedHint")
-          : t("agents.queueStall.noWorkerHint", { pending: state.pendingJobs })
-      }
+          : // ⚠️ R211：`workers === 0` **只有在 `workersKnown` 时才是事实**。
+            //   不是事实时**不得**说「没有 worker」（那是把回落值当观测结论），
+            //   改成「观测不到 worker」—— 措辞差异就是「确有其事」与「不知道」的差异。
+            state.workersKnown
+            ? t("agents.queueStall.noWorkerHint", { pending: state.pendingJobs })
+            : t("agents.queueStall.workerUnknownHint", { pending: state.pendingJobs }),
+        // R211：计数类读失败 ⇒ 在排队数**可能更大**（这是「下界」，不是全部）。
+        state.degradedCounts ? t("agents.queueStall.countsPartialHint") : null,
+      ]
+        .filter(Boolean)
+        .join(" ")}
     >
       <Button size="small" danger type="text" onClick={onJump} data-testid="queue-stall-jump">
         {t("agents.queueStall.label")}
