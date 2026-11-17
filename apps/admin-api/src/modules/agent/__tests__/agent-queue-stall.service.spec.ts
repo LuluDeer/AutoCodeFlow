@@ -93,6 +93,49 @@ describe("R205 · 队列停摆观测（接线层）", () => {
     expect(r.stalled).toBe(false);
   });
 
+  it("③b **`workers` 读失败 + `active === 0` + 有待办 ⇒ 不得报停摆**（R210 的真误报路径）", async () => {
+    // ⚠️ 这条是 ③ **没覆盖**的那一格：③ 里 `active: 2` 会让 `isQueueStalled` 的
+    // `requireIdleWorker` 分支直接返回 false ⇒ **有没有修复都一样绿**。
+    // 真实路径是：Redis 抖动 ⇒ `getWorkersCount()` 抛错 ⇒ 回落 0 ⇒ 若照此判定
+    // 就会把「不知道」报成「停摆」。修复前实测 `stalled === true`。
+    const { svc } = makeService({
+      waiting: 5,
+      active: 0,
+      failFor: ["workers"],
+    });
+    const r = await svc.inspect();
+    expect(r.degraded).toBe(true);
+    // 「读不到」≠「确有其事」：宁可漏报，也不制造一条假告警。
+    expect(r.stalled).toBe(false);
+    expect(r.reason).toBeNull();
+  });
+
+  it("③c **`paused` 是独立强证据**：`workers` 读失败也不影响「暂停」那一路", async () => {
+    // 判据有两路：`paused` 单独成立 / `workers` 那一路。前者是**人为显式状态**，
+    // 不依赖 worker 观测 ⇒ `workers` 读失败**不该**把这条真实停摆也压掉。
+    const { svc } = makeService({
+      waiting: 3,
+      active: 0,
+      paused: true,
+      failFor: ["workers"],
+    });
+    const r = await svc.inspect();
+    expect(r.degraded).toBe(true);
+    expect(r.stalled).toBe(true);
+    // 归因必须是 `paused`（去 resume），**不是** `no-worker`（去查进程）。
+    expect(r.reason).toBe("paused");
+  });
+
+  it("③d `workers` 读**成功**且为 0 ⇒ 仍然报停摆（正例控制组，防 ③b 改过头）", async () => {
+    // ⚠️ ③b 的修复很容易写成「degraded 就一律不报」—— 那会把**真的停摆**也吞掉。
+    // 本条是它的对立面：`workers` 正常读到 0、`active === 0`、有待办 ⇒ **必须**报。
+    const { svc } = makeService({ waiting: 5, active: 0, workers: 0 });
+    const r = await svc.inspect();
+    expect(r.degraded).toBe(false);
+    expect(r.stalled).toBe(true);
+    expect(r.reason).toBe("no-worker");
+  });
+
   it("④ 六个全读失败 ⇒ `degraded: true` 且**不**谎报「正常」也不谎报「停摆」", async () => {
     const { svc } = makeService({
       failFor: [

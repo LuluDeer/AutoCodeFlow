@@ -36,7 +36,6 @@ import { AGENT_QUEUE_NAME } from "./agent.processor";
 import {
   isQueueStalled,
   pendingJobCount,
-  queueStallReason,
   type QueueStallReason,
   type QueueStallSnapshot,
 } from "./agent-queue-stall-check";
@@ -78,11 +77,19 @@ export class AgentQueueStallService {
    */
   async inspect(): Promise<QueueStallReport> {
     let degraded = false;
-    const read = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
+    /** `workers` 这个观测量是否读失败（决定能不能用它判停摆，见下面的注释）。 */
+    let workersUnknown = false;
+    const read = async <T>(
+      fn: () => Promise<T>,
+      fallback: T,
+      /** 该观测量读失败时是否要额外标记（目前只有 `workers` 用）。 */
+      markUnknown?: () => void,
+    ): Promise<T> => {
       try {
         return await fn();
       } catch (err: unknown) {
         degraded = true;
+        markUnknown?.();
         this.logger.warn(
           `Queue observation failed: ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -96,7 +103,13 @@ export class AgentQueueStallService {
         read(() => this.queue.getDelayedCount(), 0),
         read(() => this.queue.getPrioritizedCount(), 0),
         read(() => this.queue.getActiveCount(), 0),
-        read(() => this.queue.getWorkersCount(), 0),
+        read(
+          () => this.queue.getWorkersCount(),
+          0,
+          () => {
+            workersUnknown = true;
+          },
+        ),
         read(() => this.queue.isPaused(), false),
       ]);
 
@@ -108,10 +121,39 @@ export class AgentQueueStallService {
       workers,
       paused,
     };
-    const stalled = isQueueStalled(snapshot);
+    /**
+     * R210：**「读不到」不得被当成「确有其事」**。
+     *
+     * `workers` 是 `stall` 的**结构性判据**（§3.2）；它读失败时会回落成 `0`
+     * ⇒ 若照此判定，一次 Redis 抖动就能把「不知道」报成「**停摆**」。
+     * 这是本仓主导缺陷类（「没读到」被渲染成「有问题」）在**告警方向**上的镜像 ——
+     * 代价同样大：误报会让运营不再看这个徽标。
+     *
+     * ⚠️ 但**不能**简单地「degraded 就一律不报」：`paused` 是**独立的强证据**
+     * （人为显式状态，不依赖 worker 观测）⇒ 只要 `paused` 读到了且为 `true`、
+     * 且有活排队，停摆就**成立**，与 `workers` 读没读到无关。
+     * ⇒ 判定分两路：`paused` 单独成立；`workers` 那一路要求**它自己读到了**。
+     */
+    const workersKnown = !workersUnknown;
+    const stalled =
+      (paused && pendingJobCount(snapshot) > 0) ||
+      (workersKnown && isQueueStalled(snapshot));
+    /**
+     * ⚠️ `reason` **不能**复用 `queueStallReason(snapshot)`：它内部会再调一次
+     * `isQueueStalled`，而后者对 `workers === 0` 的判定**不区分**「真的是 0」与
+     * 「读失败回落成 0」⇒ 在 `paused` 那一路成立、`workers` 读失败时，
+     * 它会因为 `workersUnknown` 之外的形态差异给出 `no-worker`（**错误归因**：
+     * 明明是「暂停」，却让人去查进程）。
+     * ⇒ 这里按**已确认的证据**归因：`paused` 优先（它是显式状态），否则才是 `no-worker`。
+     */
+    const reason: QueueStallReason | null = !stalled
+      ? null
+      : paused
+        ? "paused"
+        : "no-worker";
     return {
       stalled,
-      reason: stalled ? queueStallReason(snapshot) : null,
+      reason,
       pendingJobs: pendingJobCount(snapshot),
       snapshot,
       degraded,
