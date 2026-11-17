@@ -155,6 +155,10 @@
       "why": "真机探针：需真 Redis + 真 BullMQ Worker 才有意义（直跑），不可被 import 复用"
     },
     {
+      "path": "scripts/r212-degraded-live-probe.mjs",
+      "why": "真机探针：需隔离 Redis + admin-api 进程才有意义（直跑），不可被 import 复用"
+    },
+    {
       "path": "scripts/registry-npm-demo-smoke.mjs",
       "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
     },

@@ -147,7 +147,18 @@ R205 起，任何**一个**观测量读失败都置 `degraded: true`。但六个
   （R210 真机坐实，见 §3.2）。升级 BullMQ 后要**重跑** `npm run test:r210-stall-live`
   —— 它会断言「阻塞不降 / 断开才降」这两条，版本语义一变就红。
 - **`getWorkersCount()` 抛错**：R210 已让**它自己读不到时不判停摆**（`workersKnown === false`），
-  R211 又把这个事实**透出到契约**。⇒ 当前实现里**没有**已知的「读失败 ⇒ 假报停摆」路径。
+  R211 又把这个事实**透出到契约**，**R212 在真机上完整验证了这条路径**（见下）。⇒ 当前实现里
+  **没有**已知的「读失败 ⇒ 假报停摆」路径。
+- **R212 真机验证（`npm run test:r212-degraded-live`，10/10）**：在**隔离 Redis**（16379，
+  脚本内置安全闸拒绝在 6379 上跑）上禁用 `CLIENT` 命令制造真实 `NOPERM` ⇒ 断言
+  ① 基线正常 · ② `degraded:true` + `workersKnown:false` · ③ **同一次读失败下 `stalled:false`**
+  （R210 靶心）· ④ `queue-idle` 也标出 `degraded` · ⑤ **paused + 有活 + workers 读失败 ⇒
+  仍 `stalled:true` / `reason:"paused"`**（降级**不得**吞掉真停摆）· ⑥ 恢复后位回落、结论不变 ·
+  ⑦ **回读** `ACL LIST` 确认 `CLIENT` 真的可用（不是「我改了」）。
+  **三条候选触发手段的实测结论（写进脚本头注）**：`docker pause` ⇒ 请求**无限挂起**（不抛错）；
+  `CLIENT KILL` ⇒ ioredis **自动重连**（不抛错）；**只有 `ACL SETUSER default -client`** 才产生真异常。
+  ⚠️ 第 1 条本身是个**独立的运维发现**：Redis 卡住不会让端点报错，而是让它**挂住** ——
+  这不在本判据范围内，但值得单独立项。
   ⚠️ 但它仍**不是**「万无一失」：`CLIENT LIST` 跨节点看不到别的节点上的 worker、
   GCP 不支持 `SETNAME` 时 `baseGetClients` 的 catch 会返回 1 条假 worker ——
   这两条需要多节点/托管环境才能复现，**只登记不声称**。
