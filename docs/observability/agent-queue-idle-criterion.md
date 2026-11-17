@@ -2,7 +2,9 @@
 
 > R206 立项。**先定判据，再写代码**（R388）。按 R393 的纪律：**先列「候选信号 × 它会被什么打穿」**。
 >
-> 状态：**判据已定 + 纯函数已实现并测**（`agent-queue-idle-check.ts`）；**接线待下一轮**。
+> 状态：**判据已定 + 纯函数已实现并测**（`agent-queue-idle-check.ts`）+ **接线已落地并测**
+> （R207：`agent-queue-idle.service.ts` / `GET /agent/sessions/queue-idle` / `QueueIdleBadge`，
+> 见 §6）。
 
 ## 1. 要解决的缺陷（**第四个的补充，不是第五个**）
 
@@ -74,7 +76,12 @@ const ageMs = Date.now() - oldest.timestamp;      // timestamp = 入队时间
 | 积压（R201/R203） | `pending` 且**队列里没有 job** | — |
 | 队列停摆（R204/R205） | 有活 + **没有 worker**（或队列被暂停） | 本条覆盖的是「**worker 在、却不再消费**」 |
 
-⇒ 四者互补：本条补的是「**有人但不干活**」。
+⇒ 五者互补：本条补的是「**有人但不干活**」。
+
+⚠️ **判定顺序：停摆优先**（R207 落地）。若已停摆，本条**让位**
+（API 返回 `suppressedBy: "queue-stall"`、徽标**静默**）—— 否则同一现象会同时点亮
+两个徽标，而运营的注意力是稀缺资源。让位是**完整判定**，**不等于**「读不到」
+（后者走 `degraded`）：把两者压成同一条分支的实现会被 `queue-idle-badge.test.tsx` ④ 抓红。
 
 ## 4. 动作：**只告警**（与其它三条一致）
 
@@ -84,7 +91,44 @@ const ageMs = Date.now() - oldest.timestamp;      // timestamp = 入队时间
 ## 5. 已知边界（**如实登记**）
 
 - **阈值依赖「墙钟预算」这个外部量** ⇒ 本仓的墙钟预算改了，本阈值要跟着改
-  ⇒ 接线层应当**从配置读**预算并推导阈值，**不要**在这里写死魔法数。
+  ⇒ 接线层**从配置读**预算并推导阈值（§6），**不要**在这里写死魔法数。
 - **`getWaiting` 只覆盖 `waiting`**（不含 `delayed` / `prioritized`）。
   `delayed` job 的「年龄」语义不同（它是**故意**延迟的）⇒ 本条**刻意不覆盖** `delayed`。
-- **未实现的部分**：接口/徽标接线（本轮只做判据 + 纯函数，见文首状态）。
+- **误报窗口**：墙钟判定发生在**每轮开头**，真实结束时刻会略晚于 `wallClockMs`，
+  且一次 LLM 调用的超时没有上界 ⇒ 阈值只加了「一拍」（心跳间隔），**不是**按最坏
+  LLM 超时放大。⇒ 文案说「**可能**空转」；**只告警不处置**。
+- **真机验证未做**：本轮全部证据来自单测（后端 13 条 / 前端 5 条 + 反证）与守卫链，
+  **没有**在真 Redis + 真 worker 上制造过「worker 在册却不消费」的场景。
+  ⇒ 状态记 `unverified`（纪律：未跑真机不许写「已验证」）。
+
+## 6. R207 接线（阈值推导与两个新字段）
+
+### 6.1 阈值怎么来的（R403：不允许魔法数）
+
+```text
+thresholdMs = wallClockMs × AGENT_QUEUE_CONCURRENCY + tickMs
+            = 1800000     × 2                     + 30000  = 3,630,000（60.5 分钟）
+```
+
+每一环都是本仓**已有**的量，不是系数：
+
+| 分量 | 来源 | 为什么它是「正确的那一个」 |
+|---|---|---|
+| `wallClockMs` | `agent.budget.wallClockMs`（配置面） | 它是**代码层硬闸门**：超时即 `budget_exceeded` ⇒ 单 job 耗时**结构上**不会超过它 |
+| `concurrency` | `AGENT_QUEUE_CONCURRENCY`（`agent.processor.ts:34`） | 最老 job 能合法等很久的**唯一**成因是「前面的 job 占满并发槽」⇒ 峰值合法等待 = 槽位 × 上界 |
+| `tickMs` | `executor.heartbeatInterval`（默认 30000） | 吸收派发往返 + 「墙钟判定在轮轮开头」的微小超时；**加一拍，不是乘系数** |
+
+⚠️ **任一分量缺失/非法 ⇒ 阈值 0 ⇒ 判据层「不判定」**（宁可漏报）。
+**不**回落到默认值：那会把「配置坏了」伪装成「判定正常」，正是本仓主导缺陷类。
+
+### 6.2 API 契约（`GET /agent/sessions/queue-idle`）
+
+`{ idleStuck, oldestAgeMs, thresholdMs, waitingCount, retried, suppressedBy, degraded, basis }`
+
+- `degraded`：任一个观测量读失败 ⇒ **`idleStuck` 恒 false 且标 degraded**（前端显示「未知」）。
+- `suppressedBy`：`"queue-stall"` ⇒ 本条让位（§3.4）；`null` ⇒ 本判据是这一格的最终结论。
+- `basis`：`{ wallClockMs, concurrency, tickMs, thresholdMs, formula }` —— 把**依据**一起交出去，
+  否则下一次调参就会退化成改魔法数。
+- 服务缺席（只可能发生在测试装配里）⇒ **显式 503** `AGENT_QUEUE_IDLE_CHECK_UNAVAILABLE`，
+  绝不返回「队列在正常消费」。
+

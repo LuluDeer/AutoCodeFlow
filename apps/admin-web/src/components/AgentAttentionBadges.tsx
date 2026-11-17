@@ -21,6 +21,7 @@ import PendingTakeoverBadge from "./PendingTakeoverBadge";
 import StalledBadge from "./StalledBadge";
 import BacklogBadge from "./BacklogBadge";
 import QueueStallBadge from "./QueueStallBadge";
+import QueueIdleBadge from "./QueueIdleBadge";
 
 export interface AgentAttentionBadgesProps {
   /** 主列表刷新信号（+1 ⇒ 两个徽标都跟着刷）。 */
@@ -56,6 +57,9 @@ export default function AgentAttentionBadges({
       <StalledBadge refreshToken={refreshToken} onJump={onShowStalled} />
       <BacklogBadge refreshToken={refreshToken} onJump={onShowBacklog} />
       <QueueStallBadge refreshToken={refreshToken} />
+      {/* R207：空转与停摆**互补**（停摆在册却不再消费）；后端已做让位，
+          本徽标在 `suppressedBy === "queue-stall"` 时**静默**（见组件头注）。 */}
+      <QueueIdleBadge refreshToken={refreshToken} />
       {/* 「只看卡住」必须有清除入口 —— 否则点了徽标就「回不去了」。 */}
       {stalledOnly ? (
         <Tag closable color="orange" onClose={onClearStalled}>

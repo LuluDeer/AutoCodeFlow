@@ -16,6 +16,7 @@ import { AgentEvent } from "./entities/agent-event.entity";
 import { AgentSessionService } from "./runtime/agent-session.service";
 import { AgentBacklogService } from "./runtime/agent-backlog.service";
 import { AgentQueueStallService } from "./runtime/agent-queue-stall.service";
+import { AgentQueueIdleService } from "./runtime/agent-queue-idle.service";
 import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
 import {
@@ -97,6 +98,9 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
     AgentBacklogService,
     // R205：队列「停摆」观测（结构性信号：worker 注册表 / 队列是否被暂停）。
     AgentQueueStallService,
+    // R207：队列「空转」观测（worker 在册却不再消费 —— 停摆判据的互补格）。
+    // 与 stall 服务并列注册：两者读同一队列、但问的是不同问题（R399 互补纪律）。
+    AgentQueueIdleService,
     AgentApprovalsService,
     AgentBudgetService,
     AgentRuntimeService,

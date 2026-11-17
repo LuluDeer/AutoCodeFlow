@@ -1550,5 +1550,6 @@
   "最近 5 条执行（按 createdAt DESC，不限终态与窗口）": "Latest 5 executions (createdAt DESC, regardless of terminal state or window)",
   "同时按项目名称与描述做关键字搜索。LIKE 元字符（% 与 _）按字面匹配。": "Keyword search over both project name and description. LIKE wildcards (% and _) are matched literally.",
   "项目详情统计（任务/应用/近 7 天执行/失败率/成员）": "Project detail stats (tasks/applications/executions in the last 7 days/failure rate/members)",
-  "项目详情统计（任务/应用/近 7 天执行/失败率/成员 + 最近失败与最近活动列表）": "Project detail stats (tasks/applications/executions in the last 7 days/failure rate/members, plus recent failures and recent activity lists)"
+  "项目详情统计（任务/应用/近 7 天执行/失败率/成员 + 最近失败与最近活动列表）": "Project detail stats (tasks/applications/executions in the last 7 days/failure rate/members, plus recent failures and recent activity lists)",
+  "队列是否空转（worker 在册却不再消费新 job）": "Whether the queue is idle-stuck (workers are registered but no longer consuming new jobs)"
 }

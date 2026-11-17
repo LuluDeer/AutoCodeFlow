@@ -12511,6 +12511,29 @@
         }
       }
     },
+    "/agent/sessions/queue-idle": {
+      "get": {
+        "operationId": "AgentController_inspectQueueIdle",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "队列是否空转（worker 在册却不再消费新 job）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Whether the queue is idle-stuck (workers are registered but no longer consuming new jobs)"
+        }
+      }
+    },
     "/agent/sessions/queue-stall": {
       "get": {
         "operationId": "AgentController_inspectQueueStall",

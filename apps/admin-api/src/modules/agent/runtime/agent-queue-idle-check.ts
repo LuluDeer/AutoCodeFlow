@@ -90,3 +90,94 @@ export function evaluateQueueIdle(input: QueueIdleInput): QueueIdleVerdict {
     retried: (input.oldest.attemptsStarted ?? 0) > 0,
   };
 }
+
+/**
+ * R207：**从「单 job 合理耗时上界」推导阈值**（R403：阈值不该是魔法数）。
+ *
+ * ## 推导链（每一环都必须是仓里**已有**的量，不准拍脑袋）
+ *
+ * ```
+ *   单 job 合理耗时上界    = 会话墙钟预算 wallClockMs
+ *                          （`agent.budget.wallClockMs`，默认 30min；
+ *                           它是**代码层硬闸门**：超时即 budget_exceeded ⇒ 单个 job
+ *                           的耗时**结构上**不可能超过它）
+ *   并发窗口               = ceil(AGENT_QUEUE_CONCURRENCY / 1) = 2（processor 的并发）
+ *   ⇒ 阈值 T               = wallClockMs × 并发槽位数
+ * ```
+ *
+ * ## 为什么乘「并发槽位数」而不是别的倍数
+ *
+ * 队列里**最老**的那个 waiting job 之所以能合法地等很久，唯一成因是：
+ * **前面的 job 正在占用并发槽位**。峰值合法等待 = 「所有槽位各跑满一个上界」
+ * = `wallClockMs × AGENT_QUEUE_CONCURRENCY`。`AGENT_QUEUE_CONCURRENCY = 2`
+ * + 30min 墙钟 ⇒ **60min**。
+ *
+ * ⚠️ 这个乘法**不是**保守系数，而是**最坏合法路径本身**：换成 2×/3× 之类的
+ * 系数就成了魔法数，而 R403 明确要求「先问本仓有没有一个量已表达『合理上界』」。
+ *
+ * ## 为什么再留一个「余量」——**只加一拍，不是系数**
+ *
+ * 派发本身有往返（Redis → worker → DB 落 `processedOn`），且墙钟判定是在
+ * **每轮开头**做的 ⇒ 单 job 真实结束时刻会**略晚于** `wallClockMs`。
+ * 这个超出量**没有上界**（一次 LLM 调用的超时才是上界），所以**不用系数放大**，
+ * 而是加**一拍**：`+ 心跳间隔`。心跳间隔是仓里已有的量
+ * （`EXECUTOR_HEARTBEAT_INTERVAL`，执行器心跳 30s）⇒ 取它当「一拍」。
+ *
+ * @param wallClockMs 会话墙钟预算（`agent.budget.wallClockMs`）
+ * @param concurrency 队列并发槽位数（`AGENT_QUEUE_CONCURRENCY`）
+ * @param tickMs      一拍（心跳间隔）；缺省 0 ⇒ 纯乘积
+ */
+export function deriveIdleThresholdMs(
+  wallClockMs: number,
+  concurrency: number,
+  tickMs = 0,
+): number {
+  // 任一分量为非法/非正 ⇒ 返回 0 ⇒ 判据层「阈值 ≤ 0 ⇒ 不判定」接手（**宁可漏报**）。
+  // ⚠️ 这里**不**回落到默认值：配错时静默换一个默认阈值，等于把「配置坏了」
+  //   伪装成「判定正常」，那是本仓主导缺陷类（「没读到」渲染成「没问题」）。
+  if (!Number.isFinite(wallClockMs) || wallClockMs <= 0) return 0;
+  if (!Number.isFinite(concurrency) || concurrency <= 0) return 0;
+  const tick = Number.isFinite(tickMs) && tickMs > 0 ? tickMs : 0;
+  return wallClockMs * Math.floor(concurrency) + tick;
+}
+
+/** 阈值推导的**输入**（接线层从配置读；单独列出便于把「读了哪些量」钉进测试）。 */
+export interface IdleThresholdInputs {
+  wallClockMs: number;
+  concurrency: number;
+  tickMs: number;
+}
+
+/**
+ * 阈值推导的**依据链**（诊断用）——把「T 是多少」和「T 为什么是这个数」一起交出去。
+ *
+ * 为什么要一并返回依据：运营看到「60min」时的第一个问题是「这个数哪来的」，
+ * 若只给结果，下一次调参就会变成改魔法数。
+ */
+export interface IdleThresholdBasis {
+  wallClockMs: number;
+  concurrency: number;
+  tickMs: number;
+  thresholdMs: number;
+  /** 一句话推导（进 API 响应与 tooltip，避免前端自己复述公式而漂移）。 */
+  formula: string;
+}
+
+export function deriveIdleThreshold(
+  input: IdleThresholdInputs,
+): IdleThresholdBasis {
+  const thresholdMs = deriveIdleThresholdMs(
+    input.wallClockMs,
+    input.concurrency,
+    input.tickMs,
+  );
+  return {
+    ...input,
+    thresholdMs,
+    formula:
+      thresholdMs > 0
+        ? `wallClockMs(${input.wallClockMs}) × concurrency(${input.concurrency})` +
+          (input.tickMs > 0 ? ` + tick(${input.tickMs})` : "")
+        : "推导失败（任一分量非法/非正）⇒ **不判定**（宁可漏报）",
+  };
+}

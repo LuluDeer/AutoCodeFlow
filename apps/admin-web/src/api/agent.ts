@@ -187,6 +187,26 @@ export const agentApi = {
       pendingJobs: number;
       degraded: boolean;
     }>,
+  /**
+   * R207：**队列是否空转**（worker 在册却不再消费新 job）。
+   *
+   * 判据见 `docs/observability/agent-queue-idle-criterion.md`；后端端点 R207 落地。
+   * ⚠️ 与 `queueStall` **互补**（不是重复）：停摆问「有没有人能消费」，空转问
+   * 「有人、却不再消费」。判定顺序上停摆优先 ⇒ `suppressedBy === 'queue-stall'`
+   * 时本徽标**必须不显示**（否则同一现象会点亮两个徽标，运营的注意力是稀缺资源）。
+   * ⚠️ `degraded` 必须一起拿：读失败时后端返回 `idleStuck: false`，但那是
+   * **不完整的判定** ⇒ 前端要显示「未知」而不是「正常」。
+   */
+  queueIdle: () =>
+    client.get('/agent/sessions/queue-idle') as Promise<{
+      idleStuck: boolean;
+      oldestAgeMs: number;
+      thresholdMs: number;
+      waitingCount: number;
+      retried: boolean;
+      suppressedBy: 'queue-stall' | null;
+      degraded: boolean;
+    }>,
   backloggedCount: () =>
     client.get('/agent/sessions/backlogged') as Promise<{
       sessionIds: string[];

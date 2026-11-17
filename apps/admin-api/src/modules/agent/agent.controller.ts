@@ -36,6 +36,7 @@ import {
 } from "./runtime/agent-session.service";
 import { AgentBacklogService } from "./runtime/agent-backlog.service";
 import { AgentQueueStallService } from "./runtime/agent-queue-stall.service";
+import { AgentQueueIdleService } from "./runtime/agent-queue-idle.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
 import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -130,6 +131,14 @@ export class AgentController {
      */
     @Optional()
     private readonly queueStall?: AgentQueueStallService | null,
+    /**
+     * R207：队列空转观测服务。
+     *
+     * ⚠️ **同样放在最后且 `@Optional`**：既有测试文件用**定位参数**装配本 controller
+     * （R202/R205 两次教训：插在中间会让既有文件全部错位）。
+     */
+    @Optional()
+    private readonly queueIdle?: AgentQueueIdleService | null,
   ) {}
 
   @Get("sessions")
@@ -222,6 +231,46 @@ export class AgentController {
       pendingJobs: r.pendingJobs,
       degraded: r.degraded,
     };
+  }
+
+  /**
+   * R207：**队列空转**观测（worker 在册却不再消费新 job）。
+   *
+   * 判据见 `docs/observability/agent-queue-idle-criterion.md`。
+   *
+   * ⚠️ 与 `sessions/queue-stall` **互补**（不是重复）：停摆问「**有没有人**能消费」，
+   * 空转问「**有人、却不再消费**」。⇒ 判定顺序上停摆优先，本端点用
+   * `suppressedBy: "queue-stall"` 显式声明让位，避免同一现象点亮两个徽标。
+   *
+   * ⚠️ **`degraded` + `thresholdMs` + `basis` 都是契约的一部分**：
+   * ① 读失败时返回 `idleStuck: false` 是**不完整的判定**，不标出来就等于谎报「正常」；
+   * ② 只给阈值不给推导依据，下一次调参就会变成改魔法数（R403）。
+   */
+  @Get("sessions/queue-idle")
+  @ApiOperation({
+    summary: "队列是否空转（worker 在册却不再消费新 job）",
+  })
+  async inspectQueueIdle(): Promise<{
+    idleStuck: boolean;
+    oldestAgeMs: number;
+    thresholdMs: number;
+    waitingCount: number;
+    retried: boolean;
+    suppressedBy: "queue-stall" | null;
+    degraded: boolean;
+    basis: {
+      wallClockMs: number;
+      concurrency: number;
+      tickMs: number;
+      thresholdMs: number;
+      formula: string;
+    };
+  }> {
+    if (!this.queueIdle) {
+      // ⚠️ 服务缺席 ⇒ **显式报不可用**，绝不谎报「队列在正常消费」。
+      throw new AppError(ErrorCode.AGENT_QUEUE_IDLE_CHECK_UNAVAILABLE, {});
+    }
+    return this.queueIdle.inspect();
   }
 
   @Get("sessions/:id")

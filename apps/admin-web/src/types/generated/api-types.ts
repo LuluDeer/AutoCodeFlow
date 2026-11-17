@@ -200,6 +200,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/sessions/queue-idle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 队列是否空转（worker 在册却不再消费新 job） */
+        get: operations["AgentController_inspectQueueIdle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/sessions/queue-stall": {
         parameters: {
             query?: never;
@@ -8892,6 +8909,23 @@ export interface operations {
         };
     };
     AgentController_backlogged: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AgentController_inspectQueueIdle: {
         parameters: {
             query?: never;
             header?: never;

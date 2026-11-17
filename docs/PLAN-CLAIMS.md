@@ -4058,6 +4058,55 @@
     再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
     也不要用「先接上再观察」把 floor 变成摆设。
 
+- 2026-11-17 **自治优化 · R207（并行第 135 批）（1 提交落地 · 「队列空转」接线 —— 接管台第五个徽标，且**阈值由已有量推导**）**：
+  承接 **R206**（判据 + 纯函数，状态卡候选池第 1 条「接线 S」）。**本轮只做接线**，判据本体
+  **一个字没改**（`agent-queue-idle-check.ts` 仅**追加**推导函数，`evaluateQueueIdle` 未动）。
+
+  - **① 阈值推导（R403 的直接落地）**：`deriveIdleThresholdMs(wallClockMs, concurrency, tickMs)`
+    = **`1800000 × 2 + 30000 = 3,630,000`（60.5 分钟）**。三个分量都是仓里**已有**的：
+    `agent.budget.wallClockMs`（代码层硬闸门 ⇒ 单 job 耗时的**结构性上界**）·
+    `AGENT_QUEUE_CONCURRENCY`（最老 job 能合法等很久的**唯一**成因是槽位被占满）·
+    `executor.heartbeatInterval`（吸收派发往返的**一拍**，**不是**保守系数）。
+    **任一缺失/非法 ⇒ 阈值 0 ⇒ 判据层「不判定」**（宁可漏报）；**刻意不回落默认值** ——
+    那会把「配置坏了」伪装成「判定正常」（本仓主导缺陷类）。
+  - **② 停摆优先让位（R399）**：`suppressedBy: "queue-stall"`。复用 R205 的 `isQueueStalled`
+    **本体**（不复制条件，否则两条判据会漂移），且 `active` 传**真实值** ——
+    「有人在干活 + 最老 job 很老」**正是**本条要报的形态（worker 卡在一个永远跑不完的 job），
+    不该被停摆判据吞掉。让位是**完整判定**，与 `degraded`（读不到）**必须分开建模**。
+  - **③ 防假事实**：任一观测量读失败 ⇒ `degraded: true` 且 `idleStuck` **恒 false**
+    （既不谎报「空转」也不谎报「正常」）；服务缺席 ⇒ 显式 **503**
+    `AGENT_QUEUE_IDLE_CHECK_UNAVAILABLE`，绝不返回「队列在正常消费」。
+  - **④ `basis` 一起返回**：`{ wallClockMs, concurrency, tickMs, thresholdMs, formula }` ——
+    只给阈值不给依据，下一次调参就会退化成改魔法数。
+
+  **验证（真实 exit）**：后端新 spec **13/13** · `src/modules/agent/__tests__` **15 套 148 例全绿**
+  （`--runInBand`）· 前端新 spec **5/5** · web 相关 9 套 **54 例全绿** · `typecheck`(api/web) ·
+  `size-caps` · `test:docs` · `check-web-type-drift` · `lint:i18n`(静态键 3239 / zh,en **3640**) ·
+  `check:error-i18n`(434 码) · `check:error-migration`(595 文件裸异常 0) · `check:api-error-format` ·
+  `gen-api-reference --check`(223 paths) · `check:guards-wired`(98 守卫) · `lint:api` · `lint:web`
+  **全 0**。**两处反证**（去掉后必红，均已实测）：阈值回落魔法数 ⇒ ③⑥ 红；
+  去掉 `degraded` 守卫 ⇒ ⑤b 红；把 `suppressed` 并进 `degraded` 分支 ⇒ 前端 ④ 红。
+
+  **如实登记（不充绿）**：
+  - **真机未跑**：没有在真 Redis + 真 worker 上制造过「worker 在册却不消费」，状态 `unverified`。
+  - **守卫链未跑满**：`guards-repo-matrix` 跑到 **第 55/111 段**（`test:mcp-tool-surface`）红，
+    续跑 `--from=56` 到 **第 107/111 段**（`lint:cli`）红。两处**均已实测为环境既有缺口**
+    （`packages/mcp-server`、`packages/acf-cli` **没有 node_modules / dist**；把改动 stash 后
+    原版同样报 `MODULE_NOT_FOUND` / `eslint: not found`），**与本轮改动无关**；
+    其余 **106 段实测 exit 0**（含 `check:ssrf-parity` —— 它在并发跑测试时曾超时红，
+    单独复跑 **2.9s / 3 条用例全通过**，属并发互踩的假红）。
+  - **`AgentSessionsPage.tsx` 双顶格**（1024/1025）⇒ 徽标挂载点**只能**留在
+    `AgentAttentionBadges.tsx`（本轮已如此），页面里加任何节点都会破 size-caps 棘轮。
+
+  **方法学沉淀（接 403）**：
+  - **404「让位 ≠ 读不到 —— 两者都会让徽标不显示，但一个是完整判定、一个是判定坏了」**。
+    把它们压成同一条分支的实现**看起来更简洁且能过 3 条测试**（本轮反证实测：合并后
+    只有第 ④ 条红）⇒ 必须**分别**用测试钉住两种「不显示」。
+  - **405「反证要先问『这条用例真的能失败吗』」**：本轮 `degraded` 守卫的**第一版反证没红** ——
+    因为让 `waiting` 抛错时最老 job 本就是 `null`（判据恒 false ⇒ 有没有守卫都一样绿）；
+    换 `workers` 抛错又被「停摆让位」吞掉。**只有让 `paused` 抛错**才对准靶心。
+    ⇒ 「加了一条反证」不等于「反证有效」，**换错观测量等于没测**。
+
 - 2026-11-07 **自治优化 · R159（并行第 89 批）（2 提交落地 · 先采样再改判据 + 覆盖计数登记 29 → 34）**：
   `4ef8b24d`（`ci(web): nightly flake-watch 顺带采样覆盖率（只记录、不判定）`）+
   `e387ba6d`（`feat(guards): 覆盖率计数登记 29 → 34（R159，第一批 5 条）`），
