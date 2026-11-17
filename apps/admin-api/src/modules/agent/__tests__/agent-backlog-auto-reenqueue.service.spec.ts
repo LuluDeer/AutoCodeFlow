@@ -131,3 +131,45 @@ describe("R216 · 积压的自动补入队", () => {
     expect(add).not.toHaveBeenCalled();
   });
 });
+
+describe("R217 · 日志三态（静默 / log / warn）", () => {
+  /** 抓 `Logger` 的三种输出（`log` / `warn`）。 */
+  function captureLogger(svc: unknown) {
+    const calls: Array<{ level: string; msg: string }> = [];
+    const logger = (svc as { logger: Record<string, (m: string) => void> })
+      .logger;
+    logger.log = (m: string) => calls.push({ level: "log", msg: m });
+    logger.warn = (m: string) => calls.push({ level: "warn", msg: m });
+    return calls;
+  }
+
+  it("① `candidates === 0`（真没积压）⇒ **完全静默**（不刷日志）", async () => {
+    const { svc } = makeService({ backlogged: [] });
+    const calls = captureLogger(svc);
+    await svc.runCronBody();
+    expect(calls).toEqual([]);
+  });
+
+  it("② `attempted > 0` ⇒ 打 **log**（1 条逐会话 + 1 条汇总，都是 log 级）", async () => {
+    const { svc } = makeService({ backlogged: ["s1"] });
+    const calls = captureLogger(svc);
+    await svc.runCronBody();
+    // 两层日志各有用途：逐会话行（`首次自动补`）供排查单条，汇总行供看全局。
+    expect(calls.length).toBe(2);
+    expect(calls.every((c) => c.level === "log")).toBe(true);
+    expect(calls.some((c) => c.msg.includes("attempted=1"))).toBe(true);
+    expect(calls.some((c) => c.msg.includes("首次自动补"))).toBe(true);
+  });
+
+  it("③ ★ `candidates > 0` 但 `attempted === 0` ⇒ 打 **warn**（这条是 R217 修的缺陷）", async () => {
+    // 原实现只看 `attempted > 0` ⇒ 把这一态和「真没积压」一起静默
+    // ⇒ 运营看到徽标数字一直不变、却不知道为什么。
+    const { svc } = makeService({ backlogged: ["s1"], casFailFor: ["s1"] });
+    const calls = captureLogger(svc);
+    await svc.runCronBody();
+    expect(calls.length).toBe(1);
+    expect(calls[0].level).toBe("warn");
+    expect(calls[0].msg).toContain("attempted=0");
+    expect(calls[0].msg).toContain("人工介入");
+  });
+});

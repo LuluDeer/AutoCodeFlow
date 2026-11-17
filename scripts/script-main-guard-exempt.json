@@ -175,6 +175,10 @@
       "why": "真机探针：需真实 PG + 并发子进程才能证明 CAS 单赢家（直跑），不可被 import 复用"
     },
     {
+      "path": "scripts/r217-auto-requeue-e2e-probe.mjs",
+      "why": "真机端到端探针：需隔离 Redis + 真 cron（会等约 22 分钟）+ 真 PG，不可被 import 复用"
+    },
+    {
       "path": "scripts/registry-npm-demo-smoke.mjs",
       "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
     },

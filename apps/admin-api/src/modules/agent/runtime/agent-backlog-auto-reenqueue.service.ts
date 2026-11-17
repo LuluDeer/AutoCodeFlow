@@ -96,13 +96,44 @@ export class AgentBacklogAutoReenqueueService {
   @Cron("0 5,15,25,35,45,55 * * * *")
   async handleBacklogAutoReenqueue(): Promise<void> {
     if (this.leaderGate && !this.leaderGate.isLeader) return;
+    await this.runCronBody();
+  }
+
+  /**
+   * cron 的**函数体**（与 `handleBacklogAutoReenqueue` 分开的**唯一**目的：可测）。
+   *
+   * ⚠️ 为什么不直接把 `@Cron` 方法当测试入口：那样每个用例都要构造 `LeaderGateService`
+   * 并断言「门禁被调用」—— 而本文件要测的是**日志三态**，与门禁无关。
+   * 拆开后：`@Cron` 方法只负责「门禁 → 调用函数体」，函数体负责「跑 + 打日志」。
+   * ⇒ 谁都没有被绕开：门禁仍在 `@Cron` 路径上。
+   */
+  async runCronBody(): Promise<void> {
     try {
       const r = await this.runOnce();
-      // 只在**真有事**时打日志（每 10 分钟一条「什么都没发生」会把日志淹掉）。
+      /**
+       * 日志的**三态**（不是「有事/没事」两态）：
+       *
+       * | 情形 | 含义 | 日志 |
+       * |---|---|---|
+       * | `candidates === 0` | 真的没有积压 | **不打**（每 10 分钟一条「什么都没发生」会淹掉日志） |
+       * | `candidates > 0 && attempted > 0` | 正常补了 | `log` |
+       * | **`candidates > 0 && attempted === 0`** | **有积压但一条都补不动**（均已补过 / 状态已变） | **`warn`** |
+       *
+       * ⚠️ 第三态是 R217 真机发现的**可观测性缺陷**：原实现只看 `attempted > 0`，
+       * 把它和第一态一起静默 ⇒ 「积压一直存在、自动补却帮不上忙」这件事**没有任何信号**，
+       * 运营只能看到徽标上的数字一直不变、却不知道为什么。
+       * 这正是本仓主导缺陷类（「有问题」被渲染成「什么都没发生」）的又一形态。
+       */
+      if (r.candidates === 0) return;
       if (r.attempted > 0) {
         this.logger.log(
           `Backlog auto re-enqueue: candidates=${r.candidates} attempted=${r.attempted} ` +
             `enqueued=${r.enqueued} failed=${r.failed}`,
+        );
+      } else {
+        this.logger.warn(
+          `Backlog auto re-enqueue: candidates=${r.candidates} but attempted=0 ` +
+            `—— 这些会话**已补过或状态已变**，自动补帮不上忙，需要人工介入`,
         );
       }
     } catch (err: unknown) {
