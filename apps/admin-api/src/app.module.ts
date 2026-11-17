@@ -335,6 +335,12 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
 
         // P5/P6（agent-and-deployment）: 协作面随 poll 下发的 SOP 策略
         // （设计文档 11 §3.1）。执行器侧 P7 做 min(本地, 中台) 合并。
+        // R213：Agent 观测调用的超时上界（判据 docs/observability/observation-timeout-criterion.md §3.1）。
+        // 默认 5000ms = connectTimeout(10000) 的一半；0 ⇒ 不设超时（不推荐：Redis 卡住时端点会挂死）。
+        AGENT_OBSERVATION_TIMEOUT_MS: Joi.number()
+          .integer()
+          .min(0)
+          .default(5000),
         AGENT_SOP_POLICY: Joi.string().default("standard"),
         AGENT_SOP_POLICY_ALLOWED: Joi.string().default("minimal,standard"),
         // P6 超时治理（11 §6）：领取 30min / 进度心跳 10min（建议值）。

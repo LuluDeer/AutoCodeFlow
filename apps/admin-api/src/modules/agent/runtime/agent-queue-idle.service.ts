@@ -29,8 +29,8 @@
  * **造成真实损害**（重复执行）⇒ 人的动作是：**查 worker 进程 / Redis 连接**。
  */
 import { Injectable, Logger } from "@nestjs/common";
-import { InjectQueue } from "@nestjs/bullmq";
 import { ConfigService } from "@nestjs/config";
+import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
 
 import { AGENT_QUEUE_CONCURRENCY, AGENT_QUEUE_NAME } from "./agent.processor";
@@ -96,7 +96,9 @@ export class AgentQueueIdleService {
      * R213：观测调用上界（判据文档 §3.1）。默认值推导见
      * `DEFAULT_OBSERVATION_TIMEOUT_MS`（connectTimeout 的一半）。
      */
-    const timeoutMs = DEFAULT_OBSERVATION_TIMEOUT_MS;
+    const timeoutMs =
+      Number(this.config.get("agent.observationTimeoutMs")) ||
+      DEFAULT_OBSERVATION_TIMEOUT_MS;
     let seq = 0;
     const read = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
       try {

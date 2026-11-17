@@ -29,6 +29,7 @@
  * 「有没有人在这场子里干活」**一致**，但计数接口更省。
  */
 import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
 
@@ -88,6 +89,7 @@ export class AgentQueueStallService {
   constructor(
     @InjectQueue(AGENT_QUEUE_NAME)
     private readonly queue: Queue,
+    private readonly config: ConfigService,
   ) {}
 
   /**
@@ -101,7 +103,9 @@ export class AgentQueueStallService {
    * R213：观测调用上界（判据文档 §3.1）。默认值的推导见
    * `DEFAULT_OBSERVATION_TIMEOUT_MS` 的注释（connectTimeout 的一半）。
    */
-  private readonly observationTimeoutMs = DEFAULT_OBSERVATION_TIMEOUT_MS;
+  private readonly observationTimeoutMs =
+    Number(this.config.get("agent.observationTimeoutMs")) ||
+    DEFAULT_OBSERVATION_TIMEOUT_MS;
 
   async inspect(): Promise<QueueStallReport> {
     /**
