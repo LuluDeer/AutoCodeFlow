@@ -171,6 +171,10 @@
       "why": "真机探针：需隔离 Redis + 编译产物才有意义（直跑），不可被 import 复用"
     },
     {
+      "path": "scripts/r216-auto-requeue-live-probe.mjs",
+      "why": "真机探针：需真实 PG + 并发子进程才能证明 CAS 单赢家（直跑），不可被 import 复用"
+    },
+    {
       "path": "scripts/registry-npm-demo-smoke.mjs",
       "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
     },

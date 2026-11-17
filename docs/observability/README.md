@@ -22,6 +22,7 @@ SSE 两个 runtime gauge 的声明在同目录 `runtime-metrics.ts`（RUNTIME_GA
 
 | 文档 | 内容 |
 |---|---|
+| [backlog-auto-reenqueue-criterion.md](./backlog-auto-reenqueue-criterion.md) | **「自动补入队」判据** —— 本仓**唯一**一条「自动处置」的判据（其余五条都只告警），因为「积压」意味着会话**永远不会被执行**且**没有任何东西会自己修复它**。副作用封顶：CAS 单赢家（多副本只有 1 个补）+ 计数落库（上限 1）+ `jobId = session.id`（幂等且判据能查到）。**为什么计数必须落库**：「补了但队列里查不到」有「add 失败」与「add 成功但 job 已被消费」两种成因，队列**分不开**。R216 真机 7/7（10 并发 ⇒ 赢家=1）。 |
 | [observation-timeout-criterion.md](./observation-timeout-criterion.md) | **「观测调用超时」判据** —— **观测端点自己坏了，不能让观测面看起来像没数据**。R212 真机实测：Redis **卡住**（TCP 在、不应答）⇒ `queue-stall`/`queue-idle` **挂死 25s+ 无响应**（不报错、不降级）。根因是 BullMQ 要求的 `maxRetriesPerRequest:null` + `enableOfflineQueue:true`（**不能改**）⇒ 只能在**观测层**加超时（`withObservationTimeout` / `ObservationBudget`），且超时**必须**走与「读失败」完全相同的降级路径。R213 已落地 + 真机 11/11。 |
 | [agent-queue-idle-criterion.md](./agent-queue-idle-criterion.md) | **「队列空转」（queue idle-stuck）判定判据** —— **worker 还在、却不再消费新 job**（R205「停摆」的补充格）。信号 = **最老 waiting job 的年龄**（BullMQ `job.timestamp` + Redis ZSET ⇒ **单次请求内**可算，**不需要跨采样状态**）。**为什么不用固定阈值**：`AGENT_QUEUE_CONCURRENCY=2` ⇒ 批量触发时最后一个**合法地**等 45 分钟 ⇒ 阈值由「单 job 合理耗时上界」推导：**`wallClockMs × concurrency + heartbeat tick`**（R207 接线，见该文档 §6）。 |
 | [agent-queue-stall-criterion.md](./agent-queue-stall-criterion.md) | **「队列停摆」（queue stall）判定判据** —— **有 job 在排队但结构上没人能消费**（`workers === 0` 或队列被暂停）。这是「异常接管台」的**第四个**缺陷，与另三个**刻意不重叠**：待接管看会话状态 · 卡住看最近 step · 积压看 job 存在性 · **本条看队列的 worker 注册面**。**为什么不用时间阈值**：`waiting` 多、`active===0`、最老 job 年龄**全都会被「合法积压」打穿**（并发仅 2）⇒ 只有**结构性**信号不受影响。 |

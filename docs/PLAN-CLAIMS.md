@@ -479,6 +479,7 @@
 | 1790000000096 | AddTaskConsumedFirePointAt | A6b：显式「提前触发并消耗下一个计划点」入口的**登记载体**（产品 2026-11-03 拍板：「手动执行不算覆盖计划落点；除非给一个入口提前触发，去消耗最近 1 次 cron」）。**为什么是新列而不是复用 `lastTriggerTime`（丙方案已证伪，非倾向性否）**：该列有 **3 个写点**——`scheduler.claimTaskTrigger`（条件 UPDATE 推进触发时刻）、`task.claimDependencyTrigger`（**依赖扇出复用同列**，A1 文档点名的那条路径）、`task.rollbackDependencyClaim`（②的 CAS 回滚）；**读点 4 处**——`checkMisfiresBody` 的 gap 推导、闸 1 复核、闸 2 落点比较、`auditMissedFirePointsBody`。把**未来落点**写进去会让 `now - lastTriggerTime` 变**负** ⇒ ①`gap > threshold` 恒不成立 ⇒ **misfire 永久失明**；②`claimTaskTrigger` 的谓词 `"lastTriggerTime" IS NULL OR < :windowStart` 永不命中 ⇒ 该任务**再也无法被任何路径触发**（永久死任务）；③CAS 回滚会把它回滚到未来值 ⇒ **破坏性**，否。**为什么不是新表（乙方案）**：登记**恒为「每任务至多一条」**（重复勾选按 409 拒绝）⇒ 无历史流水/无 join/无清理策略 ⇒ 单列 + 条件 UPDATE 天然满足「至多一条 + 原子」⇒ 新表属**过度建模**。**形状**：可空、**无 DEFAULT** ⇒ metadata-only、**零回填**（存量全 NULL = 「没有未消耗登记」，语义天然正确）；`ADD COLUMN IF NOT EXISTS` 幂等；不用 CONCURRENTLY（`tasks` 非百万级表，且 CONCURRENTLY 不能在迁移事务里跑） | 本批落盘：ALTER TABLE ADD COLUMN（TIMESTAMP NULL、无 DEFAULT、metadata-only、零回填）/ down DROP COLUMN IF EXISTS |
 | 1790000000097 | AddExecutorTokenRotationEpoch | ADR-030（R14 落地）：per-executor 令牌的**轮换纪元**，作为「确定性派生 + 条件更新」的 CAS 谓词与派生输入。**为什么需要**：ADR-030 §4 采纳 ②′——令牌 `HMAC(K, identity‖startupEpoch‖rotationEpoch)`；两实例读到同一 epoch ⇒ 派生结果**逐字节相同** ⇒ 后到者不必拿明文，`bcrypt.compare(自算, 库里新 hash)` 命中即把**同一枚**令牌返回（跨实例幂等的全部机制）。没有该列只能回到 ADR-030 §3 方案①的明文缓存（已否决）。**形状**：`integer NOT NULL DEFAULT 0` ⇒ PG 11+ catalog-only（不重写表、**零回填**）；`0` = 从未按纪元轮换（该列只在 `EXECUTOR_TOKEN_EPOCH_MODE=on` 时读写，默认 `off`，旧代码完全不认识它 ⇒ 灰度互不干扰）。**不建索引**：唯一查询形态 `WHERE id=:id AND "tokenRotationEpoch"=:epoch`，主键已定位单行。 | 本批落盘：ALTER TABLE ADD COLUMN（integer NOT NULL DEFAULT 0，metadata-only、零回填）/ down DROP COLUMN IF EXISTS（回滚不打断在跑执行器：库里存的是派生令牌的 bcrypt 哈希，与派生方式无关） |
 | 1790000000098 | AddBroadcastReservedCount | ADR-038（方案 B 落地）：给**广播占坑**独立计数列，把「单播占坑靠行数下限」与「广播占坑靠心跳覆写纠正」两种相反语义**分开**（`executor.service.ts:6034` 每台 +1 但只有一行执行记录，`executorAddress` 只能落一个地址 ⇒ 未持行目标「计数1/行数0」）。**为什么需要**：与 `runningTaskCount` 共用一列时，ADR-037 的行数下限会抹掉广播占坑、而广播既有设计又依赖心跳覆写纠正少计 ⇒ 互相抵消 ⇒ 容量少计。**形状**：`integer NULL DEFAULT 0` ⇒ PG 11+ catalog-only（不重写表、**零回填**），`null` 与 `0` 等价。**不建索引**：唯一访问形态是按主键读单行。 | 本批**只加列**（步骤 2）；写路径与容量谓词在步骤 3。回滚：down `DROP COLUMN IF EXISTS`，值可由「在途广播执行数」重建 ⇒ 最坏从 0 累计 = 短时少派单、**不超卖** |
+| 1790000000099 | AddBacklogReenqueueCount | R216（「积压」自动补入队）：给**自动补**一个持久化计数列。**为什么需要**：「积压」= 会话 `pending` 但队列里没有指向它的 job ⇒ **永远不会被执行**；自动补是本仓**唯一**自动处置的判据，副作用必须封顶。**为什么落库而不是进程内 Set**：多副本 + 重启下，进程内计数 = N 次补 / 重启后无限补；条件写 `"backlogReenqueueCount" < 1 AND status = 'pending'` 让「每会话最多自动补一次」在多实例下也成立。**为什么不能只看队列**：「补了但队列里查不到」有 ① add 失败（该重试）② add 成功但 job 已被消费（不该再补）两种成因，队列**分不开**，落库的计数**记得**「我试过」。**为什么不复用 `autoResumeCount`**：语义完全不同（`pending` 无 job vs `waiting_input`），共用会让两条自动处置互相吃掉额度。**形状**：`integer NULL DEFAULT 0` ⇒ PG 11+ catalog-only、**零回填**，存量 `0` = 「从未自动补过」语义天然正确。**不建索引**：唯一访问形态是按主键条件写（CAS）。 | 本批**只加列**；写路径见 `agent-backlog-reenqueue-claim.ts` 的 `claim`（外提，因 `agent-session.service.ts` 已在 size-caps 基线上顶格）。回滚：down `DROP COLUMN IF EXISTS`，最坏从 0 重新累计 = 短时**多补一次**（`jobId = session.id` 幂等 ⇒ 无害）|
 | 1790000000093 | AddAgentEventCausation | A2（Temporal 对照调研，**该文档自定的最高优先级项**，此前一直没落地）：把事件流从「扁平日志」变「**因果图**」。Temporal 用 `ScheduledEventId` 给每个结果事件精确配对起因（`mutable_state_impl.go:4777-4783`）；我们此前要回答「这条 `tool_call_status_changed` 是被哪条事件引起的」，只能靠 payload 里的 `toolCallId`/`approvalKey` **猜**——那是**推断**不是**事实**。加 `causedBySeq integer NULL`（**可空 + 零回填**：存量事件没有因果信息，**不假装知道**；metadata-only）。**刻意不加 FK/唯一约束**（三条否决理由：① 与 `appendEvents` 的**单语句批量插入**（`WITH ORDINALITY`）原子性纠缠；② 保留期删除时外键会把清理 cron 拖死或被迫改写历史；③ 一因多果不是 1:1，唯一约束本就错）⇒ 改用「**投影运行期断言**（`causedBySeq >= seq` 或跨会话 ⇒ 记缺口，不静默接受）+ **静态守卫** `scripts/check-agent-event-causation.mjs`（11 例自检含正例控制组、`--strict` 可把「待接线」升红）」代替约束。**因果规则**：`tool_call_recorded` ← 请求它的 step；`tool_call_status_changed` ← 该工具的 `tool_call_recorded` 或引起变化的 `approval_decided`；`approval_decided` ← 需审批的 `tool_call_recorded`；`prompt_fingerprint` ← 触发该轮 LLM 调用的 `step_appended`；`step_appended`/`session_finished` 可 NULL。 | 本批落盘：ALTER TABLE ADD COLUMN（integer NULL、无默认、metadata-only、零回填）/ down DROP COLUMN |
 | 1790000000092 | AddExecutionAttemptSeq | OSS 对照调研 R7（S7 §2 **G3**，2026-11-01）：**给执行加「尝试世代」维度**。缺陷：终态门是**纯状态**的（`execution-terminal.ts` 的 `id IN (…) AND status IN (gate)`，gate = PENDING/RUNNING/WAITING，**无 attempt/epoch**）；而 `task.processor.ts` 的 `claimable` **含 `FAILED`**（注释自陈「BullMQ retries run through here again」）⇒ **同一个 `executionId` 会被重新 claim 成 RUNNING**（三条入队点对同一 job 给 `attempts`，payload 只有 `{executionId}`；该路径 `retryCount` 从不自增）。⇒ **同一执行器上「上一回合的迟到回调」与「本回合的正常回调」在 SQL 上不可区分**（跨执行器的迟到回调已被回调地址/行身份三级校验挡住）。加 `attemptSeq integer NOT NULL DEFAULT 0`（存量 0 = 第一次尝试，语义正确）；claim 时自增、随派发下传、终态门加 `AND attemptSeq = :expected`——**`expected` 不传即不加谓词**（逐字节等价，先只在回调路径传）。⚠ 这条曾被我错误结案为「不是缺口」（只查 1 条重试路径就断言「每次重试建新 executionId」），由对抗式复核推翻 ⇒ 纪律 **R2c 全称断言必须枚举**。 | 本批落盘：ALTER TABLE ADD COLUMN（NOT NULL DEFAULT 0，metadata-only、零回填）/ down DROP COLUMN |
 | 1790000000089 | AddAgentEvents | OSS 对照调研 R7（S7 §2 G1，**取证型事件日志**第一阶段）：我们**没有**事件日志（`event_log`/`events_store`/`rehydrate` 非测试文件命中 0），`rebuildMessages` 是从 `agent_steps` + `agent_tool_calls` 的**当前行**拼上下文（快照重建），而 `agent_tool_calls.status` 是**就地更新**（`in_flight` → `ok`/`error`）⇒ 历史状态不保留，「第 N 轮当时看到什么」答不出来；`stateChangedAt`（0083）只有**一个**时间戳，**不是序列**——加了列 ≠ 有了事件日志。建 `agent_events`（`sessionId` + 会话内单调 `seq` + `kind` + `payload` jsonb + `createdAt`，**唯一 `(sessionId, seq)`**）作 append-only 事实日志。**抄了 Temporal 两条适用的硬不变量**（`common/persistence/history_manager.go`）：同批 ID 连续、超限整批拒（不许部分写入）；**刻意不抄**另两条（同批版本一致、`node_id = 首批事件ID`）——那是分片/重放锚点，我们单 PG 不需要。**本阶段只写不读**（投影 `projectSession` 与 `promptFingerprint` 的落地情况以实施报告为准）。**明确不做**：Temporal 式「重算型 replay」——它服务端**根本不检测非确定性**（`NON_DETERMINISTIC_ERROR` 全仓仅 1 处且只打日志；35 种失败原因无一「与历史不一致」；SDK replayer 引用数 0），其 replay 成立于「重放的是确定性代码」，而我们的 LLM 步骤不是。 | 本批落盘：CREATE TABLE（新表，无存量行，不回填）+ 唯一索引 `(sessionId, seq)`；down DROP TABLE |
@@ -4057,6 +4058,51 @@
     （候选池里的 `web-flake-watch` 顺带记录 `lines` 就是这条的落地形态），**先用数据量化抖动，
     再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
     也不要用「先接上再观察」把 floor 变成摆设。
+
+- 2026-11-18 **自治优化 · R216（并行第 144 批）（1 提交落地 · 「积压」自动补入队 —— 本仓**第一条自动处置**的判据，副作用全部封顶）**：
+  候选池第 1 条。R215 已清掉前置误报（否则自动补会把「正在正常排队」的会话再补一条 ⇒ 观测缺陷放大成真副作用）。
+
+  - **① 判据先行（R388）**：`docs/observability/backlog-auto-reenqueue-criterion.md`。
+    核心：`积压` = 会话 `pending` 但**没有任何指向它的 job** ⇒ 永远不会跑，且**没有任何东西会自己修**
+    （`sweepStaleRunning` 只扫 `running`、GAP-3 只管 `waiting_input`、唯一修复路径是人点徽标）。
+  - **② ★ 副作用封顶（这是本条存在的意义）**：
+    | 约束 | 做法 |
+    |---|---|
+    | 最多补 **1** 次 | `claim` 条件写 `"backlogReenqueueCount" < 1`，**计数落库** |
+    | 多副本单赢家 | 同上 CAS（`affected > 0`） |
+    | 重复 add 无害 | `jobId = session.id`（与首跑同形态 ⇒ 幂等**且**积压判据下轮能查到，R215 的教训） |
+    | 不碰会话状态 | **只** `queue.add`，不改 `status`/预算/审批，**不走** `resume` |
+    | 扫描/观测有上界 | 复用 `BACKLOG_PROBE_LIMIT`(200) 与 R213 的 `withObservationTimeout` |
+    | 失败不重试 | **先 CAS 后 add** ⇒ add 失败则计数已 +1 ⇒ **少补**（判据 §5.1） |
+  - **③ ★ 为什么计数必须落库（不能只看队列）**：「补了但队列里查不到」有两种成因 ——
+    ① `add` 失败（该重试）② `add` 成功但 job 已被消费/清理（**不该**再补）。队列**分不开**这两者，
+    落库的计数**记得**「我试过」。这是本列存在的**核心**理由。
+  - **④ ★ 真机证明「单赢家」（唯一证明方式）**：`npm run test:r216-auto-requeue-live`（**7/7**）——
+    **10 个并发 `psql` 进程抢同一行 ⇒ 赢家 = 1**（`count=1`），且「额度耗尽」「非 pending」各自 `UPDATE 0`。
+    ⚠️ 单测只能证明**谓词字符串写对了**；**并发下单赢家只有真 PG 能证明**。
+  - **⑤ 两处守卫拦下了我的第一版（都对）**：
+    ① `check-size-caps`：`agent-session.service.ts` 已顶格（1102 vs 基线 1087）⇒ 把 CAS **外提**成
+    `agent-backlog-reenqueue-claim.ts`（R380/R397 同款做法），基线**一个数没动**；
+    ② `check-docs`：新判据文档未登记 ⇒ 报「**孤儿文档**」。
+  - **⑥ 新增迁移 `1790000000099-AddBacklogReenqueueCount`**（`integer NULL DEFAULT 0` ⇒ catalog-only、
+    零回填；不建索引，唯一访问是按主键条件写）。`check-migrations` 要求先在「迁移时间戳分配表」登记
+    —— 守卫点名后补上（143 个迁移全注册）。
+
+  **验证（真实 exit）**：agent `__tests__` **19 套 244 例全绿**（新增 auto-reenqueue 7 条 + claim 6 条）·
+  R216 真机探针 **7/7** · `lint:api` · `size-caps`（基线未放宽）· `test:docs` · `check-migrations`(143) ·
+  `test:agent`(22/22) · `check-script-main-guard` 全 **0**。
+  **四处反证（均实测变红）**：跳过 CAS ⇒ ② 红；`jobId` 改回带时间戳 ⇒ ① 红；
+  **去掉 CAS 的额度谓词 ⇒ 并发赢家变成 10（`count=10`）、4 条红**（最有说服力的一条）。
+  **环境复原**：探针只碰 `triggerSource='r216-probe'` 的会话，回读残留 0。
+
+  **方法学沉淀（接 421）**：
+  - **422「『别重复』不能靠『我不会重复』，只能靠一个原子谓词」**。第一版若按「先读状态再决定补不补」
+    写，10 个副本会各自读到「该补」⇒ 补 10 次。**并发安全不是靠想清楚，是靠一条 SQL 让数据库替你想清楚**；
+    而它**只有用真并发才能证明**（单测的 mock 永远是顺序的）。
+  - **423「自动化判据的门槛比告警判据高一档：副作用必须可枚举地被封顶」**。
+    其余五条判据错了只是「多一个徽标」；本条错了是**真的多跑一遍**。
+    ⇒ 立项时必须能逐条列出「最坏会多做几次、每次的代价、被什么挡住」——
+    写不出来就说明还没到能自动化的程度。
 
 - 2026-11-18 **自治优化 · R215（并行第 143 批）（1 提交落地 · 修掉「积压」判据的**真实误报路径** —— 它的前提只对首跑成立）**：
   候选池第 1 条「自动补 enqueue」的前置调研。**结论：自动补 enqueue 现在不能做 ——
