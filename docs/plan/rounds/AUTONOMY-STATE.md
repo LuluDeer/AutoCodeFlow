@@ -1,27 +1,18 @@
-# AUTONOMY-STATE — 状态卡（R217 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R220 收尾交接版 · ≤50 行）
 
-**基线**：`dbea247b`（R216，`git log -1`）· 本轮落地 **1 个提交**（R217 自动补真机端到端）· **守卫链 111 段**（本机实测 **106 段 exit 0**；第 55/107 段是环境既有缺口 —— `packages/{mcp-server,acf-cli}` 无 node_modules/dist，stash 后原版同样红；**未新增链段**）
-**会话**：第 217 轮 · 并行第 145 批 · **单靶**
+**基线**：`9dfb6834`（R220，`git log -1`）· 本轮落地 **3 个提交**（R218 死代码 / R219 atlas 同步 / R220 棘轮下调）· **守卫链 111 段**（本机实测 **106 段 exit 0**；第 55/107 段是环境既有缺口 —— `packages/{mcp-server,acf-cli}` 无 node_modules/dist，stash 后原版同样红；**未新增链段**）
+**会话**：第 220 轮 · 并行第 148 批 · **单靶（收尾轮）**
 
-## 本轮落地（R217 · 1 项 · 已复核）
+## 本轮落地（R218–R220 · 3 项 · 收尾轮）
 
-**★ 自动补的真机端到端 —— 并顺手修掉一个静默缺陷 + 探针自身的两个假绿。**
-- **★ 端到端（真 cron + 真 Redis + 真 PG，真等两轮 cron 最坏 22 分钟）**：造真积压 ⇒ 端点识别 ⇒
-  **cron 真触发**（`candidates=1 attempted=1 enqueued=1`）⇒ **真 Redis 出现 `jobId=session.id`** ⇒
-  `count=1` ⇒ **闭环**（不再报积压）⇒ **幂等**（`count` 已=1 的会话下轮不产生 job、计数仍 1）。
-  刻意**不**手动调 `runOnce()`（那会跳过 cron 注册/触发层，R416 教训）。
-- **★ 静默缺陷（真机日志暴露）**：`attempted===0 && candidates>0`（有积压但补不动）原来**静默** ⇒
-  运营看徽标数字不变、不知为何。真机日志恰好出现这态（`candidates=1 but attempted=0`）⇒ 改为**三态**：
-  没活静默 / 补成打 log / **补不动打 warn「需要人工介入」**。
-- **探针自身两个假绿（都修，写进头注）**：⓪ 命中**上一轮**的旧日志行（修：按 `sinceMs` 过滤）；
-  ⓜ 断言条件跨两行日志 `&&`（逐会话行只含 id、汇总行只含 attempted=1 ⇒ 永不满足）。
-  两处都是 R407「先问红的是产品还是探针」的实际用例。
+**收尾：清欠 + 文档同步 + 棘轮跟进。**
+- **R218**：删 `saveDeadLetter` 死代码（全仓零调用；实际死信写入走 `outbound-event-dispatcher` 的 `deadLetterToSubscribers`）。
+- **R219**：R216 的新迁移 `1790000000099` 没进 atlas 文档 ⇒ `check-atlas-counts` 正确拦下 ⇒ 同步三处（142→143）。
+- **R220**：R218 删掉的那处整行 `save()` 让 `check-conditional-writes` 提示 `wholeRowSaves 31→30` ⇒ 棘轮下调。
 
-## 验证 / 红演示（R217 · 真实 exit）
-- **验证**：端到端探针 **10/11**（行为 ④⑤⑥⑦⑧ 全过 + 真机 warn 三态；③断言两修后逻辑对齐）·
-  agent `__tests__` **18 套 184 例**（日志三态 3 条新增）· `lint:api` · `size-caps` · `test:docs` ·
-  `check-script-main-guard` 全 **0**。
-- **反证**：加回 `attempted===0 ⇒ return` ⇒ **③ 红**。
+## 验证 / 红演示（R218–R220）
+- **验证**：event-subscriptions 6 套 108 例 · `check-atlas-counts` exit 0 · `check-conditional-writes`(+selftest 55/55) exit 0 · `tsc`/`eslint`/`size-caps`/`test:docs` 全 0。
+- 批量检查 20+ 个守卫全绿（唯一红项是环境既有的 `lint:cli` / `test:mcp-tool-surface` —— 无 node_modules）。
 
 ## 教训（424–425，接 423）
 - **424「降级类动作的日志要三态：没活 / 干成了 / 想干但干不动」** —— 第三态最容易被「别刷日志」的善意吞掉，而它恰恰是**唯一**需要人知道的一态。
@@ -31,7 +22,7 @@
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（部分已修，**不声称根除**，nightly 尚无样本）· `release-notice-ops`（需运维窗口）。
 
 ## 候选池（已排序）
-1. 五个徽标低频自动刷新（S，**待定**：需先问价值）· `saveDeadLetter` 死代码（S）· 判据⑨盲区（M，R168 只登记不立项）。（S，**待定**：需先问价值）· `saveDeadLetter` 死代码（S）· 判据⑨盲区（M，R168 只登记不立项）。
+1. 五个徽标低频自动刷新（S，**待定**：需先问价值）· 判据⑨盲区（M，R168 只登记不立项）。
 
 **里程碑**：前端 P3 九条（R188–195）· R169 审计 17 条 · `no-explicit-any` 73→0（R196）· 「读失败渲染成没有」清零（R197）· **接管台五徽标全部接线完成**（R198/199/203/205/207）· 五判据严格互补 · 两级阈值不变式（R200）。
 
