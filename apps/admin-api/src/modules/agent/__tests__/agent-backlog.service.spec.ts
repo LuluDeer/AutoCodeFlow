@@ -126,4 +126,46 @@ describe("R202 · 积压对账（接线层）", () => {
     // 而是「这次没查到」—— 由 truncated:true 表达）。
     expect(report.count).toBe(0);
   }, 20_000);
+  it("⑥ ★ **R215 回归：resume 入队的会话不得被判成积压**（真实的误报路径）", async () => {
+    // ⚠️ 这条是**真实缺陷**的回归钉子：本仓三条入队路径用的 jobId 不同 ——
+    //   首跑 `session.id`、人工/审批恢复 `resume-<id>`、LLM 自动续跑 `auto-resume-<id>`。
+    //   判据原先只查 `session.id` ⇒ 「审批通过、正在正常等消费」的会话会被误判成积压
+    //   ⇒ 运营按提示「重新入队」⇒ **同一会话跑两遍（双份副作用）**。
+    const { svc } = makeService({
+      pending: [{ id: "s0" }, { id: "s1" }, { id: "s2" }, { id: "s3" }],
+      jobStates: {
+        s0: "waiting", // 首跑（jobId === session.id）
+        "resume-s1": "waiting", // 人工/审批恢复
+        "auto-resume-s2": "waiting", // LLM 瞬时错误自动续跑
+        // s3 三条都没有 ⇒ **真积压**
+      },
+    });
+    const report = await svc.findBacklogged();
+    expect(report.sessionIds).toEqual(["s3"]);
+    expect(report.count).toBe(1);
+  });
+
+  it("⑦ R215：首跑形态**零额外往返**（命中第一个候选就返回）", async () => {
+    // 枚举三个候选**不等于**每次都查三次：绝大多数会话走首跑路径，
+    // 那条必须只查一次（否则 200 条 pending × 3 次往返会拖慢端点）。
+    const { svc, getJob } = makeService({
+      pending: [{ id: "s0" }],
+      jobStates: { s0: "waiting" },
+    });
+    await svc.findBacklogged();
+    expect(getJob).toHaveBeenCalledTimes(1);
+    expect(getJob).toHaveBeenCalledWith("s0");
+  });
+
+  it("⑧ R215：三个候选都查不到 ⇒ 才判积压（且恰好查 3 次）", async () => {
+    const { svc, getJob } = makeService({ pending: [{ id: "s0" }] });
+    const report = await svc.findBacklogged();
+    expect(report.sessionIds).toEqual(["s0"]);
+    expect(getJob).toHaveBeenCalledTimes(3);
+    expect(getJob.mock.calls.map((c) => c[0])).toEqual([
+      "s0",
+      "resume-s0",
+      "auto-resume-s0",
+    ]);
+  });
 });

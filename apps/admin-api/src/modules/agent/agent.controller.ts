@@ -42,6 +42,7 @@ import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import type { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { AGENT_QUEUE_NAME, type AgentJobData } from "./runtime/agent.processor";
+import { manualResumeJobId } from "./runtime/agent-job-options";
 import {
   AGENT_SESSION_KINDS,
   type AgentSessionKind,
@@ -453,7 +454,9 @@ export class AgentController {
     await this.queue.add(
       "run",
       { sessionId: id, reason: "resume:manual" },
-      { jobId: `${id}:resume:${Date.now()}`, attempts: 1 },
+      // R215：**可枚举**的 jobId（不带时间戳）—— 见 `manualResumeJobId` 的头注。
+      // 旧写法 `${id}:resume:${Date.now()}` 会让「积压」判据把它误判成「队列里没有 job」。
+      { jobId: manualResumeJobId(id), attempts: 1 },
     );
     return { ok: true };
   }
@@ -548,7 +551,8 @@ export class AgentController {
       await this.queue.add(
         "run",
         { sessionId, reason: "resume:approval" },
-        { jobId: `${sessionId}:resume:${Date.now()}`, attempts: 1 },
+        // R215：同上 —— 审批通过后的自动续跑也必须用可枚举 id，否则会被积压判据误报。
+        { jobId: manualResumeJobId(sessionId), attempts: 1 },
       );
       resumed = true;
     }

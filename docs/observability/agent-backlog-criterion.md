@@ -2,7 +2,10 @@
 
 > R201 立项。**先定判据，再写代码**（R388 纪律：判据文档会替你发现实现里最容易错的那一处）。
 >
-> 状态：**判据已定 + 纯函数已实现并测**（`agent-backlog-check.ts`）；**接线（徽标/接口）待下一轮**。
+> 状态：**判据已定 + 纯函数已实现并测**（`agent-backlog-check.ts`）+ **接线已落地**
+> （R202/R203：`agent-backlog.service.ts` / `GET /agent/sessions/backlogged` / `BacklogBadge`）。
+> **R215 发现并修掉一处误报路径**：`jobId === session.id` 这个前提**只对首跑成立**，
+> resume 入队的 job 用的是别的 id ⇒ 判据会把**正在正常排队等消费**的会话误报成积压（见 §8）。
 > 与 `agent-stalled-criterion.md`（「卡住」）是**两个不同的缺陷**，见 §6 对照表。
 
 ## 1. 要解决的问题
@@ -98,10 +101,68 @@
 
 ## 7. 已知边界（**如实登记**）
 
-- **依赖 `jobId === session.id` 这个约定**。若将来改成随机 `jobId`（例如为了允许同一会话多次入队），
-  本判据会**全部误报成积压** ⇒ 那时必须改成「按 `data.sessionId` 扫描 job」。
-  ⇒ 该约定应当被**用例钉住**（`agent-backlog-check.spec.ts` 断言判据的输入是 sessionId）。
+- **依赖 `jobId === session.id` 这个约定 —— R215 实测确认它已经**不成立**（这条边界写对了，但被当成「将来」）**。
+  本仓**已有三处** resume 入队用的是**别的 jobId**：
+
+  | 入口 | 位置 | jobId |
+  |---|---|---|
+  | 人工恢复 | `agent.controller.ts:455` | `${id}:resume:${Date.now()}` |
+  | 审批通过后自动续跑 | `agent.controller.ts:550` | `${sessionId}:resume:${Date.now()}` |
+  | LLM 瞬时错误自动重试 | `agent.module.ts:177`（`autoResumeJobId`） | `auto-resume-${sessionId}` |
+
+  ⇒ 一个「**审批通过、正在正常等消费**」的会话，`getJob(session.id)` 查不到 ⇒ **误报成积压**。
+  修法与影响见 §8。
 - **只查「job 存不存在」，不查「job 是否卡在 waiting 太久」** —— 后者是「队列停摆」，另一个判据（§4）。
 - **需要 N 次 `queue.getJob`**（N = pending 会话数）。pending 会话**本应**很少（正常情况下几秒内就被消费），
   ⇒ 可接受；但要给 N 设上限（与 `sweepStaleRunning` 的 `take: 1000` 同款纪律）。
 - **未实现的部分**：接口/徽标接线（**本轮只做判据 + 纯函数**，见文首状态）。
+
+## 8. R215：`jobId === session.id` 只在**首跑**成立（误报路径，已修）
+
+### 8.1 缺陷
+
+判据的实现是 `queue.getJob(session.id)`（R202）。但本仓 **三条 resume 路径**的 jobId 都不是 `session.id`（见 §7 的表）。
+⇒ 以下这条**完全正常**的链路会被判成「积压」：
+
+```text
+会话 waiting_input（等审批）
+  → 管理员批准 → controller 以 jobId=`${id}:resume:${ts}` 入队
+  → 会话仍在 pending/waiting_input，job 正在 waiting 里排队
+  → 积压对账执行 getJob(session.id) ⇒ undefined ⇒ **判成「积压」** ✗
+```
+
+危害：**误报**。运营看到「积压 1」后按提示「重新入队」，而那条会话**本来就会正常执行**
+⇒ 多出一条重复 job（同会话跑两遍，双份副作用）。
+
+### 8.2 判据修正（**不改判据的语义，只补全「怎么查」**）
+
+> **backlogged = 状态是 `pending` 且队列里**不存在任何**指向该会话的 job。**
+>
+> 「指向该会话」= `job.getJob(id) !== undefined` **或** `job.data.sessionId === session.id`。
+
+实现上**不能**退化成「扫描全队列按 data.sessionId 匹配」（那是 O(n) 全表扫，且 `getJobs()` 有上限）。
+实际做法（见 `agent-backlog.service.ts`）：
+
+1. 先按既有快路径 `getJob(session.id)` 查（覆盖**首跑**这一最常见形态，**零额外往返**）；
+2. 查不到时，再查**该会话的 resume 专用 id**（`<id>:resume:*` 与 `auto-resume-<id>`）——
+   这是**有限枚举**（3 个候选），不是全表扫；
+3. 三者都查不到才判积压。
+
+⚠️ **`<id>:resume:<ts>` 的 ts 不可枚举** ⇒ 该形态**无法**按 id 直接查。对它的处置是：
+用一个**短 TTL 的负缓存**？不 —— 那会引入状态。**R215 的裁定是：把 resume 的 jobId 改成可枚举的**
+（见 §8.3），而不是让判据去猜。
+
+### 8.3 配套改动：resume 的 jobId 改为**可枚举**
+
+`${id}:resume:${Date.now()}` 中的时间戳**只用于绕过 BullMQ 的 jobId 去重**（避免「重复 resume 被静默 no-op」）。
+但这条去重**本来就该由业务保证**（resume 前已检查 `status === running` ⇒ 409）。
+⇒ 改为 **`<id>:resume`**（**不带**时间戳）：
+
+- 它**可枚举** ⇒ 判据能直接查；
+- **仍然满足** BullMQ 的「不能含单个冒号，除非恰好 3 段」规则？—— 需要实测确认段数：
+  `<uuid>:resume` 是 **2 段** ⇒ **会被拒**。故改成 **`resume-<id>`**（无冒号，与 `autoResumeJobId` 同款）。
+
+⚠️ **去重语义的变化必须如实登记**：改成固定 id 后，「同一会话连续两次 resume」的第二次
+会命中**已存在的 job**（BullMQ 对相同 id 的 add 是幂等 no-op，或按 `removeOnComplete` 语义处理）。
+⇒ 这**正是我们要的**（第二次 resume 本来就不该产生第二个 job）；但它把「重复 resume」从
+「产生两条 job」变成「静默复用一条」—— 需要一条用例钉住这个行为。

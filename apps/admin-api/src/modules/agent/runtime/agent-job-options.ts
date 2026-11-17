@@ -21,6 +21,31 @@ export function autoResumeJobId(sessionId: string): string {
   return `auto-resume-${sessionId}`;
 }
 
+/**
+ * R215：**人工 / 审批恢复**的 jobId（可枚举，**不带时间戳**）。
+ *
+ * ## 为什么改掉 `${id}:resume:${Date.now()}`
+ *
+ * ① **它让「积压」判据误报**：积压对账的做法是 `queue.getJob(session.id)`（`jobId === session.id`，
+ *    因为首跑就是这么入队的）。而 resume 用的是带时间戳的 id ⇒ `getJob(session.id)` 查不到
+ *    ⇒ 一条「审批通过、正在正常等消费」的会话会被判成**积压** ⇒ 运营按提示「重新入队」
+ *    ⇒ **同一会话跑两遍（双份副作用）**。
+ * ② **时间戳的唯一作用是绕过去重**，而那条去重**本来该由业务保证**：resume 前已检查
+ *    `status === "running"` ⇒ 409（B-8）。⇒ 固定 id 更诚实。
+ *
+ * ## 为什么不能写成 `${id}:resume`
+ *
+ * **实测**（`scripts/r215-jobid-live-probe.mjs`）：BullMQ 拒绝含冒号且非 3 段的 id ——
+ * `${id}:resume` 是 2 段 ⇒ **`Custom Id cannot contain :`**。故用**无冒号**的 `resume-${id}`，
+ * 与 `autoResumeJobId` 同款（无冒号 ⇒ 不依赖上游的 3 段兼容分支）。
+ *
+ * ⚠️ **去重语义已被用例钉住**：同一会话重复 resume 会命中**已存在的 job**（BullMQ 对相同 id 的
+ * `add` 是**幂等 no-op**，实测 `before=4 after=4`）—— 这正是想要的（第二次 resume 不该产生第二个 job）。
+ */
+export function manualResumeJobId(sessionId: string): string {
+  return `resume-${sessionId}`;
+}
+
 export interface AutoResumeJobData {
   sessionId: string;
   reason: string;

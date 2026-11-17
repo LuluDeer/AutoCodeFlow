@@ -38,6 +38,7 @@ import {
   ObservationBudget,
   withObservationTimeout,
 } from "./observation-timeout.util";
+import { autoResumeJobId, manualResumeJobId } from "./agent-job-options";
 
 /**
  * 一次最多对账多少条 `pending` 会话。
@@ -87,6 +88,48 @@ export class AgentBacklogService {
   ) {}
 
   /**
+   * R215：找出**指向该会话**的 job（不限首跑）。
+   *
+   * ## 为什么要多查两个 id（这是一处**真实的误报路径**）
+   *
+   * 判据原先只查 `getJob(session.id)`，因为首跑用的是 `jobId: session.id`
+   * （`agent-trigger.service.ts:352`/`:520`）。但本仓**还有两条 resume 路径**用**别的** id：
+   * `manualResumeJobId`（人工/审批恢复 ⇒ `resume-<id>`）与 `autoResumeJobId`
+   * （LLM 瞬时错误 ⇒ `auto-resume-<id>`）。
+   *
+   * ⇒ 一条「审批通过、正在正常排队等消费」的会话，`getJob(session.id)` 查不到 ⇒
+   * **被误判成积压** ⇒ 运营按提示「重新入队」⇒ **同一会话跑两遍（双份副作用）**。
+   *
+   * ## 为什么是「有限枚举」而不是「扫全队列」
+   *
+   * 按 `job.data.sessionId` 扫全队列是 **O(n) 全表扫**，且 `getJobs()` 有单次上限 ⇒ 会漏。
+   * ⇒ 只查**三个已知形态**（首跑 / 人工恢复 / 自动续跑）：
+   * ① 绝大多数命中第 1 个，**零额外往返**；②③ 只在 resume 过的会话上多两次。
+   *
+   * ⚠️ 前两个形态是 `R215` 起**可枚举**的前提：旧写法 `${id}:resume:${Date.now()}` 里的时间戳
+   * **不可枚举** ⇒ 那时这个缺陷**没法在判据侧修**，只能改 jobId 本身（已改）。
+   */
+  private async findSessionJob(
+    sessionId: string,
+    timeoutMs: number,
+  ): Promise<{ getState: () => Promise<string> } | undefined> {
+    // 顺序即优先级：首跑最常见 ⇒ 放第一个，命中即返回（零额外往返）。
+    for (const candidateId of [
+      sessionId,
+      manualResumeJobId(sessionId),
+      autoResumeJobId(sessionId),
+    ]) {
+      const job = await withObservationTimeout(
+        `backlog.getJob(${candidateId})`,
+        () => this.queue.getJob(candidateId),
+        timeoutMs,
+      );
+      if (job) return job as unknown as { getState: () => Promise<string> };
+    }
+    return undefined;
+  }
+
+  /**
    * 对账一次：返回当前**永远不会被执行**的 `pending` 会话。
    *
    * 判据：`pending` 且 `queue.getJob(session.id)` 查不到（`missing`）或已终结（`finished`）。
@@ -125,14 +168,9 @@ export class AgentBacklogService {
       }
       let jobState: PendingSessionProbe["jobState"];
       try {
-        // `jobId === session.id`（`agent-trigger.service.ts:352`/`:520`）⇒ 可直接按 id 查。
         // 单次上界取 `min(单调用上界, 剩余预算)` —— 否则后段仍可能超出总预算。
         const slice = budget.sliceMs();
-        const job = await withObservationTimeout(
-          `backlog.getJob(${id})`,
-          () => this.queue.getJob(id),
-          slice,
-        );
+        const job = await this.findSessionJob(id, slice);
         jobState = classifyJobState(
           job
             ? await withObservationTimeout(
