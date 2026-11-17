@@ -106,7 +106,8 @@ export class AgentQueueIdleService {
       await Promise.all([
         read(() => this.queue.getWaitingCount(), 0),
         // ⚠️ `getWaiting(0, 1)` 的 `end` 是**闭区间** ⇒ 取到 2 个；我们只要最老的
-        //   第一个（内部 `asc=true`，底层 Redis ZSET 的 score = 入队时间）。
+        //   第一个（⚠️ `wait` 是 **LIST**，不是 ZSET —— 表头 = **最早入队**的那个；
+        //   真机 R207 实测，见 `agent-queue-idle-check.ts` 头注的修正框）。
         read(
           async () =>
             (await this.queue.getWaiting(0, 1)) as unknown as unknown[],
@@ -183,7 +184,7 @@ export class AgentQueueIdleService {
  *
  * 抽成**纯函数**的两个理由：
  * ① `getWaiting` 返回的是 BullMQ `Job` 实例（重对象），而判据只需要 3 个字段；
- * ② 「取第一个」这个动作本身是判据的一部分（依赖 `asc=true` 的排序保证）——
+ * ② 「取第一个」这个动作本身是判据的一部分（依赖 `wait` 是**插入序 LIST**、表头=最早入队）——
  *    它必须能被单测钉住，否则上游哪天改了排序方向，判据会**静默失效**。
  */
 export function pickOldestProbe(jobs: unknown[]): WaitingJobProbe | null {

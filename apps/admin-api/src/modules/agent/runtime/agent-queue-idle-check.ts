@@ -5,12 +5,26 @@
  * > **idle-stuck = 存在一个 `waiting` job，其「入队至今」的年龄 > 阈值 T，
  * > 且 T **大于**「单个 job 的合理耗时上界」。**
  *
- * ## 为什么**不需要**跨采样状态（R204/R205 曾认为「报不出来」—— 本轮推翻）
+ * ## 为什么**不需要**跨采样状态（R204/R205 曾认为「报不出来」—— R206 推翻）
  *
- * BullMQ 的 job 有 **`timestamp`（入队时间，`job.timestamp = opts.timestamp ?? Date.now()`）**，
- * 而 waiting 列表底层是 Redis **有序集合**（score = 入队时间）⇒
- * `queue.getWaiting(0, 1)`（内部 `asc=true`）**取到的第一个就是最老的 job**
+ * BullMQ 的 job 有 **`timestamp`（入队时间，`job.timestamp = opts.timestamp ?? Date.now()`）**
  * ⇒ **单次请求内**就能算出「最老 waiting job 的年龄」，**不需要**比较两次采样。
+ *
+ * ## ⚠️ R207 真机修正：`wait` 是 **LIST**，不是 ZSET
+ *
+ * 本节原先写「waiting 底层是有序集合（score = 入队时间）⇒ 升序第一个就是最老的」。
+ * **真机实测证明这是错的**（BullMQ 9.x）：`addStandardJob-9.lua` 用
+ * `pushCmd = opts['lifo'] and 'RPUSH' or 'LPUSH'`，且 `TYPE bull:<q>:wait` → **`list`**
+ * ⇒ `wait` 按**插入顺序**排列，`timestamp` 只是 job 的字段、**不是排序键**。
+ *
+ * 生产路径上二者**通常一致**（同一条 `add` 里先算 `timestamp` 再 `LPUSH`），
+ * 所以「取 `getWaiting(0, 1)` 的第一个」得到的仍是**最早入队**的那个。
+ * **但 `delayed` job 被 promote 时会插到表头**，而它的 `timestamp` 仍是当初算 delay 的时刻
+ * ⇒ 顺序与 `timestamp` 错位，`[0]` 可能比真·最老的 `timestamp` **更年轻**。
+ *
+ * ⇒ 本判据实际测的是「**最早入队那个 job** 的年龄」；错位方向是**年龄算小 ⇒ 只漏报不误报**。
+ * 这是刻意的取舍：要精确取 `timestamp` 最小就得扫全表（O(n) Redis 往返），
+ * 而本端点是**无状态 GET**。见判据文档 §1 / §5。
  *
  * ## 为什么**不能**只用一个固定阈值（R393：候选信号 × 会被什么打穿）
  *
