@@ -39,6 +39,10 @@ import {
   type QueueStallReason,
   type QueueStallSnapshot,
 } from "./agent-queue-stall-check";
+import {
+  DEFAULT_OBSERVATION_TIMEOUT_MS,
+  withObservationTimeout,
+} from "./observation-timeout.util";
 
 export interface QueueStallReport {
   /** 是否停摆。 */
@@ -93,6 +97,12 @@ export class AgentQueueStallService {
    * **不**把整个判定当作「没停摆」——理由同上（`degraded` 会让前端显示「未知」）。
    * 但**不**因为一个计数读失败就断言「停摆」（那会是**误报**，代价更大）。
    */
+  /**
+   * R213：观测调用上界（判据文档 §3.1）。默认值的推导见
+   * `DEFAULT_OBSERVATION_TIMEOUT_MS` 的注释（connectTimeout 的一半）。
+   */
+  private readonly observationTimeoutMs = DEFAULT_OBSERVATION_TIMEOUT_MS;
+
   async inspect(): Promise<QueueStallReport> {
     /**
      * 两个**方向相反**的失败位（R211）：
@@ -105,6 +115,8 @@ export class AgentQueueStallService {
     /** `workers` 这个观测量是否读失败（决定能不能用它判停摆，见下面的注释）。 */
     let workersUnknown = false;
     const read = async <T>(
+      /** 诊断标签（进日志；**不要**含凭据）。 */
+      label: string,
       fn: () => Promise<T>,
       fallback: T,
       /**
@@ -117,7 +129,13 @@ export class AgentQueueStallService {
       markUnknown?: () => void,
     ): Promise<T> => {
       try {
-        return await fn();
+        // R213：**超时与读失败走完全相同的路径**（判据 §3.2）——
+        //   观测端点必须在有限时间内给出答案，哪怕答案是「不知道」。
+        return await withObservationTimeout(
+          `queue-stall.${label}`,
+          fn,
+          this.observationTimeoutMs,
+        );
       } catch (err: unknown) {
         if (direction === "counts") degradedCounts = true;
         else degraded = true;
@@ -134,12 +152,18 @@ export class AgentQueueStallService {
     const [waiting, delayed, prioritized, active, workers, paused] =
       await Promise.all([
         // 计数类：读失败只会让 `pendingJobs` 变小 ⇒ 可能**漏报**（不影响「误报」位）。
-        read(() => this.queue.getWaitingCount(), 0, "counts"),
-        read(() => this.queue.getDelayedCount(), 0, "counts"),
-        read(() => this.queue.getPrioritizedCount(), 0, "counts"),
-        // 结构性量：参与判定 ⇒ 读失败可能**误报**。
-        read(() => this.queue.getActiveCount(), 0, "verdict"),
+        read("waiting", () => this.queue.getWaitingCount(), 0, "counts"),
+        read("delayed", () => this.queue.getDelayedCount(), 0, "counts"),
         read(
+          "prioritized",
+          () => this.queue.getPrioritizedCount(),
+          0,
+          "counts",
+        ),
+        // 结构性量：参与判定 ⇒ 读失败可能**误报**。
+        read("active", () => this.queue.getActiveCount(), 0, "verdict"),
+        read(
+          "workers",
           () => this.queue.getWorkersCount(),
           0,
           "verdict",
@@ -147,7 +171,7 @@ export class AgentQueueStallService {
             workersUnknown = true;
           },
         ),
-        read(() => this.queue.isPaused(), false, "verdict"),
+        read("paused", () => this.queue.isPaused(), false, "verdict"),
       ]);
 
     const snapshot: QueueStallSnapshot = {

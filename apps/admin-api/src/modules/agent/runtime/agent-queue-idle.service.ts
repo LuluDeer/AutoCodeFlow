@@ -36,6 +36,10 @@ import type { Queue } from "bullmq";
 import { AGENT_QUEUE_CONCURRENCY, AGENT_QUEUE_NAME } from "./agent.processor";
 import { isQueueStalled } from "./agent-queue-stall-check";
 import {
+  DEFAULT_OBSERVATION_TIMEOUT_MS,
+  withObservationTimeout,
+} from "./observation-timeout.util";
+import {
   deriveIdleThreshold,
   evaluateQueueIdle,
   type IdleThresholdBasis,
@@ -88,9 +92,23 @@ export class AgentQueueIdleService {
    */
   async inspect(): Promise<QueueIdleReport> {
     let degraded = false;
+    /**
+     * R213：观测调用上界（判据文档 §3.1）。默认值推导见
+     * `DEFAULT_OBSERVATION_TIMEOUT_MS`（connectTimeout 的一半）。
+     */
+    const timeoutMs = DEFAULT_OBSERVATION_TIMEOUT_MS;
+    let seq = 0;
     const read = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
       try {
-        return await fn();
+        // R213：**超时与读失败走完全相同的路径** —— 端点必须在有限时间内给出答案，
+        //   哪怕答案是「不知道」（否则 Redis 卡住时这里会**挂死**，R212 实测）。
+        //   标签用序号而非观测量名：本服务的读取顺序与 `Promise.all` 解构绑定，
+        //   加名字反而要与解构顺序各维护一份（漂移源）。
+        return await withObservationTimeout(
+          `queue-idle.#${++seq}`,
+          fn,
+          timeoutMs,
+        );
       } catch (err: unknown) {
         degraded = true;
         this.logger.warn(

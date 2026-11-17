@@ -96,4 +96,34 @@ describe("R202 · 积压对账（接线层）", () => {
       truncated: false,
     });
   });
+  it("⑤ **R213：串行探测挂住 ⇒ 总预算耗尽后停止，且 `truncated: true`**", async () => {
+    // ⚠️ 本条针对的是**最容易写错的格子**：本循环是**串行**的，每 session 两次往返，
+    //    最坏 200×2 = 400 次。若只做「逐调用 5s」，最坏 2000s ⇒ 等于没修。
+    //    ⇒ 必须用**整次请求一个总预算**，耗尽即停并标记截断（R395：截断必须可见）。
+    const hangForever = () => new Promise<never>(() => {});
+    const find = jest.fn().mockResolvedValue(pendingRows(50));
+    // 第一条就挂住 ⇒ 预算是唯一的出路
+    const getJob = jest.fn(hangForever);
+    const svc = new AgentBacklogService({ find } as never, { getJob } as never);
+    // 把总预算压到 200ms（生产是 8s）：本条测的是**「预算耗尽会停」这个机制**，
+    // 不是「8 秒这个数字」—— 后者由 observation-timeout.util.spec 的常量用例钉住。
+    // ⚠️ 不压的话，agent 套件每条会多等 8s ⇒ 「测试慢」最终等于「测试不跑」。
+    (svc as unknown as { observationBudgetMs: number }).observationBudgetMs =
+      200;
+    const started = Date.now();
+    const report = await svc.findBacklogged();
+    const elapsed = Date.now() - started;
+
+    // 必须**在有限时间内**返回（预算 200ms；给一点余量）
+    expect(elapsed).toBeLessThan(3_000);
+    // 截断必须为 true。⚠️ 注意 `probed` 的语义是「**本次查了多少条 pending**」
+    //   （不是「成功探测了几条」）⇒ 它仍是 50；真正说明「没查完」的是 `truncated`。
+    //   （这一条我第一版写错过：断言 probed===0，实测得 50 —— 判据的**语义**要对，
+    //    不是「看起来该是 0」。）
+    expect(report.truncated).toBe(true);
+    expect(report.probed).toBe(50);
+    // 第一条就挂住 ⇒ 没有任何一条被确认为积压 ⇒ count=0（不是「没有积压」的假事实，
+    // 而是「这次没查到」—— 由 truncated:true 表达）。
+    expect(report.count).toBe(0);
+  }, 20_000);
 });

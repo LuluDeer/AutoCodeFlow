@@ -33,6 +33,11 @@ import {
   pickBacklogged,
   type PendingSessionProbe,
 } from "./agent-backlog-check";
+import {
+  DEFAULT_OBSERVATION_BUDGET_MS,
+  ObservationBudget,
+  withObservationTimeout,
+} from "./observation-timeout.util";
 
 /**
  * 一次最多对账多少条 `pending` 会话。
@@ -66,6 +71,14 @@ export interface BacklogReport {
 export class AgentBacklogService {
   private readonly logger = new Logger(AgentBacklogService.name);
 
+  /**
+   * R213：整次请求的探测总预算（判据文档 §6）。单测可覆写。
+   *
+   * 为什么是**字段**而不是直接读常量：串行探测的最坏情况是 200 × 2 次往返，
+   * 必须整次请求共享一个 deadline；而单测要把它压到毫秒级（否则每条用例真等 8s）。
+   */
+  readonly observationBudgetMs: number = DEFAULT_OBSERVATION_BUDGET_MS;
+
   constructor(
     @InjectRepository(AgentSession)
     private readonly sessions: Repository<AgentSession>,
@@ -90,13 +103,45 @@ export class AgentBacklogService {
     const truncated = rows.length > BACKLOG_PROBE_LIMIT;
     const probed = truncated ? rows.slice(0, BACKLOG_PROBE_LIMIT) : rows;
 
+    /**
+     * R213：**整次请求的总预算**（不是逐调用 5s）。
+     *
+     * ⚠️ 为什么必须这样：本循环是**串行**的，每个 session **两次往返**
+     * （`getJob` + `getState`）⇒ 最坏 200 × 2 = **400 次串行**。若每个调用各给 5s，
+     * 最坏 2000s ⇒ **等于没修**（判据文档 §6 已实测确认这一点）。
+     * ⇒ 用总预算，超了就**停止探测**并返回已得的部分（`truncated: true`）。
+     */
+    // ⚠️ 用实例字段而不是直接读常量：单测要把它压到毫秒级（否则每条用例都要真等 8s，
+    //   那会让整个 agent 套件慢到没人愿意跑 —— 「测试慢」最终等于「测试不跑」）。
+    const budget = new ObservationBudget(this.observationBudgetMs, Date.now());
     const probes: PendingSessionProbe[] = [];
+    /** 是否因为**预算耗尽**而提前停止（与 `truncated` 同义：都表示「没查完」）。 */
+    let budgetExhausted = false;
     for (const { id } of probed) {
+      // 每次迭代前先看预算：已经超了就别再发新请求（那只会让请求更慢）。
+      if (budget.expired()) {
+        budgetExhausted = true;
+        break;
+      }
       let jobState: PendingSessionProbe["jobState"];
       try {
         // `jobId === session.id`（`agent-trigger.service.ts:352`/`:520`）⇒ 可直接按 id 查。
-        const job = await this.queue.getJob(id);
-        jobState = classifyJobState(job ? await job.getState() : undefined);
+        // 单次上界取 `min(单调用上界, 剩余预算)` —— 否则后段仍可能超出总预算。
+        const slice = budget.sliceMs();
+        const job = await withObservationTimeout(
+          `backlog.getJob(${id})`,
+          () => this.queue.getJob(id),
+          slice,
+        );
+        jobState = classifyJobState(
+          job
+            ? await withObservationTimeout(
+                `backlog.getState(${id})`,
+                () => job.getState(),
+                budget.sliceMs(),
+              )
+            : undefined,
+        );
       } catch (err: unknown) {
         // ⚠️ 对账失败**不能**当成「积压」也不能当成「没积压」——
         //   两者都是假事实。跳过这一条（保守：不当积压），并记日志。
@@ -114,7 +159,9 @@ export class AgentBacklogService {
       sessionIds,
       count: sessionIds.length,
       probed: probed.length,
-      truncated,
+      // ⚠️ **截断必须可见**（R395 的纪律）：预算耗尽也是「没查完」的一种，
+      //   若只说「count=3」，运营会以为「一共就 3 条积压」。
+      truncated: truncated || budgetExhausted,
     };
   }
 }

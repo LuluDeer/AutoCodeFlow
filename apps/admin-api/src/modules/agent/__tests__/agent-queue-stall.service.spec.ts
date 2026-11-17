@@ -136,6 +136,33 @@ describe("R205 · 队列停摆观测（接线层）", () => {
     expect(r.reason).toBe("no-worker");
   });
 
+  it("③e **R213：观测调用挂住（不是抛错）⇒ 必须在超时后走「读失败」路径**", async () => {
+    // ⚠️ 这正是 R212 真机实测踩到的形态：Redis 卡住时 `getWorkersCount()` **不抛错、只挂住**
+    //   ⇒ 修复前端点会**挂死**（25s+ 无响应），既不报错也不降级。
+    //   本条用「永不 resolve 的 promise」复刻它，断言：超时后 `degraded` 被置起、
+    //   且**不**据此判停摆（与真正抛错的路径**完全一致**）。
+    const never = () => new Promise<never>(() => {});
+    const queue = {
+      getWaitingCount: jest.fn(async () => 5),
+      getDelayedCount: jest.fn(async () => 0),
+      getPrioritizedCount: jest.fn(async () => 0),
+      getActiveCount: jest.fn(async () => 0),
+      // ← 挂住，永不返回（模拟 Redis 不应答）
+      getWorkersCount: jest.fn(never),
+      isPaused: jest.fn(async () => false),
+    };
+    const svc = new AgentQueueStallService(queue as never);
+    // 把上界压到测试可接受的量级（生产是 5000ms）
+    (svc as unknown as { observationTimeoutMs: number }).observationTimeoutMs =
+      50;
+
+    const r = await svc.inspect();
+    expect(r.degraded).toBe(true);
+    expect(r.workersKnown).toBe(false);
+    // 不得谎报停摆（与「workers 抛错」同一结论）
+    expect(r.stalled).toBe(false);
+  });
+
   it("④ 六个全读失败 ⇒ `degraded` **与** `degradedCounts` **都**为 true，且不谎报「停摆」", async () => {
     const { svc } = makeService({
       failFor: [
