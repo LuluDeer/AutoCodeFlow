@@ -126,9 +126,27 @@ const ageMs = Date.now() - oldest.timestamp;      // timestamp = 入队时间
   ⑭⑮ **顺序偏差真实存在且方向是「年龄算小 ⇒ 只漏报」**（实测表头 759ms vs 真·最老 2h，
   偏差 2 小时）；⑬⑫b⑯ **清理残留 = 0**（不是「我删了」，是「查出来是 0」）。
   **反证**：把 ⑨ 的断言改坏 ⇒ 该条立刻红（16/17），证明它不是恒真。
-  ⚠️ **仍有边界（如实登记）**：探针复刻接线层的**读法**（`getWaiting(0,1)` + `job.timestamp` +
-  `attemptsStarted`）并调用**生产纯函数**判定，**没有**启动完整 NestJS 进程去打真实 HTTP 端点；
-  也**没有**覆盖「worker 事件循环阻塞导致心跳过期」那一类（那是停摆判据的误报窗口）。
+  ⚠️ 该探针复刻接线层的**读法**并调用**生产纯函数**判定，**不**经过 NestJS。
+
+- **真 HTTP 端点验证（R209）**：`npm run test:r209-queue-idle-http`
+  （`scripts/r209-queue-idle-http-probe.mjs`）在**真 NestJS 进程 + 真 PG + 真 Redis**上跑
+  **13 条断言**并全部通过。它覆盖 R208 探针**碰不到**的那一半（controller 响应整形 / 服务注入 /
+  JWT-Roles 守卫 / 全局响应信封）：
+  ① `/api/health` 可达；② **未认证 ⇒ 401**（「没权限」与「队列正常」必须可区分）；
+  ③ 探针账号登录；④ 空队列 ⇒ `idleStuck:false` / `oldestAgeMs:0` / `degraded:false`（正例控制组）；
+  ⑤ 响应在 **`data` 信封**里（拦截器没被绕过）；⑥ 8 个契约字段齐全；
+  ⑦ `basis.formula` 带推导依据；⑧ 线上阈值 = **3,630,000**；
+  ⑨ **paused + 老 job ⇒ `suppressedBy:"queue-stall"` 且不报空转**（真端点上的 R399 语义）；
+  ⑩ 同一快照下 `queue-stall` 报 `stalled:true` / `reason:paused`（**两端口径一致**）；
+  ⑪ 让位**不是**「读不到」：`degraded:false`；
+  ⑫ 复原后 ⇒ `suppressedBy:null`（不是「我 resume 了」，是**端点说**正常了）；⑬ 队列未 paused 且 job 清空。
+  **反证**：把 ② 改成「应为 200」、⑪ 改成「应为 true」⇒ 两条立刻红（11/13）。
+  **安全边界（脚本里写死）**：只增删 id 前缀 `r207-probe` 的 job；**`finally` 里无条件 `resume()`**
+  （一个留在 paused 的队列会让真实调度全线停摆，这是本脚本**唯一**能造成生产影响的方式）。
+
+- **仍然未覆盖（如实登记）**：「worker 事件循环阻塞 ⇒ 心跳过期 ⇒ `workers=0`」那一类
+  （那是**停摆**判据的误报窗口，不是本条）；以及 `degraded` 的**真机**触发
+  （要让真实 BullMQ 调用抛错得先切断 Redis，代价大于收益 ⇒ 仅由单测覆盖）。
 
 ## 6. R207 接线（阈值推导与两个新字段）
 
