@@ -731,24 +731,65 @@
       "dispositionNote": "这条判据的价值是「每个迁移都**可回滚**」——不可逆迁移在生产上等于「出问题只能靠备份」。只有把 up/down 的 DDL **抽成对象集合**再比，才能正确处理「索引随表消失」「分区子表」这两种不属于字面 1:1 的情况；比文本会把它们误判成不对称。⇒ 接受源码依赖；`collectMethodText` 跟随子方法调用是必要复杂度（很多迁移把 DDL 抽到 helper 里）。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
-    }
-  ],
-  "coverageBacklog": [
+    },
     {
-      "id": "GSTC-B02",
+      "id": "GSTC-039",
+      "tier": "P0",
       "spec": "scripts/check-agent-stub-fidelity.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
+      "specLine": 55,
+      "needle": "抽出测试替身（stub/mock）的实现体后 `.has(prev.value)` 比对**替身返回面**与真实实现；并设下界防「0 个替身 = 全部保真」的假绿",
+      "reads": [
         "apps/admin-api/src/modules/agent/agent.controller.ts",
         "apps/admin-api/src/modules/agent/runtime/agent-approvals.service.ts",
         "apps/admin-api/src/modules/agent/runtime/demo-runtime.service.ts",
         "scripts/agent-demo-check.mjs",
         "scripts/agent-demo-extra.mjs"
-      ]
+      ],
+      "asserts": "断的是**替身与真实现的返回面集合关系**（ADR-027「替身必须保真」）。核心是「一个替身都找不到 ⇒ 不是全部保真，而是判据瞎了」——该守卫自带下界并**显式列出已知盲区**（不允许把绿当成「全部保真」）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「测试替身不能撒谎」——本仓有过「替身返回 undefined 而生产返 Promise ⇒ 调用点 .catch 抛错被外层吞掉 ⇒ 弹假错误 toast」的真实事故。只有抽出卖方（替身）与买方（真实现）的返回面才能比对；比文本无法判断「返回形状是否等价」。⇒ 接受源码依赖；**已知盲区已写在脚本头注**，不是「未知风险」。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
+    {
+      "id": "GSTC-040",
+      "tier": "P0",
+      "spec": "scripts/check-error-i18n.mjs",
+      "specLine": 115,
+      "needle": "`placeholderSet(template)` 抽 `{{name}}` 占位符集合，断 zh/en 两侧**集合相等**；错误码集合则由 `matchAll(re)` + `Map.get(code)` 双向对账",
+      "reads": [
+        "apps/admin-api/src/common/errors/catalog",
+        "apps/admin-web/src/locales/en.ts",
+        "apps/admin-web/src/locales/generated/error-codes.en.ts",
+        "apps/admin-web/src/locales/generated/error-codes.zh.ts",
+        "apps/admin-web/src/locales/zh.ts"
+      ],
+      "asserts": "断的是**两个集合关系**：① 每条错误码在 zh/en 两侧都存在（双向）；② 同一条文案的**占位符集合必须相等**（`{{id}}` 写成 `{{ID}}` 或漏写 ⇒ 英文界面渲染出未替换原文）。⇒ 断结构化集合，不是文本相似度",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「多语言文案的**占位符**不许漂」——它比「翻译是否准确」机械得多，但恰好能挡住「中文正常、英文一片空白」。只有抽占位符成**集合**才可比（文本相似度会把「顺序不同但集合相同」误判成漂移）。⇒ 接受源码依赖。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-041",
+      "tier": "P0",
+      "spec": "scripts/check-enum-consumers.mjs",
+      "specLine": 70,
+      "needle": "`MEMBER_RE = /=\\s*[\"']([^\"']+)[\"']/g` 抽枚举成员值，再用 `.has(e.name)` / `Map.get(name)` 与**消费清单**对账",
+      "reads": [
+        "apps/admin-api/src",
+        "apps/admin-api/src/modules/notification/channels.ts",
+        "apps/admin-api/src/modules/notification/declarations.ts",
+        "apps/admin-api/src/modules/notification/notification.service.ts"
+      ],
+      "asserts": "断的是「**枚举扩了、消费者没跟**」：新枚举成员必须出现在消费清单（或用例覆盖）里，否则某个 switch/map 会静默落到 default。⇒ 断成员值集合与消费面的对应，不是文本命中",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「加了枚举值就必须有人处理它」。只有把枚举成员抽成集合并与消费点对照才能发现「漏了一个分支」；目录改名/全排除时会显式红（不允许「0 命中 ⇒ 一致」）。⇒ 接受源码依赖。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    }
+  ],
+  "coverageBacklog": [
     {
       "id": "GSTC-B05",
       "spec": "scripts/check-atlas-counts.mjs",
@@ -842,40 +883,6 @@
         "apps/executor-desktop/src/agent-worker/electron-stub/index.cjs",
         "apps/executor-desktop/src/main/agent-worker-paths.ts",
         "apps/executor-desktop/tsconfig.worker.json"
-      ]
-    },
-    {
-      "id": "GSTC-B14",
-      "spec": "scripts/check-enum-consumers.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src",
-        "apps/admin-api/src/modules/notification/a.ts",
-        "apps/admin-api/src/modules/notification/b.ts",
-        "apps/admin-api/src/modules/notification/c.ts",
-        "apps/admin-api/src/modules/notification/channels.ts",
-        "apps/admin-api/src/modules/notification/d.ts",
-        "apps/admin-api/src/modules/notification/declarations.ts",
-        "apps/admin-api/src/modules/notification/filler.ts",
-        "apps/admin-api/src/modules/notification/notification.service.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B16",
-      "spec": "scripts/check-error-i18n.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/common/errors/catalog",
-        "apps/admin-web/src/locales/en.ts",
-        "apps/admin-web/src/locales/generated/error-codes.en.ts",
-        "apps/admin-web/src/locales/generated/error-codes.zh.ts",
-        "apps/admin-web/src/locales/zh.ts"
       ]
     },
     {
