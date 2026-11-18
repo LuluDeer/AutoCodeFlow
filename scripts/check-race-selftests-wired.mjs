@@ -23,8 +23,8 @@
  * 用法：`node scripts/check-race-selftests-wired.mjs [--selftest] [--root=<dir>]`
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -81,7 +81,59 @@ export function checkParentChainWiring(root) {
       if (!ex.why || String(ex.why).length < 12) {
         errors.push(`豁免条目 ${parent} 的 why 太短（需 ≥12 字）`);
       } else {
-        printed.push(`${parent} 未进链，**显式豁免**：${ex.why}（复核：${ex.reviewBy ?? "未定"}）`);
+        // R246（→ 460）：**理由里的数量断言必须可重跑**。
+        //
+        // 病（R245 实测）：本条豁免从 R106 起挂着，理由写「20/20 轮违反 oversell」。
+        // 缺陷在 `80e45a3b` 就修好了（实测 0/20），但**没有任何机制会去重测那个数字** ——
+        // `reviewBy` 只问「还需不需要豁免」，不问「那个数字还成不成立」。
+        // 于是它安静地挡住了 4 条健康用例十余轮。
+        //
+        // 判据（**不需要时钟即可判定**）：`why` 里若出现数量断言
+        // （`N/M 轮`、`N 次中 M 次`、`N%` 等），就必须带 `evidence`：
+        //   · `evidence.command`：能**重跑出那个数字**的 npm script，
+        //     且该 script **必须真的存在于 package.json**（拼错 = 红，防止写成一句愿望）；
+        //   · `evidence.checkedAt`：那次实测的日期（YYYY-MM-DD）。
+        // 没有数量断言的 `why`（纯定性理由）不要求 evidence。
+        const numeric = /\d+\s*\/\s*\d+\s*轮|\d+\s*次中\s*\d+\s*次|\d+\s*%|≈\s*\d+\s*%/.test(
+          String(ex.why),
+        );
+        if (numeric) {
+          const ev = ex.evidence;
+          if (!ev || typeof ev !== "object") {
+            errors.push(
+              `豁免条目 ${parent} 的 why 含**数量断言**，但没有 evidence —— ` +
+                `这种理由会随时间腐坏（R245 实测：写着「20/20 轮违反」，实际早已 0/20）。` +
+                `请加 evidence: { command: "npm run <真实脚本>", checkedAt: "YYYY-MM-DD" }`,
+            );
+          } else {
+            const cmd = String(ev.command ?? "");
+            const m = /^npm run ([\w:-]+)$/.exec(cmd.trim());
+            if (!m) {
+              errors.push(
+                `豁免条目 ${parent} 的 evidence.command 必须是 \`npm run <脚本>\` 形态（当前：${JSON.stringify(cmd)}）` +
+                  ` —— 它要能让下一个人**照着重跑**那个数字`,
+              );
+            } else if (!(m[1] in scripts)) {
+              errors.push(
+                `豁免条目 ${parent} 的 evidence.command 指向的 \`${m[1]}\` **在 package.json 里不存在** ` +
+                  `⇒ 那个数字无法被重跑（拼错的命令等于一句愿望）`,
+              );
+            }
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(String(ev.checkedAt ?? ""))) {
+              errors.push(
+                `豁免条目 ${parent} 的 evidence.checkedAt 必须是 YYYY-MM-DD（当前：${JSON.stringify(ev.checkedAt)}）`,
+              );
+            }
+          }
+        }
+        if (!errors.some((e) => e.includes(parent))) {
+          const evHint = ex.evidence?.command
+            ? `；重跑：${ex.evidence.command}（实测于 ${ex.evidence.checkedAt}）`
+            : "";
+          printed.push(
+            `${parent} 未进链，**显式豁免**：${ex.why}（复核：${ex.reviewBy ?? "未定"}${evHint}）`,
+          );
+        }
       }
       continue;
     }
@@ -311,6 +363,74 @@ function runSelftest() {
         contains: ["没有执行"],
         withinMs: 20000,
         label: "入口漂移",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  // ── R246（→ 460）：豁免理由里的**数量断言必须可重跑** ─────────────────────
+  // 这三条反例守的不是「有没有豁免」，而是「豁免的理由还能不能被复现」。
+  const exemptFixture = (why, evidence) => {
+    // 只覆盖**父脚本的链**（让它「未进链」），selftests 段保持完整 ——
+    // 否则 4 条 race 用例会因「selftests 链里没有它们」而先红，掩盖本条判据的观察对象。
+    // 正例里引用的 `test:arch31-multi-instance` 必须在夹具的 package.json 里存在
+    // （否则 evidence 判据会红 —— 这正是它该做的事）。
+    const scripts = fixtureScripts({
+      "test:guards:chain": "npm run something-else",
+      "test:arch31-multi-instance": "node scripts/arch31-multi-instance-selftest.mjs",
+    });
+    const repo = makeFixtureRepo(fixtureTree({ scripts }));
+    const exPath = join(repo.dir, PARENT_EXEMPT_REL);
+    const body = { exempt: [{ script: "test:guards:selftests", why, reviewBy: "2026-12-31" }] };
+    if (evidence !== undefined) body.exempt[0].evidence = evidence;
+    mkdirSync(dirname(exPath), { recursive: true });
+    writeFileSync(exPath, JSON.stringify(body, null, 2));
+    return repo;
+  };
+
+  push("反例⑤：why 含数量断言但**没有 evidence** ⇒ exit 1（理由会腐坏）", () => {
+    const repo = exemptFixture("arch31 槽位断言偶发，实测 6 次中 1 次失败，需先有样本再改");
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: ["数量断言", "evidence"],
+        withinMs: 20000,
+        label: "缺 evidence",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  push("反例⑥：evidence.command 指向**不存在的 npm script** ⇒ exit 1（拼错=愿望）", () => {
+    const repo = exemptFixture("arch31 槽位断言偶发（≈17%），需先有样本再改", {
+      command: "npm run test:does-not-exist",
+      checkedAt: "2026-11-18",
+    });
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: ["不存在", "无法被重跑"],
+        withinMs: 20000,
+        label: "命令不存在",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  push("正例：数量断言 + 合法 evidence ⇒ exit 0，且**打印重跑命令**（触发信号）", () => {
+    const repo = exemptFixture("arch31 槽位断言偶发（≈17%），需先有样本再改", {
+      command: "npm run test:arch31-multi-instance",
+      checkedAt: "2026-11-18",
+    });
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 0,
+        contains: ["重跑：npm run test:arch31-multi-instance"],
+        withinMs: 20000,
+        label: "带 evidence",
       });
     } finally {
       repo.cleanup();
