@@ -508,6 +508,55 @@
       "dispositionNote": "这条判据的全部价值是「告警规则**接线了**且**引用的指标真的存在**」——只读文本无法判断 `expr` 里的指标名是否在代码里注册过，也无法判断 runbook 锚点是否真实存在。它自带一个 YAML 子集解析器（不支持锚点等高级语法，遇到即报错），**解析失败会显式红**而非静默跳过 ⇒ 不会退化成永真。按 P0：断的是结构化的语义值。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-026",
+      "tier": "P0",
+      "spec": "scripts/check-desktop-update-chain.mjs",
+      "specLine": 231,
+      "needle": "parseYamlSubset(electron-builder.yml) 得结构树 + placeholdersOf(matchAll(/\\$\\{([^}]*)\\}/g)) 抽占位符名，与 updater.ts 的替换点对账",
+      "reads": [
+        "apps/executor-desktop/electron-builder.yml",
+        "apps/executor-desktop/src/main/updater.ts"
+      ],
+      "asserts": "把 `electron-builder.yml` **解析成结构树**（非按行匹配），再核对：linux 段必须有 artifactName、模板里的 `${...}` 占位符必须与 `updater.ts` 的替换点**逐名对应**（多一个/少一个都红）。书写的缩进变化由解析器消化",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「自动更新的文件名模板与 updater 的替换逻辑**逐字对应**」——名字对不上会导致 updater 找不到文件（静默更新失败）。只有**解析 YAML 结构**才能稳定抽出 artifactName；按行正则会随缩进/引号写法失明。解析失败与「段缺失」都**显式红**（不做 silent skip），故接受。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-027",
+      "tier": "P1",
+      "spec": "scripts/check-windows-gui-script.mjs",
+      "specLine": 412,
+      "needle": "items.filter((item) => !item.re.test(text)) —— 逐条 regex.test 整个 PS1 脚本文本",
+      "reads": [
+        "apps/executor-desktop/src/main/agent/gui-windows.ts",
+        "apps/executor-desktop/src/main/agent/gui-windows.selftest.ts"
+      ],
+      "asserts": "断言 PowerShell 脚本里**必须出现**若干形态：`ConvertTo-Json`、`$ErrorActionPreference = 'Stop'`、失败路径必须落到 `catch` 里的 `Reply`、不得 `exit` 非零。**全部是按正则对整个文本做 `.test()`**，脚本里多写/重排/换引号都可能让正则失配 ⇒ 判据**依赖书写形态**（tierDefinitions 的 P1 语义在此体现为「依赖被扫文本的书写形态」）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的对象**就是**那段 PS1 脚本的文本形态：它检查的是「脚本里有没有那几条语句/结构」。PS1 没有可用的解析器进仓（引入 PSScriptAnalyzer 是一次重依赖决策），所以只能正则。**已有一处补偿**：`catchIndex >= 0` 之外还要求 `Reply` 出现在 catch **之后**的文本里，避免「关键词在文件别处出现」的假绿。⇒ 接受其对书写形态的依赖，改动 PS1 结构时须同步更新这里的正则（该文件是本仓唯一由 node 生成的 PS1，改动点集中）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-028",
+      "tier": "P0",
+      "spec": "scripts/check-agent-write-sanitize.mjs",
+      "specLine": 485,
+      "needle": "抽出写入点调用参数（含模板字面量）后 `SANITIZER_RE.test(prop.value)` 判定是否已过脱敏，并对「扫描面/脱敏函数定义」设下界",
+      "reads": [
+        "apps/admin-api/src/modules/agent/dto/agent-response.dto.ts",
+        "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts",
+        "apps/admin-api/src/modules/agent/tools/agent-sanitize.util.ts"
+      ],
+      "asserts": "断的是**值级事实**：每个能写入 `agent_events` 等列的调用点，其参数**必须已被 sanitize*/redact* 包裹**；同时用两条**结构红**（`scannedFiles < MIN_SCANNED_FILES`、`sanitizerDefinitions === 0`）防止「规则被搬走/改名 ⇒ 判据失明」。不是比文本形态，而是从写入点的**参数表达式**判断是否被脱敏函数包裹",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值是「任何写入点都不许把未脱敏的原文落库」。它必须读实现源码才能找到**调用点的实参表达式**并判断是否被 sanitizer 包裹。**两条结构红 + 每个列的下界**是它的补偿控制：一旦「找不到写入点」，它报 structural 而不是静默通过。⇒ 接受源码依赖。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [
@@ -524,19 +573,6 @@
         "apps/admin-api/src/modules/agent/runtime/demo-runtime.service.ts",
         "scripts/agent-demo-check.mjs",
         "scripts/agent-demo-extra.mjs"
-      ]
-    },
-    {
-      "id": "GSTC-B03",
-      "spec": "scripts/check-agent-write-sanitize.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/agent/dto/agent-response.dto.ts",
-        "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts",
-        "apps/admin-api/src/modules/agent/tools/agent-sanitize.util.ts"
       ]
     },
     {
@@ -658,18 +694,6 @@
         "apps/executor-desktop/electron-builder.yml",
         "apps/executor-desktop/package.json",
         "apps/executor-desktop/src/main/config-store.ts",
-        "apps/executor-desktop/src/main/updater.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B13",
-      "spec": "scripts/check-desktop-update-chain.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/executor-desktop/electron-builder.yml",
         "apps/executor-desktop/src/main/updater.ts"
       ]
     },
@@ -889,18 +913,6 @@
         "apps/admin-web/src/api",
         "apps/admin-web/src/types/generated/api-types.ts",
         "scripts/web-type-field-drift-baseline.json"
-      ]
-    },
-    {
-      "id": "GSTC-B31",
-      "spec": "scripts/check-windows-gui-script.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/executor-desktop/src/main/agent/gui-windows.selftest.ts",
-        "apps/executor-desktop/src/main/agent/gui-windows.ts"
       ]
     }
   ],
