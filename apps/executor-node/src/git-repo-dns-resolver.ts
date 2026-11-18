@@ -41,6 +41,31 @@ export function gitRepoDnsResolver(host: string): Promise<string[]> {
 }
 
 /**
+ * R240：给 `ssrf-guard.ts` 用的同源出口 —— 它需要 `{ address, family }` 形状。
+ *
+ * ## 为什么要复用同一个 `activeResolver`
+ *
+ * `packageUrl`（zip 渠道）与 `gitRepo` 走**两条不同的 SSRF 闸**
+ * （`ssrf-guard.ts` 的 `assertSafeDnsResolutionWithTimeout` vs
+ * `git-repo-network-policy.ts` 的 `assertGitRepoNetworkPolicyResolved`），
+ * 但它们**防的是同一件事**、且**在同一台机器上会同时受 fake-IP 影响**。
+ * 若各自留一份缝，测试要装两个表、且将来加第三条路径又会漏
+ * ⇒ **一个模块级解析器、两个形状出口**。
+ *
+ * family 由地址形态推断（含 `:` ⇒ 6，否则 4）—— 调用方只按 family 分流分类逻辑，
+ * 与真实 `lookup` 的 family 语义一致。
+ */
+export async function ssrfDnsLookup(
+  host: string,
+): Promise<Array<{ address: string; family: number }>> {
+  const addresses = await activeResolver(host);
+  return addresses.map((address) => ({
+    address,
+    family: address.includes(":") ? 6 : 4,
+  }));
+}
+
+/**
  * **仅供测试**：替换解析器。传 `null` 恢复真实 DNS。
  *
  * 约定：spec 的 `beforeEach` 装固定表、`afterEach` 传 `null` 恢复 ——
