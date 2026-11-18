@@ -1404,6 +1404,14 @@ jobs:
         run: |
           node scripts/check-race-selftests-wired.mjs --selftest
           node scripts/check-race-selftests-wired.mjs
+      # R249：运维脚本的**离线自检**。`reset-admin-password.selftest.sh` 头注原文
+      # 「exercises the dry-run path only, so it is safe in CI and never touches a database」
+      # —— 它自己写着「safe in CI」，却**两边都不跑**（它自 CI 建立以来就没被接过）。
+      # 判据：dry-run 输出的 SQL 含 pgcrypto + 撤销会话、且**密码必须被 <redacted>**；
+      # 短密码被拒。零依赖、秒级、不碰 DB。
+      - name: Reset admin password selftest (R249)
+        run: |
+          bash scripts/reset-admin-password.selftest.sh
       # ── R15（2026-11-05）：运维手册段落 + 启动告警接线守卫 ──
       # 换派生密钥的语义/流程/失效半径写在 docs/operations.md；本守卫断言该节存在且三要素齐全、
       # main.ts 真的调用了 tokenDerivationPostureWarning()、UPGRADING 有交叉引用。
