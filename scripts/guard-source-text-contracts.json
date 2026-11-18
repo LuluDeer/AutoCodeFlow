@@ -457,6 +457,22 @@
       "dispositionNote": "这条判据的全部价值就是**跨两种格式对账**：YAML 里注入了什么、TS 里读了什么，只有同时读两边才能发现「读了但没注入」（容器起得来但运行时 500）。按 tierDefinitions 属 P1「跨语言/跨仓读 ⇒ 最脆」—— 它天然依赖两个文件的**路径与书写形态**，改任一侧的写法就可能让扫描器失明；这一点已由两处下界断言 + 「事实源缺失 ⇒ 结构红」作为补偿控制，故接受。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-023",
+      "tier": "P0",
+      "spec": "scripts/check-password-policy-sync.mjs",
+      "specLine": 332,
+      "needle": "extractBackendPolicy / extractFrontendPolicy 抽出 minLength 与三条正则，再 `charSet(compile(re))` **展开成字符集逐字符比对**",
+      "reads": [
+        "apps/admin-api/src/modules/users/users.service.ts",
+        "apps/admin-web/src/utils/passwordPolicy.ts"
+      ],
+      "asserts": "比的是**语义层的值**：`PASSWORD_MIN_LENGTH` 数值相等，且三条规则（uppercase/digit/special）**正则展开后的字符集**两侧一致。不是比正则字面量的文本形态 —— 两侧写 `/[A-Z]/` 与 `/[A-Za-z]/` 会被如实判成「后端独有」。抽取失败（找不到函数/正则）**分流到结构错**（判据不可信），不会静默放行",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值是「前后端密码策略**真的等价**」—— 用户在后端能设的密码，前端不能拒；反之亦然。要做到这点**只能**从两侧源码抽出数值与正则并**编译比对**（比文本会漏掉 `/[A-Z]/` vs `/[a-z]/` 之外更隐蔽的写法差异，比手抄清单则会漂移）。⇒ 接受源码依赖；代价（函数名/常量名改动）已由抽取失败 ⇒ **结构错**兜住，不会静默变永真。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [
@@ -786,18 +802,6 @@
         "apps/admin-api/src/migrations/1770000000009-Fixed.ts",
         "apps/admin-api/src/migrations/1770000000010-Known.ts",
         "apps/admin-api/src/migrations/1770000000018-ShortReason.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B24",
-      "spec": "scripts/check-password-policy-sync.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/users/users.service.ts",
-        "apps/admin-web/src/utils/passwordPolicy.ts"
       ]
     },
     {
