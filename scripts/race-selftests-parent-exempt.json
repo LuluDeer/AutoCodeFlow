@@ -2,14 +2,32 @@
   "$schema": "race-selftests-parent-exempt/v1",
   "$comment": [
     "R106：**父脚本豁免表** —— `check-race-selftests-wired` 要求「被引用的父脚本必须真的会被链执行」。",
-    "为什么需要豁免：`test:guards:selftests` 含**恒红项**（heartbeat-dispatch-race，R18-B 活缺陷：20 轮 20 轮违反），",
-    "把它接进链会让整条链长期红；而该缺陷的修复属 `apps/**` 写域（W3 在改）。",
-    "⇒ 在修好之前显式豁免并**每轮打印**（不静默）；条目必须带 why + reviewBy，到期不复核即应删除豁免。"
+    "",
+    "## R245：**理由已更正**（原理由不成立，但结论仍成立）",
+    "原写：「含 heartbeat-dispatch-race 恒红项（R18-B 活缺陷，20/20 轮违反 oversell）」。",
+    "**实测推翻**：该缺陷早已修复（`80e45a3b` 2026-11-05 把心跳改为「客户端上报 vs 服务端在途占坑」",
+    "取较大值）；R245 真机复跑 heartbeat-dispatch-race **20 轮 · 产品违反 0 轮 · exit 0**。",
+    "另 3 条 race 用例（register / token-idempotency / token-cross-instance）也都 exit 0。",
+    "",
+    "**但整段仍不能接进链** —— 新理由是实测出来的：",
+    "`test:arch31-multi-instance` 的「⑤ 实例内槽位上限生效（第 3 条同实例连接收到 503）」",
+    "是**偶发**：R245 连跑 6 次 **5 通过 / 1 失败（≈17%）**；失败时三条 SSE 连接依次",
+    "`status=200/200/200`（第 3 条未被拒），而同段另外两条槽位断言（「另一实例仍有独立槽位」",
+    "「断流后槽位释放干净」）**始终通过** ⇒ 槽位机制本身正常，是**判据的时序假设**不稳。",
+    "产品侧无缺陷可修：`metrics-stream.controller.ts:97` 的 `acquireSlot()` 在写 SSE 头之前",
+    "同步占槽（无 await 中断），释放走 `finally` 双保险。",
+    "",
+    "**为什么现在不改那条断言**：试过给前两次连接之间加 120ms 节拍 ⇒ **仍失败**（已回退）。",
+    "按 451（不可复现的失败应产出观测记录而非猜测性修补）：没有可复现样本时改断言，",
+    "「绿了」既可能是修好、也可能只是没抽到，**两种解释无法区分**。",
+    "",
+    "⇒ **保留豁免**，但把理由换成实测事实；reviewBy 保持，到期待有复现样本时再动。",
+    "条目必须带 why + reviewBy，到期不复核即应删除豁免（与原纪律一致）。"
   ],
   "exempt": [
     {
       "script": "test:guards:selftests",
-      "why": "含 heartbeat-dispatch-race 恒红项（R18-B 活缺陷，20/20 轮违反 oversell）；修复属 apps/** 写域（W3）。修好后必须把该段接进 test:guards:chain 并删本条豁免",
+      "why": "arch31-multi-instance 的「第 3 条 SSE 连接应 503」偶发（R245 实测 6 次中 1 次，三条均 200）；槽位机制本身正常（另两条槽位断言恒过），是判据时序假设不稳，需先有可复现样本再改。其余 4 条 race 用例已全绿",
       "reviewBy": "2026-12-31"
     }
   ]
