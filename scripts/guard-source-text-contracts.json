@@ -840,17 +840,14 @@
       "dispositionNote": "这条判据的价值是「把打包接线**注释掉**——最省事的临时关掉手法——在本闸下会红」。它自己已经用**剥注释 + 边界 + 下界**修掉了四类假绿，是本仓「守卫自身缺陷」修复得最完整的一份。⇒ 接受源码依赖；它的四类修复写在头注里，可直接对照。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
-    }
-  ],
-  "coverageBacklog": [
+    },
     {
-      "id": "GSTC-B17",
+      "id": "GSTC-045",
+      "tier": "P0",
       "spec": "scripts/check-failure-classifiers.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
+      "specLine": 0,
+      "needle": "把 `packages/contract-fixtures/generated/failure-classifier.{mjs,py}` 两份生成物**真跑一遍**（node 进程 + python3 进程），对**输出**做等价性比对；另用 `matchAll(testRe)` / `.test(message)` 核对分类器规则表",
+      "reads": [
         "apps/admin-api/src/common/failure-classification/failure-patterns.ts",
         "apps/executor-node/src/consumer.ts",
         "apps/executor-node/src/generated/failure-classifier.ts",
@@ -868,16 +865,20 @@
         "packages/executor-protocol/protocol.json",
         "scripts/failure-classifier-divergence-baseline.json",
         "scripts/generate-failure-classifiers.mjs"
-      ]
+      ],
+      "asserts": "断的是**跨语言行为等价**：同一组输入消息，node 与 python 两侧分类器必须给出**相同分类**。这是**行为级**验证（跑真进程），不是文本比对 —— 因此不怕两侧写法不同，只怕行为不同",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「node 与 python 的 failureReason 分类必须一致」——不一致会让同一故障在两侧显示不同原因，运维按原因排查时会找错方向。只有**真跑两侧生成物**才能证明行为等价；比文本只能证明「源码相似」。⇒ 接受跨语言运行依赖（需要 python3 + node 可用，缺任一即**显式 skip 而非绿**）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
-      "id": "GSTC-B18",
+      "id": "GSTC-046",
+      "tier": "P0",
       "spec": "scripts/check-failure-classifiers-reverse-proof.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
+      "specLine": 0,
+      "needle": "对 B17 的等价探针做**反向实证**：构造一个「必然不等价」的变体（`.includes(\"D-13\")` / `FAIL` / `·` 等向量），断言 B17 **必须红**",
+      "reads": [
         "apps/admin-api/src/common/failure-classification/failure-patterns.ts",
         "apps/executor-node/src/generated/failure-classifier.ts",
         "apps/executor-node/src/routes/execute.ts",
@@ -894,16 +895,20 @@
         "scripts/failure-classifier-divergence-baseline.json",
         "scripts/generate-failure-classifiers.mjs",
         "scripts/protocol-breaking-acknowledgements.json"
-      ]
+      ],
+      "asserts": "断的是「**等价探针本身有牙**」：若把两侧之一改成故意不等价，B17 必须报红。这是**元判据**（对判据的判据）——它防的是「B17 恒绿但什么也没验」",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「可重跑的证据，不是装饰」——本仓反复踩过「判据恒绿」的坑（如 8 处 `includes` 让注释也算接线）。只有**构造反例并断言它会红**才能证明 B17 真的在验。⇒ 接受源码 + 子进程依赖；它自身也带向量表下界。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
-      "id": "GSTC-B25",
+      "id": "GSTC-047",
+      "tier": "P0",
       "spec": "scripts/check-release-config.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
+      "specLine": 192,
+      "needle": "从 `release.yml` 切出 `publish-npm:` 的 `include:` 段与 `version-guard:` 段，`matchAll` 抽矩阵条目与 `pkg_json_version(...)`/`pyproject_version(...)` 路径，再与「要发布的包集合」做**双向对账**",
+      "reads": [
         "packages/acf-cli",
         "packages/autocodeflow-node-sdk",
         "packages/autoflow-sdk",
@@ -918,9 +923,15 @@
         "packages/three",
         "packages/two",
         "packages/two/package.json"
-      ]
+      ],
+      "asserts": "断的是**四份互不校验的发布配置之间的集合一致**：publish 矩阵条目、version-guard 守卫路径、root 的 extra-files 广播路径、各包自身版本文件，四者必须互相覆盖。用**分段切片**（`indexOf` 定位 job 边界）而非全文匹配 ⇒ 避免「别的 job 里的同名键」误命中",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「任一处漏配 ⇒ 某个包**静默地永远发不出去**或**永远不 bump 版本**」。发版链跨四份配置、任何单点漏配都不会报错；只有把四份都解析出来做**集合对账**（双向）才能发现缺哪一侧。⇒ 接受 YAML 结构依赖；切段解析（`indexOf` + `matchAll`）比全文正则稳，因为「同名字符串出现在别的 job」不会被误算。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
+  "coverageBacklog": [],
   "coverageNote": "本轮（2026-11-04）实测口径：`scripts/` 下 **66 个 check-*.mjs**，65 个有 readFileSync/readText；其中 **41 个**读了 `apps/` 或 `packages/` 下的 `.ts/.tsx/.py` **实现源码**（排除 fixture/spec/__tests__/tests 路径）。这 41 个里 **10 个**已深审入 entries（含全部 5 条新守卫 + 最脆的跨语言几条），其余 **31 个**入 coverageBacklog 待深审。",
   "scannedTotals": {
     "checkGuardsTotal": 68,
