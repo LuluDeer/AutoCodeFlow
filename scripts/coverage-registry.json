@@ -545,7 +545,7 @@
     },
     "scripts/check-typecheck-covers-specs.mjs": {
       "helper": "checkCase",
-      "floor": 4,
+      "floor": 6,
       "args": []
     },
     "scripts/check-version-line.mjs": {

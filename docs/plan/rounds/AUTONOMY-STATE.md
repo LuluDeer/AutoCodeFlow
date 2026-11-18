@@ -1,29 +1,27 @@
-# AUTONOMY-STATE — 状态卡（R224 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R225 收尾交接版 · ≤50 行）
 
-**基线**：`52e99466`（R223，`git log -1`）· 本轮落地 **1 个提交**（R224 把 426 机械化）· **守卫链 111 段**（本机实测 **106 段 exit 0**；第 55/107 段是环境既有缺口 —— `packages/{mcp-server,acf-cli}` 无 node_modules/dist，stash 后原版同样红；**未新增链段**）
-**会话**：第 224 轮 · 并行第 150 批 · **单靶**
+**基线**：`65ca921a`（R224，`git log -1`）· 本轮落地 **1 个提交**（R225 同一根因推广）· **守卫链 111 段**（本机实测 **106 段 exit 0**；第 55/107 段是环境既有缺口 —— `packages/{mcp-server,acf-cli}` 无 node_modules/dist，stash 后原版同样红；**未新增链段**）
+**会话**：第 225 轮 · 并行第 151 批 · **单靶**
 
-## 本轮落地（R224 · 1 项 · 已复核）
+## 本轮落地（R225 · 1 项 · 已复核）
 
-**★ 把 R223 的纪律 426 机械化：`typecheck:all` 必须覆盖 spec 层。**
-- **缺口**：根 `typecheck:all` 串了 7 个 typecheck，**唯独没有 `typecheck:specs`** —— 而它在本仓
-  多处文档里被引为「全量类型检查门禁」⇒ 拿它当验收项的人会得到**假绿**（正是 R222 事故
-  能溜过去的**结构性原因**）。
-- **修法**：根新增 `typecheck:specs`（`-p tsconfig.spec.json`）+ **串进 `typecheck:all`**。
-- **★ 新守卫 `check-typecheck-covers-specs`**（四条判据：已定义 / 已串联 / 真的用 spec tsconfig /
-  CI 有跑），**selftest 5/5**（正例 + 四个反例逐条红），已接进 `test:guards:chain` 与 `ci.yml`。
-- **★ 决定性反证**：复刻 R222 事故（去掉 `@Optional()`）后 —— **`typecheck:api` exit 0**
-  （build tsconfig 不含 spec）、**`typecheck:specs` exit 2**。⇒ 两个门禁**不是同一件事**。
+**★ R224 的同一根因推广：又找到一处「全量门禁漏一块代码」。**
+- **缺口**：`apps/executor-desktop` 定义了 `typecheck:renderer`（`tsconfig.renderer.json`，覆盖
+  **11k 行** renderer），而根 `typecheck:desktop` 只跑 `.json` + `.worker.json` ⇒ **renderer 不在
+  `typecheck:all` 覆盖面里**。⚠️ **不是「没人查」** —— CI 有真跑（`ci.yml:2417`，R7 已翻真门禁）；
+  缺的是「**被判据引为全量门禁的入口**没有它」。
+- **修法**：根 `typecheck:desktop` 追加 `tsc -p tsconfig.renderer.json --noEmit`。
+- **★ 判据推广（4→5 条）**：把 `typecheck:all` **展开**成「实际执行的 (项目, tsconfig) 集合」再核对（**不按脚本名硬对应**）。排除面：`:report`（恒 exit 0）· `apps/admin-web`（`tsc -b` 已拉齐）。selftest **5→7**。
+- **★ 判据自己的脆弱点（自检抓到）**：`expandAll()` 只跟 `npm run X` 引用、漏了正文**内联写法** ⇒ 正例红。修：`expanded = all + expandAll(all)`。
 
-## 验证 / 红演示（R224 · 真实 exit）
-- **验证**：新守卫 5/5 自检 + 主跑 0 · `check:guards-wired` 0（守卫 98→**99**、覆盖登记 82→**83**）·
-  `check-script-main-guard` 0 · `size-caps` 0 · `check-workflow-yaml` 0 · `test:docs` 0 ·
-  `check-env-drift` 0 · `typecheck:api`/`typecheck:specs` 全 0。
-- **环境既有缺口（如实）**：`typecheck:all` 本机仍红 —— `typecheck:cli`/`mcp` 需要 `packages/*/node_modules`（本机没装）。
+## 验证 / 红演示（R225 · 真实 exit）
+- **验证**：守卫 **7/7 自检 + 主跑 0** · `check:guards-wired` 0（覆盖登记 83、下界 5→6）·
+  `check-script-main-guard` 0 · `size-caps` 0 · `test:docs` 0。
+- **环境缺口（如实）**：本机 `apps/executor-desktop` 无 `node_modules` ⇒ `typecheck:desktop` 在此跑不了；renderer 那环由 CI 保证（`Renderer typecheck (hard gate, R7)`）。
 
-## 教训（428–429，接 427）
-- **428「写在文档里的纪律 ≠ 门禁；它只是『记得的人』的私人知识」** —— R223 的教训把这个坑写清楚了，但**下一个加 typecheck 脚本的人不会读到**。⇒ 教训写完问一句：**这条能不能机械化**？能就别只写文档。
-- **429「两个门禁看起来是同一件事时，必须证明它们不是」** —— `typecheck:api` 与 `typecheck:specs` 名字相近、都用 tsc，但**读不同 tsconfig、覆盖面不相交**。反证（一个 exit 0、一个 exit 2）是唯一能钉死的证据形态。
+## 教训（430–431，接 429）
+- **430「修掉一处『门禁漏了 X』后，必须把同一条判据推广去扫**全部同类**」** —— R224 只钉了 spec；若不推广，`renderer` 那处会一直躺着，而两者**同一根因**（`typecheck:all` 是手写串行链，每环都要人记得加）。⇒ 修完一个实例就问：这条判据能不能表达成「对所有同类都成立」？
+- **431「判据的输入要同时覆盖『内联』与『引用』两种写法」** —— 本轮正例失败的真因是展开函数只跟 `npm run X` 的引用、漏了正文里的内联 `cd ... && tsc`。同一份配置可以两种写法混用 ⇒ **先把两种写法归一**再比。
 
 ## 剩余 backlog（`§7.0` 主表 **3** 条 · 全部外部阻塞）
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（部分已修，**不声称根除**，nightly 尚无样本）· `release-notice-ops`（需运维窗口）。
@@ -33,7 +31,8 @@
 
 **里程碑**：前端 P3 九条（R188–195）· R169 审计 17 条 · `no-explicit-any` 73→0（R196）· 「读失败渲染成没有」清零（R197）· **接管台五徽标全部接线完成**（R198/199/203/205/207）· 五判据严格互补 · 两级阈值不变式（R200）。
 
-## 方法学（累积 399–429，全文见 `AUTONOMY-STATE-ARCHIVE.md` / `PLAN-CLAIMS`）
+## 方法学（累积 399–431，全文见 `AUTONOMY-STATE-ARCHIVE.md` / `PLAN-CLAIMS`）
+**431** 判据输入要覆盖「内联」与「引用」两种写法 · **430** 修完一处门禁缺口要推广扫全部同类 ·
 **429** 「两个门禁像同一件事」时要证明它们不是 · **428** 纪律能机械化就别只写在文档里 ·
 **427** 给 @Injectable 加依赖默认 `@Optional()`+末尾 · **426** 套件编译失败不计入 `Tests:`（要另看 Suites 数与 spec tsc）·
 **425** 探针断言不能跨两行日志 `&&` · **424** 降级日志要三态（「想干但干不动」最容易被静默）·

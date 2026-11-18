@@ -16,17 +16,22 @@
  * 而它**在 CI 里有跑**（`ci.yml` 的 `npm run typecheck:specs`），**但根级 `typecheck:all` 不含它**
  * ⇒ 任何把 `typecheck:all` 当「全量类型检查门禁」的人（本仓多处文档如此引用）都会得到**假绿**。
  *
- * ## 判据
+ * ## 判据（5 条）
  *
  *  ① 根 `package.json` 必须定义 `typecheck:specs`；
  *  ② 根 `typecheck:all` 的串行链里**必须**包含 `npm run typecheck:specs`；
  *  ③ 该脚本必须真的用 **`-p tsconfig.spec.json`**（否则它和 `typecheck:api` 是同一个门禁，
  *     包含它只是给人「我查过 spec 了」的错觉）；
- *  ④ `.github/workflows/` 里必须有一步真跑它（本地门禁与 CI 不能只接一面）。
+ *  ④ `.github/workflows/` 里必须有一步真跑它（本地门禁与 CI 不能只接一面）；
+ *  ⑤ **R225（同一根因的推广）**：每个 TS 子项目定义的 `typecheck*` 脚本，
+ *     都必须被 `typecheck:all` **展开后**覆盖到 —— 把链**展开**成「实际会执行的
+ *     (项目, tsconfig) 集合」再逐项核对，**不按脚本名硬对应**（那是猜）。
+ *     排除面显式两条：`:report` 后缀（恒 exit 0，不是门禁）· `apps/admin-web`（`tsc -b` 已拉齐）。
  *
- * ## 反例（本脚本在 `--selftest` 里逐条验证）
+ * ## 反例（本脚本在 `--selftest` 里逐条验证，共 7 条）
  *
- * 去掉 ② 的链环、把 ③ 换成 `tsconfig.json`、把 ④ 的 CI step 删掉 —— 三种都必须红。
+ * 去掉 ② 的链环、把 ③ 换成 `tsconfig.json`、把 ④ 的 CI step 删掉、
+ * 子项目有 `typecheck:renderer` 而链里没有 —— 四种都必须红；两个正例必须绿。
  *
  * 用法：`node scripts/check-typecheck-covers-specs.mjs [--selftest] [--root <dir>]`
  */
@@ -115,6 +120,87 @@ export function checkTypecheckCoversSpecs(root = DEFAULT_ROOT) {
     }
   }
 
+  // ── ⑤ 每个子项目定义的 typecheck 脚本都必须被 typecheck:all 覆盖 ────────
+  // R225：这是 R224 的**同类根因推广**。R224 修的是「typecheck:all 漏了 typecheck:specs」；
+  // 本轮事实核对发现**同一形态还有一处**：`apps/executor-desktop` 定义了
+  // `typecheck:renderer`（覆盖 11k 行 renderer），而根 `typecheck:desktop` 只跑
+  // `tsconfig.json` + `tsconfig.worker.json` ⇒ **renderer 不在 typecheck:all 的覆盖面里**。
+  // CI 有跑它（`ci.yml` 的 `npm run typecheck:renderer`），所以不是「没人查」，
+  // 而是「**被判据引为全量门禁的入口**没有它」—— 两者差别很大：前者 CI 会红，
+  // 后者只在有人**拿 typecheck:all 当验收**时给出假绿。
+  //
+  // ## 判法：把 `typecheck:all` **展开**成「实际会执行的 (项目, 命令) 集合」，再逐项核对
+  //
+  // 不能按脚本名硬对应（`typecheck:api` → `apps/admin-api`、`typecheck:desktop` → 含 worker），
+  // 那是猜。⇒ 展开法：根链里每个 `npm run X` 取根脚本 X 的正文，若是 `cd <proj> && ...` 形态
+  // 就归属到 `<proj>`，并抽出其中的 `tsc -p <cfg>`；最后核对「子项目定义了的每个 typecheck
+  // 命令，是否都在展开集合里出现过」。
+  //
+  // 排除面（**必须显式**，不能靠「正好没扫到」）：
+  //  · `:report` 后缀 —— 恒 exit 0 的报告模式，**不是门禁**（串进去等于关灯键）；
+  //  · `apps/admin-web` —— 它用 `tsc -b`（project references）一次拉齐全部 tsconfig。
+  const REPORT_SUFFIX = ":report";
+  const TSC_BUILD_PROJECTS = new Set(["apps/admin-web"]);
+  const TS_PROJECTS = [
+    "apps/admin-api",
+    "apps/executor-node",
+    "apps/executor-desktop",
+    "apps/admin-web",
+    "packages/acf-cli",
+    "packages/mcp-server",
+    "packages/autocodeflow-node-sdk",
+  ];
+
+  /** 把 `typecheck:all` 展开成「执行过的命令片段」文本（够判据用即可）。 */
+  const expandAll = (chain, seen = new Set()) => {
+    let text = "";
+    for (const m of String(chain ?? "").matchAll(/npm run ([\w:-]+)/g)) {
+      const name = m[1];
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const body = scripts[name];
+      if (typeof body !== "string") continue;
+      text += `\n${body}`;
+      // 根脚本可能再引用别的根脚本（如 typecheck:desktop 引用 typecheck:worker）
+      if (/npm run /.test(body)) text += expandAll(body, seen);
+    }
+    return text;
+  };
+  // ⚠️ 必须**把 `typecheck:all` 自身正文也算进去**：内联形态（`cd <proj> && npx tsc -p <cfg>`）
+  // 就写在它自己的正文里，`expandAll` 只展开 `npm run X` 引用到的子脚本。
+  const expanded = `${all}\n${expandAll(all)}`;
+
+  for (const proj of TS_PROJECTS) {
+    if (TSC_BUILD_PROJECTS.has(proj)) continue;
+    const projPkgPath = join(root, proj, "package.json");
+    if (!existsSync(projPkgPath)) continue;
+    let projPkg;
+    try {
+      projPkg = JSON.parse(readFileSync(projPkgPath, "utf8"));
+    } catch {
+      failures.push(`${proj}/package.json 不是合法 JSON`);
+      continue;
+    }
+    const projScripts = projPkg.scripts ?? {};
+    for (const [name, cmd] of Object.entries(projScripts)) {
+      if (!/^typecheck/.test(name)) continue;
+      if (name.endsWith(REPORT_SUFFIX)) continue;
+      if (typeof cmd !== "string") continue;
+      // 抽出该脚本用的 tsconfig（`-p <cfg>` 或 `-p=<cfg>`）；抽不到 tsconfig 的命令
+      // （例如 `tsc --noEmit`）在展开文本里以「项目 + 无 -p」形态判定。
+      const cfgMatch = cmd.match(/-p\s+(\S+)/);
+      const cfg = cfgMatch ? cfgMatch[1].replace(/^["']|["']$/g, "") : "tsconfig.json";
+      // 判据：展开文本里必须能找到「这个项目」+「这个 tsconfig」同时出现。
+      const covered = expanded.includes(proj) && expanded.includes(cfg);
+      if (!covered) {
+        failures.push(
+          `${proj}/package.json 定义了 \`${name}\`（\`${cmd}\`，读 \`${cfg}\`），` +
+            `但根 \`typecheck:all\` 展开后**没有**覆盖它 —— 「全量类型检查门禁」漏掉了这块代码`,
+        );
+      }
+    }
+  }
+
   return { ok: failures.length === 0, failures };
 }
 
@@ -141,9 +227,10 @@ async function main() {
       }
       scripts["typecheck:api"] = "cd apps/admin-api && npx tsc --noEmit -p tsconfig.json";
       scripts["typecheck:all"] =
-        opts.inAll === false
+        (opts.inAll === false
           ? "npm run typecheck:api"
-          : `npm run typecheck:api && npm run ${SCRIPT_NAME}`;
+          : `npm run typecheck:api && npm run ${SCRIPT_NAME}`) +
+        (opts.extraChain ?? "");
       writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts }, null, 2));
       writeFileSync(
         join(dir, ".github", "workflows", "ci.yml"),
@@ -151,6 +238,14 @@ async function main() {
           ? "jobs:\n  x:\n    steps:\n      - run: echo hi\n"
           : `jobs:\n  x:\n    steps:\n      - run: npm run ${SCRIPT_NAME}\n`,
       );
+      // R225：需要造子项目时按 opts.projects 生成（用于第 ⑤ 条判据的反例）。
+      for (const [proj, projScripts] of Object.entries(opts.projects ?? {})) {
+        mkdirSync(join(dir, proj), { recursive: true });
+        writeFileSync(
+          join(dir, proj, "package.json"),
+          JSON.stringify({ name: proj, scripts: projScripts }, null, 2),
+        );
+      }
       const r = checkTypecheckCoversSpecs(dir);
       const pass = r.ok === expectOk;
       console.log(`${pass ? "✔" : "✘"} ${label}（ok=${r.ok}，期望 ${expectOk}）`);
@@ -165,8 +260,35 @@ async function main() {
     checkCase("反例②：typecheck:all 没串它 ⇒ 红", { inAll: false }, false);
     checkCase("反例③：脚本不用 tsconfig.spec.json ⇒ 红", { useSpecConfig: false }, false);
     checkCase("反例④：CI 里没有它 ⇒ 红", { inCi: false }, false);
+    // R225 的两条：第 ⑤ 条判据（子项目 typecheck 必须被展开覆盖）
+    checkCase(
+      "反例⑤：子项目定义了 typecheck:renderer 但链里没有 ⇒ 红",
+      {
+        projects: {
+          "apps/executor-desktop": {
+            "typecheck:worker": "tsc -p tsconfig.worker.json",
+            "typecheck:renderer": "tsc -p tsconfig.renderer.json --noEmit",
+          },
+        },
+      },
+      false,
+    );
+    checkCase(
+      "正例（R225）：子项目的两个 typecheck 都在链里 ⇒ 绿",
+      {
+        projects: {
+          "apps/executor-desktop": {
+            "typecheck:worker": "tsc -p tsconfig.worker.json",
+          },
+        },
+        // 让 typecheck:all 里带上 desktop 与 worker 的 tsconfig
+        extraChain:
+          " && cd apps/executor-desktop && npx tsc -p tsconfig.json --noEmit && npx tsc -p tsconfig.worker.json --noEmit",
+      },
+      true,
+    );
 
-    const total = 5;
+    const total = 7;
     console.log(
       `\n${failed === 0 ? "✔" : "✘"} check-typecheck-covers-specs selftest：${total - failed}/${total} 通过`,
     );

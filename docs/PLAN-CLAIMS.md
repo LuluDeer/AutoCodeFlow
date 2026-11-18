@@ -4059,6 +4059,46 @@
     再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
     也不要用「先接上再观察」把 floor 变成摆设。
 
+- 2026-11-18 **自治优化 · R225（并行第 150 批）（1 提交 · R224 的**同一根因推广**：又找到一处「全量门禁漏一块代码」）**：
+  R224 修的是「`typecheck:all` 漏了 `typecheck:specs`」。本轮做**同类事实核对**，
+  把链**展开**成「实际会执行的 (项目, tsconfig) 集合」后发现**还有一处**。
+
+  - **① 缺口**：`apps/executor-desktop` 定义了 `typecheck:renderer`
+    （`tsc -p tsconfig.renderer.json`，覆盖 **11k 行** renderer 代码），
+    而根 `typecheck:desktop` 只跑 `tsconfig.json` + `tsconfig.worker.json`
+    ⇒ **renderer 不在 `typecheck:all` 的覆盖面里**。
+    ⚠️ 它**不是**「没人查」—— CI 有真跑它（`ci.yml:2417`，R7 第五轮已翻成真门禁、实测 0 error）。
+    缺的是「**被判据引为全量门禁的入口**没有它」：前者 CI 会红，后者只在有人**拿
+    `typecheck:all` 当验收**时给出假绿。
+  - **② 修法**：根 `typecheck:desktop` 追加 `npx tsc -p tsconfig.renderer.json --noEmit`。
+  - **③ 判据扩展（第 ⑤ 条，`check-typecheck-covers-specs` 4 条 → 5 条）**：
+    **把 `typecheck:all` 展开**成「实际执行的 (项目, tsconfig) 集合」，再逐项核对
+    「子项目定义了的每个 `typecheck*` 是否都在集合里」。**刻意不按脚本名硬对应**
+    （`typecheck:api`→`apps/admin-api`、`typecheck:desktop`→含 worker）—— 那是猜；
+    展开法给出的是**实际会跑什么**。
+    **排除面显式两条**：`:report` 后缀（恒 exit 0，串进去等于关灯键）·
+    `apps/admin-web`（`tsc -b` 的 project references 已拉齐全部 tsconfig）。
+    selftest **5 → 7**（新增「子项目有 renderer 但链里没有 ⇒ 红」与「都有 ⇒ 绿」）。
+  - **④ 判据自己的一个真实脆弱点（自检抓到）**：首版 `expandAll()` **只展开 `npm run X`
+    引用到的子脚本**，没算 `typecheck:all` **自身正文** ⇒ 内联形态（`cd <proj> && npx tsc -p <cfg>`）
+    会漏判、正例变红。修：`expanded = all + expandAll(all)`。
+    ⇒ 这是「**判据的输入要覆盖两种写法**」的又一实例（内联 vs 引用）。
+
+  **验证（真实 exit）**：守卫 **7/7 自检 + 主跑 0** · `check:guards-wired` 0（覆盖登记 83、
+  下界 5→6） · `check-script-main-guard` 0 · `size-caps` 0 · `test:docs` 0。
+  **环境既有缺口（如实）**：本机 `apps/executor-desktop` 无 `node_modules` ⇒
+  `typecheck:desktop` 在此跑不了（与本次改动无关）；**renderer 那一环的正确性由 CI 保证**
+  （`ci.yml` 的 `Renderer typecheck (hard gate, R7)`，实测 0 error）。
+
+  **方法学沉淀（接 429）**：
+  - **430「修掉一处『门禁漏了 X』之后，必须把**同一条判据推广**去扫全部同类」**。
+    R224 只钉了 spec 这一环；若不推广，`renderer` 那处会一直躺着 ——
+    而它俩是**同一个根因**（`typecheck:all` 是手写串行链，每条链环都要人记得加）。
+    ⇒ 修完一个实例，问：**这条判据能不能表达成「对所有同类都成立」**？能就立刻推广。
+  - **431「判据的输入要同时覆盖『内联』与『引用』两种写法」** —— 本轮正例失败的真因是
+    `expandAll()` 只跟 `npm run X` 的引用、漏了 `typecheck:all` 正文里的内联 `cd ... && tsc`。
+    同一份配置**可以两种写法混用** ⇒ 判据必须**先把两种写法归一**再比。
+
 - 2026-11-18 **自治优化 · R224（并行第 149 批）（1 提交 · 把 426 那条纪律**机械化**：`typecheck:all` 必须覆盖 spec 层）**：
   R223 的教训 426 写的是「判测试全绿必须另看 spec tsc」—— 但那只是**一句要靠人记得的话**。
   本轮把它变成守卫。
