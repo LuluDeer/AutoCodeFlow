@@ -4059,6 +4059,34 @@
     再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
     也不要用「先接上再观察」把 floor 变成摆设。
 
+- 2026-11-18 **自治优化 · R231（并行第 157 批）（0 提交 · 环境轮：把「本机 106/113」变成 **113/113 全绿**）**：
+  状态卡头部长期写着「守卫链 111 段（本机实测 **106 段 exit 0**；第 55/107 段是环境既有缺口）」。
+  本轮去**把它补掉** —— 结论：**那些「缺口」全部是缺 `node_modules`，不是仓库问题**。
+
+  - **① 逐段定位（R230 已把链条从第 10 段推进到第 57 段）**：剩余的 6 段红全是
+    `MODULE_NOT_FOUND` / `eslint: not found`，且集中在**本机没装依赖的子项目**：
+    `test:mcp-tool-surface`（第 57）· `lint:cli`（109）· `lint:mcp`（110）·
+    `lint:node-sdk`（111）· `lint:desktop`（112）。
+  - **② 修法（只装依赖，不改代码）**：
+    `npm install` 于 `packages/mcp-server` / `packages/acf-cli` /
+    `packages/autocodeflow-node-sdk` / `apps/executor-desktop`，
+    并对 mcp-server 跑 `npm run build`（`mcp-tools-probe` 需要 `dist/index.js`，
+    它读的是**编译产物**而不是源码）。
+  - **③ 结果**：`guards-repo-matrix` **113/113、exit 0**。
+    这是本仓守卫链**第一次在本机完整跑通**（此前每次都在第 10 或第 57 段中断）。
+  - **④ 安装没碰任何被跟踪文件**：`git status --porcelain | grep -v '^??'` 为空 ——
+    `node_modules` / `dist` 均在 gitignore 内。⇒ **这是一次纯环境准备，零代码风险**。
+
+  **验证（真实 exit）**：`guards-repo-matrix` **113/113 = 0**；
+  各段单独复跑（`lint:mcp`/`lint:cli`/`lint:node-sdk`/`lint:desktop`/`test:mcp-tool-surface`）全 **0**。
+
+  **方法学沉淀（接 437）**：
+  - **438「『本机跑不了』要先分清是**仓库问题**还是**环境问题** —— 二者的处置成本差两个数量级」**。
+    「第 55/107 段是环境既有缺口」这句话在状态卡头部挂了 **十几轮**，每轮都把它当**已知且不可改进**的事。
+    实际只需要 **4 次 `npm install` + 1 次 `npm run build`**（4 秒/次）就能消掉。
+    ⇒ 凡记录「环境缺口」，**必须写清它是哪一类**（缺依赖 / 缺服务 / 缺账号 / 真缺陷），
+    否则它会**永久免检**：因为「环境缺口」四个字看起来像「不归我管」。
+
 - 2026-11-18 **自治优化 · R230（并行第 156 批）（1 提交 · 修掉守卫链第 10 段的**真误报**，链条从「第 10 段断」推进到「第 57 段」）**：
   跑全链时 `check:guard-harness` 在第 **10/113** 段红，点名
   `r209-queue-idle-http-probe.mjs`「起 admin-api 但没接 `hermeticEnv`」。
