@@ -882,6 +882,42 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   // 只对带 gitRepo 的任务生效；无 gitRepo 时立即返回（零开销）。
   const gitRepoRaw = body?.task?.gitRepo ?? (body?.task as Record<string, unknown> | undefined)?.git_repo;
   if (typeof gitRepoRaw === 'string' && gitRepoRaw) {
+    // ⚠️ R234（**安全**）：**userinfo 必须先于 DNS 解析被拒**。
+    //
+    // 病（实测于 `execute.spec.ts` 的 P2-2 用例）：本闸在**路由入口**、而 P2-2 的
+    // 凭据闸在 `acceptExecution` 内 ⇒ **DNS 解析先跑**。当主机名解析到受限段时，
+    // `assertGitRepoNetworkPolicyResolved` 抛的文案是
+    // `gitRepo URL 指向受限网络地址：${gitRepo}` —— **把含 user:token 的完整 URL
+    // 原样回显给调用方**。那正是 P2-2 要防的泄漏面（原本只在 git clone 失败时经
+    // stderr 泄漏，现在**在 accept 期就泄了**，且不依赖 clone 是否失败）。
+    //
+    // 修法：把「http(s) 不得带 userinfo / ssh 不得带 password」这条**前置到 DNS 之前**。
+    // 它**纯字符串判定、零网络开销**，前置没有任何代价；且与 python 侧的顺序一致
+    // （`execute.py` 的 ② 凭据闸在 ⑥ SSRF 闸之前）。
+    // 拒绝文案**不含原 URL**（避免二次泄漏），与 `acceptExecution` 内的措辞保持同一语义。
+    try {
+      const early = new URL(gitRepoRaw);
+      const earlyScheme = early.protocol.replace(/:$/, '');
+      if (
+        (earlyScheme === 'http' || earlyScheme === 'https') &&
+        (early.username !== '' || early.password !== '')
+      ) {
+        res.status(400).json({
+          error:
+            'gitRepo 不得内嵌凭据（userinfo）；请改用 GIT_ASKPASS / 凭据助手',
+        });
+        return;
+      }
+      if (earlyScheme === 'ssh' && early.password !== '') {
+        res.status(400).json({
+          error: 'gitRepo 不得内嵌密码；请改用 SSH 密钥 / GIT_ASKPASS',
+        });
+        return;
+      }
+    } catch {
+      // 解析失败不在这里判死：`acceptExecution` 的既有分支会给出
+      // 「无效的 gitRepo URL」的准确文案，这里只负责「能解析且带凭据」的抢先拒绝。
+    }
     try {
       await assertGitRepoNetworkPolicyResolved(gitRepoRaw);
     } catch (err) {
