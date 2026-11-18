@@ -713,6 +713,24 @@
       "dispositionNote": "这条判据的价值是「文档里的指标清单**不是手抄的**」。它必须读 `runtime-metrics` 的注册表（结构化源）并与文档提及做**双向**对账 —— 单向只能发现「注册了没写」，发现不了「写了但根本不存在」。allowlist 只许缩小防「一律放宽」的退化。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-038",
+      "tier": "P0",
+      "spec": "scripts/check-migration-symmetry.mjs",
+      "specLine": 417,
+      "needle": "collectMethodText(src,\"up\"/\"down\") 抽方法体（含被调用子方法，`seen` 防环）→ sanitize → 正则识别 DDL 对象（table:x / column:x.y / index:z）→ 两侧**对象集合对称性**校验",
+      "reads": [
+        "apps/admin-api/src/migrations/1770000000007-Irreversible.ts",
+        "apps/admin-api/src/migrations/1770000000009-Fixed.ts",
+        "apps/admin-api/src/migrations/1770000000010-Known.ts",
+        "apps/admin-api/src/migrations/1770000000018-ShortReason.ts"
+      ],
+      "asserts": "断的是**对象集合的对称性**：`up` 建了什么，`down` 就必须能拆掉什么（含「索引随表/列消失也算对称」与「分区子表不属独立对象」两类精细判定）。方法体由 `collectMethodText` **跟随被调用子方法**抽取（`seen` 防环）⇒ 不是只看 `up`/`down` 字面段",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「每个迁移都**可回滚**」——不可逆迁移在生产上等于「出问题只能靠备份」。只有把 up/down 的 DDL **抽成对象集合**再比，才能正确处理「索引随表消失」「分区子表」这两种不属于字面 1:1 的情况；比文本会把它们误判成不对称。⇒ 接受源码依赖；`collectMethodText` 跟随子方法调用是必要复杂度（很多迁移把 DDL 抽到 helper 里）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [
@@ -911,20 +929,6 @@
         "scripts/failure-classifier-divergence-baseline.json",
         "scripts/generate-failure-classifiers.mjs",
         "scripts/protocol-breaking-acknowledgements.json"
-      ]
-    },
-    {
-      "id": "GSTC-B22",
-      "spec": "scripts/check-migration-symmetry.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/migrations/1770000000007-Irreversible.ts",
-        "apps/admin-api/src/migrations/1770000000009-Fixed.ts",
-        "apps/admin-api/src/migrations/1770000000010-Known.ts",
-        "apps/admin-api/src/migrations/1770000000018-ShortReason.ts"
       ]
     },
     {
