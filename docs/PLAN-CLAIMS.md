@@ -4078,6 +4078,42 @@
   守卫侧 **23 → 24 条**、**P0 9 → 10**、backlog **24 → 23** ·
   `--selftest` **59/59** · `check-size-caps` 0。
 
+- 2026-11-19 **自治优化 · R277（并行第 204 批）（1 提交 · 补上「状态→色」单一事实源的零测试；顺带修正我一处**扫描面漏层**）**：
+
+  - **① 先修正自己的扫描错误（507 的第一次落地就漏了层）**：首版按
+    `apps/admin-web/src/__tests__/` 找测试，报出 **27 个「被引用但未断言」**；
+    抽查发现 `secretKeyPolicy` / `passwordPolicy` **本来就有专属测试**——
+    它们放在 `src/utils/__tests__/`（**另一层目录**）。改用
+    `src/**/*.test.ts*` 递归后，数字降到 **2**（`maintenance-desc` / `status-color`）。
+    ⇒ 这正是 507 要防的：**「搜哪里」决定了结论**，而漏一层就多报 25 个假缺口。
+  - **② 选定 `status-color.ts`（真缺口）**：它收口了此前**散落 5 处**的「状态→色」知识
+    （TaskDetailPage / ExecutionRetryChain / AgentSessionsPage / ApplicationDetailPage /
+    SopsPage 经 sop-label），收敛纪律是**只搬运、不改值**；而表全是
+    `Record<string, …>` **宽键**、调用点 `?? 'default'` 兜底 ⇒ 两个**编译器拦不住**的静默失败：
+    ① **迁移错值**（`killed` 的 Tag 从 `volcano` 写成 `red`，类型合法、颜色变了、无人红）；
+    ② **键集漂移**（后端新增状态、前端没跟 ⇒ 静默渲染成中性色，「看起来正常」实为「未知」）。
+  - **③ 测的是什么**：**对拍**（`AGENT_SESSION_STATUS_COLOR` 键集 == `AGENT_SESSION_STATUSES`、
+    `AGENT_APPROVAL_STATUS_COLOR` == `AGENT_APPROVAL_STATUSES`）+ **逐字取值**
+    （成功=green / 失败=red / 超时=volcano / 在途=gold / 审批 consumed=blue）。
+    `killed` 那条单独钉住：Badge=error 而 Tag=volcano **故意不同**，
+    收口时若「合并成一个值」会让某一侧变色。
+  - **④ 两条反证（475 方法）**：① 把 `killed` 的 Tag 改成 `red` ⇒ **1 例红**；
+    ② 删掉 `budget_exceeded` 键 ⇒ **2 例红**（键集对拍 + 取值）。均已恢复原值。
+
+  **验证（真实 exit）**：单跑 **10/10** · `tsc -b` 0 · `eslint` 0 · `check-size-caps` 0。
+
+  **方法学沉淀（接 508）**：
+  - **509「『我搜过了』必须带上『我搜了哪一层』——否则 27 与 2 的差别会被当成事实」**。
+    首版 27 个「未断言」里 **25 个是假缺口**，只因测试放在 `src/utils/__tests__/`
+    而我只扫了 `src/__tests__/`。若直接按 27 个去补测试，会**重复造 25 份已有测试**。
+    ⇒ 任何「没有 X」的结论，必须同时给出**扫描面**（哪几个目录、哪个 glob），
+    否则它只是「在我看的地方没有」。
+  - **510「`Record<string, T>` 宽键 + `?? 默认` 兜底，是把『未知枚举』变成『看起来正常』的标准配方」**。
+    `status-color` 的每张表都是宽键、每个调用点都 `?? 'default'` ——
+    这让「后端新增状态、前端没跟」的后果从**编译错**降级成**一个中性色**。
+    ⇒ 这种收敛型常量表，必须配一条**对拍规范枚举**的测试；否则收敛越彻底，
+    漂移越无声（散落 5 处时至少还有 5 个地方各自可能被发现）。
+
 - 2026-11-19 **自治优化 · R276（并行第 203 批）（1 提交 · 补上**唯一安全闸**的零覆盖：`isSessionPathSegment`）**：
 
   - **① 并发工作者的三个提交先跑了一遍全链**：`2ceaaa2a` / `a8d59a5c` / `b5b182bb`
