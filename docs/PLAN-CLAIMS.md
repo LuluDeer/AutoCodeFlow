@@ -4078,6 +4078,45 @@
   守卫侧 **23 → 24 条**、**P0 9 → 10**、backlog **24 → 23** ·
   `--selftest` **59/59** · `check-size-caps` 0。
 
+- 2026-11-19 **自治优化 · R276（并行第 203 批）（1 提交 · 补上**唯一安全闸**的零覆盖：`isSessionPathSegment`）**：
+
+  - **① 并发工作者的三个提交先跑了一遍全链**：`2ceaaa2a` / `a8d59a5c` / `b5b182bb`
+    落地后 `guards-repo-matrix` **122/122 = 0** —— 它们的改动没有破任何守卫
+    （按 506：别人的扰动先当压力测用）。其中 `b5b182bb` 移除的
+    `AgentWaitingResult` 类型漂移基线**是对的**（前端内部判别联合、非 API 响应体，
+    基线因此从 119 → 118，属**棘轮收紧**而非放宽）。
+  - **② ★ 找出的真缺口（不是补覆盖率）**：`apps/admin-web/src/utils/agentSessionUrl.ts`
+    三个导出**全部零测试**。其中：
+    ```ts
+    // AgentSessionsPage.tsx:274
+    const validId = sessionId !== null && isSessionPathSegment(sessionId) ? sessionId : null;
+    ```
+    `validId` 为 `null` 时 `useAgentSessionDetail(null)` **完全不发请求**
+    ⇒ `isSessionPathSegment` 是**把 URL query（不可信）变成 API 路径段的唯一闸**，
+    而它此前全仓**没有任何测试引用**。另两个（`agentSessionUrl` / `agentSessionTab`）
+    只在别处**被当工具传参**，从未被断言过自己的输出。
+  - **③ 测的是判据不是数字**：闸的三条 —— ① 拒绝穿越/分段（`/`、`\`、`.`、`..`、`%2F`）；
+    ② 接受真实 id 形态；③ **长度边界两侧封闭**（128 过 / 129 不过 / 空串不过）。
+    `agentSessionTab`：未知值必须回落 `steps`（坏 URL 不许弄崩页面）。
+    `agentSessionUrl`：`tab=steps` 省略、`approvalKey` 只在 `approvals` 带、
+    `status`/`stalled` 叠加、session 值解码可还原。
+  - **④ 反证（475 方法）**：把闸改成 `return true` 后重跑 ⇒
+    **3 条安全用例立刻变红**、其余仍绿 ⇒ 证明这组用例**测的正是那道闸**。已恢复。
+
+  **验证（真实 exit）**：单跑 **11/11** · `tsc -b` 0 · `eslint` 0 ·
+  `guards-repo-matrix` **122/122 = 0** · `check-size-caps` 0。
+
+  **方法学沉淀（接 506）**：
+  - **507「『被用到』不等于『被测到』——工具函数在别人的用例里出现，只证明它没崩溃」**。
+    `agentSessionUrl` 在 `agent-sessions-approvals.test.tsx` 里出现两次（构造 URL 传参），
+    但**从未断言过它的输出**；`isSessionPathSegment` 连出现都没有。
+    ⇒ 判「有没有覆盖」不能搜「有没有 import / 有没有调用」，
+    要搜「**有没有 expect 断言它的返回值**」。
+  - **508「安全类的纯函数，其测试的价值集中在**拒绝面**而不是接受面」**。
+    接受面（合法 id 返回 true）即使实现写宽了也不会红 —— 真正该钉的是
+    「穿越串必须 false」。本轮反证也印证：拆掉闸后**只有拒绝面那三条变红**。
+    ⇒ 给校验函数写测试时，**先列它必须拒绝什么**，再列必须接受什么。
+
 - 2026-11-19 **自治优化 · R275（并行第 202 批）（1 提交 · 修正一处**由并发改动暴露的真实缺陷**：基线 key 含行号）**：
   跑全链时第 96 段 `check:spec-coupling-surfaces` 红，报「R1 基线腐烂」——**但代码一行没动**。
 
