@@ -4059,6 +4059,45 @@
     再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
     也不要用「先接上再观察」把 floor 变成摆设。
 
+- 2026-11-18 **自治优化 · R235（并行第 161 批）（1 提交 · 7 个 Python 测试脚本在新发行版上**全部 exit 127**）**：
+  按 R439（补上环境后要重跑「被它挡住的门禁」）把 `test:unit` 剩余段跑一遍，发现 **7 个 Python 套件从未能跑**。
+
+  - **① 缺陷**：`test:python` / `test:pypi` / `test:sdk-py` / `test:lib-{http,ai,notify,db}`
+    **全部硬编码 `python -m pytest`**。而 **Ubuntu ≥ 20.04 不再提供 `python` 别名**
+    （本机 26.04 实测 `/usr/bin/python` 不存在）⇒ 全部 **exit 127**（`sh: python: not found`）。
+    CI（GitHub `ubuntu-latest`）**恰好自带 `python` 别名** ⇒ 这个缺陷在 CI 上**从未暴露**。
+  - **② 为什么不能只换 `python3`**：本仓 Python 测试需要**项目自己的依赖**
+    （fastapi / httpx / sqlalchemy / respx / tenacity…），系统 `python3` 通常没有
+    ⇒ 换完仍是 `Interrupted: 51 errors during collection`（实测）。
+  - **③ 修法**：新增 `scripts/py.mjs` 统一探测解释器，顺序与仓内**既有约定**
+    （`scripts/e2e-full.sh:377`）一致：项目 `.venv`(POSIX) → `.venv`(Windows) → `python3` → `python`。
+    失败时**显式区分「环境没准备好」与「测试失败」**并给出补依赖命令
+    （本仓主导缺陷类：把「环境没准备好」渲染成「代码坏了」）。
+  - **④ 自己踩到并修掉的一个真坑**：首版子进程 `cwd` 设成**仓库根**
+    ⇒ `test:python` 去收集**仓库根**的测试（实测 **50 个 collection error**）、
+    `lib-http` 直接 `file or directory not found: tests`。
+    pytest 的相对路径与 rootdir **都以 cwd 为基准** ⇒ 必须设成**项目目录**。
+  - **⑤ 顺带清掉 R234 的体量债**：R234 的安全前置让 `execute.ts` 超棘轮（**2159 > 2154**）。
+    按「基线只减不增」的纪律**不放宽基线**，把凭据判据抽到 `git-repo-credentials.ts`
+    （**判据一行未改，只是搬家**）⇒ 回到基线内。
+
+  **验证（真实 exit）**：7 个套件全部 **0** —— pypi 205 · sdk-py 179 · lib-http 55 ·
+  lib-ai 67 · lib-notify 31 · lib-db 30 · python（覆盖率 87.31% ≥ 86%）；
+  合计 **567+ 例**（此前全是 127 或 collection error）。
+  `execute.spec.ts` 失败数仍 **28**（与 R234 基线一致，**零回归**）、P2-2 用例仍 ✓；
+  `tsc` 0 · `check-size-caps` 0 · `check-script-main-guard` 0。
+
+  **方法学沉淀（接 441）**：
+  - **442「CI 环境比用户环境更『宽容』时，缺陷只在用户那边出现」**。
+    GitHub `ubuntu-latest` 自带 `python` 别名 ⇒ 7 个脚本在 CI **永远绿**，
+    在**较新的真实发行版上全部不可用**。这不是 CI 配错了，而是
+    **CI 的隐式便利掩盖了脚本对环境的假设**。
+    ⇒ 判据：凡脚本里出现**未加版本号的解释器名**（`python` / `node` / `bash` 之外），
+    就要问「这个别名在我支持的所有发行版上都存在吗」。
+  - **443「换解释器之前先问『依赖在哪』」** —— 看到 `python: not found` 的直觉是换 `python3`，
+    但那只是把「命令找不到」换成「51 个 collection error」：**症状变了，根因没动**。
+    本仓的 Python 依赖在**项目 venv** 里 ⇒ 正确的修法是**探测 venv**，不是换名字。
+
 - 2026-11-18 **自治优化 · R233–R234（并行第 159–160 批）（2 提交 · 用户报「跑测试把整机拖死」⇒ 查出内核 OOM 的三层根因；顺带修掉一处真实安全缺陷）**：
 
   - **R233（`885f6510`）限制 jest 并发 + 抬高堆上限** —— **用户报告**：跑测试时**整机卡死、时钟停走**，
