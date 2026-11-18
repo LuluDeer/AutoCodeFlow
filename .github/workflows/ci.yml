@@ -1421,6 +1421,15 @@ jobs:
           node scripts/demo-seed.selftest.mjs
           node scripts/demo-failure-seed.selftest.mjs
           bash scripts/demo.selftest.sh
+      # ── R251：`*.selftest.*` 命名即接线契约（方法学 468/469/470）──
+      # 每个 selftest 要么**可达**（被某个入口真的执行），要么**在它自己的头注里**
+      # 写明「为什么不能进链」（needs-env / docker / 分钟级…）。
+      # 为什么不放进豁免清单：469 —— 理由要留在**被执行的对象旁边**，
+      # 打开脚本就能看到，且与代码同生共死（挪走脚本，理由跟着走）。
+      - name: Selftests wired guard (R251)
+        run: |
+          node scripts/check-selftests-wired.mjs --selftest
+          node scripts/check-selftests-wired.mjs
       # ── R15（2026-11-05）：运维手册段落 + 启动告警接线守卫 ──
       # 换派生密钥的语义/流程/失效半径写在 docs/operations.md；本守卫断言该节存在且三要素齐全、
       # main.ts 真的调用了 tokenDerivationPostureWarning()、UPGRADING 有交叉引用。
