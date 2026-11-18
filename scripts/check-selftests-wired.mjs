@@ -125,7 +125,19 @@ export function check(root = resolve(HERE, "..")) {
   let ciText = "";
   if (existsSync(ciDir)) {
     for (const f of readdirSync(ciDir)) {
-      if (/\.ya?ml$/.test(f)) ciText += readFileSync(join(ciDir, f), "utf8");
+      if (/\.ya?ml$/.test(f)) {
+        // ⚠️ R253（474 的反证本轮抓出）：**必须剥掉 YAML 注释**。
+        // 原实现直接 `ciText += 整个文件` ⇒ 注释里出现 `scripts/x.selftest.mjs`
+        // 也会命中 ⇒ 判成「已接线」。而我自己的 R250 注释里**正好**写了
+        // 「demo-seed / demo-failure-seed / demo」三个名字 —— 若写成带路径的形态，
+        // 这守卫就会把「只在注释里提到」判成「真的被跑」。
+        // 这与它要防的错（「看起来有覆盖、实际没有」）**完全同型**。
+        const raw = readFileSync(join(ciDir, f), "utf8");
+        ciText += raw
+          .split("\n")
+          .filter((line) => !/^\s*#/.test(line))
+          .join("\n");
+      }
     }
   }
 
@@ -250,6 +262,27 @@ function runSelftest() {
         contains: ["why0.selftest.mjs", "没有说明为什么"],
         withinMs: 20000,
         label: "删理由",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  push("反例③：只在 **YAML 注释**里提到路径 ⇒ 仍判「没人跑」（剥注释）", () => {
+    const files = baseFiles();
+    // 把唯一可达的那条从 CI 里拿掉，改成**只出现在注释里**
+    files[".github/workflows/ci.yml"] = "# run: node scripts/wired.selftest.mjs\n";
+    const scripts = baseScripts();
+    const repo = makeFixtureRepo({
+      ...files,
+      "package.json": JSON.stringify({ scripts }, null, 2),
+    });
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: ["wired.selftest.mjs", "叫 selftest 却没人跑"],
+        withinMs: 20000,
+        label: "注释不算接线",
       });
     } finally {
       repo.cleanup();
