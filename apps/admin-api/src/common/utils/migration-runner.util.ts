@@ -52,8 +52,14 @@ export interface MigratableDataSource {
 }
 
 export interface AdvisoryLockMigrationOptions {
-  /** 覆盖互斥键（仅测试用——生产路径必须缺省以共享常量键）。 */
-  lockKey?: number;
+  // R247：**已删除 `lockKey?: number`** —— 注释写着「仅测试用」，但全仓
+  // （含 `migration-runner.util.spec.ts`）**没有任何调用点传入它**。
+  // spec 验证「默认互斥键 = 共享常量」用的是**直接断言 `MIGRATION_ADVISORY_LOCK_KEY`**
+  // （`try_lock:${MIGRATION_ADVISORY_LOCK_KEY}`），而不是覆盖它。
+  // ⇒ 这是一个「写了但没接」的缝（方法学 447 的同族，发生在**可选参数**上）：
+  // 它让读者以为「测试会注入不同的 key」，实际从未发生。
+  // 保留它的代价是真实的：下一个人可能为了「隔离并发测试」去用它，
+  // 从而**在共享 PG 上造出两把不同的锁**，那正是本常量要避免的。
   /** 轮询间隔毫秒（默认 1000；测试注入 1ms 加速）。 */
   pollIntervalMs?: number;
   /** up = runMigrations（默认）；down = undoLastMigration（CLI revert 路径，
@@ -117,7 +123,7 @@ export async function runMigrationsWithAdvisoryLock(
   dataSource: MigratableDataSource,
   options: AdvisoryLockMigrationOptions = {},
 ): Promise<void> {
-  const lockKey = options.lockKey ?? MIGRATION_ADVISORY_LOCK_KEY;
+  const lockKey = MIGRATION_ADVISORY_LOCK_KEY;
   const pollIntervalMs =
     options.pollIntervalMs ?? MIGRATION_LOCK_POLL_INTERVAL_MS;
   const mode = options.mode ?? "up";
