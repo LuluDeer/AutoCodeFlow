@@ -119,7 +119,16 @@ export function check(root = resolve(HERE, "..")) {
   const reach = collectReachable(scripts);
 
   // 所有可达 npm script 的**正文**（用来判「某个脚本文件是否被它们直接调用」）
-  const reachBodies = [...reach].map((n) => scripts[n]).join("\n");
+  // ⚠️ R255（476 的同族加固）：**排除 `//` 注释键**。
+  // `package.json` 允许 `//xxx` 形式的注释键（本仓有 45 个）。它们的正文是
+  // **人读的说明**，可能提到 `npm run foo` 或某个脚本路径 —— 若混进 reachBodies，
+  // 就会把「注释里提到」判成「真的被引用」。
+  // 实测当前无实际影响（45 个注释键里 0 个含 selftest 路径），但**形态是对的才安全**：
+  // 与 `ciText` 剥 YAML 注释（R253）同一条纪律 —— **注释不能当代码用**。
+  const reachBodies = [...reach]
+    .filter((n) => !n.startsWith("//"))
+    .map((n) => scripts[n])
+    .join("\n");
 
   const ciDir = join(root, ".github", "workflows");
   let ciText = "";
@@ -283,6 +292,28 @@ function runSelftest() {
         contains: ["wired.selftest.mjs", "叫 selftest 却没人跑"],
         withinMs: 20000,
         label: "注释不算接线",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  push("反例④：只在 **package.json 注释键**里提到路径 ⇒ 仍判「没人跑」（排除 // 键）", () => {
+    const files = baseFiles();
+    files[".github/workflows/ci.yml"] = "run: echo hi\n"; // CI 不接线
+    const scripts = baseScripts();
+    // 注释键里提到 wired 的路径（旧实现会把它当成「被引用」）
+    scripts["//note"] = "历史说明：node scripts/wired.selftest.mjs 曾经用过";
+    const repo = makeFixtureRepo({
+      ...files,
+      "package.json": JSON.stringify({ scripts }, null, 2),
+    });
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: ["wired.selftest.mjs", "叫 selftest 却没人跑"],
+        withinMs: 20000,
+        label: "注释键不算接线",
       });
     } finally {
       repo.cleanup();
