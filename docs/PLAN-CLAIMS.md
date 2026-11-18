@@ -4059,6 +4059,47 @@
     再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
     也不要用「先接上再观察」把 floor 变成摆设。
 
+- 2026-11-18 **自治优化 · R240（并行第 166 批）（1 提交 · `execute.spec.ts` **28 → 0**，`test:node` 全绿）**：
+  承接 R239（当时 28 → 4）。R239 只给 **gitRepo** 那条闸接了可注入解析器，
+  而 `packageUrl`（zip 渠道）走的是**另一条闸**（`ssrf-guard.ts` 的
+  `assertSafeDnsResolutionWithTimeout`），仍在内部直接查真实 DNS ⇒ 剩余 4 例。
+
+  - **① 事实核对（446：先找第一个失败）**：把 4 例逐个隔离复跑 ⇒
+    `公网 packageUrl` 与 `zip-download prepare rejects` **隔离跑通过**、
+    `kills a running execution` 隔离跑也失败 ⇒ 只有 1 个可能独立。
+  - **② 真因**：`ssrf-guard.ts` 内部 `dns.promises.lookup` ⇒ 本机 fake-IP 把
+    `example.com` 解析到 `198.18.1.104`（RFC 2544 段）⇒ `packageUrl` 用例全 400。
+  - **③ 修法**：
+    (a) `git-repo-dns-resolver.ts` 增 `ssrfDnsLookup()` —— **同一个模块级解析器、
+        第二种形状**（`{address, family}`）。两条闸防的是同一件事，
+        留两份缝的话将来加第三条路径又会漏。
+    (b) `ssrf-guard.ts` 改走 `ssrfDnsLookup(host)`，去掉不再用的 `node:dns` import。
+    (c) spec 的 **R72 / R74 / R75 三组原先 spy `dns.promises.lookup`** ——
+        生产路径改经共享解析器后，**再 spy 底层会完全失效**（实测：R239 之后
+        R72 组 4 例全红）。改为 `__setGitRepoDnsResolverForTest`，并用**队列**
+        保住原 `mockResolvedValueOnce` 的**一次性**语义。
+  - **④ ★ 本轮踩到并修掉的「改善一组、恶化另一组」（445 的又一次实证）**：
+    R239 修好 gitRepo 那 12 例后，**R72 组从绿变红** —— 因为它们依赖 spy 底层 `dns`。
+    若不逐个隔离复跑，会误以为「只剩 3 个环境问题」而**放过一个自己刚制造的回归**。
+
+  **验证（真实 exit）**：`execute.spec.ts` **159/159 全绿**（R239 后 4 failed、R237 时 28 failed）
+  · `test:node` 全量 **exit 0**：64 套件 **1875 例**通过
+  · `tsc` 0 · `eslint` 0 · `check-size-caps` **0**（**未放宽任何基线**）。
+
+  **方法学沉淀（接 448）**：
+  - **449「一个缺陷往往有多条路径，修一条会把另一条的**测试假象**暴露出来」**。
+    gitRepo 与 packageUrl 是**两条 SSRF 闸**，R239 只接了前者。
+    更隐蔽的是：R239 让「spy 底层 `dns`」这个**既有的测试手法失效**，
+    于是 R72 组从绿变红 —— **那不是新缺陷，是被我揭掉的旧伪装**。
+    ⇒ 改生产路径的**调用形态**时，必须**全仓搜索谁在 mock 这个形态**
+    （`jest.spyOn(dns` / `mockImplementation` 等），否则会以为在修 bug、实际在制造回归。
+  - **450「『合法公网域名』这类**反向断言**，换接缝后要重新设计证据形态」**。
+    原断言 `expect(lookupSpy).toHaveBeenCalled()` 证明「确实走了 DNS 解析」。
+    换接缝后改为 `expect(res.status).not.toBe(400)` 并写明理由：
+    若解析被短路，`example.com` 会落到真实 DNS、在本机 fake-IP 下变 400 ⇒ 该断言会红。
+    ⇒ **不是放宽**，是**证据形态**从「spy 被调用」换成「结果不为受限拒绝」；
+    关键是新证据**仍然能失败**（405 会说清这一点）。
+
 - 2026-11-18 **自治优化 · R238–R239（并行第 164–165 批）（1 提交 · 把 R237 那个「28 例」从**根上**拆开并修掉 24 例）**：
   R237 只查出第一层（Once 队列泄漏）且两次修法都更差、已回退。本轮改用**探针先定位**的做法。
 
