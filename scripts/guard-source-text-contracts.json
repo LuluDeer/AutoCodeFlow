@@ -410,21 +410,25 @@
       "dispositionNote": "这条判据的**全部价值**就是「白名单与真实机器面路由同源」：它必须读 guard 源码才能核对常量与消费点。若改成不读源码的形态，它就只能核对一份手抄清单 —— 那正是它要防的漂移。故接受它对源码结构的依赖，代价是 guard 重命名/搬家时必须同步更新本脚本（脚本已用「事实源缺失 ⇒ 结构红」兜住这条，不会静默变永真）。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-020",
+      "tier": "P0",
+      "spec": "scripts/check-agent-event-limits.mjs",
+      "specLine": 147,
+      "needle": "parseConstNumber：match(/export const X = (...)/) 后 **求值** 成数字再比上下界",
+      "reads": [
+        "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts",
+        "apps/admin-api/src/modules/agent/entities/agent-event.entity.ts"
+      ],
+      "asserts": "读实现源码后把 `AGENT_EVENT_BATCH_MAX` / `_BYTES` 等常量 **求值成数值**，断言其与 jsonb 最坏转义倍数（6）的乘积不超过上限 ⇒ 断的是**数值关系**，不是文本形态",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值是「批量上限与最坏转义膨胀的**数值**关系」：它必须读源码常量并求值，否则只能比对手抄的数字，而手抄数字正是它会漂移的东西。故接受源码依赖；代价（常量改名/搬家）已由 `parseConstNumber` 的显式错误（`找不到 export const X` / `不是纯算术字面量`）兜住，不会静默变永真。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [
-    {
-      "id": "GSTC-B01",
-      "spec": "scripts/check-agent-event-limits.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/agent/entities/agent-event.entity.ts",
-        "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts"
-      ]
-    },
     {
       "id": "GSTC-B02",
       "spec": "scripts/check-agent-stub-fidelity.mjs",
