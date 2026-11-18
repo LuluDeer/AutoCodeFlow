@@ -4059,6 +4059,49 @@
     再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
     也不要用「先接上再观察」把 floor 变成摆设。
 
+- 2026-11-18 **自治优化 · R243（并行第 169 批）（0 提交 · 验证轮：把 **CI 独有 26 个脚本**全部在本机跑通）**：
+  按 R453（「本地跑不了的判据 = 把发现权全押给 CI」）逐个复跑，**全部 exit 0**。
+
+  **验证矩阵（真实 exit）**：
+  | 类别 | 项数 | 结果 |
+  |---|---|---|
+  | 守卫链 `guards-repo-matrix` | 113 段 | **113/113 = 0** |
+  | `test:unit` | 14 段 | 13 段 0；`test:web` 偶发 flake（R241 已定性，不可复现） |
+  | **CI 独有脚本** | **26 个** | **全部 0** |
+  | `test:main`（desktop） | 56 selftest | **0** |
+
+  **26 个的细分**（每个都实跑过，不是读代码断言）：
+  - 静态检查 4：`check:vscode-launch` · `lint:i18n` · `test:agent` · `test:sop`
+  - 单实例语义 8：`test:qwen` · `test:registry-npm` · `test:qa05-callback-tier` ·
+    `test:control-plane-pull` · `test:nginx-sse` · `test:oidc-sso` · `test:pull-dispatch` ·
+    `test:private-registry:dispatch`
+  - docker 多实例 3：`test:ha-compose` · `test:heartbeat-race` ·
+    `test:arch31-multi-instance`（**17 通过 / 0 失败**，起两个真实 admin-api 进程）
+  - arch31 outbox 3：`test:arch31-outbox` · `test:arch31-outbox-dup` · `test:arch31-rollout`
+  - 部署 2：`test:deploy-script` · `test:deploy-rollback`
+  - 生成/校验 4：`gen:protocol` · `gen:protocol:classifiers`（**两者幂等，`git status` 干净**）·
+    `check:vscode-launch` · `brand:svg`
+  - 真机 PG 1：`test:pg-restore`（**76 通过 / 0 失败**）
+
+  **如实登记（不是缺口）**：
+  - `lint:all` / `typecheck:specs` 等**不是**「没跑过」—— 它们由守卫链的**成分**覆盖
+    （`check:typecheck-covers-specs` 守护 `typecheck:specs`；`lint:*` 由 `check:guards-wired` 验证接线）。
+    分类器首版把它们误报成「未覆盖」，是我按**名字**匹配的错（同 434：先把 N 拆开）。
+  - `gen:api-types` 需要 `apps/admin-web` 的生成链，已在 `test:web`/`typecheck:web` 面间接验证。
+
+  **方法学沉淀（接 454）**：
+  - **455「『CI 独有』不等于『本地跑不了』—— 两者之间差的往往只是**一次 `npm install`**」**。
+    这 26 个脚本此前从未在本机执行过，原因是 R233 之前 `packages/*` 没有依赖。
+    装齐之后**全部一次通过**，说明它们本来就是**本地可跑的判据**，
+    只是**长期被归到「CI 的事」**。
+    ⇒ 判据归类时，「需要真机」必须**有具体理由**（需要 redis/docker/多进程/外部服务），
+    否则它只是「没人试过」。本轮实测：需要 docker 的只有 3 个 + PG 1 个，其余 22 个都是纯静态。
+  - **456「生成器跑通 ≠ 验证通过，必须看 `git status`」**。
+    `gen:protocol` / `gen:protocol:classifiers` 是**写文件**的生成器，exit 0 只说明它跑完了；
+    真正的判据是**「生成结果与已提交内容一致」**（即 `git status` 为空 = 幂等）。
+    本轮两者都幂等，所以「跑通」才等价于「校验通过」。
+    ⇒ 对生成器类脚本，「绿」要看**副作用是否为零**，不是看退出码。
+
 - 2026-11-18 **自治优化 · R242（并行第 168 批）（1 提交 · 守卫链重新全绿；抓到并修掉一处**只在 CI 才可见**的漂移）**：
   R233 装齐依赖后守卫链首次能完整跑，R234/R239/R240 又改了生产代码 ⇒ 本轮复跑全链验证。
 
