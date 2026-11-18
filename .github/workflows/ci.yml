@@ -1412,6 +1412,15 @@ jobs:
       - name: Reset admin password selftest (R249)
         run: |
           bash scripts/reset-admin-password.selftest.sh
+      # R250：**`*.selftest.*` 命名即接线契约**（方法学 468）。本轮用可达性分析扫出
+      # 3 个「叫 selftest 却没人跑」的：demo-seed / demo-failure-seed / demo。
+      # 三者都自证「纯函数自检 / No Docker required, safe for CI」——
+      # 与 R249 同类：命名承诺了「会被跑」，实际从未被跑，比叫 demo.sh 更误导。
+      - name: Demo tooling selftests (R250)
+        run: |
+          node scripts/demo-seed.selftest.mjs
+          node scripts/demo-failure-seed.selftest.mjs
+          bash scripts/demo.selftest.sh
       # ── R15（2026-11-05）：运维手册段落 + 启动告警接线守卫 ──
       # 换派生密钥的语义/流程/失效半径写在 docs/operations.md；本守卫断言该节存在且三要素齐全、
       # main.ts 真的调用了 tokenDerivationPostureWarning()、UPGRADING 有交叉引用。
