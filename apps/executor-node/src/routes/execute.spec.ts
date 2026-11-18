@@ -138,6 +138,7 @@ jest.mock('../task-worker', () => {
 // ---------------------------------------------------------------------------
 
 import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, abortAllLiveExecutions, BoundedLogBuffer, resolveBwrapPath, buildTaskSandboxArgv, __resetBwrapPathCacheForTest, SHELL_ENTRYPOINT_SAFE_RE, resolveTaskTimeoutRaw, DEFAULT_PYTHON_VERSION, describeProcessExit } from './execute';
+import { __setGitRepoDnsResolverForTest } from '../git-repo-dns-resolver';
 import { buildNpmRcContent, executionExists, quoteShellArgForPlatform, __drainExecMetaWritesForTest, writeExecMetaForTest, clampCallbackResult, runtimeSandboxStartupFailureReason } from './execute';
 // A3（kill/logs 契约化）：kill 真实出参用生成的 schema 现校验
 import { KillResponseSchema } from '../generated/protocol.schemas';
@@ -202,6 +203,8 @@ function okSpawn(code: number | null = 0) {
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
+  // R239：DNS 解析换成固定表（详见 git-repo-dns-resolver.ts 头注）。
+  __setGitRepoDnsResolverForTest(async () => ['192.0.2.1']); // 192.0.2.0/24 = TEST-NET-1，公网非受限类
   jest.clearAllMocks();
   mockNpmFiles.clear();
   Atomics.store(_runningCountArr, 0, 0);
@@ -265,6 +268,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __setGitRepoDnsResolverForTest(null);
   delete process.env.EXECUTOR_SHARED_TOKEN;
 });
 

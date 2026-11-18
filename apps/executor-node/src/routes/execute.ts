@@ -66,6 +66,8 @@ import {
   assertGitRepoNetworkPolicyResolved,
 } from '../git-repo-network-policy';
 import { checkGitRepoCredentials } from '../git-repo-credentials';
+import { gitRepoDnsResolver } from '../git-repo-dns-resolver';
+
 // R70：zip 渠道 packageUrl 的 accept 期同步闸——复用下载面同一入口（不写第二份逻辑）。
 // R72：配套的 accept 期 **DNS** 预闸（主机名形态 + 2 s 超时按 deny）。
 import { assertSafeHttpUrl, assertSafeDnsResolutionWithTimeout } from '../lib/ssrf-guard';
@@ -898,7 +900,7 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
       return;
     }
     try {
-      await assertGitRepoNetworkPolicyResolved(gitRepoRaw);
+      await assertGitRepoNetworkPolicyResolved(gitRepoRaw, {}, gitRepoDnsResolver);
     } catch (err) {
       res.status(400).json({
         error: err instanceof Error ? err.message : String(err),
