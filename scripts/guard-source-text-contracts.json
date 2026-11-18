@@ -557,6 +557,57 @@
       "dispositionNote": "这条判据的全部价值是「任何写入点都不许把未脱敏的原文落库」。它必须读实现源码才能找到**调用点的实参表达式**并判断是否被 sanitizer 包裹。**两条结构红 + 每个列的下界**是它的补偿控制：一旦「找不到写入点」，它报 structural 而不是静默通过。⇒ 接受源码依赖。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-029",
+      "tier": "P0",
+      "spec": "scripts/check-cron-guard.mjs",
+      "specLine": 109,
+      "needle": "定位每个 @Cron 方法体（`body.slice(close+1, …)` 括号配平后判 `/^\\s*catch\\b/` 或 `guardedCron(`）",
+      "reads": [
+        "apps/admin-api/src",
+        "apps/admin-api/src/modules/agent",
+        "apps/admin-api/src/modules/scheduler/scheduler.service.ts"
+      ],
+      "asserts": "断的是**代码结构事实**：每个 `@Cron` 装饰的方法体必须有**顶层异常闸**（`try/catch` 紧接方法体开头，或整段被 `guardedCron(` 包裹）。用括号配平定位方法体边界、再判开头 64 字符 ⇒ **结构判定**，不是全文正则命中",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「以后新增 cron 不许裸奔」——`@nestjs/schedule` **不 await** 回调的 Promise，裸奔方法体的异常会变成未处理拒绝（进程可能退出）。只有读源码并**定位方法体边界**才能判断「闸是否在**方法体开头**」而不是「文件里某处有 try/catch」。⇒ 接受源码依赖；代价（装饰器写法变化）会表现为「解析不到方法体」⇒ 该守卫有结构红兜底，不静默放行。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-030",
+      "tier": "P0",
+      "spec": "scripts/check-enum-drift.mjs",
+      "specLine": 316,
+      "needle": "masked 文本 + `matchBracket()` 括号配平定位枚举字面量，再 `.test(tail)` / `.test(m[2])` 判成员值",
+      "reads": [
+        "apps/admin-api/src",
+        "apps/admin-api/src/migrations",
+        "apps/admin-web/src/pages/ExecutorListPage.tsx"
+      ],
+      "asserts": "断的是**跨端枚举值集合一致**：后端 entity 枚举、迁移 DDL 的 CHECK/ENUM、前端字面量三侧成员必须相同。用**括号配平**定位字面量边界（不是全文正则），且对**掩码后的文本**做成员匹配 ⇒ 结构判定",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「三端枚举不许各写各的」——迁移里少一个值会让 PG 拒写、前端少一个值会让 UI 显示空白。只有**定位每个枚举字面量的边界**再比成员集合才能做到；全文正则会串到相邻声明。⇒ 接受源码依赖；括号配平在这类字面量上是稳定形态（`matchBracket` 有 selftest 覆盖）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-031",
+      "tier": "P1",
+      "spec": "scripts/check-ssrf-deny-parity.mjs",
+      "specLine": 24,
+      "needle": "三处测试文本**先剥注释**再 `includes(entry)` / `matchAll(/\\baddr:\\s*\"[^\"]*\"/g)` 对账条目集合",
+      "reads": [
+        "apps/admin-api/src/common/utils/__tests__/ssrf-deny-matrix.spec.ts",
+        "apps/executor-node/src/lib/ssrf-deny-parity.spec.ts",
+        "apps/executor-python/tests/test_ssrf_guard.py"
+      ],
+      "asserts": "断的是**三处测试文件里 addr: 条目集合**互相覆盖（node 侧矩阵 / node parity / python）。但它读的是**三种语言的测试源码文本**，靠 `addr:\\s*\"…\"` 正则抽条目 ⇒ **依赖三处书写形态**（换成单引号、改写成变量、重构用例都会失配）。已有补偿：三处**先剥注释**（R 前身曾因注释命中假绿）+ **各条目数下界**（低于实测即红）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的对象**就是**三个测试文件里的文本条目：它要保证「node/python 两侧的 deny 矩阵用同一组地址」。而三侧是**不同语言**（.ts / .py），引入跨语言 AST 解析的代价远高于收益。⇒ 归 P1（依赖书写形态）。补偿控制：**剥注释 + 条目数下界**（下界低于实测即红，防「正则失配 ⇒ 集合变空 ⇒ 恒绿」）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [
@@ -652,19 +703,6 @@
       ]
     },
     {
-      "id": "GSTC-B10",
-      "spec": "scripts/check-cron-guard.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src",
-        "apps/admin-api/src/modules/agent",
-        "apps/admin-api/src/modules/scheduler/scheduler.service.ts"
-      ]
-    },
-    {
       "id": "GSTC-B11",
       "spec": "scripts/check-desktop-agent-packaging.mjs",
       "status": "待深审",
@@ -714,19 +752,6 @@
         "apps/admin-api/src/modules/notification/declarations.ts",
         "apps/admin-api/src/modules/notification/filler.ts",
         "apps/admin-api/src/modules/notification/notification.service.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B15",
-      "spec": "scripts/check-enum-drift.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src",
-        "apps/admin-api/src/migrations",
-        "apps/admin-web/src/pages/ExecutorListPage.tsx"
       ]
     },
     {
@@ -861,19 +886,6 @@
         "packages/three",
         "packages/two",
         "packages/two/package.json"
-      ]
-    },
-    {
-      "id": "GSTC-B26",
-      "spec": "scripts/check-ssrf-deny-parity.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/common/utils/__tests__/ssrf-deny-matrix.spec.ts",
-        "apps/executor-node/src/lib/ssrf-deny-parity.spec.ts",
-        "apps/executor-python/tests/test_ssrf_guard.py"
       ]
     },
     {
