@@ -608,6 +608,57 @@
       "dispositionNote": "这条判据的对象**就是**三个测试文件里的文本条目：它要保证「node/python 两侧的 deny 矩阵用同一组地址」。而三侧是**不同语言**（.ts / .py），引入跨语言 AST 解析的代价远高于收益。⇒ 归 P1（依赖书写形态）。补偿控制：**剥注释 + 条目数下界**（下界低于实测即红，防「正则失配 ⇒ 集合变空 ⇒ 恒绿」）。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-032",
+      "tier": "P0",
+      "spec": "scripts/check-template-manifest.mjs",
+      "specLine": 353,
+      "needle": "解析 manifest.json 后做**封闭键集合**断言（`ALLOWED_MANIFEST_KEYS`）+ 字段值语义校验（name==目录名、entrypoints、capabilities）",
+      "reads": [
+        "docs/skills/manifest.json",
+        "apps/admin-api/src/modules/sop/sop-frontmatter.ts",
+        "apps/admin-api/src/modules/task-template/task-template.constants.ts"
+      ],
+      "asserts": "把 JSON 清单**解析成对象**后断：① 顶层键必须 ∈ 封闭集合（未知键即失败，明确拒绝 `hook`/`command`/`script` 这类可执行片段）；② `name` 必须等于目录名；③ entrypoints / capabilities 与实际能力表一致。⇒ 断**结构化语义值**，不是文本匹配",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「清单是**机器契约**：不接受自由字段，也不接受可执行片段」。只有解析 JSON 成对象才能判断「未知键」与「字段值一致」；文本匹配无法区分「键在注释里」与「真在结构里」。JSON.parse 失败/顶层非对象都会**显式 fail**，不会静默放行。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-033",
+      "tier": "P0",
+      "spec": "scripts/check-web-type-drift.mjs",
+      "specLine": 374,
+      "needle": "scanApiDeclarations 抽出顶层类型声明后按 `CONTRACT_RE.test(hay)` / `MIRROR_RE.test(decl.rhs)` 分类，再与 `parseGeneratedSchemas(api-types.ts)` 的 schema 集合对账",
+      "reads": [
+        "apps/admin-web/src/api",
+        "apps/admin-web/src/types/generated/api-types.ts",
+        "scripts/web-type-drift-baseline.json"
+      ],
+      "asserts": "断的是**两端类型声明的集合关系**：前端 `src/api/**` 里的类型声明必须能在**生成物** `api-types.ts` 的 `components.schemas` 里找到对应，且分类（contract / mirror）正确。**五处下界**（`MIN_API_FILES` / `MIN_DECLARATIONS` / `MIN_GENERATED_SCHEMAS` 等）防「扫描面塌方 ⇒ 恒绿」——注释明确写着「扫到 0 处不是『没有漂移』，是『一处都没看』」",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值是「**手写的 API 类型** 与 **OpenAPI 生成的类型**不许漂移」——前端手抄一份就必然漂。只有解析两侧结构（TypeScript 顶层声明 + JSON schema 表）才能做集合对账；比文本会把等价写法判成漂移。⇒ 接受源码依赖；五处下界是它的补偿控制（拦的是**全失明**：0 处即红）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-034",
+      "tier": "P0",
+      "spec": "scripts/check-web-type-field-drift.mjs",
+      "specLine": 289,
+      "needle": "对每个接口体做 `bodyTxt.startsWith(\"{\")` 判形态、再 `.has(f)` 做**字段集合交集/差集**，与生成物字段对账",
+      "reads": [
+        "apps/admin-web/src/api",
+        "apps/admin-web/src/types/generated/api-types.ts",
+        "scripts/web-type-field-drift-baseline.json"
+      ],
+      "asserts": "断的是**字段级集合关系**：手写接口的字段集合 vs 生成物 schema 的字段集合，差集必须为空（或落在基线里）。用 `\\s` 跳白与 `{`/`|&` 形态判定来切出字段列表 ⇒ 断**结构化字段集合**，且基线把「已知的合法差异」显式登记（只许缩小）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "B29 是「类型声明是否存在」，这条是「**字段是否逐个对上**」——更细，且必然需要解析接口体结构。基线文件让「已知差异」不重复报警（棘轮只许缩小），避免了「一律放宽」的退化。⇒ 接受源码依赖。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [
@@ -886,45 +937,6 @@
         "packages/three",
         "packages/two",
         "packages/two/package.json"
-      ]
-    },
-    {
-      "id": "GSTC-B27",
-      "spec": "scripts/check-template-manifest.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/sop/sop-frontmatter.ts",
-        "apps/admin-api/src/modules/task-template/task-template.constants.ts",
-        "scripts/check-template-manifest.mjs"
-      ]
-    },
-    {
-      "id": "GSTC-B29",
-      "spec": "scripts/check-web-type-drift.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-web/src/api",
-        "apps/admin-web/src/types/generated/api-types.ts",
-        "scripts/web-type-drift-baseline.json"
-      ]
-    },
-    {
-      "id": "GSTC-B30",
-      "spec": "scripts/check-web-type-field-drift.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-web/src/api",
-        "apps/admin-web/src/types/generated/api-types.ts",
-        "scripts/web-type-field-drift-baseline.json"
       ]
     }
   ],
