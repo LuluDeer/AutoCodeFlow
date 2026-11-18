@@ -32,6 +32,11 @@ import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+
+// R160 覆盖计数出口：必须在**任何依赖之前**打印 —— 若本文件因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看（`scripts/lib/agent-coverage.mjs` 头注同款纪律）。
+printCoverageBanner(import.meta.url, "report");
 import process from "node:process";
 
 import {
