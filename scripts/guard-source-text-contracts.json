@@ -929,6 +929,22 @@
       "dispositionNote": "这条判据的价值是「任一处漏配 ⇒ 某个包**静默地永远发不出去**或**永远不 bump 版本**」。发版链跨四份配置、任何单点漏配都不会报错；只有把四份都解析出来做**集合对账**（双向）才能发现缺哪一侧。⇒ 接受 YAML 结构依赖；切段解析（`indexOf` + `matchAll`）比全文正则稳，因为「同名字符串出现在别的 job」不会被误算。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-048",
+      "tier": "P0",
+      "spec": "scripts/check-agent-index-names.mjs",
+      "specLine": 106,
+      "needle": "`readUtilConstraintNames(readFileSync(utilPath))` 抽 `AGENT_UNIQUE_CONSTRAINTS` 的三个值 + `readMigrationIndexNames(readFileSync(迁移))` 抽 `CREATE UNIQUE INDEX` 名，两侧**集合对账**",
+      "reads": [
+        "apps/admin-api/src/modules/agent/runtime/agent-unique-violation.util.ts",
+        "apps/admin-api/src/migrations"
+      ],
+      "asserts": "断的是**两侧名字集合相等**：实体侧的 `AGENT_UNIQUE_CONSTRAINTS` 三个约束名必须与迁移 DDL 里的 `CREATE UNIQUE INDEX` 同名。这三个名字**直接决定 23505 的归因是否生效** —— 名字对不上，违反约束时归因失效（静默落到通用错误）。两处解析失败各报**结构红**（「解析器失效」「扫描面失效」），不判绿",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值是「约束名在**实体声明**与**迁移 DDL**两处一致」—— 名字对不上时，`23505` 无法按约束名归因（本仓 R 段记过「agent 域 23505 按约束名归因」这条债）。只有从两侧**抽名字集合**再比才能发现；比文本无法判断「同名但不同表」。⇒ 接受源码依赖；两处结构红是补偿控制（解析不出即红，不静默）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [],
