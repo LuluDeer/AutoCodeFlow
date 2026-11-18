@@ -395,6 +395,21 @@
       "dispositionNote": "R6 新增登记。路由下界 20 远低于实际，故必须有计数自检兜底。",
       "reviewBy": "2026-12-15",
       "owner": "arch-core"
+    },
+    {
+      "id": "GSTC-019",
+      "tier": "P0",
+      "spec": "scripts/check-throttler-whitelist.mjs",
+      "specLine": 308,
+      "needle": "readFileSync(abs, \"utf8\") 后 includes(...) 断言常量与消费函数存在",
+      "reads": [
+        "apps/admin-api/src/common/guards/executor-aware-throttler.guard.ts"
+      ],
+      "asserts": "读实现源码 + 断言 `EXECUTOR_MACHINE_PATH_PATTERNS` 常量存在、`isExecutorMachinePath` 被消费 ⇒ 属于「重构即红」的 P0 类",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的**全部价值**就是「白名单与真实机器面路由同源」：它必须读 guard 源码才能核对常量与消费点。若改成不读源码的形态，它就只能核对一份手抄清单 —— 那正是它要防的漂移。故接受它对源码结构的依赖，代价是 guard 重命名/搬家时必须同步更新本脚本（脚本已用「事实源缺失 ⇒ 结构红」兜住这条，不会静默变永真）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [
@@ -820,17 +835,6 @@
         "apps/admin-api/src/modules/sop/sop-frontmatter.ts",
         "apps/admin-api/src/modules/task-template/task-template.constants.ts",
         "scripts/check-template-manifest.mjs"
-      ]
-    },
-    {
-      "id": "GSTC-B28",
-      "spec": "scripts/check-throttler-whitelist.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/common/guards/executor-aware-throttler.guard.ts"
       ]
     },
     {
