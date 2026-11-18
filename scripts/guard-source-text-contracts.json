@@ -659,6 +659,60 @@
       "dispositionNote": "B29 是「类型声明是否存在」，这条是「**字段是否逐个对上**」——更细，且必然需要解析接口体结构。基线文件让「已知差异」不重复报警（棘轮只许缩小），避免了「一律放宽」的退化。⇒ 接受源码依赖。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-035",
+      "tier": "P0",
+      "spec": "scripts/check-desktop-rollback-path.mjs",
+      "specLine": 154,
+      "needle": "按标题层级定位文档节（`headingRe` + `headings[k].level <= headings[h].level`）后断该节内的回滚路径描述与 builder/updater/config-store 事实一致",
+      "reads": [
+        "apps/executor-desktop/electron-builder.yml",
+        "apps/executor-desktop/package.json",
+        "apps/executor-desktop/src/main/config-store.ts",
+        "apps/executor-desktop/src/main/updater.ts"
+      ],
+      "asserts": "断的是**结构化的文档节归属 + 代码事实对照**：先剥 `#` 注释与空行，再按标题层级把行归到所属节，然后要求「回滚路径」那一节里描述的步骤能在 builder/updater/config-store 里找到对应实现。⇒ 断的是节内语义与代码事实的一致，不是全文关键词命中（否则把关键词写在别的节也会假绿）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「文档里写的回滚路径**真的被实现**」——只做全文关键词匹配会让「关键词写在无关章节」通过；按标题层级切节才能把断言限定在正确位置。⇒ 接受源码+文档结构依赖；标题层级变化会表现为「节找不到」⇒ 显式红，不静默放行。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-036",
+      "tier": "P0",
+      "spec": "scripts/check-index-drift.mjs",
+      "specLine": 141,
+      "needle": "`matchAll(/CREATE\\s+(UNIQUE\\s+)?INDEX\\s+… \"name\"\\s+ON\\s+\"table\"\\s*\\(cols\\)/gis)` 建 DDL 侧 Map，与实体的具名 `@Index(\"name\", [cols])` 声明做**集合对账**",
+      "reads": [
+        "apps/admin-api/src",
+        "apps/admin-api/src/migrations",
+        "apps/admin-api/src/migrations/1790000000000-fx.ts",
+        "apps/admin-api/src/modules/fx/fx.entity.ts"
+      ],
+      "asserts": "断的是**两侧集合相等**：实体上每个**显式命名**的 `@Index(\"name\", [cols])` 必须在迁移 DDL 里有同名 `CREATE INDEX`（且列集合一致），反之 DDL 里的具名索引也不许无声明。R263 已把它的 `stripComments` 换成共用件（修掉「行尾注释误命中」）⇒ 现在抽的是**真实声明的集合**",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「`@Index` 不许是**死声明**」——本仓有过「声明的索引数十个迁移周期从未落库」的真实事故。只有从两侧抽集合做对账才能发现；比文本无法判断「同名但列不同」。R263 用共用 `stripComments` 修掉了唯一的形态漏洞（行尾注释），⇒ 现在它读的是真实代码结构。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-037",
+      "tier": "P0",
+      "spec": "scripts/check-metric-docs.mjs",
+      "specLine": 482,
+      "needle": "从 runtime-metrics 注册表建 `entries.set(name, {kind, reason})`，再从文档 `matchAll(/^[ \\t]+(autoflow_[a-z0-9_]+…)/)` 抽提及，做**双向集合对账**（注册未文档 / 文档未注册 / allowlist 越界）",
+      "reads": [
+        "apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts",
+        "apps/admin-api/src/modules/metrics/runtime-metrics.ts",
+        "scripts/metric-docs-allowlist.json",
+        "scripts/metric-docs-baseline.json"
+      ],
+      "asserts": "断的是**注册表与文档的双向集合关系**：每个注册的指标都必须被文档提及；文档里每个 `autoflow_*` 提及都必须对应已注册指标（或落在 allowlist）；allowlist 是**棘轮**（只许缩小，越界即红）。⇒ 断结构化集合，不是文本命中",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「文档里的指标清单**不是手抄的**」。它必须读 `runtime-metrics` 的注册表（结构化源）并与文档提及做**双向**对账 —— 单向只能发现「注册了没写」，发现不了「写了但根本不存在」。allowlist 只许缩小防「一律放宽」的退化。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [
@@ -773,20 +827,6 @@
       ]
     },
     {
-      "id": "GSTC-B12",
-      "spec": "scripts/check-desktop-rollback-path.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/executor-desktop/electron-builder.yml",
-        "apps/executor-desktop/package.json",
-        "apps/executor-desktop/src/main/config-store.ts",
-        "apps/executor-desktop/src/main/updater.ts"
-      ]
-    },
-    {
       "id": "GSTC-B14",
       "spec": "scripts/check-enum-consumers.mjs",
       "status": "待深审",
@@ -871,34 +911,6 @@
         "scripts/failure-classifier-divergence-baseline.json",
         "scripts/generate-failure-classifiers.mjs",
         "scripts/protocol-breaking-acknowledgements.json"
-      ]
-    },
-    {
-      "id": "GSTC-B19",
-      "spec": "scripts/check-index-drift.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src",
-        "apps/admin-api/src/migrations",
-        "apps/admin-api/src/migrations/1790000000000-fx.ts",
-        "apps/admin-api/src/modules/fx/fx.entity.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B21",
-      "spec": "scripts/check-metric-docs.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts",
-        "apps/admin-api/src/modules/metrics/runtime-metrics.ts",
-        "scripts/metric-docs-allowlist.json",
-        "scripts/metric-docs-baseline.json"
       ]
     },
     {
