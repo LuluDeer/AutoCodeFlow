@@ -742,12 +742,6 @@
       "review_by": "2026-12-15"
     },
     {
-      "key": "apps/admin-web/src/api/inbox.ts\tAgentWaitingResult",
-      "reason": "待处置（未配对）：AgentWaitingResult 是内部判别联合 {approvals,sessions} | {error}，非 API 响应体，无后端 schema。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
       "key": "apps/admin-web/src/api/inbox.ts\tStallResult",
       "reason": "待处置（未配对）：StallResult 是内部判别联合 {snapshot} | {error}，非 API 响应体，无后端 schema。",
       "owner": "arch-core",

@@ -321,7 +321,7 @@ jobs:
         run: npm run test:pg-race
         timeout-minutes: 10
 
-      - name: E2E (auth / executors / tasks)
+      - name: E2E (auth / executors / tasks / Agent approvals)
         run: npm run test:e2e -- --runInBand
         working-directory: apps/admin-api
 
@@ -2248,6 +2248,9 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
                      /etc/apt/sources.list.d/google-chrome.sources
           npx playwright install --with-deps chromium
+        working-directory: apps/admin-web
+      - name: Agent session browser journeys (production bundle, offline API)
+        run: npm run test:e2e:agent
         working-directory: apps/admin-web
       - name: Run 48-case full-chain e2e
         run: bash scripts/e2e-full.sh

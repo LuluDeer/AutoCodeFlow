@@ -3,7 +3,7 @@
 > **受众**：正在执行版本升级的自托管运维 · **状态**：稳定 · **最后核对**：2026-11-02
 > **读者**：自托管运维。本文覆盖两段路，按需取用：
 > - **① v1.15.0（上一稳定线）→ v2.0.0（2026-10-30 已发布）**——**必须做**，含 15 个迁移与 3 条破坏性改动（§0–§8）；
-> - **② v2.0.0 → develop（未发布）**——**可选灰度**，12 个纯增量迁移、2 个新 env 键、无破坏性变更（§9）。
+> - **② v2.0.0 → develop**——§9 是截至迁移 `0093` 的历史快照。升级到含 `0100` 的版本前，请另读 **§15**：Agent 工具调用表会重写；写入审批业务键后不可直接将该列降回 UUID。
 >
 > **核实基线**（R58 刷新：2026-11-05，`git log -1 --oneline` ⇒ `907879f0`，工作区 `/home/yongsheng/project/AutoCodeFlow`）：
 > - **核实方法**：`git log -1 --oneline`（取当前 HEAD）；本文的行号/命令以**该提交**为准，合并后可能漂移。
@@ -370,7 +370,7 @@ curl -s -o /dev/null -w 'live=%{http_code}\n' http://127.0.0.1:3105/api/health/l
 
 ### 6.1 中台
 
-- [ ] `node scripts/check-migrations.mjs` 通过（**v2.0.0 tag 上应报 126 个迁移**；若你已经跟到 develop，则是 **138 个**，见 §9）
+- [ ] `node scripts/check-migrations.mjs` 通过（v2.0.0 tag 有 126 个；§9 的 `0093` 快照有 138 个；到 §15 的 `0100` 为 144 个。后续版本以脚本实测为准）
 - [ ] `(cd apps/admin-api && npm run migration:run)` 二次执行输出 `No migrations are pending`
 - [ ] `node scripts/check-env-drift.mjs` 退出 0
 - [ ] `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3105/api/health/live` → `200`
@@ -802,3 +802,22 @@ Forwardable/Globally Reachable **全 False**，脚注[2]「不更具体登记即
 
 > 与 §12/§13 的区别：那两条是**行为收紧**（元数据地址恒拒），本条**不改任何鉴权语义**，
 > 只是把一次运维动作的边界写清；不需要数据迁移，也不需要停机。
+
+## 15. Agent 工具调用审批键（迁移 `1790000000100`）
+
+**先升级数据库，再启用审批流量。** `agent_tool_calls."approvalId"` 由可空 `uuid` 改为可空
+`varchar(128)`，与 `agent_approvals."approvalKey"` 一致。新调用写入 `apr-<sessionId>-<fingerprint>`；
+升级前，审批单可能已是 pending，但调用行未记录该键。这个迁移不重建缺失的关联，也不重放工具。
+对先前失败的会话请核对审批单、调用状态和实际副作用，再决定是否恢复。
+
+- **保留什么**：`up` 只转该列。旧 UUID 保留 PostgreSQL 的规范文本，NULL 仍为 NULL。0040 没有到审批主键的外键；即使某个旧 UUID 等于 `agent_approvals.id`，也不把原值替换成该行的业务键。需调查该类数据时，先在备份或只读副本上按 `a.id::text = c."approvalId"::text` 找候选，并核对会话和工具审计证据。
+- **锁和容量**：`ALTER COLUMN TYPE` 需要 `ACCESS EXCLUSIVE` 锁，UUID↔文本会重写调用表和索引，不是只改元数据。表的读写会等待；不同于 `CONCURRENTLY` 建索引。按 §2 备份并演练恢复，在同等数据量的副本测耗时、磁盘余量及 WAL/复制延迟；生产选维护窗口，停止新的审批写入，让旧 Agent worker 排空在途调用并停下，确认无长事务，再用既有带 advisory lock 的迁移入口。验收列形状后滚动替换 worker 并恢复流量；无需清空 Redis 或丢弃排队任务。部署副本间的 advisory lock 不替代表锁。
+- **验收**：查 `information_schema.columns`，该列应为 `character varying` / `128` / `YES`；经真实审批写一条测试调用，按 `agent_tool_calls."approvalId" = agent_approvals."approvalKey"` 应能关联。不要用审批单主键验证新调用。
+- **回滚**：暂停审批写入，确认 `0100` 是最后一条已执行迁移。只剩 NULL 与规范小写 UUID 文本时，用 `npm run migration:revert`（在 `apps/admin-api` 下）可无损还原。出现任一业务键或其他非规范文本，down 在同一语句内先锁表、再检查，以 `SQLSTATE 22P02` / `1790000000100 rollback blocked` 退出，保留列、行及迁移账本。此时保留宽列；如必须退回旧库结构，应另行评估备份恢复及后续写入的影响，不要删除调用行或把审批键置空。
+
+降级前可先做只读预检（非零就保留宽列；并发情况下以 down 的锁内检查为准）：
+
+```sql
+SELECT count(*) AS blocking_rows FROM agent_tool_calls
+WHERE "approvalId" COLLATE "C" !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+```

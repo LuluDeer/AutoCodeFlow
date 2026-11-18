@@ -644,13 +644,6 @@
     },
     {
       "file": "apps/admin-web/src/api/inbox.ts",
-      "name": "AgentWaitingResult",
-      "reason": "内部判别联合 {approvals,sessions} | {error}，非 API 响应体，无后端 schema。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
-      "file": "apps/admin-web/src/api/inbox.ts",
       "name": "StallResult",
       "reason": "内部判别联合 {snapshot} | {error}，非 API 响应体，无后端 schema。",
       "owner": "arch-core",

@@ -125,7 +125,8 @@
     "check-metric-docs",
     "check-typecheck-covers-specs",
     "check-migration-symmetry",
-    "check-live-probes-intact"
+    "check-live-probes-intact",
+    "check-selftests-wired"
   ],
   "covered": {
     "scripts/agent-boundary-check.mjs": {
@@ -500,6 +501,11 @@
     "scripts/check-sdk-docs-truthfulness.mjs": {
       "helper": "subprocess",
       "floor": 5,
+      "args": []
+    },
+    "scripts/check-selftests-wired.mjs": {
+      "helper": "push",
+      "floor": 4,
       "args": []
     },
     "scripts/check-shared-cache-lock.mjs": {
