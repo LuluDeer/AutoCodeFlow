@@ -4059,6 +4059,45 @@
     再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
     也不要用「先接上再观察」把 floor 变成摆设。
 
+- 2026-11-18 **自治优化 · R249（并行第 175 批）（1 提交 · 用 466 的正确做法重扫；接上一条自己写着「safe in CI」却两边都不跑的运维自检）**：
+
+  - **① ★ 先做 466 要求的重扫（可达性分析，取代逐层 grep）**：从
+    `test:guards:chain` / `test:unit` / `test:guards:selftests` / `typecheck:all` 出发做
+    **递归可达 + CI 直调 node** 的并集，得到 —— **99 个守卫全部可达、0 个盲区**。
+    ⇒ 前两轮（R244/R248）的守卫覆盖工作**已收敛**；也说明我当时用「一层引用」得出的
+    「两边都不跑」结论确实有两处误报（466 已记）。
+  - **② 剩下的盲区在**非守卫脚本**：`scripts/*.mjs|*.sh` 里（去掉 `check-*`/`agent-*`）
+    **33 个完全不可达**。逐类拆（434）：多数是运维脚本（`pg-backup.sh`、`pg-restore.sh`、
+    `demo-*.sh`、`start-isolated.sh`、`load-test-stack.sh`）—— **不需要门禁，合理**；
+    但**带 `.selftest.` 的那几个不该在其中**。
+  - **③ 命中**：`scripts/reset-admin-password.selftest.sh` 头注原文
+    「exercises the dry-run path only, so it is **safe in CI** and never touches a database」
+    —— **它自己写着「safe in CI」，却从未接进 CI、也从未进本地链**。
+    **它守的是凭据不泄漏**：`--dry-run --env-file .env.example` **不连库**，断言输出的 SQL
+    含 pgcrypto + 撤销会话、且**密码必须被 `<redacted>`**；短密码被拒。
+    `reset-admin-password.sh` 是**运维手工跑的脚本**，最容易在「改个参数/加个字段」时
+    把明文密码带进日志。
+  - **④ 修法**：新增 `test:reset-admin-password`（`bash scripts/<...>.selftest.sh`）+
+    接进 `test:guards:chain` + 接进 `ci.yml`（**它自己声明 safe in CI**，两面都要接）。
+
+  **验证（真实 exit）**：单跑 **0**（`all checks passed`）·
+  `guards-repo-matrix` **115 → 116 段**，新段**实际执行**，全链 **116/116 = 0** ·
+  `check-workflow-yaml` 0 · `check-script-main-guard` 0 · `check-size-caps` 0 ·
+  `check-guards-wired` 0。
+
+  **方法学沉淀（接 466）**：
+  - **467「重扫时若『盲区清零』，说明该做的事是**换一个扫描面**，不是继续修同一种」**。
+    本轮可达性分析给出「99/99 可达」——这是**收敛信号**，不是「没活了」。
+    真正的下一步在**另一个面**（非守卫脚本），而那个面**不能用同一条判据**
+    （运维脚本天然不需要门禁）。⇒ 判据的**适用范围**决定它何时该停：
+    守卫面用「可达性」、运维面用「有没有 `.selftest.` 却没人跑」。
+  - **468「`*.selftest.*` 这个命名本身就是接线契约」**。
+    本仓用 `.selftest.` 标记「这是自检，应该被某个门禁跑」。
+    可见的 3 个里 1 个（`demo.selftest.sh`）在 `test:main` 里、另外 1 个
+    （`install-artifact-sha256.selftest.sh`）待查、1 个两边都不跑（本轮修掉）。
+    ⇒ **命名即承诺**：叫 selftest 却不被跑，比叫 `demo.sh` 更误导 ——
+    前者让读者以为「有覆盖」，后者不会。
+
 - 2026-11-18 **自治优化 · R248（并行第 174 批）（1 提交 · 一条**安全关键**的静态判据此前本地从不执行）**：
   接 458（「离线自检/零依赖」本身就是进本地链的强信号）继续扫，
   发现 `check-throttler-whitelist` 处在「**已登记、永不执行**」的状态。
