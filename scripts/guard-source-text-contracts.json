@@ -473,6 +473,22 @@
       "dispositionNote": "这条判据的全部价值是「前后端密码策略**真的等价**」—— 用户在后端能设的密码，前端不能拒；反之亦然。要做到这点**只能**从两侧源码抽出数值与正则并**编译比对**（比文本会漏掉 `/[A-Z]/` vs `/[a-z]/` 之外更隐蔽的写法差异，比手抄清单则会漂移）。⇒ 接受源码依赖；代价（函数名/常量名改动）已由抽取失败 ⇒ **结构错**兜住，不会静默变永真。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-024",
+      "tier": "P0",
+      "spec": "scripts/check-cli-doc.mjs",
+      "specLine": 115,
+      "needle": "match(/\\.command\\(/g).length 数源码里的命令注册次数，再与文档标题 `### …（N）` 的数字逐节比对",
+      "reads": [
+        "packages/acf-cli/src/commands",
+        "docs/atlas/05-interfaces/cli.md"
+      ],
+      "asserts": "断的是**代码结构的计数**：每个命令文件里 `.command(` 的出现次数（+ `new Command(` 的根命令数）必须等于文档该节标题里写的数字。文档那侧是**手写**的 ⇒ 代码加了命令而文档没跟，立刻红",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「文档里的命令数不是手抄的、而是与代码同步的」。只有数源码才能发现「加了 .command( 但忘了改文档」——那正是它会漂的地方（本仓有过 CLI 计数漂移史）。⚠️ **已知形态风险**：计数直接对 `readText` 的原文跑 `match`，**未剥注释** ⇒ 源码注释里若出现 `.command(` 会被多算。当前 `packages/acf-cli` 里 0 处（已核）；若将来出现，症状是「文档数字对不上但代码没改」，可自愈（补注释说明即可），不会掩盖真缺陷。故接受现状，风险已记录在此。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [
@@ -590,18 +606,6 @@
         "apps/executor-desktop/src/renderer/pages/Wizard.tsx",
         "packages/docs-site/public/logo.svg",
         "scripts/brand/build-brand-assets.py"
-      ]
-    },
-    {
-      "id": "GSTC-B07",
-      "spec": "scripts/check-cli-doc.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "packages/acf-cli/src/commands",
-        "packages/acf-cli/src/index.ts"
       ]
     },
     {
