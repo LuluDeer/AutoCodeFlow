@@ -78,7 +78,9 @@ src/
 | `/` | DashboardPage | 仪表盘 |
 | `/tasks` | TaskListPage | 任务列表 |
 | `/tasks/new` | TaskFormPage | 新建任务 |
-| `/tasks/:id` | TaskDetailPage | 任务详情 |
+| `/tasks/:id` | TaskDetailPage | 任务详情；管理员可对当前任务发起只读 Agent 诊断 |
+| `/agent-sessions` | AgentSessionsPage | 管理员提问与跟踪会话；`session` 定位会话，`tab=approvals&approvalKey=…` 精确审阅一张单 |
+| `/inbox` | InboxPage | 管理员待办收件箱，可从审批或异常项直达目标会话 |
 | `/tasks/:id/edit` | TaskFormPage | 编辑任务 |
 | `/applications` | ApplicationListPage | 应用列表 |
 | `/applications/:id` | ApplicationDetailPage | 应用详情 |
@@ -119,6 +121,8 @@ npx playwright test --config=playwright.e2e.config.cjs
 ```
 
 测试文件位于 `e2e/` 目录，覆盖认证、导航、页面功能等场景。
+
+只验收中台 Agent 用户路径时，从本应用目录运行 `npm run test:e2e:agent`。它构建管理台、在 `127.0.0.1:4176` 临时预览，覆盖桌面提问、窄屏审批、卡住会话和普通用户权限。API 响应由浏览器测试提供，无需启动后端或配置模型。已安装系统 Chrome 而非 Playwright Chromium 时，可设置 `PLAYWRIGHT_CHROMIUM_CHANNEL=chrome`。实际运行和审批的数据库／队列验证在 admin-api 的 `test:e2e` 套件中。
 
 ## 环境变量
 

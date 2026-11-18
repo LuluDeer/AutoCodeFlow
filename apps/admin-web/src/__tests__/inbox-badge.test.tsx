@@ -11,19 +11,7 @@ import InboxBadge from '../components/InboxBadge';
 import { loadInboxCounts } from '../api/inbox';
 import type { InboxCountMap } from '../api/inbox';
 
-vi.mock('../api/inbox', () => ({
-  INBOX_REFRESH_EVENT: 'autoflow:inbox-refresh',
-  loadInboxCounts: vi.fn(),
-  summarizeInboxCounts: vi.fn((counts: InboxCountMap) => {
-    let total = 0;
-    for (const [k, v] of Object.entries(counts)) {
-      if (k === 'recentFailures') continue; // 只读参考项，不计入总数
-      if (v === null) return null;
-      total += v;
-    }
-    return total;
-  }),
-}));
+vi.mock('../api/inbox', { spy: true });
 
 const g = globalThis as Record<string, unknown>;
 if (!g.ResizeObserver) {
@@ -48,7 +36,7 @@ if (!window.matchMedia) {
 
 const counts = (overrides: Partial<InboxCountMap> = {}): InboxCountMap => ({
   deployments: 0,
-  agentApprovals: 0,
+  agentApprovals: null,
   agentWaiting: 0,
   stalled: 0,
   backlogged: 0,
@@ -74,8 +62,8 @@ describe('InboxBadge 顶栏待办入口', () => {
     expect(screen.queryByTestId('inbox-badge-button')).toBeNull();
   });
 
-  it('有待办时展示计数并可点击进入收件箱', async () => {
-    vi.mocked(loadInboxCounts).mockResolvedValue(counts({ deployments: 2, stalled: 1 }));
+  it('等待会话只计一次，无单独的审批单计数仍可展示总数', async () => {
+    vi.mocked(loadInboxCounts).mockResolvedValue(counts({ deployments: 1, agentWaiting: 2 }));
     render(<MemoryRouter><InboxBadge /></MemoryRouter>);
     const btn = await screen.findByTestId('inbox-badge-button');
     expect(btn).toBeTruthy();

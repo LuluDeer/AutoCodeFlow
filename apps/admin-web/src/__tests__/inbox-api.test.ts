@@ -1,12 +1,14 @@
 /**
- * P1-4 收件箱聚合层纯函数回归：
+ * P1-4 收件箱聚合层回归：
  * - 计数汇总的诚实口径：任一源读不到（null）⇒ 总数 null，不用局部和谎报；
  *   最近失败是只读参考项，不计入总数；
  * - 等待时长排序：有时间的在前（越久越靠前），无时间信息的排末尾；
  * - 第二人规则：提交者本人不能审批自己的部署请求。
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { client } from '../api/client';
 import {
+  loadInboxCounts,
   summarizeInboxCounts,
   sortInboxItemsByWaitingSince,
   isSelfDeployment,
@@ -16,7 +18,7 @@ import {
 
 const emptyCounts = (): InboxCountMap => ({
   deployments: 0,
-  agentApprovals: 0,
+  agentApprovals: null,
   agentWaiting: 0,
   stalled: 0,
   backlogged: 0,
@@ -24,11 +26,31 @@ const emptyCounts = (): InboxCountMap => ({
   recentFailures: 0,
 });
 
+afterEach(() => vi.restoreAllMocks());
+
 describe('summarizeInboxCounts 总数口径', () => {
+  it('实际计数接口只返回等待会话数，不把它当作另一个审批单数再加一次', async () => {
+    const get = vi.spyOn(client, 'get').mockImplementation(async (url, config) => {
+      if (url === '/agent/sessions') {
+        const params = config?.params as { status?: string } | undefined;
+        return { total: params?.status === 'waiting_input' ? 3 : 1 };
+      }
+      if (url.endsWith('/backlogged')) return { count: 0 };
+      if (url.endsWith('/queue-stall')) return { stalled: false, degraded: false };
+      if (url === '/app-deployments/approvals/pending') return { total: 2 };
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const counts = await loadInboxCounts();
+    expect(counts.agentApprovals).toBeNull();
+    expect(counts.agentWaiting).toBe(3);
+    expect(summarizeInboxCounts(counts)).toBe(6);
+    expect(get).toHaveBeenCalledTimes(5);
+  });
+
   it('全部读到：汇总可处置待办（不含最近失败）', () => {
     const counts = emptyCounts();
     counts.deployments = 2;
-    counts.agentApprovals = 1;
+    counts.agentWaiting = 1;
     counts.stalled = 3;
     counts.recentFailures = 99; // 只读参考，不计入
     expect(summarizeInboxCounts(counts)).toBe(6);

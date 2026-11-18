@@ -43,7 +43,7 @@
  *     或「恢复」（paused）——POST /tasks/:id/trigger|pause|resume，失败 toast
  *     走 getErrMsg（与列表页同语义），成功 message 提示并跳任务详情。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import PaletteGroupTruncationHint from './PaletteGroupTruncationHint';
@@ -238,8 +238,19 @@ export default function CommandPalette({
   const listRef = useRef<HTMLDivElement>(null);
   const openRef = useRef(open);
   openRef.current = open;
-  /** UI-12：打开前的焦点宿主——关闭后要把焦点还回去，键盘用户不会「掉到 body」 */
-  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const needsFocus = useRef(false);
+  const focusSearch = useCallback(() => {
+    const input = inputRef.current?.input;
+    if (openRef.current && needsFocus.current && input?.isConnected) {
+      input.focus();
+      needsFocus.current = document.activeElement !== input;
+    }
+  }, []);
+  const attachInput = useCallback((ref: InputRef | null) => {
+    inputRef.current = ref;
+    // A Portal may attach after the open effect. Wait for this commit, not an arbitrary timer.
+    if (ref) queueMicrotask(focusSearch);
+  }, [focusSearch]);
 
   // 每次打开重置为全新搜索，并使上一轮在途请求失效
   useEffect(() => {
@@ -250,27 +261,24 @@ export default function CommandPalette({
     setActiveIndex(0);
   }, [open]);
 
-  // 打开（内容挂载）后聚焦搜索框
-  useEffect(() => {
+  const focusCycle = useRef(0);
+  useLayoutEffect(() => {
     if (!open) return;
-    const timer = window.setTimeout(() => inputRef.current?.focus(), 0);
-    return () => window.clearTimeout(timer);
-  }, [open]);
-
-  // UI-12：焦点进入/归还。打开时记下焦点宿主（body 视为无宿主，不做无效归还），
-  // 关闭时归还——Esc、选中跳转、⌘K 再按三条关闭路径共用这一处。
-  useEffect(() => {
-    if (open) {
-      const active = document.activeElement as HTMLElement | null;
-      restoreFocusRef.current = active && active !== document.body ? active : null;
-      return;
-    }
-    const el = restoreFocusRef.current;
-    restoreFocusRef.current = null;
-    if (el && el !== document.body && document.contains(el) && typeof el.focus === 'function') {
-      el.focus();
-    }
-  }, [open]);
+    const cycle = focusCycle.current + 1;
+    focusCycle.current = cycle;
+    const trigger = document.activeElement;
+    needsFocus.current = true;
+    focusSearch();
+    // Closing may unmount the lazy palette. Restore after this commit has released
+    // the dialog's focus trap; a rapid reopen invalidates the old restoration.
+    return () => {
+      needsFocus.current = false;
+      queueMicrotask(() => {
+        if (cycle === focusCycle.current && trigger instanceof HTMLElement &&
+            trigger !== document.body && trigger.isConnected) trigger.focus();
+      });
+    };
+  }, [open, focusSearch]);
 
   // 防抖 300ms 后并行请求四个列表端点；各路独立 catch —— 单组失败降级为
   // 「加载失败」行，不阻塞其他组。取消以序号守卫实现（过期响应直接丢弃），
@@ -709,10 +717,7 @@ export default function CommandPalette({
       // 但本弹层为 closable=false 且无 title，dialog 长期无名；sr-only 标题
       // 只供读屏消费（antd 会据此设置 aria-labelledby），不占视觉版面。
       title={<span id="command-palette-title" style={SR_ONLY_STYLE}>{t('palette.dialogTitle')}</span>}
-      // 打开动画结束后再补一次聚焦（与上面 setTimeout 兜底互为冗余，两条路径幂等）
-      afterOpenChange={(visible) => {
-        if (visible) inputRef.current?.focus();
-      }}
+      afterOpenChange={visible => { if (visible) focusSearch(); }}
       footer={null}
       width={560}
       destroyOnHidden
@@ -724,7 +729,7 @@ export default function CommandPalette({
       }}
     >
       <Input
-        ref={inputRef}
+        ref={attachInput}
         size="large"
         variant="borderless"
         value={keyword}

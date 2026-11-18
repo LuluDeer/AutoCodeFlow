@@ -4412,10 +4412,7 @@ export interface components {
             }[] | null;
         };
         AgentToolCallDto: {
-            /**
-             * Format: uuid
-             * @description awaiting_approval / granted 流程的审批记录
-             */
+            /** @description 关联的审批业务键；历史 UUID 原样保留 */
             approvalId: string | null;
             argsJson: {
                 [key: string]: unknown;

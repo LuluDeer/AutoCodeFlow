@@ -14,13 +14,14 @@
  *
  * - 每个小节独立 `Promise.allSettled`：某一类读失败**不拖垮**其他小节，
  *   失败小节保留「未知」态（`status: 'error'`），绝不渲染成 0 条；
- * - 顶栏计数的汇总：任一小节计数读不到 ⇒ 总计数 `null`（显示「—」/隐藏），
+ * - 顶栏按等待会话数（含待审批）计一次；任一参与计数的数据源读不到 ⇒ 总计数 `null`，
  *   不用其余小节的局部和谎报「一共 N 件」；
  * - 时间字段缺失时行内明确显示「无时间信息」，不猜。
  *
  * 写动作不在本层执行：页面直接复用 `deploymentsApi` / `agentApi` 的既有写接口
  * （后端 `@Roles(ADMIN)` + 第二人规则仍是权威门控）。
  */
+import { agentSessionUrl } from '../utils/agentSessionUrl';
 import { client } from './client';
 import { agentApi, type AgentApproval, type AgentSession } from './agent';
 import { deploymentsApi, type AppDeployment } from './applications';
@@ -54,6 +55,8 @@ export interface InboxItem {
   waitingSince: string | null;
   /** 详情深链（原对象页）。 */
   detailUrl?: string;
+  /** 已确认可尝试恢复；无待批单的 waiting_input 或补全了对象的积压 pending。 */
+  canResume?: boolean;
   deployment?: AppDeployment;
   session?: AgentSession;
   approval?: AgentApproval;
@@ -76,7 +79,7 @@ export interface InboxSectionState {
 
 export type InboxSections = Record<InboxSectionKey, InboxSectionState>;
 
-/** 顶栏计数口径：每小节计数；`null` = 该小节读不到（未知），不是 0。 */
+/** 顶栏计数口径：`null` 表示没有独立计数或读取失败，均不等于 0。 */
 export type InboxCountMap = Record<InboxSectionKey, number | null>;
 
 const READY = (key: InboxSectionKey, items: InboxItem[], extra?: Partial<InboxSectionState>): InboxSectionState => ({
@@ -119,52 +122,52 @@ async function loadDeployments(signal?: AbortSignal): Promise<InboxItem[]> {
   }));
 }
 
-/** 2+3. Agent 等待人工：审批单（grant/deny）+ 等待输入会话（resume/查看）。 */
-async function loadAgentWaiting(): Promise<{
-  approvals: InboxItem[];
-  sessions: InboxItem[];
-}> {
+/** 2+3. Agent 等待人工：审批单 + 等待输入会话（没有待批单时才可恢复）。 */
+async function loadAgentWaiting(): Promise<{ approvals: InboxSectionState; sessions: InboxSectionState }> {
   const res = await agentApi.list({ status: 'waiting_input', page: 1, pageSize: 50 });
   const sessions = res?.items ?? [];
 
-  const approvalItems: InboxItem[] = [];
-  const sessionItems: InboxItem[] = [];
+  const approvalSection = READY('agentApprovals', []);
+  const waitingSection = READY('agentWaiting', []);
 
   await Promise.all(
     sessions.map(async (s) => {
-      let approvals: AgentApproval[];
-      try {
-        approvals = await agentApi.listApprovals(s.id);
-      } catch {
-        // 单会话审批单读失败不拖垮整个小节：该会话只保留等待输入行。
-        approvals = [];
-      }
-      const pending = approvals.filter((a) => a.status === 'pending');
-      for (const a of pending) {
-        approvalItems.push({
+      // 单会话读取失败时保留其他会话的单，但不能把未知当成「无待批单」。
+      const approvals = await agentApi.listApprovals(s.id).catch((error: unknown) => {
+        approvalSection.status = 'error';
+        approvalSection.error = error;
+        return undefined;
+      });
+      const pending = approvals?.filter((a) => a.status === 'pending');
+      for (const a of pending ?? []) {
+        approvalSection.items.push({
           id: `apr-${a.approvalKey}`,
           section: 'agentApprovals' as const,
           title: s.title || s.id,
           subtitle: a.toolName,
           waitingSince: a.createdAt ?? s.createdAt ?? null,
-          detailUrl: `/agent-sessions`,
+          detailUrl: agentSessionUrl(s.id, { tab: 'approvals', approvalKey: a.approvalKey }),
           session: s,
           approval: a,
         });
       }
-      sessionItems.push({
+      waitingSection.items.push({
         id: `ses-${s.id}`,
         section: 'agentWaiting' as const,
         title: s.title || s.id,
         subtitle: s.waitingFor || s.createdBy || s.kind,
         waitingSince: s.createdAt ?? null,
-        detailUrl: `/agent-sessions?status=waiting_input`,
+        detailUrl: agentSessionUrl(s.id, {
+          status: 'waiting_input',
+          tab: pending?.length ? 'approvals' : undefined,
+        }),
+        canResume: s.status === 'waiting_input' && pending?.length === 0,
         session: s,
       });
     }),
   );
 
-  return { approvals: approvalItems, sessions: sessionItems };
+  return { approvals: approvalSection, sessions: waitingSection };
 }
 
 /** 4. 卡住会话（running 且久无进展）。 */
@@ -175,8 +178,9 @@ async function loadStalled(): Promise<InboxItem[]> {
     section: 'stalled' as const,
     title: s.title || s.id,
     subtitle: s.createdBy || s.kind,
-    waitingSince: s.updatedAt ?? s.startedAt ?? s.createdAt ?? null,
-    detailUrl: `/agent-sessions`,
+    // The list does not include MAX(step.createdAt); a maintenance write is not progress.
+    waitingSince: null,
+    detailUrl: agentSessionUrl(s.id, { stalled: true }),
     session: s,
   }));
 }
@@ -201,7 +205,8 @@ async function loadBacklogged(): Promise<{ items: InboxItem[]; truncated: boolea
       title: s?.title || id,
       subtitle: s?.createdBy || s?.kind,
       waitingSince: s?.createdAt ?? null,
-      detailUrl: `/agent-sessions?status=pending`,
+      detailUrl: agentSessionUrl(id, { status: 'pending' }),
+      canResume: s?.status === 'pending',
       session: s,
     };
   });
@@ -239,7 +244,6 @@ async function loadRecentFailures(signal?: AbortSignal): Promise<InboxItem[]> {
   }));
 }
 
-type AgentWaitingResult = { approvals: InboxItem[]; sessions: InboxItem[] } | { error: unknown };
 type StallResult = { snapshot: QueueStallSnapshot | null } | { error: unknown };
 
 /** 全量装载：小节互相隔离，失败小节保留 error 态。 */
@@ -249,10 +253,10 @@ export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
       (items) => READY('deployments', items),
       (error) => ERROR('deployments', error),
     ),
-    loadAgentWaiting().then(
-      ({ approvals, sessions }): AgentWaitingResult => ({ approvals, sessions }),
-      (error): AgentWaitingResult => ({ error }),
-    ),
+    loadAgentWaiting().catch((error: unknown) => ({
+      approvals: ERROR('agentApprovals', error),
+      sessions: ERROR('agentWaiting', error),
+    })),
     loadStalled().then(
       (items) => READY('stalled', items),
       (error) => ERROR('stalled', error),
@@ -271,16 +275,6 @@ export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
     ),
   ]);
 
-  let agentApprovals: InboxSectionState;
-  let agentWaitingSection: InboxSectionState;
-  if ('error' in agentWaiting) {
-    agentApprovals = ERROR('agentApprovals', agentWaiting.error);
-    agentWaitingSection = ERROR('agentWaiting', agentWaiting.error);
-  } else {
-    agentApprovals = READY('agentApprovals', agentWaiting.approvals);
-    agentWaitingSection = READY('agentWaiting', agentWaiting.sessions);
-  }
-
   let queueStallSection: InboxSectionState;
   if ('error' in queueStall) {
     queueStallSection = ERROR('queueStall', queueStall.error);
@@ -294,8 +288,8 @@ export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
 
   return {
     deployments,
-    agentApprovals,
-    agentWaiting: agentWaitingSection,
+    agentApprovals: agentWaiting.approvals,
+    agentWaiting: agentWaiting.sessions,
     stalled,
     backlogged,
     queueStall: queueStallSection,
@@ -347,7 +341,7 @@ export async function loadInboxCounts(signal?: AbortSignal): Promise<InboxCountM
 
   return {
     deployments,
-    agentApprovals: waiting,
+    agentApprovals: null, // 审批单数没有独立计数源；待审批的会话已包含在 agentWaiting。
     agentWaiting: waiting,
     stalled,
     backlogged,
@@ -360,13 +354,13 @@ export async function loadInboxCounts(signal?: AbortSignal): Promise<InboxCountM
 
 /**
  * 汇总顶栏待办总数。
- * 任一小节计数为 `null`（读不到）⇒ 返回 `null`（未知），不用局部和谎报总数；
- * `recentFailures` 为只读参考，不计入总数。
+ * 等待人工按会话计一次，审批单是这些会话的拆分视图；最近失败只读。
+ * 排除这两项后，任一计数源为 null ⇒ 总数未知，不用局部和谎报总数。
  */
 export function summarizeInboxCounts(counts: InboxCountMap): number | null {
   let total = 0;
   for (const key of INBOX_SECTIONS) {
-    if (key === 'recentFailures') continue;
+    if (key === 'agentApprovals' || key === 'recentFailures') continue;
     const n = counts[key];
     if (n === null) return null;
     total += n;

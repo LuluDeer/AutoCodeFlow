@@ -15,6 +15,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e:agent": "playwright test --config=playwright.agent.config.ts",
     "gen:api-types": "openapi-typescript ../admin-api/openapi.json -o src/types/generated/api-types.ts --default-non-nullable=false",
     "lighthouse": "lhci autorun"
   },

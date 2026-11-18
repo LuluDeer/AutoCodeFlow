@@ -108,6 +108,7 @@ import { buildVersionColumns, buildDiffRows } from './task-detail/version-view-m
 // 只剩 2 行余量 ⇒ 错误分支无处可放）。整块逐字搬移 + **新增错误态**（读取失败 ⇒
 // 错误块 + 重试，绝不说「暂无执行记录」）；props 全显式，本模块不持有 state、不发请求。
 import ExecutionsTab from './task-detail/ExecutionsTab';
+import TaskAgentDiagnosis from './task-detail/TaskAgentDiagnosis';
 import '../i18n';
 // PERF（第四轮审计）：GlueEditor 拖带 monaco（约 2.5MB raw 的 lazy chunk）。
 // 此前静态 import 让详情页 route chunk 与 GlueEditor chunk 产生**静态边**——
@@ -529,6 +530,7 @@ export default function TaskDetailPage() {
             <Button icon={<FolderOpenOutlined />} onClick={() => nav(`/artifacts?taskId=${task.id}`)}>
               {t('taskDetail.viewAllArtifacts')}
             </Button>
+            {isAdmin && <TaskAgentDiagnosis key={task.id} taskId={task.id} taskName={task.name} />}
             <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
               <Button icon={<ThunderboltOutlined />} type="primary" disabled={!isAdmin} onClick={handleTrigger}>{t('taskDetail.triggerNow')}</Button>
             </Tooltip>

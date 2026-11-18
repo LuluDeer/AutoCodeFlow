@@ -139,14 +139,14 @@ function renderLayout(initialPath = '/dashboard') {
 }
 
 /** 命令面板宿主：真实触发按钮 + 受控 open，用于验证焦点进入/归还 */
-function PaletteHarness() {
+function PaletteHarness({ unmountOnClose = false }: { unmountOnClose?: boolean } = {}) {
   const [open, setOpen] = useState(false);
   return (
     <MemoryRouter>
       <button type="button" data-testid="palette-trigger" onClick={() => setOpen(true)}>
         打开搜索面板
       </button>
-      <CommandPalette open={open} onOpenChange={setOpen} />
+      {(!unmountOnClose || open) && <CommandPalette open={open} onOpenChange={setOpen} />}
     </MemoryRouter>
   );
 }
@@ -365,9 +365,9 @@ describe('UI-12 CommandPalette — dialog 语义与焦点', () => {
     expect(options[0].getAttribute('aria-selected')).toBe('true');
   });
 
-  it('Esc 关闭后焦点归还触发元素（键盘用户不会掉到 body）', async () => {
+  it.each([false, true])('Esc 关闭后焦点归还触发元素（关闭时卸载=%s）', async (unmountOnClose) => {
     const user = userEvent.setup();
-    render(<PaletteHarness />);
+    render(<PaletteHarness unmountOnClose={unmountOnClose} />);
     const trigger = screen.getByTestId('palette-trigger');
 
     await user.click(trigger);

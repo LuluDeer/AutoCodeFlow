@@ -32,6 +32,7 @@ import StateError from '../components/StateError';
 import { Modal as ConfirmModal } from '../utils/modal';
 import { message } from '../utils/toast';
 import { showApiError } from '../utils/error';
+import { agentApprovalStatusLabel } from '../utils/agent-label';
 import { formatRelativeTime } from '../utils/timeFormat';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import {
@@ -95,12 +96,11 @@ interface InboxRowActionsProps {
   userId: number | null | undefined;
   onApprove: (item: InboxItem) => void;
   onReject: (item: InboxItem) => void;
-  onGrant: (item: InboxItem) => void;
   onDeny: (item: InboxItem) => void;
   onResume: (item: InboxItem) => void;
 }
 
-/** 行内动作按钮组：按小节渲染批准/拒绝/授予/拒绝/接管/查看详情；只读小节只给深链。 */
+/** Agent 放行前须到审批页签核对工具参数；其余动作按小节、权限及可用性展示。 */
 function InboxRowActions({
   item,
   canWrite,
@@ -108,7 +108,6 @@ function InboxRowActions({
   userId,
   onApprove,
   onReject,
-  onGrant,
   onDeny,
   onResume,
 }: InboxRowActionsProps) {
@@ -159,15 +158,7 @@ function InboxRowActions({
     case 'agentApprovals':
       return (
         <Space size={4} wrap>
-          <Button
-            size="small"
-            type="primary"
-            disabled={!canWrite || actingId === item.id}
-            loading={actingId === item.id}
-            onClick={() => onGrant(item)}
-          >
-            {t('inbox.action.grant')}
-          </Button>
+          {item.detailUrl && <Link to={item.detailUrl}>{t('inbox.action.reviewApproval')}</Link>}
           <Button
             size="small"
             danger
@@ -177,11 +168,6 @@ function InboxRowActions({
           >
             {t('inbox.action.deny')}
           </Button>
-          {item.detailUrl && (
-            <Link to={item.detailUrl}>
-              <Button size="small">{t('inbox.action.viewSession')}</Button>
-            </Link>
-          )}
         </Space>
       );
     case 'agentWaiting':
@@ -189,20 +175,18 @@ function InboxRowActions({
     case 'backlogged':
       return (
         <Space size={4} wrap>
-          <Button
-            size="small"
-            type="primary"
-            disabled={!canWrite || actingId === item.id || !item.session}
-            loading={actingId === item.id}
-            onClick={() => onResume(item)}
-          >
-            {t('inbox.action.resume')}
-          </Button>
-          {item.detailUrl && (
-            <Link to={item.detailUrl}>
-              <Button size="small">{t('inbox.action.viewSession')}</Button>
-            </Link>
+          {item.canResume && (
+            <Button
+              size="small"
+              type="primary"
+              disabled={!canWrite || actingId === item.id}
+              loading={actingId === item.id}
+              onClick={() => onResume(item)}
+            >
+              {t('inbox.action.resume')}
+            </Button>
           )}
+          {item.detailUrl && <Link to={item.detailUrl}>{t('inbox.action.viewSession')}</Link>}
         </Space>
       );
     default:
@@ -239,36 +223,32 @@ export default function InboxPage() {
 
   // ── 写动作 ────────────────────────────────────────────────────────────────
 
-  const confirmThen = (title: string, onOk: () => Promise<unknown>, successKey: string) => {
+  const confirmThen = (title: string, action: () => Promise<void>) => {
     ConfirmModal.confirm({
       title,
       okText: t('inbox.action.confirm'),
       cancelText: t('inbox.action.cancel'),
-      onOk: () => runActionConfirm(onOk, successKey),
+      onOk: async () => {
+        try {
+          await action();
+        } catch (err) {
+          showApiError(err);
+          // 竞争后的 409 表示此行已变化：关闭旧确认框并重取，其他错误留在原位重试。
+          if ((err as { __status?: number } | null)?.__status !== 409) throw err;
+        }
+        dispatchInboxRefresh();
+        await reload();
+      },
     });
-  };
-
-  // Modal.confirm 的 onOk 返回 Promise：失败时弹层不关闭（antd 等待 reject）。
-  const runActionConfirm = async (onOk: () => Promise<unknown>, successKey: string) => {
-    try {
-      await onOk();
-      message.success(t(successKey));
-      dispatchInboxRefresh();
-      await reload();
-    } catch (err) {
-      showApiError(err);
-      throw err;
-    }
   };
 
   const handleApprove = (item: InboxItem) => {
     const dep = item.deployment;
     if (!dep) return;
-    confirmThen(
-      t('inbox.approveConfirm.title', { title: item.title }),
-      () => deploymentsApi.approve(dep.id),
-      'inbox.success.approved',
-    );
+    confirmThen(t('inbox.approveConfirm.title', { title: item.title }), async () => {
+      await deploymentsApi.approve(dep.id);
+      message.success(t('inbox.success.approved'));
+    });
   };
 
   const openReject = (item: InboxItem) => {
@@ -293,31 +273,25 @@ export default function InboxPage() {
     }
   };
 
-  const handleGrant = (item: InboxItem) => {
-    if (!item.session || !item.approval) return;
-    confirmThen(
-      t('inbox.grantConfirm.title', { title: item.title }),
-      () => agentApi.grantApproval(item.session!.id, item.approval!.approvalKey),
-      'inbox.success.granted',
-    );
+  const handleDeny = ({ session, approval, title }: InboxItem) => {
+    if (!session || !approval) return;
+    confirmThen(t('inbox.denyConfirm.title', { title, tool: approval.toolName }), async () => {
+      const result = await agentApi.denyApproval(session.id, approval.approvalKey);
+      if (result.ok && result.approval.status === 'denied') {
+        message.success(t('inbox.success.denied'));
+      } else {
+        message.warning(t('inbox.approvalState', { status: agentApprovalStatusLabel(result.approval.status, t) }));
+      }
+    });
   };
 
-  const handleDeny = (item: InboxItem) => {
-    if (!item.session || !item.approval) return;
-    confirmThen(
-      t('inbox.denyConfirm.title', { title: item.title }),
-      () => agentApi.denyApproval(item.session!.id, item.approval!.approvalKey),
-      'inbox.success.denied',
-    );
-  };
-
-  const handleResume = (item: InboxItem) => {
-    if (!item.session) return;
-    confirmThen(
-      t('inbox.resumeConfirm.title', { title: item.title }),
-      () => agentApi.resume(item.session!.id),
-      'inbox.success.resumed',
-    );
+  const handleResume = ({ canResume, session, title }: InboxItem) => {
+    if (!canResume || !session) return;
+    confirmThen(t('inbox.resumeConfirm.title', { title }), async () => {
+      const result = await agentApi.resume(session.id);
+      if (result.ok) message.success(t('inbox.success.resumed'));
+      else message.warning(result.reason || t('inbox.resumeNotQueued'));
+    });
   };
 
   // ── 渲染 ────────────────────────────────────────────────────────────────────
@@ -351,7 +325,7 @@ export default function InboxPage() {
             {item.title}
           </Text>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            {item.waitingSince
+            {item.section === 'stalled' ? t('inbox.inspectProgress') : item.waitingSince
               ? formatRelativeTime(item.waitingSince, t)
               : t('inbox.noTimeInfo')}
           </Text>
@@ -370,7 +344,6 @@ export default function InboxPage() {
           userId={user?.id}
           onApprove={handleApprove}
           onReject={openReject}
-          onGrant={handleGrant}
           onDeny={handleDeny}
           onResume={handleResume}
         />
@@ -395,11 +368,14 @@ export default function InboxPage() {
     return (
       <Card key={key} size="small" title={title} style={{ marginBottom: 16 }} data-testid={`inbox-section-${key}`}>
         {section.status === 'error' ? (
-          <StateError
-            error={section.error}
-            title={t('inbox.loadFailed')}
-            onRetry={() => void reload()}
-          />
+          <>
+            <StateError
+              error={section.error}
+              title={key === 'agentApprovals' && section.items.length ? t('inbox.approvalsIncomplete') : t('inbox.loadFailed')}
+              onRetry={() => void reload()}
+            />
+            {sortInboxItemsByWaitingSince(section.items).map(renderRow)}
+          </>
         ) : key === 'queueStall' ? (
           queueStall ? (
             <Alert
@@ -415,7 +391,7 @@ export default function InboxPage() {
                   </Text>
                   <div style={{ marginTop: 8 }}>
                     <Link to="/agent-sessions">
-                      <Button size="small">{t('inbox.queueStall.viewSessions')}</Button>
+                      {t('inbox.queueStall.viewSessions')}
                     </Link>
                   </div>
                 </div>
