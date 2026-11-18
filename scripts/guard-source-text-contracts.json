@@ -426,6 +426,21 @@
       "dispositionNote": "这条判据的全部价值是「批量上限与最坏转义膨胀的**数值**关系」：它必须读源码常量并求值，否则只能比对手抄的数字，而手抄数字正是它会漂移的东西。故接受源码依赖；代价（常量改名/搬家）已由 `parseConstNumber` 的显式错误（`找不到 export const X` / `不是纯算术字面量`）兜住，不会静默变永真。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-021",
+      "tier": "P2",
+      "spec": "scripts/check-migrations.mjs",
+      "specLine": 220,
+      "needle": "stripComments(readFileSync(迁移文件)) 后测 SQL 文本里的 `CONCURRENTLY` / `SET statement_timeout = 0` / `RESET` / `transaction = false`",
+      "reads": [
+        "apps/admin-api/src/migrations"
+      ],
+      "asserts": "断的是**迁移 SQL 文本形态**：含 `CREATE/DROP INDEX CONCURRENTLY` 就必须同时出现那三条语句级豁免。判据对象**就是** SQL 的文本形态（注释已由 `stripComments` 剥掉）⇒ 按 tierDefinitions 属 P2「保留，非债」",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据不可能脱离 SQL 文本：PostgreSQL 是否允许在事务块内跑 CONCURRENTLY、连接池超时会不会取消建索引，**全都体现在那几句 SQL 里**。改成「不读 SQL」就只能靠人工 checklist，而那正是它会漏的地方。⇒ P2：判据对象即文本形态，保留且非债。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [
@@ -766,17 +781,6 @@
         "apps/admin-api/src/migrations/1770000000009-Fixed.ts",
         "apps/admin-api/src/migrations/1770000000010-Known.ts",
         "apps/admin-api/src/migrations/1770000000018-ShortReason.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B23",
-      "spec": "scripts/check-migrations.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/migrations"
       ]
     },
     {
