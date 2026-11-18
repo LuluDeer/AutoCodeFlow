@@ -763,7 +763,7 @@ source-digest: c0c317e41d3ca3d19609783fe07dd9e2e1599f4546f72e2d937974f60444e265
 #   · `src/main.ts` 的 dotenv 加载改为受 `SELFTEST_SKIP_ENV_FILE` 约束（与 admin-api R04 同语义）；
 #   · 新增 `src/config/env-file.ts`（开关纯函数）⇒ bundle 输入 **55 → 56** 个。
 #   ⇒ 语义摘要（①）必变。按 ADR-005 回填 ①；② 字节哈希**待 CI 回填**（产物 gitignored）。
-source-digest: f35054ece802dc8d55bcdab98779ba6cb58f27b65c29796042d2ec01c25f5d3c
+source-digest: 2534ce3bf3034103ec194167aabb57a7bf7185989c1999df9b4e1f0b63b8f7e0
 
 # 2026-11-08 回填（develop 基线补账 + PR #159 的 eslint 10.13.0 → 10.14.0）：
 #   本次回填覆盖**两个叠加**的漂移，两者必须一起算，否则回填出来的值仍然对不上：
