@@ -33,6 +33,8 @@ import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { stripComments } from "./lib/strip-comments.mjs";
+
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
 // R163：覆盖计数出口。**必须在任何 require/依赖之前**打印 —— 本文件若因缺依赖崩掉，
@@ -219,11 +221,10 @@ export function check({ srcDir = SRC_DIR, migrationsDir = MIGRATIONS_DIR, read =
 }
 
 // ── 工具 ───────────────────────────────────────────────────────────────────
-function stripComments(text) {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^\s*\/\/.*$/gm, "");
-}
+// R263：改用共用件 —— 原实现 `.replace(/^\\s*\\/\\/.*$/gm, "")` **只剥行首注释**，
+// 行尾注释完全漏剥（`const a = 1; // 提到 .command(` 里的内容会被当成真实代码）。
+// 共用件 `scripts/lib/strip-comments.mjs` 是逐字符状态机：正确处理行尾/块注释与字符串字面量，
+// 且**等长替换**（换行保留）⇒ 行号列号不变，调用方按位置断言不会错位。
 
 function listEntityFiles(srcDir) {
   const out = [];
