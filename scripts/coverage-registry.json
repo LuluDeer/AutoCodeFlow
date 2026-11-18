@@ -123,7 +123,8 @@
     "check-windows-gui-script",
     "check-spec-coupling-surfaces",
     "check-metric-docs",
-    "check-typecheck-covers-specs"
+    "check-typecheck-covers-specs",
+    "check-migration-symmetry"
   ],
   "covered": {
     "scripts/agent-boundary-check.mjs": {
@@ -399,6 +400,11 @@
       "floor": 11,
       "args": [],
       "why": "数据驱动用例表（20 + 2 = 22 条）：`must(` 的 8 个调用点是**生产与自检共用**的断言助手 = 「断言语句数」，删表纹丝不动 ⇒ 用它当 floor 是假保护（→ 314）。⇒ 用 R168 的一等形态：守卫打 `COVERAGE_CASES: 22` + `COVERAGE_TABLE: SELFTEST_CASES=20,EXTRA_SELFTEST_CASES=2`，哨兵**自己**去源码里数这两张表的顶层条目并与打印值逐张对照 ⇒ **交叉核对仍然成立**。"
+    },
+    "scripts/check-migration-symmetry.mjs": {
+      "helper": "push",
+      "floor": 5,
+      "args": []
     },
     "scripts/check-migrations.mjs": {
       "helper": "subprocess",
