@@ -124,7 +124,8 @@
     "check-spec-coupling-surfaces",
     "check-metric-docs",
     "check-typecheck-covers-specs",
-    "check-migration-symmetry"
+    "check-migration-symmetry",
+    "check-live-probes-intact"
   ],
   "covered": {
     "scripts/agent-boundary-check.mjs": {
@@ -382,6 +383,11 @@
     "scripts/check-lint-gates.mjs": {
       "helper": "subprocess",
       "floor": 6,
+      "args": []
+    },
+    "scripts/check-live-probes-intact.mjs": {
+      "helper": "checkCase",
+      "floor": 4,
       "args": []
     },
     "scripts/check-mcp-error-hints.mjs": {

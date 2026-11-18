@@ -1331,6 +1331,15 @@ jobs:
         run: |
           node scripts/check-typecheck-covers-specs.mjs --selftest
           node scripts/check-typecheck-covers-specs.mjs
+      # R229：9 个真机探针（r2*-probe.mjs）需要隔离 Redis/真 PG/分钟级 cron ⇒ **不能进 CI**。
+      # 代价：它们**退化时没有任何信号**（文件被删/入口接串/语法坏），而它们是唯一能证明
+      # 「真机行为成立」的资产（R208/R212/R213/R214/R216 的结论全靠它们）——
+      # 一个**默默失效、没人知道已经失效**的验证资产比没有更糟：它会让人以为「有覆盖」。
+      # 本守卫**只查静态可用性**，不连真机（跑一遍最坏 22 分钟，塞进 CI 只会被人注释掉）。
+      - name: Live probes intact guard (R229)
+        run: |
+          node scripts/check-live-probes-intact.mjs --selftest
+          node scripts/check-live-probes-intact.mjs
       # shell「变量名吞掉多字节字符」守卫（desktop-v1.6.0 补发实证）。
       # 裸 `$count` 紧跟全角「（」时，macOS runner 的 /bin/bash 3.2 在非 UTF-8
       # locale 下会把 0xEF 并进变量名 → set -u 下 `count�: unbound variable`
