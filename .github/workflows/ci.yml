@@ -1322,6 +1322,15 @@ jobs:
         run: |
           node scripts/check-lint-gates.mjs --selftest
           node scripts/check-lint-gates.mjs
+      # R224：`typecheck:all` 必须覆盖「spec 层」（`tsc -p tsconfig.spec.json`）。
+      # 事故形态（R222/R223）：构造器加**必填**参数 ⇒ 用定位参数装配的 spec **整个套件编译失败**；
+      # 而 `tsc --noEmit`（typecheck:api）用的是 **build tsconfig、不含 spec**，
+      # Jest 汇总行又只写 `Tests: 26 passed`（失败套件的用例按 0 计）⇒ 所有局部信号全绿。
+      # 判据：脚本已定义 + 已串进 typecheck:all + 真的用 tsconfig.spec.json + CI 有跑。
+      - name: Typecheck covers specs guard (R224)
+        run: |
+          node scripts/check-typecheck-covers-specs.mjs --selftest
+          node scripts/check-typecheck-covers-specs.mjs
       # shell「变量名吞掉多字节字符」守卫（desktop-v1.6.0 补发实证）。
       # 裸 `$count` 紧跟全角「（」时，macOS runner 的 /bin/bash 3.2 在非 UTF-8
       # locale 下会把 0xEF 并进变量名 → set -u 下 `count�: unbound variable`

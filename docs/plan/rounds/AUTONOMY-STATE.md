@@ -1,29 +1,29 @@
-# AUTONOMY-STATE — 状态卡（R223 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R224 收尾交接版 · ≤50 行）
 
-**基线**：`d1ec6710`（R222，`git log -1`）· 本轮落地 **1 个提交**（R223 修 R222 自伤）· **守卫链 111 段**（本机实测 **106 段 exit 0**；第 55/107 段是环境既有缺口 —— `packages/{mcp-server,acf-cli}` 无 node_modules/dist，stash 后原版同样红；**未新增链段**）
-**会话**：第 223 轮 · 并行第 149 批 · **单靶**
+**基线**：`52e99466`（R223，`git log -1`）· 本轮落地 **1 个提交**（R224 把 426 机械化）· **守卫链 111 段**（本机实测 **106 段 exit 0**；第 55/107 段是环境既有缺口 —— `packages/{mcp-server,acf-cli}` 无 node_modules/dist，stash 后原版同样红；**未新增链段**）
+**会话**：第 224 轮 · 并行第 150 批 · **单靶**
 
-## 本轮落地（R223 · 1 项 · 已复核）
+## 本轮落地（R224 · 1 项 · 已复核）
 
-**★ 修掉 R222 自己造成的自伤 —— 并且发现「26 例全绿」是个假绿。**
-- **缺陷**：R222 把 `ConfigService` 加成**必填构造器参数**，而既有 spec 用**定位参数**装配
-  （`new AgentQueueStallService(queue)`）⇒ `agent-queue-stall.service.spec.ts` **整个套件编译失败**。
-- **上一轮为什么没发现**：Jest 对「套件编译失败」只打 `Test suite failed to run`，
-  **用例数按 0 计** ⇒ 汇总行 `Tests: 26 passed` 看起来正常（那个 26 来自**别的套件**）。
-- **修法**：`@Optional()` + 放末尾 + 读处 `?.` 空值安全，回落 `DEFAULT_OBSERVATION_TIMEOUT_MS`
-  （与 `AgentController` 同款，R202/R205 两次前例）。
-- **修后**：queue 4 套 **37 例**（原 26 例是漏算）· agent 全量 **18 套 184 例**。
+**★ 把 R223 的纪律 426 机械化：`typecheck:all` 必须覆盖 spec 层。**
+- **缺口**：根 `typecheck:all` 串了 7 个 typecheck，**唯独没有 `typecheck:specs`** —— 而它在本仓
+  多处文档里被引为「全量类型检查门禁」⇒ 拿它当验收项的人会得到**假绿**（正是 R222 事故
+  能溜过去的**结构性原因**）。
+- **修法**：根新增 `typecheck:specs`（`-p tsconfig.spec.json`）+ **串进 `typecheck:all`**。
+- **★ 新守卫 `check-typecheck-covers-specs`**（四条判据：已定义 / 已串联 / 真的用 spec tsconfig /
+  CI 有跑），**selftest 5/5**（正例 + 四个反例逐条红），已接进 `test:guards:chain` 与 `ci.yml`。
+- **★ 决定性反证**：复刻 R222 事故（去掉 `@Optional()`）后 —— **`typecheck:api` exit 0**
+  （build tsconfig 不含 spec）、**`typecheck:specs` exit 2**。⇒ 两个门禁**不是同一件事**。
 
-## 验证 / 红演示（R223 · 真实 exit）
-- **验证**：`tsc` + **`tsc -p tsconfig.spec.json`**（后者是 spec 层编译的唯一门禁，R223 补漏的关键）·
-  agent **18 套 184 例** · `lint:api` · `size-caps` · `check-env-drift` · `test:docs` 全 **0**。
-- **反证**：把 `@Optional()` 去掉 ⇒ `tsc -p tsconfig.spec.json` 报 TS2554、套件 `Tests: 0`。
-- **台账补记**：R221（backlogged schema，覆盖率 246→247）与 R222（观测超时可配）两个提交
-  **当时没登记**，本轮一并补进 `PLAN-CLAIMS`。
+## 验证 / 红演示（R224 · 真实 exit）
+- **验证**：新守卫 5/5 自检 + 主跑 0 · `check:guards-wired` 0（守卫 98→**99**、覆盖登记 82→**83**）·
+  `check-script-main-guard` 0 · `size-caps` 0 · `check-workflow-yaml` 0 · `test:docs` 0 ·
+  `check-env-drift` 0 · `typecheck:api`/`typecheck:specs` 全 0。
+- **环境既有缺口（如实）**：`typecheck:all` 本机仍红 —— `typecheck:cli`/`mcp` 需要 `packages/*/node_modules`（本机没装）。
 
-## 教训（426–427，接 425）
-- **426「加构造器参数会破坏所有用定位参数装配的 spec，而它们**不会**在 `Tests:` 里出现」** —— Jest 对套件编译失败只打 `Test suite failed to run`、用例按 0 计 ⇒ 汇总行看起来正常。⇒ 判「测试全绿」必须同时看 **`Test Suites:` 数**与 **`tsc -p tsconfig.spec.json`**（`tsc --noEmit` 用 build tsconfig，**不含 spec**）。
-- **427「给已有 @Injectable 加依赖：`@Optional()` + 放末尾是默认姿势」** —— 本仓 spec 大量用 `new X(a, b)` 定位装配（R202/R205/R223 三次同坑）。⇒ 新增依赖一律 `@Optional()` 放末尾；若它其实必需，那也要**同批改所有 spec**，不要留「必填但 spec 没传」的中间态。
+## 教训（428–429，接 427）
+- **428「写在文档里的纪律 ≠ 门禁；它只是『记得的人』的私人知识」** —— R223 的教训把这个坑写清楚了，但**下一个加 typecheck 脚本的人不会读到**。⇒ 教训写完问一句：**这条能不能机械化**？能就别只写文档。
+- **429「两个门禁看起来是同一件事时，必须证明它们不是」** —— `typecheck:api` 与 `typecheck:specs` 名字相近、都用 tsc，但**读不同 tsconfig、覆盖面不相交**。反证（一个 exit 0、一个 exit 2）是唯一能钉死的证据形态。
 
 ## 剩余 backlog（`§7.0` 主表 **3** 条 · 全部外部阻塞）
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（部分已修，**不声称根除**，nightly 尚无样本）· `release-notice-ops`（需运维窗口）。
@@ -33,7 +33,8 @@
 
 **里程碑**：前端 P3 九条（R188–195）· R169 审计 17 条 · `no-explicit-any` 73→0（R196）· 「读失败渲染成没有」清零（R197）· **接管台五徽标全部接线完成**（R198/199/203/205/207）· 五判据严格互补 · 两级阈值不变式（R200）。
 
-## 方法学（累积 399–427，全文见 `AUTONOMY-STATE-ARCHIVE.md` / `PLAN-CLAIMS`）
+## 方法学（累积 399–429，全文见 `AUTONOMY-STATE-ARCHIVE.md` / `PLAN-CLAIMS`）
+**429** 「两个门禁像同一件事」时要证明它们不是 · **428** 纪律能机械化就别只写在文档里 ·
 **427** 给 @Injectable 加依赖默认 `@Optional()`+末尾 · **426** 套件编译失败不计入 `Tests:`（要另看 Suites 数与 spec tsc）·
 **425** 探针断言不能跨两行日志 `&&` · **424** 降级日志要三态（「想干但干不动」最容易被静默）·
 **423** 自动化判据门槛更高（副作用须可枚举封顶）· **422** 「别重复」只能靠原子谓词，且只有真并发能证明 ·

@@ -4059,6 +4059,40 @@
     再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
     也不要用「先接上再观察」把 floor 变成摆设。
 
+- 2026-11-18 **自治优化 · R224（并行第 149 批）（1 提交 · 把 426 那条纪律**机械化**：`typecheck:all` 必须覆盖 spec 层）**：
+  R223 的教训 426 写的是「判测试全绿必须另看 spec tsc」—— 但那只是**一句要靠人记得的话**。
+  本轮把它变成守卫。
+
+  - **① ★ 找到缺口**：根 `typecheck:all` 串了 **7 个** typecheck，**唯独没有 `typecheck:specs`**；
+    而 `typecheck:specs` 在本仓**多处文档里被引为「全量类型检查门禁」**（`PLAN-CLAIMS` 数处、
+    `ARCH-28b` 的并行化对照）。⇒ 任何把 `typecheck:all` 当验收项的人都会得到**假绿** ——
+    这正是 R222 事故（`tsc --noEmit` 0 错而 spec 整个套件编译失败）能溜过去的**结构性原因**。
+  - **② 修法**：根 `package.json` 新增 `typecheck:specs`（`cd apps/admin-api && npx tsc -p
+    tsconfig.spec.json --noEmit`，与 `typecheck:api` 同款形态）+ **串进 `typecheck:all`**。
+  - **③ ★ 加守卫 `check-typecheck-covers-specs.mjs`（判据四条）**：
+    ① 根必须定义 `typecheck:specs`；② `typecheck:all` **必须**串上它；
+    ③ 该脚本必须真的用 **`-p tsconfig.spec.json`**（否则它与 `typecheck:api` 是同一个门禁，
+    包含它只是「看起来查过 spec」的错觉）；④ CI 必须有一跑它。
+    **selftest 5/5**（正例 + 四个反例逐条变红）。已接进 `test:guards:chain` 与 `ci.yml`。
+  - **④ ★ 反证的**决定性证据**（本轮最有说服力的一条）**：把 `@Optional()` 去掉（复刻 R222 事故）后
+    —— **`typecheck:api` = exit 0**（用 build tsconfig，**不含 spec**），
+    **`typecheck:specs` = exit 2**（2 处 TS2554）。⇒ 两个门禁**不是同一件事**，
+    而 `typecheck:all` 此前只跑了前者。
+
+  **验证（真实 exit）**：新守卫 **5/5 自检 + 主跑 0** · `check:guards-wired` **0**（守卫 98 → **99**、
+  覆盖登记 82 → **83**）· `check-script-main-guard` 0 · `check-size-caps` 0 · `check-workflow-yaml` 0
+  （10 个 workflow 全可解析）· `test:docs` 0 · `check-env-drift` 0 · `typecheck:api`/`typecheck:specs` 全 0。
+  **环境既有缺口（如实）**：`typecheck:all` 在本机仍会红 —— 因为 `typecheck:cli`/`typecheck:mcp`
+  需要 `packages/*/node_modules`，本机没装（与本轮改动无关，stash 后原版同样红）。
+
+  **方法学沉淀（接 427）**：
+  - **428「写在文档里的纪律 ≠ 门禁；它只是『记得的人』的私人知识」**。R223 的教训 426 已经把这个坑
+    描述得很清楚，但**下一个加 typecheck 脚本的人不会读到它** —— 除非它变成一条会红的判据。
+    ⇒ 教训写完要问一句：**这条能不能机械化？能就别只写在文档里**。
+  - **429「两个门禁看起来是同一件事时，必须证明它们不是」**。`typecheck:api` 与 `typecheck:specs`
+    名字相近、都用 tsc、都跑在 admin-api —— 但它们**读不同的 tsconfig**，覆盖面**不相交**。
+    本轮的反证（一个 exit 0、一个 exit 2）是唯一能把这件事钉死的证据形态。
+
 - 2026-11-18 **自治优化 · R221–R223（并行第 146–148 批）（3 提交 · 两个契约面收尾 + 一处自伤修复）**：
 
   - **R221（`40583b1b`）补 `backlogged` 端点的 response schema** —— 与 R211 补的 stall/idle 同批落地，
