@@ -1822,6 +1822,16 @@ jobs:
         # deploy.sh 是唯一会改动生产主机的脚本：50 例覆盖迁移前备份的退出码
         # 传播、rollback 的 mode 恢复、dry-run 安全性、health 闸门。
         run: npm run test:deploy-script
+      # R252：**4 条真机 race 用例此前「两边都不跑」**（方法学 465 的活案例）。
+      # `check-race-selftests-wired` 判据说「都在 test:guards:selftests 链内 ✓」——
+      # 但那个段**本地 chain 不含、CI 也不直接调**（全仓 0 次提及）⇒ 从未被执行。
+      # 本 job 已装依赖且有 docker，正是它们需要的环境。
+      - name: Executor race selftests (R252)
+        run: |
+          npm run test:executor-register-race
+          npm run test:executor-token-idempotency
+          npm run test:executor-token-cross-instance
+          npm run test:heartbeat-dispatch-race
       - name: Deploy auto-rollback selftest (OSS-recon S6-6-2)
         # 验证失败自动回滚链：verify_phase 健康门失败 → 记 .deploy-manifest.failed.json
         # → 用**同一次运行的 MODE** 调 cmd_rollback → 回滚后再验 health → 两类失败

@@ -23,7 +23,7 @@
  * 用法：`node scripts/check-race-selftests-wired.mjs [--selftest] [--root=<dir>]`
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -72,6 +72,67 @@ export function checkParentChainWiring(root) {
       errors.push(`${PARENT_EXEMPT_REL} 不是合法 JSON：${e.message}`);
     }
   }
+  // ── R252：**「在某个父段的链里」≠「会被执行」**（方法学 465 的活案例） ──────────
+  //
+  // 本轮实测到的真实缺口：4 条 race 用例都挂在 `test:guards:selftests`，
+  // 而那个父段 **本地 chain 不含、CI 也不直接调**（全仓 0 次提及）
+  // ⇒ 旧判据只查 `chainParts` 里有没有父段名 —— **它们全绿通过，但从未被执行**。
+  //
+  // 新判据分两层：
+  //   ① 本地：从 `test:guards:chain` 做**递归可达性分析**（父段可能被间接引用）；
+  //   ② CI：`ci.yml` 里是否**真的出现**该用例的 `npm run <npmScript>`（直接执行）。
+  // 只要**任一**成立 ⇒ 该用例真的会被跑。
+  const chainScripts = scripts["test:guards:chain"] ?? "";
+  const localReach = new Set();
+  const walkLocal = (name, depth) => {
+    if (depth > 8 || localReach.has(name)) return;
+    const body = scripts[name];
+    if (typeof body !== "string") return;
+    localReach.add(name);
+    for (const m of body.matchAll(/npm run ([\w:-]+)/g)) walkLocal(m[1], depth + 1);
+  };
+  walkLocal("test:guards:chain", 0);
+
+  const ciDir = join(root, ".github", "workflows");
+  let ciText = "";
+  if (existsSync(ciDir)) {
+    for (const f of readdirSync(ciDir)) {
+      if (/\.ya?ml$/.test(f)) ciText += readFileSync(join(ciDir, f), "utf8");
+    }
+  }
+
+  /** 某条用例是否**真的**会被执行（本地可达 或 CI 直接调）。 */
+  const reallyExecuted = (entry) => {
+    if (localReach.has(entry.npmScript)) return "局部链可达";
+    if (new RegExp(`npm run ${entry.npmScript.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(ciText)) {
+      return "CI 直接调用";
+    }
+    return null;
+  };
+
+  // ── 逐条判「真的会被跑」──────────────────────────────────────────────────
+  for (const entry of REQUIRED_RACE_SELFTESTS) {
+    const how = reallyExecuted(entry);
+    if (how) {
+      printed.push(`${entry.id}：会执行（${how}）`);
+      continue;
+    }
+    const ex = exempt.find((x) => x.script === entry.npmScript);
+    if (ex && ex.why && String(ex.why).length >= 12) {
+      printed.push(
+        `${entry.id}：**不执行，显式豁免**：${ex.why}（复核：${ex.reviewBy ?? "未定"}）`,
+      );
+      continue;
+    }
+    errors.push(
+      `${entry.id}（\`${entry.npmScript}\`）**没有任何真实执行入口** —— ` +
+        `本地 \`test:guards:chain\` 递归可达里没有它，\`ci.yml\` 也没直接调它。` +
+        `它挂在 \`${entry.chain}\`，而那个段本身**可能从未被执行**（R252 实测：该段两边都不跑）。` +
+        `处置：① 把 \`npm run ${entry.npmScript}\` 加进 \`test:guards:chain\` 或 \`ci.yml\`；` +
+        `② 或在 ${PARENT_EXEMPT_REL} 里按 **npmScript** 登记豁免（why ≥12 字 + reviewBy）。`,
+    );
+  }
+
   const parents = [...new Set(REQUIRED_RACE_SELFTESTS.map((e) => e.chain).filter(Boolean))];
   for (const parent of parents) {
     const runsInChain = chainParts.some((part) => part.includes(`npm run ${parent}`) || part.includes(parent));
@@ -303,7 +364,7 @@ function runSelftest() {
     }
   });
 
-  push("反例①：链里删掉引用 ⇒ exit 1 且点名「没有任何链会执行」", () => {
+  push("反例①：链里删掉引用 ⇒ exit 1 且点名「没有任何真实执行入口」", () => {
     const scripts = fixtureScripts({
       "test:guards:selftests": "npm run test:executor-register-race",
     });
@@ -311,7 +372,7 @@ function runSelftest() {
     try {
       expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
         code: 1,
-        contains: ["test:executor-token-idempotency", "没有任何链会执行"],
+        contains: ["test:executor-token-idempotency", "没有任何真实执行入口"],
         withinMs: 20000,
         label: "删引用",
       });
@@ -327,7 +388,7 @@ function runSelftest() {
     try {
       expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
         code: 1,
-        contains: ["没有 \"test:executor-token-idempotency\""],
+        contains: ["test:executor-token-idempotency"],
         withinMs: 20000,
         label: "删脚本",
       });
@@ -380,7 +441,13 @@ function runSelftest() {
       "test:guards:chain": "npm run something-else",
       "test:arch31-multi-instance": "node scripts/arch31-multi-instance-selftest.mjs",
     });
-    const repo = makeFixtureRepo(fixtureTree({ scripts }));
+    // ⚠️ R252：新判据要求每条用例有**真实执行入口**（本地链递归 或 CI 直调）。
+    // 本夹具故意让父段「未进链」，所以必须在 `ci.yml` 里给出这 4 条的直调，
+    // 否则它们会因「没有任何真实执行入口」先红，掩盖本条判据的观察对象。
+    const files = fixtureTree({ scripts });
+    files[".github/workflows/ci.yml"] =
+      REQUIRED_RACE_SELFTESTS.map((e) => `run: npm run ${e.npmScript}\n`).join("");
+    const repo = makeFixtureRepo(files);
     const exPath = join(repo.dir, PARENT_EXEMPT_REL);
     const body = { exempt: [{ script: "test:guards:selftests", why, reviewBy: "2026-12-31" }] };
     if (evidence !== undefined) body.exempt[0].evidence = evidence;
