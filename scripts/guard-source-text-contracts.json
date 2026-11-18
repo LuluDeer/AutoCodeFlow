@@ -441,6 +441,22 @@
       "dispositionNote": "这条判据不可能脱离 SQL 文本：PostgreSQL 是否允许在事务块内跑 CONCURRENTLY、连接池超时会不会取消建索引，**全都体现在那几句 SQL 里**。改成「不读 SQL」就只能靠人工 checklist，而那正是它会漏的地方。⇒ P2：判据对象即文本形态，保留且非债。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-022",
+      "tier": "P1",
+      "spec": "scripts/check-compose-service-env.mjs",
+      "specLine": 411,
+      "needle": "parseControllerConfigKeys(readFileSync(registry.controller.ts)) 与 parseComposeServices(readFileSync(docker-compose.yml)) **两侧键集合对账**",
+      "reads": [
+        "docker-compose.yml",
+        "apps/admin-api/src/modules/registry/registry.controller.ts"
+      ],
+      "asserts": "**跨格式读取**：从 YAML 的 `services.admin-api.environment` 抽出注入键，从 TS 的 `config.get('X')` 抽出读取键，断言「读了的都必须注入，且注入值非空」。两侧都先剥注释（YAML `#` / TS 行注释），并各有下界（`MIN_ADMIN_ENV_KEYS=15` / `MIN_CONTROLLER_KEYS`）防扫描器失效退化永真",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值就是**跨两种格式对账**：YAML 里注入了什么、TS 里读了什么，只有同时读两边才能发现「读了但没注入」（容器起得来但运行时 500）。按 tierDefinitions 属 P1「跨语言/跨仓读 ⇒ 最脆」—— 它天然依赖两个文件的**路径与书写形态**，改任一侧的写法就可能让扫描器失明；这一点已由两处下界断言 + 「事实源缺失 ⇒ 结构红」作为补偿控制，故接受。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [
@@ -570,17 +586,6 @@
       "readSurface": [
         "packages/acf-cli/src/commands",
         "packages/acf-cli/src/index.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B08",
-      "spec": "scripts/check-compose-service-env.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/registry/registry.controller.ts"
       ]
     },
     {
