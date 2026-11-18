@@ -70,7 +70,17 @@ const readySections = (items: Partial<Record<keyof InboxSections, InboxItem[]>>)
     status: 'ready',
     items: [],
     error: null,
-    snapshot: { stalled: false, reason: null, pendingJobs: 0, degraded: false },
+    snapshot: {
+      stalled: false,
+      reason: null,
+      pendingJobs: 0,
+      degraded: false,
+      // R232：R211 给 QueueStallSnapshot 加了两个字段（「可能误报」/「workers 是否已知」），
+      // 本夹具此前没跟上 ⇒ `typecheck:web`（tsc -b）在**本机从未完整跑过**所以一直没暴露
+      // （它需要 packages/* 的 node_modules，R231 才装齐）。
+      degradedCounts: false,
+      workersKnown: true,
+    },
   },
   recentFailures: { key: 'recentFailures', status: 'ready', items: items.recentFailures ?? [], error: null },
 });
