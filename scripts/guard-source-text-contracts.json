@@ -489,6 +489,25 @@
       "dispositionNote": "这条判据的价值是「文档里的命令数不是手抄的、而是与代码同步的」。只有数源码才能发现「加了 .command( 但忘了改文档」——那正是它会漂的地方（本仓有过 CLI 计数漂移史）。⚠️ **已知形态风险**：计数直接对 `readText` 的原文跑 `match`，**未剥注释** ⇒ 源码注释里若出现 `.command(` 会被多算。当前 `packages/acf-cli` 里 0 处（已核）；若将来出现，症状是「文档数字对不上但代码没改」，可自愈（补注释说明即可），不会掩盖真缺陷。故接受现状，风险已记录在此。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-025",
+      "tier": "P0",
+      "spec": "scripts/check-alerts-rules.mjs",
+      "specLine": 1371,
+      "needle": "parseYamlSubset(alerts.yml) → validateAlertsDocument(doc, {metricNames, runbookAnchors, gauges}) 做**语义级对账**（alert/expr/for/severity 四元组 + 指标名 ∈ 代码清单）",
+      "reads": [
+        "config/monitoring/alerts.yml",
+        "docs/observability/grafana-dashboard.json",
+        "docs/observability/alerting-rules.yml",
+        "docs/observability/README.md",
+        "docs/operations.md"
+      ],
+      "asserts": "把 `alerts.yml` **解析成结构树**后断的是**语义**：每条规则的 alert 名合法且唯一、expr 引用的指标名必须存在于「代码指标清单」、runbook_url 的锚点必须在文档标题里真实存在（含探针防「锚点面为空 ⇒ 死链判据空转」）。不是比文本 —— 一个空格缩进错误会被解析器如实报红",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值是「告警规则**接线了**且**引用的指标真的存在**」——只读文本无法判断 `expr` 里的指标名是否在代码里注册过，也无法判断 runbook 锚点是否真实存在。它自带一个 YAML 子集解析器（不支持锚点等高级语法，遇到即报错），**解析失败会显式红**而非静默跳过 ⇒ 不会退化成永真。按 P0：断的是结构化的语义值。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageBacklog": [
@@ -518,18 +537,6 @@
         "apps/admin-api/src/modules/agent/dto/agent-response.dto.ts",
         "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts",
         "apps/admin-api/src/modules/agent/tools/agent-sanitize.util.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B04",
-      "spec": "scripts/check-alerts-rules.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts",
-        "apps/admin-api/src/modules/metrics/runtime-metrics.ts"
       ]
     },
     {
