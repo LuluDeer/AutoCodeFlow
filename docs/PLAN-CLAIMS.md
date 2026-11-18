@@ -4077,6 +4077,34 @@
   守卫侧 **23 → 24 条**、**P0 9 → 10**、backlog **24 → 23** ·
   `--selftest` **59/59** · `check-size-caps` 0。
 
+- 2026-11-19 **自治优化 · R268（并行第 195 批）（1 提交 · 批量判定 3 条，全 P0：B12 / B19 / B21）**：
+
+  - **`GSTC-B12` → P0**（`check-desktop-rollback-path`）：按**标题层级**定位文档节
+    （`headingRe` + `headings[k].level <= headings[h].level`），再要求「回滚路径」那一节
+    描述的步骤能在 builder/updater/config-store 找到对应实现 ⇒ 断**节内语义与代码事实一致**，
+    不是全文关键词命中（否则关键词写在别的节也会假绿）。
+  - **`GSTC-B19` → P0**（`check-index-drift`）：
+    `matchAll(/CREATE … INDEX … "name" ON "table" (cols)/gis)` 建 DDL 侧 Map，
+    与实体具名 `@Index("name",[cols])` 做**集合对账** ⇒ 断两侧集合相等。
+    价值：`@Index` 不许是**死声明**（本仓有过「声明的索引数十周期从未落库」的真实事故）。
+    R263 已把它的 `stripComments` 换成共用件，修掉唯一的形态漏洞。
+  - **`GSTC-B21` → P0**（`check-metric-docs`）：从 `runtime-metrics` 注册表建
+    `entries.set(name,{kind,reason})`，再从文档抽 `autoflow_*` 提及，做**双向集合对账**
+    （注册未文档 / 文档未注册 / allowlist 越界）。
+    价值：文档里的指标清单**不是手抄的** —— 单向只能发现「注册了没写」，
+    发现不了「写了但根本不存在」；allowlist 是**棘轮**（只许缩小）。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **34 → 37 条**、**P0 18 → 21**、backlog **13 → 10** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **方法学沉淀（接 495）**：
+  - **496「『双向对账』与『单向清单』的区别，在于它能发现**根本不存在的东西****。
+    `GSTC-B21` 是双向（注册表 ↔ 文档），所以「文档里写了一个不存在的指标」会红；
+    若只做单向（「注册的都要在文档里」），那个假指标会**永远留着**。
+    ⇒ 判据设计时先问：**这个方向能不能发现「多出来的」**？
+    只能发现「少了的」的判据，对「臆造」类缺陷**完全无效**。
+
 - 2026-11-19 **自治优化 · R267（并行第 194 批）（1 提交 · 批量判定 3 条，**全部 P0**：B27 / B29 / B30）**：
 
   - **`GSTC-B27` → P0**（`check-template-manifest`）：解析 `manifest.json` 后做
