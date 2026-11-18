@@ -122,7 +122,8 @@
     "check-size-caps",
     "check-windows-gui-script",
     "check-spec-coupling-surfaces",
-    "check-metric-docs"
+    "check-metric-docs",
+    "check-typecheck-covers-specs"
   ],
   "covered": {
     "scripts/agent-boundary-check.mjs": {
