@@ -326,7 +326,7 @@ describe("AgentController · grant/deny（A1 审批闭环）", () => {
 
   it("grant：挂起会话 → 条件写 + 复用 resume 链路（reason=resume:approval）", async () => {
     const h = harness({
-      session: { id: "s-1", status: "waiting_input" } as Partial<AgentSession>,
+      session: { id: "s-1", status: "waiting_input", totalSteps: 7 },
       approval: pendingApproval as Partial<AgentApproval>,
       decideResult: grantedRow as Partial<AgentApproval>,
     });
@@ -347,8 +347,12 @@ describe("AgentController · grant/deny（A1 审批闭环）", () => {
     );
     expect(h.queue.add).toHaveBeenCalledWith(
       "run",
-      { sessionId: "s-1", reason: "resume:approval" },
-      expect.objectContaining({ attempts: 1 }),
+      { sessionId: "s-1", reason: "resume:approval", expectTotalSteps: 7 },
+      {
+        attempts: 1,
+        removeOnComplete: true,
+        deduplication: { id: "resume-s-1-7" },
+      },
     );
   });
 

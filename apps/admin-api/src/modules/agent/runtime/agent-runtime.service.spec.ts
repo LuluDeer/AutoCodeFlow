@@ -18,6 +18,7 @@
  */
 import {
   AgentRuntimeService,
+  type RunOptions,
   PROMPT_FINGERPRINT_ALGO,
   computePromptFingerprint,
 } from "./agent-runtime.service";
@@ -79,10 +80,10 @@ function harness(
   const events: Any[] = [];
   // RT-3：替身必须实现「唤醒凭据」语义（期望 waitingFor 不匹配即 CAS 输）
   const markRunning = jest.fn(
-    async (_id: string, expectWaitingFor?: string) => {
+    async (_id: string, { expectWaitingFor }: RunOptions) => {
       const won =
         expectWaitingFor === undefined ||
-        (session.waitingFor ?? null) === expectWaitingFor;
+        session.waitingFor === expectWaitingFor;
       // 与生产同语义：从 waiting_input 恢复会拿到新的墙钟窗口（审计 #1）
       if (won && session.status === "waiting_input") {
         session.status = "running";
@@ -1683,10 +1684,9 @@ describe("AgentRuntimeService.run —— 唤醒凭据与循环内状态复查", 
     });
 
     expect(h.chatMultimodal).not.toHaveBeenCalled();
-    expect(h.sessionService.markRunning).toHaveBeenCalledWith(
-      "sess-1",
-      "auto_resume",
-    );
+    expect(h.sessionService.markRunning).toHaveBeenCalledWith("sess-1", {
+      expectWaitingFor: "auto_resume",
+    });
     expect(out.status).toBe("waiting_input");
     expect(h.finished).toHaveLength(0);
   });

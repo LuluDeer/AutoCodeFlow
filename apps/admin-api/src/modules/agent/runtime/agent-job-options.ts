@@ -22,28 +22,43 @@ export function autoResumeJobId(sessionId: string): string {
 }
 
 /**
- * R215：**人工 / 审批恢复**的 jobId（可枚举，**不带时间戳**）。
- *
- * ## 为什么改掉 `${id}:resume:${Date.now()}`
- *
- * ① **它让「积压」判据误报**：积压对账的做法是 `queue.getJob(session.id)`（`jobId === session.id`，
- *    因为首跑就是这么入队的）。而 resume 用的是带时间戳的 id ⇒ `getJob(session.id)` 查不到
- *    ⇒ 一条「审批通过、正在正常等消费」的会话会被判成**积压** ⇒ 运营按提示「重新入队」
- *    ⇒ **同一会话跑两遍（双份副作用）**。
- * ② **时间戳的唯一作用是绕过去重**，而那条去重**本来该由业务保证**：resume 前已检查
- *    `status === "running"` ⇒ 409（B-8）。⇒ 固定 id 更诚实。
- *
- * ## 为什么不能写成 `${id}:resume`
- *
- * **实测**（`scripts/r215-jobid-live-probe.mjs`）：BullMQ 拒绝含冒号且非 3 段的 id ——
- * `${id}:resume` 是 2 段 ⇒ **`Custom Id cannot contain :`**。故用**无冒号**的 `resume-${id}`，
- * 与 `autoResumeJobId` 同款（无冒号 ⇒ 不依赖上游的 3 段兼容分支）。
- *
- * ⚠️ **去重语义已被用例钉住**：同一会话重复 resume 会命中**已存在的 job**（BullMQ 对相同 id 的
- * `add` 是**幂等 no-op**，实测 `before=4 after=4`）—— 这正是想要的（第二次 resume 不该产生第二个 job）。
+ * R215 固定 jobId：只供对账识别升级前的 job。retained 终态无需删除。
+ * 旧在途 job 没有步数凭据，升级时应先排空旧 worker/在途工作，再开放新恢复请求。
  */
 export function manualResumeJobId(sessionId: string): string {
   return `resume-${sessionId}`;
+}
+
+/** 审批前的 assistant step 已落库；人工与审批按同一份持久进度合并，不按入口合并。 */
+export function manualResumeDeduplicationId(
+  sessionId: string,
+  totalSteps: number,
+): string {
+  return `resume-${sessionId}-${totalSteps}`;
+}
+
+export function manualResumeJobOptions(
+  sessionId: string,
+  totalSteps: number,
+  reopenedFailure = false,
+): JobsOptions {
+  return {
+    // 不指定 jobId：旧 retained job 不会挡新工作；BullMQ 原子地在终结时释放去重键。
+    attempts: 1,
+    removeOnComplete: true,
+    deduplication: {
+      id: manualResumeDeduplicationId(sessionId, totalSteps),
+      // 仅 failed → pending 的 CAS 赢家能证明这是一次新的显式重试：上次可能在
+      // 写 step 前失败、job 仍 active。普通重复点击绝不在 active 后面再排一份。
+      ...(reopenedFailure ? { keepLastIfActive: true } : {}),
+    },
+  };
+}
+
+/** 队列到 markRunning CAS 的唤醒凭据；无凭据的旧 job 保持原判定。 */
+export interface RunOptions {
+  expectWaitingFor?: string;
+  expectTotalSteps?: number;
 }
 
 export interface AutoResumeJobData {

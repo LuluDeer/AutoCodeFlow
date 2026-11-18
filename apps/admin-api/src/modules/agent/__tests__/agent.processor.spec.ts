@@ -65,6 +65,12 @@ describe("AgentProcessor · process（委托 + 兜底）", () => {
     });
   });
 
+  it("人工/审批的进度凭据透传给 run（含第 0 步）", async () => {
+    const h = harness();
+    await h.proc.process(job({ expectTotalSteps: 0 }));
+    expect(h.run).toHaveBeenCalledWith("sess-1", { expectTotalSteps: 0 });
+  });
+
   it("成功路径记 status/steps，且 job 正常结束（不抛）", async () => {
     const h = harness(
       async () => ({ status: "succeeded", steps: 3 }) as unknown,

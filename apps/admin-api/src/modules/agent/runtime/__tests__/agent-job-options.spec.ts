@@ -3,6 +3,7 @@ import type { JobsOptions } from "bullmq";
 import {
   autoResumeJobId,
   autoResumeJobOptions,
+  manualResumeJobOptions,
   manualResumeJobId,
 } from "../agent-job-options";
 
@@ -40,7 +41,21 @@ describe("agent-job-options —— BullMQ job 选项的合法性", () => {
       removeOnComplete: true,
     });
   });
-  describe("R215 · 人工/审批恢复的 jobId", () => {
+  it("人工与审批共用当前进度去重键；跨步数不相撞，不与旧 retained jobId 相撞", () => {
+    const first = manualResumeJobOptions("s-1", 0);
+    expect(first.jobId).toBeUndefined();
+    expect(first.deduplication).toEqual({ id: "resume-s-1-0" });
+    expect(first.deduplication).toEqual(
+      manualResumeJobOptions("s-1", 0).deduplication,
+    );
+    expect(first.deduplication).not.toEqual(
+      manualResumeJobOptions("s-1", 1).deduplication,
+    );
+    expect(first.deduplication).not.toEqual(
+      manualResumeJobOptions("s-2", 0).deduplication,
+    );
+  });
+  describe("R215 · 升级前人工/审批 job 的兼容探针", () => {
     const SID = "3f2b9c1e-0000-4000-8000-000000000000";
 
     it("① 通过 BullMQ 校验（**无冒号** —— `${id}:resume` 是 2 段，实测会被拒）", () => {

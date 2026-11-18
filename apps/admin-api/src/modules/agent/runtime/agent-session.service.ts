@@ -16,6 +16,7 @@ import {
 } from "../entities/agent-session.entity";
 import { AgentStep, type AgentStepRole } from "../entities/agent-step.entity";
 import { buildStalledPredicate } from "./agent-stalled-thresholds";
+import type { RunOptions } from "./agent-job-options";
 import { clampPagination } from "./agent-pagination";
 import {
   AgentToolCall,
@@ -775,7 +776,8 @@ export class AgentSessionService {
    * 扫描撞上在跑会话）或已收敛终态——输家不得进入推理循环（GAP-1：此前
    * affected 被丢弃，输家照跑，B-8 声称的双跑守卫实际不成立）。
    */
-  async markRunning(id: string, expectWaitingFor?: string): Promise<boolean> {
+  async markRunning(id: string, wake: RunOptions = {}): Promise<boolean> {
+    const { expectWaitingFor: expect, expectTotalSteps: steps } = wake;
     // B-8：CAS 双保险——只有「非 running 且未终态」的会话能被置 running。
     // ① 双 worker 领到同一会话（重复入队的残余窗口）时只有一方真正置态；
     // ② 防住把终态会话拉回 running 的状态机倒退。
@@ -802,11 +804,10 @@ export class AgentSessionService {
           terminal: AGENT_TERMINAL_STATUSES,
         },
       );
-    if (expectWaitingFor !== undefined) {
-      qb.andWhere('"waitingFor" IS NOT DISTINCT FROM :expect', {
-        expect: expectWaitingFor,
-      });
+    if (expect !== undefined) {
+      qb.andWhere('"waitingFor" IS NOT DISTINCT FROM :expect', { expect });
     }
+    if (steps !== undefined) qb.andWhere('"totalSteps" = :steps', { steps });
     const res = await qb.execute();
     return (res.affected ?? 0) > 0;
   }
@@ -831,8 +832,7 @@ export class AgentSessionService {
       where: { id },
       select: { id: true, startedAt: true, status: true },
     });
-    if (!s?.startedAt) return true;
-    return s.status === "waiting_input";
+    return !s?.startedAt || s.status === "waiting_input";
   }
 
   /**

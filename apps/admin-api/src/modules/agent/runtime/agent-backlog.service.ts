@@ -3,8 +3,8 @@
  *
  * 判据本身（纯函数、已测）在 `agent-backlog-check.ts`；完整推导见
  * `docs/observability/agent-backlog-criterion.md`。本文件只做**三件事**：
- * ① 取 `pending` 会话的 id（**有上限**）；
- * ② 逐个问队列「这个 id 的 job 还在不在」（`queue.getJob`，因为 `jobId === session.id`）；
+ * ① 取 `pending` 会话的 id 和 totalSteps（**有上限**）；
+ * ② 查首跑、续跑及旧版本的有限已知键，任一在途 job 都不算积压；
  * ③ 交给纯函数判定，返回积压的 id 列表。
  *
  * ## 为什么单独一个 service（不挂在 `AgentSessionService` 上）
@@ -36,9 +36,14 @@ import {
 import {
   DEFAULT_OBSERVATION_BUDGET_MS,
   ObservationBudget,
+  ObservationTimeoutError,
   withObservationTimeout,
 } from "./observation-timeout.util";
-import { autoResumeJobId, manualResumeJobId } from "./agent-job-options";
+import {
+  autoResumeJobId,
+  manualResumeDeduplicationId,
+  manualResumeJobId,
+} from "./agent-job-options";
 
 /**
  * 一次最多对账多少条 `pending` 会话。
@@ -75,7 +80,7 @@ export class AgentBacklogService {
   /**
    * R213：整次请求的探测总预算（判据文档 §6）。单测可覆写。
    *
-   * 为什么是**字段**而不是直接读常量：串行探测的最坏情况是 200 × 2 次往返，
+   * 为什么是**字段**而不是直接读常量：串行探测最多 200 个会话的多个已知键，
    * 必须整次请求共享一个 deadline；而单测要把它压到毫秒级（否则每条用例真等 8s）。
    */
   readonly observationBudgetMs: number = DEFAULT_OBSERVATION_BUDGET_MS;
@@ -87,59 +92,64 @@ export class AgentBacklogService {
     private readonly queue: Queue,
   ) {}
 
-  /**
-   * R215：找出**指向该会话**的 job（不限首跑）。
-   *
-   * ## 为什么要多查两个 id（这是一处**真实的误报路径**）
-   *
-   * 判据原先只查 `getJob(session.id)`，因为首跑用的是 `jobId: session.id`
-   * （`agent-trigger.service.ts:352`/`:520`）。但本仓**还有两条 resume 路径**用**别的** id：
-   * `manualResumeJobId`（人工/审批恢复 ⇒ `resume-<id>`）与 `autoResumeJobId`
-   * （LLM 瞬时错误 ⇒ `auto-resume-<id>`）。
-   *
-   * ⇒ 一条「审批通过、正在正常排队等消费」的会话，`getJob(session.id)` 查不到 ⇒
-   * **被误判成积压** ⇒ 运营按提示「重新入队」⇒ **同一会话跑两遍（双份副作用）**。
-   *
-   * ## 为什么是「有限枚举」而不是「扫全队列」
-   *
-   * 按 `job.data.sessionId` 扫全队列是 **O(n) 全表扫**，且 `getJobs()` 有单次上限 ⇒ 会漏。
-   * ⇒ 只查**三个已知形态**（首跑 / 人工恢复 / 自动续跑）：
-   * ① 绝大多数命中第 1 个，**零额外往返**；②③ 只在 resume 过的会话上多两次。
-   *
-   * ⚠️ 前两个形态是 `R215` 起**可枚举**的前提：旧写法 `${id}:resume:${Date.now()}` 里的时间戳
-   * **不可枚举** ⇒ 那时这个缺陷**没法在判据侧修**，只能改 jobId 本身（已改）。
-   */
-  private async findSessionJob(
+  /** 三种固定 jobId（含升级前的人工恢复）+ 当前进度的一条 BullMQ 去重键，无需扫队列。 */
+  private async findSessionJobState(
     sessionId: string,
-    timeoutMs: number,
-  ): Promise<{ getState: () => Promise<string> } | undefined> {
-    // 顺序即优先级：首跑最常见 ⇒ 放第一个，命中即返回（零额外往返）。
-    for (const candidateId of [
+    totalSteps: number,
+    budget: ObservationBudget,
+  ): Promise<PendingSessionProbe["jobState"]> {
+    const probe = <T>(label: string, run: () => Promise<T>) => {
+      const slice = budget.sliceMs();
+      if (slice === 0) throw new ObservationTimeoutError(label, slice);
+      return withObservationTimeout(label, run, slice);
+    };
+    const readState = async (id: string) => {
+      const job = await probe(`backlog.getJob(${id})`, () =>
+        this.queue.getJob(id),
+      );
+      return classifyJobState(
+        job
+          ? await probe(`backlog.getState(${id})`, () => job.getState())
+          : undefined,
+      );
+    };
+    let state: PendingSessionProbe["jobState"] = "missing";
+    for (const id of [
       sessionId,
       manualResumeJobId(sessionId),
       autoResumeJobId(sessionId),
     ]) {
-      const job = await withObservationTimeout(
-        `backlog.getJob(${candidateId})`,
-        () => this.queue.getJob(candidateId),
-        timeoutMs,
-      );
-      if (job) return job as unknown as { getState: () => Promise<string> };
+      const candidate = await readState(id);
+      if (candidate === "present") return candidate;
+      // 旧 retained completed/failed 不能遮住后面的活 job。
+      if (candidate === "finished") state = candidate;
     }
-    return undefined;
+    const key = manualResumeDeduplicationId(sessionId, totalSteps);
+    const lookup = () =>
+      probe(`backlog.getDeduplicationJobId(${key})`, () =>
+        this.queue.getDeduplicationJobId(key),
+      );
+    const id = await lookup();
+    if (!id) return state;
+    const resolved = await readState(id);
+    if (resolved === "present") return resolved;
+    // Redis 故障可留下悬空指针；但读 job 途中也可能刚好换成新赢家。只在 miss 时
+    // 再读一次同一键：已换代则本次保守不报，不追着变化的 jobId 循环。
+    const latest = await lookup();
+    return latest && latest !== id ? "present" : resolved;
   }
 
   /**
    * 对账一次：返回当前**永远不会被执行**的 `pending` 会话。
    *
-   * 判据：`pending` 且 `queue.getJob(session.id)` 查不到（`missing`）或已终结（`finished`）。
+   * 判据：`pending` 且全部已知键都缺失（`missing`）或只剩已终结的 job（`finished`）。
    * 完整边界见判据文档 §4（含「队列停摆**不是**积压，是另一个判据」）。
    */
   async findBacklogged(): Promise<BacklogReport> {
     // 多取 1 条用来判「是否截断」（不用另发一次 COUNT：那会多一次全表扫描）。
     const rows = await this.sessions.find({
       where: { status: "pending" },
-      select: { id: true },
+      select: { id: true, totalSteps: true },
       order: { createdAt: "ASC" }, // 最老的优先：真积压的通常是最老的那些
       take: BACKLOG_PROBE_LIMIT + 1,
     });
@@ -149,9 +159,8 @@ export class AgentBacklogService {
     /**
      * R213：**整次请求的总预算**（不是逐调用 5s）。
      *
-     * ⚠️ 为什么必须这样：本循环是**串行**的，每个 session **两次往返**
-     * （`getJob` + `getState`）⇒ 最坏 200 × 2 = **400 次串行**。若每个调用各给 5s，
-     * 最坏 2000s ⇒ **等于没修**（判据文档 §6 已实测确认这一点）。
+     * 单个候选的 getJob/getState、及新恢复键的 getter 都有 Redis 往返；
+     * 200 条逐一查时，不能让每次往返都重新拿到完整的超时窗口。
      * ⇒ 用总预算，超了就**停止探测**并返回已得的部分（`truncated: true`）。
      */
     // ⚠️ 用实例字段而不是直接读常量：单测要把它压到毫秒级（否则每条用例都要真等 8s，
@@ -160,7 +169,7 @@ export class AgentBacklogService {
     const probes: PendingSessionProbe[] = [];
     /** 是否因为**预算耗尽**而提前停止（与 `truncated` 同义：都表示「没查完」）。 */
     let budgetExhausted = false;
-    for (const { id } of probed) {
+    for (const { id, totalSteps } of probed) {
       // 每次迭代前先看预算：已经超了就别再发新请求（那只会让请求更慢）。
       if (budget.expired()) {
         budgetExhausted = true;
@@ -168,18 +177,7 @@ export class AgentBacklogService {
       }
       let jobState: PendingSessionProbe["jobState"];
       try {
-        // 单次上界取 `min(单调用上界, 剩余预算)` —— 否则后段仍可能超出总预算。
-        const slice = budget.sliceMs();
-        const job = await this.findSessionJob(id, slice);
-        jobState = classifyJobState(
-          job
-            ? await withObservationTimeout(
-                `backlog.getState(${id})`,
-                () => job.getState(),
-                budget.sliceMs(),
-              )
-            : undefined,
-        );
+        jobState = await this.findSessionJobState(id, totalSteps, budget);
       } catch (err: unknown) {
         // ⚠️ 对账失败**不能**当成「积压」也不能当成「没积压」——
         //   两者都是假事实。跳过这一条（保守：不当积压），并记日志。
@@ -187,6 +185,10 @@ export class AgentBacklogService {
         this.logger.warn(
           `Backlog probe failed for session ${id}: ${err instanceof Error ? err.message : String(err)}`,
         );
+        if (budget.expired()) {
+          budgetExhausted = true;
+          break;
+        }
         continue;
       }
       probes.push({ sessionId: id, jobState });

@@ -17,11 +17,16 @@ import {
 
 /** 造一个 pending 会话行列表。 */
 const pendingRows = (n: number, offset = 0) =>
-  Array.from({ length: n }, (_, i) => ({ id: `s${offset + i}` }));
+  Array.from({ length: n }, (_, i) => ({
+    id: `s${offset + i}`,
+    totalSteps: 0,
+  }));
 
 function makeService(
   opts: {
-    pending?: Array<{ id: string }>;
+    pending?: Array<{ id: string; totalSteps?: number }>;
+    /** 当前有在途 job 的 BullMQ 去重键。 */
+    deduplicationId?: string;
     /** sessionId → job 状态；`undefined` = 队列里查不到。 */
     jobStates?: Record<string, string>;
     /** 这些 id 的探针会抛错。 */
@@ -36,9 +41,15 @@ function makeService(
     return { getState: jest.fn(async () => state) };
   });
   const sessions = { find } as never;
-  const queue = { getJob } as never;
-  const svc = new AgentBacklogService(sessions, queue);
-  return { svc, find, getJob };
+  const getDeduplicationJobId = jest.fn(
+    async (id: string): Promise<string | null> =>
+      id === opts.deduplicationId ? "49" : null,
+  );
+  const svc = new AgentBacklogService(sessions, {
+    getJob,
+    getDeduplicationJobId,
+  } as never);
+  return { svc, find, getJob, getDeduplicationJobId };
 }
 
 describe("R202 · 积压对账（接线层）", () => {
@@ -49,6 +60,7 @@ describe("R202 · 积压对账（接线层）", () => {
     // 谓词必须是 status = pending
     expect(find.mock.calls[0][0]).toMatchObject({
       where: { status: "pending" },
+      select: { id: true, totalSteps: true },
     });
   });
 
@@ -157,10 +169,69 @@ describe("R202 · 积压对账（接线层）", () => {
     expect(getJob).toHaveBeenCalledWith("s0");
   });
 
-  it("⑧ R215：三个候选都查不到 ⇒ 才判积压（且恰好查 3 次）", async () => {
-    const { svc, getJob } = makeService({ pending: [{ id: "s0" }] });
+  it("新恢复键的查询挂住同样受总预算约束，即使它是最后一条也标明截断", async () => {
+    jest.useFakeTimers();
+    try {
+      const getDeduplicationJobId = jest.fn(() => new Promise<never>(() => {}));
+      const svc = new AgentBacklogService(
+        { find: async () => pendingRows(1) } as never,
+        { getJob: async () => undefined, getDeduplicationJobId } as never,
+      );
+      Object.defineProperty(svc, "observationBudgetMs", { value: 50 });
+      const report = svc.findBacklogged();
+      await jest.advanceTimersByTimeAsync(50);
+      await expect(report).resolves.toMatchObject({
+        sessionIds: [],
+        truncated: true,
+      });
+      expect(getDeduplicationJobId).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("旧 retained job 不遮住在途 job；仅当前进度的去重键参与对账", async () => {
+    const { svc } = makeService({
+      pending: [
+        { id: "s0", totalSteps: 7 },
+        { id: "s1", totalSteps: 9 },
+        { id: "s2", totalSteps: 7 },
+      ],
+      jobStates: {
+        s0: "completed",
+        "resume-s0": "failed",
+        "resume-s1": "completed",
+        "auto-resume-s1": "delayed",
+        "resume-s2": "completed",
+        "49": "waiting", // 当前进度的去重键指向自动分配的 jobId 49
+      },
+      deduplicationId: "resume-s0-7",
+    });
+    expect((await svc.findBacklogged()).sessionIds).toEqual(["s2"]);
+  });
+
+  it("悬空去重指针不算工作；探测途中换代则保守不报且只复查一次", async () => {
+    const opts = {
+      pending: [{ id: "s0", totalSteps: 7 }],
+      deduplicationId: "resume-s0-7",
+    };
+    const stale = makeService(opts);
+    expect((await stale.svc.findBacklogged()).sessionIds).toEqual(["s0"]);
+    expect(stale.getDeduplicationJobId).toHaveBeenCalledTimes(2);
+    const handoff = makeService(opts);
+    handoff.getDeduplicationJobId.mockResolvedValueOnce("48"); // 回读时变成 49
+    expect((await handoff.svc.findBacklogged()).sessionIds).toEqual([]);
+    expect(handoff.getDeduplicationJobId).toHaveBeenCalledTimes(2);
+  });
+
+  it("⑧ 所有已知键都查不到才判积压；不扫队列，不遍历历史步数", async () => {
+    const { svc, getJob, getDeduplicationJobId } = makeService({
+      pending: [{ id: "s0", totalSteps: 12 }],
+    });
     const report = await svc.findBacklogged();
     expect(report.sessionIds).toEqual(["s0"]);
+    expect(getDeduplicationJobId).toHaveBeenCalledTimes(1);
+    expect(getDeduplicationJobId).toHaveBeenCalledWith("resume-s0-12");
     expect(getJob).toHaveBeenCalledTimes(3);
     expect(getJob.mock.calls.map((c) => c[0])).toEqual([
       "s0",

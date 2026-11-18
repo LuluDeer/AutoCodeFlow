@@ -678,7 +678,7 @@ describe("AgentSessionService · 自动续跑额度与重开（GAP-3/GAP-6）", 
 describe("AgentSessionService · 唤醒凭据（RT-3）", () => {
   it("带 expectWaitingFor 时 CAS 追加 waitingFor 谓词；不带时不追加", async () => {
     const h = harness();
-    await h.svc.markRunning("s-1", "auto_resume");
+    await h.svc.markRunning("s-1", { expectWaitingFor: "auto_resume" });
     expect(h.sessionQb.andWhere).toHaveBeenCalledWith(
       '"waitingFor" IS NOT DISTINCT FROM :expect',
       { expect: "auto_resume" },

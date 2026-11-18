@@ -402,6 +402,7 @@
   "共享令牌无效": "Invalid shared token",
   "共享令牌缺失或无效": "Missing or invalid shared token",
   "共享机器凭据（ADMIN-only 面下发）": "Shared machine credential (issued on the ADMIN-only surface)",
+  "关联的审批业务键；历史 UUID 原样保留": "Approval business key; legacy UUID values are preserved unchanged",
   "其中处于 active 状态的任务数——删除后仍会被 cron 触发，是真正会持续产生副作用的那部分": "How many of those tasks are active -- they keep being triggered by cron after the deletion, which is the part that keeps producing side effects",
   "内存使用率百分比": "Memory usage percentage",
   "内容与当前版本完全一致 → 400（修订必须真的改了什么）": "Content identical to the current version -> 400 (a revision must actually change something)",

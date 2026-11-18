@@ -138,8 +138,8 @@ export class AgentToolCall {
   @Column({ type: "text", nullable: true })
   errorMessage: string | null;
 
-  /** 关联的审批记录 id（status=awaiting_approval 时非空）。 */
-  @Column({ type: "uuid", nullable: true })
+  /** 新调用关联 agent_approvals.approvalKey（非主键）；历史 UUID 原样保留。 */
+  @Column({ type: "varchar", length: 128, nullable: true })
   approvalId: string | null;
 
   @Column({ type: "int", default: 0 })

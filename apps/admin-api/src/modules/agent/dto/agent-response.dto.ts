@@ -223,8 +223,9 @@ export class AgentToolCallDto {
 
   @ApiProperty({
     nullable: true,
-    format: "uuid",
-    description: "awaiting_approval / granted 流程的审批记录",
+    type: String,
+    maxLength: 128,
+    description: "关联的审批业务键；历史 UUID 原样保留",
   })
   approvalId: string | null;
 

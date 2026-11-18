@@ -42,9 +42,10 @@ import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import type { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { AGENT_QUEUE_NAME, type AgentJobData } from "./runtime/agent.processor";
-import { manualResumeJobId } from "./runtime/agent-job-options";
+import { manualResumeJobOptions } from "./runtime/agent-job-options";
 import {
   AGENT_SESSION_KINDS,
+  type AgentSession,
   type AgentSessionKind,
 } from "./entities/agent-session.entity";
 import {
@@ -297,7 +298,7 @@ export class AgentController {
   @Get("sessions/:id")
   @ApiOperation({ summary: "获取某个 Agent 会话及其步骤" })
   @ApiOkResponse({ type: AgentSessionDetailResponseDto })
-  async detail(@Param("id") id: string) {
+  async detail(@Param("id", ParseUuidShapePipe) id: string) {
     const session = await this.sessions.requireById(id);
     const [steps, toolCalls, children] = await Promise.all([
       this.sessions.listSteps(id),
@@ -402,9 +403,7 @@ export class AgentController {
       };
     }
 
-    // B-8：running 会话拒绝再入队——下面的 jobId 带 Date.now() 会绕过
-    // BullMQ 去重，双 worker 同时跑同一会话 = 双 LLM 循环、副作用双份。
-    // 409 让前端如实提示（resumable 列表同步排除 running）。
+    // 已有 worker 持有执行权；409 让前端如实提示（resumable 列表同步排除 running）。
     if (session.status === "running") {
       throw new AppError("AGENT_SESSION_ALREADY_RUNNING");
     }
@@ -454,14 +453,24 @@ export class AgentController {
       }
     }
 
-    await this.queue.add(
-      "run",
-      { sessionId: id, reason: "resume:manual" },
-      // R215：**可枚举**的 jobId（不带时间戳）—— 见 `manualResumeJobId` 的头注。
-      // 旧写法 `${id}:resume:${Date.now()}` 会让「积压」判据把它误判成「队列里没有 job」。
-      { jobId: manualResumeJobId(id), attempts: 1 },
-    );
+    await this.enqueueResume(session, "resume:manual");
     return { ok: true };
+  }
+
+  private enqueueResume(
+    session: AgentSession,
+    reason: "resume:manual" | "resume:approval",
+  ) {
+    const { id: sessionId, totalSteps } = session;
+    return this.queue.add(
+      "run",
+      { sessionId, reason, expectTotalSteps: totalSteps },
+      manualResumeJobOptions(
+        sessionId,
+        totalSteps,
+        session.status === "failed",
+      ),
+    );
   }
 
   /** 当前生效的预算（供设置页展示与运维核对）。 */
@@ -551,12 +560,7 @@ export class AgentController {
       session.status === "waiting_input" &&
       !(await this.approvals.hasPendingForSession(sessionId))
     ) {
-      await this.queue.add(
-        "run",
-        { sessionId, reason: "resume:approval" },
-        // R215：同上 —— 审批通过后的自动续跑也必须用可枚举 id，否则会被积压判据误报。
-        { jobId: manualResumeJobId(sessionId), attempts: 1 },
-      );
+      await this.enqueueResume(session, "resume:approval");
       resumed = true;
     }
     return {
@@ -730,7 +734,7 @@ export class AgentController {
       items: { type: "object", additionalProperties: true },
     },
   })
-  async listApprovals(@Param("id") id: string) {
+  async listApprovals(@Param("id", ParseUuidShapePipe) id: string) {
     await this.sessions.requireById(id);
     return this.approvals.listForSession(id);
   }
