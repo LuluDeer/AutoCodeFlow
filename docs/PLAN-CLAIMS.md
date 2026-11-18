@@ -4059,6 +4059,48 @@
     再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
     也不要用「先接上再观察」把 floor 变成摆设。
 
+- 2026-11-18 **自治优化 · R236–R237（并行第 162–163 批）（1 提交 · 修掉 web 最后一处失败；node 那 28 个**查清性质但未修**，如实留档）**：
+
+  - **R236（`510320d1`）修掉 `test:web` 的唯一失败** —— 全量跑 1 失败、单文件跑却全绿：
+    `Found multiple elements with the text: 先查看未结束的指派`。
+    **根因**：antd `Modal.confirm` 的 content 渲染进**独立 portal**，而 `Modal.destroyAll()`
+    是**异步**的 ⇒ 同一用例内此前开过的确认框 portal 可能仍在 DOM 里
+    ⇒ `findByText`（要求唯一命中）报 multiple。**这是测试隔离缺陷，不是产品缺陷**。
+    **修法**：`findAllByText(...)` 取**最后一个**（portal 按打开顺序追加）
+    —— **不是放宽断言**：下面仍断言 `assignments` 被调用、`cancelAssignments` 未被调用。
+    **验证**：`test:web` **exit 0**，329 文件 **2579 例**通过（此前 1 failed / 2578 passed）。
+
+  - **R237（调查，0 提交）`test:node` 的 28 个失败：查清了两层成因，但修法比预期复杂，如实记录尝试与回退**。
+    - **① 第一层（已证实）**：全部集中在 `execute.spec.ts` 一个文件（其余 63 套件绿）；
+      且含 A-2 shell 白名单这类**与网络无关**的用例 ⇒ 同一根因。
+      实证：`jest.clearAllMocks()` **不清 `mockImplementationOnce` 队列** ——
+      我写了个一次性用例验证：注册一条 Once 后调 `clearAllMocks()`，那次调用**仍返回 `once-1`**。
+      而该文件 **31 处**对 `taskWorkerManager.execute` 都用 `mockImplementationOnce`
+      ⇒ 某用例注册了 Once 却没消费掉（先断言失败、或走了不触发 execute 的分支），
+      残留那条会被**下一个用例**消费 ⇒ 「一堆互不相关的用例同时红、单跑全绿」。
+    - **② 尝试与**回退****：加 `mockReset()` ⇒ 28 → **20**，但 `buildNpmRcContent` 那 8 例
+      从绿转红（`mockReset` 连 automock 的**默认实现**一起清掉，而那组依赖「默认 no-op 即成功」）。
+      改 `mockImplementation(() => undefined)` ⇒ 反而 **28 → 38**。
+      ⇒ **两个方向都比基线差** ⇒ **`git checkout` 回退**，停在基线 28，不提交半吊子修复。
+    - **③ 剩下的成因（如实：未查完）**：20 个里既有 DNS 劫持导致（`example.com` → `198.18.1.104`，
+      P2-2 / B-01 / R70 那几例），也有 `killRunningTaskProcesses` 这类 **5001ms 超时**
+      （真实进程组操作，可能与本机环境有关），还有 `buildNpmRcContent` 的 mock 交互。
+      **它们不是同一个根因**，需要逐类分开处理；本轮**没有**做到。
+
+  **验证（真实 exit）**：`test:web` **0**（2579 例）· `execute.spec.ts` 回到基线 **28 failed**
+  （两次尝试分别 20 / 38，**均比基线差，已回退**）· 工作区干净。
+
+  **方法学沉淀（接 443）**：
+  - **444「`jest.clearAllMocks()` 不清 `mockImplementationOnce` 队列 —— 这是顺序污染的常见源头，且症状极像『一堆无关用例同时坏』」**。
+    判据：一个 spec 文件里若大量用 `mockImplementationOnce` 而 `beforeEach` 只有 `clearAllMocks()`，
+    就存在「前一个用例没消费完的 Once 被下一个吃掉」的风险。
+    **验证方法**：注册一条 Once → `clearAllMocks()` → 调用，若仍返回 Once 的值即证实。
+  - **445「修 mock 泄漏时，`mockReset()` 与 `mockImplementation(() => undefined)` 不是等价替换」**。
+    前者连 automock 的**默认实现**一起清掉 ⇒ 依赖「默认 no-op」的用例会集体变红
+    （本轮实测：`mockReset` 把 28 降到 20 却**新增** 8 个红；换成 `mockImplementation` 又涨到 38）。
+    ⇒ **改善的那部分与恶化的那部分是两组用例**，必须分别度量；
+    而且**任何一个方向只要比基线差，就该先回退再想**，不要在「部分变好」上继续叠。
+
 - 2026-11-18 **自治优化 · R235（并行第 161 批）（1 提交 · 7 个 Python 测试脚本在新发行版上**全部 exit 127**）**：
   按 R439（补上环境后要重跑「被它挡住的门禁」）把 `test:unit` 剩余段跑一遍，发现 **7 个 Python 套件从未能跑**。
 
