@@ -4059,6 +4059,41 @@
     再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
     也不要用「先接上再观察」把 floor 变成摆设。
 
+- 2026-11-18 **自治优化 · R221–R223（并行第 146–148 批）（3 提交 · 两个契约面收尾 + 一处自伤修复）**：
+
+  - **R221（`40583b1b`）补 `backlogged` 端点的 response schema** —— 与 R211 补的 stall/idle 同批落地，
+    但 `GET /agent/sessions/backlogged` **漏了**：`openapi.json` 里只有 `{"200":{"description":""}}`
+    ⇒ 前端只能手写类型、字段在契约面完全不可见。新增 `AgentBacklogResponseDto`
+    （`sessionIds`/`count`/`probed`/`truncated`）+ `@ApiOkResponse` + 4 条 API 英文映射。
+    OpenAPI 响应 schema 覆盖率 **246 → 247**（95.0%，棘轮已 `--update`）。
+  - **R222（`d1ec6710`）`AGENT_OBSERVATION_TIMEOUT_MS` 从配置读** —— R213 判据文档 §3.1 写
+    「可用 `AGENT_OBSERVATION_TIMEOUT_MS` 覆盖」，但**代码是硬编码常量** ⇒ 文档与实现不一致
+    （「接口返回了」≠「契约表达了」的同族）。补 Joi 校验 + `configuration.ts` 映射 +
+    `.env.example` 条目 + 两个 service 从 `ConfigService` 读。
+  - **R223（本轮）★ 修掉 R222 自己造成的自伤** —— R222 把 `ConfigService` 加成**必填构造器参数**，
+    而既有 spec 用**定位参数**装配（`new AgentQueueStallService(queue)`）⇒
+    **`agent-queue-stall.service.spec.ts` 整个套件编译失败**（`Test suite failed to run`）。
+    ⚠️ **上一轮把它读成了「26 例全绿」** —— 因为那个数字来自**别的套件**，失败套件的用例数不计入。
+    ⇒ 改成 `@Optional()` + 放最后 + 读处 `?.` 空值安全，回落 `DEFAULT_OBSERVATION_TIMEOUT_MS`
+    （与 `AgentController` 的 `@Optional() config` 同款，R202/R205 两次前例）。
+    修后 **4 套 37 例**（原 26 例是漏算）+ agent 全量 **18 套 184 例**。
+
+  **验证（真实 exit）**：`tsc`（含 **`tsc -p tsconfig.spec.json`** —— 这条是 R223 补漏的关键：
+  只跑 `tsc --noEmit` **看不出** spec 的编译错误）· agent **18 套 184 例** ·
+  `lint:api` · `size-caps` · `check-env-drift` · `test:docs` 全 **0**。
+  **反证**：把 `@Optional()` 去掉 ⇒ `tsc -p tsconfig.spec.json` 报 TS2554、套件 `Tests: 0`。
+
+  **方法学沉淀（接 425）**：
+  - **426「加构造器参数 = 破坏所有用定位参数装配的 spec，而它们**不会**在 `Tests:` 里出现」**。
+    Jest 对「整个套件编译失败」只打 `Test suite failed to run`，**用例数按 0 计**
+    ⇒ 汇总行的 `Tests: 26 passed` 看起来一切正常。⇒ 判「测试全绿」必须**同时**看
+    `Test Suites:`（应有 N 个、且 equals 目录里的 spec 数）与 **`tsc -p tsconfig.spec.json`**
+    （它才是 spec 层编译的唯一门禁；`tsc --noEmit` 用的是 build tsconfig，**不含 spec**）。
+  - **427「给已有 @Injectable 加依赖：`@Optional()` + 放末尾是默认姿势，不是权宜之计」** ——
+    本仓 spec 大量用 `new X(a, b)` 定位装配（R202/R205/R223 三次踩同一坑）。
+    ⇒ 新增依赖一律 `@Optional()` 且追加在末尾；**若它其实是必需依赖**，那也要**同批改所有 spec**
+    ——两者选一个，不要留「必填但 spec 没传」的中间态。
+
 - 2026-11-18 **自治优化 · R217（并行第 145 批）（1 提交落地 · 自动补的**真机端到端** —— 并顺手修掉一个静默缺陷 + 探针自身的两个假绿）**：
   承接候选池第 1 条。R216 证明了 CAS 单赢家（真 PG）与入队逻辑（单测），但**没有**跑过一整轮
   「积压 → 自动补 → 下轮不再判积压」。

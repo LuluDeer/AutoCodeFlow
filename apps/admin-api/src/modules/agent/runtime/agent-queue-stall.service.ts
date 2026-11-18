@@ -28,7 +28,7 @@
  * 「**workers that are available to process jobs**」—— 语义上与我们要问的
  * 「有没有人在这场子里干活」**一致**，但计数接口更省。
  */
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
@@ -89,7 +89,17 @@ export class AgentQueueStallService {
   constructor(
     @InjectQueue(AGENT_QUEUE_NAME)
     private readonly queue: Queue,
-    private readonly config: ConfigService,
+    /**
+     * R222：配置（读 `agent.observationTimeoutMs`）。
+     *
+     * ⚠️ **`@Optional()` + 放最后**：既有 spec 用**定位参数**装配
+     * （`new AgentQueueStallService(queue)`），加必填参数会让它们整片编译失败
+     * （实测：`agent-queue-stall.service.spec.ts` 直接 `Test suite failed to run`）。
+     * 缺席时回落 `DEFAULT_OBSERVATION_TIMEOUT_MS` —— 与 `AgentController` 里
+     * `@Optional() config` 同款做法（R202/R205 两次教训）。
+     */
+    @Optional()
+    private readonly config?: ConfigService | null,
   ) {}
 
   /**
@@ -104,7 +114,7 @@ export class AgentQueueStallService {
    * `DEFAULT_OBSERVATION_TIMEOUT_MS` 的注释（connectTimeout 的一半）。
    */
   private readonly observationTimeoutMs =
-    Number(this.config.get("agent.observationTimeoutMs")) ||
+    Number(this.config?.get("agent.observationTimeoutMs")) ||
     DEFAULT_OBSERVATION_TIMEOUT_MS;
 
   async inspect(): Promise<QueueStallReport> {

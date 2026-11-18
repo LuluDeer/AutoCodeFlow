@@ -28,7 +28,7 @@
  * 自动处置（重入队 / 杀 worker）在「worker 只是心跳过期、其实还在干活」时会
  * **造成真实损害**（重复执行）⇒ 人的动作是：**查 worker 进程 / Redis 连接**。
  */
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
@@ -81,7 +81,17 @@ export class AgentQueueIdleService {
   constructor(
     @InjectQueue(AGENT_QUEUE_NAME)
     private readonly queue: Queue,
-    private readonly config: ConfigService,
+    /**
+     * R222：配置（读 `agent.observationTimeoutMs`）。
+     *
+     * ⚠️ **`@Optional()` + 放最后**：既有 spec 用**定位参数**装配
+     * （`new AgentQueueStallService(queue)`），加必填参数会让它们整片编译失败
+     * （实测：`agent-queue-stall.service.spec.ts` 直接 `Test suite failed to run`）。
+     * 缺席时回落 `DEFAULT_OBSERVATION_TIMEOUT_MS` —— 与 `AgentController` 里
+     * `@Optional() config` 同款做法（R202/R205 两次教训）。
+     */
+    @Optional()
+    private readonly config?: ConfigService | null,
   ) {}
 
   /**
@@ -97,7 +107,7 @@ export class AgentQueueIdleService {
      * `DEFAULT_OBSERVATION_TIMEOUT_MS`（connectTimeout 的一半）。
      */
     const timeoutMs =
-      Number(this.config.get("agent.observationTimeoutMs")) ||
+      Number(this.config?.get("agent.observationTimeoutMs")) ||
       DEFAULT_OBSERVATION_TIMEOUT_MS;
     let seq = 0;
     const read = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
@@ -192,7 +202,7 @@ export class AgentQueueIdleService {
    * 在这里偷偷兜底会把「配置坏了」伪装成「判定正常」。
    */
   private readPositive(key: string, fallback: number): number {
-    const raw = this.config.get<string | number>(key);
+    const raw = this.config?.get<string | number>(key);
     if (raw === undefined || raw === null || raw === "") return fallback;
     const n = typeof raw === "number" ? raw : parseInt(String(raw), 10);
     return Number.isFinite(n) && n > 0 ? n : fallback;

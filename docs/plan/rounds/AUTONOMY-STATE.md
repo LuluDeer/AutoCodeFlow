@@ -1,22 +1,29 @@
-# AUTONOMY-STATE — 状态卡（R220 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R223 收尾交接版 · ≤50 行）
 
-**基线**：`9dfb6834`（R220，`git log -1`）· 本轮落地 **3 个提交**（R218 死代码 / R219 atlas 同步 / R220 棘轮下调）· **守卫链 111 段**（本机实测 **106 段 exit 0**；第 55/107 段是环境既有缺口 —— `packages/{mcp-server,acf-cli}` 无 node_modules/dist，stash 后原版同样红；**未新增链段**）
-**会话**：第 220 轮 · 并行第 148 批 · **单靶（收尾轮）**
+**基线**：`d1ec6710`（R222，`git log -1`）· 本轮落地 **1 个提交**（R223 修 R222 自伤）· **守卫链 111 段**（本机实测 **106 段 exit 0**；第 55/107 段是环境既有缺口 —— `packages/{mcp-server,acf-cli}` 无 node_modules/dist，stash 后原版同样红；**未新增链段**）
+**会话**：第 223 轮 · 并行第 149 批 · **单靶**
 
-## 本轮落地（R218–R220 · 3 项 · 收尾轮）
+## 本轮落地（R223 · 1 项 · 已复核）
 
-**收尾：清欠 + 文档同步 + 棘轮跟进。**
-- **R218**：删 `saveDeadLetter` 死代码（全仓零调用；实际死信写入走 `outbound-event-dispatcher` 的 `deadLetterToSubscribers`）。
-- **R219**：R216 的新迁移 `1790000000099` 没进 atlas 文档 ⇒ `check-atlas-counts` 正确拦下 ⇒ 同步三处（142→143）。
-- **R220**：R218 删掉的那处整行 `save()` 让 `check-conditional-writes` 提示 `wholeRowSaves 31→30` ⇒ 棘轮下调。
+**★ 修掉 R222 自己造成的自伤 —— 并且发现「26 例全绿」是个假绿。**
+- **缺陷**：R222 把 `ConfigService` 加成**必填构造器参数**，而既有 spec 用**定位参数**装配
+  （`new AgentQueueStallService(queue)`）⇒ `agent-queue-stall.service.spec.ts` **整个套件编译失败**。
+- **上一轮为什么没发现**：Jest 对「套件编译失败」只打 `Test suite failed to run`，
+  **用例数按 0 计** ⇒ 汇总行 `Tests: 26 passed` 看起来正常（那个 26 来自**别的套件**）。
+- **修法**：`@Optional()` + 放末尾 + 读处 `?.` 空值安全，回落 `DEFAULT_OBSERVATION_TIMEOUT_MS`
+  （与 `AgentController` 同款，R202/R205 两次前例）。
+- **修后**：queue 4 套 **37 例**（原 26 例是漏算）· agent 全量 **18 套 184 例**。
 
-## 验证 / 红演示（R218–R220）
-- **验证**：event-subscriptions 6 套 108 例 · `check-atlas-counts` exit 0 · `check-conditional-writes`(+selftest 55/55) exit 0 · `tsc`/`eslint`/`size-caps`/`test:docs` 全 0。
-- 批量检查 20+ 个守卫全绿（唯一红项是环境既有的 `lint:cli` / `test:mcp-tool-surface` —— 无 node_modules）。
+## 验证 / 红演示（R223 · 真实 exit）
+- **验证**：`tsc` + **`tsc -p tsconfig.spec.json`**（后者是 spec 层编译的唯一门禁，R223 补漏的关键）·
+  agent **18 套 184 例** · `lint:api` · `size-caps` · `check-env-drift` · `test:docs` 全 **0**。
+- **反证**：把 `@Optional()` 去掉 ⇒ `tsc -p tsconfig.spec.json` 报 TS2554、套件 `Tests: 0`。
+- **台账补记**：R221（backlogged schema，覆盖率 246→247）与 R222（观测超时可配）两个提交
+  **当时没登记**，本轮一并补进 `PLAN-CLAIMS`。
 
-## 教训（424–425，接 423）
-- **424「降级类动作的日志要三态：没活 / 干成了 / 想干但干不动」** —— 第三态最容易被「别刷日志」的善意吞掉，而它恰恰是**唯一**需要人知道的一态。
-- **425「探针断言条件不能跨两行日志用 `&&`」** —— 逐条日志与汇总日志字段互斥，组合条件永不满足；这是探针的 bug 不是产品的。修探针前先数「到底几行日志、各含什么」。
+## 教训（426–427，接 425）
+- **426「加构造器参数会破坏所有用定位参数装配的 spec，而它们**不会**在 `Tests:` 里出现」** —— Jest 对套件编译失败只打 `Test suite failed to run`、用例按 0 计 ⇒ 汇总行看起来正常。⇒ 判「测试全绿」必须同时看 **`Test Suites:` 数**与 **`tsc -p tsconfig.spec.json`**（`tsc --noEmit` 用 build tsconfig，**不含 spec**）。
+- **427「给已有 @Injectable 加依赖：`@Optional()` + 放末尾是默认姿势」** —— 本仓 spec 大量用 `new X(a, b)` 定位装配（R202/R205/R223 三次同坑）。⇒ 新增依赖一律 `@Optional()` 放末尾；若它其实必需，那也要**同批改所有 spec**，不要留「必填但 spec 没传」的中间态。
 
 ## 剩余 backlog（`§7.0` 主表 **3** 条 · 全部外部阻塞）
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（部分已修，**不声称根除**，nightly 尚无样本）· `release-notice-ops`（需运维窗口）。
@@ -26,7 +33,8 @@
 
 **里程碑**：前端 P3 九条（R188–195）· R169 审计 17 条 · `no-explicit-any` 73→0（R196）· 「读失败渲染成没有」清零（R197）· **接管台五徽标全部接线完成**（R198/199/203/205/207）· 五判据严格互补 · 两级阈值不变式（R200）。
 
-## 方法学（累积 399–425，全文见 `AUTONOMY-STATE-ARCHIVE.md` / `PLAN-CLAIMS`）
+## 方法学（累积 399–427，全文见 `AUTONOMY-STATE-ARCHIVE.md` / `PLAN-CLAIMS`）
+**427** 给 @Injectable 加依赖默认 `@Optional()`+末尾 · **426** 套件编译失败不计入 `Tests:`（要另看 Suites 数与 spec tsc）·
 **425** 探针断言不能跨两行日志 `&&` · **424** 降级日志要三态（「想干但干不动」最容易被静默）·
 **423** 自动化判据门槛更高（副作用须可枚举封顶）· **422** 「别重复」只能靠原子谓词，且只有真并发能证明 ·
 **421** 自动化排在「它依据的观测是对的」之后 · **420** 「将来可能坏」与「现在就是坏的」只差一次代码对照 ·
