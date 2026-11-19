@@ -66,6 +66,12 @@ import {
   AgentSessionListResponseDto,
   AgentSessionResumeResponseDto,
 } from "./dto/agent-response.dto";
+// R278：待办收件箱的服务端聚合（S1）。新 provider，controller 只加两条薄路由。
+import { AgentInboxService } from "./runtime/agent-inbox.service";
+import {
+  AgentInboxCountsResponseDto,
+  AgentPendingApprovalsResponseDto,
+} from "./dto/agent-inbox.dto";
 
 export class CreateAgentSessionDto {
   @ApiProperty({ enum: AGENT_SESSION_KINDS as unknown as string[] })
@@ -144,6 +150,15 @@ export class AgentController {
      */
     @Optional()
     private readonly queueIdle?: AgentQueueIdleService | null,
+    /**
+     * R278：待办收件箱的服务端聚合。
+     *
+     * ⚠️ **同样放在最后且 `@Optional`**（R202/R205/R207 三次教训）：既有 spec 用
+     * 定位参数装配本 controller，插在中间会让它们全部错位。缺席 ⇒ 路由显式抛
+     * `DEPENDENCY_UNAVAILABLE`（503），绝不回 200 空信封。
+     */
+    @Optional()
+    private readonly inbox?: AgentInboxService | null,
   ) {}
 
   @Get("sessions")
@@ -737,5 +752,60 @@ export class AgentController {
   async listApprovals(@Param("id", ParseUuidShapePipe) id: string) {
     await this.sessions.requireById(id);
     return this.approvals.listForSession(id);
+  }
+
+  /**
+   * R278：**跨会话**的待审批单聚合（收件箱「审批单」小节的唯一数据源）。
+   *
+   * ## 为什么是新端点，而不是给 `sessions/:id/approvals` 加跨会话参数
+   *
+   * 那条端点的返回是 `AgentApproval[]` 裸数组（既有前端与 3 个用例依赖这个形状）。
+   * 收件箱要的是**信封**：`total`（独立计数）/ `truncated` / `degraded` ——
+   * 裸数组装不下这三个字段，而缺了它们就是本条产品问题的原始形态
+   * （「少报且不说明少报」）。⇒ 新增端点，旧端点一字不改。
+   *
+   * ## 为什么 `limit` 由这里钳
+   *
+   * 钳制逻辑是**纯函数**（`clampPendingApprovalLimit`）并且被测过（1..200，默认
+   * 100）。controller 只做 `parseInt` 与转发——非法值安全回落，**不 400**
+   * （保持「非法深链安全回落」的既有契约）。
+   */
+  @Get("approvals/pending")
+  @ApiOperation({
+    summary: "列出跨会话的待审批单（含总数、截断与降级标记）",
+  })
+  @ApiOkResponse({ type: AgentPendingApprovalsResponseDto })
+  async listPendingApprovals(
+    @Query("limit") limit?: string,
+  ): Promise<AgentPendingApprovalsResponseDto> {
+    if (!this.inbox) {
+      // ⚠️ 服务缺席 ⇒ 显式报不可用。回 `{items:[], total:0}` 会让运营以为
+      // 「没有待办」，而事实是「读不到」——这正是本仓要消灭的那类假事实。
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    return this.inbox.pending({
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+  }
+
+  /**
+   * R278：收件箱**计数**的唯一服务端口径（顶栏徽标用）。
+   *
+   * 一次请求换掉前端的 5 次请求（`/app-deployments/approvals/pending`、
+   * `/agent/sessions?status=waiting_input`、`?stalled=1`、`/sessions/backlogged`、
+   * `/sessions/queue-stall`）—— 那 5 次共用一个 60/min 的限流桶，是「转圈很久 /
+   * 偶发读取失败」的成因。
+   *
+   * 口径分工（brief §二 D1）：`pendingApprovals` 是**审批单**数，
+   * `waitingSessions` 是**会话**数；两者**不可相加**（会话已含审批单）。
+   */
+  @Get("inbox/counts")
+  @ApiOperation({ summary: "收件箱各项计数（读不到时为 null，绝不伪装成 0）" })
+  @ApiOkResponse({ type: AgentInboxCountsResponseDto })
+  async inboxCounts(): Promise<AgentInboxCountsResponseDto> {
+    if (!this.inbox) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    return this.inbox.counts();
   }
 }

@@ -100,12 +100,19 @@ function renderPage() {
 const firstKey = 'approval:first+item';
 const secondKey = 'approval:second&item';
 const session = (id: string, status: string) => ({ id, status, title: id });
-const approval = (approvalKey: string, toolName: string) => ({
-  approvalKey, sessionId: 'needs-review', toolName, status: 'pending',
-});
 
 // 在 HTTP 读边界提供数据：真实 loadInbox、链接构造、排序和路由导航都照常运行。
-function mockAgentInbox(approvalReadFails: (id: string) => boolean = (id) => id === 'unknown') {
+//
+// R278/U1：审批单不再走「逐会话 GET /agent/sessions/:id/approvals」的 N+1，
+// 而是**一次** `GET /agent/approvals/pending`。故此处按新契约注入：
+// - `needs-review` 一个会话两张待批单（第一条 / 第二条）；
+// - `unknown` 换成「审批单读不到」的降级形态（degraded + total:null），
+//   保留原用例「读取失败不隐藏已知审批、也不假报空态」的判据面；
+// - `approvalReadFails` 参数保留（签名不动），返回 true 时整体报错（等价旧语义）。
+function mockAgentInbox(opts: { allFail?: boolean | (() => boolean); unreadable?: (id: string) => boolean } = {}) {
+  // `allFail` 允许传函数：测试里「先失败、重试后成功」需要**每次请求时**重新求值。
+  const allFailNow = (): boolean => (typeof opts.allFail === 'function' ? opts.allFail() : opts.allFail ?? false);
+  const unreadable = opts.unreadable ?? (() => false);
   return vi.spyOn(client, 'get').mockImplementation(async (url, config) => {
     if (url === '/app-deployments/approvals/pending') return { data: [], total: 0 };
     if (url === '/metrics/failures') return [];
@@ -118,10 +125,23 @@ function mockAgentInbox(approvalReadFails: (id: string) => boolean = (id) => id 
         : ['ready', 'needs-review', 'unknown'].map((id) => session(id, 'waiting_input'));
       return { items, total: items.length };
     }
-    const match = /^\/agent\/sessions\/([^/]+)\/approvals$/.exec(url);
-    if (match) {
-      if (approvalReadFails(match[1])) throw new Error('Approval read failed');
-      return match[1] === 'needs-review' ? [approval(firstKey, 'firstTool'), approval(secondKey, 'secondTool')] : [];
+    if (url === '/agent/approvals/pending') {
+      // 全库都读不到 ⇒ 小节走 error（与原「审批单全部读取失败」等价）。
+      if (allFailNow()) throw new Error('Approval read failed');
+      const rows = [
+        { approvalKey: firstKey, sessionId: 'needs-review', sessionTitle: 'needs-review', toolName: 'firstTool', reason: null, createdAt: '2026-01-01T00:00:00Z', preview: null, argsDigest: null },
+        { approvalKey: secondKey, sessionId: 'needs-review', sessionTitle: 'needs-review', toolName: 'secondTool', reason: null, createdAt: '2026-01-01T00:00:01Z', preview: null, argsDigest: null },
+      ];
+      // 部分读不到 ⇒ 已知行照常透出，但 total 未知 + degraded（绝不报 0）。
+      const degraded = ['ready', 'needs-review', 'unknown'].some(unreadable);
+      return {
+        items: rows,
+        total: degraded ? null : rows.length,
+        sessionTotal: degraded ? null : 1,
+        returned: rows.length,
+        truncated: false,
+        degraded,
+      };
     }
     throw new Error(`Unexpected request: ${url}`);
   });
@@ -197,29 +217,33 @@ describe('InboxPage 待办收件箱', () => {
     expect((await screen.findByRole('status')).textContent).toBe('');
   });
 
-  it('已知 pending 和无待批的 waiting 才能恢复；审批读取失败不隐藏已知审批，也不假报空态', async () => {
-    mockAgentInbox();
+  it('已知 pending 和无待批的 waiting 才能恢复；审批单降级不隐藏已知审批，也不假报空态', async () => {
+    // R278/U1：审批单读取失败不再按「逐会话」发生，而是服务端聚合的**部分降级**
+    // （`degraded:true` + `total:null`）。契约语义不变的部分保留断言：
+    //   ① 已知审批行照常显示；② 不渲染「本类暂无待办」冒充空态；
+    //   ③ 无法确认「该会话没有待批单」⇒ 一律不给「接管/恢复」（未知 ≠ 没有）。
+    mockAgentInbox({ unreadable: (id) => id === 'unknown' });
     renderPage();
     await screen.findByTestId('inbox-row-stalled');
     expect(rowWith('stalled', 'running').queryByRole('button', { name: '接管/恢复' })).toBeNull();
     expect(rowWith('backlogged', 'id-only').queryByRole('button', { name: '接管/恢复' })).toBeNull();
     expect(rowWith('agentWaiting', 'unknown').queryByRole('button', { name: '接管/恢复' })).toBeNull();
     expect(rowWith('agentWaiting', 'needs-review').queryByRole('button', { name: '接管/恢复' })).toBeNull();
-    for (const [section, text] of [['agentWaiting', 'ready'], ['backlogged', 'queued']] as const) {
-      expect(rowWith(section, text).getByRole<HTMLButtonElement>('button', { name: '接管/恢复' }).disabled).toBe(false);
-    }
+    // 审批单不完整 ⇒ 连「看起来干净」的 waiting 会话也不能接管（未知不等于无待批）。
+    expect(rowWith('agentWaiting', 'ready').queryByRole('button', { name: '接管/恢复' })).toBeNull();
+    expect(rowWith('backlogged', 'queued').getByRole<HTMLButtonElement>('button', { name: '接管/恢复' }).disabled).toBe(false);
     expect(rowWith('agentApprovals', 'firstTool').queryByRole('button', { name: /放\s*行/ })).toBeNull();
     const approvals = within(screen.getByTestId('inbox-section-agentApprovals'));
-    expect(approvals.getByText(/部分会话的审批单读取失败/)).toBeTruthy();
+    expect(approvals.getByTestId('inbox-degraded-agentApprovals')).toBeTruthy();
     expect(approvals.getAllByTestId('inbox-row-agentApprovals')).toHaveLength(2);
     expect(approvals.queryByText('本类暂无待办')).toBeNull();
-    fireEvent.click(approvals.getByRole('button', { name: /重\s*试/ }));
-    await waitFor(() => expect(loadInbox).toHaveBeenCalledTimes(2));
+    // 知识点：`total:null` 不是 0——标题必须是「—」。
+    expect(screen.getByTestId('inbox-count-agentApprovals').textContent).toContain('—');
   });
 
   it('审批单全部读取失败时不报零；重试后恢复已知单据和可用的恢复动作', async () => {
     let failed = true;
-    mockAgentInbox(() => failed);
+    mockAgentInbox({ allFail: () => failed });
     renderPage();
     const approvals = within(await screen.findByTestId('inbox-section-agentApprovals'));
     expect(approvals.queryByText(/·\s*0/)).toBeNull();

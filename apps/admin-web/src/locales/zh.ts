@@ -4111,5 +4111,17 @@ export default {
   'inbox.queueStall.viewSessions': '查看会话',
   'inbox.badge.tooltip': '待办收件箱（等待人工的会话各计一次，含待审批会话）',
   'inbox.badge.loadFailHint': '待办计数读不到，不代表没有待办；点击重试。',
+  'inbox.badge.approvals': '待审批 {{n}} 单',
+  'inbox.badge.waiting': '等待输入 {{n}} 会话',
+  'inbox.count.total': '共 {{n}} 条',
+  'inbox.count.returned': '已列出 {{n}} 条',
+  'inbox.count.unknown': '—',
+  'inbox.count.degraded': '计数不可用',
+  'inbox.count.unknownHint': '本节总数读取失败，无法确认一共多少条；下方仅列出已读到的条目，不要按「就这些」处理。',
+  'inbox.count.degradedHint': '服务端部分子查询失败，计数与实际待办可能不一致；下方条目可能不是全部。',
+  'inbox.empty.unknownSection': '本节暂无条目，但总数读取失败——不能据此认为「没有待办」。',
+  'inbox.count.cappedHint': '最多显示 {{limit}} 条；超出部分未列出，完整列表请到原对象页查看。',
+  'inbox.truncated.summary': '显示前 {{returned}} 条（共 {{total}} 条）',
+  'inbox.truncated.hint': '显示前 {{returned}} 条（共 {{total}} 条）；其余未显示，完整列表请到原对象页查看。',
 } as const;
 

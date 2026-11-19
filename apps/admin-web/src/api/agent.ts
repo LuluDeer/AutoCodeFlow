@@ -1,3 +1,4 @@
+import type { components } from '../types/generated/api-types';
 import { client } from './client';
 
 /**
@@ -271,4 +272,47 @@ export const agentApi = {
   denyApproval: (id: string, approvalKey: string) =>
     client.post(`/agent/sessions/${id}/approvals/${approvalKey}/deny`) as Promise<AgentApprovalDecision>,
   budget: () => client.get('/agent/budget') as Promise<AgentBudget>,
+  /**
+   * R278/U1：**全库待审批单**（一次请求，取代「先拉 50 个会话再逐个 listApprovals」）。
+   *
+   * ⚠️ 与 `stalledCount` / `pendingTakeoverCount` / `backloggedCount` 同款理由：
+   * **独立方法**，不混进 `list` / `listApprovals` 的调用计数——既有测试断言那两个
+   * 方法被调了几次，复用会让断言被一个用途完全不同的请求打乱。
+   *
+   * ⚠️ 契约（admin-api `agent-inbox.service`，brief §四）：
+   * - `total` / `sessionTotal` 为 `null` = **读不到（未知）**，绝不等于 0；
+   * - `truncated` = `returned < total`；**`total` 未知时为 `false`**——「是否截断」
+   *   本身不可知，那件事由 `degraded` 表达（两者各自只说自己的事，不互相顶替）；
+   * - `degraded` = 任一子查询失败（HTTP 仍 200）；整体不可用时后端给 503。
+   */
+  listPendingApprovals: (limit?: number) =>
+    client.get('/agent/approvals/pending', { params: limit ? { limit } : undefined }) as Promise<AgentPendingApprovalsResponse>,
+  /**
+   * R278/U1：**收件箱计数一次拿全**（取代 5 个分散请求：deployments / waiting /
+   * stalled / backlogged / queue-stall 各发一次）。
+   *
+   * ⚠️ 失败语义：单字段 `null` = 该计数读不到（未知），**不是 0**；
+   * `degraded: true` = 至少一个子查询失败。整体不可用时后端给 503，前端走 catch ⇒
+   * 该小节计数为 `null`，仍不伪装成 0。
+   */
+  inboxCounts: (signal?: AbortSignal) =>
+    client.get('/agent/inbox/counts', signal ? { signal } : undefined) as Promise<AgentInboxCountsResponse>,
 };
+
+/**
+ * R278 收件箱聚合的两个**合同派生**类型。
+ *
+ * 为什么不再手写：`scripts/check-web-type-drift.mjs` 是「手写 API 类型只减不增」
+ * 的棘轮——手写副本与生成物同名同义却互不约束，后端改字段名时 tsc 照样绿、
+ * 前端静默读到 `undefined`。这三个 DTO 已由 admin-api 的 `@ApiOkResponse` 导出进
+ * `openapi.json` ⇒ 一律 `components['schemas'][…]` 派生（按定义不算手写）。
+ *
+ * 字段语义以**生成物**为准（与 `agent-inbox.dto.ts` 逐字一致）：
+ * - `total` / `sessionTotal` = `number | null`，`null` 是**读不到**，绝不等于 0；
+ * - `truncated = returned < total`；**`total === null` 时为 `false`**——
+ *   「是否截断」本身不可知，那件事由 `degraded` 表达（brief §四 裁决）；
+ * - `degraded` = 任一子查询失败，HTTP 仍 200。
+ */
+export type AgentPendingApprovalRow = components['schemas']['AgentPendingApprovalItemDto'];
+export type AgentPendingApprovalsResponse = components['schemas']['AgentPendingApprovalsResponseDto'];
+export type AgentInboxCountsResponse = components['schemas']['AgentInboxCountsResponseDto'];

@@ -37,6 +37,8 @@ import {
 } from "./runtime/agent-job-options";
 import { AgentController } from "./agent.controller";
 import { AgentSessionRetentionService } from "./agent-session-retention.service";
+// R278：待办收件箱的服务端聚合（S1，独立 provider）。
+import { AgentInboxService } from "./runtime/agent-inbox.service";
 import { AgentBoundaryService } from "./boundary/agent-boundary.service";
 import { ToolExecutorService } from "./tools/tool-executor.service";
 import { AgentApiClient } from "./tools/agent-api.client";
@@ -122,6 +124,10 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
     AgentNotifyService,
     // B-10：会话域 retention（终态 steps 90 天、tool_calls 按 tier 保留）
     AgentSessionRetentionService,
+    // R278：待办收件箱的服务端聚合（一次 find + 一次 count + 一次 In 批量取标题）。
+    // 独立 provider：agent-approvals.service.ts / agent-session.service.ts 都在
+    // size-caps 的「逐文件只减不增」基线上，就地新增必然破顶。
+    AgentInboxService,
   ],
   exports: [
     AgentSessionService,

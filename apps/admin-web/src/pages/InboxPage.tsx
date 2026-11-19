@@ -37,6 +37,12 @@ import { formatRelativeTime } from '../utils/timeFormat';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import {
   INBOX_REFRESH_EVENT,
+  SECTION_PAGE_SIZE,
+  NOTICE_TESTID,
+  hasUncertainCounts,
+  noticeTitle,
+  sectionCountLabel,
+  sectionNotices,
   deploymentsApi,
   agentApi,
   isSelfDeployment,
@@ -301,6 +307,8 @@ export default function InboxPage() {
     : 0;
   const anyError = sections ? SECTION_ORDER.some((key) => sections[key].status === 'error') : false;
   const allReady = sections ? SECTION_ORDER.every((key) => sections[key].status === 'ready') : false;
+  // R278/D3：「清零」必须是被证实的事实（判定见 api/inbox.hasUncertainCounts）。
+  const countsUncertain = sections ? hasUncertainCounts(sections) : false;
   const queueStall = sections?.queueStall.snapshot;
 
   const renderRow = (item: InboxItem) => {
@@ -359,14 +367,25 @@ export default function InboxPage() {
     const title = (
       <Space size={8}>
         <Tag color={SECTION_TAG_COLOR[key]}>{t(`inbox.section.${key}`)}</Tag>
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          {section.status === 'ready' ? `· ${section.items.length}` : ''}
+        <Text type="secondary" style={{ fontSize: 12 }} data-testid={`inbox-count-${key}`}>
+          {sectionCountLabel(section, t)}
         </Text>
       </Space>
     );
 
     return (
       <Card key={key} size="small" title={title} style={{ marginBottom: 16 }} data-testid={`inbox-section-${key}`}>
+        {/* R278/D2+D3：截断 / 未知 / 降级 / 上限四条告警的判定全在 api/inbox.ts 的纯函数里。 */}
+        {sectionNotices(section, SECTION_PAGE_SIZE).map((notice) => (
+          <Alert
+            key={notice}
+            type="warning"
+            showIcon
+            style={{ marginBottom: 8 }}
+            data-testid={NOTICE_TESTID[notice](key)}
+            title={noticeTitle(notice, section, t)}
+          />
+        ))}
         {section.status === 'error' ? (
           <>
             <StateError
@@ -401,7 +420,10 @@ export default function InboxPage() {
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('inbox.empty.section')} />
           )
         ) : section.items.length === 0 ? (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('inbox.empty.section')} />
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={section.total === null || section.degraded ? t('inbox.empty.unknownSection') : t('inbox.empty.section')}
+          />
         ) : (
           sortInboxItemsByWaitingSince(section.items).map(renderRow)
         )}
@@ -421,7 +443,7 @@ export default function InboxPage() {
         }
       />
 
-      {allReady && totalReadyItems === 0 && !queueStall?.stalled ? (
+      {allReady && totalReadyItems === 0 && !countsUncertain && !queueStall?.stalled ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={

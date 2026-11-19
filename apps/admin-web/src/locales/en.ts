@@ -4119,5 +4119,17 @@ export default {
   'inbox.queueStall.viewSessions': 'View sessions',
   'inbox.badge.tooltip': 'Inbox (each waiting session counts once, including sessions awaiting approval)',
   'inbox.badge.loadFailHint': 'The count could not be read — this does NOT mean there is no inbox item. Click to retry.',
+  'inbox.badge.approvals': '{{n}} approval(s) pending',
+  'inbox.badge.waiting': '{{n}} session(s) waiting',
+  'inbox.count.total': '{{n}} item(s)',
+  'inbox.count.returned': '{{n}} item(s) listed',
+  'inbox.count.unknown': '—',
+  'inbox.count.degraded': 'count unavailable',
+  'inbox.count.unknownHint': 'The total for this section could not be read, so it is not possible to confirm how many items exist. Only the items read so far are listed below — do not treat them as the complete set.',
+  'inbox.count.degradedHint': 'Some server-side sub-queries failed, so the count may not match the real backlog; the items below may be incomplete.',
+  'inbox.empty.unknownSection': 'No items could be read for this section, but the total could not be read either — this does NOT mean there is nothing to do.',
+  'inbox.count.cappedHint': 'At most {{limit}} items are shown; anything beyond that is not listed — open the original page for the complete list.',
+  'inbox.truncated.summary': 'Showing the first {{returned}} of {{total}}',
+  'inbox.truncated.hint': 'Showing the first {{returned}} of {{total}}; the rest are not displayed — open the original page for the complete list.',
 } as const;
 

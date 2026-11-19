@@ -29,22 +29,28 @@ const emptyCounts = (): InboxCountMap => ({
 afterEach(() => vi.restoreAllMocks());
 
 describe('summarizeInboxCounts 总数口径', () => {
-  it('实际计数接口只返回等待会话数，不把它当作另一个审批单数再加一次', async () => {
-    const get = vi.spyOn(client, 'get').mockImplementation(async (url, config) => {
-      if (url === '/agent/sessions') {
-        const params = config?.params as { status?: string } | undefined;
-        return { total: params?.status === 'waiting_input' ? 3 : 1 };
+  it('R278/U1：一次 inbox/counts 拿全；审批单数与会话数各自成值，但只有会话进入求和', async () => {
+    const get = vi.spyOn(client, 'get').mockImplementation(async (url) => {
+      if (url === '/agent/inbox/counts') {
+        return {
+          pendingApprovals: 4, // 审批单数：独立显示，**不参与**会话求和
+          waitingSessions: 3,
+          stalled: 1,
+          backlogged: 0,
+          backlogTruncated: false,
+          deployments: 2,
+          queueStall: 0,
+          degraded: false,
+        };
       }
-      if (url.endsWith('/backlogged')) return { count: 0 };
-      if (url.endsWith('/queue-stall')) return { stalled: false, degraded: false };
-      if (url === '/app-deployments/approvals/pending') return { total: 2 };
       throw new Error(`Unexpected request: ${url}`);
     });
     const counts = await loadInboxCounts();
-    expect(counts.agentApprovals).toBeNull();
+    expect(counts.agentApprovals).toBe(4);
     expect(counts.agentWaiting).toBe(3);
+    // 2（部署）+ 3（等待会话）+ 1（卡住）+ 0（积压）+ 0（停摆）= 6；审批单 4 不重复计入。
     expect(summarizeInboxCounts(counts)).toBe(6);
-    expect(get).toHaveBeenCalledTimes(5);
+    expect(get).toHaveBeenCalledTimes(1);
   });
 
   it('全部读到：汇总可处置待办（不含最近失败）', () => {

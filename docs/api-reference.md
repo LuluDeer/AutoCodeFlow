@@ -1444,7 +1444,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 260 个操作，覆盖 223 个路径。
+共 262 个操作，覆盖 225 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1457,7 +1457,9 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/agent-collab/clarifications` | - |
 | POST | `/agent-collab/llm` | - |
 | POST | `/agent-collab/poll` | - |
+| GET | `/agent/approvals/pending` | 列出跨会话的待审批单（含总数、截断与降级标记） |
 | GET | `/agent/budget` | 获取生效的 Agent 预算设置 |
+| GET | `/agent/inbox/counts` | 收件箱各项计数（读不到时为 null，绝不伪装成 0） |
 | GET | `/agent/sessions` | 列出 Agent 会话（最新在前） |
 | POST | `/agent/sessions` | 创建一个 Agent 会话并入队执行 |
 | GET | `/agent/sessions/{id}` | 获取某个 Agent 会话及其步骤 |

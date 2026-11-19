@@ -148,6 +148,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/approvals/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出跨会话的待审批单（含总数、截断与降级标记） */
+        get: operations["AgentController_listPendingApprovals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/budget": {
         parameters: {
             query?: never;
@@ -157,6 +174,23 @@ export interface paths {
         };
         /** 获取生效的 Agent 预算设置 */
         get: operations["AgentController_budgetInfo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/inbox/counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 收件箱各项计数（读不到时为 null，绝不伪装成 0） */
+        get: operations["AgentController_inboxCounts"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4249,6 +4283,24 @@ export interface components {
             };
             targetAgentSessionId?: string;
         };
+        AgentInboxCountsResponseDto: {
+            /** @description 积压对账是否被探测上限截断（`true` ⇒ `backlogged` 是**下界**，前端按 `N+` 渲染） */
+            backlogTruncated: boolean;
+            /** @description 调度积压会话数（判据见 `docs/observability/agent-backlog-criterion.md`）。读不到 ⇒ null */
+            backlogged: number | null;
+            /** @description 是否有任一计数读不到（此时对应字段为 null）。**HTTP 仍是 200**；全部读不到才算整体不可用（503） */
+            degraded: boolean;
+            /** @description 待审批的部署数。读不到 ⇒ null */
+            deployments: number | null;
+            /** @description 待审批单数（口径 = 审批单，与列表行数一致；会话数见 waitingSessions）。读不到 ⇒ null */
+            pendingApprovals: number | null;
+            /** @description 队列是否停摆：1 = 停摆、0 = 未停摆、null = 判定不可用（**不代表队列正常**） */
+            queueStall: number | null;
+            /** @description 「卡住」会话数（判据见 `docs/observability/agent-stalled-criterion.md`）。读不到 ⇒ null */
+            stalled: number | null;
+            /** @description `waiting_input` 会话数。读不到 ⇒ null */
+            waitingSessions: number | null;
+        };
         AgentMediaDto: {
             /** Format: uuid */
             assignmentId: string;
@@ -4261,6 +4313,44 @@ export interface components {
             sizeBytes: number;
             /** @description 'executor:<id>' 或 'user:<id>' */
             uploadedBy: string;
+        };
+        AgentPendingApprovalItemDto: {
+            /** @description 审批幂等键（= `agent_tool_calls.approvalId`，`apr-<sessionId>-<指纹>`）；处置端点用它定位 */
+            approvalKey: string;
+            /** @description 被批参数的完整摘要 `sha256(canonicalJson(args))`（64 位 hex）；null = 本列上线前的旧单 */
+            argsDigest: string | null;
+            /**
+             * Format: date-time
+             * @description 申请时刻（ISO）
+             */
+            createdAt: string;
+            /** @description 人类可读的参数预览（**写入侧已脱敏 + 已截断**，本端点只透出，不新增序列化面）；null = 旧单无预览或本次调用无参数 */
+            preview: string | null;
+            /** @description 闸门给出的审批理由（原样透传） */
+            reason: string | null;
+            /**
+             * Format: uuid
+             * @description 所属会话 id
+             */
+            sessionId: string;
+            /** @description 会话标题；**会话没有标题或标题读不到时一律 null**，绝不退回 uuid（uuid 不是给人看的标题） */
+            sessionTitle: string | null;
+            /** @description 触发闸门的工具名 */
+            toolName: string;
+        };
+        AgentPendingApprovalsResponseDto: {
+            /** @description 是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败 */
+            degraded: boolean;
+            /** @description 按申请时刻升序（最久等待的在前） */
+            items: components["schemas"]["AgentPendingApprovalItemDto"][];
+            /** @description 本次实际返回的行数（= items.length） */
+            returned: number;
+            /** @description 这些待审批单涉及的**会话数**（`COUNT(DISTINCT sessionId)`）；读不到 ⇒ null */
+            sessionTotal: number | null;
+            /** @description 待审批单**总数**（独立 `count()`，不是 `items.length` 的别名）；读不到 ⇒ null，**绝不 0** */
+            total: number | null;
+            /** @description 是否截断（`returned < total`）。`total` 未知时为 false —— 此时「是否截断」本身也不可知，由 `degraded` 表达 */
+            truncated: boolean;
         };
         AgentQueueIdleResponseDto: {
             /** @description 阈值推导依据（运营问「这个数哪来的」时的答案） */
@@ -8891,6 +8981,27 @@ export interface operations {
             };
         };
     };
+    AgentController_listPendingApprovals: {
+        parameters: {
+            query: {
+                limit: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentPendingApprovalsResponseDto"];
+                };
+            };
+        };
+    };
     AgentController_budgetInfo: {
         parameters: {
             query?: never;
@@ -8906,6 +9017,25 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentBudgetResponseDto"];
+                };
+            };
+        };
+    };
+    AgentController_inboxCounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentInboxCountsResponseDto"];
                 };
             };
         };

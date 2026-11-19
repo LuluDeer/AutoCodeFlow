@@ -4,39 +4,58 @@
  * 聚合部署审批 / Agent 待审批 / 等待输入 / 卡住会话 / 调度积压 / 队列停摆六类
  * 待办的轻量计数（只拉计数，不拉列表体）。点击进入 `/inbox` 统一收件箱。
  *
+ * ## R278/D1：两个口径，措辞不同，都不能省
+ *
+ * 用户心智是「**有几件活**等我处置」＝审批单数，不是会话数。旧实现只有一个
+ * `total`（按 waiting_input **会话**计），而列表按**审批单**行计——同一会话
+ * 两张单时两者必然不等（U1：徽标 3、列表 7）。
+ *
+ * 现在：
+ * - `待审批 N 单` —— 审批单数（服务端 `pendingApprovals`），**独立计数源**；
+ * - `等待输入 M 会话` —— 会话数（服务端 `waitingSessions`），仍是会话口径；
+ * - 徽标数字仍取**会话去重求和**（`summarizeInboxCounts` 把审批单排除在求和之外，
+ *   避免同一会话被算两次），两个单位各自单独显示，不混成一个数。
+ *
  * 诚实口径（沿用 PendingTakeoverBadge / BacklogBadge 的 R188–R203 纪律）：
- * - 任一计数源读不到 ⇒ 汇总为「未知」：不显示 0，也不用局部和谎报总数；
+ * - 任一计数源读不到 ⇒ 显示「—」（未知），不显示 0，也不用局部和谎报总数；
  * - 未知时徽标呈现可重试的错误态（红色文字按钮 + Tooltip）；
  * - 0 件时整体隐藏（不占顶栏位置）。
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Badge, Button, Tooltip } from 'antd';
+import { Badge, Button, Space, Tooltip } from 'antd';
 import { MailOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { INBOX_REFRESH_EVENT, loadInboxCounts, summarizeInboxCounts } from '../api/inbox';
+import { INBOX_REFRESH_EVENT, loadInboxCounts, splitInboxCounts } from '../api/inbox';
 import '../i18n';
 
 type LoadState =
   | { status: 'loading' }
-  | { status: 'ready'; total: number | null }
+  | { status: 'ready'; total: number | null; approvals: number | null; waiting: number | null }
   | { status: 'error' };
+
+/** 未知计数的统一占位（语言无关的 em dash；与下文字典词条成对，不可写成 0）。 */
+const UNKNOWN = '—';
 
 export default function InboxBadge() {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const [state, setState] = useState<LoadState>({ status: 'loading' });
 
+  const applyCounts = useCallback((counts: Awaited<ReturnType<typeof loadInboxCounts>>) => {
+    const { total, approvals, waiting } = splitInboxCounts(counts);
+    setState({ status: 'ready', total, approvals, waiting });
+  }, []);
+
   const reload = useCallback(async () => {
     setState({ status: 'loading' });
     try {
-      const counts = await loadInboxCounts();
-      setState({ status: 'ready', total: summarizeInboxCounts(counts) });
+      applyCounts(await loadInboxCounts());
     } catch {
-      // loadInboxCounts 内部已把各源吞成 null；此处只兜 Promise 级异常。
+      // loadInboxCounts 内部已把整体失败吞成「全 null」；此处只兜 Promise 级异常。
       setState({ status: 'error' });
     }
-  }, []);
+  }, [applyCounts]);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,7 +64,7 @@ export default function InboxBadge() {
       setState({ status: 'loading' });
       try {
         const counts = await loadInboxCounts(controller.signal);
-        if (!cancelled) setState({ status: 'ready', total: summarizeInboxCounts(counts) });
+        if (!cancelled) applyCounts(counts);
       } catch {
         if (!cancelled) setState({ status: 'error' });
       }
@@ -57,7 +76,7 @@ export default function InboxBadge() {
       controller.abort();
       window.removeEventListener(INBOX_REFRESH_EVENT, onRefresh);
     };
-  }, [reload]);
+  }, [reload, applyCounts]);
 
   // 错误态：可见的可重试入口，不隐藏（隐藏会被误读成「没有待办」）。
   if (state.status === 'error') {
@@ -78,25 +97,40 @@ export default function InboxBadge() {
   }
 
   const total = state.status === 'ready' ? state.total : null;
+  const approvals = state.status === 'ready' ? state.approvals : null;
+  const waiting = state.status === 'ready' ? state.waiting : null;
 
   // 0 件隐藏；未知（null）也不挂假数字——点击进收件箱看分小节真实状态。
-  if (state.status === 'ready' && total === 0) return null;
+  // R278：审批单数未知（null 且总数已归零）时同样不占顶栏；未知态在 /inbox 页
+  // 内以「—」+ 降级提示呈现（D3），顶栏位置不被一个不可知的数字长期占据。
+  if (state.status === 'ready' && total === 0 && (approvals === null || approvals === 0)) return null;
 
-  const badgeContent = total === null ? '—' : total;
+  const badgeContent = total === null ? UNKNOWN : total;
+  // 两个单位分别显示：审批单是「件活」，会话是「条卡住的会话」，措辞不可互换。
+  const approvalsText = t('inbox.badge.approvals', { n: approvals === null ? UNKNOWN : approvals });
+  const waitingText = t('inbox.badge.waiting', { n: waiting === null ? UNKNOWN : waiting });
+  const known = approvals !== null && waiting !== null;
 
   return (
-    <Tooltip title={t('inbox.badge.tooltip')}>
-      <Badge count={badgeContent} size="small" data-testid="inbox-badge">
-        <Button
-          type="text"
-          size="small"
-          aria-label={t('inbox.badge.tooltip')}
-          data-testid="inbox-badge-button"
-          onClick={() => navigate('/inbox')}
-        >
-          <MailOutlined />
-        </Button>
-      </Badge>
+    <Tooltip title={`${t('inbox.badge.tooltip')} · ${approvalsText} · ${waitingText}`}>
+      <Space size={4} align="center" data-testid="inbox-badge" data-degraded={known ? undefined : 'true'}>
+        <Badge count={badgeContent} size="small">
+          <Button
+            type="text"
+            size="small"
+            aria-label={`${t('inbox.badge.tooltip')} · ${approvalsText} · ${waitingText}`}
+            data-testid="inbox-badge-button"
+            onClick={() => navigate('/inbox')}
+          >
+            <MailOutlined />
+          </Button>
+        </Badge>
+        <span data-testid="inbox-badge-units" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+          <span data-testid="inbox-badge-approvals">{approvalsText}</span>
+          <span data-testid="inbox-badge-sep" aria-hidden="true">{t('common.listSep.space')}</span>
+          <span data-testid="inbox-badge-waiting">{waitingText}</span>
+        </span>
+      </Space>
     </Tooltip>
   );
 }
