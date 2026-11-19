@@ -323,6 +323,9 @@
 | R279-EVID-01 | P2 | done | lead（PM） | 2026-11-19 | artifacts/autonomy/R279/{throttle-evidence,failed-sessions-invisible,brief}.md；docs/observability/agent-failed-session-criterion.md | 378a1243 | **把 R278 的两条「推断」升为真机实测**：① **限流边界**——真 PG16+Redis7+真 admin-api（生产默认 `THROTTLE_LIMIT=60`）实测 `第 1..60 次 200、第 61 次 429`，精确到个位；据此旧实现「50 会话+50 approvals」单次装载不炸（50<60）、但**同分钟第二次装载 100>60** ⇒ 第 11 个 approvals 起全 429，运营看到「部分行消失+读取失败」而非「被限流」。② **会话失败缺席**——见 R279-FAILED-01。**方法学**：515「`0` 是事实还是缺席，要先问这个面建模了哪些状态」·516「后端暴露了字段、注释也写明不接会漂移，不等于前端会接」 |
 | R279-OFFLINE-01 | P1 | done | lead（PM 编排）· 切片 fix-offline-window | 2026-11-19 | apps/admin-web/src/api/executors.ts + pages/ExecutorDetailPage.tsx + locales/{zh,en}.ts + __tests__/executor-offline-window.test.ts（新）+ 13 个既有 spec 的 mock 形态 + scripts/web-type-field-drift-baseline.json | 378a1243 | **产品级事实错误：UI 显示的判死窗口比后端真实行为小一半**。真机 `GET /executors/runtime-config` = `{heartbeatTimeoutMs:90000, staleOfflineConfirmations:2, effectiveOfflineAfterMs:180000}`；后端 `executor.service.ts:4270-4279` 注释逐字写「不暴露这两项会让 UI 展示的『多久判离线』与后端实际行为不符」——**字段早已暴露，只有前端没接**：手写类型缺 2 字段、UI 用 90s、注释还把单次墙钟误称「有效判死阈值」。运维后果：把「90 秒仍在线」当后端 bug 报障 / 按 90s 估停机 SLA（偏小一半）。修法：补类型 + 改读 `effectiveOfflineAfterMs` + 文案说清迟滞成因（「单次墙钟 90s，需连续 2 次未确认，故 180s」），兜底 `heartbeatTimeoutMs × (staleOfflineConfirmations ?? 1)`，**永不静默回落 90s**。**修正了一个把 bug 钉成期望的既有用例**（`shard-c-executor-detail-diagnostics.test.tsx:99` 用真机不存在的夹具形状断言 90s）。**反证**：改回 90s ⇒ 红 / 改回 ⇒ 绿。size-caps 净减 3 行（等量压缩，无豁免） |
 | R279-GUARD-02 | P3 | done | lead（PM）· 切片 fix-offline-window | 2026-11-19 | scripts/web-type-field-drift-baseline.json | 378a1243 | **基线陈旧即红**：补上 `effectiveOfflineAfterMs`/`staleOfflineConfirmations` 后，基线里那 2 条 `ExecutorRuntimeConfig missing:*` 已不存在 ⇒ 守卫按「基线只减不增、消失即红」判红。删 2 条 + `--selftest` 27/27 绿。**这不是豁免，是收口**：留着它们会让守卫继续放过同类新漂移 |
+| R280-SOPESC-01 | P1 | done | lead（PM 编排）· 切片 be-sop-pending / fe-sop-pending | 2026-11-20 | 新建 apps/admin-api/src/modules/sop/{sop-clarification-inbox.service.ts,sop-clarification-inbox.dto.ts,__tests__/sop-clarification-inbox.service.spec.ts}；sop.controller.ts（+45 只追加）、sop.module.ts（+11）；apps/admin-web/src/api/{inbox,sops}.ts + pages/InboxPage.tsx + components/InboxBadge.tsx + locales/{zh,en}.ts + __tests__/inbox-sop-clarifications.test.tsx（新）；生成物 openapi.json / api-types.ts / api-reference.md / openapi-en-map.json | 8c9e3510 | **升级到人工的 SOP 澄清：三条通道全部失效**。①收件箱八小节无一涉及 SOP 澄清；②兜底扫描把 assignment `blocked→in_progress`（`sop.service.ts:1745-1752`）⇒ 按 blocked 筛不到；③`notifyEscalation` 调 `notify()` **不传 taskId**，而 `isSilenced` 的 global 分支 `!silence.taskId \|\| …` 无条件命中 ⇒ 一条 scope=global 静默规则可吞掉，外层还刻意 **fail-open**。且全仓无跨 SOP 聚合端点。⇒ 新建 `GET /sop/clarifications/pending`（`total` 独立 `getCount()`、`truncated`、`degraded`、查询 ≤3 无 N+1、装配缺失 503、路由注册在 `:id` 之前）。**★ 一个必须真机才发现的裁决错误**：最初照搬既有终态黑名单 `['completed','failed','cancelled']`，真机上正确待办在 assignment 变 failed 后**从列表消失**；而执行器 `agent-host.ts:688-700` 逐字写「升级后…运维在 Admin Web 处理后重派」并报 `failed + outcome=escalated_to_human` ⇒ **failed 在此不是结束而是「等人接管」**。修法：黑名单只留 completed/cancelled，注释写透「failed 刻意不在内，别修正回去」+ `maxRounds` 写 blocked 且超时扫描只扫 `assigned\|in_progress` ⇒ blocked 无兜底。**真机对账**：五状态矩阵 ⇒ 修复前计入 2（failed 消失）、修复后 **3**；真相 HTTP `total=2`（failed+blocked）、completed/cancelled 排除；`limit=1` ⇒ `returned=1/total=3/truncated=true`；`limit=9999/abc/-5` 全 200 安全回落。后端 495 套 8349 例绿；前端 340 文件 2720 例绿；守卫链 121/121 |
+| R280-FAILSEM-01 | P1 | done | lead（PM 编排）· 切片 be-failure-semantics | 2026-11-20 | apps/admin-api/src/modules/task/entities/task-execution.entity.ts（+31 常量）、modules/metrics/metrics.service.ts（+20/−4）、modules/metrics/__tests__/metrics.service.spec.ts（+179） | 8c9e3510 | **同一屏两句互斥的「失败」断言**：Dashboard 失败趋势曲线**含 timeout**（`DashboardPage.tsx:160-165`，注释写明告警口径为 `failed\|timeout`），而「最近失败」只查 `status=FAILED`（`metrics.service.ts:244/274`）⇒ **超时风暴时曲线涨到 10、卡片说「近期无失败记录」**。更麻烦：同一 `timeout` 语义**分叉落两桶**——回调 ⇒ `status=TIMEOUT`（`execution-callback.collaborator.ts:470`）、sweep ⇒ `status=FAILED`+`failureReason=TIMEOUT`（`scheduler.service.ts:1838`）⇒ **只数 FAILED 的桶本身也不纯**。修法：实体立**唯一事实源** `FAILED_EXECUTION_STATUSES=[FAILED,TIMEOUT]`（`KILLED`/`CANCELLED` 不算，与 `alerts.yml`/`docs/operations.md:1273` 一致），`getRecentFailures` 两分支 + 成功率卡 failed 均改用；常量注释列出**其余未迁移调用点**并标明 `execution-read.collaborator.ts:798-800` **已正确、勿重改**。**真机取证**：造 2×timeout+1×failed+1×killed+1×cancelled ⇒ `/metrics/failures` 返回 3（含 2 timeout，killed/cancelled 正确排除）、`/metrics/summary` 的 `failed:3`（修复前为 1）。**反证**：改回 `status=FAILED` ⇒ 3 例红 / 再改回成功率卡 ⇒ 4 例红，恢复即绿 |
+| R280-EVID-01 | P2 | done | lead（PM） | 2026-11-20 | artifacts/autonomy/R280/{brief,recon-sop-escalation,recon-failure-semantics}.md | 8c9e3510 | **两条侦察、两条真机、一次自我推翻**：①`recon-sop-escalation` 推翻我 brief 里的假设——`maxRounds` 路径写 `blocked` **停在那儿**而超时扫描只扫 `assigned\|in_progress` ⇒ 该路径**连自愈都没有**（比我原判断更严重）；②`recon-failure-semantics` 追加发现「timeout 分叉落两桶」，使「只数 FAILED」这条建议本身也不完整；③真机发现我自己的口径裁决错误（failed 被误排除）。**方法学**：517「照搬既有定义前先问它在**这个语境**里指什么」·518「同一语义落两个字段值，是『只数某一个值』这类统计的隐形毒药」 |
 | R278-DEC-01 | P2 | done | lead（PM 编排）· 切片 decisions | 2026-11-19 | docs/OPEN-DECISIONS.md + packages/acf-cli/src/ui.ts(+spec) + packages/executor-protocol/protocol.json + docs/atlas/01-apps/admin-api/modules/task.md | 13368858 | **待决策清单收口**：拍板并落地 5 条零成本项——**A4** 容器任务内存上限维持 768/512（证据：`check-sandbox-limit-order` exit 0 / 16 例）；**H1** `docs/atlas/.../task.md` 的「默认 any」改为 `owner`（与 `configuration.ts:568` 一致，非成员恒 403）；**D1** `--json` 加入 `VALUE_TAKING_OPTIONS` + `looksLikeJsonPayload` 反向判据（`--json <body>` 不再被当输出开关，**命令末尾的 `--json` 仍作开关**，不破坏 `task list --json`）；**B4/B5** 协议 `adminApiUrls` 与 v7/v8 加 `$comment` 标注 python 侧未（部分）实现（`check-protocol-breaking` 判 compatible、生成物 `--check` 幂等）。**明确不做并写理由 12 条**：B1/B2/B3/C1/D2/D3/D5/D6/A2/A3/D7 + D4（棘轮不加第 7 类，顺带把文档里的 73 改成实测 76）。**反证**：把 `'--json'` 从表里删掉 ⇒ **2 failed / 48 passed**，恢复 ⇒ 50/50。**验证**：`check-docs` 7/7、`check:cli-doc`、`check:sandbox-limit-order`(16)、`check:protocol-three-way`(三向 33 + 逐格 14)、`check-protocol-breaking`、`acf-cli tsc` 全 0；`acf-cli` 全量 **460 例** 绿 |
 | R278-GUARD-01 | P2 | done | lead（PM 编排）· 切片 guardfix | 2026-11-19 | scripts/check-agent-stub-fidelity.mjs + scripts/agent-runtime-check.mjs | 6a4b1141 | **修本轮自造的守卫红（不是既有欠账）**：`declaredTypeOf()` 正则不容 `?`，认不出本仓 `@Optional()` 标准写法 `private readonly x?: T | null` ⇒ 把 `Repository<AgentApproval>` 判成 `AgentApprovalsService`，一条误判造两条红（`approvals 保真 2/13`、`sessionService 保真 12/13`）。修法：正则加 `\??` + `stripNullUnion()`（**只**剥 `| null`/`| undefined`，别的联合原样保留 ⇒ 保守方向：宁可多要求替身，不把真缺口藏起来），补 2 条 selftest（含「换成服务类型必须红」对照）。同时补**替身真缺口**：`makeSessionService()` 增 `list`，按 `agent-session.service.ts:623-662` 逐条复刻（stalled 谓词看 **step 而非 updatedAt**、`clampPagination` 的 NaN 回落、`createdAt DESC`、`total` 与 skip/take 无关），**零白名单豁免**。自测探针顺带抓到自己一个真 bug：同毫秒兜底原按 id **升序** ⇒ `pageSize:1` 取到最老会话，与 `createdAt DESC` 相反，已改同向。**反证**：去掉 `\??` ⇒ 新用例红（`✖ 失败：1/17`），恢复即绿 **17/17**。**验证**：守卫 0、selftest 17/17、`agent-runtime-check` 0、`agent-sop-check` 0 | | 2026-09-27 | scripts/check-no-hoisting.mjs（新；T4 起伴生 selftest 已并入 --selftest，用例扩到 17 条真子进程断言，伴生文件已删）+ 根 package.json（两 script）+ .github/workflows/ci.yml + docs/ARCH-28b-turbo-adoption.md（新）+ docs/arch-28-workspace-evaluation.md §5.1 回填 | 见本轮 commit | **turbo 增量接入 —— 实测结论=不接入；交付 no-hoisting 守卫 + A/B 实测报告。**沙箱 worktree（develop @ d3804307 detached，仓库零污染）逐项实测：**①turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 workspaces，8 个子项目 `npm ci` **全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）；报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；**部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；`--legacy-peer-deps` 会把 hoist 写进根 lockfile（1→866 条目）固化破坏。**②runner 委派语义**：turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突（无 workspace 清单时 pnpm 直接 ERR_PNPM_OTHER_PM_EXPECTED）。**③单包模式缓存生效但对 CI 无收益**（每 job 独立 runner + 全新 checkout，本地缓存不可跨 job 复用；§2 预判的重复 build 实测每处仅 8~12s）。**④真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s（收益真实但前提不可用）。**交付**：check-no-hoisting.mjs 结构守卫（5 判据，13 项有齿自检，含 4 负例族）+ 接入 CI check-migrations job + 根两 script + ARCH-28b 实测报告（含 CI 关键路径实测：瓶颈=selftests 518s 串行自检 / admin-web 286s vitest，npm ci 仅占 2.5~10%，与 ARCH-28 §1.3 结论一致且强化）。**如实**：turbo 依赖未入 package.json（沙箱实测用）；turbo.json 未落地（验收原文要求——不落地即结论）。 |
 | N-01 | P2 | done | main-A（轮 27） | 2026-09-27 | scripts/check-no-hoisting.mjs（新；T4 起伴生 selftest 已并入 --selftest，用例扩到 17 条真子进程断言，伴生文件已删）+ 根 package.json（两 script）+ .github/workflows/ci.yml + docs/ARCH-28b-turbo-adoption.md（新）+ docs/arch-28-workspace-evaluation.md §5.1 回填 | 见本轮 commit | **turbo 增量接入 —— 实测结论=不接入；交付 no-hoisting 守卫 + A/B 实测报告。**沙箱 worktree（develop @ d3804307 detached，仓库零污染）逐项实测：**①turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 workspaces，8 个子项目 `npm ci` **全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）；报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；**部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；`--legacy-peer-deps` 会把 hoist 写进根 lockfile（1→866 条目）固化破坏。**②runner 委派语义**：turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突（无 workspace 清单时 pnpm 直接 ERR_PNPM_OTHER_PM_EXPECTED）。**③单包模式缓存生效但对 CI 无收益**（每 job 独立 runner + 全新 checkout，本地缓存不可跨 job 复用；§2 预判的重复 build 实测每处仅 8~12s）。**④真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s（收益真实但前提不可用）。**交付**：check-no-hoisting.mjs 结构守卫（5 判据，13 项有齿自检，含 4 负例族）+ 接入 CI check-migrations job + 根两 script + ARCH-28b 实测报告（含 CI 关键路径实测：瓶颈=selftests 518s 串行自检 / admin-web 286s vitest，npm ci 仅占 2.5~10%，与 ARCH-28 §1.3 结论一致且强化）。**如实**：turbo 依赖未入 package.json（沙箱实测用）；turbo.json 未落地（验收原文要求——不落地即结论）。 |
@@ -529,6 +532,61 @@
 | 记忆域 / 子 agent | **推迟**（写明前置条件） | 裁定 R12；记忆需先解决多租户分桶与跨会话注入的不可撤销性 |
 
 ## 变更日志
+
+- 2026-11-20 **产品轮 · R280（PM 立项 + 2 路侦察 + 3 个实现切片）（1 个提交 `8c9e3510` · 补齐两处「没有接收方」；其中一处是我自己的裁决被真机推翻）**：
+
+  任务书 `artifacts/autonomy/R280/brief.md`；侦察 `recon-sop-escalation.md` / `recon-failure-semantics.md`。
+
+  - **① 主线：升级到人工的 SOP 澄清，三条通道全部失效**。收件箱八小节无一涉及 SOP 澄清；
+    兜底路径把 assignment `blocked → in_progress`（`sop.service.ts:1745-1752`）⇒ 按 blocked
+    筛不到；`notifyEscalation` 调 `notify()` **不传 taskId**，而 `isSilenced` 的 global 分支
+    `!silence.taskId || …` 无条件命中 ⇒ 一条 scope=global 静默规则就能吞掉，外层还刻意
+    **fail-open**；全仓也没有跨 SOP 的待答复澄清聚合端点。
+    ⇒ 新建 `GET /sop/clarifications/pending`（`total` 独立 `getCount()`、`truncated`/`degraded`、
+    查询 ≤3 无 N+1、装配缺失 503、路由注册在 `:id` **之前**）。
+  - **② 一个必须真机才发现的裁决错误（本轮转折点）**。我最初照搬既有终态黑名单
+    `['completed','failed','cancelled']`，真机上那条正确的待办在 assignment 变 `failed` 后
+    **从列表消失**。而执行器 `agent-host.ts:688-700` 逐字写着「升级后…**运维在 Admin Web
+    处理后重派**」并以 `status:'failed'` + `outcome:'escalated_to_human'` 上报
+    ⇒ **`failed` 在这里不是「结束」而是「等人接管」**，是「请运维去处理」这个动作的触发条件。
+    排除它 = 把那个入口本身删掉。修法：黑名单只留 `completed`/`cancelled`，并在常量注释里
+    写透「`failed` 刻意不在内，别把它『修正』回去」（含 `maxRounds` 写 `blocked`、
+    超时扫描只扫 `assigned|in_progress` ⇒ `blocked` 无服务端兜底这一事实）。
+    **真机对账**：五种 assignment 状态各挂一条 ⇒ 修复前计入 2、修复后 **3**；
+    真实 HTTP `total=2`（failed+blocked）而 completed/cancelled 排除。
+  - **③ 第二条：同一屏两句互斥的「失败」断言**。Dashboard 失败趋势曲线**含 timeout**
+    （注释写明告警口径 `failed|timeout`），而「最近失败」只查 `status=FAILED`
+    ⇒ 超时风暴时曲线涨到 10 而卡片说「近期无失败记录」。
+    侦察还追加了一层：同一个 `timeout` 语义**分叉落两桶**（回调 ⇒ `TIMEOUT`；
+    sweep ⇒ `FAILED`+`failureReason=TIMEOUT`）⇒ **只数 FAILED 的桶本身也不纯**。
+    修法：实体立**唯一事实源** `FAILED_EXECUTION_STATUSES=[FAILED,TIMEOUT]`
+    （`KILLED`/`CANCELLED` 不算，与 `alerts.yml` 及 `docs/operations.md:1273` 一致），
+    注释列出其余未迁移调用点并标明哪一条**已经是对的、不要重改**。
+  - **④ 侦察推翻了我 brief 里的一处假设**：`maxRounds` 路径（`sop.service.ts:1018-1025`）
+    写 `blocked` 且**停在那儿**，而超时扫描只扫 `status IN ('assigned','in_progress')`
+    ⇒ 该路径**连自愈都没有**。这比我原判断更严重，已并入上面的常量注释。
+
+  **验证（真实 exit，分级如实）**：
+  - **真机（真实进程内集成）**：真 PG16/Redis7 + 真 admin-api + 144 迁移。
+    升级澄清五种状态矩阵；`limit=1` ⇒ `returned=1/total=3/truncated=true`（最久等待者排第一）；
+    `limit=9999/abc/-5` 全 200 安全回落。失败口径：造 `2×timeout+1×failed+1×killed+1×cancelled`
+    ⇒ `/metrics/failures` 返回 3（含 2 timeout，**killed/cancelled 正确排除**）、
+    `/metrics/summary` 的 `failed:3`（修复前为 1）。**探针数据已全部清理**。
+  - 后端 `npx jest` **495 套 / 8349 例**绿；前端全量 **340 文件 / 2720 例**绿；守卫链 **121/121 = 0**。
+  - 生成物：`swagger:export` + i18n **1810/1810**；`gen:api-types`（新 DTO 改为**合同派生**，
+    手写类型 126 处不变、派生 22 → 23）；`check:response-schema` 250/263（棘轮 `--update`）；
+    `check:api-reference` 226 路径逐字节一致。
+  - **反证**：失败口径改回 `status=FAILED` ⇒ 3 例红；成功率卡再改回 ⇒ 4 例红；恢复即绿。
+
+  **未覆盖**：生产包浏览器 E2E 未跑（前端证据级 = 单测/内存替身 + 静态守卫）。
+
+  **方法学沉淀（接 516）**：
+  - **517「照搬既有定义前，先问那个定义在**这个语境**里指什么」**。`completed/failed/cancelled`
+    在 SOP 语境里不是「工单结束」而是「谁在等谁」——`failed` 是执行器**把球交回人工**的信号。
+    照搬让错误实现看起来毫无破绽（单测全绿、注释还引了「判据来源」），**只有真机造一条数据才暴露**。
+  - **518「同一个语义落两个字段值，是『只数某一个值』这类统计的隐形毒药」**。`timeout` 分叉落
+    `TIMEOUT` 与 `FAILED+failureReason` ⇒ 任何按 `status` 单值过滤的统计都不完整且**看上去完全正常**。
+    解法不是逐个修查询，而是先立唯一事实源。
 
 - 2026-11-19 **产品轮 · R279（PM 立项 + 3 个 agent 编排）（1 个提交 `378a1243` · 收件箱补上「终态」这一格；并修一条 UI 显示判死窗口小一半的事实错误）**：
 

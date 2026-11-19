@@ -3,6 +3,37 @@
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-19
 > 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
 
+## SOP 升级澄清待办 + 失败口径统一（R280，工作树，未发布）
+
+- **可用路径**：收件箱新增第九个小节「待答复澄清」（`sopClarifications`），顶栏单独显示
+  「待答复澄清 N 问」。每行显示疑问（前端截断 120 字符）+ SOP 名（读不到显示「（未命名 SOP）」，
+  **绝不退回 uuid**）+ 第 N 轮，深链 `/sops?sop=<id>`。接口：`GET /api/sop/clarifications/pending`。
+- **判据（改代码前必读）**：
+  - 计入 `resolution='escalated_to_human'` **且** assignment `status ∉ {completed, cancelled}`。
+  - ⚠️ **`failed` 必须计入**，这是本文件最容易改错的一处：执行器
+    `agent-host.ts:688-700` 用 `status:'failed' + outcome:'escalated_to_human'` 表达
+    「无自动答复，**请在 Admin Web 处理后重派**」⇒ `failed` 在这里不是「工单结束」而是
+    「等人接管」。**不要**照搬 `sop.service.ts` 的 `['completed','failed','cancelled']` 终态定义
+    （那是「谁在等谁」的另一套语境）。
+  - `maxRounds` 路径写 `blocked` 并停在那儿，而超时扫描只扫 `assigned|in_progress`
+    ⇒ 该路径**无服务端兜底**；`blocked` 因此必须在待办里可见。
+- **失败口径（第二个交付面）**：实体新增唯一事实源
+  `FAILED_EXECUTION_STATUSES = [FAILED, TIMEOUT]`（`task-execution.entity.ts`）。
+  `KILLED`/`CANCELLED` **不算失败**（人主动停的）。为什么必须含 TIMEOUT：同一个 timeout
+  语义分叉落两桶——回调上报 ⇒ `status=TIMEOUT`；stale sweep ⇒ `status=FAILED` +
+  `failureReason=TIMEOUT`。**只数 FAILED 的桶本身也不纯。**
+  常量注释里列了其余未迁移调用点，其中 `execution-read.collaborator.ts:798-800` **已经是对的，不要重改**。
+- **验收口径**：后端 `npx jest`（495 套 / 8349 例）；前端 `npx vitest run`（340 文件 / 2720 例）；
+  守卫 `node scripts/guards-repo-matrix.mjs`（121 段）。
+  **真机复验（本轮的裁决就是真机推翻的，不接受单测代替）**：起真 PG/Redis → 迁移 →
+  `npm run build` → `node dist/main.js` → 造五种 assignment 状态各挂一条 `escalated_to_human`
+  ⇒ `total` 应为 **3**（failed + blocked + in_progress），`completed`/`cancelled` 排除。
+  失败口径：造 `2×timeout+1×failed+1×killed+1×cancelled` ⇒ `/metrics/failures` 返回 3、
+  `summary.failed = 3`。
+- **发布前**：无迁移、无新 env 键、无破坏性契约变更。新端点需 `swagger:export` 后再跑
+  `inject-openapi-en`（新增 DTO 的中文描述必须在 `openapi-en-map.json` 里有英文，否则该脚本红）。
+- **回滚**：`git revert` 本轮提交；新端点删除即恢复，`limit` 缺省即旧行为。
+
 ## 收件箱「Agent 会话失败」小节（R279，工作树，未发布）
 
 - **可用路径**：顶栏徽标会单独显示「会话失败 N」；`/inbox` 新增第八个小节「Agent 会话失败」，
