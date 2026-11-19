@@ -7355,9 +7355,9 @@ export interface components {
             applicationCount: number;
             /** @description 近 7 天执行数（经 taskId 关联 tasks.projectId 统计） */
             executionsLast7d: number;
-            /** @description 近 7 天失败执行数（status=failed） */
+            /** @description 近 7 天失败执行数（status=failed，分桶明细，不含 timeout） */
             failedExecutionsLast7d: number;
-            /** @description 近 7 天失败率（failed / 执行总数，百分比保留两位）；窗口内无执行为 null，前端显示暂无数据 */
+            /** @description 近 7 天失败率 =（failed + timeout）/ 执行总数，百分比保留两位；分子按已宣示口径「失败 = 失败 + 超时」合并，故**不等于** failedExecutionsLast7d / executionsLast7d（那两个字段是分桶明细）；窗口内无执行为 null，前端显示暂无数据 */
             failureRate?: number | null;
             /** @description 项目成员关系行数 */
             memberCount: number;
@@ -7371,7 +7371,7 @@ export interface components {
             recentFailures: components["schemas"]["ProjectSummaryRecentFailureDto"][];
             /** @description 未软删除的任务数（排除 status=deleted；默认项目含未分配 NULL 行） */
             taskCount: number;
-            /** @description 近 7 天超时执行数（status=timeout） */
+            /** @description 近 7 天超时执行数（status=timeout，分桶明细，不含 failed） */
             timeoutExecutionsLast7d: number;
         };
         ProjectViewDto: {

@@ -8529,15 +8529,15 @@
             "x-i18n-en": "Executions in the last 7 days (counted via taskId joined to tasks.projectId)"
           },
           "failedExecutionsLast7d": {
-            "description": "近 7 天失败执行数（status=failed）",
+            "description": "近 7 天失败执行数（status=failed，分桶明细，不含 timeout）",
             "type": "number",
-            "x-i18n-en": "Failed executions in the last 7 days (status=failed)"
+            "x-i18n-en": "Failed executions in the last 7 days (status=failed; a per-bucket breakdown that excludes timeout)"
           },
           "failureRate": {
-            "description": "近 7 天失败率（failed / 执行总数，百分比保留两位）；窗口内无执行为 null，前端显示暂无数据",
+            "description": "近 7 天失败率 =（failed + timeout）/ 执行总数，百分比保留两位；分子按已宣示口径「失败 = 失败 + 超时」合并，故**不等于** failedExecutionsLast7d / executionsLast7d（那两个字段是分桶明细）；窗口内无执行为 null，前端显示暂无数据",
             "nullable": true,
             "type": "number",
-            "x-i18n-en": "Failure rate in the last 7 days (failed / total executions, percentage rounded to two decimals); null when there are no executions in the window, and the frontend shows no-data"
+            "x-i18n-en": "Failure rate over the last 7 days = (failed + timeout) / total executions, as a percentage with two decimals. The numerator follows the declared caliber \"failed = failed + timeout\", so it is **not** equal to failedExecutionsLast7d / executionsLast7d (those two fields are per-bucket breakdowns). null when there were no executions in the window; the UI shows \"no data\""
           },
           "memberCount": {
             "description": "项目成员关系行数",
@@ -8576,9 +8576,9 @@
             "x-i18n-en": "Number of tasks that are not soft-deleted (excludes status=deleted; the default project includes unassigned NULL rows)"
           },
           "timeoutExecutionsLast7d": {
-            "description": "近 7 天超时执行数（status=timeout）",
+            "description": "近 7 天超时执行数（status=timeout，分桶明细，不含 failed）",
             "type": "number",
-            "x-i18n-en": "Timed-out executions in the last 7 days (status=timeout)"
+            "x-i18n-en": "Timed-out executions in the last 7 days (status=timeout; a per-bucket breakdown that excludes failed)"
           }
         },
         "required": [

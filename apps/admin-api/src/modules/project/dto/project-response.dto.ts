@@ -300,10 +300,15 @@ export class ProjectSummaryRecentExecutionDto {
  * - `memberCount`：project_members 成员关系行数。
  * - `executionsLast7d`：task_executions 经 `taskId` 关联 tasks，按任务归属统计
  *   近 7 天（`createdAt >= now - 7d`）的执行数；窗口内无执行记 0。
- * - `failedExecutionsLast7d` / `timeoutExecutionsLast7d`：同一窗口内
- *   `status = failed` / `timeout` 的行数（TIMEOUT 单列透出，对齐告警口径
- *   failed|timeout，见 metrics.service A-10 注释）。
- * - `failureRate`：窗口内 `failed / executionsLast7d`（百分比，保留两位小数）；
+ * - `failedExecutionsLast7d` / `timeoutExecutionsLast7d`：同一窗口内的**分桶明细**——
+ *   `status = failed` / `status = timeout` 各自的行数。两桶**不要相加**：用户要看的是
+ *   「脚本失败」与「超时」各多少，合并会让 timeout 这个字段失去意义。
+ * - `failureRate`：窗口内 `(failed + timeout) / executionsLast7d`（百分比，保留两位小数）。
+ *   分子取 `FAILED_EXECUTION_STATUSES`（= FAILED ∪ TIMEOUT）——这是**已宣示的产品口径**：
+ *   admin-web `locales/zh.ts:1479` 逐字写着「失败 = 失败 + 超时（人工终止不计入失败率）」。
+ *   ⚠️ 因此 **`failureRate` 不等于 `failedExecutionsLast7d / executionsLast7d`**：
+ *   后者只含 FAILED 桶，前者是两桶合并。这个「不等」是**契约而非缺陷**，别把它「修正」
+ *   回去——两者相等会让超时风暴时的失败率漏报（回调上报的 timeout 落 TIMEOUT 桶）。
  *   **窗口内无执行时为 null**——前端显示「暂无数据」，不渲染 0%。
  * - `recentFailures`：该项目任务下最近 5 条失败/超时执行（不限 7 天窗口，
  *   按 createdAt DESC）；`recentExecutions`：最近 5 条执行（不限终态）。
@@ -337,19 +342,19 @@ export class ProjectSummaryResponseDto {
   executionsLast7d: number;
 
   @ApiProperty({
-    description: "近 7 天失败执行数（status=failed）",
+    description: "近 7 天失败执行数（status=failed，分桶明细，不含 timeout）",
   })
   failedExecutionsLast7d: number;
 
   @ApiProperty({
-    description: "近 7 天超时执行数（status=timeout）",
+    description: "近 7 天超时执行数（status=timeout，分桶明细，不含 failed）",
   })
   timeoutExecutionsLast7d: number;
 
   @ApiPropertyOptional({
     nullable: true,
     description:
-      "近 7 天失败率（failed / 执行总数，百分比保留两位）；窗口内无执行为 null，前端显示暂无数据",
+      "近 7 天失败率 =（failed + timeout）/ 执行总数，百分比保留两位；分子按已宣示口径「失败 = 失败 + 超时」合并，故**不等于** failedExecutionsLast7d / executionsLast7d（那两个字段是分桶明细）；窗口内无执行为 null，前端显示暂无数据",
   })
   failureRate: number | null;
 
