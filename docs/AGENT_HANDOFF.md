@@ -3,13 +3,23 @@
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-19
 > 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
 
-## 中台 Agent：本次接手交付（2026-11-19，工作树，未发布）
+## 待办收件箱：服务端聚合（R278，工作树，未发布）
+
+- **可用路径**：顶栏徽标现在显示两个口径——`待审批 N 单`（**审批单**数）与 `等待输入 M 会话`（会话数），点击进 `/inbox`。收件箱各小节在「取了 N 条但不是全部」时显示「显示前 N 条（共 M 条）」，计数读不到时显示「—」并带降级提示（**不再渲染成 0**或「当前没有待办」）。接口：`GET /api/agent/approvals/pending`、`GET /api/agent/inbox/counts`。
+- **本轮闭掉的上一版遗留项**：上一版交接写的「后续优先级：待办量大时的服务端聚合与分页；当前等待列表取前 50 个会话，再逐个读审批单，顶栏计数按会话而非审批单数」——**即本轮交付内容**。前端 `listApprovals` 已归零（一次 `approvals/pending` 取代 51 次请求），计数由 5 个分散请求并为 1 个。
+- **契约要点（改代码前必读）**：`total` / `sessionTotal` 为 `null` = **读不到**，`0` = 事实为零，两者不可互替；`truncated = returned < total`，`total` 未知时 `truncated` 为 `false`（「是否截断」未知由 `degraded` 表达）；服务装配缺失 ⇒ **503**，绝不回 200 空信封。
+- **验收口径**：后端 `npx jest`（全量 494 套件 / 8305 例）+ `npx tsc --noEmit -p tsconfig.json` + `npx tsc -p tsconfig.spec.json --noEmit`；前端 `npx tsc -b` + `npx vitest run`（337 文件 / 2661 例）；守卫 `node scripts/guards-repo-matrix.mjs`（121 段）。注意 `apps/admin-api` 下 jest **必须**带 `NODE_OPTIONS=--experimental-vm-modules`（裸 `npx jest` 会对本模块全线报 `Must use import to load ES Module`，既有文件同样如此，不是本轮引入）。
+- **生成物纪律**：改了 `@ApiProperty` / `@ApiOperation` 的中文描述后，**必须**依次跑 `npm run openapi:export` → 把英文补进 `scripts/api-i18n/data/openapi-en-map.json`（**键 = 中文原文，纯追加**）→ `node scripts/api-i18n/inject-openapi-en.mjs` → `npm run gen:api-types` → `node scripts/gen-api-reference-appendix.mjs`。漏任何一步，`api-types-drift` / `api-i18n` / `check:api-reference` 三条闸会红在 CI 而本地看着全绿。
+- **本轮实测（级别如实）**：最高到「真实进程内集成」的**前置**——Jest 内存替身 + 真子进程跑真守卫脚本。**未跑**真 PG/Redis 集成、**未跑**生产包浏览器 E2E；因此「旧实现第 51 个请求必 429」仍是**侦察推断**（依据：`app.module.ts:208` 全局 60/min + `agent.controller.ts` 无 `@Throttle`），**未实测复现**。
+- **发布前**：本轮**无迁移**、**无新 env 键**、**无破坏性契约变更**（两条端点均为新增；既有 `sessions/:id/approvals` 一字未改）。回滚 = `git revert` 本轮提交，前端 `api/inbox.ts` 的旧函数名保留薄包装，单文件还原即可。
+
+## 中台 Agent：上一版交付（2026-11-19，工作树，未发布）
 
 - **可用路径**：管理员从任务详情发起只读诊断，或在 Agent 会话页用自然语言提问；按返回 ID 看进度和完整答复。收件箱的审批链接同时定位会话和业务单号。操作步骤见[运维手册](operations.md#用中台-agent-排查任务)。桌面执行器和视频转 SOP 是独立产品路径，本次没有修改。
 - **验收口径**：前端的 `npm run test:e2e:agent` 构建真实页面、用离线 API 夹具跑浏览器。后端 `npm run test:e2e -- --runInBand` 需要已迁移的测试库和 Redis；连续审批用例检查同会话的步骤 1 → 2 → 3、两笔实际任务各生成一次，不以 `resumed:true` 代替执行证据。真实 HTTP 烟测只替代模型传输，无需外部模型密钥。
 - **本轮实测**：全量管理台单测 333 个文件通过（2622 项通过、1 项跳过）；生产包浏览器验收 4/4；全新 PostgreSQL 16 + Redis 7 环境的后端 E2E 为 6 套、42/42。后端 144 条迁移执行到 `0100`；人工对话取得答复，只读诊断对范围内任务读取成功、对范围外的 `get_task` 拦截。独立管理员连续批准两张不同的单，实测两次工具副作用各发生一次。
 - **发布前**：先备份并安排维护窗口，依[升级指南 §15](UPGRADING.md#15-agent-工具调用审批键迁移-1790000000100)排空旧 worker、执行迁移 `0100`，再恢复审批流量。不要为回滚删除审批键或清空 Redis。
-- **后续优先级**：验证直接 API 客户端在会话尚为 `running` 时就处理新审批单的竞态；本次双轮验收覆盖的是 `waiting_input` 后批准。其次是待办量大时的服务端聚合与分页：当前等待列表取前 50 个会话，再逐个读审批单，顶栏计数按会话而非审批单数。真实模型的答复质量须在实际部署的提供商上另行评估。
+- **后续优先级**：验证直接 API 客户端在会话尚为 `running` 时就处理新审批单的竞态；本次双轮验收覆盖的是 `waiting_input` 后批准。~~其次是待办量大时的服务端聚合与分页~~（**已由 R278 交付**）。真实模型的答复质量须在实际部署的提供商上另行评估。
 
 ## 目录
 

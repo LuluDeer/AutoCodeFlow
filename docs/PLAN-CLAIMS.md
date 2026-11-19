@@ -318,6 +318,9 @@
 
 | 任务 | 优先级 | 状态 | Owner | 认领时间 | 文件足迹 | commit | 备注 |
 |---|---|---|---|---|---|---|---|
+| R278-INBOX-01 | P1 | done | lead（PM 编排）· 切片 be-inbox / fe-inbox | 2026-11-19 | apps/admin-api/src/modules/agent/runtime/agent-inbox.service.ts（新）+ dto/agent-inbox.dto.ts（新）+ __tests__/agent-inbox.service.spec.ts（新）+ agent.controller.ts（+70 只追加）+ agent.module.ts（+6）；apps/admin-web/src/api/{inbox,agent}.ts + components/InboxBadge.tsx + pages/InboxPage.tsx + __tests__/inbox-*；生成物 openapi.json / api-types.ts / api-reference.md / openapi-en-map.json | 54ea04f7 | **待办收件箱：从「少报且不说明少报」到「可对账」**。根因是前端「先拉 50 个 waiting_input 会话、再逐个 `listApprovals`」⇒ ① 顶栏按会话计 vs 列表按审批单行计（同一会话多单必然不等）② 第 51 个起**静默丢弃无标记** ③ 51 次请求共用 60/min 全局限流桶（第 51 个必 429）。修法=**把聚合搬到服务端**：新 `GET /agent/approvals/pending`（独立 `count()` 出 `total`、`COUNT(DISTINCT sessionId)` 出 `sessionTotal`、一次 `In(...)` 批量标题 ⇒ 查询数与会话数无关）与 `GET /agent/inbox/counts`（6 项计数并行、各自独立降级），信封强制带 `total`/`truncated`/`degraded`；装配缺失抛 503，**不回 200 空信封**。前端 `listApprovals` 调用归零（`toHaveBeenCalledTimes(1)` 钉死防回归），计数 5 请求 → 1。顺带修真缺陷两条：全部计数未知时原渲染「当前没有待你处理的事项」（空态谎报）；无 `total` 时原把已取条数渲染成「共 N 条」（编造总数）。**验证**：后端 `npx jest` 全量 **494 套件 / 8305 例** 绿（新增 inbox 16 例）；前端 `vitest run` **337 文件 / 2661 例** 绿（新增 45 例）；`route-authz-matrix` 10/10（262 路由，**未改 spec**）；双端 tsc/eslint 0；守卫链 **121/121 = 0**。**未覆盖**：真 PG/Redis 集成与生产包浏览器 E2E 未跑，故「429 是否真发生」仍是侦察推断 |
+| R278-DEC-01 | P2 | done | lead（PM 编排）· 切片 decisions | 2026-11-19 | docs/OPEN-DECISIONS.md + packages/acf-cli/src/ui.ts(+spec) + packages/executor-protocol/protocol.json + docs/atlas/01-apps/admin-api/modules/task.md | 13368858 | **待决策清单收口**：拍板并落地 5 条零成本项——**A4** 容器任务内存上限维持 768/512（证据：`check-sandbox-limit-order` exit 0 / 16 例）；**H1** `docs/atlas/.../task.md` 的「默认 any」改为 `owner`（与 `configuration.ts:568` 一致，非成员恒 403）；**D1** `--json` 加入 `VALUE_TAKING_OPTIONS` + `looksLikeJsonPayload` 反向判据（`--json <body>` 不再被当输出开关，**命令末尾的 `--json` 仍作开关**，不破坏 `task list --json`）；**B4/B5** 协议 `adminApiUrls` 与 v7/v8 加 `$comment` 标注 python 侧未（部分）实现（`check-protocol-breaking` 判 compatible、生成物 `--check` 幂等）。**明确不做并写理由 12 条**：B1/B2/B3/C1/D2/D3/D5/D6/A2/A3/D7 + D4（棘轮不加第 7 类，顺带把文档里的 73 改成实测 76）。**反证**：把 `'--json'` 从表里删掉 ⇒ **2 failed / 48 passed**，恢复 ⇒ 50/50。**验证**：`check-docs` 7/7、`check:cli-doc`、`check:sandbox-limit-order`(16)、`check:protocol-three-way`(三向 33 + 逐格 14)、`check-protocol-breaking`、`acf-cli tsc` 全 0；`acf-cli` 全量 **460 例** 绿 |
+| R278-GUARD-01 | P2 | done | lead（PM 编排）· 切片 guardfix | 2026-11-19 | scripts/check-agent-stub-fidelity.mjs + scripts/agent-runtime-check.mjs | 6a4b1141 | **修本轮自造的守卫红（不是既有欠账）**：`declaredTypeOf()` 正则不容 `?`，认不出本仓 `@Optional()` 标准写法 `private readonly x?: T | null` ⇒ 把 `Repository<AgentApproval>` 判成 `AgentApprovalsService`，一条误判造两条红（`approvals 保真 2/13`、`sessionService 保真 12/13`）。修法：正则加 `\??` + `stripNullUnion()`（**只**剥 `| null`/`| undefined`，别的联合原样保留 ⇒ 保守方向：宁可多要求替身，不把真缺口藏起来），补 2 条 selftest（含「换成服务类型必须红」对照）。同时补**替身真缺口**：`makeSessionService()` 增 `list`，按 `agent-session.service.ts:623-662` 逐条复刻（stalled 谓词看 **step 而非 updatedAt**、`clampPagination` 的 NaN 回落、`createdAt DESC`、`total` 与 skip/take 无关），**零白名单豁免**。自测探针顺带抓到自己一个真 bug：同毫秒兜底原按 id **升序** ⇒ `pageSize:1` 取到最老会话，与 `createdAt DESC` 相反，已改同向。**反证**：去掉 `\??` ⇒ 新用例红（`✖ 失败：1/17`），恢复即绿 **17/17**。**验证**：守卫 0、selftest 17/17、`agent-runtime-check` 0、`agent-sop-check` 0 | | 2026-09-27 | scripts/check-no-hoisting.mjs（新；T4 起伴生 selftest 已并入 --selftest，用例扩到 17 条真子进程断言，伴生文件已删）+ 根 package.json（两 script）+ .github/workflows/ci.yml + docs/ARCH-28b-turbo-adoption.md（新）+ docs/arch-28-workspace-evaluation.md §5.1 回填 | 见本轮 commit | **turbo 增量接入 —— 实测结论=不接入；交付 no-hoisting 守卫 + A/B 实测报告。**沙箱 worktree（develop @ d3804307 detached，仓库零污染）逐项实测：**①turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 workspaces，8 个子项目 `npm ci` **全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）；报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；**部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；`--legacy-peer-deps` 会把 hoist 写进根 lockfile（1→866 条目）固化破坏。**②runner 委派语义**：turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突（无 workspace 清单时 pnpm 直接 ERR_PNPM_OTHER_PM_EXPECTED）。**③单包模式缓存生效但对 CI 无收益**（每 job 独立 runner + 全新 checkout，本地缓存不可跨 job 复用；§2 预判的重复 build 实测每处仅 8~12s）。**④真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s（收益真实但前提不可用）。**交付**：check-no-hoisting.mjs 结构守卫（5 判据，13 项有齿自检，含 4 负例族）+ 接入 CI check-migrations job + 根两 script + ARCH-28b 实测报告（含 CI 关键路径实测：瓶颈=selftests 518s 串行自检 / admin-web 286s vitest，npm ci 仅占 2.5~10%，与 ARCH-28 §1.3 结论一致且强化）。**如实**：turbo 依赖未入 package.json（沙箱实测用）；turbo.json 未落地（验收原文要求——不落地即结论）。 |
 | N-01 | P2 | done | main-A（轮 27） | 2026-09-27 | scripts/check-no-hoisting.mjs（新；T4 起伴生 selftest 已并入 --selftest，用例扩到 17 条真子进程断言，伴生文件已删）+ 根 package.json（两 script）+ .github/workflows/ci.yml + docs/ARCH-28b-turbo-adoption.md（新）+ docs/arch-28-workspace-evaluation.md §5.1 回填 | 见本轮 commit | **turbo 增量接入 —— 实测结论=不接入；交付 no-hoisting 守卫 + A/B 实测报告。**沙箱 worktree（develop @ d3804307 detached，仓库零污染）逐项实测：**①turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 workspaces，8 个子项目 `npm ci` **全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）；报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；**部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；`--legacy-peer-deps` 会把 hoist 写进根 lockfile（1→866 条目）固化破坏。**②runner 委派语义**：turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突（无 workspace 清单时 pnpm 直接 ERR_PNPM_OTHER_PM_EXPECTED）。**③单包模式缓存生效但对 CI 无收益**（每 job 独立 runner + 全新 checkout，本地缓存不可跨 job 复用；§2 预判的重复 build 实测每处仅 8~12s）。**④真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s（收益真实但前提不可用）。**交付**：check-no-hoisting.mjs 结构守卫（5 判据，13 项有齿自检，含 4 负例族）+ 接入 CI check-migrations job + 根两 script + ARCH-28b 实测报告（含 CI 关键路径实测：瓶颈=selftests 518s 串行自检 / admin-web 286s vitest，npm ci 仅占 2.5~10%，与 ARCH-28 §1.3 结论一致且强化）。**如实**：turbo 依赖未入 package.json（沙箱实测用）；turbo.json 未落地（验收原文要求——不落地即结论）。 |
 | N-02 | P1 | done | main-A（轮 28 复核） | 2026-09-27 | docs/adr/adr-013-project-roles.md | 见本轮 commit | | **ADR-013 保留缺口清偿**（四项，均 AUTH-02 行明示）：① 非成员 trigger/pause/resume 宽松语义收紧（⚠️破坏性，**需产品拍板**）；② 项目列表按成员过滤（**已由 AUTH-02-B `0318dfe` 落地，认领前须复核销账**）；③ 项目内 executor/package 角色细分；④ admin-web 权限门控 UI。**破坏性项纪律**：ADR 修订 + 前后端同批 + CHANGELOG 显著位 + 升级说明 **轮 28 复核销账（2026-09-27）**：四项逐条回读源码实测——**①③④ 性质与原判断不同**：① 已兑现（2026-09-15 TASK-SCOPE-01）且**比原设想更进一步**——`configuration.ts:390` 实测`TASK_OPERATE_SCOPE === "any" ? "any" : "owner"`，**默认即收紧档 owner**，宽松需显式声明；② 已兑现（AUTH-02-B `0318dfe`，`projects.controller.ts:83-102`）；④ 已兑现（`ProjectsPage.tsx` 用 `isAdminUser` 门控，3 处引用）；**③ 复核后判定为「能力扩张」而非缺口**——实测 `executor.controller.ts` 全部写端点（PATCH :id / :id/reload-config / :id/rotate-token / :id/set-offline / DELETE :id）均带`@Roles(UserRole.ADMIN)`，`executor-package.controller.ts:118` 更是**类级** `@Roles(ADMIN)`；即现状**比项目角色细分更严**，故「细分」真实含义是**把权限下放给项目 editor/admin**（能改执行器元数据/轮换令牌/删执行器的席位变多），与 ADR-013 §2「只增放行、不收紧」方向相反，**必须产品拍板**。附实测：`executor.projectId`/`executor_packages.projectId` 两列**已存在**（迁移 1790000000009）但**全仓零处读用**（模块内 grep 仅命中实体定义，计数=1）——拍板后可直接接权限判定，无需再动迁移。ADR-013 §3 已追加 2026-09-27 更新段为事实源。**如实**：本轮**零代码改动**（纯复核销账）；③ 若做属放行权扩张，按纪律须 ADR 修订 +前后端同批 + CHANGELOG 显著位 + 升级说明。（**阻塞原因**：③ 属放行权扩张，需产品拍板；①②④ 已兑现无需改动）。**2026-10-02 产品拍板（AskUserQuestion 留痕）：③ 取温和下放**——PATCH `:id` 与 POST `:id/reload-config` 下放项目 editor/admin（ProjectAccessService 判定 + executor.projectId 接线），rotate-token / set-offline / DELETE 保留 ADMIN 独占，executor-package 类级 ADMIN 不动；ADR-013 已追加拍板段，实施本轮进行中。**验收兑现（2026-10-02）**：executor.controller PATCH `:id` / POST `:id/reload-config` 移除 @Roles(ADMIN)，判定下沉 assertCanManageMetadata（ADMIN 短路 + ProjectAccessService 项目 editor+；projectId=null 平台级执行器非 ADMIN 恒 403，不落 DEFAULT_PROJECT_ID；@Optional 缺席退化仅 ADMIN fail-closed）；A2 授权形态声明 @WriteGuard("executor",{scope:"ownership"}) + recordOwnershipAssertion("executor","write") 落证，穷举守卫清单显式登记；rotate-token/set-offline/DELETE 与 executor-package 类级 ADMIN 未动。admin-web 详情页头部按钮拆分（编辑/热更=canManageMetadata，下线/轮换/删除=isAdmin；列表页批量入口维持 ADMIN）。RBAC 矩阵 +6（editor 放行/成员被拒/null 短路/ADMIN 免查/reload 双向），write-guard-coverage 清单登记，admin-api 全量 253 套件 4206 例绿，admin-web 176 套件 1346 例绿，双端 lint/tsc 绿，swagger/api-types 同批（纯描述+403 文档 diff）。子代理平台复现 reasoning-level-missing，按既有降级纪律主会话直落。 |
 | N-03 | P2 | done | main-A（轮 27） | 2026-09-27 | apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts（新）+ src/modules/sop/__tests__/sop.controller.spec.ts（新）+ src/modules/sop/sop.service.read-and-guards.spec.ts（新）+ apps/admin-api/package.json（coverageThreshold） | 见本轮 commit | 覆盖率棘轮续期 —— 四档地板**全部上探**，全在**定向补测真实逻辑**之后。**实测（本机 baseline → now）**：stmts 87.64→**88.59**、branches 76.40→**77.58**、funcs 80.60→**82.45**、lines 88.56→**89.54**；地板 84/75/78/85 → **87/76/81/88**（jest coverageThreshold；**反证实测**：把 functions 临时改成 99 → 全量跑 exit 1 并打印`Coverage for functions (82.45%) does not meet "global" threshold (99%)`，证明地板真在生效而非装饰）。**三处定向补测（+56 例，226→229 套件；3790→3846 例）**：① **`agent-runtime.service.ts`（0% → fn/lines/stmts 100%，branches 87.03）**——P2 推理循环此前**一行未测**，而它承载三条只能在运行时暴露的不变量：**可重入**（每轮从 DB steps 重建messages 而非复用内存数组——依赖内存则重启后 resume 丢上下文）、**闸门在循环开头**（预算触顶时不得再发起推理与工具调用；判在末尾则最后一轮副作用已发生）、**模型调用失败 ≠ 预算超限**（链路坏 vs 花超了，运维含义不同必须落不同终态）。另测上下文窗口管理：已折叠步用 [阶段小结] 替身、tool 步折叠后降级 user 角色（tool 角色缺 tool_call_id 会触发上游 400）、tool 结果 tool_call_id 严格配对。② **`sop.controller.ts`（0% → 100%）**——ADMIN 管理面。发布权 = 间接指令注入权（04 §4.3），故钉住：**跨工单答复防线**（澄清不属于该指派即 Forbidden 且**拒绝发生在写之前**）、**指派目标解析**（地址查不到/两者都缺一律 Forbidden 且不落指派，不得退化成"随便派一台"）、**编辑走工作副本**（经 draft() 而非直改实体；title 缺省沿用原值不清空）、**媒体下载响应头**（Content-Length 取真实对象大小、文件名经 encodeURIComponent 防头注入、mime 缺失回落 octet-stream）、query 字符串转数字（不转会让分页变字符串拼接）。③ **`sop.service.ts` 读面 + 校验面 + 清洗面**（fn 21%→46%）——读面此前一行未测：分页双向钳位、slug 未命中抛 NotFound（不返回 null）、getAssignment 只带本指派澄清（防跨指派泄漏）、listActiveAssignments **投影字段封闭**（多出的列不得透出）、setExecutorSession 钳 128 位；校验面 mediaRefs **只认平台内 /api/ 路径**（外链/协议相对/相对路径全拒——SSRF 转嫁面）+ 上限 4 条 + kind 封闭枚举 + URL 长度 + note 钳 256；清洗面凭据打码（key=value 八形态 + sk-/gh[pousr]_ 前缀）、普通文本不误伤、超长截断到导出的 SOP_CLARIFICATION_QUESTION_MAX（**对着常量断言而非硬编码**——初版硬编码 2000 实测为 4000 立刻转红，正是"钉旧值假绿"的现场纠偏）。**反证均有牙（逐条实测转红后还原）**：预算闸门改 `if(false)` → 2 例红；折叠语义失效（强制 summary=null）→ 2 例红；移除 mediaRefs 外链拒绝 → 1 例红；listActiveAssignments 投影改 `{...a}` → 1 例红；删跨工单守卫 → 1 例红；assign 缺目标改回落常量 → 1 例红。**纪律遵守**：不写凑数弱断言——三处补测全部针对安全边界/可重入/失败归因这类"错了会静默"的语义；tsc 0 错、eslint 0 错（新文件）、全量 229 套件 3846 例绿。**如实**：洼地未清完——`tool-binder.service.ts`(fn 59%)、`task.controller.ts`(57%)、`clamd-scan.util.ts`(42%)、`executor.service.ts`(90% 但绝对缺口 17)、`application.controller.ts`(33%)、`auth.controller.ts`(42%)、`executor-package.controller.ts`(33%)仍待下轮；本次地板上探幅度按"最坏情况 ±1"保守取值（实测值全部高于地板 ≥1.45 个百分点）。 |
@@ -522,6 +525,82 @@
 | 记忆域 / 子 agent | **推迟**（写明前置条件） | 裁定 R12；记忆需先解决多租户分桶与跨会话注入的不可撤销性 |
 
 ## 变更日志
+
+- 2026-11-19 **产品轮 · R278（PM 立项 + 4 个 agent 编排）（2 个提交面 · 待办收件箱从「少报且不说明少报」变成「可对账」；顺带结清 5 条待决策 + 修 1 处守卫盲区）**：
+
+  任务书在 `artifacts/autonomy/R278/brief.md`，侦察在 `recon-approvals.md` /
+  `recon-decisions.md`，各切片回执 `be-inbox.md` / `fe-inbox.md` / `decisions.md` / `guardfix.md`。
+
+  - **① PM 选靶：不是找 bug，是选一条用户可感知的路径**。侦察交付的 U1–U5 五个现象
+    （徽标 3 vs 列表 7、第 51 个凭空消失、转圈+偶发读取失败、200 钳到 100、部署只显示 20）
+    **同一根因**：前端「先拉 50 个 `waiting_input` 会话，再逐个 `listApprovals`」。
+    ⇒ 补丁式修法会造出第三、第四份截断；**决定把聚合搬到服务端**，一次返回
+    「审批单行 + 两个计数 + `truncated` + `degraded`」。
+  - **② 四条产品决策（写进 brief，两侧不得各自发挥）**：
+    **D1** 顶栏口径以**审批单**为准（用户心智是「几件活」），`waitingSessions` 保留会话
+    数但**措辞不同**（「待审批 N 单」/「等待输入 M 会话」）；**D2** 任何「取了 N 条但
+    不保证是全部」必须带 `truncated` + `total`，**不许静默截断**；**D3** 读失败回 `null`
+    + `degraded`，**绝不回 0**（「没读到」≠「没有」是三处既有徽标的同一纪律，本轮补到
+    收件箱）；**D4** 顺带结清 5 条零成本待决策（A4 定 768/512、H1 改过期描述、
+    D1 修 `--json` 误判、B4/B5 协议标注），其余 12 条本轮**明确不做并写理由**。
+  - **③ 后端聚合（S1）**：新 `runtime/agent-inbox.service.ts`（+218 行）两条端点——
+    `GET /agent/approvals/pending` 与 `GET /agent/inbox/counts`。
+    **`total` 走独立 `count()`**（不是 `items.length`）、`sessionTotal` 走
+    `COUNT(DISTINCT sessionId)`、标题用一次 `In(...)` 批量取 ⇒ **查询数与会话数无关**（N+1 清零）。
+    `truncated = returned < total`；`total` 未知时 `truncated:false`、由 `degraded` 说
+    「未知」——**三个字段各自只说自己的事**。装配缺失抛 `DEPENDENCY_UNAVAILABLE`（503），
+    **不回 200 空信封**（不回空信封 = 不让运营以为活干完了）。
+  - **④ 前端接线（S2）**：`loadAgentWaiting` 改为**一次** `approvals/pending`
+    （`listApprovals` 调用归零，`toHaveBeenCalledTimes(1)` 钉死防 N+1 回归）；
+    `loadInboxCounts` 由 5 个分散请求（共用一个 60/min 限流桶）并为**一次**
+    `inbox/counts`。顺带修掉两条**真缺陷**：① 全部计数未知时原会渲染
+    「当前没有待你处理的事项」（空态谎报）；② 没有 `total` 时原会把已取条数
+    渲染成「共 N 条」（编造总数）。
+  - **⑤ 决策落地（S3）**：`--json <body>` 不再被当成输出开关（`VALUE_TAKING_OPTIONS`
+    加 `--json` + `looksLikeJsonPayload` 反向判据，**命令末尾的 `--json` 仍作开关**，
+    不反向破坏 `task list --json`）；协议 `adminApiUrls` / v7-v8 加 `$comment`
+    标注 python 侧未（部分）实现（生成物 `--check` 幂等，`check-protocol-breaking`
+    判 compatible）；`docs/atlas/.../task.md` 的「默认 any」改为 `owner`（与
+    `configuration.ts:568` 一致）；A4 从「选项」改「已定」。
+  - **⑥ 修一处**守卫盲区**（本轮自造的红，不是既有欠账）**：`check:agent-stub-fidelity`
+    的 `declaredTypeOf()` 正则不容 `?`，认不出本仓 `@Optional()` 标准写法
+    `private readonly x?: T | null` ⇒ 把 `Repository<AgentApproval>` 当成
+    `AgentApprovalsService`，一条误判造出两条红。修法：正则加 `\??` +
+    `stripNullUnion()`（**只**剥 `| null` / `| undefined`，别的联合原样保留 ⇒
+    保守方向：宁可多要求替身，不把真缺口藏起来），并补 2 条 selftest 用例
+    （含「换成服务类型必须红」的对照）。同时**补齐替身真缺口**：`makeSessionService()`
+    补 `list`，按生产 `agent-session.service.ts:623-662` 逐条复刻
+    （stalled 谓词看 **step 而非 updatedAt**、`clampPagination`、`createdAt DESC`），
+    **没有用白名单豁免**。自测探针顺带抓到自己的一个真 bug：同毫秒兜底原按 id
+    **升序** ⇒ `pageSize:1` 取到最老会话，与 `createdAt DESC` 相反，已改为同向。
+
+  **验证（真实 exit，分级如实）**：
+  - **守卫链 121/121 = 0**（`guards-repo-matrix` 全链解析 121 段 / 执行 121 段 / diff 空）；
+    `check:agent-stub-fidelity` **0**（1 替身 / 27 生产方法全覆盖）+ `--selftest` **17/17**；
+    **反证**：去掉 `\??` ⇒ 新用例红、恢复即绿。
+  - **后端**：`npx jest` 全量 **0**；`modules/agent` 52 套 **878 例**绿（新增 inbox 16 例）；
+    `route-authz-matrix` 10/10（262 路由，新路由落角色限制形态，**未改 spec**）；
+    `tsc`（app + specs）**0**；`eslint` 0。
+  - **前端**：`vitest run` **337 文件 / 2661 例通过**（+1 skip）；`inbox` 5 文件 **45 例**；
+    `tsc -b` **0**；`eslint` 0；`lint:i18n` 0；新增 13 条 zh/en 成对 key。
+  - **生成物**：`openapi:export` + `inject-openapi-en`（**1793/1793** 中文节点有英文，
+    en-map 新增 24 条**纯追加**，24 → 25 行 diff）；`gen:api-types` **+130 行**
+    （3 个 schema + 2 条 path）；`check-openapi-response-schema` 249/262 **棘轮已 --update**；
+    `check:api-reference` 225 路径逐字节一致。
+  - **级别声明（不越级）**：本轮最高到「真实进程内集成」的**前置**——
+    Jest 内存替身 + 真子进程跑真守卫脚本；**未**跑真 PG/Redis 集成、**未**跑生产包
+    浏览器 E2E。故「429 是否真的会发生」仍是**推断**（侦察给出的限流桶证据），
+    未实测复现，已记入 `docs/AGENT_HANDOFF.md` 的未覆盖项。
+
+  **方法学沉淀（接 510）**：
+  - **511「产品视角的第一件事是把 N 个现象归到一个根因，然后决定『不做哪几个补丁』」**。
+    U1–U5 看着是五个 bug，逐个修会得到五份截断逻辑与五种「未知」表达；归因到
+    「客户端聚合 + 无上限」后，正确解是**搬迁**（服务端一次返回带信封），
+    且**删掉的代码比新增的多**（`api/inbox.ts` 的 51 次请求变 2 次）。
+  - **512「`null` 与 `0` 的区分要在契约层强制，不能靠前端记得」**。本轮把
+    `total` / `degraded` / `truncated` 三个字段做成**响应信封的必填项**后，
+    前端「读失败渲染成没有」的可能性被**类型系统**挡住了 —— 而在此之前，
+    同一个错误在本仓已以「徽标 0 条」「空态：没有待办」两种形态复发过三次。
 
 - 2026-10-28 主会话（第三轮）：**LLM 接入与分配 done（后端地基）**——把「一个全局 provider + 每个厂商一套分支」换成「注册表 + 按用途路由」。
   ①**注册表**（`modules/ai/ai-providers.ts`）：provider 条目 = id + baseUrl + model + maxTokens/timeoutMs + **supportsVideo 能力位** + enabled；厂商名只是 id，代码里不再有 `provider === 'qwen'` 的分支（`chatMultimodal` 对任何 OpenAI 兼容端点生效）。存储 `ai.providers`（JSON，**不含密钥**）+ `ai.providers.<id>.apiKey`（isSecret，`***` 哨兵表示不改）。未配置时用旧键合成三条内置条目、旧键继续回落 → 存量部署零行为变化。
