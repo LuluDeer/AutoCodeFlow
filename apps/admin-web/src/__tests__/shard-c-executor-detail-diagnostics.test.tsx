@@ -18,14 +18,21 @@ import ExecutorDetailPage from '../pages/ExecutorDetailPage';
 import { executorsApi } from '../api/executors';
 import { useAuthStore } from '../store/auth';
 
-vi.mock('../api/executors', () => ({
-  executorsApi: {
-    get: vi.fn(),
-    getMetrics: vi.fn(),
-    getExecutions: vi.fn(),
-    getRuntimeConfig: vi.fn(),
-  },
-}));
+// R279：mock 必须保留契约层的**真实纯函数**（resolveEffectiveOfflineAfterMs /
+// describeOfflineWindow）。整模块替换会把它抹成 undefined，页面直接崩在「No export」，
+// 那是 mock 失真而不是实现坏了；这里只替 executorsApi，纯函数走真实现。
+vi.mock('../api/executors', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/executors')>();
+  return {
+    ...actual,
+    executorsApi: {
+      get: vi.fn(),
+      getMetrics: vi.fn(),
+      getExecutions: vi.fn(),
+      getRuntimeConfig: vi.fn(),
+    },
+  };
+});
 const mockedApi = vi.mocked(executorsApi, true);
 
 const g = globalThis as Record<string, unknown>;
@@ -57,7 +64,19 @@ function renderPage(executor: Record<string, unknown>, runningTaskCount: number)
     history: [],
   });
   mockedApi.getExecutions.mockResolvedValue({ total: 0, items: [] } as never);
-  mockedApi.getRuntimeConfig.mockResolvedValue({ heartbeatTimeoutMs: 90_000 } as never);
+  // R279：夹具照**真机** GET /executors/runtime-config 的响应造
+  // （127.0.0.1:3106 实测：heartbeatTimeoutMs=90000、staleOfflineConfirmations=2、
+  // effectiveOfflineAfterMs=180000）。旧夹具只喂 heartbeatTimeoutMs=90000，
+  // 等于替后端编了一个「单轮判死」的响应，把错误 UI 钉成了期望。
+  mockedApi.getRuntimeConfig.mockResolvedValue({
+    heartbeatIntervalMs: 30_000,
+    heartbeatTimeoutMultiplier: 3,
+    heartbeatTimeoutMs: 90_000,
+    staleOfflineConfirmations: 2,
+    effectiveOfflineAfterMs: 180_000,
+    listLimit: 500,
+    executorTotal: 1,
+  } as never);
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={['/executors/e1']}>
@@ -89,18 +108,22 @@ describe('P1-28: 详情页状态不再渲染裸枚举', () => {
   });
 });
 
-describe('P1-24: 离线 Alert 必须可回答「为什么离线」', () => {
-  it('离线 Alert 带上判死阈值（秒）与最后心跳时刻，不再只有通用文案', async () => {
+describe('P1-24 / R279: 离线 Alert 必须可回答「为什么离线、多久判死」', () => {
+  it('离线 Alert 渲染**真实判死窗口** 180 秒（而非单次墙钟 90 秒）+ 迟滞成因 + 最后心跳时刻', async () => {
     renderPage({
       id: 'e1', appName: 'node-1', address: '10.0.0.9:3002',
       status: 'offline', lastHeartbeat: OLD_HEARTBEAT, maxConcurrentTasks: 4, runningTaskCount: 0,
     }, 0);
     await screen.findAllByText('node-1');
-    // 阈值：runtime-config 返回 90000ms → "90 秒"；在离线 Alert（role=alert）内断言，
-    // 避免与信息卡里的心跳字段标签撞文案。
+    // 在离线 Alert（role=alert）内断言，避免与信息卡里的心跳字段标签撞文案。
     const alert = screen.getByRole('alert');
-    expect(alert.textContent).toMatch(/判死阈值/);
-    expect(alert.textContent).toMatch(/90\s*秒/);
+    // R279：旧期望 = 「90 秒」，那是拿单次墙钟当判死窗口，掩盖了 180 秒的真实窗口。
+    // 真机 effectiveOfflineAfterMs=180000 ⇒ 必须渲染 180 秒。
+    expect(alert.textContent).toMatch(/判死窗口[：:]\s*连续\s*180\s*秒/);
+    // 迟滞成因必须摆在页面上（否则运维会问「为什么不是 90」）：连续 2 次未确认。
+    expect(alert.textContent).toMatch(/连续\s*2\s*次扫描仍未确认/);
+    // 单次墙钟仍然出现（作为对照说明），但**不**再承担「多久判离线」的语义。
+    expect(alert.textContent).toMatch(/单次心跳墙钟为\s*90\s*秒/);
     // 最后心跳绝对时刻 + 已静默时长（旧实现两者都不渲染）
     expect(alert.textContent).toMatch(/最后心跳/);
   });

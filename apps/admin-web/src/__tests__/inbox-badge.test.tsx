@@ -38,6 +38,7 @@ const counts = (overrides: Partial<InboxCountMap> = {}): InboxCountMap => ({
   deployments: 0,
   agentApprovals: null,
   agentWaiting: 0,
+  agentFailures: 0,
   stalled: 0,
   backlogged: 0,
   queueStall: 0,

@@ -5,10 +5,19 @@
  *   1. 部署审批待办（`GET /app-deployments/approvals/pending`）；
  *   2. Agent 会话等待审批（挂起在 waiting_input、有待处置审批单）；
  *   3. Agent 会话等待人工输入/澄清（waiting_input 会话）；
- *   4. 卡住会话（running 且久无进展，`stalled=1`）；
- *   5. 调度积压（pending 但队列里没有对应 job，`backlogged`）；
- *   6. 队列停摆观测（`queue-stall`，结构性告警横幅，不是逐条待办）；
- *   7. 最近失败（复用 `/metrics/failures`，只读跳转，不在这里处置）。
+ *   4. **Agent 会话失败**（R279：`failed` + `budget_exceeded`，时间窗内）；
+ *   5. 卡住会话（running 且久无进展，`stalled=1`）；
+ *   6. 调度积压（pending 但队列里没有对应 job，`backlogged`）；
+ *   7. 队列停摆观测（`queue-stall`，结构性告警横幅，不是逐条待办）；
+ *   8. 最近失败（复用 `/metrics/failures`，只读跳转，不在这里处置）。
+ *
+ * ## R279：为什么必须新增第 8 个面（不是「读数错了」，是「没建模」）
+ *
+ * 旧七个小节里，前六项只看 `pending` / `waiting_input` / `running` 这些**非终态**；
+ * 唯一的「失败」小节 `recentFailures` 查的是 `task_executions`（任务执行），
+ * **不是** `agent_sessions`。⇒ `failed` / `budget_exceeded` 一个都不进任何观测面，
+ * 计数确实全 0——**真实的 0 掩盖了「有 3 条失败等你处理」**。
+ * 这类缺陷比谎报更隐蔽：它不是读到 0 报成 0，而是「没数过的东西永远不出现」。
  *
  * ## 诚实口径（沿用本仓 R188–R203 徽标同款纪律）
  *
@@ -49,11 +58,12 @@ import { metricsApi, type RecentFailure } from './metrics';
 /** 待办变更后通知顶栏徽标重取计数的窗口事件名。 */
 export const INBOX_REFRESH_EVENT = 'autoflow:inbox-refresh';
 
-/** 收件箱小节键。 */
+/** 收件箱小节键（R279 起八个小节；`agentFailures` 紧跟在 `agentWaiting` 之后）。 */
 export const INBOX_SECTIONS = [
   'deployments',
   'agentApprovals',
   'agentWaiting',
+  'agentFailures',
   'stalled',
   'backlogged',
   'queueStall',
@@ -89,6 +99,13 @@ export interface InboxItem {
   session?: AgentSession;
   approval?: AgentApproval;
   failure?: RecentFailure;
+  /**
+   * R279/agentFailures：失败原因**原文**（未截断）。
+   *
+   * 行内展示用 `subtitle`（已截断，见 `truncateFailureReason`），这里保留原文供
+   * 悬停/后续扩展；缺省 `undefined` = 会话没有 `errorMessage`（**不编造原因**）。
+   */
+  errorMessage?: string;
 }
 
 /** 单个小节的装载状态。 */
@@ -110,6 +127,22 @@ export interface InboxSectionState {
    * - `undefined`：该小节没有总数字段（如 recentFailures），页面回落已取条数。
    */
   total?: number | null;
+  /**
+   * R279：**行集合**的总数（与服务端 `total` 的**口径**可能不同）。
+   *
+   * `agentFailures` 是唯一用到它的小节，且它存在的理由就是那句「口径不同」：
+   * `total` 来自 `inbox/counts.failedSessions`（**failed + budget_exceeded**，
+   * 这是「有几条等你处理」），而本小节的**行**只列 `status=failed`
+   * （`budget_exceeded` 的处置路径不同）——两者相减不是「被截掉的条数」，
+   * 而是**根本不在本列表里的另一类**。
+   *
+   * ⇒ 截断判定与「显示前 N 条（共 M 条）」里的 M 必须走 `rowTotal`，
+   * 不能拿 `total` 冒充：否则「计数 5、列表 3」会被渲染成「3 条里有 2 条没显示」，
+   * 把「口径不同」伪装成「显示不全」（两种缺陷形态不同，不能互相顶替）。
+   */
+  rowTotal?: number | null;
+  /** R279：失败小节的时间窗（小时）。供标题渲染「近 {{hours}} 小时」。 */
+  windowHours?: number;
   /** 服务端实际返回的条数（= 已取条数，用于「显示前 N 条」的 N）。 */
   returned?: number;
   /** 服务端聚合的部分失败标记：数字仍是**下界**，不是事实。 */
@@ -121,6 +154,16 @@ export type InboxSections = Record<InboxSectionKey, InboxSectionState>;
 
 /** 顶栏计数口径：`null` 表示没有独立计数或读取失败，均不等于 0。 */
 export type InboxCountMap = Record<InboxSectionKey, number | null>;
+
+/**
+ * 「全部读不到」——整体不可用时的**唯一**回落值（R278/D3）。
+ *
+ * 刻意用 `Record` + `INBOX_SECTIONS` 逐键生成：新增小节时它自动跟上，
+ * 不会因为忘了加一行而让新小节静默变成 0（那正是本轮要消灭的缺陷形态）。
+ */
+export function unknownCounts(): InboxCountMap {
+  return Object.fromEntries(INBOX_SECTIONS.map((key) => [key, null])) as InboxCountMap;
+}
 
 const READY = (key: InboxSectionKey, items: InboxItem[], extra?: Partial<InboxSectionState>): InboxSectionState => ({
   key,
@@ -339,7 +382,136 @@ async function loadAgentWaiting(): Promise<{ approvals: InboxSectionState; sessi
   return { approvals: approvalSection, sessions };
 }
 
-/** 4. 卡住会话（running 且久无进展）。 */
+// ── 4. Agent 会话失败（R279 新增小节） ────────────────────────────────────────
+
+/**
+ * 失败小节的时间窗（小时）默认值。
+ *
+ * 后端 `AGENT_FAILED_SESSION_WINDOW_HOURS` 的默认值就是 24（brief D1）；这里是
+ * **配置读不到时的回落**，不是事实 ⇒ 后端不给 `failedWindowHours` 时用它，
+ * 而不是把窗口当成 0/无限（前者会漏数、后者会把全 history 塞进「今天要处理的」）。
+ */
+export const AGENT_FAILED_WINDOW_HOURS_DEFAULT = 24;
+
+/** 失败原因行内展示的截断长度（D4：一眼可见原因，又不让一行吃掉整块屏）。 */
+export const FAILED_REASON_MAX_CHARS = 120;
+
+/**
+ * 失败原因截断（纯函数）。
+ *
+ * `null` / 空白 ⇒ `undefined`（**不编造原因**，页面自行显示「未记录失败原因」）；
+ * 超长 ⇒ 截到 `limit` 并加省略号——省略号是「后面还有」的可视证据，
+ * 不是装饰：没有它，截断后的文本会被读成「原因就这么短」。
+ */
+export function truncateFailureReason(
+  text: string | null | undefined,
+  limit: number = FAILED_REASON_MAX_CHARS,
+): string | undefined {
+  const raw = (text ?? '').trim();
+  if (!raw) return undefined;
+  return raw.length <= limit ? raw : `${raw.slice(0, limit)}…`;
+}
+
+/** 时间窗起点（ISO）。纯函数：注入 `now` 让单测能钉住窗口边界。 */
+export function failedWindowSince(hours: number, now: number = Date.now()): string {
+  const safeHours = Number.isFinite(hours) && hours > 0 ? hours : AGENT_FAILED_WINDOW_HOURS_DEFAULT;
+  return new Date(now - safeHours * 3_600_000).toISOString();
+}
+
+/**
+ * 读收件箱计数 + 失败小节的时间窗（一次请求）。
+ *
+ * `failedSessions` / `failedWindowHours` 是 S1 契约新增字段，尚未进
+ * `types/generated/api-types.ts`（生成物由主会话统一收）。这里用**局部**交叉视图读，
+ * 而不是新增手写合同类型（`check-web-type-drift` 的棘轮、以及「合同派生」纪律）。
+ *
+ * ⚠️ 字段缺失（旧后端）⇒ `failedSessions` 得 `undefined` ⇒ 按 `null`（**读不到**）处理：
+ * 若在这里回落 0，「未建模」的缺陷就会原样复现成「读不到伪装成没有」。
+ */
+async function readInboxCounts(
+  signal?: AbortSignal,
+): Promise<{ counts: InboxCountMap; windowHours: number }> {
+  const fallback = { counts: unknownCounts(), windowHours: AGENT_FAILED_WINDOW_HOURS_DEFAULT };
+  try {
+    const raw = (await agentApi.inboxCounts(signal)) as unknown as
+      | (Record<string, unknown> & { failedSessions?: number | null; failedWindowHours?: number })
+      | undefined;
+    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const hours = num(raw?.failedWindowHours);
+    return {
+      counts: {
+        deployments: num(raw?.deployments),
+        agentApprovals: num(raw?.pendingApprovals),
+        agentWaiting: num(raw?.waitingSessions),
+        agentFailures: num(raw?.failedSessions),
+        stalled: num(raw?.stalled),
+        backlogged: num(raw?.backlogged),
+        queueStall: num(raw?.queueStall),
+        recentFailures: null,
+      },
+      // 窗口是**配置**不是事实 ⇒ 读不到时回默认值（与「计数读不到 = null」不同）。
+      windowHours: hours !== null && hours > 0 ? hours : AGENT_FAILED_WINDOW_HOURS_DEFAULT,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * 4. Agent 会话失败（R279）。
+ *
+ * ## 行数据只取 `failed`，计数含 `budget_exceeded` —— 刻意的，别「顺手对齐」
+ *
+ * - **计数**（`inbox/counts.failedSessions`）含 `failed` + `budget_exceeded`：
+ *   运营先要知道「今天有几条等我处理」（D1）；
+ * - **行**（`status=failed`）只要 `failed`：`budget_exceeded` 的处置路径不同
+ *   （改预算/换模型再重跑，不是「看看错在哪」），混进同一列表会让每行的动作按钮
+ *   说两种话（D2 同款理由）；
+ * - 两者之差**不是**「被截掉的条数」，而是另一类会话 ⇒ 截断判定走 `rowTotal`，
+ *   差值由 `budgetExcluded` 告警单独说明（`sectionNotices`）。
+ *
+ * 若哪天有人把行也改成 `status IN ('failed','budget_exceeded')`，或把计数收窄成只数
+ * `failed`，都必须同时改这里、`readInboxCounts` 与后端，否则「计数 5、列表 3」
+ * 会变成两个都不解释的数字。
+ *
+ * `aborted` 两侧都不计入：那是人主动停的，不是待办。
+ */
+async function loadAgentFailures(): Promise<InboxSectionState> {
+  // ⚠️ 顺序是**刻意**的（一次串行换一条诚实）：计数先回来，才知道配置的窗口是几小时。
+  // 若并行发两路、行固定用默认 24h，而配置是 48h，则「计数 5 / 行 2」里混进了
+  // **两种**原因（预算耗尽 + 窗口差）；下方 budgetExcluded 告警会把它们一律说成
+  // 「预算耗尽」——一条数字对、结论错的假事实。宁可多一次往返。
+  const { counts, windowHours } = await readInboxCounts();
+  const rows = await agentApi.listFailedSessions({
+    since: failedWindowSince(windowHours),
+    page: 1,
+    pageSize: SECTION_PAGE_SIZE,
+  });
+  const items = (rows?.items ?? []).map((s) => ({
+    id: `fail-${s.id}`,
+    section: 'agentFailures' as const,
+    title: s.title || s.id,
+    subtitle: truncateFailureReason(s.errorMessage),
+    // 失败会话的「发生时刻」：优先 finishedAt（真正失败那一下），缺则 createdAt。
+    waitingSince: s.finishedAt ?? s.createdAt ?? null,
+    detailUrl: agentSessionUrl(s.id, { status: 'failed' }),
+    errorMessage: s.errorMessage ?? undefined,
+    session: s,
+  }));
+  const rowMeta = metaOf(items.length, rows?.total);
+  return READY('agentFailures', items, {
+    // 计数口径（含 budget_exceeded）：决定「—」与「隐藏」。
+    total: counts.agentFailures,
+    // 行集合口径：决定「显示前 N 条（共 M 条）」的 M 与 truncated。
+    rowTotal: rowMeta.total,
+    returned: rowMeta.returned,
+    truncated: rowMeta.truncated,
+    degraded: counts.agentFailures === null || rowMeta.total === null,
+    windowHours,
+  });
+}
+
+/** 5. 卡住会话（running 且久无进展）。 */
 async function loadStalled(): Promise<{ items: InboxItem[]; total: number | null; returned: number; truncated: boolean }> {
   const res = await agentApi.list({ stalled: 1, page: 1, pageSize: SECTION_PAGE_SIZE });
   const items = (res?.items ?? []).map((s) => ({
@@ -355,7 +527,7 @@ async function loadStalled(): Promise<{ items: InboxItem[]; total: number | null
   return { items, ...metaOf(items.length, res?.total) };
 }
 
-/** 5. 调度积压：后端只回 sessionIds，再用 pending 列表补对象信息。 */
+/** 6. 调度积压：后端只回 sessionIds，再用 pending 列表补对象信息。 */
 async function loadBacklogged(): Promise<{ items: InboxItem[]; truncated: boolean; probed: number }> {
   const backlog = await agentApi.backloggedCount();
   const ids = backlog?.sessionIds ?? [];
@@ -383,7 +555,7 @@ async function loadBacklogged(): Promise<{ items: InboxItem[]; truncated: boolea
   return { items, truncated: !!backlog?.truncated, probed: backlog?.probed ?? ids.length };
 }
 
-/** 6. 队列停摆观测（横幅，不是逐条待办）。 */
+/** 7. 队列停摆观测（横幅，不是逐条待办）。 */
 export interface QueueStallSnapshot {
   stalled: boolean;
   reason: string | null;
@@ -400,7 +572,7 @@ async function loadQueueStall(): Promise<QueueStallSnapshot | null> {
   return agentApi.queueStall();
 }
 
-/** 7. 最近失败（只读跳转）。 */
+/** 8. 最近失败（只读跳转）。 */
 async function loadRecentFailures(signal?: AbortSignal): Promise<InboxItem[]> {
   const failures = await metricsApi.getRecentFailures(undefined, signal);
   return (failures ?? []).map((f) => ({
@@ -418,7 +590,7 @@ type StallResult = { snapshot: QueueStallSnapshot | null } | { error: unknown };
 
 /** 全量装载：小节互相隔离，失败小节保留 error 态。 */
 export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
-  const [deployments, agentWaiting, stalled, backlogged, queueStall, recentFailures] = await Promise.all([
+  const [deployments, agentWaiting, agentFailures, stalled, backlogged, queueStall, recentFailures] = await Promise.all([
     loadDeployments(signal).then(
       ({ items, ...meta }) => READY('deployments', items, meta),
       (error) => ERROR('deployments', error),
@@ -427,6 +599,8 @@ export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
       approvals: ERROR('agentApprovals', error),
       sessions: ERROR('agentWaiting', error),
     })),
+    // R279：新小节独立装载——失败**只**让它自己是 error 态，不拖垮其余七个小节。
+    loadAgentFailures().catch((error: unknown) => ERROR('agentFailures', error)),
     loadStalled().then(
       ({ items, ...meta }) => READY('stalled', items, meta),
       (error) => ERROR('stalled', error),
@@ -460,6 +634,7 @@ export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
     deployments,
     agentApprovals: agentWaiting.approvals,
     agentWaiting: agentWaiting.sessions,
+    agentFailures,
     stalled,
     backlogged,
     queueStall: queueStallSection,
@@ -495,30 +670,9 @@ function queueStallBannerItem(snapshot: QueueStallSnapshot): InboxItem {
  * - 队列停摆是结构性告警：停摆记 1，未停摆记 0；判定不完整 ⇒ `null`（由后端给）。
  */
 export async function loadInboxCounts(signal?: AbortSignal): Promise<InboxCountMap> {
-  const unknown: InboxCountMap = {
-    deployments: null,
-    agentApprovals: null,
-    agentWaiting: null,
-    stalled: null,
-    backlogged: null,
-    queueStall: null,
-    recentFailures: null,
-  };
-  try {
-    const counts = await agentApi.inboxCounts(signal);
-    return {
-      deployments: counts?.deployments ?? null,
-      // R278/D1：审批单数是**独立计数源**（不再恒为 null），但它不参与会话求和。
-      agentApprovals: counts?.pendingApprovals ?? null,
-      agentWaiting: counts?.waitingSessions ?? null,
-      stalled: counts?.stalled ?? null,
-      backlogged: counts?.backlogged ?? null,
-      queueStall: counts?.queueStall ?? null,
-      recentFailures: null, // 最近失败是只读参考项，不计入顶栏待办总数。
-    };
-  } catch {
-    return unknown;
-  }
+  // 失败语义全在 readInboxCounts：整体不可用 ⇒ 全部 null（未知），绝不回落 0。
+  const { counts } = await readInboxCounts(signal);
+  return counts;
 }
 
 // ── 纯函数（可单测） ───────────────────────────────────────────────────────────
@@ -536,13 +690,31 @@ export async function loadInboxCounts(signal?: AbortSignal): Promise<InboxCountM
 export function summarizeInboxCounts(counts: InboxCountMap): number | null {
   let total = 0;
   for (const key of INBOX_SECTIONS) {
-    if (key === 'agentApprovals' || key === 'recentFailures') continue;
+    if (SESSION_SUM_EXCLUDED.has(key)) continue;
     const n = counts[key];
     if (n === null) return null;
     total += n;
   }
   return total;
 }
+
+/**
+ * 不进入「会话去重求和」的小节键（语义各不相同，统一在这里声明一次）。
+ *
+ * - `agentApprovals`（R278/D1）——审批单是 `agentWaiting` 会话的拆分视图，
+ *   同一会话的两张单会被算两次；
+ * - `agentFailures`（R279/D3）——**同一会话可能在窗口内先 failed、修好后被重跑成
+ *   其他状态**，把失败数与「还在等我处置的会话数」相加会重复计；而且失败还需要
+ *   「先判断为什么」，与「等你点同意」不是同一件事（brief D2 同款理由）；
+ * - `recentFailures`——只读参考项，从设计上就不是待办。
+ *
+ * ⚠️ 这三个是**独立显示项**，不是「不显示项」：它们各自在徽标/小节里单独成句。
+ */
+const SESSION_SUM_EXCLUDED: ReadonlySet<InboxSectionKey> = new Set([
+  'agentApprovals',
+  'agentFailures',
+  'recentFailures',
+]);
 
 /**
  * 顶栏两个口径的拆分（措辞不同，不能混成一个数）。
@@ -553,11 +725,14 @@ export function summarizeInboxCounts(counts: InboxCountMap): number | null {
 export function splitInboxCounts(counts: InboxCountMap): {
   approvals: number | null;
   waiting: number | null;
+  failed: number | null;
   total: number | null;
 } {
   return {
     approvals: counts.agentApprovals,
     waiting: counts.agentWaiting,
+    // R279：「会话失败 N」是**独立显示项**，与两个会话口径并列，不参与 total。
+    failed: counts.agentFailures,
     total: summarizeInboxCounts(counts),
   };
 }
@@ -587,7 +762,11 @@ export function describeSectionCount(section: InboxSectionState):
   const returned = section.returned ?? section.items.length;
   if (section.total === undefined) return { kind: 'total', n: returned, source: 'returned' };
   if (section.total === null) return { kind: 'unknown', degraded: section.degraded === true };
-  if (section.truncated) return { kind: 'truncated', returned, total: section.total };
+  // 截断判定看**行集合**（`rowTotal`），标题数字看**计数口径**（`total`）：
+  // 两者只在 `agentFailures` 上不同（计数含 budget_exceeded，行只取 failed）。
+  // 没有 `rowTotal` 的小节行为与此前逐字一致（回落 `total`）。
+  const rowTotal = section.rowTotal ?? section.total;
+  if (section.truncated && rowTotal != null) return { kind: 'truncated', returned, total: rowTotal };
   return { kind: 'total', n: section.total, source: 'server' };
 }
 
@@ -597,7 +776,7 @@ export function describeSectionCount(section: InboxSectionState):
  * 取值用本文件 `as const` 元组镜像（与 `INBOX_SECTIONS` 同款）：它是**本模块的
  * 版式枚举**，不是 OpenAPI 视图模型 ⇒ 不引入手写合同类型。
  */
-export const SECTION_NOTICES = ['truncated', 'unknown', 'degraded', 'capped'] as const;
+export const SECTION_NOTICES = ['truncated', 'unknown', 'degraded', 'capped', 'budgetExcluded'] as const;
 
 export function sectionNotices(
   section: InboxSectionState,
@@ -611,7 +790,82 @@ export function sectionNotices(
   else if (section.degraded) notices.push('degraded');
   // 没有总数字段却满页返回 ⇒ 只说明「最多显示 N 条」，不编造总数（U4）。
   if (section.total === undefined && section.items.length >= limit) notices.push('capped');
+  // R279：计数口径 > 行集合口径 ⇒ 有一类会话**根本不在下方列表里**（不是「没显示全」）。
+  // 缺这条，运营会把「计数 5 / 列表 3」读成「列表漏了 2 条」，或反过来怀疑计数。
+  if (budgetExcludedCount(section) > 0) notices.push('budgetExcluded');
   return notices;
+}
+
+/**
+ * 计数里算、但本小节**行**里不算的条数（R279 的 `budget_exceeded`）。
+ *
+ * 这是「口径差」，不是「截断差」：`truncated` 说的是「同一集合里还有 N 条没显示」，
+ * 本函数说的是「另一类会话不在这个列表里」（处置路径不同，见 `loadAgentFailures`）。
+ * 两者必须各自表达，不能相加、不能互相顶替。
+ */
+export function budgetExcludedCount(section: InboxSectionState): number {
+  if (section.status !== 'ready') return 0;
+  const rowTotal = section.rowTotal ?? section.total;
+  if (typeof section.total !== 'number' || typeof rowTotal !== 'number') return 0;
+  return Math.max(0, section.total - rowTotal);
+}
+
+/**
+ * `agentFailures` 小节是否应渲染（R279/D1 的唯一判定点）。
+ *
+ * - `total === 0` ⇒ 事实为零 ⇒ **隐藏**（与 `InboxBadge` 的 0 件隐藏同款）；
+ * - `total === null` ⇒ 读不到 ⇒ **保留**（显示「—」+ 降级提示，未知必须可见）；
+ * - 非 ready 态（装载 error）⇒ 保留（错误态带重试，绝不渲染成空列表）。
+ * - 其余小节恒为 true（既有七个小节不因计数 0 而隐藏，那是既有交付面）。
+ */
+export function isSectionVisible(section: InboxSectionState): boolean {
+  if (section.key !== 'agentFailures') return true;
+  return !(section.status === 'ready' && section.total === 0);
+}
+
+/**
+ * 失败小节标题上的时间窗标签（其余小节返回空串）。
+ *
+ * 为什么要显示窗口：「失败会话 5」在不同窗口下是完全不同的结论（24h 内 5 条 = 今天
+ * 出事了；全 history 5 条 = 一直如此）。窗口是**配置**，读不到时回默认值而非「—」。
+ */
+export function sectionWindowLabel(
+  section: InboxSectionState,
+  t: ReturnType<typeof useTranslation>['t'],
+): string {
+  if (section.key !== 'agentFailures' || section.status !== 'ready') return '';
+  const hours = section.windowHours ?? AGENT_FAILED_WINDOW_HOURS_DEFAULT;
+  return ` · ${t('inbox.failed.window', { hours })}`;
+}
+
+/**
+ * 计数里存在、但行列表里没有的待办数（全空态的守卫，R279）。
+ *
+ * 只算 `agentFailures`：它的行只取 `failed`，`budget_exceeded` 只在计数里。
+ * 若不算进来，「计数 5、行 0」会被全空态渲染成「当前没有待你处理的事项」——
+ * 那正是本轮要消灭的假事实（数字对、结论错）。
+ */
+export function pendingBeyondRows(sections: InboxSections): number {
+  const s = sections.agentFailures;
+  if (s.status !== 'ready' || typeof s.total !== 'number') return 0;
+  return Math.max(0, s.total - s.items.length);
+}
+
+/**
+ * 「当前确实没有待你处理的事项」—— 全空态的**唯一**判据（R278/D3 + R279）。
+ *
+ * 四条同时成立才算「清零被证实」：
+ * ① 所有小节都 ready（有 error 态 ⇒ 未知，不许报空）；
+ * ② 没有任何计数不可确定（`hasUncertainCounts`）；
+ * ③ 队列未停摆（停摆横幅本身就是要处理的信号）；
+ * ④ 没有任何「计数里算、行里没列出」的待办（`pendingBeyondRows`）。
+ */
+export function isInboxAllClear(sections: InboxSections): boolean {
+  if (!INBOX_SECTIONS.every((key) => sections[key].status === 'ready')) return false;
+  if (hasUncertainCounts(sections)) return false;
+  if (sections.queueStall.snapshot?.stalled) return false;
+  if (pendingBeyondRows(sections) > 0) return false;
+  return INBOX_SECTIONS.every((key) => sections[key].items.length === 0);
 }
 
 /**
@@ -656,6 +910,7 @@ export const NOTICE_TESTID: Record<(typeof SECTION_NOTICES)[number], (key: Inbox
   unknown: (key) => `inbox-degraded-${key}`,
   degraded: (key) => `inbox-degraded-${key}`,
   capped: (key) => `inbox-capped-${key}`,
+  budgetExcluded: (key) => `inbox-budget-excluded-${key}`,
 };
 
 /** 告警标题文案的唯一出口（每条告警只说一条事实，不互相顶替）。 */
@@ -666,14 +921,22 @@ export function noticeTitle(
 ): string {
   switch (notice) {
     case 'truncated':
+      // 与 `describeSectionCount` 同口径：截断说的是**行集合**（`rowTotal`），
+      // 拿计数口径的 `total` 会在 `agentFailures` 上多报出「另有一类会话」的条数。
       return t('inbox.truncated.hint', {
         returned: section.returned ?? section.items.length,
-        total: section.total ?? 0,
+        total: section.rowTotal ?? section.total ?? 0,
       });
     case 'unknown':
-      return t('inbox.count.unknownHint');
+      // R279：失败小节的总数读不到时，提示必须点出「多少条**失败会话**」这件事，
+      // 而不是通用措辞——通用提示在这里读不出「本节数的是哪一类」。
+      return section.key === 'agentFailures'
+        ? t('inbox.failed.unknownHint')
+        : t('inbox.count.unknownHint');
     case 'degraded':
       return t('inbox.count.degradedHint');
+    case 'budgetExcluded':
+      return t('inbox.failed.budgetExcludedHint', { n: budgetExcludedCount(section) });
     default:
       return t('inbox.count.cappedHint', { limit: SECTION_PAGE_SIZE });
   }

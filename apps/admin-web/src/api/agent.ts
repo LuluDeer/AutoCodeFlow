@@ -297,6 +297,25 @@ export const agentApi = {
    */
   inboxCounts: (signal?: AbortSignal) =>
     client.get('/agent/inbox/counts', signal ? { signal } : undefined) as Promise<AgentInboxCountsResponse>,
+  /**
+   * R279：**窗口内的失败会话行**（收件箱「Agent 会话失败」小节的数据源）。
+   *
+   * ⚠️ `status=failed` **刻意只取 `failed`**：`budget_exceeded` 的处置路径不同
+   * （要改预算/换模型再重跑，不是「看看错在哪」），所以不进本小节的**行**；
+   * 但它**计入** `inbox/counts.failedSessions`（运营先要知道「有几条要处理」）。
+   * 两侧口径的这个差异是设计决定，不是遗漏 —— 改单边会让「计数 5、列表 3」
+   * 变成两个都不解释的数字。把对齐冲动写在这里，比写在提交信息里活得久。
+   *
+   * ⚠️ 与 `stalledCount` / `pendingTakeoverCount` / `backloggedCount` 同款理由：
+   * **独立方法**，不混进 `list` 的调用计数（既有测试断言那个方法被调了几次）。
+   *
+   * ⚠️ `since` 是后端新增的**可选** query：缺省 = 不筛（旧行为不变）；本模块总是显式传，
+   * 因为收件箱只关心「今天要处理的」窗口，窗口外的东西在会话列表里查得到。
+   */
+  listFailedSessions: (params?: { since?: string; page?: number; pageSize?: number }) =>
+    client.get('/agent/sessions', {
+      params: { status: 'failed', ...(params ?? {}) },
+    }) as Promise<{ items: AgentSession[]; total: number }>,
 };
 
 /**

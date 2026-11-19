@@ -1,8 +1,14 @@
 /**
  * P1-4 · 顶栏「待办」入口徽标。
  *
- * 聚合部署审批 / Agent 待审批 / 等待输入 / 卡住会话 / 调度积压 / 队列停摆六类
- * 待办的轻量计数（只拉计数，不拉列表体）。点击进入 `/inbox` 统一收件箱。
+ * 聚合部署审批 / Agent 待审批 / 等待输入 / **Agent 会话失败** / 卡住会话 /
+ * 调度积压 / 队列停摆的轻量计数（只拉计数，不拉列表体）。点击进入 `/inbox`。
+ *
+ * ## R279：「会话失败 N」是第三个独立口径
+ *
+ * 失败会话**不进**会话去重求和（同一会话可能窗口内先 failed、修好后被重跑成
+ * 其他状态，相加会重复计；且「先判断为什么失败」与「等你点同意」不是同一件事）。
+ * 但它必须**单独可见**——否则「没建模的东西永远不出现」，运营根本不知道有这么回事。
  *
  * ## R278/D1：两个口径，措辞不同，都不能省
  *
@@ -31,7 +37,7 @@ import '../i18n';
 
 type LoadState =
   | { status: 'loading' }
-  | { status: 'ready'; total: number | null; approvals: number | null; waiting: number | null }
+  | { status: 'ready'; total: number | null; approvals: number | null; waiting: number | null; failed: number | null }
   | { status: 'error' };
 
 /** 未知计数的统一占位（语言无关的 em dash；与下文字典词条成对，不可写成 0）。 */
@@ -43,8 +49,8 @@ export default function InboxBadge() {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
 
   const applyCounts = useCallback((counts: Awaited<ReturnType<typeof loadInboxCounts>>) => {
-    const { total, approvals, waiting } = splitInboxCounts(counts);
-    setState({ status: 'ready', total, approvals, waiting });
+    const { total, approvals, waiting, failed } = splitInboxCounts(counts);
+    setState({ status: 'ready', total, approvals, waiting, failed });
   }, []);
 
   const reload = useCallback(async () => {
@@ -99,26 +105,39 @@ export default function InboxBadge() {
   const total = state.status === 'ready' ? state.total : null;
   const approvals = state.status === 'ready' ? state.approvals : null;
   const waiting = state.status === 'ready' ? state.waiting : null;
+  const failed = state.status === 'ready' ? state.failed : null;
 
   // 0 件隐藏；未知（null）也不挂假数字——点击进收件箱看分小节真实状态。
   // R278：审批单数未知（null 且总数已归零）时同样不占顶栏；未知态在 /inbox 页
   // 内以「—」+ 降级提示呈现（D3），顶栏位置不被一个不可知的数字长期占据。
-  if (state.status === 'ready' && total === 0 && (approvals === null || approvals === 0)) return null;
+  //
+  // R279：失败会话数是**独立计数源**（不进求和）⇒ 它非 0/非未知时徽标必须出来，
+  // 哪怕其余待办全清零。判断「要不要显示」时它是与审批单并列的第二个出场地。
+  if (state.status === 'ready' && total === 0) {
+    const noApprovals = approvals === null || approvals === 0;
+    const noFailures = failed === null || failed === 0;
+    if (noApprovals && noFailures) return null;
+  }
 
   const badgeContent = total === null ? UNKNOWN : total;
-  // 两个单位分别显示：审批单是「件活」，会话是「条卡住的会话」，措辞不可互换。
+  // 三个单位分别显示：审批单是「件活」，会话是「条卡住的会话」，失败是「条已终止的
+  // 会话」——措辞不可互换，也不可相加成「一共 N 件」。
   const approvalsText = t('inbox.badge.approvals', { n: approvals === null ? UNKNOWN : approvals });
   const waitingText = t('inbox.badge.waiting', { n: waiting === null ? UNKNOWN : waiting });
-  const known = approvals !== null && waiting !== null;
+  // `0` = 事实为零 ⇒ 这一格不占位（与小节隐藏同款纪律）；`null` = 读不到 ⇒ 必须显示
+  // 「会话失败 —」，否则「没读到的失败数」会被自己藏起来——那正是本轮要消灭的形态。
+  const failedText = failed === 0 ? '' : t('inbox.badge.failedSessions', { n: failed === null ? UNKNOWN : failed });
+  const known = approvals !== null && waiting !== null && failed !== null;
+  const unitText = [approvalsText, waitingText, failedText].filter(Boolean).join(' · ');
 
   return (
-    <Tooltip title={`${t('inbox.badge.tooltip')} · ${approvalsText} · ${waitingText}`}>
+    <Tooltip title={`${t('inbox.badge.tooltip')} · ${unitText}`}>
       <Space size={4} align="center" data-testid="inbox-badge" data-degraded={known ? undefined : 'true'}>
         <Badge count={badgeContent} size="small">
           <Button
             type="text"
             size="small"
-            aria-label={`${t('inbox.badge.tooltip')} · ${approvalsText} · ${waitingText}`}
+            aria-label={`${t('inbox.badge.tooltip')} · ${unitText}`}
             data-testid="inbox-badge-button"
             onClick={() => navigate('/inbox')}
           >
@@ -129,6 +148,12 @@ export default function InboxBadge() {
           <span data-testid="inbox-badge-approvals">{approvalsText}</span>
           <span data-testid="inbox-badge-sep" aria-hidden="true">{t('common.listSep.space')}</span>
           <span data-testid="inbox-badge-waiting">{waitingText}</span>
+          {failedText && (
+            <>
+              <span data-testid="inbox-badge-sep2" aria-hidden="true">{t('common.listSep.space')}</span>
+              <span data-testid="inbox-badge-failed">{failedText}</span>
+            </>
+          )}
         </span>
       </Space>
     </Tooltip>

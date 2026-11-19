@@ -168,6 +168,24 @@ export class AgentInboxCountsResponseDto {
   queueStall: number | null;
 
   @ApiProperty({
+    nullable: true,
+    type: Number,
+    description:
+      "窗口内失败的 Agent 会话数（`failed` + `budget_exceeded`，**不含 `aborted`** ——" +
+      "那是人主动停的，不是待办）。**独立显示项**，不参与任何会话求和。" +
+      "读不到 ⇒ null，**绝不 0**",
+  })
+  failedSessions: number | null;
+
+  @ApiProperty({
+    type: Number,
+    description:
+      "失败统计窗口（小时），供前端渲染「近 N 小时」。**配置而非事实** ⇒ " +
+      "读不到时回默认值 24 而不是 null",
+  })
+  failedWindowHours: number;
+
+  @ApiProperty({
     description:
       "是否有任一计数读不到（此时对应字段为 null）。**HTTP 仍是 200**；全部读不到才算整体不可用（503）",
   })

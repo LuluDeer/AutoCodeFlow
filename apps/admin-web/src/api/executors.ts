@@ -1,4 +1,5 @@
 import { client } from './client';
+import { HEARTBEAT_TIMEOUT_FALLBACK_MS } from '../utils/executorLiveness';
 
 export interface Executor {
   id: string;
@@ -231,20 +232,140 @@ export interface InstallCmdResult {
 
 /**
  * GET /executors/runtime-config 返回的执行器面有效运行时参数
- * （executor lifecycle audit P2-5 / P3-9）。
+ * （executor lifecycle audit P2-5 / P3-9；NETOPT-G P1-7 补齐判死迟滞）。
  * 前端的心跳判死着色与列表截断提示必须以这里的值为准，不得再硬编码。
+ *
+ * 字段名与后端 DTO 逐字一致（`misc-2xx-response.dto.ts::ExecutorRuntimeConfigDto`），
+ * 不改名、不做前端侧聚合——R279 的缺陷根源正是前端「自己推断」判死窗口。
  */
 export interface ExecutorRuntimeConfig {
   /** 心跳间隔（毫秒，默认 30000）。 */
   heartbeatIntervalMs: number;
   /** 判死倍数（默认 3）。 */
   heartbeatTimeoutMultiplier: number;
-  /** 有效判死阈值 = interval × multiplier（默认 90000）。 */
+  /**
+   * **单次墙钟**阈值 = interval × multiplier（默认 90000）。
+   *
+   * 它**不是**「多久判离线」：迟滞上线后，单次超时只算「第一次未确认」，
+   * 真正被判死还要连续 `staleOfflineConfirmations` 轮未确认。旧注释把它写成
+   * 「有效判死阈值」正是 R279 修掉的前后端漂移（UI 90s vs 后端 180s）。
+   * 渲染「多久判离线」只能用 `effectiveOfflineAfterMs`。
+   */
   heartbeatTimeoutMs: number;
+  /** 判死迟滞的确认轮数（≥1，后端默认 2）：连续 N 次扫描未确认才 ONLINE→OFFLINE。 */
+  staleOfflineConfirmations: number;
+  /**
+   * 后端**真实**判死窗口 = heartbeatTimeoutMs × staleOfflineConfirmations
+   * （默认 90000 × 2 = 180000；实际落地还可多一个扫描周期）。
+   * UI 说「多久判离线」只能用它，见 `resolveEffectiveOfflineAfterMs`。
+   */
+  effectiveOfflineAfterMs: number;
   /** GET /executors 列表的硬上限。 */
   listLimit: number;
   /** 执行器全量行数；executorTotal > listLimit 即列表被静默截断。 */
   executorTotal: number;
+}
+
+/**
+ * 后端 `executor.staleOfflineConfirmations` 的**缺省值**（configuration.ts）。
+ * 只在整个 runtime-config **端点不可达**（拿不到任何字段）时用于折算——那种
+ * 情况下没有比「后端缺省」更接近事实的答案，且绝不能退回单次墙钟 90s（R279）。
+ * 端点可用时一律以后端下发的字段为准，本常量不参与计算。
+ */
+const BACKEND_DEFAULT_STALE_CONFIRMATIONS = 2;
+
+/**
+ * R279：「这台执行器多久被判离线」的唯一前端口径（毫秒）。
+ *
+ * ## 为什么是这个算式
+ *
+ * 后端判死是**两段式**（`executor.service.ts` 的 markStaleOffline + sweep）：
+ * ① 单次墙钟 `heartbeatTimeoutMs` = interval × multiplier（默认 90s）只决定
+ *    「这一轮扫描判定为未确认」；② 真正把 ONLINE→OFFLINE 要**连续**
+ *    `staleOfflineConfirmations` 轮（默认 2）都未确认——这是 NETOPT-G P1-7 为跨境
+ *    链路抖动加上的迟滞，故真实窗口 = 墙钟 × 确认轮数（默认 180s）。
+ *
+ * ## 为什么缺字段时按这个算式折算，而不是直接回落到 90s
+ *
+ * 旧 UI 直接拿 `heartbeatTimeoutMs` 当判死窗口渲染，把 180s 报成 90s：值班看到
+ * 「90 秒了还显示在线」会当后端 bug 报障，按 90s 估 SLA 窗口也偏小一半。所以
+ * `effectiveOfflineAfterMs` 缺失（旧后端 / 缓存里的旧响应）时**必须**用同一算式
+ * 自己折算；退回单次墙钟正好复现本项要修的缺陷。
+ *
+ * `staleOfflineConfirmations` 也缺时按 `1` 折算：后端该值为 1 就是「单轮判死」的
+ * 回滚开关（等价于迟滞上线前的行为），此时窗口确实等于单次墙钟。
+ *
+ * 整份配置都不可达（端点失败/首次未加载）时按**后端缺省**折算
+ * （90000 × 2 = 180000），而不是 90s：宁可沿用后端默认，也不把窗口报小一半。
+ *
+ * @param cfg runtime-config 响应（可缺字段：旧后端/缓存）
+ * @returns 判死窗口（毫秒），恒为正数
+ */
+export function resolveEffectiveOfflineAfterMs(
+  cfg?: Partial<ExecutorRuntimeConfig> | null,
+): number {
+  // ① 端点不可达（整份缺失）：按后端缺省折算，绝不退回单次墙钟 90s。
+  if (!cfg) return HEARTBEAT_TIMEOUT_FALLBACK_MS * BACKEND_DEFAULT_STALE_CONFIRMATIONS;
+  // ② 字段在：以后端下发值为准（后端才是判死行为的事实源）。
+  const explicit = cfg.effectiveOfflineAfterMs;
+  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) return explicit;
+  // ③ 旧后端/旧缓存：用同一算式自己折算（墙钟 × 确认轮数）。
+  const rounds = cfg.staleOfflineConfirmations;
+  const confirmedRounds = typeof rounds === 'number' && Number.isFinite(rounds) && rounds >= 1
+    ? Math.floor(rounds)
+    : 1;
+  const wallClock = cfg.heartbeatTimeoutMs;
+  const wallClockMs = typeof wallClock === 'number' && Number.isFinite(wallClock) && wallClock > 0
+    ? wallClock
+    : HEARTBEAT_TIMEOUT_FALLBACK_MS;
+  return wallClockMs * confirmedRounds;
+}
+
+/**
+ * R279：把「多久判离线」折算成 UI 可直接渲染的一组数字。
+ *
+ * 返回形状刻意**内联**、不新开顶层类型：`api/*.ts` 的顶层手写声明受
+ * WEB-TYPE-FIELD-DRIFT 增长闸约束（新增一个配不上生成 schema 的名字即红），
+ * 而这里只是一组派生标量，不是契约视图模型。
+ *
+ * - `windowMs` / `windowSeconds`：判死窗口（`resolveEffectiveOfflineAfterMs`，秒四舍五入）——
+ *   UI 说「多久判离线」只能显示它；
+ * - `confirmations`：迟滞确认轮数（≥1），由「窗口 ÷ 单次墙钟」反推，
+ *   保证「{{seconds}} 秒」与「连续 {{n}} 次未确认」永远自洽；
+ * - `singleTimeoutSeconds`：单次墙钟（秒），**仅供对照说明**「为什么不是这个数」，
+ *   不参与判死窗口计算。
+ *
+ * 为什么放在契约层（`api/executors.ts`）而不是页面里：这组数字的算式就是后端
+ * 判死行为的镜像（`executor-runtime-config.util.ts::deriveExecutorRuntimeConfigNumbers`），
+ * 与 runtime-config 的类型定义放在一起，才能让「下一个人改字段」时一眼看到
+ * 消费面；页面只负责把它塞进文案。也避免在 ExecutorDetailPage（受 size-caps
+ * 棘轮约束）里再堆派生逻辑。
+ *
+ * `confirmations` 刻意用「窗口 ÷ 单次墙钟」反推而不是直接取
+ * `staleOfflineConfirmations`：旧后端把后者丢了的时候，页面上「{{seconds}} 秒」
+ * 与「连续 {{n}} 次未确认」仍必须互相自洽，不能一个按 180s、一个按 1 轮。
+ *
+ * @param cfg runtime-config 响应（可缺字段：旧后端 / 缓存 / 端点失败）
+ */
+export function describeOfflineWindow(
+  cfg?: Partial<ExecutorRuntimeConfig> | null,
+): {
+  windowMs: number;
+  windowSeconds: number;
+  confirmations: number;
+  singleTimeoutSeconds: number;
+} {
+  const windowMs = resolveEffectiveOfflineAfterMs(cfg);
+  const wallClock = cfg?.heartbeatTimeoutMs;
+  const wallClockMs = typeof wallClock === 'number' && Number.isFinite(wallClock) && wallClock > 0
+    ? wallClock
+    : HEARTBEAT_TIMEOUT_FALLBACK_MS;
+  return {
+    windowMs,
+    windowSeconds: Math.round(windowMs / 1000),
+    confirmations: Math.max(1, Math.round(windowMs / wallClockMs)),
+    singleTimeoutSeconds: Math.round(wallClockMs / 1000),
+  };
 }
 
 /**

@@ -411,7 +411,9 @@ export function redactContextForStorage(
  * 混为一谈；「正文太大被截」另有 `truncated`。
  */
 export function buildEventBody(value: unknown): AgentEventBody | null {
-  if (value === null || value === undefined) return null;
+  // `== null` 同时覆盖 null 与 undefined —— 与本文件 `redactNullableText` /
+  // `redactContextForStorage` 的同款写法一致（一处判据，不写两遍等价比较）。
+  if (value == null) return null;
 
   if (typeof value === "string") {
     if (value.length === 0) return null;
@@ -613,10 +615,7 @@ export class AgentSessionService {
 
   async requireById(id: string): Promise<AgentSession> {
     const s = await this.findById(id);
-    if (!s)
-      throw new AppError("AGENT_SESSION_NOT_FOUND", {
-        sessionId: id,
-      });
+    if (!s) throw new AppError("AGENT_SESSION_NOT_FOUND", { sessionId: id });
     return s;
   }
 
@@ -630,6 +629,18 @@ export class AgentSessionService {
      */
     /** 卡住筛选：传 `{ minutes }` 即启用（阈值分钟数，省略 ⇒ 后端默认 15）。 */
     stalled?: { minutes?: number };
+    /**
+     * R279：只列 `createdAt >= since` 的会话。
+     *
+     * ⚠️ **可选，缺省 = 不筛 = 旧行为一字不变**：收件箱的「Agent 会话失败」小节
+     * 用它取窗口内的行数据（`?status=failed&since=<ISO>`），而列表页/SOP 兜底等
+     * 既有调用方都不传它 ⇒ 谓词一条不多。
+     *
+     * 为什么用 `createdAt` 而不是 `updatedAt`：判据问「这段时间里**创建**的会话里
+     * 有几个是失败的」（与 `countFailedSessions` 同口径）；`updatedAt` 会被重跑 /
+     * resume 刷新 ⇒ 旧会话会凭空落进当期窗口。
+     */
+    since?: Date;
     page?: number;
     pageSize?: number;
   }): Promise<{ items: AgentSession[]; total: number }> {
@@ -653,6 +664,9 @@ export class AgentSessionService {
       qb.andWhere("s.status = :status", { status: options.status });
     if (options.stalled)
       qb.andWhere(...buildStalledPredicate(options.stalled.minutes));
+    // R279：可选时间下界（缺省 ⇒ 不加谓词，旧行为不变）。
+    if (options.since)
+      qb.andWhere("s.createdAt >= :since", { since: options.since });
     qb.orderBy("s.createdAt", "DESC")
       .skip((page - 1) * pageSize)
       .take(pageSize);
@@ -685,10 +699,7 @@ export class AgentSessionService {
   }
 
   async listSteps(sessionId: string): Promise<AgentStep[]> {
-    return this.steps.find({
-      where: { sessionId },
-      order: { seq: "ASC" },
-    });
+    return this.steps.find({ where: { sessionId }, order: { seq: "ASC" } });
   }
 
   /**

@@ -21,9 +21,12 @@ import { ServiceUnavailableException } from "@nestjs/common";
 import {
   AgentInboxService,
   clampPendingApprovalLimit,
+  resolveFailedWindowHours,
+  FAILED_SESSION_WINDOW_HOURS_DEFAULT,
 } from "../runtime/agent-inbox.service";
 import { AppError } from "../../../common/errors/app-error";
 import type { AgentApproval } from "../entities/agent-approval.entity";
+import { AgentController } from "../agent.controller";
 
 const SESSION_A = "11111111-1111-4111-8111-111111111111";
 const SESSION_B = "22222222-2222-4222-8222-222222222222";
@@ -70,6 +73,7 @@ function harness(
       | "backlog"
       | "stall"
       | "deployments"
+      | "sessionCount"
     >;
     waitingTotal?: number;
     stalledTotal?: number;
@@ -81,14 +85,26 @@ function harness(
     };
     stall?: { stalled: boolean; degraded: boolean };
     deploymentTotal?: number;
-    omit?: Array<"approvals" | "sessionRepo" | "sessionService">;
+    /** R279：窗口内失败会话数（独立 count() 的返回值）。 */
+    failedSessions?: number;
+    /** R279：配置读到的窗口小时数（省略 ⇒ 模拟「配置缺席」）。 */
+    windowHours?: number;
+    omit?: Array<"approvals" | "sessionRepo" | "sessionService" | "config">;
   } = {},
 ) {
   const fail = (key: string) => {
     if (opts.fail?.includes(key as never)) throw new Error(`${key} down`);
   };
 
-  const calls = { find: 0, count: 0, distinct: 0, titles: 0 };
+  const calls = {
+    find: 0,
+    count: 0,
+    distinct: 0,
+    titles: 0,
+    sessionCount: 0,
+  };
+  /** 最近一次 `sessionRepo.count()` 的入参（用于断言谓词本身）。 */
+  let lastSessionCountArgs: { where?: Record<string, unknown> } | undefined;
   const approvals = {
     find: jest.fn(async () => {
       calls.find += 1;
@@ -117,6 +133,18 @@ function harness(
       calls.titles += 1;
       fail("titles");
       return opts.titles ?? [];
+    }),
+    /**
+     * R279：失败会话计数走**独立 `count()`**（不是 `find().length`）。
+     *
+     * 刻意与 `find()` 分开配置：若被测代码把 `find().length` 当总数，下面的
+     * 「count=3 而 find 返回 0 行」用例会立刻把它抓出来。
+     */
+    count: jest.fn(async (args: { where?: Record<string, unknown> }) => {
+      calls.sessionCount += 1;
+      lastSessionCountArgs = args;
+      fail("sessionCount");
+      return opts.failedSessions ?? 0;
     }),
   };
 
@@ -173,6 +201,12 @@ function harness(
     backlog as never,
     queueStall as never,
     deployments as never,
+    // R279：末位可选参数（既有用例不传 ⇒ 窗口回落默认 24h，旧行为不变）。
+    opts.omit?.includes("config")
+      ? null
+      : opts.windowHours === undefined
+        ? null
+        : ({ get: jest.fn(() => opts.windowHours) } as never),
   );
   return {
     svc,
@@ -183,7 +217,28 @@ function harness(
     queueStall,
     deployments,
     calls,
+    /** R279：最近一次失败计数查询的入参（断言谓词用）。 */
+    lastSessionCountArgs: () => lastSessionCountArgs,
   };
+}
+
+/**
+ * R279 · controller 的最小装配（只用于钉 `since` 这个 **HTTP 边界**参数）。
+ *
+ * 为什么单独一个 harness 而不是复用 `agent.controller.spec.ts`：那边用**定位参数**
+ * 装配 `AgentController`，而本文件要断言的是 `list()` 把 `since` 解析成什么。
+ * 只装一个 `sessions.list` 替身即可 —— 参数解析与「旧行为不变」都发生在这一层，
+ * 不需要真仓储（那是 `counts()` 的用例面）。
+ */
+function controllerHarness() {
+  const sessions = { list: jest.fn(async () => ({ items: [], total: 0 })) };
+  const ctl = new AgentController(
+    sessions as never,
+    { resolveBudget: jest.fn() } as never,
+    {} as never,
+    {} as never,
+  );
+  return { ctl, sessions };
 }
 
 describe("R278 · 待审批单聚合（GET /agent/approvals/pending）", () => {
@@ -440,5 +495,222 @@ describe("R278 · 收件箱计数（GET /agent/inbox/counts）", () => {
     const err = await svc.counts().catch((e) => e);
     expect((err as AppError).errorCode).toBe("DEPENDENCY_UNAVAILABLE");
     expect((err as AppError).getStatus()).toBe(503);
+  });
+});
+
+/**
+ * R279 · 「Agent 会话失败」小节的服务端计数。
+ *
+ * 钉住 brief §五 的四条判据，逐条对应一个用例：
+ *  ① `failed` + `budget_exceeded` 计入、`aborted` **不计**（后者是人主动停的）；
+ *  ② 窗口外的不计（谓词必须带 `createdAt >= now - windowHours`）；
+ *  ③ 仓储抛错 ⇒ `failedSessions:null` + `degraded`，**不允许 0**；
+ *  ④ `since` 缺省 = 不筛（旧行为一字不变）。
+ *
+ * 另钉三条契约细节：
+ *  · `failedSessions` 走**独立 `count()`**，不是 `find().length` 的别名；
+ *  · `failedWindowHours` 是**配置而非事实** ⇒ 读不到回默认 24，**永不 null**；
+ *  · `failedSessions` **不参与**任何会话求和（独立显示项，与 D3 一致）。
+ */
+describe("R279 · 失败会话计数（GET /agent/inbox/counts 的 failedSessions）", () => {
+  it("① 口径 = failed + budget_exceeded，且 aborted 不在谓词里（不计）", async () => {
+    const { svc, lastSessionCountArgs } = harness({ failedSessions: 3 });
+
+    const res = await svc.counts();
+
+    expect(res.failedSessions).toBe(3);
+    expect(res.degraded).toBe(false);
+
+    // 谓词本身：`status` 必须是恰好两项的 `In([...])`，且**不含 `aborted`**。
+    const where = lastSessionCountArgs()?.where as {
+      status?: { value?: string[] };
+      createdAt?: unknown;
+    };
+    expect(where?.status?.value).toEqual(["failed", "budget_exceeded"]);
+    expect(where?.status?.value).not.toContain("aborted");
+    // 反证：`succeeded` 同样不计（它不是待办）。
+    expect(where?.status?.value).not.toContain("succeeded");
+    // 时间窗谓词必须在（② 的另一半：没有它这条会退化成「全 history 计数」）。
+    expect(where?.createdAt).toBeDefined();
+  });
+
+  it("② 窗口下界来自配置：默认 24h 时 `since ≈ now-24h`（用 createdAt 不是 updatedAt）", async () => {
+    const before = Date.now();
+    const { svc, lastSessionCountArgs } = harness({ failedSessions: 1 });
+
+    const res = await svc.counts();
+    const after = Date.now();
+
+    expect(res.failedWindowHours).toBe(FAILED_SESSION_WINDOW_HOURS_DEFAULT);
+    expect(res.failedWindowHours).toBe(24);
+
+    // `MoreThanOrEqual` 实例：TypeORM 把值挂在 `_value` 上（不依赖私有实现细节的
+    // 写法是只看区间是否落在 now-24h 附近）。
+    const createdAt = lastSessionCountArgs()?.where?.createdAt as {
+      _value?: Date;
+    };
+    const at = createdAt?._value?.getTime?.();
+    expect(typeof at).toBe("number");
+    const expectedLo = before - 24 * 3600 * 1000;
+    const expectedHi = after - 24 * 3600 * 1000;
+    expect(at as number).toBeGreaterThanOrEqual(expectedLo - 1000);
+    expect(at as number).toBeLessThanOrEqual(expectedHi + 1000);
+  });
+
+  it("②b 窗口可配：配置给 1 小时 ⇒ failedWindowHours:1 且下界随之前移", async () => {
+    const before = Date.now();
+    const { svc, lastSessionCountArgs } = harness({
+      failedSessions: 2,
+      windowHours: 1,
+    });
+
+    const res = await svc.counts();
+
+    expect(res.failedWindowHours).toBe(1);
+    const createdAt = lastSessionCountArgs()?.where?.createdAt as {
+      _value?: Date;
+    };
+    const at = createdAt?._value?.getTime?.() as number;
+    expect(at).toBeGreaterThanOrEqual(before - 3600 * 1000 - 1000);
+    expect(at).toBeLessThanOrEqual(Date.now() - 3600 * 1000 + 1000);
+  });
+
+  it("③ 仓储抛错 ⇒ failedSessions:null + degraded:true，绝不渲染成 0", async () => {
+    const { svc } = harness({ fail: ["sessionCount"] });
+
+    const res = await svc.counts();
+
+    expect(res.failedSessions).toBeNull();
+    expect(res.degraded).toBe(true);
+    // ⚠️ 语义断言：null 与 0 必须可区分 —— 这条是 `toBeNull()`，不是 `toBe(0)`。
+    expect(res.failedSessions).not.toBe(0);
+    // 窗口是配置 ⇒ 同一请求里仍必须是数字（不跟着降级）。
+    expect(res.failedWindowHours).toBe(24);
+  });
+
+  it("③b 独立 count()：find 返回 0 行而 count=3 ⇒ failedSessions 仍是 3", async () => {
+    const { svc, sessionRepo, calls } = harness({
+      failedSessions: 3,
+      titles: [],
+    });
+
+    const res = await svc.counts();
+
+    expect(res.failedSessions).toBe(3);
+    // `count()` 真的被调用过（不是 find().length —— 那会是 0）。
+    expect(calls.sessionCount).toBe(1);
+    expect(sessionRepo.count).toHaveBeenCalledTimes(1);
+    // `find()` **没有**被用来数失败会话（它只用于 pending 的标题批量取）。
+    expect(calls.titles).toBe(0);
+  });
+
+  it("③c 失败是独立显示项：不参与任何会话求和（不污染 waitingSessions）", async () => {
+    const { svc } = harness({
+      failedSessions: 9,
+      waitingTotal: 2,
+      stalledTotal: 1,
+    });
+
+    const res = await svc.counts();
+
+    // 三个会话计数互为独立事实，谁都不把别人加进来。
+    expect(res.failedSessions).toBe(9);
+    expect(res.waitingSessions).toBe(2);
+    expect(res.stalled).toBe(1);
+  });
+
+  it("④ 实为 0 时回 0（真实零 ≠ 未知）：这是唯一允许出现 0 的分支", async () => {
+    const { svc } = harness({ failedSessions: 0 });
+
+    const res = await svc.counts();
+
+    expect(res.failedSessions).toBe(0);
+    expect(res.failedSessions).not.toBeNull();
+    expect(res.degraded).toBe(false);
+  });
+
+  it("⑤ 窗口是配置而非事实：非法/缺失/0/负数 ⇒ 一律回落默认 24，绝不 null", async () => {
+    expect(resolveFailedWindowHours(undefined)).toBe(24);
+    expect(resolveFailedWindowHours(null)).toBe(24);
+    expect(resolveFailedWindowHours(Number.NaN)).toBe(24);
+    expect(resolveFailedWindowHours(0)).toBe(24);
+    expect(resolveFailedWindowHours(-5)).toBe(24);
+    expect(resolveFailedWindowHours(Number.POSITIVE_INFINITY)).toBe(24);
+    expect(resolveFailedWindowHours("abc")).toBe(24);
+    // 合法值原样透出（截断成整数）。
+    expect(resolveFailedWindowHours(72)).toBe(72);
+    expect(resolveFailedWindowHours(1)).toBe(1);
+    expect(resolveFailedWindowHours(2.9)).toBe(2);
+
+    // 配置服务缺席（既有 spec 用定位参数装配本 service 时就是这样）⇒ 仍回数字。
+    const { svc } = harness({ omit: ["config"], failedSessions: 4 });
+    const res = await svc.counts();
+    expect(res.failedWindowHours).toBe(24);
+    expect(res.failedSessions).toBe(4);
+  });
+});
+
+describe("R279 · sessions 列表的 since 参数（缺省 = 不筛 = 旧行为）", () => {
+  it("① 缺省 ⇒ list() 收到的 since 是 undefined（不筛，旧行为一字不变）", async () => {
+    const { ctl, sessions } = controllerHarness();
+
+    await ctl.list();
+
+    expect(sessions.list).toHaveBeenCalledWith(
+      expect.objectContaining({ since: undefined }),
+    );
+    // 反证：既有参数一个没变（这是「只追加」的判据）。
+    expect(sessions.list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: undefined,
+        status: undefined,
+        stalled: undefined,
+        page: undefined,
+        pageSize: undefined,
+      }),
+    );
+  });
+
+  it("② 合法 ISO ⇒ 透传成 Date（收件箱失败小节用它取窗口内的行）", async () => {
+    const { ctl, sessions } = controllerHarness();
+
+    await ctl.list(
+      undefined,
+      "failed",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "2026-11-18T00:00:00.000Z",
+    );
+
+    const arg = (sessions.list.mock.calls as unknown[][])[0][0] as {
+      since?: Date;
+      status?: string;
+    };
+    expect(arg.status).toBe("failed");
+    expect(arg.since).toBeInstanceOf(Date);
+    expect(arg.since?.toISOString()).toBe("2026-11-18T00:00:00.000Z");
+  });
+
+  it("③ 非法值 ⇒ 回落 undefined（不筛 / 不 400）：坏 query 不该让整页 500", async () => {
+    const { ctl, sessions } = controllerHarness();
+
+    await ctl.list(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "not-a-date",
+    );
+
+    const arg = (sessions.list.mock.calls as unknown[][])[0][0] as {
+      since?: Date;
+    };
+    expect(arg.since).toBeUndefined();
+    // 没有把 NaN Date 交给 TypeORM（那会打成 SQL 语法错）。
+    expect(sessions.list).toHaveBeenCalledTimes(1);
   });
 });

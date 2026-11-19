@@ -53,6 +53,7 @@ const counts = (overrides: Partial<InboxCountMap> = {}): InboxCountMap => ({
   deployments: 0,
   agentApprovals: null,
   agentWaiting: 0,
+  agentFailures: 0,
   stalled: 0,
   backlogged: 0,
   queueStall: 0,
@@ -75,9 +76,9 @@ describe('R278/U1 徽标双口径：审批单 ≠ 会话', () => {
     render(<MemoryRouter><InboxBadge /></MemoryRouter>);
 
     const approvals = await screen.findByTestId('inbox-badge-approvals');
-    expect(approvals.textContent).toBe('待审批 2 单');
+    await waitFor(() => expect(approvals.textContent).toBe('待审批 2 单'));
     // 会话口径独立显示，且**不被审批单放大**（同一会话的两张单不能变成 2 会话）。
-    expect(screen.getByTestId('inbox-badge-waiting').textContent).toBe('等待输入 1 会话');
+    await waitFor(() => expect(screen.getByTestId('inbox-badge-waiting').textContent).toBe('等待输入 1 会话'));
     // 徽标数字仍是会话去重求和：审批单不参与求和（否则同一会话被算两次）。
     await waitFor(() => expect(screen.getByTestId('inbox-badge').textContent).toContain('1'));
   });
@@ -85,9 +86,13 @@ describe('R278/U1 徽标双口径：审批单 ≠ 会话', () => {
   it('两口径措辞不同：单 / 会话 各自成句，可共存', async () => {
     vi.mocked(loadInboxCounts).mockResolvedValue(counts({ agentApprovals: 2, agentWaiting: 1 }));
     render(<MemoryRouter><InboxBadge /></MemoryRouter>);
+    // 徽标在 loading 阶段就先渲染「—」（计数是后续异步落地的）。断言必须等 ready
+    // 那一拍，否则「已落地」与「仍在 loading」会互相竞态（CI 上偶发假红）。
+    // R279：第三格「会话失败」同理——本用例把它钉成 0（事实为零 ⇒ 不占位）。
     const units = await screen.findByTestId('inbox-badge-units');
-    expect(units.textContent).toContain('待审批 2 单');
+    await waitFor(() => expect(units.textContent).toContain('待审批 2 单'));
     expect(units.textContent).toContain('等待输入 1 会话');
+    expect(units.textContent).not.toContain('会话失败');
     expect(screen.getByTestId('inbox-badge-approvals').textContent)
       .not.toBe(screen.getByTestId('inbox-badge-waiting').textContent);
   });
@@ -95,7 +100,8 @@ describe('R278/U1 徽标双口径：审批单 ≠ 会话', () => {
   it('summarizeInboxCounts：审批单不参与求和，但仍单独可显示（不再是 null 占位）', () => {
     const c = counts({ deployments: 1, agentApprovals: 5, agentWaiting: 2 });
     expect(summarizeInboxCounts(c)).toBe(3); // 1 + 2，审批单 5 不算进来
-    expect(splitInboxCounts(c)).toEqual({ approvals: 5, waiting: 2, total: 3 });
+    // R279：`failed` 是新增的**独立显示项**，同样不参与 total。
+    expect(splitInboxCounts(c)).toEqual({ approvals: 5, waiting: 2, failed: 0, total: 3 });
   });
 
   it('审批单数未知（null）⇒ 只影响缺口提示，不把总数算成 0', async () => {
@@ -103,7 +109,7 @@ describe('R278/U1 徽标双口径：审批单 ≠ 会话', () => {
     render(<MemoryRouter><InboxBadge /></MemoryRouter>);
     const approvals = await screen.findByTestId('inbox-badge-approvals');
     expect(approvals.textContent).toBe('待审批 — 单');
-    expect(screen.getByTestId('inbox-badge-waiting').textContent).toBe('等待输入 2 会话');
+    await waitFor(() => expect(screen.getByTestId('inbox-badge-waiting').textContent).toBe('等待输入 2 会话'));
     expect(summarizeInboxCounts(counts({ agentApprovals: null, agentWaiting: 2 }))).toBe(2);
   });
 
@@ -210,6 +216,8 @@ describe('R278/U1 计数只发 1 个请求（防 N+1 / 429 回归）', () => {
       deployments: 3,
       agentApprovals: 4,
       agentWaiting: 2,
+      // R279：契约新增字段；mock 没给 ⇒ null（读不到），绝不是 0。
+      agentFailures: null,
       stalled: 1,
       backlogged: 0,
       queueStall: 0,

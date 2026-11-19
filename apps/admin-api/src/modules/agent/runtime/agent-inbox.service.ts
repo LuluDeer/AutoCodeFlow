@@ -42,8 +42,9 @@
  * 新造码需要跑 `gen-error-i18n` 重生成物，本轮不做。
  */
 import { Injectable, Logger, Optional } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Repository } from "typeorm";
+import { In, MoreThanOrEqual, Repository } from "typeorm";
 
 import { AppError } from "../../../common/errors/app-error";
 import { ErrorCode } from "../../../common/errors/error-codes";
@@ -86,6 +87,33 @@ export function clampPendingApprovalLimit(raw?: number | null): number {
   return Math.min(PENDING_APPROVAL_LIMIT_MAX, Math.max(1, Math.trunc(raw)));
 }
 
+/**
+ * R279：失败会话统计窗口的**默认值**（小时）。
+ *
+ * 为什么是 24h：收件箱是「**今天要处理的**」，不是全 history（判据推导见
+ * `docs/observability/agent-failed-session-criterion.md` §2.2）。没有窗口时一个跑了
+ * 三个月的部署会累积到几千 ⇒ 徽标变成永远巨大的数字 ⇒ 运营学会忽略它。
+ * 窗口外的东西在会话列表按状态筛选仍查得到，收件箱不必承担那个职责。
+ */
+export const FAILED_SESSION_WINDOW_HOURS_DEFAULT = 24;
+
+/**
+ * 把配置读到的窗口小时数收敛成**可用的正数**（非法/缺失 ⇒ 默认 24）。
+ *
+ * ⚠️ 与 `failedSessions` 的失败语义**刻意相反**：`failedSessions` 读不到必须回
+ * `null`（「没读到」≠「没有」）；而窗口小时数是**配置**不是**事实** —— 它有一个
+ * 确定的默认值，回 `null` 只会让 UI 无法渲染「近 N 小时」这句本来就能说的话。
+ * 两者的区别是「事实 vs 约定」，不是「重要 vs 不重要」。
+ */
+export function resolveFailedWindowHours(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return FAILED_SESSION_WINDOW_HOURS_DEFAULT;
+  return Math.trunc(n);
+}
+
+/** 计入「失败待办」的会话状态。`aborted` **刻意不在内**（见判据文档 §2.1）。 */
+const FAILED_SESSION_STATUSES = ["failed", "budget_exceeded"] as const;
+
 /** 一次子查询的结果：`value === null` 恒表示**未知**（读失败），而不是 0。 */
 interface ReadResult<T> {
   value: T | null;
@@ -126,6 +154,15 @@ export class AgentInboxService {
     /** 部署审批待办计数（DEP-04 的既有查询面，`take: 1` 只为拿 `total`）。 */
     @Optional()
     private readonly deployments?: AppDeploymentService | null,
+    /**
+     * R279：配置面（失败会话的统计窗口 `agent.failedSessionWindowHours`）。
+     *
+     * ⚠️ **同样放在末位且 `@Optional`**：既有 spec 用定位参数装配本 service，
+     * 插在中间会让它们全部错位（与前面几个依赖同一纪律）。缺席 ⇒ 窗口回落默认
+     * 24h（**不**抛 503）—— 窗口是配置，缺它仍能给出正确的失败计数。
+     */
+    @Optional()
+    private readonly config?: ConfigService | null,
   ) {}
 
   /**
@@ -206,6 +243,12 @@ export class AgentInboxService {
   async counts(): Promise<AgentInboxCountsResponseDto> {
     this.requireWiring();
 
+    // 窗口先解析：两个新字段都要用它，且它是**配置**（同步可读）⇒ 不必进
+    // `Promise.all`，也不会成为降级来源（读不到就回默认，见 resolveFailedWindowHours）。
+    const failedWindowHours = resolveFailedWindowHours(
+      this.config?.get("agent.failedSessionWindowHours"),
+    );
+
     const [
       pendingApprovals,
       waitingSessions,
@@ -213,6 +256,7 @@ export class AgentInboxService {
       backlog,
       stall,
       deploymentCount,
+      failedSessions,
     ] = await Promise.all([
       // 口径 = **审批单**（与 `/approvals/pending` 的 total **同一谓词**，
       // 否则徽标与列表又会不等 —— D1 的全部意义就在这里）。
@@ -230,6 +274,10 @@ export class AgentInboxService {
       this.read("counts.backlogged", () => this.backlog.findBacklogged()),
       this.read("counts.queueStall", () => this.findQueueStall()),
       this.read("counts.deployments", () => this.findPendingDeployments()),
+      // R279：窗口内的失败会话（`failed` + `budget_exceeded`，**不含 `aborted`**）。
+      this.read("counts.failedSessions", () =>
+        this.countFailedSessions(failedWindowHours),
+      ),
     ]);
 
     return {
@@ -243,13 +291,19 @@ export class AgentInboxService {
       backlogTruncated: backlog.value ? !!backlog.value.truncated : false,
       deployments: deploymentCount.value,
       queueStall: stall.value,
+      // R279：**独立显示项**，不参与任何会话求和（D3：同一会话可能窗口内先
+      // failed 后被重跑成 succeeded，相加会重复计同一份历史）。
+      failedSessions: failedSessions.value,
+      // 配置而非事实 ⇒ 恒为数字，永不 null（读不到回默认 24）。
+      failedWindowHours,
       degraded:
         pendingApprovals.degraded ||
         waitingSessions.degraded ||
         stalled.degraded ||
         backlog.degraded ||
         stall.degraded ||
-        deploymentCount.degraded,
+        deploymentCount.degraded ||
+        failedSessions.degraded,
     };
   }
 
@@ -316,6 +370,31 @@ export class AgentInboxService {
       DeploymentApprovalStatus.PENDING_APPROVAL,
     );
     return res.total;
+  }
+
+  /**
+   * R279：窗口内失败会话数。
+   *
+   * **独立 `count()`，绝不 `find().length`** —— 与 `countPendingSessions` /
+   * `findPendingDeployments` 同一条纪律：`find` 有 `take` 上限，把它的长度当总数
+   * 会让「被截断」与「一共就这么多」同形。这里没有截断面，所以长度恰好等于总数
+   * **只是巧合**；用 `count()` 才能让「口径」这件事只有一个来源。
+   *
+   * 窗口下界用 `createdAt`（**不是** `updatedAt`）：判据问的是「这段时间里**新建**的
+   * 会话有几个失败了」，而 `updatedAt` 会被重跑/resume 刷新 ⇒ 一条昨天失败、今天被
+   * 重新打开的会话会**凭空出现在今天的窗口里**，且失败状态早已不是它的现状。
+   *
+   * `status` 用 `In([...])`（而非两个 `or` 分支）：与 `readTitles` 的既有写法一致，
+   * 且谓词只有一处，改口径不会漏改一支。
+   */
+  private async countFailedSessions(windowHours: number): Promise<number> {
+    const since = new Date(Date.now() - windowHours * 60 * 60 * 1000);
+    return this.sessionRepo.count({
+      where: {
+        status: In([...FAILED_SESSION_STATUSES]) as never,
+        createdAt: MoreThanOrEqual(since),
+      },
+    });
   }
 
   /**

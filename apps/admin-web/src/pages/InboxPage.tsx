@@ -39,10 +39,13 @@ import {
   INBOX_REFRESH_EVENT,
   SECTION_PAGE_SIZE,
   NOTICE_TESTID,
-  hasUncertainCounts,
+  isInboxAllClear,
+  isSectionVisible,
   noticeTitle,
+  budgetExcludedCount,
   sectionCountLabel,
   sectionNotices,
+  sectionWindowLabel,
   deploymentsApi,
   agentApi,
   isSelfDeployment,
@@ -60,6 +63,8 @@ const SECTION_ORDER: InboxSectionKey[] = [
   'deployments',
   'agentApprovals',
   'agentWaiting',
+  // R279：紧跟等待输入——两者是「Agent 会话出了状况」的连续视角（还在等 / 已终止）。
+  'agentFailures',
   'stalled',
   'backlogged',
   'queueStall',
@@ -70,14 +75,21 @@ const SECTION_TAG_COLOR: Record<InboxSectionKey, string> = {
   deployments: 'orange',
   agentApprovals: 'gold',
   agentWaiting: 'blue',
+  agentFailures: 'red',
   stalled: 'red',
   backlogged: 'volcano',
   queueStall: 'magenta',
   recentFailures: 'default',
 };
 
-/** 只读参考小节（不提供处置动作）。 */
-const READONLY_SECTIONS: ReadonlySet<InboxSectionKey> = new Set(['recentFailures']);
+/**
+ * 只读参考小节（不提供处置动作，只给详情深链）。
+ *
+ * R279：`agentFailures` 也是只读——失败会话的处置（改配置 / 改预算 / 重跑）在会话
+ * 详情页做，不在收件箱点按钮：同一行可能是配置问题、也可能是个例，收件箱不该替
+ * 运营猜是哪一个（brief D4）。放行动作只有「去会话详情」。
+ */
+const READONLY_SECTIONS: ReadonlySet<InboxSectionKey> = new Set(['recentFailures', 'agentFailures']);
 
 function dispatchInboxRefresh(): void {
   window.dispatchEvent(new Event(INBOX_REFRESH_EVENT));
@@ -92,6 +104,9 @@ function inboxSubtitleText(item: InboxItem, t: ReturnType<typeof useTranslation>
     const reason = item.approval?.reason;
     return item.subtitle ? `${item.subtitle}${reason ? ` · ${reason}` : ''}` : undefined;
   }
+  // R279/D4：失败原因**必须一眼可见**。会话没记 errorMessage 时明确说出来——
+  // 留白会被读成「没有原因」和「读取失败」中不确切的那一个。
+  if (item.section === 'agentFailures') return item.subtitle ?? t('inbox.failed.noReason');
   return item.subtitle;
 }
 
@@ -200,6 +215,74 @@ function InboxRowActions({
   }
 }
 
+interface InboxRowProps {
+  item: InboxItem;
+  canWrite: boolean;
+  actingId: string | null;
+  userId: number | null | undefined;
+  onApprove: (item: InboxItem) => void;
+  onReject: (item: InboxItem) => void;
+  onDeny: (item: InboxItem) => void;
+  onResume: (item: InboxItem) => void;
+}
+
+/**
+ * 一行待办的版式（标题 / 时间 / 副标题 + 右侧动作）。
+ *
+ * 为什么是模块级组件而不是页面里的局部闭包：页面组件体是 `check:size-caps` 的
+ * 度量单元（单函数 > 300 行 ⇒ 红）。R279 加第八个小节后它已到 296 行——离红线
+ * 只剩 4 行，下一个加个小节的人会先撞墙再拆，那时改动面已经更大。
+ * 外提的是**纯版式**：动作回调仍由页面注入，`InboxRowActions` 的权限/动作块一行未动。
+ */
+function InboxRow({ item, canWrite, actingId, userId, onApprove, onReject, onDeny, onResume }: InboxRowProps) {
+  const { t } = useTranslation();
+  const subtitle = inboxSubtitleText(item, t);
+  return (
+    <div
+      data-testid={`inbox-row-${item.section}`}
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        gap: 12,
+        flexWrap: 'wrap',
+        padding: '10px 0',
+        borderBottom: '1px solid var(--ant-color-border-secondary, #f0f0f0)',
+      }}
+    >
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          <Text strong style={{ fontSize: 13 }}>
+            {item.title}
+          </Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {item.section === 'stalled' ? t('inbox.inspectProgress') : item.waitingSince
+              ? formatRelativeTime(item.waitingSince, t)
+              : t('inbox.noTimeInfo')}
+          </Text>
+        </div>
+        {subtitle && (
+          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 2 }}>
+            {subtitle}
+          </Text>
+        )}
+      </div>
+      <Space wrap>
+        <InboxRowActions
+          item={item}
+          canWrite={canWrite}
+          actingId={actingId}
+          userId={userId}
+          onApprove={onApprove}
+          onReject={onReject}
+          onDeny={onDeny}
+          onResume={onResume}
+        />
+      </Space>
+    </div>
+  );
+}
+
 export default function InboxPage() {
   const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
@@ -302,73 +385,42 @@ export default function InboxPage() {
 
   // ── 渲染 ────────────────────────────────────────────────────────────────────
 
-  const totalReadyItems = sections
-    ? SECTION_ORDER.reduce((acc, key) => acc + (sections[key].status === 'ready' ? sections[key].items.length : 0), 0)
-    : 0;
   const anyError = sections ? SECTION_ORDER.some((key) => sections[key].status === 'error') : false;
-  const allReady = sections ? SECTION_ORDER.every((key) => sections[key].status === 'ready') : false;
-  // R278/D3：「清零」必须是被证实的事实（判定见 api/inbox.hasUncertainCounts）。
-  const countsUncertain = sections ? hasUncertainCounts(sections) : false;
+  // R278/D3 + R279：「清零」必须是被证实的事实。四条判据（全 ready / 计数已知 /
+  // 队列未停摆 / 没有「只计入总数却没行」的待办）收在 api/inbox.isInboxAllClear
+  // 里——页面只读一个布尔，判定不再散落在组件体里（check:size-caps 是结构闸）。
+  const allClear = sections ? isInboxAllClear(sections) : false;
   const queueStall = sections?.queueStall.snapshot;
 
-  const renderRow = (item: InboxItem) => {
-    const subtitle = inboxSubtitleText(item, t);
-    return (
-    <div
+  // 行的 JSX 已外提为模块级 `InboxRow`（与 `InboxRowActions` 同理）：这里是
+  // 「把已有动作回调绑到当前身份/权限上」的唯一接线点，不再持有 40 行版式。
+  const renderRow = (item: InboxItem) => (
+    <InboxRow
       key={item.id}
-      data-testid={`inbox-row-${item.section}`}
-      style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'flex-start',
-        gap: 12,
-        flexWrap: 'wrap',
-        padding: '10px 0',
-        borderBottom: '1px solid var(--ant-color-border-secondary, #f0f0f0)',
-      }}
-    >
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-          <Text strong style={{ fontSize: 13 }}>
-            {item.title}
-          </Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {item.section === 'stalled' ? t('inbox.inspectProgress') : item.waitingSince
-              ? formatRelativeTime(item.waitingSince, t)
-              : t('inbox.noTimeInfo')}
-          </Text>
-        </div>
-        {subtitle && (
-          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 2 }}>
-            {subtitle}
-          </Text>
-        )}
-      </div>
-      <Space wrap>
-        <InboxRowActions
-          item={item}
-          canWrite={canWrite}
-          actingId={actingId}
-          userId={user?.id}
-          onApprove={handleApprove}
-          onReject={openReject}
-          onDeny={handleDeny}
-          onResume={handleResume}
-        />
-      </Space>
-    </div>
-    );
-  };
+      item={item}
+      canWrite={canWrite}
+      actingId={actingId}
+      userId={user?.id}
+      onApprove={handleApprove}
+      onReject={openReject}
+      onDeny={handleDeny}
+      onResume={handleResume}
+    />
+  );
 
   const renderSection = (key: InboxSectionKey) => {
     const section = sections?.[key];
     if (!section) return null;
+    // R279/D1：`agentFailures` 的 0 是**事实**（隐藏）；null 是**读不到**（保留并显示「—」）。
+    // 判定在 api/inbox.isSectionVisible，其余七个小节恒为 true（既有交付面不动）。
+    if (!isSectionVisible(section)) return null;
 
     const title = (
       <Space size={8}>
         <Tag color={SECTION_TAG_COLOR[key]}>{t(`inbox.section.${key}`)}</Tag>
         <Text type="secondary" style={{ fontSize: 12 }} data-testid={`inbox-count-${key}`}>
           {sectionCountLabel(section, t)}
+          {sectionWindowLabel(section, t)}
         </Text>
       </Space>
     );
@@ -422,7 +474,21 @@ export default function InboxPage() {
         ) : section.items.length === 0 ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={section.total === null || section.degraded ? t('inbox.empty.unknownSection') : t('inbox.empty.section')}
+            description={
+              // 总数读不到 / 降级 ⇒ 不能把空列表说成「本类暂无待办」。
+              // 注：`agentFailures` 的专属措辞由标题上方的 unknown 告警承担
+              // （`noticeTitle` 对失败小节返回 inbox.failed.unknownHint）——同一件事
+              // 在同一个卡片里说两遍不会更清楚，只会把两条告警挤在一起。
+              // R279 补充：还有第五种情形 —— **计数>0 但一行都没有**（`budget_exceeded`
+              // 只进计数、不进行列表）。这时既不能说「暂无」（有 N 条待处理），也不能
+              // 只说「读不到」（读到了，是 5）。所以这一格单独说清「几条、为什么不在下方」，
+              // 否则 `isInboxAllClear` 因为这个差值判「未清零」，而页面上看不到原因。
+              section.total === null || section.degraded
+                ? t('inbox.empty.unknownSection')
+                : budgetExcludedCount(section) > 0
+                  ? t('inbox.failed.pendingBeyondRows', { n: budgetExcludedCount(section) })
+                  : t('inbox.empty.section')
+            }
           />
         ) : (
           sortInboxItemsByWaitingSince(section.items).map(renderRow)
@@ -443,7 +509,7 @@ export default function InboxPage() {
         }
       />
 
-      {allReady && totalReadyItems === 0 && !countsUncertain && !queueStall?.stalled ? (
+      {allClear ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={

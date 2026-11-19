@@ -29,16 +29,23 @@ import { client } from '../api/client';
 import { useAuthStore } from '../store/auth';
 import type { Executor, ExecutorRuntimeConfig } from '../api/executors';
 
-vi.mock('../api/executors', () => ({
-  executorsApi: {
-    list: vi.fn(),
-    getGroups: vi.fn(),
-    get: vi.fn(),
-    getMetrics: vi.fn(),
-    getExecutions: vi.fn(),
-    getRuntimeConfig: vi.fn(),
-  },
-}));
+// R279：mock 必须保留契约层的**真实纯函数**（resolveEffectiveOfflineAfterMs /
+// describeOfflineWindow）。整模块替换会把它抹成 undefined，页面直接崩在「No export」，
+// 那是 mock 失真而不是实现坏了；这里只替 executorsApi，纯函数走真实现。
+vi.mock('../api/executors', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/executors')>();
+  return {
+    ...actual,
+    executorsApi: {
+      list: vi.fn(),
+      getGroups: vi.fn(),
+      get: vi.fn(),
+      getMetrics: vi.fn(),
+      getExecutions: vi.fn(),
+      getRuntimeConfig: vi.fn(),
+    },
+  };
+});
 const mockedApi = vi.mocked(executorsApi, true);
 
 vi.mock('../api/client', () => ({
@@ -71,6 +78,10 @@ const runtimeCfg = (over: Partial<ExecutorRuntimeConfig> = {}): ExecutorRuntimeC
   heartbeatIntervalMs: 30_000,
   heartbeatTimeoutMultiplier: 3,
   heartbeatTimeoutMs: 90_000,
+  // R279：真机 GET /executors/runtime-config 实测 staleOfflineConfirmations=2、
+  // effectiveOfflineAfterMs=180000（夹具与真机同源，不再自造 90s 判死窗口）。
+  staleOfflineConfirmations: 2,
+  effectiveOfflineAfterMs: 180_000,
   listLimit: 500,
   executorTotal: 0,
   ...over,

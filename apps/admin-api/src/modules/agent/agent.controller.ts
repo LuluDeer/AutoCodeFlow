@@ -73,6 +73,23 @@ import {
   AgentPendingApprovalsResponseDto,
 } from "./dto/agent-inbox.dto";
 
+/**
+ * R279：把 `since` query（ISO-8601）解析成 `Date`；**解析不出 ⇒ `undefined`（不筛）**。
+ *
+ * 为什么非法值回落「不筛」而不是 400：与 `clampPagination` / `stalled` 的既有口径
+ * 一致 —— 非法深链必须安全回落，一个坏 query 不该让整页 500。「不筛」是**旧行为**，
+ * 也就是最保守的那个分支（多给行，不少给行）。
+ *
+ * 为什么在这里解析而不是在 service：`sessions.list` 的入参已是 `Date`，类型收窄的
+ * 责任留在 HTTP 边界；service 不掺进字符串解析（它也被 SOP 兜底等内部调用方复用）。
+ */
+function parseSinceParam(raw?: string): Date | undefined {
+  if (!raw) return undefined;
+  const d = new Date(raw);
+  // `NaN` 的 Date 直接进 SQL 会把整条查询打成语法错 ⇒ 必须在这里拦掉。
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
 export class CreateAgentSessionDto {
   @ApiProperty({ enum: AGENT_SESSION_KINDS as unknown as string[] })
   @IsString()
@@ -172,6 +189,15 @@ export class AgentController {
     @Query("stalled") stalled?: string,
     @Query("stalledMinutes") stalledMinutes?: string,
     @Query("pageSize") pageSize?: string,
+    /**
+     * R279：只列 `createdAt >= since` 的会话（ISO-8601），供收件箱的
+     * 「Agent 会话失败」小节取窗口内的行数据（`?status=failed&since=<ISO>`）。
+     *
+     * ⚠️ **缺省 = 不筛 = 旧行为完全不变**：既有调用方（列表页、深链、SOP 兜底）
+     * 都不传它，谓词一条不多。非法值/无法解析 ⇒ 同样**不筛**（与 `clampPagination`
+     * 的「非法深链安全回落、绝不 400」同一契约），绝不因一个坏 query 让整页 500。
+     */
+    @Query("since") since?: string,
   ) {
     const result = await this.sessions.list({
       kind,
@@ -187,6 +213,7 @@ export class AgentController {
           : undefined,
       page: page ? parseInt(page, 10) : undefined,
       pageSize: pageSize ? parseInt(pageSize, 10) : undefined,
+      since: parseSinceParam(since),
     });
     return result;
   }
