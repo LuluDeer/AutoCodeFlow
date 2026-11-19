@@ -519,11 +519,50 @@ function walkFiles(dir, out = []) {
 /**
  * 同文件构造函数里的属性类型标注 → 用来把 TypeORM 仓储认出来。
  * `private readonly approvals: Repository<AgentApproval>` ⇒ 仓储，不是服务。
+ *
+ * ## R278：`@Optional()` 的标准写法不能把守卫弄瞎
+ *
+ * 旧正则要求 `${role}\s*:\s*`，**不允许 `?` 可选标记**。而本仓 `@Optional()`
+ * 注入的标准形态是 `private readonly x?: T | null`（`AgentController` 里 3 个新
+ * provider 参数、`agent-inbox.service.ts` 里 2 个仓储全是这么写的）⇒ 旧正则**一条
+ * 都认不出来**，`declaredTypeOf` 回 null ⇒ `isRepositoryType(null)` = false ⇒
+ * 该文件的 `this.approvals.*` 被当成 `AgentApprovalsService` 的调用。
+ *
+ * 实证（R278 本轮）：`runtime/agent-inbox.service.ts` 的 `approvals` 声明为
+ * `Repository<AgentApproval> | null` + `?`，守卫因此要求 `agent-sop-check.mjs`
+ * 的 `makeRepo()` 实现 `buildKey/consume/decide/expireStalePending`（那些是
+ * `tool-executor.service.ts` / `agent-session.service.ts` / `agent.controller.ts`
+ * 的调用，与本轮无关），并且因为新增 `this.approvals.count(` 使「按方法名交集 2」
+ * 把那个数据访问桩错认成 approvals 替身 ⇒ 一条误判同时制造了两条红。
+ *
+ * ## 去糖口径（都是类型标注的语法糖，不改变「这个字段是不是仓储」这个事实）
+ *
+ *   · `?`   可选标记 —— `@Optional()` 的写法，**注入与否**不改变声明类型；
+ *   · `| null` / `| undefined` —— Nest 可空注入的标准联合；
+ *   · `Pick<T, "a" | "b">` —— 生产 `agent-runtime.service.ts:449` 就写成
+ *     `Pick<AgentApprovalsService, "listForSession"> | null`，剥联合后仍以
+ *     `Pick<` 开头 ⇒ 不是 `Repository<…>` ⇒ 正确判为服务。
+ *
+ * **只剥联合里不是「具体类型的 null 分支」**（`null` / `undefined`），别的联合成员
+ * 原样保留、按 `|` 连接 —— 宁可让一个奇怪的类型判不成仓储（保守方向：多要求替身
+ * 实现方法），也不要把服务判成仓储（激进方向：把真缺口藏起来）。
  */
 function declaredTypeOf(maskedSrc, role) {
-  const re = new RegExp(`(?:readonly|private|public|protected)\\s+${role}\\s*:\\s*([^,)\\n]+)`);
+  // `\s*` 后面允许 `?`（可选标记），再强制 `:`。少了 `?` 支持 ⇒ 见上面的复盘。
+  const re = new RegExp(
+    `(?:readonly|private|public|protected)\\s+${role}\\??\\s*:\\s*([^,)\\n]+)`,
+  );
   const m = re.exec(maskedSrc);
-  return m ? m[1].trim() : null;
+  return m ? stripNullUnion(m[1].trim()) : null;
+}
+
+/** 只剥 `| null` / `| undefined` 这两个「空分支」，其余联合成员保留。 */
+function stripNullUnion(type) {
+  const parts = type
+    .split("|")
+    .map((t) => t.trim())
+    .filter((t) => t !== "" && t !== "null" && t !== "undefined");
+  return parts.length > 0 ? parts.join(" | ") : null;
 }
 
 const isRepositoryType = (type) => type !== null && /^Repository\s*</.test(type);
@@ -978,7 +1017,7 @@ function selftest() {
   // `create/save/findOne/update/insert` 全是 TypeORM 的方法），
   // `agent.controller.ts` 里才是 `AgentApprovalsService`。判据必须按**声明类型**分，
   // 不能按文件名白名单，也不能把两边的调用并成一个集合。
-  const approvalsFixture = (repoDeclType) => ({
+  const approvalsFixture = (repoDecl) => ({
     "package.json": { name: "fixture", private: true },
     "scripts/agent-demo-check.mjs": [
       "function makeApprovals() {",
@@ -993,7 +1032,7 @@ function selftest() {
     "apps/admin-api/src/modules/agent/runtime/agent-approvals.service.ts": [
       `export class AgentApprovalsService {`,
       "  constructor(",
-      `    private readonly approvals: ${repoDeclType},`,
+      `    ${repoDecl},`,
       "  ) {}",
       "",
       "  async request(sessionId: string) {",
@@ -1017,17 +1056,53 @@ function selftest() {
   });
   cases.push({
     name: "判据：this.approvals 声明为 Repository<…> ⇒ 视为仓储，不要求替身有 create",
-    fn: () => withFixture(approvalsFixture("Repository<AgentApproval>"), (repo) => {
+    fn: () => withFixture(approvalsFixture("private readonly approvals: Repository<AgentApproval>,"), (repo) => {
       const r = run(repo.dir);
       expectExit(r, { code: 0, contains: ["✔ 测试替身保真", "仓储不是服务"], absent: ["缺方法"], label: "仓储排除" });
     }),
   });
   cases.push({
     name: "判据对照：同一形态把类型换成 AgentApprovalsService ⇒ 必须红（排除有齿）",
-    fn: () => withFixture(approvalsFixture("AgentApprovalsService"), (repo) => {
+    fn: () => withFixture(approvalsFixture("private readonly approvals: AgentApprovalsService,"), (repo) => {
       const r = run(repo.dir);
       expectExit(r, { code: 1, contains: ["缺方法", "approvals.create"], label: "仓储排除对照" });
     }),
+  });
+
+  // 9b. R278：`@Optional()` 标准写法（`?` + `| null`）⇒ 必须与无糖写法同判
+  //
+  // 真树形态（本轮新引入的 `runtime/agent-inbox.service.ts:107-109`）：
+  //     @Optional()
+  //     @InjectRepository(AgentApproval)
+  //     private readonly approvals?: Repository<AgentApproval> | null,
+  // 旧正则要求 `${role}\s*:\s*`、不容 `?` ⇒ 认不出 ⇒ 当服务 ⇒ 要求替身实现
+  // buildKey/consume/decide/expireStalePending（其实全是别处的调用），并且因为
+  // 新增的 `this.approvals.count(` 让「方法名交集 ≥2」把数据访问桩错认成 approvals
+  // 替身 ⇒ 一条误判制造两条红。
+  cases.push({
+    name: "判据：`approvals?: Repository<AgentApproval> | null`（@Optional 标准写法）⇒ 仍是仓储，不要求替身有 create",
+    fn: () => withFixture(
+      approvalsFixture("private readonly approvals?: Repository<AgentApproval> | null,"),
+      (repo) => {
+        const r = run(repo.dir);
+        expectExit(r, {
+          code: 0,
+          contains: ["✔ 测试替身保真", "仓储不是服务"],
+          absent: ["缺方法", "approvals.create"],
+          label: "? + |null 仓储排除",
+        });
+      },
+    ),
+  });
+  cases.push({
+    name: "判据对照：同为空糖形态但类型是 `AgentApprovalsService | null` ⇒ 必须红（可选标记不豁免服务）",
+    fn: () => withFixture(
+      approvalsFixture("private readonly approvals?: AgentApprovalsService | null,"),
+      (repo) => {
+        const r = run(repo.dir);
+        expectExit(r, { code: 1, contains: ["缺方法", "approvals.create"], label: "? + |null 服务对照" });
+      },
+    ),
   });
 
   // 10. 工厂改名也抓得住（靠方法名交集的兜底判定）
