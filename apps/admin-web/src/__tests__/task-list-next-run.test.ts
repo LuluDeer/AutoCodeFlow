@@ -23,7 +23,7 @@
  * 语义边界：暂停任务不调度、手动任务没有"下次"。
  */
 import { describe, it, expect } from 'vitest';
-import { nextRunAt } from '../utils/trigger-preview';
+import { nextRunAt, nextRunOutcome } from '../utils/trigger-preview';
 
 describe('P1-1: nextRunAt（列表页「下次执行」的真实时刻）', () => {
   const NOW = new Date('2026-09-21T00:00:00Z');
@@ -132,5 +132,43 @@ describe('P1-1: nextRunAt（列表页「下次执行」的真实时刻）', () =
     expect(
       nextRunAt({ status: 'active', triggerType: 'cron', cronExpression: null }, NOW),
     ).toBeNull();
+  });
+});
+
+
+/**
+ * R282：`nextRunAt` 是「**不含窗口**」的窄函数——本 describe 把它与
+ * `nextRunOutcome` 的关系钉死：**没配窗口时两者逐毫秒相同**。
+ *
+ * 为什么要单独立这一条：本轮把两个消费点（列表列 / 详情 Tag）从 `nextRunAt`
+ * 换到了 `nextRunOutcome`。若新函数在"没配维护窗口"这条最常见路径上偏了一毫秒，
+ * 那 99% 的任务显示的时刻都会静默变化——这是最难在 code review 里看出来的回归。
+ */
+describe('R282: nextRunOutcome 在无窗口路径上必须与 nextRunAt 逐毫秒相同', () => {
+  const NOW = new Date('2026-09-21T00:00:00Z');
+  const cases = [
+    { status: 'active', triggerType: 'cron', cronExpression: '0 8 * * *', timezone: 'UTC' },
+    { status: 'active', triggerType: 'cron', cronExpression: '*/5 * * * *', timezone: 'Asia/Shanghai' },
+    { status: 'active', triggerType: 'fixed_rate', fixedRate: 300 },
+    { status: 'active', triggerType: 'fixed_rate', fixedRate: 300, lastTriggerTime: new Date(NOW.getTime() - 200_000).toISOString() },
+    { status: 'paused', triggerType: 'cron', cronExpression: '0 8 * * *', timezone: 'UTC' },
+    { status: 'active', triggerType: 'manual' },
+    { status: 'active', triggerType: 'cron', cronExpression: 'not a cron' },
+  ];
+
+  it('未配置窗口（undefined / null / []）⇒ at 且时刻与 nextRunAt 完全相等', () => {
+    for (const c of cases) {
+      const legacy = nextRunAt(c, NOW);
+      for (const maintenanceWindows of [undefined, null, []]) {
+        const out = nextRunOutcome({ ...c, maintenanceWindows }, NOW);
+        if (legacy === null) {
+          expect(out.kind, JSON.stringify(c)).toBe('none');
+        } else {
+          expect(out.kind, JSON.stringify(c)).toBe('at');
+          if (out.kind !== 'at') throw new Error('unreachable');
+          expect(out.at.getTime(), JSON.stringify(c)).toBe(legacy.getTime());
+        }
+      }
+    }
   });
 });

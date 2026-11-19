@@ -341,6 +341,14 @@ export default {
   // "Last run" column.
   'taskList.nextRun.unpredictable': 'Cannot estimate',
   'taskList.nextRun.unpredictableTooltip': 'This expression cannot be parsed locally (it falls outside the supported 5-field preview subset), or this trigger type has no predictable next time. The server-side schedule is authoritative.',
+  // R282: once a maintenance window matches, "Next run" is no longer a fake time.
+  // The copy must name the CAUSE (D5) — a bare "skipped" leaves the user with
+  // nothing to fix, and it would collide with firePoint.consume.hint's ONE-OFF
+  // skip (FEAT-21), hence "maintenance window" is spelled out.
+  'taskList.nextRun.skippedByWindow': 'Skipped (maintenance window {{start}}–{{end}})',
+  'taskList.nextRun.skippedTooltip': 'The next scheduled trigger falls inside this task\'s maintenance window: the scheduler skips it without creating an execution record and without catching up. Normal firing resumes at the next schedule point after the window closes. Originally planned for {{time}}.',
+  'taskList.nextRun.unknownWindow': 'In window? Timezone unknown',
+  'taskList.nextRun.unknownWindowTooltip': 'This task has maintenance windows but no valid timezone: the server evaluates them in its own timezone while this page uses the browser timezone, so the two can disagree. No verdict is shown. Set a valid IANA timezone on the task.',
   'taskList.col.lastRun': 'Last run',
   'taskList.lastRun.never': 'Never run',
   'taskList.lastRun.neverTooltip': 'This task has never been triggered since it was created. If it is an enabled scheduled task, scheduling is not taking effect — check its trigger configuration.',
@@ -1452,6 +1460,11 @@ export default {
   'taskDetail.stat.nextRun': 'Next run {{time}}',
   'taskDetail.stat.nextRunTooltip': 'Next fire time computed from the current expression (browser local time)',
   'taskDetail.stat.nextRunNone': 'Not scheduled',
+  // R282: inside a window → "will arrive but will not run", tag turns warning;
+  // unknown timezone → no verdict (D3).
+  'taskDetail.stat.nextRunSkipped': 'Skipped (maintenance window {{start}}–{{end}}) · planned {{time}}',
+  'taskDetail.stat.nextRunSkippedTooltip': 'The next scheduled trigger falls inside a maintenance window: the scheduler skips it (no execution record is created and nothing is caught up), and firing resumes once the window closes.',
+  'taskDetail.stat.nextRunUnknownWindow': 'In window? Timezone unknown · planned {{time}}',
   'taskDetail.stat.lastRun': 'Last run {{time}}',
   'taskDetail.stats.totalRuns': 'Total Runs',
   'taskDetail.stats.successRate': 'Success Rate',

@@ -367,6 +367,359 @@ export function nextRunAt(
   return null;
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+ * R282 / FEAT-06 读面：维护窗口命中判定（**与 admin-api 同语义的复刻**）
+ * ════════════════════════════════════════════════════════════════════════════
+ *
+ * 缺陷现场：调度器在维护窗口命中时 `return null`——**不建执行行、不推进
+ * lastTriggerTime、不补跑**（scheduler.service.ts:2804-2816）。而 `nextRunAt`
+ * 只问「下一拍 cron 何时到」，入参里根本没有 maintenanceWindows ⇒ 列表列与
+ * 详情 Tag 一直在渲染**一次不会发生的执行**。
+ *
+ * 这里的判据**不是**「把 start/end 解析成时:分再比大小」——那只对「同日窗口且
+ * start<end」成立，跨午夜、周级、月级窗口全错。后端是「**最近触达比较**」：
+ *
+ *     startFire = lastWindowCronFireBefore(start, at, 回看, tz)
+ *     if (!startFire) continue                        ← start 回看内无触达 ⇒ 窗口关闭
+ *     endFire   = lastWindowCronFireBefore(end, at, 回看, tz)
+ *     if (endFire && endFire >= startFire) continue   ← 已关窗（半开 [start,end)，平局归关窗）
+ *     return w                                        ← 开窗
+ *
+ * 三处最容易写反、且都在本文件被显式钉住的地方：
+ *   ① **`endFire === null` 是开窗**，不是关窗（后端 `:395` 的 `endFire &&` 短路）；
+ *   ② **恰在 end 触达的那一分钟已关窗**（半开区间，`>=` 而非 `>`）；
+ *   ③ 比较的是 **instant**，不是壁钟时:分——跨午夜窗口靠它自然成立。
+ *
+ * ## 时区（D3）
+ *
+ * 后端按 `task.timezone` 评估（scheduler.service.ts:2807），**未填/非法时降级
+ * 服务端本地时区**；浏览器本地时区不一定是同一个。此时前端算出的结论可能与
+ * 后端相反，而「跳过」是**负面断言**（会让用户以为任务不会跑）⇒ 不猜，走
+ * `unknown-window` 分支显式说明「无法判定」（沿用 R278 纪律：未知 ≠ 是/否）。
+ * 判据复用 `previewNeedsTimezoneWarning`（timezoneWarningKind 的两态在这里不需要
+ * 区分：两种都需要降级）。
+ *
+ * ## 性能（D2，红线）
+ *
+ * 照抄后端的「逐 instant 回扫 7×24×60 分钟 × formatToParts」在列表页会卡死：
+ * 实测 20 个带窗口任务 = 127ms（日级窗口）/ 962ms（周级窗口最坏）。而回扫的
+ * 目的只有一个——找「最近一次触达」。
+ *
+ * `lastWindowFireBefore` 因此改成**按壁钟日回扫**：每次 `formatToParts` 得到
+ * 「该 instant 在目标时区的日期 + 时:分」，于是同一天内的所有壁钟分钟不必再逐
+ * 分钟 format，直接按 cron 的 (时,分) 命中集构造候选、由近及远取第一个
+ * **instant ≤ 起点** 的（DST 重复壁钟分钟由此取后触达，与后端「最近」一致）。
+ * 一天的 formatToParts 从 1440 次降到 1 次（本地路径 0 次）。
+ *
+ * 回看上限按**窗口 cron 自身的最小周期**收紧，但**永不超过后端 7 天**（超过即
+ * 可能算出后端算不出的触达 ⇒ 结论漂移）：
+ *   · dom/month/dow 全为 `*`（日级/日内窗口、最常见形态）⇒ 3 天。3 天足以覆盖
+ *     跨午夜窗口（≤1 天）与 DST 单次跳变（±1 天）的所有「最近触达」场景；
+ *   · 其余（周级/月级/受限于具体日期）⇒ 后端同值 7 天，逐日回扫仅 7~8 次 format。
+ * 改后实测：20 个带窗口任务全量 = **个位数毫秒**（spec 里钉 < 50ms）。
+ */
+
+/** 单条维护窗口（与 api/tasks.ts 的 MaintenanceWindow / 后端 DTO 同形） */
+export interface NextRunMaintenanceWindow {
+  start: string;
+  end: string;
+  description?: string | null;
+}
+
+/**
+ * 「下次执行」的判别式结果（D4/D5）。
+ *
+ * `nextRunAt` 的 `null` 已被三种语义占用（非 active / 表达式非法 / manual），
+ * **不能再让 null 承担「窗口内」**——那正是当前缺陷的同类错误：用一个值表达多
+ * 种含义。故新增本类型，`nextRunAt` 签名与语义一字不动。
+ */
+export type NextRunOutcome =
+  /** 正常：未来某刻会跑（渲染既有文案，**零视觉变化**） */
+  | { kind: 'at'; at: Date }
+  /** 会到点，但那一刻落在维护窗口内 ⇒ 调度器会跳过（不建执行记录） */
+  | { kind: 'skipped-by-window'; at: Date; window: NextRunMaintenanceWindow }
+  /** 任务没配时区/时区非法 ⇒ 前后端时区可能不同，无法判定，**不猜** */
+  | { kind: 'unknown-window'; at: Date }
+  /** 暂停 / 手动 / 表达式非法（既有 null 语义，占位文案不变） */
+  | { kind: 'none' };
+
+/** 扫描预算与常量（推导见文件头「性能」段；二者都**永不超过后端 7 天**） */
+const DAY_LOOKBACK_DAILY = 3;
+const DAY_LOOKBACK_BACKEND = 7;
+const MS_PER_DAY = 86_400_000;
+const MS_PER_HOUR = 3_600_000;
+
+/** 壁钟字段（cron 匹配的最小信息面，与后端 WallClockParts 同形）。 */
+interface WallStamp {
+  y: number;
+  mo: number;
+  d: number;
+  h: number;
+  mi: number;
+}
+
+/** as-UTC 毫秒 → 壁钟字段（「as-UTC」= 该毫秒数按 UTC 读出的年月日时分）。 */
+function wallFields(asUtcMs: number): WallStamp {
+  const d = new Date(asUtcMs);
+  return {
+    y: d.getUTCFullYear(),
+    mo: d.getUTCMonth() + 1,
+    d: d.getUTCDate(),
+    h: d.getUTCHours(),
+    mi: d.getUTCMinutes(),
+  };
+}
+
+/**
+ * 该 cron 的触达是否会落在「每天同一批时刻」（月/日/周全 `*`）——只有这种形态
+ * 才允许把回扫收紧到 3 天：它**必然每天触达**，最近一次触达不可能超过 1 天前。
+ */
+function firesEveryDay(parsed: ParsedCron): boolean {
+  return parsed.domAll && parsed.dowAll && parsed.month.size === 12;
+}
+
+/** 回扫天数：日级 3 天（跨午夜 ≤1 天 + DST 单跳 ±1 天），其余沿用后端 7 天。 */
+function windowLookbackDays(parsed: ParsedCron): number {
+  return firesEveryDay(parsed) ? DAY_LOOKBACK_DAILY : DAY_LOOKBACK_BACKEND;
+}
+
+/* ── 时区壁钟工具（复用 validateTimezone，不再写第四份 cron 解析器） ───────── */
+
+/** 时区格式化器缓存：构造 Intl.DateTimeFormat 远比格式化贵，列表页会复用。 */
+const ZONE_FMT_CACHE = new Map<string, Intl.DateTimeFormat>();
+const ZONE_FMT_CACHE_MAX = 32;
+
+function zoneFormatter(tz: string): Intl.DateTimeFormat {
+  const hit = ZONE_FMT_CACHE.get(tz);
+  if (hit) return hit;
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  if (ZONE_FMT_CACHE.size >= ZONE_FMT_CACHE_MAX) ZONE_FMT_CACHE.clear();
+  ZONE_FMT_CACHE.set(tz, fmt);
+  return fmt;
+}
+
+/** instant → 目标时区壁钟。`tz` 已由 validateTimezone 校验过（null 不走这里）。 */
+function zoneWallClock(d: Date, tz: string): WallStamp & { asUtcMs: number } {
+  const parts = zoneFormatter(tz).formatToParts(d);
+  const get = (t: string): string => parts.find((p) => p.type === t)?.value ?? '0';
+  const y = Number(get('year'));
+  const mo = Number(get('month'));
+  const dOfMonth = Number(get('day'));
+  // hourCycle h23 在部分 ICU 版本把午夜给成 "24"——取模归零
+  const h = Number(get('hour')) % 24;
+  const mi = Number(get('minute'));
+  const s = Number(get('second'));
+  return { y, mo, d: dOfMonth, h, mi, asUtcMs: Date.UTC(y, mo - 1, dOfMonth, h, mi, s) };
+}
+
+/** 本地路径（tz 未填/非法）：浏览器本地时区 = 后端「降级服务端本地」的同位语。 */
+function localWallClock(d: Date): WallStamp & { asUtcMs: number } {
+  const y = d.getFullYear();
+  const mo = d.getMonth() + 1;
+  const dOfMonth = d.getDate();
+  const h = d.getHours();
+  const mi = d.getMinutes();
+  return { y, mo, d: dOfMonth, h, mi, asUtcMs: Date.UTC(y, mo - 1, dOfMonth, h, mi, d.getSeconds()) };
+}
+
+/** 该 instant 在目标时区相对 UTC 的偏移（毫秒）。 */
+function zoneOffsetAt(ms: number, tz: string): number {
+  return zoneWallClock(new Date(ms), tz).asUtcMs - ms;
+}
+
+/**
+ * 扫描窗口内的**偏移样本**：DST 一年两次跳变，采样覆盖窗口两端即可拿到全部
+ * 可能偏移（不必逐分钟问）。一次调用最多 `2×(days+2)` 次 formatToParts。
+ */
+function collectZoneOffsets(startMs: number, days: number, tz: string): number[] {
+  const set = new Set<number>();
+  for (let i = 0; i <= days + 1; i++) {
+    const base = startMs - i * MS_PER_DAY;
+    set.add(zoneOffsetAt(base, tz));
+    set.add(zoneOffsetAt(base + MS_PER_DAY / 2, tz));
+  }
+  return [...set];
+}
+
+/**
+ * 壁钟候选 → 真实 instant（可能两个：秋季回拨时同一壁钟分钟出现两次）。
+ *
+ * 回读校验是**语义必需**而非保险：DST 春季跳变时被跳过的壁钟分钟没有对应
+ * instant（Date 构造器会顺移），后端逐 instant 回扫天然不命中——这里若不复核
+ * 就会凭空造出一次"触达"，把已关窗误判成开窗。
+ * 返回按 instant **由晚到早**排序（后端「最近触达」取的正是最晚那个）。
+ */
+function instantsForWall(
+  asUtcMs: number,
+  tz: string | null,
+  offsets: number[],
+): number[] {
+  const f = wallFields(asUtcMs);
+  const out: number[] = [];
+  const accept = (t: number): void => {
+    if (!Number.isFinite(t) || out.includes(t)) return;
+    const w = tz ? zoneWallClock(new Date(t), tz) : localWallClock(new Date(t));
+    if (w.y === f.y && w.mo === f.mo && w.d === f.d && w.h === f.h && w.mi === f.mi) {
+      out.push(t);
+    }
+  };
+  if (tz) {
+    for (const off of offsets) accept(asUtcMs - off);
+  } else {
+    // 本地路径：先按本地日期构造，再补 ±1h 覆盖秋季回拨的两次出现。
+    const base = new Date(f.y, f.mo - 1, f.d, f.h, f.mi).getTime();
+    accept(base);
+    accept(base + MS_PER_HOUR);
+    accept(base - MS_PER_HOUR);
+  }
+  return out.sort((a, b) => b - a);
+}
+
+/** 该壁钟日是否满足 cron 的月/日/周条件（周几按壁钟日算，故按日缓存一次）。 */
+function dayMatches(parsed: ParsedCron, f: WallStamp): boolean {
+  if (!parsed.month.has(f.mo)) return false;
+  const dow = new Date(Date.UTC(f.y, f.mo - 1, f.d)).getUTCDay();
+  const domHit = parsed.dayOfMonth.has(f.d);
+  const dowHit = parsed.dayOfWeek.has(dow);
+  if (parsed.domAll && parsed.dowAll) return true;
+  if (parsed.domAll) return dowHit;
+  if (parsed.dowAll) return domHit;
+  return domHit || dowHit;
+}
+
+/** 升序数值数组（Set → number[]），供「由晚到早」双重遍历。 */
+const asc = (s: Set<number>): number[] => [...s].sort((a, b) => a - b);
+
+/**
+ * 等价于后端 `lastWindowCronFireBefore`：`expr` 在 `(before - 7天, before]` 内的
+ * 最近一次触达（分钟粒度、秒截断）。表达式非法 / 超出回看 ⇒ null。
+ *
+ * 与后端的**唯一**差异是扫描粒度（按壁钟日而非逐分钟 instant），结论在同一
+ * 时区下逐条相同——对拍见 `__tests__/maintenance-window-parity.test.ts`。
+ * 7 天硬下限（`floorMs`）必须保留：日粒度会让回扫面比后端宽一天，若不夹这个
+ * 边界，前端就可能找到后端找不到的触达 ⇒ 已关窗被判成开窗。
+ */
+export function lastWindowCronFireBefore(
+  expr: string,
+  before: Date,
+  timezone?: string | null,
+): Date | null {
+  const parsed = parseCronExpression(expr);
+  if (!parsed) return null;
+  const tz = validateTimezone(timezone);
+  // 起点截断到「真实 instant 的整分钟」——与后端分区路径 :334 同一口径
+  const startMs = Math.floor(before.getTime() / 60_000) * 60_000;
+  const startWall = tz ? zoneWallClock(new Date(startMs), tz) : localWallClock(new Date(startMs));
+  const days = windowLookbackDays(parsed);
+  const offsets = tz ? collectZoneOffsets(startMs, days, tz) : [];
+  const floorMs = startMs - DAY_LOOKBACK_BACKEND * MS_PER_DAY;
+  const hours = asc(parsed.hour);
+  const minutes = asc(parsed.minute);
+  // 起点所在壁钟日 00:00（as-UTC 表示与真实日历日同余，取模即日界）
+  const dayStart = startWall.asUtcMs - (startWall.asUtcMs % MS_PER_DAY);
+
+  for (let i = 0; i <= days; i++) {
+    const dayMs = dayStart - i * MS_PER_DAY;
+    if (dayMs + MS_PER_DAY <= floorMs) break;
+    if (!dayMatches(parsed, wallFields(dayMs))) continue;
+    for (let hi = hours.length - 1; hi >= 0; hi--) {
+      for (let mi = minutes.length - 1; mi >= 0; mi--) {
+        const wallMs = dayMs + hours[hi] * MS_PER_HOUR + minutes[mi] * 60_000;
+        for (const instantMs of instantsForWall(wallMs, tz, offsets)) {
+          if (instantMs > startMs) continue;
+          if (instantMs <= floorMs) return null;
+          return new Date(instantMs);
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 复刻 `findActiveMaintenanceWindow`：并集语义，短路返回第一条开窗的。
+ * `at` 为**判定时刻**（既是「未来下次执行」也是「现在」——后端 enqueue 传的是
+ * 触发瞬间，前端传的是算出的下次时刻，语义完全一致）。
+ */
+export function findActiveMaintenanceWindowPreview(
+  windows: NextRunMaintenanceWindow[] | null | undefined,
+  at: Date,
+  timezone?: string | null,
+): NextRunMaintenanceWindow | null {
+  if (!Array.isArray(windows)) return null;
+  for (const w of windows) {
+    if (!w || typeof w.start !== 'string' || typeof w.end !== 'string') continue;
+    const startFire = lastWindowCronFireBefore(w.start, at, timezone);
+    if (!startFire) continue;
+    const endFire = lastWindowCronFireBefore(w.end, at, timezone);
+    // 半开 [start, end)：end 触达 ≥ start 触达即已关窗（含同刻平局）。
+    // ⚠️ endFire === null 是**开窗**（后端 :395 的 `endFire &&` 短路）。
+    if (endFire && endFire.getTime() >= startFire.getTime()) continue;
+    return w;
+  }
+  return null;
+}
+
+/**
+ * R282：列表/详情「下次执行」的**判别式**计算——`nextRunAt` + 维护窗口判定。
+ *
+ * 分支优先级（顺序本身是语义，改动即回归）：
+ *   ① `nextRunAt` 返回 null ⇒ `none`（暂停/手动/非法表达式，既有占位不变）
+ *   ② 未配置窗口（null / [] / 全为非法条目）⇒ `at`（**零行为变化**，与
+ *      `nextRunAt` 逐毫秒相同——spec 用 toEqual 钉住）
+ *   ③ 时区未填/非法 ⇒ `unknown-window`（前后端时区可能不同，不猜）
+ *   ④ 命中窗口 ⇒ `skipped-by-window`（带窗口本体，供 UI 说出**原因**）
+ *   ⑤ 否则 ⇒ `at`
+ *
+ * 注意 ③ 与 ④ 的先后：时区不明时**即便**按浏览器时区算出来是「在窗口内」也不
+ * 报 skipped——那个结论可能正好反了，而负面断言的代价是用户不去排查。
+ */
+export function nextRunOutcome(
+  task: {
+    status?: string | null;
+    triggerType?: string | null;
+    cronExpression?: string | null;
+    fixedRate?: number | null;
+    timezone?: string | null;
+    lastTriggerTime?: string | Date | null;
+    maintenanceWindows?: NextRunMaintenanceWindow[] | null;
+  },
+  now: Date = new Date(),
+): NextRunOutcome {
+  const at = nextRunAt(task, now);
+  if (!at) return { kind: 'none' };
+  const windows = task.maintenanceWindows;
+  if (!Array.isArray(windows) || windows.length === 0) return { kind: 'at', at };
+  if (previewNeedsTimezoneWarning(task.timezone)) return { kind: 'unknown-window', at };
+  const hit = findActiveMaintenanceWindowPreview(windows, at, task.timezone);
+  return hit ? { kind: 'skipped-by-window', at, window: hit } : { kind: 'at', at };
+}
+
+/**
+ * 维护窗口边界 → 紧凑展示文本（R282 的文案槽位，不是判据）。
+ *
+ * brief §四 要求文案形如「跳过（维护窗口 02:30–04:00）」——用户看到的是**时刻**，
+ * 不是 cron。但窗口 cron 可以带步进/范围/列表，那类形态无法压成一个时刻。
+ * 故：分与时都是**单点**时给 `HH:MM`；其余原样回 cron 表达式，**绝不猜**一个
+ * "代表性时刻"（与 describeMaintenanceWindow 同策：宁缺勿错）。
+ */
+export function formatWindowEdge(expr: string): string {
+  const parsed = parseCronExpression(expr);
+  if (!parsed || parsed.minute.size !== 1 || parsed.hour.size !== 1) return expr;
+  const h = [...parsed.hour][0];
+  const m = [...parsed.minute][0];
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
 /**
  * 触发时刻 → 展示文本。timezone 有效则按该时区渲染，否则浏览器本地时区。
  * 输出形如「09/08 14:30:00 （GMT+8）」的紧凑本地化文本。

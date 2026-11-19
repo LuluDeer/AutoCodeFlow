@@ -348,6 +348,13 @@ export default {
   // 「Cron 计划中」，而列题承诺的是「下次执行」）；并补「上次执行」列。
   'taskList.nextRun.unpredictable': '无法预估',
   'taskList.nextRun.unpredictableTooltip': '表达式无法在本地解析（超出预览支持的 5 字段子集），或该调度方式无法推算下次时刻。以后端实际调度为准。',
+  // R282：维护窗口命中时「下次执行」不再是假时刻。文案**必须点出原因**（D5）——
+  // 只说「跳过」用户不知道去改什么；且要与 firePoint.consume.hint 的**一次性**
+  // 跳过（FEAT-21 消耗下一个计划点）明确区分，故写「维护窗口」而非裸「跳过」。
+  'taskList.nextRun.skippedByWindow': '跳过（维护窗口 {{start}}–{{end}}）',
+  'taskList.nextRun.skippedTooltip': '下一次计划触发落在该任务的维护窗口内：调度器会跳过它，不建执行记录、不补跑。窗口关闭后的下一个调度点恢复正常。原计划时刻 {{time}}。',
+  'taskList.nextRun.unknownWindow': '窗口内？时区未知',
+  'taskList.nextRun.unknownWindowTooltip': '该任务配置了维护窗口，但未填时区或时区非法：后端按服务端时区判定、此处按浏览器时区，结论可能不同，故不判定。请在任务设置里填写有效时区。',
   'taskList.col.lastRun': '上次执行',
   'taskList.lastRun.never': '从未执行',
   'taskList.lastRun.neverTooltip': '该任务自创建以来从未被触发过。若它是定时任务且已启用，说明调度没有生效——请检查触发配置。',
@@ -1460,6 +1467,10 @@ export default {
   'taskDetail.stat.nextRun': '下次执行 {{time}}',
   'taskDetail.stat.nextRunTooltip': '按当前表达式推算的下次触发时刻（浏览器本地时区）',
   'taskDetail.stat.nextRunNone': '未在调度',
+  // R282：窗口内 → "会到但不会跑"，Tag 转 warning；时区未知 → 不判定（D3）。
+  'taskDetail.stat.nextRunSkipped': '跳过（维护窗口 {{start}}–{{end}}）· 原计划 {{time}}',
+  'taskDetail.stat.nextRunSkippedTooltip': '该任务的下一次计划触发落在维护窗口内：调度器会跳过它（不建执行记录、不补跑），窗口关闭后恢复正常。',
+  'taskDetail.stat.nextRunUnknownWindow': '窗口内？时区未知 · 原计划 {{time}}',
   'taskDetail.stat.lastRun': '上次执行 {{time}}',
   'taskDetail.stats.totalRuns': '总执行次数',
   'taskDetail.stats.successRate': '成功率',
