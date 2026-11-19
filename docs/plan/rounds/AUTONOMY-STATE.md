@@ -1,73 +1,73 @@
-# AUTONOMY-STATE — 状态卡（R280 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R281 收尾交接版 · ≤50 行）
 
-**基线**：`a594db7d`（R279）→ 本轮 **1 个提交**（`8c9e3510`，3 条认领）· **守卫链 121 段，121/121 = exit 0**
-**会话**：第 280 轮 · **产品视角轮**（PM 立项 + 2 路侦察 + 3 个实现切片）· 任务书 `artifacts/autonomy/R280/brief.md`
+**基线**：`a99f927c`（R280）→ 本轮 **1 个提交**（`1e5ee470`，3 条认领）· **守卫链 121 段，121/121 = exit 0**
+**会话**：第 281 轮 · **产品视角轮**（PM 立项 + 2 路侦察 + 3 个切片）· 任务书 `artifacts/autonomy/R281/brief.md`
 
-## 本轮主线：补齐两处「系统做了动作，却假定人会看到」
+## 本轮主线：「点了但看不到」
 
-### ① 升级到人工的 SOP 澄清：三条通道全部失效（已修）
+R280 已把「失败」口径统一成 `FAILED ∪ TIMEOUT`，但**深链仍是单值**
+（前端两处入口都链 `?status=failed`，后端 `e.status = :status` 等值）
+⇒ **超时风暴（10 timeout、0 failed）时卡片显示 10 条、点进去 0 条**，
+空态还把「筛选比数据源窄」谎报成「真的没有」。这是前三轮缺陷在**用户动作层面**的合成。
 
-收件箱八小节无一涉及；兜底路径 `blocked → in_progress`（`sop.service.ts:1745-1752`）
-⇒ 按 blocked 筛不到；`notifyEscalation` 不传 `taskId` ⇒ 一条 `scope=global` 静默规则
-无条件吞掉（外层还 fail-open）。且全仓无跨 SOP 聚合端点。
-⇒ 新建 `GET /sop/clarifications/pending`（`total` 独立 `getCount()`、`truncated`/`degraded`、
-查询 ≤3 无 N+1、装配缺失 503、路由在 `:id` **之前**）。
+**后端**：侦察核出 `p.status` 共 **4 处**（我 brief 只点出 1 处）——共用装配
+（覆盖 all OFFSET/keyset + **CSV 导出**三条路径）、对象形态、keyset 的 count 与页查询。
+新增纯函数 `parseExecutionStatusFilter()`（剥空白/去重保序/**白名单**/非法逐条丢弃**不 400**）。
+**单值仍生成 `=`**：执行页下拉里 `failed`/`timeout` 是两个独立意图，不能共用一个词。
 
-**★ 本轮最重要的一件事：我自己的裁决被真机推翻了。**
-最初照搬既有终态黑名单 `['completed','failed','cancelled']`，真机上正确待办在 assignment
-变 `failed` 后**从列表消失**；而执行器 `agent-host.ts:688-700` 逐字写
-「运维在 Admin Web 处理后重派」并以 `failed + outcome=escalated_to_human` 上报
-⇒ **`failed` 不是「结束」而是「等人接管」**。黑名单改为只留 `completed`/`cancelled`，
-真机对账 2 → **3**。
+**前端只改 2 处**，第 3 处**刻意不改**（详见下）。
 
-### ② 同一屏两句互斥的「失败」断言（已修）
+## 两处「我说错了 / 侦察说错了」（都已纠正）
 
-趋势曲线**含 timeout**、而「最近失败」只查 `status=FAILED` ⇒ 超时风暴时曲线涨、
-卡片说「近期无失败记录」。侦察追加一层：`timeout` **分叉落两桶**
-（回调 ⇒ `TIMEOUT`；sweep ⇒ `FAILED`+`failureReason`）⇒ 只数 FAILED 的桶也不纯。
-⇒ 实体立唯一事实源 `FAILED_EXECUTION_STATUSES=[FAILED,TIMEOUT]`，
-注释列出其余未迁移调用点并标明哪条**已经是对的不要重改**。
+- **我 brief 的 D3 是错的**：原要求「最近失败·全部记录」也带 `failed,timeout`。
+  侦察证明它**本来就不带 status**（能看到全部）⇒ 改成多值会把「全部」偷换成
+  「全部失败」，**用一个更坏的谎报换掉一个谎报**。已在 docblock 固化「别为了一致改掉」。
+- **侦察 A④ 是错的**：它判「`URLSearchParams` 编码成 `%2C` ⇒ 服务端按整串字面量匹配、
+  静默 0 行」。**真机证伪**：`?status=failed%2Ctimeout` 正常返回 3 条（Express 解码 query）。
+  若采信，下一轮会去做无用的手工解码/双重编码改造。
 
-## 侦察推翻的假设（写进代码注释）
+## ★ 本轮最有价值的一半：补上全仓缺失的那条不变式
 
-`maxRounds` 路径（`sop.service.ts:1018-1025`）写 `blocked` 且**停在那儿**，
-而超时扫描只扫 `status IN ('assigned','in_progress')` ⇒ 该路径**连自愈都没有**。
-比我 brief 里的原判断更严重。
+侦察指出「卡片数 == 点进去条数」**一条用例都没有**——既有深链测试的 fixture
+**恒为空**，只验「URL 对不对」**不验「用户看到什么」** ⇒ 缺陷能长期潜伏，
+**修完也没有东西阻止它回来**。
+新增 `failed-deeplink-invariant.test.tsx`（4 条真断言），**反证**：改回单值 ⇒ 3 条红。
 
 ## 验证（真实 exit，**级别如实**）
 
-- **真机（真实进程内集成）**：真 PG16/Redis7 + 真 admin-api + 144 迁移。
-  升级澄清五状态矩阵；`limit=1` ⇒ `returned=1/total=3/truncated=true`；
-  `limit=9999/abc/-5` 全 200 安全回落。失败口径造 `2 timeout+1 failed+1 killed+1 cancelled`
-  ⇒ `/metrics/failures` 返回 3（**killed/cancelled 正确排除**）、`summary.failed=3`（修复前 1）。
-  **探针数据已全部清理**。
-- 后端 **495 套 / 8349 例** 绿；前端全量 **340 文件 / 2720 例** 绿；守卫链 **121/121 = 0**。
-- 生成物：i18n **1810/1810**；新 DTO 改为**合同派生**（手写 126 不变、派生 22 → 23）；
-  `check:response-schema` 250/263（棘轮 `--update`，覆盖率上升）。
-- **反证**：失败口径改回 `status=FAILED` ⇒ 3 例红；成功率卡再改回 ⇒ 4 例红。
+- **真机（真实进程内集成）**：真 PG16/Redis7 + 真 admin-api + 144 迁移，造 3 条 timeout：
+  `?status=failed` ⇒ **0**（复现缺陷）· `failed,timeout` ⇒ **3** · `failed%2Ctimeout` ⇒ **3** ·
+  `foo` ⇒ 全量（安全回落）· `failed, timeout` ⇒ **3**（剥空白）。
+  **CSV 导出**：多值 11 行（含表头）vs 单值仅表头。
+- 后端 **495 套 / 8375 例**绿；守卫链 **121/121 = 0**。
+- 前端全量 **1 failed / 2730 passed**：失败的是 `inbox-failures.test.tsx` 一条**既有偶发失败**，
+  我在**未改动的基线 `a99f927c`** 上跑同一组得到**完全相同**的 1 failed / 96 passed
+  ⇒ 与本轮无关。**不猜测着改**（405）。
 
 ## 未结项（如实）
 
-- `web-flake-not-reproduced`（本轮全量 web 一次即绿，无新增观测）· `ci-pg-race-unverified` ·
+- `web-flake-not-reproduced`（本轮首次拿到「基线同样红」的实证）· `ci-pg-race-unverified` ·
   `release-notice-ops`：不变。
-- 生产包浏览器 E2E 未跑（前端证据级 = 单测/内存替身 + 静态守卫）。
+- 剩余失败口径 2 处**经侦察判定后一项推翻**：`failure-reason-aggregate.ts` **不一致不成立**
+  （它算「当前页原因分布」非失败计数，含 `killed` 是刻意口径；但它的**路径在实体注释里写错了**，
+  `modules/metrics/…` 实际在 `apps/admin-web/src/utils/`，需改名以免认错常量）。
+  `projects.service.ts:444-445` **仍不一致**（失败率分子不含 timeout，同页「最近失败」却含）。
 
 ## 下轮第一步（按产品价值排序，建议只取 1 条）
 
-1. **其余 4 处失败口径未迁移**（已在常量注释登记）：`projects.service.ts:444-445`、
-   `failure-reason-aggregate.ts:24`（多含 `KILLED`）、`executor.service.ts:8025`、
-   `execution-read.collaborator.ts:551` 深链等值过滤（**点进去列表为空**是最挫败形态）。
-   建议**先做深链**：它直接决定「从失败卡片点进去能不能看到那条记录」。
-2. **「同一屏 4 个失败数字」的完整统一**（本轮只钉了 metrics 三处）。
-3. `maxRounds` 的 `blocked` 无兜底 → 升级后要么同 B 路解除、要么让扫描按 TTL 判 stalled。
-   **需产品裁决**（改状态机属破坏性）。
+1. **维护窗口让「下次执行」变成假时刻**（`recon-product2` 候选 1，**推荐**）：
+   `trigger-preview.ts:342-352` 的 `nextRunAt` 入参不含 `maintenanceWindows`，
+   而 `scheduler.service.ts:2804-2816` 命中窗口即 `return null`（不建行、不补跑）
+   ⇒ 列表/详情显示「今晚 02:00 会跑」而实际不跑；且「跳过」在列表/详情/执行记录/告警
+   **四个面全不可见**。**零后端改动**、无需产品裁决，当天可闭合。
+2. `projects.service.ts:444-445` 失败率分子对齐（侦察已给验收：`22.22 → 33.33` 为预期红）。
+3. 告警被静默规则吞掉后**零痕迹**（`recon-product2` 候选 2）：需先取证（`LOG_LEVEL=debug`
+   跑一次被 global 覆盖的失败告警），且要动 `RUNTIME_NOTIFICATION_RESULTS` 棘轮 ⇒ 属裁决级。
 4. `backlogged` 小节统一到 D2 新口径（仍用旧 `3+` 文案）。
 
-## 方法学（本轮新增 517–518）
+## 方法学（本轮新增 519–520）
 
-- **517** 照搬既有定义前，先问那个定义在**这个语境**里指什么 —— `failed` 在 SOP 语境里
-  不是「工单结束」而是「谁在等谁」。照搬让错误实现看起来毫无破绽（单测全绿、注释还引了
-  「判据来源」），**只有真机造一条数据才暴露**。
-- **518** 同一个语义落两个字段值，是「只数某一个值」这类统计的隐形毒药 ——
-  `timeout` 分叉落 `TIMEOUT` 与 `FAILED+failureReason` ⇒ 按 `status` 单值过滤的统计
-  都不完整且**看上去完全正常**。解法不是逐个修查询，而是先立唯一事实源。
+- **519** 只验「请求发出去了」的测试，会在功能全废时全绿 —— 修完一个缺陷时要问
+  「什么用例能阻止它回来」；若答案是没有，那修的是当下，不是形态（478 的同族）。
+- **520** 决策要限制在「证据能支撑的粒度」上 —— 我 brief 断言「全部记录应带 status」，
+  是从「与其他入口保持一致」推出来的，**不是从「用户会做错什么决定」推出来的**。

@@ -326,6 +326,9 @@
 | R280-SOPESC-01 | P1 | done | lead（PM 编排）· 切片 be-sop-pending / fe-sop-pending | 2026-11-20 | 新建 apps/admin-api/src/modules/sop/{sop-clarification-inbox.service.ts,sop-clarification-inbox.dto.ts,__tests__/sop-clarification-inbox.service.spec.ts}；sop.controller.ts（+45 只追加）、sop.module.ts（+11）；apps/admin-web/src/api/{inbox,sops}.ts + pages/InboxPage.tsx + components/InboxBadge.tsx + locales/{zh,en}.ts + __tests__/inbox-sop-clarifications.test.tsx（新）；生成物 openapi.json / api-types.ts / api-reference.md / openapi-en-map.json | 8c9e3510 | **升级到人工的 SOP 澄清：三条通道全部失效**。①收件箱八小节无一涉及 SOP 澄清；②兜底扫描把 assignment `blocked→in_progress`（`sop.service.ts:1745-1752`）⇒ 按 blocked 筛不到；③`notifyEscalation` 调 `notify()` **不传 taskId**，而 `isSilenced` 的 global 分支 `!silence.taskId \|\| …` 无条件命中 ⇒ 一条 scope=global 静默规则可吞掉，外层还刻意 **fail-open**。且全仓无跨 SOP 聚合端点。⇒ 新建 `GET /sop/clarifications/pending`（`total` 独立 `getCount()`、`truncated`、`degraded`、查询 ≤3 无 N+1、装配缺失 503、路由注册在 `:id` 之前）。**★ 一个必须真机才发现的裁决错误**：最初照搬既有终态黑名单 `['completed','failed','cancelled']`，真机上正确待办在 assignment 变 failed 后**从列表消失**；而执行器 `agent-host.ts:688-700` 逐字写「升级后…运维在 Admin Web 处理后重派」并报 `failed + outcome=escalated_to_human` ⇒ **failed 在此不是结束而是「等人接管」**。修法：黑名单只留 completed/cancelled，注释写透「failed 刻意不在内，别修正回去」+ `maxRounds` 写 blocked 且超时扫描只扫 `assigned\|in_progress` ⇒ blocked 无兜底。**真机对账**：五状态矩阵 ⇒ 修复前计入 2（failed 消失）、修复后 **3**；真相 HTTP `total=2`（failed+blocked）、completed/cancelled 排除；`limit=1` ⇒ `returned=1/total=3/truncated=true`；`limit=9999/abc/-5` 全 200 安全回落。后端 495 套 8349 例绿；前端 340 文件 2720 例绿；守卫链 121/121 |
 | R280-FAILSEM-01 | P1 | done | lead（PM 编排）· 切片 be-failure-semantics | 2026-11-20 | apps/admin-api/src/modules/task/entities/task-execution.entity.ts（+31 常量）、modules/metrics/metrics.service.ts（+20/−4）、modules/metrics/__tests__/metrics.service.spec.ts（+179） | 8c9e3510 | **同一屏两句互斥的「失败」断言**：Dashboard 失败趋势曲线**含 timeout**（`DashboardPage.tsx:160-165`，注释写明告警口径为 `failed\|timeout`），而「最近失败」只查 `status=FAILED`（`metrics.service.ts:244/274`）⇒ **超时风暴时曲线涨到 10、卡片说「近期无失败记录」**。更麻烦：同一 `timeout` 语义**分叉落两桶**——回调 ⇒ `status=TIMEOUT`（`execution-callback.collaborator.ts:470`）、sweep ⇒ `status=FAILED`+`failureReason=TIMEOUT`（`scheduler.service.ts:1838`）⇒ **只数 FAILED 的桶本身也不纯**。修法：实体立**唯一事实源** `FAILED_EXECUTION_STATUSES=[FAILED,TIMEOUT]`（`KILLED`/`CANCELLED` 不算，与 `alerts.yml`/`docs/operations.md:1273` 一致），`getRecentFailures` 两分支 + 成功率卡 failed 均改用；常量注释列出**其余未迁移调用点**并标明 `execution-read.collaborator.ts:798-800` **已正确、勿重改**。**真机取证**：造 2×timeout+1×failed+1×killed+1×cancelled ⇒ `/metrics/failures` 返回 3（含 2 timeout，killed/cancelled 正确排除）、`/metrics/summary` 的 `failed:3`（修复前为 1）。**反证**：改回 `status=FAILED` ⇒ 3 例红 / 再改回成功率卡 ⇒ 4 例红，恢复即绿 |
 | R280-EVID-01 | P2 | done | lead（PM） | 2026-11-20 | artifacts/autonomy/R280/{brief,recon-sop-escalation,recon-failure-semantics}.md | 8c9e3510 | **两条侦察、两条真机、一次自我推翻**：①`recon-sop-escalation` 推翻我 brief 里的假设——`maxRounds` 路径写 `blocked` **停在那儿**而超时扫描只扫 `assigned\|in_progress` ⇒ 该路径**连自愈都没有**（比我原判断更严重）；②`recon-failure-semantics` 追加发现「timeout 分叉落两桶」，使「只数 FAILED」这条建议本身也不完整；③真机发现我自己的口径裁决错误（failed 被误排除）。**方法学**：517「照搬既有定义前先问它在**这个语境**里指什么」·518「同一语义落两个字段值，是『只数某一个值』这类统计的隐形毒药」 |
+| R281-DEEPLINK-01 | P1 | done | lead（PM 编排）· 切片 be-status-multi / fe-deeplink / test-invariant | 2026-11-20 | apps/admin-api/src/modules/task/execution-read.collaborator.ts（+109/−8：3 个纯函数 + 4 个使用点）+ __tests__/execution-read.collaborator.spec.ts（+534：27 例）；apps/admin-web/src/pages/DashboardPage.tsx（2 处调用 + 模块 docblock）、components/NotificationBell.tsx（1 处 URL）、__tests__/failed-deeplink-invariant.test.tsx（新 452 行）+ 2 个 multistatus spec | 1e5ee470 | **「点了但看不到」**：R280 已把「失败」口径统一为 `FAILED ∪ TIMEOUT`，但**深链仍是单值**——前端「失败 Top·全部失败」与铃铛「全部失败」都链到 `?status=failed`，后端 `e.status = :status` 是单值等值 ⇒ **超时风暴（10 timeout、0 failed）时卡片显示 10 条、点进去 0 条**，空态还说「没有匹配的执行记录」（把「筛选比数据源窄」谎报成「真的没有」）。**后端**：侦察核出 `p.status` 共 **4 处**（我 brief 只点出 1 处）——`:551` 的共用装配（覆盖 all OFFSET/keyset + **CSV 导出**三条路径）、`:149` 对象形态、`:335`/`:384` keyset 的 count 与页查询；新增纯函数 `parseExecutionStatusFilter()`（剥空白/去重保序/**白名单**/非法逐条丢弃**不 400**/全非法=未传）+ 2 个执行器，**单值仍生成 `=`**（执行页下拉 `failed`/`timeout` 是两个独立意图，不能共用一个词；且三条既有 spec 按 `= :status` 逐字钉住）。**前端只改 2 处**：`DashboardPage.tsx:530`、`NotificationBell.tsx:116` → `failed,timeout`；**`:545`「全部记录」刻意不改**（它本不带 status 能看到全部，改成多值会把「全部」偷换成「全部失败」——我 brief 该条决策**是错的**，已反向并在 docblock 固化「别为了一致改掉」）。**验证**：真机 `?status=failed`⇒0 / `failed,timeout`⇒3 / `failed%2Ctimeout`⇒3 / `foo`⇒全量 / `failed, timeout`⇒3；CSV 多值 11 行 vs 单值仅表头。后端 495 套 **8375** 例绿；守卫链 121/121 |
+| R281-INVARIANT-01 | P1 | done | lead（PM 编排）· 切片 test-invariant | 2026-11-20 | apps/admin-web/src/__tests__/failed-deeplink-invariant.test.tsx（新） | 1e5ee470 | **补上全仓缺失的那条不变式**：侦察 §C.2 指出「卡片数 == 点进去条数」**一条用例都没有**——`executions-deeplink.test.tsx` 的 fixture **恒为空**（`:100`），4 条用例只验「URL 对不对」，**不验「用户看到什么」** ⇒ 本轮缺陷能长期潜伏，**修完也没有东西阻止它回来**（方法学 519）。新增 4 条**真断言**：①种 3 条 timeout ⇒ 点进去 `.ant-table-row` 计数=3 且不出现「没有匹配」（反谎报）；②旧 `?status=failed` 下 status **不含** timeout（反证，钉住「后端单值语义刻意保留」）；③`%2C` 编码形态端到端 3 行；④「全部记录」href **不含** status。**反证**：`MULTI_STATUS` 改回 `'failed'` ⇒ `3 failed / 1 passed`、exit 1；改回即绿 4/4 |
+| R281-EVID-01 | P2 | done | lead（PM） | 2026-11-20 | artifacts/autonomy/R281/{brief,recon-deeplink,recon-product2}.md | 1e5ee470 | **侦察纠正我两处判断 + 我纠正侦察一处**：①侦察 A④ 判「`URLSearchParams` 把逗号编码成 `%2C` ⇒ 服务端按整串字面量匹配、静默 0 行」——**真机证伪**（`%2C` 正常返回 3 条，Express 解码 query），若采信会去做无用的手工解码改造；②侦察证明「最近失败·全部记录」**本来就不带 status** ⇒ 我 brief 的 D3 决策反向；③侦察核出 `p.status` 有 **4 处**而非我 brief 的 1 处（含 CSV 导出这条独立入口）。**方法学**：519「只验『请求发出去了』的测试会在功能全废时全绿」·520「决策要限制在证据能支撑的粒度上」。**另一条侦察（recon-product2）登记三项新候选未做**：维护窗口让「下次执行」成假时刻（推荐下一轮做）、告警被静默吞掉后零痕迹、日志 30 天 vs 执行行 90 天的空白期 |
 | R278-DEC-01 | P2 | done | lead（PM 编排）· 切片 decisions | 2026-11-19 | docs/OPEN-DECISIONS.md + packages/acf-cli/src/ui.ts(+spec) + packages/executor-protocol/protocol.json + docs/atlas/01-apps/admin-api/modules/task.md | 13368858 | **待决策清单收口**：拍板并落地 5 条零成本项——**A4** 容器任务内存上限维持 768/512（证据：`check-sandbox-limit-order` exit 0 / 16 例）；**H1** `docs/atlas/.../task.md` 的「默认 any」改为 `owner`（与 `configuration.ts:568` 一致，非成员恒 403）；**D1** `--json` 加入 `VALUE_TAKING_OPTIONS` + `looksLikeJsonPayload` 反向判据（`--json <body>` 不再被当输出开关，**命令末尾的 `--json` 仍作开关**，不破坏 `task list --json`）；**B4/B5** 协议 `adminApiUrls` 与 v7/v8 加 `$comment` 标注 python 侧未（部分）实现（`check-protocol-breaking` 判 compatible、生成物 `--check` 幂等）。**明确不做并写理由 12 条**：B1/B2/B3/C1/D2/D3/D5/D6/A2/A3/D7 + D4（棘轮不加第 7 类，顺带把文档里的 73 改成实测 76）。**反证**：把 `'--json'` 从表里删掉 ⇒ **2 failed / 48 passed**，恢复 ⇒ 50/50。**验证**：`check-docs` 7/7、`check:cli-doc`、`check:sandbox-limit-order`(16)、`check:protocol-three-way`(三向 33 + 逐格 14)、`check-protocol-breaking`、`acf-cli tsc` 全 0；`acf-cli` 全量 **460 例** 绿 |
 | R278-GUARD-01 | P2 | done | lead（PM 编排）· 切片 guardfix | 2026-11-19 | scripts/check-agent-stub-fidelity.mjs + scripts/agent-runtime-check.mjs | 6a4b1141 | **修本轮自造的守卫红（不是既有欠账）**：`declaredTypeOf()` 正则不容 `?`，认不出本仓 `@Optional()` 标准写法 `private readonly x?: T | null` ⇒ 把 `Repository<AgentApproval>` 判成 `AgentApprovalsService`，一条误判造两条红（`approvals 保真 2/13`、`sessionService 保真 12/13`）。修法：正则加 `\??` + `stripNullUnion()`（**只**剥 `| null`/`| undefined`，别的联合原样保留 ⇒ 保守方向：宁可多要求替身，不把真缺口藏起来），补 2 条 selftest（含「换成服务类型必须红」对照）。同时补**替身真缺口**：`makeSessionService()` 增 `list`，按 `agent-session.service.ts:623-662` 逐条复刻（stalled 谓词看 **step 而非 updatedAt**、`clampPagination` 的 NaN 回落、`createdAt DESC`、`total` 与 skip/take 无关），**零白名单豁免**。自测探针顺带抓到自己一个真 bug：同毫秒兜底原按 id **升序** ⇒ `pageSize:1` 取到最老会话，与 `createdAt DESC` 相反，已改同向。**反证**：去掉 `\??` ⇒ 新用例红（`✖ 失败：1/17`），恢复即绿 **17/17**。**验证**：守卫 0、selftest 17/17、`agent-runtime-check` 0、`agent-sop-check` 0 | | 2026-09-27 | scripts/check-no-hoisting.mjs（新；T4 起伴生 selftest 已并入 --selftest，用例扩到 17 条真子进程断言，伴生文件已删）+ 根 package.json（两 script）+ .github/workflows/ci.yml + docs/ARCH-28b-turbo-adoption.md（新）+ docs/arch-28-workspace-evaluation.md §5.1 回填 | 见本轮 commit | **turbo 增量接入 —— 实测结论=不接入；交付 no-hoisting 守卫 + A/B 实测报告。**沙箱 worktree（develop @ d3804307 detached，仓库零污染）逐项实测：**①turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 workspaces，8 个子项目 `npm ci` **全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）；报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；**部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；`--legacy-peer-deps` 会把 hoist 写进根 lockfile（1→866 条目）固化破坏。**②runner 委派语义**：turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突（无 workspace 清单时 pnpm 直接 ERR_PNPM_OTHER_PM_EXPECTED）。**③单包模式缓存生效但对 CI 无收益**（每 job 独立 runner + 全新 checkout，本地缓存不可跨 job 复用；§2 预判的重复 build 实测每处仅 8~12s）。**④真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s（收益真实但前提不可用）。**交付**：check-no-hoisting.mjs 结构守卫（5 判据，13 项有齿自检，含 4 负例族）+ 接入 CI check-migrations job + 根两 script + ARCH-28b 实测报告（含 CI 关键路径实测：瓶颈=selftests 518s 串行自检 / admin-web 286s vitest，npm ci 仅占 2.5~10%，与 ARCH-28 §1.3 结论一致且强化）。**如实**：turbo 依赖未入 package.json（沙箱实测用）；turbo.json 未落地（验收原文要求——不落地即结论）。 |
 | N-01 | P2 | done | main-A（轮 27） | 2026-09-27 | scripts/check-no-hoisting.mjs（新；T4 起伴生 selftest 已并入 --selftest，用例扩到 17 条真子进程断言，伴生文件已删）+ 根 package.json（两 script）+ .github/workflows/ci.yml + docs/ARCH-28b-turbo-adoption.md（新）+ docs/arch-28-workspace-evaluation.md §5.1 回填 | 见本轮 commit | **turbo 增量接入 —— 实测结论=不接入；交付 no-hoisting 守卫 + A/B 实测报告。**沙箱 worktree（develop @ d3804307 detached，仓库零污染）逐项实测：**①turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 workspaces，8 个子项目 `npm ci` **全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）；报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；**部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；`--legacy-peer-deps` 会把 hoist 写进根 lockfile（1→866 条目）固化破坏。**②runner 委派语义**：turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突（无 workspace 清单时 pnpm 直接 ERR_PNPM_OTHER_PM_EXPECTED）。**③单包模式缓存生效但对 CI 无收益**（每 job 独立 runner + 全新 checkout，本地缓存不可跨 job 复用；§2 预判的重复 build 实测每处仅 8~12s）。**④真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s（收益真实但前提不可用）。**交付**：check-no-hoisting.mjs 结构守卫（5 判据，13 项有齿自检，含 4 负例族）+ 接入 CI check-migrations job + 根两 script + ARCH-28b 实测报告（含 CI 关键路径实测：瓶颈=selftests 518s 串行自检 / admin-web 286s vitest，npm ci 仅占 2.5~10%，与 ARCH-28 §1.3 结论一致且强化）。**如实**：turbo 依赖未入 package.json（沙箱实测用）；turbo.json 未落地（验收原文要求——不落地即结论）。 |
@@ -532,6 +535,53 @@
 | 记忆域 / 子 agent | **推迟**（写明前置条件） | 裁定 R12；记忆需先解决多租户分桶与跨会话注入的不可撤销性 |
 
 ## 变更日志
+
+- 2026-11-20 **产品轮 · R281（PM 立项 + 2 路侦察 + 3 个切片）（1 个提交 `1e5ee470` · 修「点了但看不到」，并补上全仓缺失的那条不变式；期间纠正了侦察一处、也被侦察纠正一处）**：
+
+  任务书 `artifacts/autonomy/R281/brief.md`；侦察 `recon-deeplink.md` / `recon-product2.md`。
+
+  - **① 缺陷：前三轮缺陷在「用户动作」层面的合成结果**。R280 已把「失败」口径统一为
+    `FAILED ∪ TIMEOUT`，但**深链仍是单值**：前端两处入口都链到 `?status=failed`，
+    后端 `e.status = :status` 是单值等值 ⇒ **超时风暴（10 timeout、0 failed）时
+    卡片显示 10 条、点进去 0 条**，空态还把「筛选比数据源窄」谎报成「真的没有」。
+  - **② 侦察核出 `p.status` 共 4 处（我 brief 只点了 1 处）**：`:551` 的共用装配
+    （覆盖 all OFFSET/keyset + **CSV 导出**三条路径）、`:149` 对象形态、`:335`/`:384`
+    keyset 的 count 与页查询。⇒ 只改一处会让「导出 CSV」与「单任务历史」继续失效。
+    新增纯函数 `parseExecutionStatusFilter()`（剥空白/去重保序/**白名单**/非法逐条丢弃
+    **不 400**/全非法=未传）；**单值仍生成 `=`**——执行页下拉里 `failed` 与 `timeout`
+    是两个独立意图，不能共用一个词；三条既有 spec 也正按 `= :status` 逐字钉住。
+  - **③ 我 brief 里有一条决策是错的，已反向**：原要求「最近失败·全部记录」也改多值。
+    侦察证明它**本来就不带 status**（能看到全部），改成多值会把「全部」偷换成
+    「全部失败」——**用一个更坏的谎报换掉一个谎报**。已在模块 docblock 用表格固化两个方向。
+  - **④ 补上全仓缺失的那条不变式（本轮最有价值的一半）**。侦察 §C.2 指出：
+    「卡片数 == 点进去条数」**一条用例都没有**，既有深链测试的 fixture **恒为空**，
+    只验「URL 对不对」**不验「用户看到什么」** ⇒ 缺陷能长期潜伏，**修完也没有东西
+    阻止它回来**。新增 4 条真断言（含「点进去真的渲染出 3 行」），
+    **反证**：改回单值 ⇒ 3 条红，改回即绿。
+  - **⑤ 我纠正了侦察一处**：它判「`URLSearchParams` 把逗号编码成 `%2C` ⇒ 服务端按整串
+    字面量匹配、静默 0 行」。**真机证伪**——`?status=failed%2Ctimeout` 正常返回 3 条
+    （Express 会解码 query）。若采信，下一轮会去做无用的手工解码/双重编码改造。
+
+  **验证（真实 exit，分级如实）**：
+  - **真机（真实进程内集成）**：真 PG16/Redis7 + 真 admin-api + 144 迁移，造 3 条 timeout：
+    `?status=failed` ⇒ **0**（复现缺陷）；`failed,timeout` ⇒ **3**；`failed%2Ctimeout` ⇒ **3**；
+    `foo` ⇒ 全量（安全回落）；`failed, timeout` ⇒ **3**（剥空白）。
+    **CSV 导出**：多值 11 行（含表头 = 10 条数据）vs 单值仅表头。
+  - 后端 `npx jest` **495 套 / 8375 例**绿（任务域 +27 例）。
+  - 前端 `npx vitest run`：**1 failed / 2730 passed**——失败的是 `inbox-failures.test.tsx`
+    一条**既有偶发失败**；我在**未改动的基线 `a99f927c`** 上跑同一组得到**完全相同的
+    1 failed / 96 passed**，与本轮无关，属既有未结项 `web-flake-not-reproduced`。
+    **不猜测着改**（405：无法复现即无法验证改对）。
+  - 守卫链 **121/121 = 0**；`size-caps` / `enum-drift` / `collaborator-self-call` /
+    `source-text-contracts` 全 0。
+
+  **方法学沉淀（接 518）**：
+  - **519「只验『请求发出去了』的测试，会在功能全废时全绿」**。深链测试的 fixture 恒为空，
+    于是「URL 对」与「用户看到内容」之间没有任何断言。**修完一个缺陷时要问
+    『什么用例能阻止它回来』**——若答案是没有，那修的是当下，不是形态（478 的同族）。
+  - **520「决策要限制在『证据能支撑的粒度』上」**。我 brief 断言「全部记录应带 status」，
+    那是从「与其他入口保持一致」推出来的，**不是从「用户会做错什么决定」推出来的**。
+    侦察一给出「它本来就不带 status」这个事实，该决策立刻反向。
 
 - 2026-11-20 **产品轮 · R280（PM 立项 + 2 路侦察 + 3 个实现切片）（1 个提交 `8c9e3510` · 补齐两处「没有接收方」；其中一处是我自己的裁决被真机推翻）**：
 

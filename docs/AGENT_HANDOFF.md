@@ -3,6 +3,31 @@
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-19
 > 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
 
+## 执行列表的失败深链：多值 status（R281，工作树，未发布）
+
+- **可用路径**：Dashboard「失败 Top·全部失败」与通知铃铛「全部失败」现在跳到
+  `/executions?status=failed,timeout`，与卡片上显示的「失败」集合一致。
+- **契约（改代码前必读）**：`GET /tasks/executions/all?status=` 接受**逗号分隔多值**
+  ⇒ `IN (...)`；**单值仍生成 `e.status = :status`**（不是 `IN` 单元素）。
+  ⚠️ 单值语义**刻意保留**：执行页下拉里 `failed` 与 `timeout` 是两个独立选项，
+  **主动筛选**与**从汇总点进来**是两个意图，不能共用一个词。
+- **4 个使用点都要改**（`execution-read.collaborator.ts`）：`:551` 的共用装配
+  （`getAllExecutions` OFFSET/keyset + **CSV 导出**三条路径）、`:149` 对象形态、
+  `:335`/`:384` keyset 的 count 与页查询。**只改一处会让导出与单任务历史继续失效。**
+- **非法值安全回落**：`?status=foo` ⇒ 等同未传（返回全量），**不 400**；
+  `failed, timeout`（含空格）⇒ 剥空白后等价。白名单是 `ExecutionStatus` 枚举。
+- **⚠️ 一个刻意的不一致**：`DashboardPage.tsx` 的「最近失败·全部记录」**不带 status**
+  （`executionsHref()`）。它承诺的是「全部」；改成 `failed,timeout` 会把「全部」偷换成
+  「全部失败」——**别为了『保持一致』改掉它**，docblock 里已用表格固化两个方向。
+- **验收口径**：后端 `npx jest`（495 套 / 8375 例）；前端 `npx vitest run`；
+  守卫 `node scripts/guards-repo-matrix.mjs`（121 段）。
+  **真机判据**：造 N 条 `timeout`（0 条 `failed`）⇒ `?status=failed` 返回 **0**、
+  `?status=failed,timeout` 返回 **N**、`?status=failed%2Ctimeout` 也返回 **N**
+  （Express 会解码 query，前端 `URLSearchParams` 的编码形态可用）。
+- **守卫空白与补强**：`failed-deeplink-invariant.test.tsx` 是**唯一**断言
+  「卡片数 == 点进去条数」的用例。既有深链测试只验「URL 对不对」，**不要**把它当覆盖。
+- **发布前**：无迁移、无新 env 键。回滚 = `git revert`（单值路径逐字节不变，风险极低）。
+
 ## SOP 升级澄清待办 + 失败口径统一（R280，工作树，未发布）
 
 - **可用路径**：收件箱新增第九个小节「待答复澄清」（`sopClarifications`），顶栏单独显示
