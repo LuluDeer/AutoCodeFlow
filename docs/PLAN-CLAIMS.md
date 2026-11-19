@@ -329,6 +329,8 @@
 | R281-DEEPLINK-01 | P1 | done | lead（PM 编排）· 切片 be-status-multi / fe-deeplink / test-invariant | 2026-11-20 | apps/admin-api/src/modules/task/execution-read.collaborator.ts（+109/−8：3 个纯函数 + 4 个使用点）+ __tests__/execution-read.collaborator.spec.ts（+534：27 例）；apps/admin-web/src/pages/DashboardPage.tsx（2 处调用 + 模块 docblock）、components/NotificationBell.tsx（1 处 URL）、__tests__/failed-deeplink-invariant.test.tsx（新 452 行）+ 2 个 multistatus spec | 1e5ee470 | **「点了但看不到」**：R280 已把「失败」口径统一为 `FAILED ∪ TIMEOUT`，但**深链仍是单值**——前端「失败 Top·全部失败」与铃铛「全部失败」都链到 `?status=failed`，后端 `e.status = :status` 是单值等值 ⇒ **超时风暴（10 timeout、0 failed）时卡片显示 10 条、点进去 0 条**，空态还说「没有匹配的执行记录」（把「筛选比数据源窄」谎报成「真的没有」）。**后端**：侦察核出 `p.status` 共 **4 处**（我 brief 只点出 1 处）——`:551` 的共用装配（覆盖 all OFFSET/keyset + **CSV 导出**三条路径）、`:149` 对象形态、`:335`/`:384` keyset 的 count 与页查询；新增纯函数 `parseExecutionStatusFilter()`（剥空白/去重保序/**白名单**/非法逐条丢弃**不 400**/全非法=未传）+ 2 个执行器，**单值仍生成 `=`**（执行页下拉 `failed`/`timeout` 是两个独立意图，不能共用一个词；且三条既有 spec 按 `= :status` 逐字钉住）。**前端只改 2 处**：`DashboardPage.tsx:530`、`NotificationBell.tsx:116` → `failed,timeout`；**`:545`「全部记录」刻意不改**（它本不带 status 能看到全部，改成多值会把「全部」偷换成「全部失败」——我 brief 该条决策**是错的**，已反向并在 docblock 固化「别为了一致改掉」）。**验证**：真机 `?status=failed`⇒0 / `failed,timeout`⇒3 / `failed%2Ctimeout`⇒3 / `foo`⇒全量 / `failed, timeout`⇒3；CSV 多值 11 行 vs 单值仅表头。后端 495 套 **8375** 例绿；守卫链 121/121 |
 | R281-INVARIANT-01 | P1 | done | lead（PM 编排）· 切片 test-invariant | 2026-11-20 | apps/admin-web/src/__tests__/failed-deeplink-invariant.test.tsx（新） | 1e5ee470 | **补上全仓缺失的那条不变式**：侦察 §C.2 指出「卡片数 == 点进去条数」**一条用例都没有**——`executions-deeplink.test.tsx` 的 fixture **恒为空**（`:100`），4 条用例只验「URL 对不对」，**不验「用户看到什么」** ⇒ 本轮缺陷能长期潜伏，**修完也没有东西阻止它回来**（方法学 519）。新增 4 条**真断言**：①种 3 条 timeout ⇒ 点进去 `.ant-table-row` 计数=3 且不出现「没有匹配」（反谎报）；②旧 `?status=failed` 下 status **不含** timeout（反证，钉住「后端单值语义刻意保留」）；③`%2C` 编码形态端到端 3 行；④「全部记录」href **不含** status。**反证**：`MULTI_STATUS` 改回 `'failed'` ⇒ `3 failed / 1 passed`、exit 1；改回即绿 4/4 |
 | R281-EVID-01 | P2 | done | lead（PM） | 2026-11-20 | artifacts/autonomy/R281/{brief,recon-deeplink,recon-product2}.md | 1e5ee470 | **侦察纠正我两处判断 + 我纠正侦察一处**：①侦察 A④ 判「`URLSearchParams` 把逗号编码成 `%2C` ⇒ 服务端按整串字面量匹配、静默 0 行」——**真机证伪**（`%2C` 正常返回 3 条，Express 解码 query），若采信会去做无用的手工解码改造；②侦察证明「最近失败·全部记录」**本来就不带 status** ⇒ 我 brief 的 D3 决策反向；③侦察核出 `p.status` 有 **4 处**而非我 brief 的 1 处（含 CSV 导出这条独立入口）。**方法学**：519「只验『请求发出去了』的测试会在功能全废时全绿」·520「决策要限制在证据能支撑的粒度上」。**另一条侦察（recon-product2）登记三项新候选未做**：维护窗口让「下次执行」成假时刻（推荐下一轮做）、告警被静默吞掉后零痕迹、日志 30 天 vs 执行行 90 天的空白期 |
+| R282-WINDOW-01 | P1 | done | lead（PM 编排）· 切片 fe-window | 2026-11-20 | apps/admin-web/src/utils/trigger-preview.ts（+353 **纯新增零删除**）、pages/task-list-columns.tsx、pages/TaskDetailPage.tsx（仅 TaskScheduleTags）、locales/{zh,en}.ts（成对 6 键）、__tests__/task-list-next-run.test.ts（+40）、__tests__/maintenance-window-parity.test.tsx（新 586 行） | d1346b1c | **「下次执行」承诺了一次不会发生的执行**。`nextRunAt` 入参**无 `maintenanceWindows`**（grep 命中 0），而实体有该字段（`task.entity.ts:394`）；调度器命中窗口 `return null`（`scheduler.service.ts:2804-2816`，**不建行不补跑**）。侦察核实四个面：**列表**窗口内与正常**渲染逐字相同**（tooltip 不提窗口）；**详情**窗口可视化**有**（橙 Tag）但「会被跳过」**只在代码注释**，且 Tag 用 `processing` **蓝**——**窗口存在反而让用户更确信它会跑**；**执行记录零解释**（反推向「调度没生效」误导）；**告警 0 条**（指标可抓无消费端）。修法：新增 `nextRunOutcome()`（**`nextRunAt` 一字未动**），分支序即语义 `none→at→unknown-window→skipped-by-window`；**时区不明时即便算出「在窗口内」也不报 skipped**（结论可能正好反了，而**负面断言的代价是用户不去排查**）。判据**复刻**后端 `maintenance-window.util.ts:371-399` 的「最近触达比较」（半开 `[start,end)`、平局归关窗、**`endFire===null` 是开窗**），复用本文件零依赖 cron 引擎，**不新增依赖**。**★ 性能红线**：照抄后端回扫实测 **127ms（日级）/962ms（周级）** ⇒ 改壁钟日回扫 + 日级收紧 3 天（永不超过后端 7 天）⇒ **11.97ms**，写成 `toBeLessThan(50)` 断言。**一致性对拍 33 例**（黄金表抽 6 条含跨午夜/DST/平局，结论逐条一致）。前端全量 344 文件 **2772** 例绿、**本轮无 flake**；守卫链 121/121；**反证主会话亲验**（变异成 `at` ⇒ 4 红） |
+| R282-EVID-01 | P2 | done | lead（PM） | 2026-11-20 | artifacts/autonomy/R282/{brief,recon-maintenance}.md | d1346b1c | **侦察抓到一条我原本会踩的硬风险**：逐 instant 回扫 7 天 × 20 行 = 40 万次 `formatToParts` **会卡死列表**——若不先测速就照抄后端判据，修完会变成「显示不了」，比缺陷更坏（实测证实 962ms）。**侦察还纠正我一处判断**：我原以为「详情页看不到窗口」是更严重的一面，实际**详情页有窗口可视化**——但**正因为有它，「会被跳过」只在代码注释里更危险**（橙 Tag 让用户确信窗口存在，蓝 Tag 又暗示会跑）。**刻意不做**：执行记录空白解释 + 告警规则卡在同一个根（跳过事件不落持久化痕迹），任何方案都要**推翻 `scheduler.service.spec.ts:2004` 的「不建行」契约** ⇒ 产品语义变更而非修 bug。**方法学**：521「正确的计算用错输入比算错更隐蔽」·522「修『显示假事实』前先测『更真实的算法要多久』」 |
 | R278-DEC-01 | P2 | done | lead（PM 编排）· 切片 decisions | 2026-11-19 | docs/OPEN-DECISIONS.md + packages/acf-cli/src/ui.ts(+spec) + packages/executor-protocol/protocol.json + docs/atlas/01-apps/admin-api/modules/task.md | 13368858 | **待决策清单收口**：拍板并落地 5 条零成本项——**A4** 容器任务内存上限维持 768/512（证据：`check-sandbox-limit-order` exit 0 / 16 例）；**H1** `docs/atlas/.../task.md` 的「默认 any」改为 `owner`（与 `configuration.ts:568` 一致，非成员恒 403）；**D1** `--json` 加入 `VALUE_TAKING_OPTIONS` + `looksLikeJsonPayload` 反向判据（`--json <body>` 不再被当输出开关，**命令末尾的 `--json` 仍作开关**，不破坏 `task list --json`）；**B4/B5** 协议 `adminApiUrls` 与 v7/v8 加 `$comment` 标注 python 侧未（部分）实现（`check-protocol-breaking` 判 compatible、生成物 `--check` 幂等）。**明确不做并写理由 12 条**：B1/B2/B3/C1/D2/D3/D5/D6/A2/A3/D7 + D4（棘轮不加第 7 类，顺带把文档里的 73 改成实测 76）。**反证**：把 `'--json'` 从表里删掉 ⇒ **2 failed / 48 passed**，恢复 ⇒ 50/50。**验证**：`check-docs` 7/7、`check:cli-doc`、`check:sandbox-limit-order`(16)、`check:protocol-three-way`(三向 33 + 逐格 14)、`check-protocol-breaking`、`acf-cli tsc` 全 0；`acf-cli` 全量 **460 例** 绿 |
 | R278-GUARD-01 | P2 | done | lead（PM 编排）· 切片 guardfix | 2026-11-19 | scripts/check-agent-stub-fidelity.mjs + scripts/agent-runtime-check.mjs | 6a4b1141 | **修本轮自造的守卫红（不是既有欠账）**：`declaredTypeOf()` 正则不容 `?`，认不出本仓 `@Optional()` 标准写法 `private readonly x?: T | null` ⇒ 把 `Repository<AgentApproval>` 判成 `AgentApprovalsService`，一条误判造两条红（`approvals 保真 2/13`、`sessionService 保真 12/13`）。修法：正则加 `\??` + `stripNullUnion()`（**只**剥 `| null`/`| undefined`，别的联合原样保留 ⇒ 保守方向：宁可多要求替身，不把真缺口藏起来），补 2 条 selftest（含「换成服务类型必须红」对照）。同时补**替身真缺口**：`makeSessionService()` 增 `list`，按 `agent-session.service.ts:623-662` 逐条复刻（stalled 谓词看 **step 而非 updatedAt**、`clampPagination` 的 NaN 回落、`createdAt DESC`、`total` 与 skip/take 无关），**零白名单豁免**。自测探针顺带抓到自己一个真 bug：同毫秒兜底原按 id **升序** ⇒ `pageSize:1` 取到最老会话，与 `createdAt DESC` 相反，已改同向。**反证**：去掉 `\??` ⇒ 新用例红（`✖ 失败：1/17`），恢复即绿 **17/17**。**验证**：守卫 0、selftest 17/17、`agent-runtime-check` 0、`agent-sop-check` 0 | | 2026-09-27 | scripts/check-no-hoisting.mjs（新；T4 起伴生 selftest 已并入 --selftest，用例扩到 17 条真子进程断言，伴生文件已删）+ 根 package.json（两 script）+ .github/workflows/ci.yml + docs/ARCH-28b-turbo-adoption.md（新）+ docs/arch-28-workspace-evaluation.md §5.1 回填 | 见本轮 commit | **turbo 增量接入 —— 实测结论=不接入；交付 no-hoisting 守卫 + A/B 实测报告。**沙箱 worktree（develop @ d3804307 detached，仓库零污染）逐项实测：**①turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 workspaces，8 个子项目 `npm ci` **全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）；报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；**部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；`--legacy-peer-deps` 会把 hoist 写进根 lockfile（1→866 条目）固化破坏。**②runner 委派语义**：turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突（无 workspace 清单时 pnpm 直接 ERR_PNPM_OTHER_PM_EXPECTED）。**③单包模式缓存生效但对 CI 无收益**（每 job 独立 runner + 全新 checkout，本地缓存不可跨 job 复用；§2 预判的重复 build 实测每处仅 8~12s）。**④真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s（收益真实但前提不可用）。**交付**：check-no-hoisting.mjs 结构守卫（5 判据，13 项有齿自检，含 4 负例族）+ 接入 CI check-migrations job + 根两 script + ARCH-28b 实测报告（含 CI 关键路径实测：瓶颈=selftests 518s 串行自检 / admin-web 286s vitest，npm ci 仅占 2.5~10%，与 ARCH-28 §1.3 结论一致且强化）。**如实**：turbo 依赖未入 package.json（沙箱实测用）；turbo.json 未落地（验收原文要求——不落地即结论）。 |
 | N-01 | P2 | done | main-A（轮 27） | 2026-09-27 | scripts/check-no-hoisting.mjs（新；T4 起伴生 selftest 已并入 --selftest，用例扩到 17 条真子进程断言，伴生文件已删）+ 根 package.json（两 script）+ .github/workflows/ci.yml + docs/ARCH-28b-turbo-adoption.md（新）+ docs/arch-28-workspace-evaluation.md §5.1 回填 | 见本轮 commit | **turbo 增量接入 —— 实测结论=不接入；交付 no-hoisting 守卫 + A/B 实测报告。**沙箱 worktree（develop @ d3804307 detached，仓库零污染）逐项实测：**①turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 workspaces，8 个子项目 `npm ci` **全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）；报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；**部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；`--legacy-peer-deps` 会把 hoist 写进根 lockfile（1→866 条目）固化破坏。**②runner 委派语义**：turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突（无 workspace 清单时 pnpm 直接 ERR_PNPM_OTHER_PM_EXPECTED）。**③单包模式缓存生效但对 CI 无收益**（每 job 独立 runner + 全新 checkout，本地缓存不可跨 job 复用；§2 预判的重复 build 实测每处仅 8~12s）。**④真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s（收益真实但前提不可用）。**交付**：check-no-hoisting.mjs 结构守卫（5 判据，13 项有齿自检，含 4 负例族）+ 接入 CI check-migrations job + 根两 script + ARCH-28b 实测报告（含 CI 关键路径实测：瓶颈=selftests 518s 串行自检 / admin-web 286s vitest，npm ci 仅占 2.5~10%，与 ARCH-28 §1.3 结论一致且强化）。**如实**：turbo 依赖未入 package.json（沙箱实测用）；turbo.json 未落地（验收原文要求——不落地即结论）。 |
@@ -535,6 +537,54 @@
 | 记忆域 / 子 agent | **推迟**（写明前置条件） | 裁定 R12；记忆需先解决多租户分桶与跨会话注入的不可撤销性 |
 
 ## 变更日志
+
+- 2026-11-20 **产品轮 · R282（PM 立项 + 1 路侦察 + 1 个切片）（1 个提交 `d1346b1c` · 首次扫**调度面**：修「下次执行」承诺一次不会发生的执行）**：
+
+  任务书 `artifacts/autonomy/R282/brief.md`；侦察 `recon-maintenance.md`（402 行）。
+
+  - **① 缺陷：前四轮都没扫过调度面**。`nextRunAt` 的入参**没有 `maintenanceWindows`**
+    （`trigger-preview.ts:342-368`，grep 命中 0），而任务实体有该字段（`task.entity.ts:394`）；
+    调度器命中窗口后 `scheduler.service.ts:2804-2816` **`return null`：不建执行行、不补跑**。
+    ⇒ 列表「下次执行」列与详情「下次执行」Tag 都在**承诺一次不会发生的执行**。
+  - **② 侦察核实四个面（比我预想的更糟）**：列表窗口内与正常**渲染逐字相同**；
+    **详情页有**窗口可视化（橙 Tag）但「会被跳过」**只写在代码注释里**，
+    且 `TaskScheduleTags` 用 `processing` **蓝色** ⇒ **窗口存在反而让用户更确信它会跑**；
+    执行记录**零解释**（反把用户推向「调度没有生效」的误导）；告警 **0 条规则**。
+  - **③ 一处我原本会踩的硬风险（侦察抓到）**：照抄后端「逐 instant 回扫 7 天」的判据，
+    20 行列表 = 40 万次 `formatToParts` **会卡死列表**。**实测基线证实**：
+    **127.26ms（日级）/ 962.43ms（周级）**。改法：按**壁钟日**回扫 + 日级 cron 收紧到 3 天
+    （其余沿用 7 天且**永不超过后端**以防结论漂移）⇒ **11.97ms**，并写成
+    `toBeLessThan(50)` 断言——**没有这条断言功能不许上**（把「显示假时刻」换成
+    「显示不了」比缺陷更坏）。
+  - **④ 判据复刻的语义细节**（这些都是会写反的地方）：半开 `[start,end)`、**平局归关窗**、
+    **`endFire === null` 是开窗**（`:395` 的 `endFire &&` 短路）。复用本文件已有的零依赖
+    cron 引擎（`parseCronExpression`/`nextCronFireTimes`/`validateTimezone`）⇒ **不新增依赖**。
+  - **⑤ 一个刻意的产品顺序**：**时区不明时即便按浏览器时区算出来「在窗口内」也不报 skipped** ——
+    那个结论可能正好反了，而**负面断言的代价是用户不去排查**（他说「跳过」而实际会跑 ⇒ 白等）。
+    改报 `unknown-window`：「窗口内？时区未知」。
+  - **⑥ 文案点出原因**：「跳过（维护窗口 02:30–04:00）」而不是只说"跳过"（用户不知道该改什么）。
+
+  **验证（真实 exit，分级如实）**：
+  - 前端全量 `npx vitest run` **344 文件 / 2772 例**绿（**本轮无 flake**）；
+    一致性对拍 **33 例**（后端黄金表抽 6 条含跨午夜/DST/平局，**结论逐条一致**）；
+    `nextRunAt` **353 行纯新增、零删除**（9 例既有测试逐字通过）。
+  - 守卫链 **121/121 = 0**；`tsc -b`/`eslint`/`lint:i18n`（键集 3704/3704）/`size-caps`/
+    `web-type-drift` 全 0。
+  - **反证由主会话亲验**（不采信子代理自述）：把 `skipped-by-window` 变异成 `at`（假装会跑）
+    ⇒ **4 条红**；还原 ⇒ 零删除行。
+
+  **刻意的界（不是遗漏）**：执行记录空白解释 + 告警规则**卡在同一个根**——跳过事件
+  **不落任何持久化痕迹**。任何能解释历史的方案都要先决定「是否落库」，那会**推翻
+  `scheduler.service.spec.ts:2004` 钉死的「不建行」契约** ⇒ 属**产品语义变更**，不是修 bug。
+  且告警有判据难题：窗口长期生效是**意图**还是**配错**，计数器分不出来，阈值告警会每天误报。
+
+  **方法学沉淀（接 520）**：
+  - **521「一个『正确的计算』用错了输入，比算错更隐蔽」**。`nextRunAt` 的 cron 计算完全正确、
+    9 例测试全绿、时区处理也对——它只是**不知道调度器会在窗口内跳过**。这类缺陷不会出现在
+    任何单元测试里，因为**测试与实现共享了同一个错误的输入定义**。
+  - **522「修一个『显示假事实』的缺陷时，先测『更真实的算法要多久』」**。照抄后端判据要
+    962ms/20 行；不做这一步，修好之后列表会卡到不可用，**用户会把『卡』归因为新产品缺陷
+    而不是旧缺陷的残留**。
 
 - 2026-11-20 **产品轮 · R281（PM 立项 + 2 路侦察 + 3 个切片）（1 个提交 `1e5ee470` · 修「点了但看不到」，并补上全仓缺失的那条不变式；期间纠正了侦察一处、也被侦察纠正一处）**：
 

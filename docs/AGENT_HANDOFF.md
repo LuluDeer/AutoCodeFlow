@@ -3,6 +3,34 @@
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-19
 > 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
 
+## 「下次执行」与维护窗口（R282，工作树，未发布）
+
+- **可用路径**：任务列表的「下次执行」列与任务详情的「下次执行」Tag，在任务配了维护窗口且
+  下一次触发落在窗口内时，显示 **「跳过（维护窗口 02:30–04:00）」**；时区空/非法时显示
+  **「窗口内？时区未知」**；其余情况与改动前**逐字相同**。
+- **判据（改代码前必读）**：`nextRunOutcome()` 在 `apps/admin-web/src/utils/trigger-preview.ts`。
+  - **`nextRunAt` 一字未动**（它是「不含窗口」的窄函数，9 例既有测试钉着它）——
+    要改窗口行为请改 `nextRunOutcome`，**不要**给 `nextRunAt` 加语义。
+  - 判据是**复刻**后端 `apps/admin-api/src/modules/task/maintenance-window.util.ts:371-399`
+    的「最近触达比较」：半开 `[start,end)`、**平局归关窗**、**`endFire === null` 是开窗**
+    （`:395` 的 `endFire &&` 短路，极易写反）。改动任一侧都必须跑一致性对拍
+    （`__tests__/maintenance-window-parity.test.tsx`，33 例，含跨午夜/DST/平局）。
+  - **时区不明时先于命中判定**返回 `unknown-window` —— 即便按浏览器时区算出「在窗口内」
+    也不报 skipped：结论可能正好反了，而**负面断言的代价是用户不去排查**。
+- **★ 性能红线**：照抄后端「逐 instant 回扫 7 天」的代价是 **962ms / 20 行**（实测），
+  **会卡死列表**。现按**壁钟日**回扫 + 日级 cron 收紧到 **3 天**（其余 7 天，
+  **永不超过后端**以防结论漂移）⇒ **11.97ms**。spec 里有 `toBeLessThan(50)` 断言，
+  **改回逐 instant 回扫会让它红**——这是刻意的。
+- **验收口径**：`npx vitest run src/__tests__/maintenance-window-parity.test.tsx`（40 例）+
+  `task-list-next-run.test.ts`（10 例）；`npx tsc -b`；`npm run lint:i18n`；
+  `node scripts/guards-repo-matrix.mjs`（121 段）。
+- **刻意不做（不是遗漏）**：执行记录里的「这段时间为什么没有执行」+ 告警规则。
+  两者卡在同一个根：**跳过事件不落任何持久化痕迹**（`scheduler.service.ts:2804-2816`
+  只写 logger + 计数器）。任何能解释历史的方案都要先决定「是否落库」，那会
+  **推翻 `scheduler.service.spec.ts:2004` 钉死的「不建行」契约** ⇒ 属产品语义变更。
+  且告警判据分不清「窗口长期生效是意图」还是「配错」，阈值告警会每天误报。
+- **发布前**：**零后端改动、零迁移、零新 env 键**。回滚 = `git revert`。
+
 ## 执行列表的失败深链：多值 status（R281，工作树，未发布）
 
 - **可用路径**：Dashboard「失败 Top·全部失败」与通知铃铛「全部失败」现在跳到
