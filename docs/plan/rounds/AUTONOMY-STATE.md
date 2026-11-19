@@ -1,58 +1,68 @@
-# AUTONOMY-STATE — 状态卡（R278 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R279 收尾交接版 · ≤50 行）
 
-**基线**：`9c1d58cd`（R277）→ 本轮 **3 个提交**（R278-INBOX-01 `54ea04f7` / R278-DEC-01 `13368858` / R278-GUARD-01 `6a4b1141`）· **守卫链 121 段，121/121 = exit 0**
-**会话**：第 278 轮 · **产品视角轮**（PM 立项 + 4 个 agent 编排）· 任务书 `artifacts/autonomy/R278/brief.md`
+**基线**：`bce37939`（R278）→ 本轮 **1 个提交**（`378a1243`，4 条认领）· **守卫链 121 段，121/121 = exit 0**
+**会话**：第 279 轮 · **产品视角轮**（PM 立项 + 3 个 agent 编排）· 任务书 `artifacts/autonomy/R279/brief.md`
 
-## 本轮主线：把「待办收件箱」从「少报且不说明少报」变成「可对账」
+## 本轮主线：收件箱补上「终态」这一格 —— 从「没建模」到「可见」
 
-**五个用户现象 → 一个根因**（侦察 `R278/recon-approvals.md`）：
-顶栏 3 vs 列表 7（会话口径 vs 审批单口径）· 第 51 个会话凭空消失（截断无标记）·
-转圈/偶发读取失败（51 次请求共用 60/min 限流桶）· 200 被钳到 100 · 部署只显示 20。
-根因 = 前端「先拉 50 个 `waiting_input` 会话，再逐个 `listApprovals`」。
-⇒ **不做五个补丁，做一次搬迁**：聚合到服务端，一次返回带信封的行 + 计数 + 截断 + 降级。
+R278 修的是**读数不可信**（`null` vs `0`、截断可见）。R279 暴露更上游一层：
+**该数的东西根本没被数**。真机为验证限流而造 3 个 Agent 会话，全部 `failed`，
+收件箱**七项全 0** —— 根因是 `failed`/`budget_exceeded`/`aborted` **一个都不进任何观测面**
+（唯一的失败小节 `recentFailures` 查的是 `task_executions`，不是 `agent_sessions`）。
+**这比谎报更隐蔽：计数确实为 0，数字是对的，真实的 0 掩盖了「有 3 条等你处理」。**
+
+## 上一轮遗留已闭合
+
+- **「第 51 个请求必 429」：推断 → 实测**。真 PG16+Redis7+真 admin-api（默认 60/min），
+  **第 1..60 次 200、第 61 次 429**，边界精确到个位。推论也精确了：单次装载 50 次不炸，
+  但**同分钟第二次装载 100>60** ⇒ 第 11 个 approvals 起全 429，前端逐个 `.catch()`
+  吞掉失败 ⇒ 运营看到「部分行消失+读取失败」而非「被限流」。
 
 ## 落地产物
 
-- **后端**（新 `agent-inbox.service.ts` +218）：`GET /agent/approvals/pending`、
-  `GET /agent/inbox/counts`。`total` 是独立 `count()`、`sessionTotal` 是
-  `COUNT(DISTINCT sessionId)`、标题一次 `In(...)` ⇒ **查询数与会话数无关**。
-  `truncated = returned < total`；`total=null` 时 `truncated:false`、未知由 `degraded` 说。
-  装配缺失 ⇒ **503，不回 200 空信封**。
-- **前端**：`listApprovals` 调用**归零**（`toHaveBeenCalledTimes(1)` 钉死）；计数 5 请求 → 1。
-  顺带修两条真缺陷：计数全未知时原渲染「当前没有待你处理的事项」；无 `total` 时
-  原把已取条数渲染成「共 N 条」。
-- **决策收口**：A4 / H1 / D1（`--json` 取值形态）/ B4 / B5 已定并落地；12 条**明确不做并写理由**。
-- **守卫盲区**：`check-agent-stub-fidelity` 的 `declaredTypeOf()` 不容 `?`，认不出
-  `@Optional()` 标准写法 `x?: T | null` ⇒ 一条误判造两条红。已加固（`\??` + 只剥
-  `| null`/`| undefined`）+ 补替身 `list` 真实现（**零豁免**）。反证：去掉 `\??` ⇒ 红。
+- **判据先定后写**（`docs/observability/agent-failed-session-criterion.md`）：计入
+  `failed`+`budget_exceeded`、**不计 `aborted`**（人主动停的）；窗口默认 24h；
+  **计数含两者、行只列 `failed`** 的不对称是刻意的 ⇒ `rowTotal`（行口径）与
+  `budgetExcludedCount()`（**口径差 ≠ 截断差**）。`failedSessions` 独立 `count()`、
+  **不进会话求和**（同一会话可先 failed 后 succeeded）。
+- **前端第八小节** `agentFailures`：行内显示 `errorMessage` + 深链；`null`⇒「—」、
+  `0`⇒隐藏、`truncated` 走行口径。`isInboxAllClear` 纳入「计数>行」守卫。
+- **孤儿键不是冗余**：`pendingBeyondRows()` 原本只参与守卫、用户看不到 ——
+  不渲染就会让「计数 5、行 0」被说成「当前没有待处理的事项」。已接进空态文案。
+- **顺带修产品级事实错误**：UI 的判死窗口用 `heartbeatTimeoutMs`(90s)，
+  而后端真实 `effectiveOfflineAfterMs`(180s) —— **字段早在 API 里、后端注释两段警告
+  「不接就会漂移」，只有前端手写类型缺字段**。运维读到的窗口**小一半**。
+  已修 + 修正了一个**把 bug 钉成期望**的既有用例。
 
-## 验证（真实 exit，**级别不越级**）
+## 验证（真实 exit，**级别如实**）
 
-- 守卫链 **121/121 = 0**；`check:agent-stub-fidelity` 0 + selftest **17/17**。
-- 后端 `npx jest` **494 套件 / 8305 例** 绿（新增 inbox 16 例）；`route-authz-matrix` 10/10（262 路由）。
-- 前端 `vitest run` **337 文件 / 2661 例** 绿（新增 45 例）；双端 tsc/eslint 0。
-- 生成物：`openapi:export` + i18n 注入 **1793/1793**；`gen:api-types` +130 行；
-  `check-openapi-response-schema` 249/262（棘轮已 `--update`）。
-- **未覆盖（如实）**：真 PG/Redis 集成、生产包浏览器 E2E **均未跑** ⇒「429 是否真发生」
-  仍是**侦察推断**，未实测复现。
+- **真机（真实进程内集成）**：真 PG16/Redis7 + 真 admin-api + 144 迁移。
+  `failedSessions: 5`（修复前无此字段）；`since` 四语义实测（缺省 5 / 未来 0 / 过去 5 / 非法 200）。
+- 后端 **494 套 / 8316 例** 绿；前端全量 **连续两轮 2693 例** 绿；守卫链 **121/121 = 0**；
+  `size-caps`（净减 3 行，无豁免）/ 两个 web-type 守卫（陈旧基线 2 条已删）/ `env-drift` 全 0。
+- **反证**：离线窗口改回 90s ⇒ 用例红；改回即绿。
 
-## 剩余 backlog（上一轮主表 **3** 条不变，全部外部阻塞）
+## 未结项（如实）
 
-`ci-pg-race-unverified` · `web-flake-not-reproduced` · `release-notice-ops`。
+- `web-flake-not-reproduced`：本轮全量 web 首跑 7 红、次跑 1 红（`python-multiversion-form-wiring`
+  耗时 72s 超时），**单文件全绿 + 连续两轮全量全绿** ⇒ 既有 flake，**未猜测着改**（405）。
+- `ci-pg-race-unverified` · `release-notice-ops`：不变，仍外部阻塞。
 
 ## 下轮第一步（按产品价值排序，建议只取 1 条）
 
-1. **把「429 是否真发生」从推断升到实测**（M）：起真 PG/Redis + 造 60+ 待审会话，
-   观察旧实现是否 429、新实现是否一次成功。这是本轮唯一没闭合的**证据缺口**。
-2. **`backlogged` 小节统一到 D2 新口径**（S）：它仍用旧 `truncated`+`probed` 的 `3+` 文案，
-   与其余小节不一致（本轮按纪律保留未改）。
-3. **审批单删除/过期的可观测性**（M）：`agentApprovals` 现在只数 `status='pending'`，
-   但 `expired` 从不进任何计数 —— 运营看不到「没人处置而自动过期」的量。
-4. `approvals` 服务侧 10 个方法**没有任何 `agent-*.mjs` 替身**（既有范围外盲区），补替身或登记。
+1. **「失败会话」之后还有一格空着**：`SOP 澄清升级 escalated_to_human` 在收件箱同样缺席
+   （`sop_clarifications` 另一张表、另一个状态），且升级时后端把 assignment 从 `blocked`
+   改回 `in_progress` ⇒ **按 blocked 也筛不到**，通知是唯一出口且 fail-open。
+   建议**先取证**：查 `resolution='escalated_to_human'` 的存量行数与最老一条年龄。
+2. **给「某字段被声明为 UI 的唯一依据」加机械守卫**（本轮教训 516 的机械化）：
+   凡 DTO 注释写「前端必须用它」，应有判据钉住消费点真的读了它。当前只能靠人工真机复核。
+3. `backlogged` 小节统一到 D2 新口径（仍用旧 `3+` 文案）。
+4. **「同一屏 4 个失败数字」**（侦察候选 2）：`timeout` 风暴时控制台说「近期无失败记录」，
+   而失败数各处口径不一。**需先裁定 `failed|timeout` 口径**，不宜只改文案。
 
-## 方法学（本轮新增 511–512，累积见 `AUTONOMY-STATE-ARCHIVE.md` / `PLAN-CLAIMS`）
+## 方法学（本轮新增 515–516）
 
-- **511** 产品视角的第一件事是把 N 个现象归到**一个根因**，然后决定「**不做哪几个补丁**」。
-  五个现象逐个修会得到五份截断逻辑；归因后正确解是搬迁，且**删掉的代码比新增多**。
-- **512** `null` 与 `0` 的区分要在**契约层强制**，不能靠前端记得。做成响应信封必填字段后，
-  「读失败渲染成没有」被类型系统挡住 —— 而同类错误此前已在本仓以两种形态复发三次。
+- **515** `0` 是事实还是缺席，要先问「这个面建模了哪些状态」—— 宽键枚举表里没出现的状态
+  永远不会被看见，而这类缺口的数字**全程都是对的**，所以任何数值校验都发现不了。
+- **516** 后端暴露了字段、注释也写明「不接就会漂移」，不等于前端会接 ——
+  跨仓契约的**最后一公里没有机械判据**，只能靠「打开真实 UI 读一次」发现。

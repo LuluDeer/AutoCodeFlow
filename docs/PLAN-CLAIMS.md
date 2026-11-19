@@ -319,6 +319,10 @@
 | 任务 | 优先级 | 状态 | Owner | 认领时间 | 文件足迹 | commit | 备注 |
 |---|---|---|---|---|---|---|---|
 | R278-INBOX-01 | P1 | done | lead（PM 编排）· 切片 be-inbox / fe-inbox | 2026-11-19 | apps/admin-api/src/modules/agent/runtime/agent-inbox.service.ts（新）+ dto/agent-inbox.dto.ts（新）+ __tests__/agent-inbox.service.spec.ts（新）+ agent.controller.ts（+70 只追加）+ agent.module.ts（+6）；apps/admin-web/src/api/{inbox,agent}.ts + components/InboxBadge.tsx + pages/InboxPage.tsx + __tests__/inbox-*；生成物 openapi.json / api-types.ts / api-reference.md / openapi-en-map.json | 54ea04f7 | **待办收件箱：从「少报且不说明少报」到「可对账」**。根因是前端「先拉 50 个 waiting_input 会话、再逐个 `listApprovals`」⇒ ① 顶栏按会话计 vs 列表按审批单行计（同一会话多单必然不等）② 第 51 个起**静默丢弃无标记** ③ 51 次请求共用 60/min 全局限流桶（第 51 个必 429）。修法=**把聚合搬到服务端**：新 `GET /agent/approvals/pending`（独立 `count()` 出 `total`、`COUNT(DISTINCT sessionId)` 出 `sessionTotal`、一次 `In(...)` 批量标题 ⇒ 查询数与会话数无关）与 `GET /agent/inbox/counts`（6 项计数并行、各自独立降级），信封强制带 `total`/`truncated`/`degraded`；装配缺失抛 503，**不回 200 空信封**。前端 `listApprovals` 调用归零（`toHaveBeenCalledTimes(1)` 钉死防回归），计数 5 请求 → 1。顺带修真缺陷两条：全部计数未知时原渲染「当前没有待你处理的事项」（空态谎报）；无 `total` 时原把已取条数渲染成「共 N 条」（编造总数）。**验证**：后端 `npx jest` 全量 **494 套件 / 8305 例** 绿（新增 inbox 16 例）；前端 `vitest run` **337 文件 / 2661 例** 绿（新增 45 例）；`route-authz-matrix` 10/10（262 路由，**未改 spec**）；双端 tsc/eslint 0；守卫链 **121/121 = 0**。**未覆盖**：真 PG/Redis 集成与生产包浏览器 E2E 未跑，故「429 是否真发生」仍是侦察推断 |
+| R279-FAILED-01 | P1 | done | lead（PM 编排）· 切片 be-failed / fe-failed | 2026-11-19 | apps/admin-api/src/modules/agent/runtime/agent-inbox.service.ts（+方法/字段）+ dto/agent-inbox.dto.ts（+2 字段）+ agent.controller.ts（+`since`）+ agent-session.service.ts（+可选 since）+ config/configuration.ts + 两份 .env.example；apps/admin-web/src/api/{inbox,agent}.ts + pages/InboxPage.tsx + components/InboxBadge.tsx + locales/{zh,en}.ts + __tests__/inbox-failures.test.tsx（新）；docs/observability/agent-failed-session-criterion.md（新）+ README | 378a1243 | **Agent 会话失败在收件箱里完全不可见**（真机造数据才发现）。真机造 3 条 failed 会话：`GET /agent/sessions?status=failed → total=3`，而 `GET /agent/inbox/counts → 七项全 0`。**根因是建模缺口不是读数错误**：`INBOX_SECTIONS` 前六项只看非终态，唯一的失败小节 `recentFailures` 查 `task_executions` 而非 `agent_sessions`；`AGENT_SESSION_STATUSES` 七值里 `failed`/`budget_exceeded`/`aborted` **一个都不进任何观测面**。判据（先定后写，见 criterion 文档）：计入 `failed`+`budget_exceeded`、**不计 `aborted`**（人主动停的）、窗口默认 24h（`AGENT_FAILED_SESSION_WINDOW_HOURS`）；**计数含两者、行只列 `failed`** 的不对称是刻意的 ⇒ 新增 `rowTotal`（行口径）与 `budgetExcludedCount()`（口径差 ≠ 截断差）；`failedSessions` 独立 `count()`、不进会话求和（同一会话可先 failed 后 succeeded）。前端加第八小节，行内显示 `errorMessage` + 深链，`null`⇒「—」/`0`⇒隐藏。**`isInboxAllClear` 纳入「计数>行」守卫**（否则「5 条待办、0 行」会渲染成「当前没有待处理的事项」——数字对、结论错）。**验证**：真机 `failedSessions:5`（修复前无此字段）；`since` 四语义实测（缺省 5 / 未来 0 / 过去 5 / 非法 200）；后端 494 套 8316 例绿；前端**连续两轮 2693 例绿**；守卫链 121/121 |
+| R279-EVID-01 | P2 | done | lead（PM） | 2026-11-19 | artifacts/autonomy/R279/{throttle-evidence,failed-sessions-invisible,brief}.md；docs/observability/agent-failed-session-criterion.md | 378a1243 | **把 R278 的两条「推断」升为真机实测**：① **限流边界**——真 PG16+Redis7+真 admin-api（生产默认 `THROTTLE_LIMIT=60`）实测 `第 1..60 次 200、第 61 次 429`，精确到个位；据此旧实现「50 会话+50 approvals」单次装载不炸（50<60）、但**同分钟第二次装载 100>60** ⇒ 第 11 个 approvals 起全 429，运营看到「部分行消失+读取失败」而非「被限流」。② **会话失败缺席**——见 R279-FAILED-01。**方法学**：515「`0` 是事实还是缺席，要先问这个面建模了哪些状态」·516「后端暴露了字段、注释也写明不接会漂移，不等于前端会接」 |
+| R279-OFFLINE-01 | P1 | done | lead（PM 编排）· 切片 fix-offline-window | 2026-11-19 | apps/admin-web/src/api/executors.ts + pages/ExecutorDetailPage.tsx + locales/{zh,en}.ts + __tests__/executor-offline-window.test.ts（新）+ 13 个既有 spec 的 mock 形态 + scripts/web-type-field-drift-baseline.json | 378a1243 | **产品级事实错误：UI 显示的判死窗口比后端真实行为小一半**。真机 `GET /executors/runtime-config` = `{heartbeatTimeoutMs:90000, staleOfflineConfirmations:2, effectiveOfflineAfterMs:180000}`；后端 `executor.service.ts:4270-4279` 注释逐字写「不暴露这两项会让 UI 展示的『多久判离线』与后端实际行为不符」——**字段早已暴露，只有前端没接**：手写类型缺 2 字段、UI 用 90s、注释还把单次墙钟误称「有效判死阈值」。运维后果：把「90 秒仍在线」当后端 bug 报障 / 按 90s 估停机 SLA（偏小一半）。修法：补类型 + 改读 `effectiveOfflineAfterMs` + 文案说清迟滞成因（「单次墙钟 90s，需连续 2 次未确认，故 180s」），兜底 `heartbeatTimeoutMs × (staleOfflineConfirmations ?? 1)`，**永不静默回落 90s**。**修正了一个把 bug 钉成期望的既有用例**（`shard-c-executor-detail-diagnostics.test.tsx:99` 用真机不存在的夹具形状断言 90s）。**反证**：改回 90s ⇒ 红 / 改回 ⇒ 绿。size-caps 净减 3 行（等量压缩，无豁免） |
+| R279-GUARD-02 | P3 | done | lead（PM）· 切片 fix-offline-window | 2026-11-19 | scripts/web-type-field-drift-baseline.json | 378a1243 | **基线陈旧即红**：补上 `effectiveOfflineAfterMs`/`staleOfflineConfirmations` 后，基线里那 2 条 `ExecutorRuntimeConfig missing:*` 已不存在 ⇒ 守卫按「基线只减不增、消失即红」判红。删 2 条 + `--selftest` 27/27 绿。**这不是豁免，是收口**：留着它们会让守卫继续放过同类新漂移 |
 | R278-DEC-01 | P2 | done | lead（PM 编排）· 切片 decisions | 2026-11-19 | docs/OPEN-DECISIONS.md + packages/acf-cli/src/ui.ts(+spec) + packages/executor-protocol/protocol.json + docs/atlas/01-apps/admin-api/modules/task.md | 13368858 | **待决策清单收口**：拍板并落地 5 条零成本项——**A4** 容器任务内存上限维持 768/512（证据：`check-sandbox-limit-order` exit 0 / 16 例）；**H1** `docs/atlas/.../task.md` 的「默认 any」改为 `owner`（与 `configuration.ts:568` 一致，非成员恒 403）；**D1** `--json` 加入 `VALUE_TAKING_OPTIONS` + `looksLikeJsonPayload` 反向判据（`--json <body>` 不再被当输出开关，**命令末尾的 `--json` 仍作开关**，不破坏 `task list --json`）；**B4/B5** 协议 `adminApiUrls` 与 v7/v8 加 `$comment` 标注 python 侧未（部分）实现（`check-protocol-breaking` 判 compatible、生成物 `--check` 幂等）。**明确不做并写理由 12 条**：B1/B2/B3/C1/D2/D3/D5/D6/A2/A3/D7 + D4（棘轮不加第 7 类，顺带把文档里的 73 改成实测 76）。**反证**：把 `'--json'` 从表里删掉 ⇒ **2 failed / 48 passed**，恢复 ⇒ 50/50。**验证**：`check-docs` 7/7、`check:cli-doc`、`check:sandbox-limit-order`(16)、`check:protocol-three-way`(三向 33 + 逐格 14)、`check-protocol-breaking`、`acf-cli tsc` 全 0；`acf-cli` 全量 **460 例** 绿 |
 | R278-GUARD-01 | P2 | done | lead（PM 编排）· 切片 guardfix | 2026-11-19 | scripts/check-agent-stub-fidelity.mjs + scripts/agent-runtime-check.mjs | 6a4b1141 | **修本轮自造的守卫红（不是既有欠账）**：`declaredTypeOf()` 正则不容 `?`，认不出本仓 `@Optional()` 标准写法 `private readonly x?: T | null` ⇒ 把 `Repository<AgentApproval>` 判成 `AgentApprovalsService`，一条误判造两条红（`approvals 保真 2/13`、`sessionService 保真 12/13`）。修法：正则加 `\??` + `stripNullUnion()`（**只**剥 `| null`/`| undefined`，别的联合原样保留 ⇒ 保守方向：宁可多要求替身，不把真缺口藏起来），补 2 条 selftest（含「换成服务类型必须红」对照）。同时补**替身真缺口**：`makeSessionService()` 增 `list`，按 `agent-session.service.ts:623-662` 逐条复刻（stalled 谓词看 **step 而非 updatedAt**、`clampPagination` 的 NaN 回落、`createdAt DESC`、`total` 与 skip/take 无关），**零白名单豁免**。自测探针顺带抓到自己一个真 bug：同毫秒兜底原按 id **升序** ⇒ `pageSize:1` 取到最老会话，与 `createdAt DESC` 相反，已改同向。**反证**：去掉 `\??` ⇒ 新用例红（`✖ 失败：1/17`），恢复即绿 **17/17**。**验证**：守卫 0、selftest 17/17、`agent-runtime-check` 0、`agent-sop-check` 0 | | 2026-09-27 | scripts/check-no-hoisting.mjs（新；T4 起伴生 selftest 已并入 --selftest，用例扩到 17 条真子进程断言，伴生文件已删）+ 根 package.json（两 script）+ .github/workflows/ci.yml + docs/ARCH-28b-turbo-adoption.md（新）+ docs/arch-28-workspace-evaluation.md §5.1 回填 | 见本轮 commit | **turbo 增量接入 —— 实测结论=不接入；交付 no-hoisting 守卫 + A/B 实测报告。**沙箱 worktree（develop @ d3804307 detached，仓库零污染）逐项实测：**①turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 workspaces，8 个子项目 `npm ci` **全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）；报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；**部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；`--legacy-peer-deps` 会把 hoist 写进根 lockfile（1→866 条目）固化破坏。**②runner 委派语义**：turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突（无 workspace 清单时 pnpm 直接 ERR_PNPM_OTHER_PM_EXPECTED）。**③单包模式缓存生效但对 CI 无收益**（每 job 独立 runner + 全新 checkout，本地缓存不可跨 job 复用；§2 预判的重复 build 实测每处仅 8~12s）。**④真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s（收益真实但前提不可用）。**交付**：check-no-hoisting.mjs 结构守卫（5 判据，13 项有齿自检，含 4 负例族）+ 接入 CI check-migrations job + 根两 script + ARCH-28b 实测报告（含 CI 关键路径实测：瓶颈=selftests 518s 串行自检 / admin-web 286s vitest，npm ci 仅占 2.5~10%，与 ARCH-28 §1.3 结论一致且强化）。**如实**：turbo 依赖未入 package.json（沙箱实测用）；turbo.json 未落地（验收原文要求——不落地即结论）。 |
 | N-01 | P2 | done | main-A（轮 27） | 2026-09-27 | scripts/check-no-hoisting.mjs（新；T4 起伴生 selftest 已并入 --selftest，用例扩到 17 条真子进程断言，伴生文件已删）+ 根 package.json（两 script）+ .github/workflows/ci.yml + docs/ARCH-28b-turbo-adoption.md（新）+ docs/arch-28-workspace-evaluation.md §5.1 回填 | 见本轮 commit | **turbo 增量接入 —— 实测结论=不接入；交付 no-hoisting 守卫 + A/B 实测报告。**沙箱 worktree（develop @ d3804307 detached，仓库零污染）逐项实测：**①turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 workspaces，8 个子项目 `npm ci` **全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）；报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；**部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；`--legacy-peer-deps` 会把 hoist 写进根 lockfile（1→866 条目）固化破坏。**②runner 委派语义**：turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突（无 workspace 清单时 pnpm 直接 ERR_PNPM_OTHER_PM_EXPECTED）。**③单包模式缓存生效但对 CI 无收益**（每 job 独立 runner + 全新 checkout，本地缓存不可跨 job 复用；§2 预判的重复 build 实测每处仅 8~12s）。**④真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s（收益真实但前提不可用）。**交付**：check-no-hoisting.mjs 结构守卫（5 判据，13 项有齿自检，含 4 负例族）+ 接入 CI check-migrations job + 根两 script + ARCH-28b 实测报告（含 CI 关键路径实测：瓶颈=selftests 518s 串行自检 / admin-web 286s vitest，npm ci 仅占 2.5~10%，与 ARCH-28 §1.3 结论一致且强化）。**如实**：turbo 依赖未入 package.json（沙箱实测用）；turbo.json 未落地（验收原文要求——不落地即结论）。 |
@@ -525,6 +529,72 @@
 | 记忆域 / 子 agent | **推迟**（写明前置条件） | 裁定 R12；记忆需先解决多租户分桶与跨会话注入的不可撤销性 |
 
 ## 变更日志
+
+- 2026-11-19 **产品轮 · R279（PM 立项 + 3 个 agent 编排）（1 个提交 `378a1243` · 收件箱补上「终态」这一格；并修一条 UI 显示判死窗口小一半的事实错误）**：
+
+  任务书 `artifacts/autonomy/R279/brief.md`；证据 `throttle-evidence.md` / `failed-sessions-invisible.md`；
+  判据文档 `docs/observability/agent-failed-session-criterion.md`。
+
+  - **① 先做「把上一轮的推断变成实测」这件事**。R278 交接里唯一没闭合的证据缺口是
+    「旧实现第 51 个请求必 429」。本轮起真 PG16 + Redis7 + 真 admin-api（生产默认
+    `THROTTLE_LIMIT=60`），对同一 handler 连打：**第 1..60 次 200、第 61 次 429**，
+    边界精确到个位。推论也随之精确：单次装载 50 次 **不炸**（50 < 60），但
+    **同一分钟内第二次装载 = 100 > 60** ⇒ 从第 11 个 approvals 起全部 429，
+    前端逐个 `.catch()` 吞掉失败 ⇒ 运营看到「部分行消失 + 读取失败」而非「被限流」。
+  - **② 真机造数据时撞见一个更严重的缺口**：为验证限流而真实创建 3 个 Agent 会话，
+    全部 `failed`，而收件箱**七项计数全 0**。根因不是读数错误（那是 R278 修的），
+    而是**建模缺口**：`INBOX_SECTIONS` 前六项只看非终态；唯一的失败小节
+    `recentFailures` 查 `task_executions` 而**不是** `agent_sessions`；
+    `AGENT_SESSION_STATUSES` 七个值里 `failed`/`budget_exceeded`/`aborted`
+    **一个都不进任何观测面**。⇒ **这些计数确实为 0，数字是对的 —— 真实的 0
+    掩盖了「有 3 条失败等你处理」**。这比谎报更隐蔽。
+  - **③ 判据先定后写**（criterion 文档）：计入 `failed`+`budget_exceeded`、
+    **不计 `aborted`**（人主动停的，是「已决定」不是「待办」——本判据与
+    `AGENT_TERMINAL_STATUSES` 的唯一分歧点，故意的）；窗口默认 24h；
+    **计数含两者、行只列 `failed`** 的不对称是刻意的 ⇒ 新增 `rowTotal`（行口径）
+    与 `budgetExcludedCount()`（**口径差 ≠ 截断差**，两者各自表达、不相加）。
+    `failedSessions` 独立 `count()`、**不进会话求和**（同一会话可先 failed 后 succeeded，
+    相加会重复计且让顶栏在「重跑」时凭空跳动）。
+  - **④ 一个容易被当成「孤儿键」删掉的东西**：`pendingBeyondRows()` 原本只参与
+    `isInboxAllClear` 守卫、**用户看不到**。它的 i18n key 在守卫里报「孤儿」——
+    但孤儿不是冗余，是**用户看不到的真相**：若不渲染，「计数 5、行 0」会被全空态
+    说成「当前没有待你处理的事项」（数字对、结论错）。已把它接进失败小节的空态文案。
+  - **⑤ 顺手修掉一条产品级事实错误**：真机 `GET /executors/runtime-config` 返回
+    `effectiveOfflineAfterMs: 180000`，而后端注释逐字写「不暴露这两项会让 UI 展示的
+    『多久判离线』与后端实际行为不符」——**字段早已暴露，只有前端没接**：手写类型缺
+    2 字段、UI 用 `heartbeatTimeoutMs`(90s)、注释还把单次墙钟误称「有效判死阈值」。
+    运维读到的窗口**比实际小一半**：会把「90 秒仍在线」当后端 bug 报障，或按 90s 估
+    SLA。已补类型 + 改读真值 + 文案说清迟滞成因；兜底用
+    `heartbeatTimeoutMs × (staleOfflineConfirmations ?? 1)`，**永不静默回落 90s**。
+    顺带**修正了一个把 bug 钉成期望的既有用例**（`shard-c-executor-detail-diagnostics.test.tsx:99`
+    用真机不存在的夹具形状断言 90s）。
+
+  **验证（真实 exit，分级如实）**：
+  - **真机（真实进程内集成）**：真 PG16/Redis7 + 真 admin-api，144 条迁移。
+    同一环境 `failedSessions: 5`（修复前该字段不存在、七项全 0）；`since` 四语义实测
+    （缺省 total=5 / 未来 0 / 过去 5 / 非法值 200 不 400）。
+  - 后端 `npx jest` **494 套件 / 8316 例** 绿；`modules/agent` 889 例；`route-authz-matrix` 10/10。
+  - 前端全量 `vitest run` **连续两轮 2693 例绿**（+1 skip）；`tsc -b` 0；`eslint` 0；`lint:i18n` 0。
+  - 守卫链 `guards-repo-matrix` **121/121 = 0**；`check-size-caps`（页面净减 3 行，无豁免）、
+    两个 web-type 守卫（基线陈旧 2 条已删 + `--selftest` 27/27）、`check-env-drift` 全 0。
+  - **反证**：把离线窗口改回只用 `heartbeatTimeoutMs` ⇒ 用例红
+    （`expected '…连续 90 秒…' to match /…180 秒/`），改回即绿。
+  - **flaky 如实记录**：全量 web 首跑 7 个红、次跑 1 个（`python-multiversion-form-wiring`
+    耗时 72s 超时），**单文件均全绿 + 连续两轮全量 2693 例全绿** ⇒ 属既有未结项
+    `web-flake-not-reproduced`（文档已记录同族机制：多文件并行 + 高负载下 0ms 定时器
+    与 `waitFor` 窗口赛跑）。**不猜测着改**（无法复现即无法验证改对，方法学 405）——
+    这条仍然**未结项**，本轮没有把它变得更糟也没有假装修好。
+
+  **方法学沉淀（接 514）**：
+  - **515「`0` 是事实还是缺席，要先问『这个面建模了哪些状态』」**。R278 修的是
+    「读数不可信」（`null` vs `0`、截断可见）；R279 暴露的是更上游一层
+    「**该数的东西根本没被数**」。宽键枚举表里没出现的状态，永远不会有人看见 ——
+    而这类缺口的数字**全程都是对的**，所以任何「数值校验」都发现不了它。
+  - **516「后端暴露了字段、注释也写明『不接就会漂移』，不等于前端会接」**。
+    离线窗口这条：DTO 有、后端注释有两段警告、生成类型里也有 —— 唯独手写类型缺字段。
+    跨仓契约的**最后一公里没有机械判据**，只能靠「打开真实 UI 读一次」发现。
+    ⇒ 凡「某字段被声明为『UI 的唯一依据』」，应有守卫钉住**消费点确实读了它**
+    （当前只能靠这类人工真机复核，已记入下一轮候选）。
 
 - 2026-11-19 **产品轮 · R278（PM 立项 + 4 个 agent 编排）（2 个提交面 · 待办收件箱从「少报且不说明少报」变成「可对账」；顺带结清 5 条待决策 + 修 1 处守卫盲区）**：
 

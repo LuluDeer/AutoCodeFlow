@@ -3,6 +3,34 @@
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-19
 > 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
 
+## 收件箱「Agent 会话失败」小节（R279，工作树，未发布）
+
+- **可用路径**：顶栏徽标会单独显示「会话失败 N」；`/inbox` 新增第八个小节「Agent 会话失败」，
+  每行显示失败原因（`errorMessage`，>120 字符截断）并深链到该会话。计数读不到显示「—」并带降级提示；
+  计数确认为 0 时小节隐藏。接口：`GET /agent/inbox/counts` 新增 `failedSessions` / `failedWindowHours`；
+  `GET /agent/sessions` 新增可选 `since`（**缺省 = 不筛 = 旧行为逐字节不变**）。
+- **判据（改代码前必读）**：`docs/observability/agent-failed-session-criterion.md`。
+  要点：计入 `failed` + `budget_exceeded`；**不计 `aborted`**（人主动停的）；
+  窗口默认 24h（`AGENT_FAILED_SESSION_WINDOW_HOURS`）；**计数含两者、行只列 `failed`** 的不对称
+  是刻意的（`budget_exceeded` 处置路径不同）⇒ 口径差由 `budgetExcludedCount()` 单独告警，
+  **不要**把差额当「被截断的条数」。
+- **为什么它曾经不存在**：`INBOX_SECTIONS` 七个小节里前六项只看非终态，唯一的「失败」小节
+  `recentFailures` 查的是 `task_executions`（任务执行）而不是 `agent_sessions`。
+  **不要再把会话失败接到 `recentFailures`** —— 那是两张表、两种处置动作。
+- **验收口径**：后端 `npx jest`（494 套 / 8316 例）+ `npx tsc --noEmit -p tsconfig.json` +
+  `npx tsc -p tsconfig.spec.json --noEmit`；前端 `npx tsc -b` + `npx vitest run`；
+  守卫 `node scripts/guards-repo-matrix.mjs`（121 段）。
+  **真机复验（本缺陷就是真机造数据才发现的，不接受单测代替）**：起真 PG/Redis → `npm run migration:run`
+  → `npm run build` → `node dist/main.js` → 建 N 个会话（`AI_PROVIDER=disabled` 时必失败）
+  → `GET /api/agent/inbox/counts` 的 `failedSessions` 应 ≥ N。
+- **发布前**：无迁移；新增 1 个 env 键（`AGENT_FAILED_SESSION_WINDOW_HOURS`，默认 24，已在
+  根与 `apps/admin-api` 两份 `.env.example` 同批登记）。回滚 = `git revert` 本轮提交，
+  `since` 缺省即旧行为，新小节删掉即恢复七小节。
+- **顺带修的一处**：执行器详情页的「判死窗口」此前显示 `heartbeatTimeoutMs`(90s)，
+  而真实判死窗口是 `effectiveOfflineAfterMs`(90s × 确认轮数 = 180s)。**字段一直在 API 里**，
+  后端注释有「不暴露它 UI 就与真实行为不符」的警告，只是前端手写类型缺字段。
+  现在读真值并显示迟滞成因；兜底 `heartbeatTimeoutMs × (staleOfflineConfirmations ?? 1)`。
+
 ## 待办收件箱：服务端聚合（R278，工作树，未发布）
 
 - **可用路径**：顶栏徽标现在显示两个口径——`待审批 N 单`（**审批单**数）与 `等待输入 M 会话`（会话数），点击进 `/inbox`。收件箱各小节在「取了 N 条但不是全部」时显示「显示前 N 条（共 M 条）」，计数读不到时显示「—」并带降级提示（**不再渲染成 0**或「当前没有待办」）。接口：`GET /api/agent/approvals/pending`、`GET /api/agent/inbox/counts`。
