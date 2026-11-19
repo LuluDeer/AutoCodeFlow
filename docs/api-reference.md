@@ -1444,7 +1444,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 262 个操作，覆盖 225 个路径。
+共 263 个操作，覆盖 226 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1653,6 +1653,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/sop/assignments/{assignmentId}` | 指派详情（含澄清对话全量） |
 | POST | `/sop/assignments/{assignmentId}/clarifications/{clarificationId}/reply` | 人工回复一条澄清（升级转人工后的答复入口） |
 | GET | `/sop/assignments/{assignmentId}/media` | 指派的媒体清单 |
+| GET | `/sop/clarifications/pending` | 列出跨 SOP、待人工答复的升级澄清（含总数、截断与降级标记） |
 | GET | `/sop/media/{mediaId}` | 下载执行器回传的媒体（截图/录屏） |
 | GET | `/task-templates` | 列出任务模板（官方 + 自定义） |
 | POST | `/task-templates` | 创建自定义任务模板 |

@@ -32,6 +32,37 @@ export enum ExecutionStatus {
   CANCELLED = "cancelled",
 }
 
+/**
+ * 「失败」的执行状态集合（**唯一事实源**，R280）。
+ *
+ * 为什么是这两个：告警口径（alerts.yml 的 status=~"failed|timeout"）与
+ * docs/operations.md 的失败率定义都已经是这个集合；此前各查询各写一份
+ * `status = FAILED`，导致超时风暴时「趋势曲线在涨、最近失败说没有」。
+ *
+ * ⚠️ KILLED / CANCELLED **不算失败**：那是人主动停的。
+ * ⚠️ 为什么必须含 TIMEOUT：同一个 timeout 语义会分叉落两个桶——
+ *    回调上报 ⇒ status=TIMEOUT（execution-callback.collaborator.ts:470）；
+ *    stale sweep ⇒ status=FAILED + failureReason=TIMEOUT（scheduler.service.ts:1838）。
+ *    只含 FAILED 会漏掉前者，只含 TIMEOUT 会漏掉后者。
+ *
+ * ⚠️ 其余调用点待迁移：本轮只钉 metrics 的三处（趋势已含 timeout、最近失败、
+ *    成功率卡的失败计数）；以下仍未对齐，属后续批次：
+ *    - modules/application/projects.service.ts:444-445（失败=FAILED，timeout
+ *      单列后缀；列表查询已 IN(FAILED,TIMEOUT)，但计数口径两份）
+ *    - modules/metrics/failure-reason-aggregate.ts:24（FAILED+TIMEOUT+KILLED，
+ *      执行页失败原因分布，含 KILLED 与本常量口径不同）
+ *    - modules/executor/executor.service.ts:8025（`SUM(status='failed')` 单值，
+ *      执行器 7 日面板）
+ *    - modules/task/execution-read.collaborator.ts:551（深链等值过滤，前端另
+ *      一切片处理）
+ *    ✅ execution-read.collaborator.ts:798-800 已经是正确口径（FAILED+TIMEOUT
+ *      全量，任务失败次数），**不要重复改**。
+ */
+export const FAILED_EXECUTION_STATUSES = [
+  ExecutionStatus.FAILED,
+  ExecutionStatus.TIMEOUT,
+] as const;
+
 export enum ExecutionFailureReason {
   PACKAGE_FETCH_FAILED = "package_fetch_failed",
   SCRIPT_ERROR = "script_error",

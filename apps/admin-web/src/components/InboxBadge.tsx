@@ -37,7 +37,15 @@ import '../i18n';
 
 type LoadState =
   | { status: 'loading' }
-  | { status: 'ready'; total: number | null; approvals: number | null; waiting: number | null; failed: number | null }
+  | {
+      status: 'ready';
+      total: number | null;
+      approvals: number | null;
+      waiting: number | null;
+      failed: number | null;
+      /** R280：待人工答复的 SOP 澄清（独立计数源，不进求和）。 */
+      sopClarifications: number | null;
+    }
   | { status: 'error' };
 
 /** 未知计数的统一占位（语言无关的 em dash；与下文字典词条成对，不可写成 0）。 */
@@ -49,8 +57,8 @@ export default function InboxBadge() {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
 
   const applyCounts = useCallback((counts: Awaited<ReturnType<typeof loadInboxCounts>>) => {
-    const { total, approvals, waiting, failed } = splitInboxCounts(counts);
-    setState({ status: 'ready', total, approvals, waiting, failed });
+    const { total, approvals, waiting, failed, sopClarifications } = splitInboxCounts(counts);
+    setState({ status: 'ready', total, approvals, waiting, failed, sopClarifications });
   }, []);
 
   const reload = useCallback(async () => {
@@ -106,6 +114,7 @@ export default function InboxBadge() {
   const approvals = state.status === 'ready' ? state.approvals : null;
   const waiting = state.status === 'ready' ? state.waiting : null;
   const failed = state.status === 'ready' ? state.failed : null;
+  const sopClarifications = state.status === 'ready' ? state.sopClarifications : null;
 
   // 0 件隐藏；未知（null）也不挂假数字——点击进收件箱看分小节真实状态。
   // R278：审批单数未知（null 且总数已归零）时同样不占顶栏；未知态在 /inbox 页
@@ -113,10 +122,12 @@ export default function InboxBadge() {
   //
   // R279：失败会话数是**独立计数源**（不进求和）⇒ 它非 0/非未知时徽标必须出来，
   // 哪怕其余待办全清零。判断「要不要显示」时它是与审批单并列的第二个出场地。
+  // R280：待答复澄清也是**独立计数源** ⇒ 与审批单/失败数并列的第三个出场地。
   if (state.status === 'ready' && total === 0) {
     const noApprovals = approvals === null || approvals === 0;
     const noFailures = failed === null || failed === 0;
-    if (noApprovals && noFailures) return null;
+    const noSopClarifications = sopClarifications === null || sopClarifications === 0;
+    if (noApprovals && noFailures && noSopClarifications) return null;
   }
 
   const badgeContent = total === null ? UNKNOWN : total;
@@ -127,8 +138,12 @@ export default function InboxBadge() {
   // `0` = 事实为零 ⇒ 这一格不占位（与小节隐藏同款纪律）；`null` = 读不到 ⇒ 必须显示
   // 「会话失败 —」，否则「没读到的失败数」会被自己藏起来——那正是本轮要消灭的形态。
   const failedText = failed === 0 ? '' : t('inbox.badge.failedSessions', { n: failed === null ? UNKNOWN : failed });
-  const known = approvals !== null && waiting !== null && failed !== null;
-  const unitText = [approvalsText, waitingText, failedText].filter(Boolean).join(' · ');
+  // R280：`0` = 事实为零 ⇒ 不占位；`null` = 读不到 ⇒ 必须显示「待答复澄清 —」。
+  const sopText = sopClarifications === 0
+    ? ''
+    : t('inbox.badge.sopClarifications', { n: sopClarifications === null ? UNKNOWN : sopClarifications });
+  const known = approvals !== null && waiting !== null && failed !== null && sopClarifications !== null;
+  const unitText = [approvalsText, waitingText, failedText, sopText].filter(Boolean).join(' · ');
 
   return (
     <Tooltip title={`${t('inbox.badge.tooltip')} · ${unitText}`}>
@@ -152,6 +167,12 @@ export default function InboxBadge() {
             <>
               <span data-testid="inbox-badge-sep2" aria-hidden="true">{t('common.listSep.space')}</span>
               <span data-testid="inbox-badge-failed">{failedText}</span>
+            </>
+          )}
+          {sopText && (
+            <>
+              <span data-testid="inbox-badge-sep3" aria-hidden="true">{t('common.listSep.space')}</span>
+              <span data-testid="inbox-badge-sop-clarifications">{sopText}</span>
             </>
           )}
         </span>

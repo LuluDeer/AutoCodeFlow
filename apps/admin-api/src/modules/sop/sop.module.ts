@@ -9,6 +9,9 @@ import { SopClarification } from "./entities/sop-clarification.entity";
 import { AgentMedia } from "./entities/agent-media.entity";
 import { SopService } from "./sop.service";
 import { SopMediaService } from "./sop-media.service";
+// R280：跨 SOP 的待答复澄清聚合（只读；SopClarification/SopAssignment/Sop 三个
+// 仓储已在下方 TypeOrmModule.forFeature 里，无需新增 imports）。
+import { SopClarificationInboxService } from "./sop-clarification-inbox.service";
 import { AgentMediaRetentionService } from "./agent-media-retention.service";
 import { SopController } from "./sop.controller";
 import { SopCollabController } from "./sop-collab.controller";
@@ -61,7 +64,13 @@ import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
     BullModule.registerQueue({ name: AGENT_QUEUE_NAME }),
   ],
   controllers: [SopController, SopCollabController],
-  providers: [SopService, SopMediaService, AgentMediaRetentionService],
+  providers: [
+    SopService,
+    SopMediaService,
+    AgentMediaRetentionService,
+    // R280：SopController 的 `clarificationsInbox` 注入源。
+    SopClarificationInboxService,
+  ],
   exports: [SopService],
 })
 export class SopModule {}

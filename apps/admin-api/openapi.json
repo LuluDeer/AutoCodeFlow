@@ -237,6 +237,17 @@
             "type": "number",
             "x-i18n-en": "Number of deployments pending approval. null when it cannot be read"
           },
+          "failedSessions": {
+            "description": "窗口内失败的 Agent 会话数（`failed` + `budget_exceeded`，**不含 `aborted`** ——那是人主动停的，不是待办）。**独立显示项**，不参与任何会话求和。读不到 ⇒ null，**绝不 0**",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Number of Agent sessions that failed inside the window (`failed` + `budget_exceeded`; **`aborted` is excluded** - that was stopped deliberately and is not a to-do). **Shown independently**; not summed into any session total. null when unreadable - **never 0**"
+          },
+          "failedWindowHours": {
+            "description": "失败统计窗口（小时），供前端渲染「近 N 小时」。**配置而非事实** ⇒ 读不到时回默认值 24 而不是 null",
+            "type": "number",
+            "x-i18n-en": "Failure-counting window in hours, used by the UI to render \"last N hours\". **Configuration, not a fact** => falls back to the default 24 rather than null"
+          },
           "pendingApprovals": {
             "description": "待审批单数（口径 = 审批单，与列表行数一致；会话数见 waitingSessions）。读不到 ⇒ null",
             "nullable": true,
@@ -270,6 +281,8 @@
           "backlogTruncated",
           "deployments",
           "queueStall",
+          "failedSessions",
+          "failedWindowHours",
           "degraded"
         ],
         "type": "object"
@@ -9519,6 +9532,115 @@
         ],
         "type": "object"
       },
+      "SopPendingClarificationItemDto": {
+        "properties": {
+          "askedAt": {
+            "description": "提问时刻（ISO，= 澄清行 createdAt）",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "Time the question was asked (ISO, = the clarification row's createdAt)"
+          },
+          "assignmentId": {
+            "description": "所属指派 id",
+            "format": "uuid",
+            "type": "string",
+            "x-i18n-en": "Owning assignment id"
+          },
+          "assignmentStatus": {
+            "description": "所属指派**当前**状态，如实回。升级后通常是 `in_progress`（不是 `blocked`）——「升级后按 blocked 筛不到」正是本端点存在的理由之一",
+            "type": "string",
+            "x-i18n-en": "The assignment's **current** status, reported verbatim. After escalation it is usually `in_progress` (not `blocked`) - \"an escalated assignment cannot be found by filtering on blocked\" is one of the reasons this endpoint exists"
+          },
+          "clarificationId": {
+            "description": "澄清行 id（答复端点用它定位）",
+            "format": "uuid",
+            "type": "string",
+            "x-i18n-en": "Clarification row id (the reply endpoint uses it to locate the row)"
+          },
+          "question": {
+            "description": "执行器 Agent 的原始疑问（**服务端不截断**，截断由前端做——服务端截断会让「点开看全文」永远拿不到全文）",
+            "type": "string",
+            "x-i18n-en": "The executor agent's original question (**the server does not truncate**; truncation is a rendering decision - truncating here would make \"open to read the full text\" impossible)"
+          },
+          "reviewSessionId": {
+            "description": "处理本次澄清的 `sop_review` 会话（因果链；无会话时为 null）",
+            "format": "uuid",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "The `sop_review` session that handled this clarification (causal chain; null when there is none)"
+          },
+          "round": {
+            "description": "澄清轮次（1 起）",
+            "type": "number",
+            "x-i18n-en": "Clarification round (1-based)"
+          },
+          "sopId": {
+            "description": "所属 SOP id（深链锚点）",
+            "format": "uuid",
+            "type": "string",
+            "x-i18n-en": "Owning SOP id (deep-link anchor)"
+          },
+          "sopName": {
+            "description": "SOP 标题；**读不到或为空时一律 null**，绝不退回 uuid（uuid 不是给人看的标题）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "SOP title; **null when unreadable or empty** - never falls back to the uuid (a uuid is not a human-readable title)"
+          }
+        },
+        "required": [
+          "clarificationId",
+          "assignmentId",
+          "sopId",
+          "sopName",
+          "round",
+          "question",
+          "askedAt",
+          "assignmentStatus",
+          "reviewSessionId"
+        ],
+        "type": "object"
+      },
+      "SopPendingClarificationsResponseDto": {
+        "properties": {
+          "degraded": {
+            "description": "是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败",
+            "type": "boolean",
+            "x-i18n-en": "Whether any sub-query failed to read (the corresponding field is then null). **HTTP stays 200**: partially usable is not the same as a broken page"
+          },
+          "items": {
+            "description": "按提问时刻升序（最久没人管的在前——「上周升级还没人管」正是最该被看见的）",
+            "items": {
+              "$ref": "#/components/schemas/SopPendingClarificationItemDto"
+            },
+            "type": "array",
+            "x-i18n-en": "Ascending by ask time (longest-ignored first - \"escalated last week, still nobody handled it\" is exactly what most needs to be seen)"
+          },
+          "returned": {
+            "description": "本次实际返回的行数（= items.length）",
+            "type": "number",
+            "x-i18n-en": "Number of rows actually returned (= items.length)"
+          },
+          "total": {
+            "description": "待人工答复的升级澄清**总数**（独立 `getCount()`，不是 `items.length` 的别名）；读不到 ⇒ null，**绝不 0**",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "**Total** number of escalated clarifications awaiting a human reply (an independent `getCount()`, not an alias for `items.length`); null when it cannot be read - **never 0**"
+          },
+          "truncated": {
+            "description": "是否截断（`returned < total`）。`total` 未知时为 false——此时「是否截断」本身也不可知，由 `degraded` 表达",
+            "type": "boolean",
+            "x-i18n-en": "Whether the result is truncated (`returned < total`). False when `total` is unknown - in that case truncation itself is unknowable, and `degraded` says so"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "returned",
+          "truncated",
+          "degraded"
+        ],
+        "type": "object"
+      },
       "SopPublishResponseDto": {
         "properties": {
           "sop": {
@@ -12815,6 +12937,14 @@
           {
             "in": "query",
             "name": "pageSize",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
             "required": true,
             "schema": {
               "type": "string"
@@ -21363,6 +21493,45 @@
         ],
         "x-i18n-en": {
           "summary": "List of assigned media"
+        }
+      }
+    },
+    "/sop/clarifications/pending": {
+      "get": {
+        "operationId": "SopController_listPendingClarifications",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopPendingClarificationsResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "列出跨 SOP、待人工答复的升级澄清（含总数、截断与降级标记）",
+        "tags": [
+          "sop"
+        ],
+        "x-i18n-en": {
+          "summary": "List escalated clarifications awaiting a human reply across SOPs (with the total, truncation and degradation markers)"
         }
       }
     },

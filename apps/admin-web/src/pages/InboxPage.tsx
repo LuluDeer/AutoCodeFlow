@@ -42,7 +42,7 @@ import {
   isInboxAllClear,
   isSectionVisible,
   noticeTitle,
-  budgetExcludedCount,
+  emptySectionReason,
   sectionCountLabel,
   sectionNotices,
   sectionWindowLabel,
@@ -53,6 +53,7 @@ import {
   sortInboxItemsByWaitingSince,
   type InboxItem,
   type InboxSectionKey,
+  type InboxSectionState,
   type InboxSections,
 } from '../api/inbox';
 
@@ -65,6 +66,8 @@ const SECTION_ORDER: InboxSectionKey[] = [
   'agentWaiting',
   // R279：紧跟等待输入——两者是「Agent 会话出了状况」的连续视角（还在等 / 已终止）。
   'agentFailures',
+  // R280：「升级到人工」是 Agent 串出状况后的**第三站**（机器答不了，要你上）。
+  'sopClarifications',
   'stalled',
   'backlogged',
   'queueStall',
@@ -76,6 +79,7 @@ const SECTION_TAG_COLOR: Record<InboxSectionKey, string> = {
   agentApprovals: 'gold',
   agentWaiting: 'blue',
   agentFailures: 'red',
+  sopClarifications: 'purple',
   stalled: 'red',
   backlogged: 'volcano',
   queueStall: 'magenta',
@@ -88,14 +92,34 @@ const SECTION_TAG_COLOR: Record<InboxSectionKey, string> = {
  * R279：`agentFailures` 也是只读——失败会话的处置（改配置 / 改预算 / 重跑）在会话
  * 详情页做，不在收件箱点按钮：同一行可能是配置问题、也可能是个例，收件箱不该替
  * 运营猜是哪一个（brief D4）。放行动作只有「去会话详情」。
+ *
+ * R280：`sopClarifications` 同样只读——答复澄清要看到 SOP 版本/上下文（该页的
+ * 答复弹窗），本页只给「去哪个 SOP 看」的深链，不在这里猜答复方式。
  */
-const READONLY_SECTIONS: ReadonlySet<InboxSectionKey> = new Set(['recentFailures', 'agentFailures']);
+const READONLY_SECTIONS: ReadonlySet<InboxSectionKey> = new Set([
+  'recentFailures',
+  'agentFailures',
+  'sopClarifications',
+]);
 
 function dispatchInboxRefresh(): void {
   window.dispatchEvent(new Event(INBOX_REFRESH_EVENT));
 }
 
 /** 副标题本地化组合：提交者前缀 / 工具名 + 理由；API 层只回原始字段。 */
+/**
+ * 主标题的本地化组合（API 层只回原始字段）。
+ *
+ * R280：澄清行的标题是执行器的**原始疑问**，可能是空串（`question` 未记录）——
+ * 空标题会被读成「标题渲染坏了」，所以这里显式说「未记录原文」而不是留白。
+ */
+function inboxTitleText(item: InboxItem, t: ReturnType<typeof useTranslation>['t']): string {
+  if (item.section === 'sopClarifications' && !item.title.trim()) {
+    return t('inbox.sop.noQuestion');
+  }
+  return item.title;
+}
+
 function inboxSubtitleText(item: InboxItem, t: ReturnType<typeof useTranslation>['t']): string | undefined {
   if (item.section === 'deployments' && item.subtitle) {
     return t('inbox.subtitle.requester', { name: item.subtitle });
@@ -107,6 +131,14 @@ function inboxSubtitleText(item: InboxItem, t: ReturnType<typeof useTranslation>
   // R279/D4：失败原因**必须一眼可见**。会话没记 errorMessage 时明确说出来——
   // 留白会被读成「没有原因」和「读取失败」中不确切的那一个。
   if (item.section === 'agentFailures') return item.subtitle ?? t('inbox.failed.noReason');
+  // R280：`SOP 名 · 第 N 轮`。SOP 名读不到（`sopName: null`）⇒ 「（未命名 SOP）」，
+  // **绝不退回 uuid**——一串十六进制对运营没有任何信息量，还会被误读成「已定位」。
+  if (item.section === 'sopClarifications') {
+    const c = item.clarification;
+    if (!c) return item.subtitle;
+    const name = c.sopName ?? t('inbox.sop.unnamed');
+    return `${name} · ${t('inbox.sop.round', { round: c.round })}`;
+  }
   return item.subtitle;
 }
 
@@ -215,6 +247,30 @@ function InboxRowActions({
   }
 }
 
+/**
+ * 空列表时的措辞（四种形态的唯一翻译出口，判定在 `api/inbox.emptySectionReason`）。
+ *
+ * ①「本类暂无待办」只有在**确认清零**时才说；②③ 是「有 N 条但不在下方」的两种成因
+ * （口径差 / 未被装配出来），④ 是「读不到」——四种说成一句话就是结论错。
+ */
+function emptySectionText(section: InboxSectionState, t: ReturnType<typeof useTranslation>['t']): string {
+  const reason = emptySectionReason(section);
+  switch (reason.kind) {
+    case 'unknown':
+      return t('inbox.empty.unknownSection');
+    case 'budgetExcluded':
+      return t('inbox.failed.pendingBeyondRows', { n: reason.n });
+    case 'beyondRows':
+      // 措辞按小节选：失败会话那边是「预算耗尽」，澄清这边是「行没装配出来」——
+      // 同一句数字、两种成因，说错成因等于给运营一条错线索。
+      return section.key === 'sopClarifications'
+        ? t('inbox.sop.pendingBeyondRows', { n: reason.n })
+        : t('inbox.empty.pendingBeyondRows', { n: reason.n });
+    default:
+      return t('inbox.empty.section');
+  }
+}
+
 interface InboxRowProps {
   item: InboxItem;
   canWrite: boolean;
@@ -237,6 +293,7 @@ interface InboxRowProps {
 function InboxRow({ item, canWrite, actingId, userId, onApprove, onReject, onDeny, onResume }: InboxRowProps) {
   const { t } = useTranslation();
   const subtitle = inboxSubtitleText(item, t);
+  const title = inboxTitleText(item, t);
   return (
     <div
       data-testid={`inbox-row-${item.section}`}
@@ -253,7 +310,7 @@ function InboxRow({ item, canWrite, actingId, userId, onApprove, onReject, onDen
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
           <Text strong style={{ fontSize: 13 }}>
-            {item.title}
+            {title}
           </Text>
           <Text type="secondary" style={{ fontSize: 12 }}>
             {item.section === 'stalled' ? t('inbox.inspectProgress') : item.waitingSince
@@ -483,11 +540,7 @@ export default function InboxPage() {
               // 只进计数、不进行列表）。这时既不能说「暂无」（有 N 条待处理），也不能
               // 只说「读不到」（读到了，是 5）。所以这一格单独说清「几条、为什么不在下方」，
               // 否则 `isInboxAllClear` 因为这个差值判「未清零」，而页面上看不到原因。
-              section.total === null || section.degraded
-                ? t('inbox.empty.unknownSection')
-                : budgetExcludedCount(section) > 0
-                  ? t('inbox.failed.pendingBeyondRows', { n: budgetExcludedCount(section) })
-                  : t('inbox.empty.section')
+              emptySectionText(section, t)
             }
           />
         ) : (

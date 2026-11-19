@@ -152,6 +152,8 @@ const sections = (failures: InboxSectionState): InboxSections =>
     agentApprovals: ready('agentApprovals', [], { total: 0 }),
     agentWaiting: ready('agentWaiting', [], { total: 0 }),
     agentFailures: failures,
+    // R280：第八节之外新增的第九个小节，本文件不是它的被测对象 ⇒ 恒为「确认清零」。
+    sopClarifications: ready('sopClarifications', [], { total: 0 }),
     stalled: ready('stalled', [], { total: 0 }),
     backlogged: ready('backlogged', [], { total: 0 }),
     queueStall: ready('queueStall', []),
@@ -163,6 +165,7 @@ const counts = (overrides: Partial<InboxCountMap> = {}): InboxCountMap => ({
   agentApprovals: null,
   agentWaiting: 0,
   agentFailures: 0,
+  sopClarifications: 0,
   stalled: 0,
   backlogged: 0,
   queueStall: 0,
@@ -220,7 +223,11 @@ describe('R279 ① failedSessions 读不到（null）⇒ 显示「—」，绝�
     expect(map.agentFailures).toBeNull();
     // 求和项全 0 ⇒ 总数仍可确定为 0：失败数是**独立显示项**，读不到也不拖垮总数。
     expect(summarizeInboxCounts(map)).toBe(0);
-    expect(splitInboxCounts(map)).toEqual({ approvals: 0, waiting: 0, failed: null, total: 0 });
+    expect(splitInboxCounts(map)).toEqual(
+      // R280：`sopClarifications` 也是独立显示项；本文件的 mockBackend 没有该端点
+      // ⇒ 读不到 ⇒ null（同样绝不回落 0）。
+      { approvals: 0, waiting: 0, failed: null, sopClarifications: null, total: 0 },
+    );
   });
 
   it('小节层：`total:null` ⇒ 标题「—」、带降级提示、**不**渲染「就这些」的空态', async () => {
@@ -267,8 +274,9 @@ describe('R279 ② failedSessions 为 0（事实为零）⇒ 小节隐藏', () =
     expect(isSectionVisible(ready('agentFailures', [], { total: 0 }))).toBe(false);
     expect(isSectionVisible(ready('agentFailures', [], { total: null, degraded: true }))).toBe(true);
     expect(isSectionVisible(ready('agentFailures', [failureItem('s1')], { total: 1 }))).toBe(true);
-    // 其余七个小节不因 0 而隐藏（既有交付面不动）。
-    for (const key of INBOX_SECTIONS.filter((k) => k !== 'agentFailures')) {
+    // 其余小节不因 0 而隐藏（既有交付面不动）。唯一同类是 R280 的
+    // `sopClarifications`——它同样「事实为零就隐藏」（brief §四），故一并排除。
+    for (const key of INBOX_SECTIONS.filter((k) => k !== 'agentFailures' && k !== 'sopClarifications')) {
       expect(isSectionVisible(ready(key, [], { total: 0 }))).toBe(true);
     }
   });
@@ -540,9 +548,11 @@ describe('R279 小节隔离：失败源挂掉只让它自己是 error 态', () =
 // ── 新增小节的位置与 agentApi 方法独立（不混进 list 的调用计数） ─────────────
 
 describe('R279 小节位置与请求形状', () => {
-  it('`agentFailures` 紧跟在 `agentWaiting` 之后（第八个小节，不插到别处）', () => {
+  it('`agentFailures` 紧跟在 `agentWaiting` 之后（不插到别处）', () => {
     expect(INBOX_SECTIONS.indexOf('agentFailures')).toBe(INBOX_SECTIONS.indexOf('agentWaiting') + 1);
-    expect(INBOX_SECTIONS).toHaveLength(8);
+    // R280 契约变更：第 9 个小节 `sopClarifications` 追加在末尾——`agentFailures`
+    // 与 `agentWaiting` 的相对位置不变，长度从 8 变 9（不是既有断言被「修」）。
+    expect(INBOX_SECTIONS).toHaveLength(9);
   });
 
   it('失败行走**独立**方法（不污染 `agentApi.list` 的调用计数）', async () => {

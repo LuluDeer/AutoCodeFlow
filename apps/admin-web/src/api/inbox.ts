@@ -6,10 +6,25 @@
  *   2. Agent 会话等待审批（挂起在 waiting_input、有待处置审批单）；
  *   3. Agent 会话等待人工输入/澄清（waiting_input 会话）；
  *   4. **Agent 会话失败**（R279：`failed` + `budget_exceeded`，时间窗内）；
- *   5. 卡住会话（running 且久无进展，`stalled=1`）；
- *   6. 调度积压（pending 但队列里没有对应 job，`backlogged`）；
- *   7. 队列停摆观测（`queue-stall`，结构性告警横幅，不是逐条待办）；
- *   8. 最近失败（复用 `/metrics/failures`，只读跳转，不在这里处置）。
+ *   5. **待人工答复的 SOP 澄清**（R280：`escalated_to_human` 且指派未终态）；
+ *   6. 卡住会话（running 且久无进展，`stalled=1`）；
+ *   7. 调度积压（pending 但队列里没有对应 job，`backlogged`）；
+ *   8. 队列停摆观测（`queue-stall`，结构性告警横幅，不是逐条待办）；
+ *   9. 最近失败（复用 `/metrics/failures`，只读跳转，不在这里处置）。
+ *
+ * ## R280：为什么必须新增第 9 个面（「升级到人工」没有接收方）
+ *
+ * `sop_clarifications.resolution = 'escalated_to_human'` 是**真实存在**的状态，且
+ * 唯一出口是通知（`notifyEscalation`）。三条通道同时不可靠：
+ * ① 收件箱前八节没有一节会显示它；② 升级后 assignment 被立刻推回 `in_progress`
+ * （「升级即复核完毕」），所以**按 `status=blocked` 永远筛不到**；③ 那条通知可被
+ * `scope=global` 的静默规则无条件吞掉（`notifyEscalation` 没传 `taskId`）。
+ * ⇒ 前端读库（`GET /sop/clarifications/pending`），不受通知静默规则影响。
+ *
+ * 口径（brief D1）：
+ * - **计入**：`resolution='escalated_to_human'` 且所属指派未终态（非 completed/failed/cancelled）；
+ * - **不计入** `resolution IS NULL`（那是等执行器/复核 Agent 的，不是等人）；
+ * - **无时间窗**：升级澄清没处理就一直挂着 ⇒ 用窗口会让「上周升级还没人管」静默消失。
  *
  * ## R279：为什么必须新增第 8 个面（不是「读数错了」，是「没建模」）
  *
@@ -54,16 +69,18 @@ import {
 } from './agent';
 import { deploymentsApi, type AppDeployment } from './applications';
 import { metricsApi, type RecentFailure } from './metrics';
+import { sopsApi } from './sops';
 
 /** 待办变更后通知顶栏徽标重取计数的窗口事件名。 */
 export const INBOX_REFRESH_EVENT = 'autoflow:inbox-refresh';
 
-/** 收件箱小节键（R279 起八个小节；`agentFailures` 紧跟在 `agentWaiting` 之后）。 */
+/** 收件箱小节键（R280 起九个小节；`sopClarifications` 在 `agentFailures` 之后）。 */
 export const INBOX_SECTIONS = [
   'deployments',
   'agentApprovals',
   'agentWaiting',
   'agentFailures',
+  'sopClarifications',
   'stalled',
   'backlogged',
   'queueStall',
@@ -106,6 +123,23 @@ export interface InboxItem {
    * 悬停/后续扩展；缺省 `undefined` = 会话没有 `errorMessage`（**不编造原因**）。
    */
   errorMessage?: string;
+  /**
+   * R280/sopClarifications：该行对应的 SOP 澄清（原文未截断）。
+   *
+   * 行内展示用 `title`（已截断的 `question`）+ `subtitle`（SOP 名 · 第 N 轮）；
+   * 这里保留原文，供后续「点开看全文」与答复动作定位（`clarificationId`/`assignmentId`）。
+   */
+  clarification?: {
+    clarificationId: string;
+    assignmentId: string;
+    sopId: string;
+    sopName: string | null;
+    round: number;
+    question: string;
+    askedAt: string;
+    assignmentStatus: string;
+    reviewSessionId: string | null;
+  };
 }
 
 /** 单个小节的装载状态。 */
@@ -447,6 +481,10 @@ async function readInboxCounts(
         stalled: num(raw?.stalled),
         backlogged: num(raw?.backlogged),
         queueStall: num(raw?.queueStall),
+        // R280：`inbox/counts` **没有**这个字段（后端本轮契约冻结），占位 null；
+        // `loadInboxCounts` 会用 `pending` 的 `total` 覆写它。这里写 null 而不是 0，
+        // 是因为「本端点不提供」不等于「事实为零」。
+        sopClarifications: null,
         recentFailures: null,
       },
       // 窗口是**配置**不是事实 ⇒ 读不到时回默认值（与「计数读不到 = null」不同）。
@@ -511,7 +549,111 @@ async function loadAgentFailures(): Promise<InboxSectionState> {
   });
 }
 
-/** 5. 卡住会话（running 且久无进展）。 */
+// ── 5. 待人工答复的 SOP 澄清（R280 新增小节） ────────────────────────────────
+
+/** 澄清问题行内展示的截断长度（brief §四：`question` 截断 120 字符 + 省略号）。 */
+export const CLARIFICATION_QUESTION_MAX_CHARS = 120;
+
+/**
+ * 澄清问题截断（纯函数，与 `truncateFailureReason` 同款口径）。
+ *
+ * 省略号是「后面还有」的可视证据，不是装饰：没有它，截断后的文本会被读成
+ * 「执行器就问了这么一句」。原文**不丢**（保留在 `item.clarification.question`），
+ * 服务端也刻意不截断（服务端截断会让「点开看全文」永远拿不到全文）。
+ */
+export function truncateClarificationQuestion(
+  text: string | null | undefined,
+  limit: number = CLARIFICATION_QUESTION_MAX_CHARS,
+): string {
+  const raw = (text ?? '').trim();
+  if (raw.length <= limit) return raw;
+  return `${raw.slice(0, limit)}…`;
+}
+
+/**
+ * 待答复澄清的深链。
+ *
+ * **只用 SOP 页已真实支持的参数**：`/sops?sop=<id>`（`SopsPage` 的审计深链，
+ * 打开该 SOP 的详情抽屉 → 指派页签）。
+ *
+ * ⚠️ 已知限制：SOP 页**暂不支持按 assignment 深链**（没有 `?assignment=<id>` 这类
+ * 参数，`SopsPage` 的 `useSearchParams` 只读 `sop`）。所以这里不编造 query 参数：
+ * 用户落到该 SOP 的指派列表后，需要自己按轮次/问题定位那一行。要做真正的按工单
+ * 深链，得先给 `SopsPage` 加参数——那是另一个切片，不在本轮写域内。
+ */
+export function sopClarificationUrl(sopId: string): string {
+  const params = new URLSearchParams({ sop: sopId });
+  return `/sops?${params}`;
+}
+
+/**
+ * 5. 待人工答复的 SOP 澄清（R280）。
+ *
+ * ## 数据源唯一，计数与行出自**同一个** `pending` 响应
+ *
+ * 后端只有一个读面（brief D2：`GET /sop/clarifications/pending`），没有往
+ * `inbox/counts` 里加字段——本轮后端契约已冻结。所以本小节与顶栏计数都从它取：
+ * 这里取行 + `total`，`loadInboxCounts` 只取 `total`。**不为此多开端点**。
+ *
+ * ## `total` / `truncated` / `degraded` 的三态（与后端逐字对齐）
+ *
+ * - `total: null` ⇒ 读不到 ⇒ 保留本节、标题显示「—」+ 降级提示，**绝不 0**；
+ * - `total: 0` ⇒ 事实为零 ⇒ 整节隐藏（`isSectionVisible`）；
+ * - `truncated` 以**服务端**为权威（它看得见全库）；缺字段的旧后端才回落本地
+ *   `metaOf`，且回落时 `total` 未知 ⇒ `false`（未知由 `degraded` 表达）。
+ *
+ * ## 无时间窗
+ *
+ * 与失败会话不同：升级澄清没处理就一直挂着，用窗口会让「上周升级还没人管」
+ * **静默消失**——那正是最该被看见的东西（brief D1）。
+ */
+async function loadSopClarifications(signal?: AbortSignal): Promise<InboxSectionState> {
+  const res = await sopsApi.pendingClarifications(SECTION_PAGE_SIZE, signal);
+  const rows = res?.items ?? [];
+  const items = rows.map((row) => {
+    const question = truncateClarificationQuestion(row.question);
+    return {
+      id: `sopc-${row.clarificationId}`,
+      section: 'sopClarifications' as const,
+      // 标题 = 执行器的原始疑问（截断后）；它才是「要我答什么」。
+      title: question,
+      // 副标题只放**原文**（SOP 名 / null），前缀与「第 N 轮」由页面本地化拼装——
+      // API 层不拼自然语言（与 deployments 的提交者前缀同款分工）。
+      subtitle: row.sopName ?? undefined,
+      // 「何时开始等我」= 提问时刻。这里恰是「越久越该在前面」的那个时间。
+      waitingSince: row.askedAt ?? null,
+      detailUrl: sopClarificationUrl(row.sopId),
+      clarification: row,
+    };
+  });
+  const meta = metaOf(items.length, res?.total);
+  return READY('sopClarifications', items, {
+    total: meta.total,
+    returned: meta.returned,
+    // 服务端是截断判定的权威；缺字段才回落本地口径（同 `loadAgentWaiting`）。
+    truncated: res?.truncated ?? meta.truncated,
+    degraded: !!res?.degraded,
+  });
+}
+
+/**
+ * 顶栏「待答复澄清 N」的计数（独立读一次 `pending` 的 `total`）。
+ *
+ * 为什么允许这次额外请求：`inbox/counts` 里**没有**这个字段（后端本轮冻结）。
+ * 编一个本地 0 才是真正不可接受的——那会把「没读过」伪装成「没有」。
+ * 读失败 / 503 ⇒ `null`（未知），绝不回落 0。
+ */
+async function readSopClarificationTotal(signal?: AbortSignal): Promise<number | null> {
+  try {
+    const res = await sopsApi.pendingClarifications(SECTION_PAGE_SIZE, signal);
+    const total = res?.total;
+    return typeof total === 'number' && Number.isFinite(total) ? total : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 6. 卡住会话（running 且久无进展）。 */
 async function loadStalled(): Promise<{ items: InboxItem[]; total: number | null; returned: number; truncated: boolean }> {
   const res = await agentApi.list({ stalled: 1, page: 1, pageSize: SECTION_PAGE_SIZE });
   const items = (res?.items ?? []).map((s) => ({
@@ -527,7 +669,7 @@ async function loadStalled(): Promise<{ items: InboxItem[]; total: number | null
   return { items, ...metaOf(items.length, res?.total) };
 }
 
-/** 6. 调度积压：后端只回 sessionIds，再用 pending 列表补对象信息。 */
+/** 7. 调度积压：后端只回 sessionIds，再用 pending 列表补对象信息。 */
 async function loadBacklogged(): Promise<{ items: InboxItem[]; truncated: boolean; probed: number }> {
   const backlog = await agentApi.backloggedCount();
   const ids = backlog?.sessionIds ?? [];
@@ -555,7 +697,7 @@ async function loadBacklogged(): Promise<{ items: InboxItem[]; truncated: boolea
   return { items, truncated: !!backlog?.truncated, probed: backlog?.probed ?? ids.length };
 }
 
-/** 7. 队列停摆观测（横幅，不是逐条待办）。 */
+/** 8. 队列停摆观测（横幅，不是逐条待办）。 */
 export interface QueueStallSnapshot {
   stalled: boolean;
   reason: string | null;
@@ -572,7 +714,7 @@ async function loadQueueStall(): Promise<QueueStallSnapshot | null> {
   return agentApi.queueStall();
 }
 
-/** 8. 最近失败（只读跳转）。 */
+/** 9. 最近失败（只读跳转）。 */
 async function loadRecentFailures(signal?: AbortSignal): Promise<InboxItem[]> {
   const failures = await metricsApi.getRecentFailures(undefined, signal);
   return (failures ?? []).map((f) => ({
@@ -590,7 +732,7 @@ type StallResult = { snapshot: QueueStallSnapshot | null } | { error: unknown };
 
 /** 全量装载：小节互相隔离，失败小节保留 error 态。 */
 export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
-  const [deployments, agentWaiting, agentFailures, stalled, backlogged, queueStall, recentFailures] = await Promise.all([
+  const [deployments, agentWaiting, agentFailures, sopClarifications, stalled, backlogged, queueStall, recentFailures] = await Promise.all([
     loadDeployments(signal).then(
       ({ items, ...meta }) => READY('deployments', items, meta),
       (error) => ERROR('deployments', error),
@@ -599,8 +741,10 @@ export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
       approvals: ERROR('agentApprovals', error),
       sessions: ERROR('agentWaiting', error),
     })),
-    // R279：新小节独立装载——失败**只**让它自己是 error 态，不拖垮其余七个小节。
+    // R279：新小节独立装载——失败**只**让它自己是 error 态，不拖垮其余小节。
     loadAgentFailures().catch((error: unknown) => ERROR('agentFailures', error)),
+    // R280：同理。**503（服务未装配）也走这里** ⇒ error 态 + 重试，绝不渲染成空列表。
+    loadSopClarifications(signal).catch((error: unknown) => ERROR('sopClarifications', error)),
     loadStalled().then(
       ({ items, ...meta }) => READY('stalled', items, meta),
       (error) => ERROR('stalled', error),
@@ -635,6 +779,7 @@ export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
     agentApprovals: agentWaiting.approvals,
     agentWaiting: agentWaiting.sessions,
     agentFailures,
+    sopClarifications,
     stalled,
     backlogged,
     queueStall: queueStallSection,
@@ -671,8 +816,16 @@ function queueStallBannerItem(snapshot: QueueStallSnapshot): InboxItem {
  */
 export async function loadInboxCounts(signal?: AbortSignal): Promise<InboxCountMap> {
   // 失败语义全在 readInboxCounts：整体不可用 ⇒ 全部 null（未知），绝不回落 0。
-  const { counts } = await readInboxCounts(signal);
-  return counts;
+  //
+  // R280：`sopClarifications` 的计数**不在** `inbox/counts` 里（后端本轮契约冻结、
+  // 不加字段），唯一权威来源是 `GET /sop/clarifications/pending` 的 `total`。
+  // 所以这里是「主聚合 + 一路独立读」：后者失败 ⇒ 该键 `null`（未知），其余键照常。
+  // 两路并行发：彼此不依赖，串行会白等一个往返。
+  const [{ counts }, sopPendingTotal] = await Promise.all([
+    readInboxCounts(signal),
+    readSopClarificationTotal(signal),
+  ]);
+  return { ...counts, sopClarifications: sopPendingTotal };
 }
 
 // ── 纯函数（可单测） ───────────────────────────────────────────────────────────
@@ -706,13 +859,17 @@ export function summarizeInboxCounts(counts: InboxCountMap): number | null {
  * - `agentFailures`（R279/D3）——**同一会话可能在窗口内先 failed、修好后被重跑成
  *   其他状态**，把失败数与「还在等我处置的会话数」相加会重复计；而且失败还需要
  *   「先判断为什么」，与「等你点同意」不是同一件事（brief D2 同款理由）；
+ * - `sopClarifications`（R280/D4）——SOP 澄清的**去重单位是「一问」**，与 Agent 会话的
+ *   「一会话」没有共同单位：一条工单可能有多轮澄清，一个会话也可能完全没有澄清。
+ *   相加等于把两种计价单位混成一个数（brief §四「不进会话求和」）；
  * - `recentFailures`——只读参考项，从设计上就不是待办。
  *
- * ⚠️ 这三个是**独立显示项**，不是「不显示项」：它们各自在徽标/小节里单独成句。
+ * ⚠️ 这四个是**独立显示项**，不是「不显示项」：它们各自在徽标/小节里单独成句。
  */
 const SESSION_SUM_EXCLUDED: ReadonlySet<InboxSectionKey> = new Set([
   'agentApprovals',
   'agentFailures',
+  'sopClarifications',
   'recentFailures',
 ]);
 
@@ -726,6 +883,8 @@ export function splitInboxCounts(counts: InboxCountMap): {
   approvals: number | null;
   waiting: number | null;
   failed: number | null;
+  /** R280：**待人工答复的 SOP 澄清 N 问**（`null` = 读不到，显示「—」）。 */
+  sopClarifications: number | null;
   total: number | null;
 } {
   return {
@@ -733,6 +892,8 @@ export function splitInboxCounts(counts: InboxCountMap): {
     waiting: counts.agentWaiting,
     // R279：「会话失败 N」是**独立显示项**，与两个会话口径并列，不参与 total。
     failed: counts.agentFailures,
+    // R280：同上——「待答复的澄清 N 问」也是独立显示项（brief D4）。
+    sopClarifications: counts.sopClarifications,
     total: summarizeInboxCounts(counts),
   };
 }
@@ -811,15 +972,26 @@ export function budgetExcludedCount(section: InboxSectionState): number {
 }
 
 /**
- * `agentFailures` 小节是否应渲染（R279/D1 的唯一判定点）。
+ * 「事实为零就隐藏」的两个小节（`agentFailures` R279 / `sopClarifications` R280）。
+ *
+ * 其余小节恒为 true：既有交付面不因计数 0 而消失（那是**已经存在**的可见性，
+ * 收紧它等于让运营失去熟悉的位置）。
+ */
+const ZERO_HIDES_SECTION: ReadonlySet<InboxSectionKey> = new Set<InboxSectionKey>([
+  'agentFailures',
+  'sopClarifications',
+]);
+
+/**
+ * `agentFailures` / `sopClarifications` 小节是否应渲染（D1 的唯一判定点）。
  *
  * - `total === 0` ⇒ 事实为零 ⇒ **隐藏**（与 `InboxBadge` 的 0 件隐藏同款）；
  * - `total === null` ⇒ 读不到 ⇒ **保留**（显示「—」+ 降级提示，未知必须可见）；
  * - 非 ready 态（装载 error）⇒ 保留（错误态带重试，绝不渲染成空列表）。
- * - 其余小节恒为 true（既有七个小节不因计数 0 而隐藏，那是既有交付面）。
+ * - 其余小节恒为 true（既有小节不因计数 0 而隐藏，那是既有交付面）。
  */
 export function isSectionVisible(section: InboxSectionState): boolean {
-  if (section.key !== 'agentFailures') return true;
+  if (!ZERO_HIDES_SECTION.has(section.key)) return true;
   return !(section.status === 'ready' && section.total === 0);
 }
 
@@ -839,6 +1011,35 @@ export function sectionWindowLabel(
 }
 
 /**
+ * 小节「空列表」时该说哪句话的**唯一**判定点（页面只做一层薄翻译）。
+ *
+ * 为什么外提：这是「同一张卡片里两种相反事实」的分岔口，判错的代价很高——
+ * 把「读不到」说成「本类暂无待办」会让运营以为活干完了。放在纯函数里可以被
+ * 单测直接钉住，页面组件的函数体也不必为此再长 8 行（`check:size-caps` 是结构闸）。
+ *
+ * 四种形态互斥：
+ * - `unknown`        —— 总数读不到 / 降级 ⇒ **不许**说「暂无」；
+ * - `budgetExcluded` —— 计数 > 行（R279 的 `budget_exceeded`）⇒ 说清「几条、为什么不在下方」；
+ * - `beyondRows`     —— 计数 > 行但**不是**口径差（R280 的澄清：`total` 独立计数，
+ *                       行因降级装配不出来）⇒ 同样不许说「暂无」；
+ * - `section`        —— 其余 ⇒ 「本类暂无待办」。
+ */
+export function emptySectionReason(section: InboxSectionState):
+  | { kind: 'section' }
+  | { kind: 'unknown' }
+  | { kind: 'budgetExcluded'; n: number }
+  | { kind: 'beyondRows'; n: number } {
+  if (section.total === null || section.degraded) return { kind: 'unknown' };
+  const excluded = budgetExcludedCount(section);
+  if (excluded > 0) return { kind: 'budgetExcluded', n: excluded };
+  // 行集合为空但独立计数 > 0：`rowTotal` 不参与，所以这不是口径差，是「没装配出来」。
+  if (typeof section.total === 'number' && section.total > 0) {
+    return { kind: 'beyondRows', n: section.total };
+  }
+  return { kind: 'section' };
+}
+
+/**
  * 计数里存在、但行列表里没有的待办数（全空态的守卫，R279）。
  *
  * 只算 `agentFailures`：它的行只取 `failed`，`budget_exceeded` 只在计数里。
@@ -852,19 +1053,44 @@ export function pendingBeyondRows(sections: InboxSections): number {
 }
 
 /**
- * 「当前确实没有待你处理的事项」—— 全空态的**唯一**判据（R278/D3 + R279）。
+ * 有待人工答复的 SOP 澄清吗（R280/D4）。
  *
- * 四条同时成立才算「清零被证实」：
+ * 两条都算「没清零」，因为它们是**两种不同的未处置形态**：
+ * - **有行** ⇒ 有人在等你答（最直接）；
+ * - **行为空但 `total > 0`** ⇒ 有 N 条待答，只是这次没被列出来（子查询降级导致
+ *   行装配不出来，或后端只回计数）。这种情形如果只看 `items.length`，页面会显示
+ *   「当前没有待你处理的事项」而计数却写着 5——**数字对、结论错**，正是 D4 要堵的。
+ *
+ * `total === null`（读不到）不算「有」，因为「未知」由 `hasUncertainCounts` 单独判，
+ * 两件事不能互相顶替（未知 ≠ 有，也 ≠ 没有）。
+ */
+export function hasPendingSopClarifications(sections: InboxSections): boolean {
+  const s = sections.sopClarifications;
+  if (s.status !== 'ready') return false;
+  if (s.items.length > 0) return true;
+  return typeof s.total === 'number' && s.total > 0;
+}
+
+/**
+ * 「当前确实没有待你处理的事项」—— 全空态的**唯一**判据（R278/D3 + R279 + R280）。
+ *
+ * 五条同时成立才算「清零被证实」：
  * ① 所有小节都 ready（有 error 态 ⇒ 未知，不许报空）；
  * ② 没有任何计数不可确定（`hasUncertainCounts`）；
  * ③ 队列未停摆（停摆横幅本身就是要处理的信号）；
- * ④ 没有任何「计数里算、行里没列出」的待办（`pendingBeyondRows`）。
+ * ④ 没有任何「计数里算、行里没列出」的待办（`pendingBeyondRows`）；
+ * ⑤ 没有待人工答复的 SOP 澄清（`hasPendingSopClarifications`，R280/D4）。
+ *
+ * ⑤ 在 ① 的「全 ready」之外**单独再判一次**：`sopClarifications` 的 `total` 是
+ * 独立计数，可能 `> 0` 而行集合为空（降级/截断），此时 ① 仍成立、`items.length` 全 0，
+ * 只有 ⑤ 能拦住「数字对、结论错」。
  */
 export function isInboxAllClear(sections: InboxSections): boolean {
   if (!INBOX_SECTIONS.every((key) => sections[key].status === 'ready')) return false;
   if (hasUncertainCounts(sections)) return false;
   if (sections.queueStall.snapshot?.stalled) return false;
   if (pendingBeyondRows(sections) > 0) return false;
+  if (hasPendingSopClarifications(sections)) return false;
   return INBOX_SECTIONS.every((key) => sections[key].items.length === 0);
 }
 
@@ -928,11 +1154,11 @@ export function noticeTitle(
         total: section.rowTotal ?? section.total ?? 0,
       });
     case 'unknown':
-      // R279：失败小节的总数读不到时，提示必须点出「多少条**失败会话**」这件事，
-      // 而不是通用措辞——通用提示在这里读不出「本节数的是哪一类」。
-      return section.key === 'agentFailures'
-        ? t('inbox.failed.unknownHint')
-        : t('inbox.count.unknownHint');
+      // R279/R280：这两节的总数读不到时，提示必须点出「数的是哪一类」——
+      // 通用措辞在这里读不出「几会话失败」还是「几问待答复」。
+      if (section.key === 'agentFailures') return t('inbox.failed.unknownHint');
+      if (section.key === 'sopClarifications') return t('inbox.sop.unknownHint');
+      return t('inbox.count.unknownHint');
     case 'degraded':
       return t('inbox.count.degradedHint');
     case 'budgetExcluded':

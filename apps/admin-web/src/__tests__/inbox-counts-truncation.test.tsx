@@ -54,6 +54,7 @@ const counts = (overrides: Partial<InboxCountMap> = {}): InboxCountMap => ({
   agentApprovals: null,
   agentWaiting: 0,
   agentFailures: 0,
+  sopClarifications: 0,
   stalled: 0,
   backlogged: 0,
   queueStall: 0,
@@ -101,7 +102,10 @@ describe('R278/U1 徽标双口径：审批单 ≠ 会话', () => {
     const c = counts({ deployments: 1, agentApprovals: 5, agentWaiting: 2 });
     expect(summarizeInboxCounts(c)).toBe(3); // 1 + 2，审批单 5 不算进来
     // R279：`failed` 是新增的**独立显示项**，同样不参与 total。
-    expect(splitInboxCounts(c)).toEqual({ approvals: 5, waiting: 2, failed: 0, total: 3 });
+    // R280：`sopClarifications` 同理（与「一会话」没有共同的去重单位）。
+    expect(splitInboxCounts(c)).toEqual({
+      approvals: 5, waiting: 2, failed: 0, sopClarifications: 0, total: 3,
+    });
   });
 
   it('审批单数未知（null）⇒ 只影响缺口提示，不把总数算成 0', async () => {
@@ -218,13 +222,21 @@ describe('R278/U1 计数只发 1 个请求（防 N+1 / 429 回归）', () => {
       agentWaiting: 2,
       // R279：契约新增字段；mock 没给 ⇒ null（读不到），绝不是 0。
       agentFailures: null,
+      // R280：不在 inbox/counts 里，来自 `GET /sop/clarifications/pending` 的 total
+      // （mock 没给 ⇒ null，读不到 ≠ 0）。
+      sopClarifications: null,
       stalled: 1,
       backlogged: 0,
       queueStall: 0,
       recentFailures: null,
     });
-    expect(get).toHaveBeenCalledTimes(1);
-    expect(get.mock.calls[0][0]).toBe('/agent/inbox/counts');
+    // 计数从**两个**端点来：主聚合一次 + 待答复澄清的 total 一次（后者是独立读面，
+    // 后端本轮没有把它塞进 inbox/counts）。两路各发一次，没有 N+1。
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(get.mock.calls.map(([url]) => url).sort()).toEqual([
+      '/agent/inbox/counts',
+      '/sop/clarifications/pending',
+    ]);
   });
 
   it('inbox/counts 整体 503 ⇒ 全部 null（未知），绝不回落 0', async () => {

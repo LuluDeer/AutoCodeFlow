@@ -3099,6 +3099,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sop/clarifications/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出跨 SOP、待人工答复的升级澄清（含总数、截断与降级标记） */
+        get: operations["SopController_listPendingClarifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sop/media/{mediaId}": {
         parameters: {
             query?: never;
@@ -4292,6 +4309,10 @@ export interface components {
             degraded: boolean;
             /** @description 待审批的部署数。读不到 ⇒ null */
             deployments: number | null;
+            /** @description 窗口内失败的 Agent 会话数（`failed` + `budget_exceeded`，**不含 `aborted`** ——那是人主动停的，不是待办）。**独立显示项**，不参与任何会话求和。读不到 ⇒ null，**绝不 0** */
+            failedSessions: number | null;
+            /** @description 失败统计窗口（小时），供前端渲染「近 N 小时」。**配置而非事实** ⇒ 读不到时回默认值 24 而不是 null */
+            failedWindowHours: number;
             /** @description 待审批单数（口径 = 审批单，与列表行数一致；会话数见 waitingSessions）。读不到 ⇒ null */
             pendingApprovals: number | null;
             /** @description 队列是否停摆：1 = 停摆、0 = 未停摆、null = 判定不可用（**不代表队列正常**） */
@@ -7691,6 +7712,53 @@ export interface components {
             items: components["schemas"]["SopResponseDto"][];
             total: number;
         };
+        SopPendingClarificationItemDto: {
+            /**
+             * Format: date-time
+             * @description 提问时刻（ISO，= 澄清行 createdAt）
+             */
+            askedAt: string;
+            /**
+             * Format: uuid
+             * @description 所属指派 id
+             */
+            assignmentId: string;
+            /** @description 所属指派**当前**状态，如实回。升级后通常是 `in_progress`（不是 `blocked`）——「升级后按 blocked 筛不到」正是本端点存在的理由之一 */
+            assignmentStatus: string;
+            /**
+             * Format: uuid
+             * @description 澄清行 id（答复端点用它定位）
+             */
+            clarificationId: string;
+            /** @description 执行器 Agent 的原始疑问（**服务端不截断**，截断由前端做——服务端截断会让「点开看全文」永远拿不到全文） */
+            question: string;
+            /**
+             * Format: uuid
+             * @description 处理本次澄清的 `sop_review` 会话（因果链；无会话时为 null）
+             */
+            reviewSessionId: string | null;
+            /** @description 澄清轮次（1 起） */
+            round: number;
+            /**
+             * Format: uuid
+             * @description 所属 SOP id（深链锚点）
+             */
+            sopId: string;
+            /** @description SOP 标题；**读不到或为空时一律 null**，绝不退回 uuid（uuid 不是给人看的标题） */
+            sopName: string | null;
+        };
+        SopPendingClarificationsResponseDto: {
+            /** @description 是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败 */
+            degraded: boolean;
+            /** @description 按提问时刻升序（最久没人管的在前——「上周升级还没人管」正是最该被看见的） */
+            items: components["schemas"]["SopPendingClarificationItemDto"][];
+            /** @description 本次实际返回的行数（= items.length） */
+            returned: number;
+            /** @description 待人工答复的升级澄清**总数**（独立 `getCount()`，不是 `items.length` 的别名）；读不到 ⇒ null，**绝不 0** */
+            total: number | null;
+            /** @description 是否截断（`returned < total`）。`total` 未知时为 false——此时「是否截断」本身也不可知，由 `degraded` 表达 */
+            truncated: boolean;
+        };
         SopPublishResponseDto: {
             sop: components["schemas"]["SopResponseDto"];
             version: components["schemas"]["SopVersionDto"];
@@ -9049,6 +9117,7 @@ export interface operations {
                 stalled: string;
                 stalledMinutes: string;
                 pageSize: string;
+                since: string;
             };
             header?: never;
             path?: never;
@@ -13720,6 +13789,27 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentMediaDto"][];
+                };
+            };
+        };
+    };
+    SopController_listPendingClarifications: {
+        parameters: {
+            query: {
+                limit: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopPendingClarificationsResponseDto"];
                 };
             };
         };

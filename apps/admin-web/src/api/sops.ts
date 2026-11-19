@@ -1,9 +1,25 @@
+import type { components } from '../types/generated/api-types';
 import { client } from './client';
 
 /**
  * P5/P6：SOP 协议 API（对齐 admin-api sop.controller.ts，全 ADMIN-only）。
  * 协作面（agent-collab）由执行器 Agent 走机器鉴权调用，不经本模块。
  */
+
+/**
+ * R280：跨 SOP 待答复升级澄清的响应**合同派生**（不是手写形状）。
+ *
+ * 为什么派生：`scripts/check-web-type-drift.mjs` 是「手写 API 类型只减不增」的棘轮，
+ * 手写副本与生成物同名同义却互不约束——后端改字段名时 tsc 照样绿、前端静默读到
+ * `undefined`。admin-api 已用 `@ApiOkResponse` 导出该 DTO ⇒ 一律从生成物派生。
+ *
+ * 字段语义以生成物为准：
+ * - `total` = `number | null`，`null` 是**读不到**，绝不等于 0；
+ * - `truncated = returned < total`；`total === null` 时为 `false`，未知由 `degraded` 说；
+ * - `sopName` 为 `null` 时**绝不退回 uuid**（uuid 不是给人看的标题）。
+ */
+export type SopPendingClarificationsResponse =
+  components['schemas']['SopPendingClarificationsResponseDto'];
 
 export interface Sop {
   id: string;
@@ -96,6 +112,36 @@ export interface AssignableExecutor {
 export const sopsApi = {
   list: (params?: { status?: string; page?: number; pageSize?: number }) =>
     client.get('/sop', { params }) as Promise<{ items: Sop[]; total: number }>,
+  /**
+   * R280：跨 SOP、**待人工答复**的升级澄清（`resolution = escalated_to_human` 且所属
+   * 指派未终态）。收件箱第九个小节与顶栏「待答复澄清」计数共用这一个读面。
+   *
+   * ## 为什么这里的响应形状是**内联**的（不新开顶层具名类型）
+   *
+   * 后端 `SopPendingClarificationsResponseDto` 已落地，但 `apps/admin-api/openapi.json`
+   * 生成物由主会话统一重生成，此刻 `types/generated/api-types.ts` 里**还没有**这个
+   * schema。若在这里写一个顶层具名副本，会同时踩两道棘轮：
+   * `check-web-type-drift`（新增手写 API 类型即红）与
+   * `check-web-type-field-drift`（未配对手写类型增长即红）。
+   * ⇒ 形状内联在方法返回注解上（与 `agent.ts` 的 `listFailedSessions` 同款写法）。
+   * 生成物重生成后应改为 `components['schemas']['SopPendingClarificationsResponseDto']`。
+   *
+   * ## 失败语义（与后端契约逐条对齐）
+   *
+   * - `total: null` = **读不到**（读失败）⇒ 前端显示「—」，绝不回落 0；
+   * - `truncated = returned < total`；`total` 未知时为 `false`（「是否截断」也不可知，
+   *   那件事由 `degraded` 表达）；
+   * - `degraded` = 任一子查询失败，HTTP 仍 200；
+   * - 服务未装配 ⇒ **503**（不回 200 空信封）⇒ 调用方读成「读不到」；
+   * - `sopName: null` = 标题读不到或为空 ⇒ **绝不退回 uuid**（uuid 不是给人看的标题）。
+   *
+   * `limit` 非法值（`abc`/`-5`/`9999`）后端安全回落，仍 200；本模块只传正数。
+   */
+  pendingClarifications: (limit?: number, signal?: AbortSignal) =>
+    client.get('/sop/clarifications/pending', {
+      params: { limit: limit ?? 100 },
+      ...(signal ? { signal } : {}),
+    }) as Promise<SopPendingClarificationsResponse>,
   get: (id: string) => client.get(`/sop/${id}`) as Promise<Sop>,
   draft: (data: {
     slug: string;

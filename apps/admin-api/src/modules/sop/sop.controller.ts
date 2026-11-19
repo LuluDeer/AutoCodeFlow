@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Ip,
+  Optional,
   Param,
   Patch,
   Post,
@@ -37,6 +38,7 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { SopService } from "./sop.service";
 import { SopMediaService } from "./sop-media.service";
+import { SopClarificationInboxService } from "./sop-clarification-inbox.service";
 import { ExecutorService } from "../executor/executor.service";
 // LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
 import { AppError } from "../../common/errors/app-error";
@@ -54,6 +56,8 @@ import {
   SopResponseDto,
   SopVersionDto,
 } from "./dto/sop-response.dto";
+// R280：跨 SOP 的待答复澄清聚合（升级转人工后的权威可见面）。
+import { SopPendingClarificationsResponseDto } from "./sop-clarification-inbox.dto";
 
 /**
  * R41-A1：审计行的 `userId` 列是**整数**（audit_logs.userId int），而控制器
@@ -214,7 +218,48 @@ export class SopController {
     private readonly sops: SopService,
     private readonly media: SopMediaService,
     private readonly executors: ExecutorService,
+    /**
+     * R280：跨 SOP 的待答复澄清聚合（升级转人工后的权威可见面）。
+     *
+     * ⚠️ **必须放在末位且 `@Optional`**：既有 spec 用**定位参数**装配本 controller
+     * （`new SopController(sops, media, executors)`，见 `sop.controller.spec.ts` /
+     * `sop.audit.spec.ts`）——插在中间会让它们全部错位。缺席 ⇒ 路由显式抛
+     * `DEPENDENCY_UNAVAILABLE`（503），绝不回 200 空信封。
+     */
+    @Optional()
+    private readonly clarificationsInbox?: SopClarificationInboxService | null,
   ) {}
+
+  /**
+   * R280：**待人工答复的升级澄清**（跨 SOP 聚合，ADMIN 面）。
+   *
+   * 为什么必须有这个端点（brief §一）：升级写入后 assignment 会 `blocked →
+   * in_progress` ⇒ 按 `status=blocked` **永远筛不到**；收件箱七小节不含 SOP
+   * 澄清；唯一的升级通知可被 `scope=global` 的静默规则吞掉。三通道全失效 ⇒
+   * 一个真实的移交动作**没有接收方**。
+   *
+   * 本端点读**库**、不读通知 ⇒ 不受静默规则影响，是权威可见面。
+   * 路由注册在 `:id` **之前**：否则 `clarifications` 会被当成 SOP id 匹配走。
+   */
+  @Get("clarifications/pending")
+  @ApiOperation({
+    summary: "列出跨 SOP、待人工答复的升级澄清（含总数、截断与降级标记）",
+  })
+  @ApiOkResponse({ type: SopPendingClarificationsResponseDto })
+  async listPendingClarifications(
+    @Query("limit") limit?: string,
+  ): Promise<SopPendingClarificationsResponseDto> {
+    if (!this.clarificationsInbox) {
+      // ⚠️ 服务缺席 ⇒ 显式报不可用。回 `{items:[], total:0}` 会让运营以为
+      // 「没有升级在等人」，而事实是「读不到」——这正是本仓要消灭的那类假事实。
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    // 非法值（NaN/±Infinity 来自 `parseInt("abc")`）在 service 内回落默认，
+    // **不 400**（本仓既有契约：非法深链安全回落）。
+    return this.clarificationsInbox.pending({
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+  }
 
   @Get()
   @ApiOperation({ summary: "SOP 列表（可按 status 过滤）" })

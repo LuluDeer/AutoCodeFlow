@@ -59,6 +59,7 @@ const readySections = (items: Partial<Record<keyof InboxSections, InboxItem[]>>)
   agentApprovals: { key: 'agentApprovals', status: 'ready', items: items.agentApprovals ?? [], error: null },
   agentWaiting: { key: 'agentWaiting', status: 'ready', items: items.agentWaiting ?? [], error: null },
   agentFailures: { key: 'agentFailures', status: 'ready', items: items.agentFailures ?? [], error: null, total: 0 },
+  sopClarifications: { key: 'sopClarifications', status: 'ready', items: items.sopClarifications ?? [], error: null, total: 0 },
   stalled: { key: 'stalled', status: 'ready', items: items.stalled ?? [], error: null },
   backlogged: { key: 'backlogged', status: 'ready', items: items.backlogged ?? [], error: null },
   queueStall: {
