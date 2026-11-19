@@ -341,6 +341,48 @@ describe('--json 失败输出：结构化错误体（含 errorCode）', () => {
     expect(isJsonInvocation(['node', 'acf'])).toBe(false);
   });
 
+  // D1（R278）：`--json` 在 `acf app create|patch` 里是**载荷别名**（DEPRECATED），
+  // 不是「输出 JSON」开关。旧实现（'--json' 不在 VALUE_TAKING_OPTIONS）把它读成
+  // 开关 ⇒ `acf app create --json '{"name":"x"}'` 的整条 CLI 错误面翻成 JSON。
+  // 反证：把 VALUE_TAKING_OPTIONS 里的 '--json' 删掉 ⇒ 本用例第一条转红。
+  it('isJsonInvocation：app create --json <body> 不被判成 JSON 输出模式（D1）', () => {
+    // 取值形态：`--json` 后紧跟 JSON 载荷 ⇒ 是载荷，不是输出模式
+    expect(isJsonInvocation(['node', 'acf', 'app', 'create', '--json', '{"name":"x"}'])).toBe(false);
+    expect(isJsonInvocation(['node', 'acf', 'app', 'create', '--json', ' [] '])).toBe(false);
+    // 同一个 token 在**命令尾**（无载荷可吃）仍然是布尔开关——否则会把
+    // `acf task list --json` 这类真·JSON 输出调用反向弄坏。
+    expect(isJsonInvocation(['node', 'acf', 'task', 'list', '--json'])).toBe(true);
+    // 载荷后面再出现独立 `--json` 才是输出模式
+    expect(
+      isJsonInvocation(['node', 'acf', 'app', 'create', '--json', '{"name":"x"}', '--json']),
+    ).toBe(true);
+    // `--json=<body>` 单 token 形态沿用既有「含 = 即跳过」语义（保持非输出模式）
+    expect(isJsonInvocation(['node', 'acf', 'app', 'create', '--json={"name":"x"}'])).toBe(false);
+  });
+
+  // D1 的另一半：不止「探针不误判」，还要证明 **commander 真的把那段载荷解析进了
+  // options.json**（否则修法只挪走了症状）。用一条最小 Command 复刻
+  // `app create --json <body>` 的选项形状（`apps.ts:211`），而不是 import
+  // `appsCommand()`：本文件只 mock 了 node:fs，直接引真实命令文件会连带把 ora /
+  // cli-table3 / chalk / client / config 全拖进来说不清是哪一层在起作用——
+  // 这条用例要钉的是「选项声明 + 探针」这一对，不是整条命令的副作用。
+  it('commander 解析：--json <body> 进 options.json（字符串），且同一次调用 jsonOutput 为 false（D1）', async () => {
+    const { Command } = await import('commander');
+    const program = new Command();
+    const create = program.command('create').exitOverride();
+    create
+      .option('--body <json>', 'Application body as JSON string')
+      .option('--json <body>', 'DEPRECATED alias of --body');
+    const argv = ['node', 'acf', 'create', '--json', '{"name":"x"}'];
+    await program.parseAsync(argv, { from: 'node' });
+    const opts = create.opts<{ body?: string; json?: string }>();
+    // ① 值确实原样落进 options.json（不是被当成布尔开关吃掉）
+    expect(opts.json).toBe('{"name":"x"}');
+    expect(opts.body).toBeUndefined();
+    // ② 同一次调用的探针结论是「非 JSON 输出模式」
+    expect(isJsonInvocation(argv)).toBe(false);
+  });
+
   // PKG-03（本轮）：`--json` 只有作为**独立开关 token** 才算 JSON 模式。旧实现
   // 是 argv.slice(2).includes('--json')，于是 `--description '--json'` 这种「取值
   // 恰好叫 --json」的调用会把整条 CLI 的错误输出面翻成 JSON。
