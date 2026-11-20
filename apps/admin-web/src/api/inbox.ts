@@ -608,16 +608,13 @@ export function truncateClarificationQuestion(
 /**
  * 待答复澄清的深链。
  *
- * **只用 SOP 页已真实支持的参数**：`/sops?sop=<id>`（`SopsPage` 的审计深链，
- * 打开该 SOP 的详情抽屉 → 指派页签）。
- *
- * ⚠️ 已知限制：SOP 页**暂不支持按 assignment 深链**（没有 `?assignment=<id>` 这类
- * 参数，`SopsPage` 的 `useSearchParams` 只读 `sop`）。所以这里不编造 query 参数：
- * 用户落到该 SOP 的指派列表后，需要自己按轮次/问题定位那一行。要做真正的按工单
- * 深链，得先给 `SopsPage` 加参数——那是另一个切片，不在本轮写域内。
+ * 指向 `SopsPage` 的查询参数深链：`/sops?sop=<sopId>&assignment=<assignmentId>`。
+ * 携带 `assignmentId` 时 `SopsPage` 自动打开该 SOP 抽屉并直达「指派与澄清」Tab、
+ * 高亮目标指派及其澄清；未传 `assignmentId` 时回落为 `/sops?sop=<sopId>`。
  */
-export function sopClarificationUrl(sopId: string): string {
+export function sopClarificationUrl(sopId: string, assignmentId?: string): string {
   const params = new URLSearchParams({ sop: sopId });
+  if (assignmentId) params.set('assignment', assignmentId);
   return `/sops?${params}`;
 }
 
@@ -657,7 +654,7 @@ async function loadSopClarifications(signal?: AbortSignal): Promise<InboxSection
       subtitle: row.sopName ?? undefined,
       // 「何时开始等我」= 提问时刻。这里恰是「越久越该在前面」的那个时间。
       waitingSince: row.askedAt ?? null,
-      detailUrl: sopClarificationUrl(row.sopId),
+      detailUrl: sopClarificationUrl(row.sopId, row.assignmentId),
       clarification: row,
     };
   });
@@ -699,12 +696,13 @@ export const SOP_BLOCKED_WINDOW_HOURS = 24;
 /**
  * 阻塞工单的深链。
  *
- * **只用 SOP 页已真实支持的参数**：`/sops?sop=<id>`（`SopsPage` 读 `searchParams.get('sop')`）。
- * 与 `sopClarificationUrl` 同款，且不编造 `?assignment=` —— 那个参数 `SopsPage` 不认，
- * 编出来会得到一个「看起来能定位、实际停在列表首页」的链接（比没有更坏）。
+ * 指向 `SopsPage` 的查询参数深链：`/sops?sop=<sopId>&assignment=<assignmentId>`。
+ * 携带 `assignmentId` 时 `SopsPage` 自动打开该 SOP 抽屉并切到「指派与澄清」Tab、
+ * 高亮并滚动定位到该条指派；未传 `assignmentId` 时回落为 `/sops?sop=<sopId>`。
  */
-export function sopAssignmentUrl(sopId: string): string {
+export function sopAssignmentUrl(sopId: string, assignmentId?: string): string {
   const params = new URLSearchParams({ sop: sopId });
+  if (assignmentId) params.set('assignment', assignmentId);
   return `/sops?${params}`;
 }
 
@@ -775,7 +773,7 @@ async function loadSopBlocked(signal?: AbortSignal): Promise<InboxSectionState> 
     // 不写 `?? null` 兜底：真出现空值应当落进 `blockedHours` 的 null 分支
     // 去「说算不出」，而不是在这里悄悄换成另一个语义。
     waitingSince: row.blockedSince,
-    detailUrl: sopAssignmentUrl(row.sopId),
+    detailUrl: sopAssignmentUrl(row.sopId, row.assignmentId),
     blockedAssignment: row,
   }));
   const meta = metaOf(items.length, res?.total);

@@ -1626,5 +1626,9 @@
   "按进入 blocked 的时刻升序（卡得最久的在最前——那正是最该被看见的）": "Ascending by the moment the assignment entered blocked (stuck longest first - exactly what most needs to be seen)",
   "滞留 blocked 工单**总数**（独立 `getCount()`，不是 `items.length` 的别名）；读不到 ⇒ null，**绝不 0**": "**Total** number of stuck blocked assignments (an independent `getCount()`, not an alias for `items.length`); null when it cannot be read - **never 0**",
   "是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败；但装配缺失（服务未注入）是 503，不是空信封": "Whether any sub-query failed to read (the corresponding field is then null). **HTTP stays 200**: partially usable is not a broken page; but a missing wiring (service not injected) is 503, not an empty envelope",
-  "观测窗口（小时）。缺省 24；钳制 1..720；非法值安全回落默认，不 400": "Observation window in hours. Defaults to 24; clamped to 1..720; illegal values fall back to the default safely instead of returning 400"
+  "观测窗口（小时）。缺省 24；钳制 1..720；非法值安全回落默认，不 400": "Observation window in hours. Defaults to 24; clamped to 1..720; illegal values fall back to the default safely instead of returning 400",
+  "取消单条未结束的指派（支持 assigned/in_progress/blocked/stalled）": "Cancel a single unfinished assignment (supports assigned/in_progress/blocked/stalled)",
+  "取消原因（可选，最多 500 字符；经脱敏后写入审计日志，不覆盖执行结果）": "Cancellation reason (optional, up to 500 characters; sanitized before being written to the audit log without overwriting execution results)",
+  "取消后的指派最新快照（status 恒为 cancelled）": "Latest snapshot of the assignment after cancellation (status is always cancelled)",
+  "取消前的指派状态（assigned | in_progress | blocked | stalled）": "Assignment status prior to cancellation (assigned | in_progress | blocked | stalled)"
 }

@@ -3082,6 +3082,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sop/assignments/{assignmentId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 取消单条未结束的指派（支持 assigned/in_progress/blocked/stalled） */
+        post: operations["SopController_cancelAssignment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sop/assignments/{assignmentId}/clarifications/{clarificationId}/reply": {
         parameters: {
             query?: never;
@@ -5231,6 +5248,10 @@ export interface components {
             executionId: string;
             /** @description false = 该项未受理（执行不存在/未派发/地址不符/内部异常），error 说明原因 */
             success: boolean;
+        };
+        CancelSopAssignmentDto: {
+            /** @description 取消原因（可选，最多 500 字符；经脱敏后写入审计日志，不覆盖执行结果） */
+            reason?: string;
         };
         ChannelTestResponseDto: {
             message: string;
@@ -7720,6 +7741,15 @@ export interface components {
             total: number | null;
             /** @description 是否截断（`returned < total`）。`total` 未知时为 false——此时「是否截断」本身也不可知，由 `degraded` 表达 */
             truncated: boolean;
+        };
+        SopCancelAssignmentResponseDto: {
+            /** @description 取消后的指派最新快照（status 恒为 cancelled） */
+            assignment: components["schemas"]["SopAssignmentDto"];
+            /**
+             * @description 取消前的指派状态（assigned | in_progress | blocked | stalled）
+             * @enum {string}
+             */
+            previousStatus: "assigned" | "in_progress" | "blocked" | "completed" | "failed" | "cancelled" | "stalled";
         };
         SopCancelAssignmentsResponseDto: {
             /**
@@ -13831,6 +13861,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SopAssignmentDetailResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_cancelAssignment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assignmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CancelSopAssignmentDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopCancelAssignmentResponseDto"];
                 };
             };
         };

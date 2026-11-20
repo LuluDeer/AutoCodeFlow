@@ -224,6 +224,24 @@ export const sopsApi = {
    */
   cancelAssignments: (id: string) =>
     client.post(`/sop/${id}/assignments/cancel`, {}) as Promise<{ cancelled: number }>,
+  /**
+   * R289：取消单条未结束的指派（assigned / in_progress / blocked / stalled）。
+   *
+   * 入参/响应体直接派生自 OpenAPI 生成物，避免手写副本漂移；空 reason 不发该键（发 `{}`）。
+   */
+  cancelAssignment: (
+    assignmentId: string,
+    data?: components['schemas']['CancelSopAssignmentDto'],
+  ) => {
+    const trimmed = data?.reason?.trim();
+    const payload: components['schemas']['CancelSopAssignmentDto'] = trimmed
+      ? { reason: trimmed }
+      : {};
+    return client.post(
+      `/sop/assignments/${assignmentId}/cancel`,
+      payload,
+    ) as Promise<components['schemas']['SopCancelAssignmentResponseDto']>;
+  },
   assign: (
     id: string,
     data: { version?: string; executorId?: string; executorAddress?: string },

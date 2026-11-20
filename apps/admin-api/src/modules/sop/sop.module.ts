@@ -15,6 +15,8 @@ import { SopClarificationInboxService } from "./sop-clarification-inbox.service"
 // R286：滞留 blocked 工单的只读观测（只读；Sop/SopAssignment/SopClarification
 // 三个仓储已在下方 TypeOrmModule.forFeature 里，无需新增 imports）。
 import { SopAssignmentLagService } from "./sop-assignment-lag.service";
+// R289：单条指派人工处置（取消未结束指派；SopAssignment 与 AuditModule 已装配）。
+import { SopAssignmentActionsService } from "./sop-assignment-actions.service";
 import { AgentMediaRetentionService } from "./agent-media-retention.service";
 import { SopController } from "./sop.controller";
 import { SopCollabController } from "./sop-collab.controller";
@@ -75,6 +77,8 @@ import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
     SopClarificationInboxService,
     // R286：SopController 的 `assignmentLag` 注入源（只读观测，不写库）。
     SopAssignmentLagService,
+    // R289：SopController 的 `assignmentActions` 注入源（单条取消条件写）。
+    SopAssignmentActionsService,
   ],
   exports: [SopService],
 })

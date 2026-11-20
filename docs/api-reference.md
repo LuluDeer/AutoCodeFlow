@@ -1444,7 +1444,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 264 个操作，覆盖 227 个路径。
+共 265 个操作，覆盖 228 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1651,6 +1651,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/sop/{id}/versions` | 版本历史（不可变快照列表） |
 | GET | `/sop/assignable-executors` | 当前租约内可接 SOP 指派的执行器（agent:sop） |
 | GET | `/sop/assignments/{assignmentId}` | 指派详情（含澄清对话全量） |
+| POST | `/sop/assignments/{assignmentId}/cancel` | 取消单条未结束的指派（支持 assigned/in_progress/blocked/stalled） |
 | POST | `/sop/assignments/{assignmentId}/clarifications/{clarificationId}/reply` | 人工回复一条澄清（升级转人工后的答复入口） |
 | GET | `/sop/assignments/{assignmentId}/media` | 指派的媒体清单 |
 | GET | `/sop/assignments/lagging` | 列出超过 N 小时未推进的 blocked 指派（含总数、截断与降级标记；不改状态机） |

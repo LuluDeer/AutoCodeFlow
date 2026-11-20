@@ -431,3 +431,51 @@ describe("R39 · resend 重新排队按领取状态做 CAS（ADR-026）", () => 
     expect(re.test(svcSrc)).toBe(true);
   });
 });
+
+describe("R289 · 并发取消防复活 CAS（pollPending:714 & ingestClarification:1046）", () => {
+  it("pollPending 首领 CAS：读到 assigned 后并发被管理员取消 → 不得复活为 in_progress 且不得下发", async () => {
+    const h = harness({
+      assignment: {
+        status: "assigned",
+        pulledAt: null,
+        targetExecutorId: "e1",
+      },
+      concurrentAssignmentWrite: () => {
+        h.assignmentRow.status = "cancelled";
+      },
+    });
+
+    const items = await h.service.pollPending({ executorId: "e1" });
+
+    expect(items).toEqual([]);
+    expect(h.assignmentRow.status).toBe("cancelled");
+    expect(h.assignmentRow.pulledAt).toBeNull();
+  });
+
+  it("ingestClarification 轮次 CAS：读到 in_progress 后并发被管理员取消 → 不得复活为 blocked 且不得写澄清", async () => {
+    const h = harness({
+      assignment: {
+        status: "in_progress",
+        clarificationRound: 0,
+        maxRounds: 5,
+        targetExecutorId: "e1",
+      },
+      concurrentAssignmentWrite: () => {
+        h.assignmentRow.status = "cancelled";
+      },
+    });
+
+    await expect(
+      h.service.ingestClarification({
+        assignmentId: "a1",
+        executorId: "e1",
+        question: "需要确认部署端口",
+      }),
+    ).rejects.toMatchObject({
+      errorCode: "SOP_CLARIFICATION_ROUND_CONFLICT",
+    });
+    expect(h.assignmentRow.status).toBe("cancelled");
+    expect(h.assignmentRow.clarificationRound).toBe(0);
+    expect(h.clarificationRows).toHaveLength(0);
+  });
+});

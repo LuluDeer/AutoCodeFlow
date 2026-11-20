@@ -185,7 +185,7 @@ const blockedItem = (overrides: Partial<InboxItem> = {}, row: Record<string, unk
     section: 'sopBlocked',
     title: (rowData.sopName as string | null) ?? '',
     waitingSince: String(rowData.blockedSince),
-    detailUrl: sopAssignmentUrl(String(rowData.sopId)),
+    detailUrl: sopAssignmentUrl(String(rowData.sopId), String(rowData.assignmentId)),
     blockedAssignment: rowData as InboxItem['blockedAssignment'],
     ...overrides,
   };
@@ -345,13 +345,13 @@ describe('R286 ③ 行渲染：SOP 名 + 第 N 轮 + 已阻塞 X 小时', () => 
     expect(SOP_BLOCKED_WINDOW_HOURS).toBe(24);
     expect(result.sopBlocked.status).toBe('ready');
     expect(result.sopBlocked.items).toHaveLength(1);
-    // 深链只用 SOP 页已真实支持的参数（`?sop=<id>`），不编造 assignment 参数。
-    expect(result.sopBlocked.items[0].detailUrl).toBe(`/sops?sop=${SOP_UUID}`);
+    // R289：深链精准携带 sop 与 assignment 参数，SopsPage 自动切指派 Tab 并高亮该指派。
+    expect(result.sopBlocked.items[0].detailUrl).toBe(`/sops?sop=${SOP_UUID}&assignment=${ASSIGN_UUID}`);
     // 行的时间 = 进入 blocked 的时刻（不是请求时刻、也不是窗口起点）。
     expect(result.sopBlocked.items[0].waitingSince).toBe(row.blockedSince);
   });
 
-  it('行内渲染「SOP 名」+「第 6 轮」+「已阻塞 30 小时」，深链到 /sops?sop=<id>', async () => {
+  it('行内渲染「SOP 名」+「第 6 轮」+「已阻塞 30 小时」，深链到 /sops?sop=<id>&assignment=<aid>', async () => {
     vi.mocked(loadInbox).mockResolvedValue(
       sections(ready('sopBlocked', [blockedItem()], { total: 1, returned: 1 })),
     );
@@ -362,7 +362,7 @@ describe('R286 ③ 行渲染：SOP 名 + 第 N 轮 + 已阻塞 X 小时', () => 
     expect(row.getByText('第 6 轮 · 已阻塞 30 小时')).toBeTruthy();
     // 只读小节：只给「查看详情」深链，不给处置按钮（处置在 SOP 页）。
     const link = row.getByRole('link');
-    expect(link.getAttribute('href')).toBe(`/sops?sop=${SOP_UUID}`);
+    expect(link.getAttribute('href')).toBe(`/sops?sop=${SOP_UUID}&assignment=${ASSIGN_UUID}`);
     expect(row.queryByRole('button', { name: /批准|拒绝|接管/ })).toBeNull();
   });
 
@@ -693,10 +693,13 @@ describe('R286 小节隔离：lagging 端点挂掉只让它自己是 error 态',
     expect(INBOX_SECTIONS).toHaveLength(10);
   });
 
-  it('深链只用 SopsPage 真实支持的 `?sop=`（不编造 assignment 参数）', () => {
+  it('深链支持 `?sop=<sopId>&assignment=<assignmentId>`，缺省 assignmentId 向后兼容 `?sop=<sopId>`', () => {
+    expect(sopAssignmentUrl(SOP_UUID, ASSIGN_UUID)).toBe(`/sops?sop=${SOP_UUID}&assignment=${ASSIGN_UUID}`);
+    const fullUrl = new URL(sopAssignmentUrl(SOP_UUID, ASSIGN_UUID), 'http://x');
+    expect([...fullUrl.searchParams.keys()]).toEqual(['sop', 'assignment']);
     expect(sopAssignmentUrl(SOP_UUID)).toBe(`/sops?sop=${SOP_UUID}`);
-    const url = new URL(sopAssignmentUrl(SOP_UUID), 'http://x');
-    expect([...url.searchParams.keys()]).toEqual(['sop']);
+    const fallbackUrl = new URL(sopAssignmentUrl(SOP_UUID), 'http://x');
+    expect([...fallbackUrl.searchParams.keys()]).toEqual(['sop']);
   });
 
   it('调用的是既有的 `laggingAssignments`（不另开端点、不改 URL）', async () => {

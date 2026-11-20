@@ -178,7 +178,7 @@ const clarItem = (overrides: Partial<InboxItem> = {}, row: Record<string, unknow
     title: truncateClarificationQuestion(String(rowData.question)),
     subtitle: (rowData.sopName as string | null) ?? undefined,
     waitingSince: String(rowData.askedAt),
-    detailUrl: `/sops?sop=${rowData.sopId}`,
+    detailUrl: `/sops?sop=${rowData.sopId}&assignment=${rowData.assignmentId}`,
     clarification: rowData as InboxItem['clarification'],
     ...overrides,
   };
@@ -312,8 +312,8 @@ describe('R280 ③ 行数据：question 截断 + SOP 名 · 第 N 轮', () => {
     expect((call![1]?.params as Record<string, unknown>).limit).toBe(100);
     expect(result.sopClarifications.status).toBe('ready');
     expect(result.sopClarifications.items).toHaveLength(1);
-    // 深链只用 SOP 页已真实支持的参数（`?sop=<id>`），不编造 assignment 参数。
-    expect(result.sopClarifications.items[0].detailUrl).toBe(`/sops?sop=${SOP_UUID}`);
+    // R289：深链精准携带 sop 与 assignment 参数，直达 SopsPage 指派与澄清 Tab。
+    expect(result.sopClarifications.items[0].detailUrl).toBe(`/sops?sop=${SOP_UUID}&assignment=${ASSIGN_UUID}`);
   });
 
   it('行内渲染 question 原文 + 「SOP 名 · 第 1 轮」', async () => {
@@ -327,7 +327,7 @@ describe('R280 ③ 行数据：question 截断 + SOP 名 · 第 N 轮', () => {
     expect(row.getByText('R280 探针 SOP · 第 1 轮')).toBeTruthy();
     // 只读小节：只给「查看详情」深链，不给答复按钮（答复在 SOP 页）。
     const link = row.getByRole('link');
-    expect(link.getAttribute('href')).toBe(`/sops?sop=${SOP_UUID}`);
+    expect(link.getAttribute('href')).toBe(`/sops?sop=${SOP_UUID}&assignment=${ASSIGN_UUID}`);
     expect(row.queryByRole('button', { name: /批准|拒绝|接管/ })).toBeNull();
   });
 

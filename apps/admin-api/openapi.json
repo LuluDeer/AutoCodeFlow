@@ -2807,6 +2807,17 @@
         ],
         "type": "object"
       },
+      "CancelSopAssignmentDto": {
+        "properties": {
+          "reason": {
+            "description": "取消原因（可选，最多 500 字符；经脱敏后写入审计日志，不覆盖执行结果）",
+            "maxLength": 500,
+            "type": "string",
+            "x-i18n-en": "Cancellation reason (optional, up to 500 characters; sanitized before being written to the audit log without overwriting execution results)"
+          }
+        },
+        "type": "object"
+      },
       "ChannelTestResponseDto": {
         "properties": {
           "message": {
@@ -9470,6 +9481,38 @@
           "returned",
           "truncated",
           "degraded"
+        ],
+        "type": "object"
+      },
+      "SopCancelAssignmentResponseDto": {
+        "properties": {
+          "assignment": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SopAssignmentDto"
+              }
+            ],
+            "description": "取消后的指派最新快照（status 恒为 cancelled）",
+            "x-i18n-en": "Latest snapshot of the assignment after cancellation (status is always cancelled)"
+          },
+          "previousStatus": {
+            "description": "取消前的指派状态（assigned | in_progress | blocked | stalled）",
+            "enum": [
+              "assigned",
+              "in_progress",
+              "blocked",
+              "completed",
+              "failed",
+              "cancelled",
+              "stalled"
+            ],
+            "type": "string",
+            "x-i18n-en": "Assignment status prior to cancellation (assigned | in_progress | blocked | stalled)"
+          }
+        },
+        "required": [
+          "assignment",
+          "previousStatus"
         ],
         "type": "object"
       },
@@ -21553,6 +21596,55 @@
         ],
         "x-i18n-en": {
           "summary": "Assignment details (including the full clarification conversation)"
+        }
+      }
+    },
+    "/sop/assignments/{assignmentId}/cancel": {
+      "post": {
+        "operationId": "SopController_cancelAssignment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assignmentId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelSopAssignmentDto"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopCancelAssignmentResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "取消单条未结束的指派（支持 assigned/in_progress/blocked/stalled）",
+        "tags": [
+          "sop"
+        ],
+        "x-i18n-en": {
+          "summary": "Cancel a single unfinished assignment (supports assigned/in_progress/blocked/stalled)"
         }
       }
     },

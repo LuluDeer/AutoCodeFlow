@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Ip,
   Optional,
   Param,
@@ -15,6 +17,7 @@ import {
 import {
   ApiTags,
   ApiBearerAuth,
+  ApiBody,
   ApiOperation,
   ApiProperty,
   ApiPropertyOptional,
@@ -42,7 +45,10 @@ import { SopMediaService } from "./sop-media.service";
 import { SopClarificationInboxService } from "./sop-clarification-inbox.service";
 // R286：滞留 blocked 工单的只读观测面（不改状态机，只补可见性）。
 import { SopAssignmentLagService } from "./sop-assignment-lag.service";
+// R289：单条指派人工处置（取消未结束指派，ADR-026 条件写）。
+import { SopAssignmentActionsService } from "./sop-assignment-actions.service";
 import { ExecutorService } from "../executor/executor.service";
+import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
 // LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
@@ -63,6 +69,11 @@ import {
 import { SopPendingClarificationsResponseDto } from "./sop-clarification-inbox.dto";
 // R286：滞留 blocked 工单的响应契约（收件箱第十小节 `sopBlocked` 的数据源）。
 import { SopAssignmentLagResponseDto } from "./sop-assignment-lag.dto";
+// R289：单条取消指派的请求与响应契约。
+import {
+  CancelSopAssignmentDto,
+  SopCancelAssignmentResponseDto,
+} from "./sop-assignment-actions.dto";
 
 /**
  * R41-A1：审计行的 `userId` 列是**整数**（audit_logs.userId int），而控制器
@@ -242,6 +253,12 @@ export class SopController {
      */
     @Optional()
     private readonly assignmentLag?: SopAssignmentLagService | null,
+    /**
+     * R289：单条指派取消服务（末位 + `@Optional()`，保住既有 3/4/5 参定位单测；
+     * 缺席 ⇒ 显式抛 503 `DEPENDENCY_UNAVAILABLE`）。
+     */
+    @Optional()
+    private readonly assignmentActions?: SopAssignmentActionsService | null,
   ) {}
 
   /**
@@ -388,6 +405,42 @@ export class SopController {
   }
 
   /**
+   * R289：取消单条未结束的指派（assigned/in_progress/blocked/stalled）。
+   *
+   * 注册在 `@Get(":id")` 之前；与批量取消 `POST /:id/assignments/cancel` 分离，
+   * 避免误杀同 SOP 其它运行中的工单。终态与并发让位统一返回 400
+   * `SOP_ASSIGNMENT_TERMINAL`（复用既有错误码，不造新码）。
+   */
+  @Post("assignments/:assignmentId/cancel")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "取消单条未结束的指派（支持 assigned/in_progress/blocked/stalled）",
+  })
+  @ApiBody({ type: CancelSopAssignmentDto, required: false })
+  @ApiOkResponse({ type: SopCancelAssignmentResponseDto })
+  async cancelAssignment(
+    @Param("assignmentId", ParseUuidShapePipe) assignmentId: string,
+    @Body() dto?: CancelSopAssignmentDto,
+    @CurrentUser() user?: { id: number | string; username?: string },
+    @Ip() ip?: string,
+  ): Promise<SopCancelAssignmentResponseDto> {
+    if (!this.assignmentActions) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    return this.assignmentActions.cancelAssignment({
+      assignmentId,
+      reason: dto?.reason,
+      actor: user ? `user:${user.id}` : undefined,
+      audit: {
+        userId: auditUserId(user),
+        username: user?.username ?? null,
+        ip: ip ?? null,
+      },
+    });
+  }
+
+  /**
    * 指派可选执行器（P7c 租约投影）：只列**当前租约内**声明了 agent:sop 的
    * 机器。列表投影刻意剥离 agentCapabilities（短效租约，快照会误导），
    * 指派面因此走这台独立端点——Admin Web 的指派对话框据此渲染可选项，
@@ -422,11 +475,22 @@ export class SopController {
     @Ip() ip?: string,
   ) {
     // 确认澄清确实属于该指派（防跨工单答复）
-    const { clarifications } = await this.sops.getAssignment(assignmentId);
+    const { assignment, clarifications } =
+      await this.sops.getAssignment(assignmentId);
     if (!clarifications.some((c) => c.id === clarificationId)) {
       throw new AppError(
         ErrorCode.SOP_CLARIFICATION_NOT_IN_ASSIGNMENT_FORBIDDEN,
       );
+    }
+    // R289：已取消或已完成的工单不再接受人工答复；刻意放行 failed（保住 R280
+    // 升级后执行器报 failed 仍允许人工修订发版再重派的既有语义）。
+    if (
+      assignment?.status === "cancelled" ||
+      assignment?.status === "completed"
+    ) {
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_TERMINAL, {
+        status: assignment.status,
+      });
     }
     return this.sops.replyClarification({
       clarificationId,
