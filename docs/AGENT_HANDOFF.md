@@ -3,6 +3,29 @@
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-19
 > 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
 
+## 滞留 blocked 工单 + 迁移清单纠错（R286，工作树，未发布）
+
+- **可用路径**：收件箱第十节「阻塞工单」列出 `status='blocked'` 且超过 24h 未推进的指派，
+  行显示 SOP 名 + 第 N 轮 + 已阻塞 X 小时。接口 `GET /sop/assignments/lagging?hours=N`。
+- **判据**：`status='blocked'` **且** `updatedAt <= now − hours`。
+  ⚠️ **`hours` 是查询窗口，不是单行阻塞时长** —— 前端「已阻塞 X 小时」由 `blockedSince`
+  与当前时间算出，**不要拿 `hours` 顶替**（这条是两个 agent 对话中纠正过的）。
+  ⚠️ `round:null` = **未知或无**（没有 escalated 澄清，或子查询读失败），**不是「第 0 轮」**；
+  它是**触顶那轮**（maxRounds=5 ⇒ 6），前端渲染「第 — 轮」，不要编造数字。
+- **不要做的事**：**不要**把 `blocked` 改回 `in_progress` 来「修」这个滞留
+  —— 那会让「等人工」的信号消失（R280 论证过）。本端点只补可见性。
+- **★ `task-execution.entity.ts` 的「待迁移清单」已全部改为完成态**（此前 4 条全过期，
+  照它改会把正确实现改错，尤其 7 日面板的 `failed` 单桶是 R285 刻意裁决）。
+  新增的**语义边界**要记住：「`FAILED_EXECUTION_STATUSES` 回答『哪些 status 等于失败』，
+  **不**回答『某面板某一格该显示什么』；面板要分桶就用分桶字段。」
+- **测试纪律（R289 教训的落地）**：`total ?? 0` 这类反证若**只红一条**，先怀疑
+  「是不是被测代码根本没跑到」——页面层用例 mock 掉 loader 会绕过被测代码。
+  本模块同时有**装配层**（真 controller）+ **端到端**（`client.get` → DOM）两层用例，
+  改坏实现时红的那几条必须**分布在不同层级**。
+- **验收**：`npx jest src/modules/sop`（21 套 / 334 例）；`npx vitest run src/__tests__/inbox`；
+  `node scripts/guards-repo-matrix.mjs`（121 段）。
+- **发布前**：无迁移、无新 env 键。回滚 = `git revert`。
+
 ## 告警静默留痕 / 日志已清理三态 / 原因常量消歧（R284，工作树，未发布）
 
 - **可用路径**：①审计页能看到 `notification.silenced`（「静默吞掉告警」），`detail.silence.endTime:null`
