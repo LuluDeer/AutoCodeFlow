@@ -163,22 +163,28 @@ export const sopsApi = {
    *
    * 服务端**没有** `limit` 参数（行数上限是内部常量）⇒ 只按 `returned`/`total` 消费。
    *
-   * ## `hours` 为什么是**必填**参数（不是 `hours?:`）
+   * ## `hours` 的三方事实必须分开说（否则会选错签名）
    *
-   * 生成物把 `hours` 标成 `required: true`（`SopController_listLaggingAssignments`
-   * 的 `parameters.query.hours: string`）。事实是运行期可以不传（`@Query("hours")`
-   * 是可选，service 回落 24h）——这是 NestJS Swagger 未写 `@ApiQuery` 时的既有
-   * 推断行为，全库同形 36 处（`/agent/sessions` 的 `page`、`/sop/clarifications/pending`
-   * 的 `limit` 等），切片 A 已把它登记为遗留项。
+   * ① **运行期**：可选。`@Query("hours") hours?: string`，非法/缺省由 service 的
+   *    `clampLagHours` 回落默认，**绝不 400**；
+   * ② **生成物**：被标 `required: true`。这是 NestJS Swagger 读不到 TS 的 `?`
+   *    导致的既有误标，全库 36 处同形；`scripts/check-query-param-required.mjs`
+   *    把它登记为 `runtime-optional` **待回收的欠账**（回收动作 = controller 补
+   *    `@ApiQuery({required:false})` + 重跑 `swagger:export`）；
+   * ③ **本方法**：签名保持**可选**，与 ① 和回收后的 ② 都自洽。
    *
-   * 对本方法的要求只有一条：**调用点必须给出窗口**，不在方法内再写一个默认值。
-   * 旧写法 `hours ?? 24` 会让「24」这个数字在仓库里出现两处（`SOP_BLOCKED_WINDOW_HOURS`
-   * 与这里的字面量），常量一改，这个方法就静默用旧窗口 —— 而窗口是**筛选条件**，
-   * 它会改变「哪些工单出现在本节」，不会报错。
+   * ⇒ 所以这里**不写** `hours ?? 24`：那会让「24」在仓库里出现两处
+   * （`SOP_BLOCKED_WINDOW_HOURS` 与这里），常量一改方法就静默用旧窗口——而窗口是
+   * **筛选条件**，它改变「哪些工单出现在本节」且**不报错**。
+   * 不传 = 真的不带这个 query 参数（由 service 决定默认），而不是假装传了 24。
+   *
+   * 「窗口由谁定」只有一个答案：**调用点**（`api/inbox.ts` 传常量）。这样即使
+   * 服务端默认值将来漂移，本前端也不会静默跟随。
    */
-  laggingAssignments: (hours: number, signal?: AbortSignal) =>
+  laggingAssignments: (hours?: number, signal?: AbortSignal) =>
     client.get('/sop/assignments/lagging', {
-      params: { hours },
+      // 不传就不带这个参数：让「谁决定窗口」只由**调用点**回答一次。
+      params: hours === undefined ? {} : { hours },
       ...(signal ? { signal } : {}),
     }) as Promise<components['schemas']['SopAssignmentLagResponseDto']>,
   get: (id: string) => client.get(`/sop/${id}`) as Promise<Sop>,

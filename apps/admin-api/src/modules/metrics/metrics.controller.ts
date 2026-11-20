@@ -6,6 +6,7 @@ import {
   ApiTags,
   ApiBearerAuth,
   ApiOperation,
+  ApiQuery,
   ApiResponse,
   ApiOkResponse,
 } from "@nestjs/swagger";
@@ -70,12 +71,18 @@ export class MetricsController {
   }
 
   @Get("summary")
+  // R287：`@Query("projectId") projectId?: string` 会被 Swagger 推断成
+  // `required: true`（具名 @Query 拿不到 TS 的 `?`）；运行期缺省=统计全部项目。
+  @ApiQuery({ name: "projectId", required: false, type: String })
   @ApiOkResponse({ type: MetricsSummaryResponseDto })
   getSummary(@Query("projectId") projectId?: string) {
     return this.svc.getSummary(projectId);
   }
 
   @Get("trend")
+  // R287：两者运行期都可选（days 缺省 7 并钳 1..90；projectId 缺省不限项目）。
+  @ApiQuery({ name: "days", required: false, type: String })
+  @ApiQuery({ name: "projectId", required: false, type: String })
   @ApiOkResponse({ type: [MetricsTrendRowDto] })
   getDailyTrend(
     @Query("days") days?: string,
@@ -96,6 +103,8 @@ export class MetricsController {
   }
 
   @Get("failures")
+  // R287：缺省走不带 where 的 repo.find 路径，属可选过滤器。
+  @ApiQuery({ name: "projectId", required: false, type: String })
   @ApiOkResponse({ type: [MetricsRecentFailureDto] })
   getRecentFailures(@Query("projectId") projectId?: string) {
     return this.svc.getRecentFailures(projectId);

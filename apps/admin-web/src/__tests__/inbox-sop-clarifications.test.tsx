@@ -278,9 +278,9 @@ describe('R280 ② total 为 0（事实为零）⇒ 小节隐藏', () => {
       sections(ready('sopClarifications', [], { total: 0, returned: 0 })),
     );
     renderPage();
-    await screen.findByTestId('inbox-page');
+    // 等全清文案（终态信号），不等 shell 容器 `inbox-page`（loading 期就有）。
+    expect(await screen.findByText('当前没有待你处理的事项')).toBeTruthy();
     expect(screen.queryByTestId('inbox-section-sopClarifications')).toBeNull();
-    expect(screen.getByText('当前没有待你处理的事项')).toBeTruthy();
 
     cleanup();
     vi.mocked(loadInbox).mockResolvedValue(
@@ -293,8 +293,9 @@ describe('R280 ② total 为 0（事实为零）⇒ 小节隐藏', () => {
   it('徽标层：0 件时即使其余待办归零也整体隐藏（0 = 事实为零，不占顶栏）', async () => {
     vi.mocked(loadInboxCounts).mockResolvedValue(counts({ sopClarifications: 0 }));
     render(<MemoryRouter><InboxBadge /></MemoryRouter>);
-    await waitFor(() => expect(vi.mocked(loadInboxCounts)).toHaveBeenCalled());
-    expect(screen.queryByTestId('inbox-badge-button')).toBeNull();
+    // 等最终 DOM 状态：`toHaveBeenCalled` 在 React 提交前就返回，loading 态下
+    // 徽标照渲染「—」⇒ 同步断言会间歇性红（R286 实测复现）。
+    await waitFor(() => expect(screen.queryByTestId('inbox-badge-button')).toBeNull());
   });
 });
 

@@ -295,9 +295,10 @@ describe('R279 ② failedSessions 为 0（事实为零）⇒ 小节隐藏', () =
     vi.mocked(loadInbox).mockResolvedValue(sections(ready('agentFailures', [], { total: 0, rowTotal: 0 })));
     renderPage();
     // 其余七个小节都确认清零 + 失败数确认为 0 ⇒ 整页进入全空态（卡片一律不渲染）。
-    await screen.findByTestId('inbox-page');
+    // `inbox-page` 是 shell 容器，loading 期已存在 ⇒ 等它等于没等。等全清文案
+    // 出现（它只在「全 ready + 确认清零」时渲染），才是可信的终态信号。
+    expect(await screen.findByText('当前没有待你处理的事项')).toBeTruthy();
     expect(screen.queryByTestId('inbox-section-agentFailures')).toBeNull();
-    expect(screen.getByText('当前没有待你处理的事项')).toBeTruthy();
 
     cleanup();
     vi.mocked(loadInbox).mockResolvedValue(

@@ -303,7 +303,9 @@ describe('R286 ② total 为 0（事实为零）⇒ 小节隐藏', () => {
       sections(ready('sopBlocked', [], { total: 0, returned: 0 })),
     );
     renderPage();
-    await screen.findByTestId('inbox-page');
+    // `inbox-page` 是**外层容器**，loading 期就已存在 ⇒ 等它等于没等。
+    // 等「全清文案」出现才是真实的终态信号（它只在全 ready 且清零时渲染）。
+    await screen.findByText('当前没有待你处理的事项');
     expect(screen.queryByTestId('inbox-section-sopBlocked')).toBeNull();
 
     cleanup();
@@ -317,8 +319,9 @@ describe('R286 ② total 为 0（事实为零）⇒ 小节隐藏', () => {
   it('徽标层：0 件时即使其余待办归零也整体隐藏', async () => {
     vi.mocked(loadInboxCounts).mockResolvedValue(counts({ sopBlocked: 0 }));
     render(<MemoryRouter><InboxBadge /></MemoryRouter>);
-    await waitFor(() => expect(vi.mocked(loadInboxCounts)).toHaveBeenCalled());
-    expect(screen.queryByTestId('inbox-badge-button')).toBeNull();
+    // 等最终 DOM 状态（不是「mock 被调用」）：loading 态下徽标照渲染「—」，
+    // 同步断言会在 promise 落地与 React 提交之间间歇性红。
+    await waitFor(() => expect(screen.queryByTestId('inbox-badge-button')).toBeNull());
   });
 });
 
@@ -569,23 +572,31 @@ describe('R286 小节隔离：lagging 端点挂掉只让它自己是 error 态',
     expect(spy.mock.calls[0][0]).toBe(SOP_BLOCKED_WINDOW_HOURS);
   });
 
-  it('窗口值只有一个事实源：`hours` 必填，方法内不再藏第二个 24', async () => {
+  it('窗口只有一个事实源：方法内不藏第二个 24，调用点显式给常量', async () => {
     // 为什么钉这条：旧写法 `hours ?? 24` 让「24」在仓库里出现两处
     // （`SOP_BLOCKED_WINDOW_HOURS` + 方法内字面量）。常量一改，方法就静默用旧窗口，
     // 而窗口是**筛选条件**——它会改变「哪些工单出现在本节」，不会报错。
-    // 这里用「传 48 ⇒ 请求里就是 48」证明参数被原样透传、没有被内部默认值吃掉。
     const get = mockBackend();
+    // 传 48 ⇒ 请求里就是 48：证明参数被原样透传、没被内部默认值吃掉。
     await sopsApi.laggingAssignments(48);
-    const call = get.mock.calls.find(([url]) => url === '/sop/assignments/lagging');
-    expect((call![1]?.params as Record<string, unknown>).hours).toBe(48);
+    const first = get.mock.calls.find(([url]) => url === '/sop/assignments/lagging');
+    expect((first![1]?.params as Record<string, unknown>).hours).toBe(48);
+
+    // 不传 ⇒ **不发明一个默认值**：不带 `hours` 参数（由 service 决定默认），
+    // 而不是假装传了 24。这样服务端默认值将来漂移，本前端也不会静默跟随。
+    await sopsApi.laggingAssignments();
+    const calls = get.mock.calls.filter(([url]) => url === '/sop/assignments/lagging');
+    const omitted = calls[calls.length - 1];
+    expect((omitted[1]?.params as Record<string, unknown>).hours).toBeUndefined();
+    expect(omitted[1]?.params).not.toHaveProperty('hours');
 
     // 仓库里的调用点必须全部传常量（不是字面量、不是省略）。
     const inbox = await loadInbox();
     expect(inbox.sopBlocked.status).toBe('ready');
     // 用下标而不是 `Array.prototype.at`：tsconfig 的 lib 未到 es2022，
     // vitest 能跑而 tsc 会红（假绿陷阱）。
-    const lagCalls = get.mock.calls.filter(([url]) => url === '/sop/assignments/lagging');
-    const second = lagCalls[lagCalls.length - 1];
-    expect((second[1]?.params as Record<string, unknown>).hours).toBe(SOP_BLOCKED_WINDOW_HOURS);
+    const laters = get.mock.calls.filter(([url]) => url === '/sop/assignments/lagging');
+    const last = laters[laters.length - 1];
+    expect((last[1]?.params as Record<string, unknown>).hours).toBe(SOP_BLOCKED_WINDOW_HOURS);
   });
 });

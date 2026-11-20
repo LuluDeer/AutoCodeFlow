@@ -664,7 +664,13 @@ describe("R286 · controller 薄路由（GET /sop/assignments/lagging）", () =>
    */
   it("装配层反证：仓储读失败 ⇒ 经真 service + 真 controller，total 仍是 null（不是 0）", async () => {
     const broken = harness({
-      assignments: [asg({ updatedAt: new Date(NOW - 30 * HOUR) })],
+      // ⚠️ 这里**必须**相对真时钟造夹具（`Date.now()`），不能用上面的固定 `NOW`：
+      // 走 controller 就是走生产路径，service 内的 `now` 是真实 `Date.now()`。
+      // 若夹具锚在 `NOW`（固定 2026-11-20），那么一旦在**早于**该时刻的机器上
+      // 跑（CI 时钟、回拨的容器、本地改过系统时间），`updatedAt = NOW-30h`
+      // 会落在"未来" ⇒ 不满足 `updatedAt <= now - 24h` ⇒ returned=0 ⇒ 假红。
+      // 相对真时钟造 -30h ⇒ 无论机器时间是多少，它都恒在窗口外。
+      assignments: [asg({ updatedAt: new Date(Date.now() - 30 * HOUR) })],
       failCount: true,
     });
     const ctl = new SopController(
@@ -675,8 +681,6 @@ describe("R286 · controller 薄路由（GET /sop/assignments/lagging）", () =>
       broken.svc as never,
     );
 
-    // ⚠️ 注意这里**没有** `now` 注入口：走 controller 就是走生产路径（真时钟）。
-    // 夹具的 updatedAt 是 NOW-30h，相对真时钟仍是"很久以前"⇒ 仍会被计入。
     const res = await ctl.listLaggingAssignments("24");
 
     expect(res.total).toBeNull();
@@ -685,5 +689,30 @@ describe("R286 · controller 薄路由（GET /sop/assignments/lagging）", () =>
     expect(res.total).not.toBe(0);
     expect(res.truncated).toBe(false);
     expect(res.returned).toBe(1);
+  });
+
+  /**
+   * R286 · **窗口默认值的单一事实源**（切片 B 提的同类风险，在此钉住）。
+   *
+   * B 反馈它前端曾有「两个 24」：签名默认 `hours ?? 24` + 模块常量，常量一改
+   * 方法就静默用旧窗口——而窗口是**筛选条件**，改了会改变「哪些工单出现在本节」
+   * 且**不报错**。服务端这边的风险点是同形的：controller 若写
+   * `hours: hours ? parseInt(hours, 10) : 24`，默认值就在两处（controller 字面量
+   * + `LAG_HOURS_DEFAULT`）⇒ 改常量不生效、且没有任何测试会红。
+   *
+   * 本条把「controller **不抄**默认值」钉成断言：不传 `hours` 时透传的必须是
+   * `undefined`（让 service 唯一决定窗口），而不是任何具体数字。
+   */
+  it("窗口默认值只有一处：controller 不传时透传 undefined，绝不自己填 24", async () => {
+    const { ctl, lag } = controllerHarness();
+    await ctl.listLaggingAssignments(undefined);
+
+    const arg = (lag as { lagging: jest.Mock }).lagging.mock.calls[0][0] as {
+      hours?: number;
+    };
+    expect(arg.hours).toBeUndefined();
+    // 直接反证「抄了一份默认值」这个具体写法：
+    expect(arg.hours).not.toBe(LAG_HOURS_DEFAULT);
+    expect(arg.hours).not.toBe(24);
   });
 });

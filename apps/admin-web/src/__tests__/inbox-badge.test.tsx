@@ -61,8 +61,10 @@ describe('InboxBadge 顶栏待办入口', () => {
   it('0 件时整体隐藏', async () => {
     vi.mocked(loadInboxCounts).mockResolvedValue(counts());
     render(<MemoryRouter><InboxBadge /></MemoryRouter>);
-    await waitFor(() => expect(vi.mocked(loadInboxCounts)).toHaveBeenCalled());
-    expect(screen.queryByTestId('inbox-badge-button')).toBeNull();
+    // 等**最终 DOM 状态**，不等「mock 被调用」：后者在 promise 落地、React 提交
+    // 之前就会返回，此时组件仍是 loading 态（`total === null` ⇒ 徽标照渲染「—」），
+    // 紧跟的同步断言会间歇性看到按钮 —— 实测复现率约 2/6。
+    await waitFor(() => expect(screen.queryByTestId('inbox-badge-button')).toBeNull());
   });
 
   it('等待会话只计一次，无单独的审批单计数仍可展示总数', async () => {
