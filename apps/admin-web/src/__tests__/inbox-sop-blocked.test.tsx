@@ -46,6 +46,7 @@ import {
   isSectionVisible,
   loadInbox,
   loadInboxCounts,
+  metaOf,
   sopAssignmentUrl,
   splitInboxCounts,
   summarizeInboxCounts,
@@ -451,6 +452,60 @@ describe('R286 ④ truncated:true ⇒ 显示「显示前 N 条（共 M 条）」
     expect(count.textContent).toContain('显示前 1 条（共 7 条）');
     const section = within(screen.getByTestId('inbox-section-sopBlocked'));
     expect(section.getByTestId('inbox-truncated-sopBlocked')).toBeTruthy();
+  });
+
+  it('非有限数 total（NaN / Infinity）⇒ 判读失败：null + degraded，不透出去', async () => {
+    // 为什么必须有这条：`metaOf` 里有一段
+    //   `typeof rawTotal === 'number' && Number.isFinite(rawTotal) ? rawTotal : null`
+    // **只把 `Number.isFinite` 去掉**（让 NaN/Infinity 透出去）时，本文件原本
+    // **128 例全绿** —— 即那个防御分支从未被喂过非法输入（与 A 那边
+    // 「非有限数 ⇒ 判读失败」守卫是同一类空转，实测双方各一处）。
+    //
+    // 它为什么该覆盖：`getCount()` 正常不回 NaN，但驱动/聚合/自定义 select 都可能
+    // 回 `NaN`/`Infinity`；而 `NaN` 进 JSON 会被序列化成 `null`，前端再判一次就失效。
+    // 契约是「读不到 ⇒ null + degraded」，不是「把不确定的数字透给 UI 显示」。
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      mockBackend({
+        lagging: {
+          items: [lagRow()],
+          total: bad,
+          returned: 1,
+          truncated: false,
+          degraded: true,
+        },
+      });
+      const result = await loadInbox();
+      // 关键：不能是 NaN / Infinity，也不能被悄悄换成 0——必须是 null。
+      expect(result.sopBlocked.total).toBeNull();
+      expect(result.sopBlocked.degraded).toBe(true);
+      // 行不能因总数不可读而丢。
+      expect(result.sopBlocked.items).toHaveLength(1);
+      expect(result.sopBlocked.returned).toBe(1);
+      // 总数未知 ⇒ 不许渲染「共 M 条」这种带具体数字的结论。
+      expect(describeSectionCount(result.sopBlocked)).toEqual({ kind: 'unknown', degraded: true });
+    }
+  });
+
+  it('`metaOf`（共享函数，7 个入口的共同根）：非有限数一律判读失败', () => {
+    // 为什么钉在**函数级**而不是再加一个入口级用例：
+    // `metaOf` 在 `api/inbox.ts` 有 **7 个调用点**（deployments / agentWaiting×2 /
+    // agentFailures / sopClarifications / sopBlocked / stalled），而上面那条
+    // 「非有限数」用例只从 `sopBlocked` 这一个入口打进去 —— 实测：把
+    // `Number.isFinite` 去掉，整套 inbox 测试只红 **2 条**，且**全部来自同一入口**。
+    // 也就是说「变异会红」不等于「覆盖完整」：红 2 条 / 7 个入口 = 覆盖 2/7。
+    //
+    // 共享函数的契约钉在函数级，1 条用例覆盖 7 个入口的共同根；入口级只需再验证
+    // 「有没有把这个 total 如实透出去」（那部分已有各节用例）。
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(metaOf(1, bad)).toEqual({ total: null, returned: 1, truncated: false });
+    }
+    // 正常值必须原样通过（防「为了让 NaN 变 null 而把整数也吃掉」）。
+    expect(metaOf(1, 7)).toEqual({ total: 7, returned: 1, truncated: true });
+    expect(metaOf(0, 0)).toEqual({ total: 0, returned: 0, truncated: false });
+    // 非数字（缺字段 / null / 字符串）同样判读失败，不是 0。
+    expect(metaOf(1, null)).toEqual({ total: null, returned: 1, truncated: false });
+    expect(metaOf(1, undefined)).toEqual({ total: null, returned: 1, truncated: false });
+    expect(metaOf(1, '7' as unknown as number)).toEqual({ total: null, returned: 1, truncated: false });
   });
 
   it('`total:null` 时 truncated 必须为 false，且不渲染「共 M 条」（没有 M）', async () => {
