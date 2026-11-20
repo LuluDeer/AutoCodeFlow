@@ -1809,6 +1809,8 @@ export default {
   'executorDetail.stats.successRate': '成功率',
   // METRIC-01：成功率分母含全部状态，只给成功/失败两数会对不上——补「其他」计数。
   'executorDetail.stats.succFail': '成功 {{succ}} / 失败 {{fail}} / 其他 {{other}}',
+  // R285：超时单独成桶，不再藏进「其他」（缺失该字段时仍用上面那条旧文案）
+  'executorDetail.stats.succFailTimeout': '成功 {{succ}} / 失败 {{fail}} / 超时 {{timeout}} / 其他 {{other}}',
   'executorDetail.stats.avgDuration': '平均耗时',
   'executorDetail.stats.empty': '暂无性能数据，执行任务后将在此显示统计信息',
   // R149-F2：读取失败 ≠ 没有数据（失败态标题，空态仍是上面那条）
@@ -4165,6 +4167,13 @@ export default {
   'inbox.empty.unknownSection': '本节暂无条目，但总数读取失败——不能据此认为「没有待办」。',
   'inbox.empty.pendingBeyondRows': '有 {{n}} 条只计入总数、未在下方列出（本次未能装配出对应条目）。',
   'inbox.count.cappedHint': '最多显示 {{limit}} 条；超出部分未列出，完整列表请到原对象页查看。',
+  // R285：backlogged 的 M 是「对账探针**已探到**的下界」（探针有上限），
+  // 不能说成「一共 M 条」；未触顶时才允许说「共 M 条」（探针跑完了全部 pending）。
+  'inbox.backlog.capped': '显示前 {{returned}} 条（本次共对账 {{probed}} 条已达上限 · 已探到 {{found}} 条是下限，实际可能更多）',
+  'inbox.backlog.cappedNoProbe': '显示前 {{returned}} 条（本次共对账已达上限 · 已探到 {{found}} 条是下限，实际可能更多）',
+  'inbox.backlog.truncatedHint': '本次对账只覆盖了前 {{probed}} 条 pending 会话（对账上限）：已探到的 {{found}} 条积压是「下限」，不是积压总数，实际可能更多。要看全量请到会话列表按 pending 复查。',
+  'inbox.backlog.truncatedHintNoProbe': '本次对账有上限、且没读到这次探了多少条：已探到的 {{found}} 条积压是「下限」，不是积压总数，实际可能更多。',
+  'inbox.backlog.unknownHint': '本次没读到积压条数——这不是「0 条积压」：对账可能不完整，下方只列出已探到的条目，请重试。',
   'inbox.truncated.summary': '显示前 {{returned}} 条（共 {{total}} 条）',
   'inbox.truncated.hint': '显示前 {{returned}} 条（共 {{total}} 条）；其余未显示，完整列表请到原对象页查看。',
 } as const;

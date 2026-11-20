@@ -1804,6 +1804,8 @@ export default {
   'executorDetail.stats.totalExecutions': 'Total executions',
   'executorDetail.stats.successRate': 'Success rate',
   'executorDetail.stats.succFail': '{{succ}} succeeded / {{fail}} failed / {{other}} other',
+  // R285: timeouts get their own bucket instead of hiding inside "other"
+  'executorDetail.stats.succFailTimeout': '{{succ}} succeeded / {{fail}} failed / {{timeout}} timed out / {{other}} other',
   'executorDetail.stats.avgDuration': 'Avg duration',
   'executorDetail.stats.empty': 'No performance data yet; stats will appear here after tasks run',
   // R149-F2: a failed read is not "no data" (error title; the empty-state wording stays above)
@@ -4173,6 +4175,12 @@ export default {
   'inbox.empty.unknownSection': 'No items could be read for this section, but the total could not be read either — this does NOT mean there is nothing to do.',
   'inbox.empty.pendingBeyondRows': '{{n}} item(s) are counted in the total but not listed below (the rows could not be assembled this time).',
   'inbox.count.cappedHint': 'At most {{limit}} items are shown; anything beyond that is not listed — open the original page for the complete list.',
+  // R285: backlogged's M is the LOWER BOUND found by a capped probe — never "the total".
+  'inbox.backlog.capped': 'Showing the first {{returned}} — {{probed}} pending sessions probed (probe cap); the {{found}} backlogged found are a lower bound, the real backlog may be larger',
+  'inbox.backlog.cappedNoProbe': 'Showing the first {{returned}} — the probe is capped and the probed count is unknown; the {{found}} backlogged found are a lower bound',
+  'inbox.backlog.truncatedHint': 'Reconciliation only covered the first {{probed}} pending sessions (probe cap): the {{found}} backlogged found are a LOWER BOUND, not the total backlog — the real number may be larger. Check the session list filtered by pending for the full picture.',
+  'inbox.backlog.truncatedHintNoProbe': 'Reconciliation is capped and the probed count could not be read: the {{found}} backlogged found are a LOWER BOUND, not the total backlog — the real number may be larger.',
+  'inbox.backlog.unknownHint': 'The backlog count could not be read — this is NOT "0 backlog". Reconciliation may be incomplete; the list below only shows what was detected. Please retry.',
   'inbox.truncated.summary': 'Showing the first {{returned}} of {{total}}',
   'inbox.truncated.hint': 'Showing the first {{returned}} of {{total}}; the rest are not displayed — open the original page for the complete list.',
 } as const;

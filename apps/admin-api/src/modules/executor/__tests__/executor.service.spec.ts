@@ -4455,6 +4455,156 @@ describe("ExecutorService (__tests__)", () => {
       expect(result.history).toEqual([]);
     });
 
+    /**
+     * R285：不靠「SQL 字符串长得对」自证。把 qb 捕获到的**每一列聚合表达式**在内存里
+     * 对 fixture 行求值（`CASE WHEN e.status = 'x'` 的字面量当过滤条件），产出 PG 形态
+     * 的 raw 行（字符串或 NULL）。于是断言验的是**这条 SQL 的语义**：删掉 timedOut
+     * 那一列，getRawOne 里就不会有该键 ⇒ 对应用例必然红（反证靠实现，不靠测试自说自话）。
+     */
+    const aggregateRows = (
+      qb: { select: jest.Mock; addSelect: jest.Mock },
+      rows: Array<{ status: ExecutionStatus; duration: number | null }>,
+    ): Record<string, string | null> => {
+      const out: Record<string, string | null> = {};
+      for (const [rawSql, alias] of [
+        ...qb.select.mock.calls,
+        ...qb.addSelect.mock.calls,
+      ] as Array<[string, string]>) {
+        if (rawSql.startsWith("COUNT(*)")) {
+          out[alias] = String(rows.length);
+        } else if (rawSql.startsWith("AVG(")) {
+          const ds = rows.map((r) => r.duration).filter((d) => d !== null);
+          out[alias] = ds.length
+            ? String(ds.reduce((a, b) => a + b, 0) / ds.length)
+            : null;
+        } else {
+          const m = /e\.status = '([a-z_-]+)'/.exec(rawSql);
+          out[alias] = String(rows.filter((r) => r.status === m?.[1]).length);
+        }
+      }
+      return out;
+    };
+
+    const metricsExecutor = {
+      id: "e1",
+      address: "host:3002",
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 0,
+      cpuUsage: null,
+      memUsage: null,
+    };
+
+    const armMetricsQuery = (
+      rows: Array<{ status: ExecutionStatus; duration: number | null }>,
+    ) => {
+      executorRepo.findOne.mockResolvedValue({ ...metricsExecutor });
+      const qb = execRepo.createQueryBuilder();
+      qb.getRawOne.mockImplementation(async () => aggregateRows(qb, rows));
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      const hqb = metricsHistoryRepo.createQueryBuilder();
+      hqb.getRawMany.mockResolvedValue([]);
+      metricsHistoryRepo.createQueryBuilder.mockReturnValue(hqb);
+      return qb;
+    };
+
+    // ① R285 缺陷本体：10 条 timeout + 0 条 failed + 2 条 success。改前这条数据下
+    // `failed=0`、面板只能把 10 条塞进「其他」，全部超时这一事实不可见。
+    it("R285-① 10 timeout + 0 failed + 2 success ⇒ timedOut=10 / failed=0 / successful=2", async () => {
+      armMetricsQuery([
+        ...Array.from({ length: 10 }, () => ({
+          status: ExecutionStatus.TIMEOUT,
+          duration: 60_000,
+        })),
+        ...Array.from({ length: 2 }, () => ({
+          status: ExecutionStatus.SUCCESS,
+          duration: 500,
+        })),
+      ]);
+
+      const result = await service.getExecutorMetrics("e1");
+
+      expect(result.sevenDayStats).toMatchObject({
+        totalExecutions: 12,
+        successful: 2,
+        failed: 0, // FAILED 桶恒为 0——timeout **没有**被并进 failed
+        timedOut: 10, // 缺陷修复点：超时独立成列
+      });
+      // 前端「其他」= total − succ − failed − timedOut：此数据下必须塌到 0，
+      // 否则「全是超时」仍会被「其他」藏住。
+      expect(
+        result.sevenDayStats.totalExecutions -
+          result.sevenDayStats.successful -
+          result.sevenDayStats.failed -
+          result.sevenDayStats.timedOut,
+      ).toBe(0);
+    });
+
+    // ② 混合数据自洽：failed 只数 FAILED，timedOut 只数 TIMEOUT，互不重叠；
+    // 差额恰好等于「未计入的桶」（未终态 + CANCELLED/KILLED）。
+    it("R285-② 混合数据自洽：四个桶相加 ≤ total，差额 = 未计入桶（RUNNING/CANCELLED/KILLED）", async () => {
+      armMetricsQuery([
+        ...Array.from({ length: 6 }, () => ({
+          status: ExecutionStatus.SUCCESS,
+          duration: 100,
+        })),
+        ...Array.from({ length: 3 }, () => ({
+          status: ExecutionStatus.FAILED,
+          duration: 200,
+        })),
+        ...Array.from({ length: 4 }, () => ({
+          status: ExecutionStatus.TIMEOUT,
+          duration: 60_000,
+        })),
+        ...Array.from({ length: 2 }, () => ({
+          status: ExecutionStatus.CANCELLED,
+          duration: 50,
+        })),
+        ...Array.from({ length: 1 }, () => ({
+          status: ExecutionStatus.RUNNING,
+          duration: null,
+        })),
+        ...Array.from({ length: 1 }, () => ({
+          status: ExecutionStatus.KILLED,
+          duration: 30,
+        })),
+      ]);
+
+      const { sevenDayStats: s } = await service.getExecutorMetrics("e1");
+
+      expect(s).toMatchObject({
+        totalExecutions: 17,
+        successful: 6,
+        failed: 3, // 3 条 FAILED；4 条 TIMEOUT **不**被折进来（否则会变 7）
+        timedOut: 4,
+      });
+      expect(s.successful + s.failed + s.timedOut).toBe(13);
+      expect(s.totalExecutions - s.successful - s.failed - s.timedOut).toBe(4);
+      expect(s.successRate).toBeCloseTo(35.29, 2);
+    });
+
+    // ③ 恒为 number：窗口 0 行时 SUM(CASE…) 返回 NULL ⇒ 回落 0，键不缺席。
+    // 前端用 typeof === "number" 区分「真有 0 条超时」与「旧后端缺键」。
+    it("R285-③ 零行窗口：SUM 返回 NULL ⇒ timedOut 回落 0（类型恒为 number，不是 null/undefined）", async () => {
+      executorRepo.findOne.mockResolvedValue({ ...metricsExecutor });
+      const qb = execRepo.createQueryBuilder();
+      qb.getRawOne.mockResolvedValue({
+        total: "0",
+        successful: null,
+        failed: null,
+        timedOut: null,
+        avgDuration: null,
+      });
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      const hqb = metricsHistoryRepo.createQueryBuilder();
+      hqb.getRawMany.mockResolvedValue([]);
+      metricsHistoryRepo.createQueryBuilder.mockReturnValue(hqb);
+
+      const result = await service.getExecutorMetrics("e1");
+
+      expect(result.sevenDayStats.timedOut).toBe(0);
+      expect(typeof result.sevenDayStats.timedOut).toBe("number");
+    });
+
     // P2-3（ADR-017「相关轨道」第 3 条，迁移 1790000000061）：
     // executor_metrics_history 补了行身份列，趋势查询改为「行身份优先 +
     // 历史行按地址回落」——同址多行（pull 各自成行）的曲线从此可拆分，

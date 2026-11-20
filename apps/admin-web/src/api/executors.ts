@@ -162,6 +162,17 @@ export interface ExecutorMetrics {
     totalExecutions: number;
     successful: number;
     failed: number;
+    /**
+     * R285：`status='TIMEOUT'` 桶的 7 日计数，与 `failed`（仅 `FAILED` 桶）**并列**
+     * 而非合并——回调上报的超时落 `TIMEOUT`，stale sweep 判死落 `FAILED +
+     * failureReason=TIMEOUT`，两条路径互斥不重叠。
+     *
+     * 声明成可选是**诚实建模**：新后端恒下发（含真实 `0`），但旧后端 / 部署未升级
+     * 的接口缓存里该键**不存在** ⇒ `JSON.parse` 出来是 `undefined`。消费方必须用
+     * `typeof === 'number'` 判定「有」（`0` 是合法真值），否则退回旧文案，
+     * 不能靠 `?? 0` 把缺失读成「超时 0」——那是假事实（同 R278 `null ≠ 0`）。
+     */
+    timedOut?: number;
     // U13: 后端 executor.service.ts getExecutorMetrics 返回 number（非字符串），
     // 声明对齐，调用点无需 `+` 强转。
     successRate: number;

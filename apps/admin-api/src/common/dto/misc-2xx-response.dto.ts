@@ -128,14 +128,29 @@ export class ExecutorMetricsDto {
     properties: {
       totalExecutions: { type: "number" },
       successful: { type: "number" },
-      failed: { type: "number" },
+      failed: {
+        type: "number",
+        description: "status=FAILED 单桶计数（不含 timeout）",
+      },
+      timedOut: {
+        type: "number",
+        description:
+          "status=timeout 计数；与 failed 互斥不重叠。旧后端可能缺该键（前端按 typeof === 'number' 判定）",
+      },
     },
-    required: ["totalExecutions", "successful", "failed"],
+    required: ["totalExecutions", "successful", "failed", "timedOut"],
   })
   sevenDayStats: {
     totalExecutions: number;
     successful: number;
+    /**
+     * R285：FAILED 单桶（不含 timeout）。timeout 语义会分叉落 TIMEOUT 与
+     * FAILED+failureReason 两桶，合并成一个 failed 会让「全是超时」淹没在
+     * 「其他」里，故超时由 `timedOut` 独立呈现。
+     */
     failed: number;
+    /** R285：status=timeout 的计数（恒为 number；旧后端缺键）。 */
+    timedOut: number;
   };
 
   @ApiProperty({

@@ -148,10 +148,19 @@ export interface InboxSectionState {
   status: 'loading' | 'ready' | 'error';
   items: InboxItem[];
   error: unknown;
-  /** 对账是否被上限截断（backlogged 口径，R395；R278 起所有有上限的小节都要带）。 */
+  /**
+   * 本小节是否「取了 N 条但不保证是全部」（D2，R278 起所有有上限的小节都要带）。
+   *
+   * ⚠️ backlogged 的 `truncated` 说的是**对账探针**有上限（`BACKLOG_PROBE_LIMIT`
+   * 条 pending 会话），**不是**「列表显示有上限」：被截的是「能确认多少」，
+   * 不是「渲染多少」。所以它的 M 是**下界**，见 `describeBacklogCount`。
+   */
   truncated?: boolean;
-  /** 实际对账条数（backlogged）。 */
-  probed?: number;
+  /**
+   * 本次实际对账（探测）了多少条 pending 会话（仅 backlogged）。
+   * `null` / `undefined` = **读不到**（旧后端或缺字段的替身），不是 0。
+   */
+  probed?: number | null;
   /** 队列停摆快照（仅 queueStall 小节携带）。 */
   snapshot?: QueueStallSnapshot | null;
   /**
@@ -159,6 +168,11 @@ export interface InboxSectionState {
    * - `number`：真实总数（可能 > 已取条数 ⇒ 配合 `truncated` 渲染「共 M 条」）；
    * - `null`：**读不到（未知）**，页面显示「—」，绝不显示 0；
    * - `undefined`：该小节没有总数字段（如 recentFailures），页面回落已取条数。
+   *
+   * ⚠️ **backlogged 例外（R285）**：这里装的是服务端 `count` = 「对账探针在
+   * `BACKLOG_PROBE_LIMIT` 条 pending 里**已探到**的积压数」。`truncated` 时它是
+   * **下界**（不是总数）⇒ 渲染必须走 `describeBacklogCount`，说成「共 M 条」就是把
+   * 下界冒充总数（R279 教训）。
    */
   total?: number | null;
   /**
@@ -669,8 +683,30 @@ async function loadStalled(): Promise<{ items: InboxItem[]; total: number | null
   return { items, ...metaOf(items.length, res?.total) };
 }
 
-/** 7. 调度积压：后端只回 sessionIds，再用 pending 列表补对象信息。 */
-async function loadBacklogged(): Promise<{ items: InboxItem[]; truncated: boolean; probed: number }> {
+/**
+ * 7. 调度积压：后端只回 sessionIds，再用 pending 列表补对象信息。
+ *
+ * ## R285：这里的 `truncated` 是**对账上限**，不是显示上限（D2 的唯一例外）
+ *
+ * 后端 `GET /agent/sessions/backlogged` 的语义是「在最多 `BACKLOG_PROBE_LIMIT`
+ * （=200）条 pending 会话里，逐条对账队列里有没有对应 job」：
+ * - `probed` = 本次**实际对账**了多少条 pending（触顶时就是 200）；
+ * - `count`  = 在 `probed` 里**已探到**的积压数 ⇒ `truncated` 时它是**下界**；
+ * - `sessionIds` = 这些积压会话，全都回传（**列表本身没有藏条目**）。
+ *
+ * ⇒ 旧实现只把 `{truncated, probed}` 塞进小节、不给 `total`，页面既画不出
+ * 「显示前 N 条（共 M 条）」也画不出「—」，`truncated` 就这么**静默**掉了——同一页
+ * 上别的节说 D2、这节说「已列出 N 条」，运营要学两套语义。
+ * 现在三件事都如实落进 state：`total`（下界/总数）、`probed`（探了多少）、
+ * `truncated`（探针是否触顶），措辞由 `describeBacklogCount` 唯一决定。
+ */
+async function loadBacklogged(): Promise<{
+  items: InboxItem[];
+  truncated: boolean;
+  probed: number | null;
+  total: number | null;
+  returned: number;
+}> {
   const backlog = await agentApi.backloggedCount();
   const ids = backlog?.sessionIds ?? [];
   let pending: AgentSession[];
@@ -694,7 +730,17 @@ async function loadBacklogged(): Promise<{ items: InboxItem[]; truncated: boolea
       session: s,
     };
   });
-  return { items, truncated: !!backlog?.truncated, probed: backlog?.probed ?? ids.length };
+  const int = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  return {
+    items,
+    truncated: !!backlog?.truncated,
+    // 缺字段 ⇒ `null`（读不到），**不是** `ids.length`：拿已取条数冒充「探了多少条」
+    // 会把「没读到探针范围」说成「只探了 N 条」。
+    probed: int(backlog?.probed),
+    // `count` 缺失 ⇒ `null`（未知），绝不回落 0（D3：读不到 ≠ 没有）。
+    total: int(backlog?.count),
+    returned: ids.length,
+  };
 }
 
 /** 8. 队列停摆观测（横幅，不是逐条待办）。 */
@@ -750,7 +796,7 @@ export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
       (error) => ERROR('stalled', error),
     ),
     loadBacklogged().then(
-      ({ items, truncated, probed }) => READY('backlogged', items, { truncated, probed }),
+      ({ items, ...meta }) => READY('backlogged', items, meta),
       (error) => ERROR('backlogged', error),
     ),
     loadQueueStall().then(
@@ -899,6 +945,41 @@ export function splitInboxCounts(counts: InboxCountMap): {
 }
 
 /**
+ * `backlogged` 计数的**渲染视图**（R285/D2 的唯一判定点，仅此一节使用）。
+ *
+ * ## 为什么它不能复用 `describeSectionCount`
+ *
+ * 别的节的 `truncated` 是「显示不全」：M 是**服务端权威总数**，N 是本次取到的条数，
+ * `N < M` 天然成立 ⇒ 「显示前 N 条（共 M 条）」两句话都是事实。
+ *
+ * `backlogged` 的 `truncated` 是「**对账**不全」：探针只在 `BACKLOG_PROBE_LIMIT`
+ * 条 pending 里查，`M = count` 是**已探到的下界**，而列表把探到的**全显示了**
+ * ⇒ `N === M`。照抄「显示前 N 条（共 M 条）」会得到「显示前 3 条（共 3 条）」：
+ * 两个数字相同、还把 3 说成总数（R279 教训：下界冒充总数）。
+ *
+ * ⇒ 三态各自只说自己那件事：
+ * - `capped`  —— 探针触顶：`found` 是**下限**，必须同时给出 `probed`（本次共探 P 条），
+ *                用户才能看出「P 才是这次能确认的范围」；
+ * - `exact`   —— 探针跑完了**全部** pending（未截断）⇒ `found` 就是积压总数，可说「共 M 条」；
+ * - `unknown` —— `count` 读不到（`null` / 缺字段）⇒ 「—」，**绝不是 0**。
+ */
+export function describeBacklogCount(section: InboxSectionState):
+  | { kind: 'none' }
+  | { kind: 'unknown' }
+  | { kind: 'capped'; returned: number; found: number; probed: number | null }
+  | { kind: 'exact'; found: number } {
+  if (section.status !== 'ready') return { kind: 'none' };
+  const returned = section.returned ?? section.items.length;
+  const found = typeof section.total === 'number' && Number.isFinite(section.total) ? section.total : null;
+  // 缺字段（`undefined`）与 `null` 同义：都是**读不到**。回落「已列出 N 条」会把
+  // 「不知道有多少」伪装成「就这些」（D3）。
+  if (found === null) return { kind: 'unknown' };
+  if (!section.truncated) return { kind: 'exact', found };
+  const probed = typeof section.probed === 'number' && Number.isFinite(section.probed) ? section.probed : null;
+  return { kind: 'capped', returned, found, probed };
+}
+
+/**
  * 小节计数的**渲染视图**（R278/D2+D3 的唯一判定点）。
  *
  * 把「显示什么数字」与「要不要提示」从页面组件里抽出来变成纯函数：
@@ -913,6 +994,10 @@ export function splitInboxCounts(counts: InboxCountMap): {
  *
  * `total === undefined`（该小节没有总数字段）⇒ 回落已取条数，形态仍是 `total`，
  * 但 `source` 标注为 `returned`，让调用方知道这不是服务端权威总数。
+ *
+ * ⚠️ **`backlogged` 不走这里**（R285）：那一节的 M 可能是**下界**，`N === M` 会让
+ * 「显示前 N 条（共 M 条）」自相矛盾 ⇒ 走 `describeBacklogCount`，由
+ * `sectionCountLabel` 按 key 分派。
  */
 export function describeSectionCount(section: InboxSectionState):
   | { kind: 'none' }
@@ -944,6 +1029,14 @@ export function sectionNotices(
   limit: number = SECTION_PAGE_SIZE,
 ): (typeof SECTION_NOTICES)[number][] {
   if (section.status !== 'ready') return [];
+  // R285：backlogged 的告警只来自「对账探针」这一件事，走自己的判定（其余三条
+  // ——降级/显示上限/口径差——在这一节没有对应事实，凭空加只会造出假红）。
+  if (section.key === 'backlogged') {
+    const view = describeBacklogCount(section);
+    if (view.kind === 'capped') return ['truncated'];
+    if (view.kind === 'unknown') return ['unknown'];
+    return [];
+  }
   const notices: (typeof SECTION_NOTICES)[number][] = [];
   if (section.truncated && section.total != null) notices.push('truncated');
   if (section.total === null) notices.push('unknown');
@@ -1108,11 +1201,45 @@ export function hasUncertainCounts(sections: InboxSections): boolean {
   });
 }
 
+/**
+ * `backlogged` 的计数标签（R285/D2）：三态措辞**互不相同**，谁也不冒充谁。
+ *
+ * - 触顶 ⇒ 「显示前 N 条（本次**共**对账 P 条已达上限 · 已探到 M 条是下限，实际可能更多）」：
+ *   N 与 P 是两个不同数字，用户一眼能看出「3 条」是**探到的**、不是总数；
+ * - 未触顶 ⇒ 「共 M 条」（探针跑完了全部 pending ⇒ M 才是总数），且**不出现**「显示前 N 条」；
+ * - 读不到 ⇒ 「—」，绝不出现 0。
+ */
+export function backlogCountLabel(
+  section: InboxSectionState,
+  t: ReturnType<typeof useTranslation>['t'],
+): string {
+  const view = describeBacklogCount(section);
+  switch (view.kind) {
+    case 'none':
+      return '';
+    case 'unknown':
+      return `· ${t('inbox.count.unknown')}`;
+    case 'exact':
+      return `· ${t('inbox.count.total', { n: view.found })}`;
+    case 'capped':
+      // `probed` 读不到（旧后端）⇒ 不能编一个探针范围出来，退到不带 P 的措辞。
+      return view.probed === null
+        ? `· ${t('inbox.backlog.cappedNoProbe', { returned: view.returned, found: view.found })}`
+        : `· ${t('inbox.backlog.capped', {
+          returned: view.returned,
+          found: view.found,
+          probed: view.probed,
+        })}`;
+  }
+}
+
 /** `describeSectionCount` 的本地化标签（`—` 与「共 M 条」等措辞的唯一来源）。 */
 export function sectionCountLabel(
   section: InboxSectionState,
   t: ReturnType<typeof useTranslation>['t'],
 ): string {
+  // R285：backlogged 的 M 可能是下界（对账探针有上限），三态措辞单独一套。
+  if (section.key === 'backlogged') return backlogCountLabel(section, t);
   const view = describeSectionCount(section);
   switch (view.kind) {
     case 'none':
@@ -1145,6 +1272,17 @@ export function noticeTitle(
   section: InboxSectionState,
   t: ReturnType<typeof useTranslation>['t'],
 ): string {
+  // R285：backlogged 的两条告警说的是「对账探针」的事，措辞必须与别的节不同——
+  // 通用 hint 里那句「其余未显示」在这一节是假话（探到的**全**显示了）。
+  if (section.key === 'backlogged') {
+    const view = describeBacklogCount(section);
+    if (notice === 'truncated' && view.kind === 'capped') {
+      return view.probed === null
+        ? t('inbox.backlog.truncatedHintNoProbe', { found: view.found })
+        : t('inbox.backlog.truncatedHint', { found: view.found, probed: view.probed });
+    }
+    if (notice === 'unknown') return t('inbox.backlog.unknownHint');
+  }
   switch (notice) {
     case 'truncated':
       // 与 `describeSectionCount` 同口径：截断说的是**行集合**（`rowTotal`），

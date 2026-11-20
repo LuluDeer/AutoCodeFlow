@@ -10,7 +10,7 @@ import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, Dele
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { describeOfflineWindow, executorsApi, type ExecutorExecution, type ExecutorRemovalImpact } from '../api/executors';
+import { describeOfflineWindow, executorsApi, type ExecutorExecution, type ExecutorMetrics, type ExecutorRemovalImpact } from '../api/executors';
 import { projectsApi } from '../api/projects';
 // D-24 hotfix：queryKey 必须走工厂，不得内联裸写（否则失效方与读取方各自手拼后缀，
 // 前缀相同但第二段不同 ⇒ 失效静默打不中）。
@@ -89,6 +89,43 @@ function trendTooltipLabel(iso: string): string {
   return sameDay
     ? d.toLocaleTimeString(currentLocale(), { hour12: false })
     : formatDateTime(d);
+}
+
+/**
+ * R285：「成功 / 失败 / 超时 / 其他」计数行。
+ *
+ * 缺陷（本函数的存在理由）：后端 7 日统计只数 `FAILED` 桶，10 条 timeout 时面板
+ * 显示「成功 0 / 失败 0 / **其他 10**」——「其他」把「全是超时」这个事实藏了起来，
+ * 用户只能猜是 killed/cancelled 还是数据异常。现在超时单独成桶（与 `failed`
+ * 互斥：回调上报落 `TIMEOUT`，stale sweep 判死落 `FAILED`）。
+ *
+ * **缺失语义（关键，同 R278 的 `null ≠ 0` 纪律）**：`timedOut` 不是 number
+ * （旧后端 / 部署未升级的接口缓存里无此键）⇒ **退回旧文案**，绝不渲染
+ * 「超时 0」——那是凭空断言出来的事实。`0` 本身是合法真值，所以判据必须是
+ * `typeof === 'number'`，不能写 `if (!timedOut)` / `?? 0`。
+ *
+ * 「其他」= total − succ − failed (− timedOut)，clamp ≥ 0：`totalExecutions`
+ * 不过滤状态、含未终态行，非原子快照下差额可为负。
+ */
+function statsCountsLine(
+  s: ExecutorMetrics['sevenDayStats'],
+  t: import('i18next').TFunction,
+): string {
+  const timedOut = s.timedOut;
+  const counted = s.totalExecutions - s.successful - s.failed;
+  if (typeof timedOut !== 'number') {
+    return t('executorDetail.stats.succFail', {
+      succ: s.successful,
+      fail: s.failed,
+      other: Math.max(counted, 0),
+    });
+  }
+  return t('executorDetail.stats.succFailTimeout', {
+    succ: s.successful,
+    fail: s.failed,
+    timeout: timedOut,
+    other: Math.max(counted - timedOut, 0),
+  });
 }
 
 export default function ExecutorDetailPage() {
@@ -813,19 +850,9 @@ export default function ExecutorDetailPage() {
                 <Col span={8}>
                   <Statistic title={t('executorDetail.stats.successRate')} value={metrics.sevenDayStats.successRate} suffix="%" styles={{ content: { color: token.colorSuccess } }} precision={1} />
                   {/* METRIC-01：分母含超时/已终止等非成功/失败终态，计数行补「其他」，
-                      避免 85.7% 与「成功 6 / 失败 0」对不上 */}
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {t('executorDetail.stats.succFail', {
-                      succ: metrics.sevenDayStats.successful,
-                      fail: metrics.sevenDayStats.failed,
-                      other: Math.max(
-                        metrics.sevenDayStats.totalExecutions -
-                          metrics.sevenDayStats.successful -
-                          metrics.sevenDayStats.failed,
-                        0,
-                      ),
-                    })}
-                  </Text>
+                      避免 85.7% 与「成功 6 / 失败 0」对不上。
+                      R285：超时单独成桶（缺失时退回旧文案），见 statsCountsLine */}
+                  <Text type="secondary" style={{ fontSize: 12 }}>{statsCountsLine(metrics.sevenDayStats, t)}</Text>
                 </Col>
                 {/* EXEC-DETAIL-01：337,261ms 这类裸毫秒不可读，与全站统一走
                     formatDuration 人性化（5分37秒/1小时2分） */}
