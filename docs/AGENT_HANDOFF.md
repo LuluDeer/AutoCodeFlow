@@ -65,7 +65,7 @@ B 曾报告「A 的中间反馈收不到，只能等它提交后看 diff」；�
 
 `openapi.json` 与 `api-types.ts` **已随 `3eea12ca` 入库，当前无未提交漂移**：
 
-```
+```bash
 git log --oneline -1 -- apps/admin-api/openapi.json apps/admin-web/src/types/generated/api-types.ts
   3eea12ca feat(guards): query 参数 required 契约守卫 …
 git status --porcelain <这两个文件>   → 空
