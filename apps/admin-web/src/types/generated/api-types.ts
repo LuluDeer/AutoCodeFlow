@@ -3048,6 +3048,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sop/assignments/lagging": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出超过 N 小时未推进的 blocked 指派（含总数、截断与降级标记；不改状态机） */
+        get: operations["SopController_listLaggingAssignments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sop/assignments/{assignmentId}": {
         parameters: {
             query?: never;
@@ -6006,6 +6023,13 @@ export interface components {
             hasMore: boolean;
             /** @description 从 fromLine 起的原始日志行（给定级别过滤时生效） */
             lines: string[];
+            /** @description 日志是否已被保留期清理（日志行保留期短于执行行）。true=已按策略清理；false=日志为空但不是清理造成的；null=未知（保留期配置不可读）。仅当本次读取的日志为空时有判定意义。 */
+            logsPurged?: boolean | null;
+            /**
+             * Format: date-time
+             * @description 清理截止时刻（当前时间减去日志保留期天数）；仅 logsPurged 为 true 时非 null。
+             */
+            logsPurgedAt?: string | null;
             /** @description （过滤后）行集合的真实总数 */
             totalLines: number;
         };
@@ -6361,8 +6385,11 @@ export interface components {
                 timestamp: string;
             }[];
             sevenDayStats?: {
+                /** @description status=FAILED 单桶计数（不含 timeout） */
                 failed: number;
                 successful: number;
+                /** @description status=timeout 计数；与 failed 互斥不重叠。旧后端可能缺该键（前端按 typeof === 'number' 判定） */
+                timedOut: number;
                 totalExecutions: number;
             };
         };
@@ -7653,6 +7680,46 @@ export interface components {
             targetExecutorId: string | null;
             /** Format: date-time */
             updatedAt: string;
+        };
+        SopAssignmentLagItemDto: {
+            /**
+             * Format: uuid
+             * @description 滞留的指派 id
+             */
+            assignmentId: string;
+            /**
+             * Format: date-time
+             * @description 进入当前状态的时刻（ISO，= 指派行 `updatedAt`）。**非 null**：谓词本身就是`updatedAt <= now - hours`，时间戳缺失的行在构造上不可能被选中；前端「已阻塞 X 小时」由它与当前时间算出——**不要拿查询窗口 `hours` 顶替**
+             */
+            blockedSince: string;
+            /** @description 上述澄清的轮次（`sop_clarifications.round`，1 起）。**null = 未知或无**（没有 escalated 澄清，或该子查询读失败），不是「第 0 轮」——前端渲染「第 — 轮」，不要编造数字 */
+            round: number | null;
+            /**
+             * Format: uuid
+             * @description 所属 SOP id（深链锚点）
+             */
+            sopId: string;
+            /** @description SOP 标题；**读不到或为空时一律 null**，绝不退回 uuid（uuid 不是给人看的标题） */
+            sopName: string | null;
+            /**
+             * Format: uuid
+             * @description 该滞留工单最近一条 `escalated_to_human` 澄清（maxRounds 触顶路径必有一条）；无澄清或澄清子查询读失败时为 null——后者伴随 `degraded: true`
+             */
+            staleClarificationId: string | null;
+            /** @description 指派状态，本端点目前恒为 `blocked`（谓词是字面量，不混入其它值） */
+            status: string;
+        };
+        SopAssignmentLagResponseDto: {
+            /** @description 是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败；但装配缺失（服务未注入）是 503，不是空信封 */
+            degraded: boolean;
+            /** @description 按进入 blocked 的时刻升序（卡得最久的在最前——那正是最该被看见的） */
+            items: components["schemas"]["SopAssignmentLagItemDto"][];
+            /** @description 本次实际返回的行数（= items.length） */
+            returned: number;
+            /** @description 滞留 blocked 工单**总数**（独立 `getCount()`，不是 `items.length` 的别名）；读不到 ⇒ null，**绝不 0** */
+            total: number | null;
+            /** @description 是否截断（`returned < total`）。`total` 未知时为 false——此时「是否截断」本身也不可知，由 `degraded` 表达 */
+            truncated: boolean;
         };
         SopCancelAssignmentsResponseDto: {
             /**
@@ -13721,6 +13788,27 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SopCapableExecutorDto"][];
+                };
+            };
+        };
+    };
+    SopController_listLaggingAssignments: {
+        parameters: {
+            query: {
+                hours: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopAssignmentLagResponseDto"];
                 };
             };
         };

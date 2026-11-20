@@ -12,6 +12,9 @@ import { SopMediaService } from "./sop-media.service";
 // R280：跨 SOP 的待答复澄清聚合（只读；SopClarification/SopAssignment/Sop 三个
 // 仓储已在下方 TypeOrmModule.forFeature 里，无需新增 imports）。
 import { SopClarificationInboxService } from "./sop-clarification-inbox.service";
+// R286：滞留 blocked 工单的只读观测（只读；Sop/SopAssignment/SopClarification
+// 三个仓储已在下方 TypeOrmModule.forFeature 里，无需新增 imports）。
+import { SopAssignmentLagService } from "./sop-assignment-lag.service";
 import { AgentMediaRetentionService } from "./agent-media-retention.service";
 import { SopController } from "./sop.controller";
 import { SopCollabController } from "./sop-collab.controller";
@@ -70,6 +73,8 @@ import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
     AgentMediaRetentionService,
     // R280：SopController 的 `clarificationsInbox` 注入源。
     SopClarificationInboxService,
+    // R286：SopController 的 `assignmentLag` 注入源（只读观测，不写库）。
+    SopAssignmentLagService,
   ],
   exports: [SopService],
 })

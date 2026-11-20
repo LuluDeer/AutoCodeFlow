@@ -49,6 +49,7 @@ import {
   deploymentsApi,
   agentApi,
   isSelfDeployment,
+  blockedHours,
   loadInbox,
   sortInboxItemsByWaitingSince,
   type InboxItem,
@@ -68,6 +69,9 @@ const SECTION_ORDER: InboxSectionKey[] = [
   'agentFailures',
   // R280：「升级到人工」是 Agent 串出状况后的**第三站**（机器答不了，要你上）。
   'sopClarifications',
+  // R286：阻塞工单紧跟在澄清之后——同一批工单的「前夜」（卡住未升级）与「当天」
+  // （升级到人工），连续视角；与 `stalled` 分开是因为后者是会话维度。
+  'sopBlocked',
   'stalled',
   'backlogged',
   'queueStall',
@@ -80,6 +84,7 @@ const SECTION_TAG_COLOR: Record<InboxSectionKey, string> = {
   agentWaiting: 'blue',
   agentFailures: 'red',
   sopClarifications: 'purple',
+  sopBlocked: 'geekblue',
   stalled: 'red',
   backlogged: 'volcano',
   queueStall: 'magenta',
@@ -100,6 +105,9 @@ const READONLY_SECTIONS: ReadonlySet<InboxSectionKey> = new Set([
   'recentFailures',
   'agentFailures',
   'sopClarifications',
+  // R286：阻塞工单同样只读——要不要取消/重派这张单取决于 SOP 版本与执行器现场，
+  // 收件箱不该替运营猜处置方式；这里只给「去哪个 SOP 看」的深链。
+  'sopBlocked',
 ]);
 
 function dispatchInboxRefresh(): void {
@@ -116,6 +124,11 @@ function dispatchInboxRefresh(): void {
 function inboxTitleText(item: InboxItem, t: ReturnType<typeof useTranslation>['t']): string {
   if (item.section === 'sopClarifications' && !item.title.trim()) {
     return t('inbox.sop.noQuestion');
+  }
+  // R286：`sopName: null`（读不到 / 空串 / 纯空白）⇒ 「（未命名 SOP）」。
+  // **绝不退回 uuid**——一串十六进制对运营没有任何信息量，还会被误读成「已定位」。
+  if (item.section === 'sopBlocked' && !item.title.trim()) {
+    return t('inbox.sopBlocked.unnamed');
   }
   return item.title;
 }
@@ -138,6 +151,24 @@ function inboxSubtitleText(item: InboxItem, t: ReturnType<typeof useTranslation>
     if (!c) return item.subtitle;
     const name = c.sopName ?? t('inbox.sop.unnamed');
     return `${name} · ${t('inbox.sop.round', { round: c.round })}`;
+  }
+  // R286：`第 N 轮` + `已阻塞 X 小时`。
+  //
+  // 两段各有各的「算不出」出口，都不许用别的数字顶上：
+  // - `round: null` ⇒ 「第 — 轮」（它**不是**当前轮次，是触顶/卡住的那一轮；
+  //   null = 没有可用澄清，编个 1 就是假事实）；
+  // - 时长由 `blockedHours` 现算，`null` ⇒ 说「时刻未记录」，**不拿窗口 24 顶上**。
+  if (item.section === 'sopBlocked') {
+    const b = item.blockedAssignment;
+    if (!b) return item.subtitle;
+    const hours = blockedHours(b.blockedSince);
+    const round = b.round === null
+      ? t('inbox.sopBlocked.roundUnknown')
+      : t('inbox.sopBlocked.round', { round: b.round });
+    const since = hours === null
+      ? t('inbox.sopBlocked.sinceUnknown')
+      : t('inbox.sopBlocked.blockedFor', { hours });
+    return `${round} · ${since}`;
   }
   return item.subtitle;
 }
@@ -263,9 +294,10 @@ function emptySectionText(section: InboxSectionState, t: ReturnType<typeof useTr
     case 'beyondRows':
       // 措辞按小节选：失败会话那边是「预算耗尽」，澄清这边是「行没装配出来」——
       // 同一句数字、两种成因，说错成因等于给运营一条错线索。
-      return section.key === 'sopClarifications'
-        ? t('inbox.sop.pendingBeyondRows', { n: reason.n })
-        : t('inbox.empty.pendingBeyondRows', { n: reason.n });
+      if (section.key === 'sopClarifications') return t('inbox.sop.pendingBeyondRows', { n: reason.n });
+      // R286：阻塞工单的成因不同（行没装配出来），措辞不能复用澄清那句。
+      if (section.key === 'sopBlocked') return t('inbox.sopBlocked.pendingBeyondRows', { n: reason.n });
+      return t('inbox.empty.pendingBeyondRows', { n: reason.n });
     default:
       return t('inbox.empty.section');
   }

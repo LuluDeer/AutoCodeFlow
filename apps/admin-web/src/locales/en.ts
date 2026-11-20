@@ -4183,5 +4183,17 @@ export default {
   'inbox.backlog.unknownHint': 'The backlog count could not be read — this is NOT "0 backlog". Reconciliation may be incomplete; the list below only shows what was detected. Please retry.',
   'inbox.truncated.summary': 'Showing the first {{returned}} of {{total}}',
   'inbox.truncated.hint': 'Showing the first {{returned}} of {{total}}; the rest are not displayed — open the original page for the complete list.',
+  // R286: the tenth section, "blocked assignments" (`sopBlocked`). Same honesty
+  // rules as `sopClarifications` but its own wording: that section counts questions,
+  // this one says how long an assignment has been stuck.
+  'inbox.section.sopBlocked': 'Blocked assignments',
+  'inbox.badge.sopBlocked': '{{n}} blocked assignment(s)',
+  'inbox.sopBlocked.unnamed': '(unnamed SOP)',
+  'inbox.sopBlocked.round': 'round {{round}}',
+  'inbox.sopBlocked.roundUnknown': 'round —',
+  'inbox.sopBlocked.blockedFor': 'blocked for {{hours}}h',
+  'inbox.sopBlocked.sinceUnknown': 'The time it entered blocked was not recorded',
+  'inbox.sopBlocked.unknownHint': 'The total for this section could not be read, so it is not possible to confirm how many assignments are blocked; only the rows that were read are listed below.',
+  'inbox.sopBlocked.pendingBeyondRows': '{{n}} blocked assignment(s) are counted in the total but not listed below (the rows could not be assembled this time).',
 } as const;
 

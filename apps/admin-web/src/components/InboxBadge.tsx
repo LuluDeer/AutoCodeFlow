@@ -45,6 +45,8 @@ type LoadState =
       failed: number | null;
       /** R280：待人工答复的 SOP 澄清（独立计数源，不进求和）。 */
       sopClarifications: number | null;
+      /** R286：阻塞工单（独立计数源，不进求和；`null` = 读不到 ⇒ 「—」）。 */
+      sopBlocked: number | null;
     }
   | { status: 'error' };
 
@@ -57,8 +59,8 @@ export default function InboxBadge() {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
 
   const applyCounts = useCallback((counts: Awaited<ReturnType<typeof loadInboxCounts>>) => {
-    const { total, approvals, waiting, failed, sopClarifications } = splitInboxCounts(counts);
-    setState({ status: 'ready', total, approvals, waiting, failed, sopClarifications });
+    const { total, approvals, waiting, failed, sopClarifications, sopBlocked } = splitInboxCounts(counts);
+    setState({ status: 'ready', total, approvals, waiting, failed, sopClarifications, sopBlocked });
   }, []);
 
   const reload = useCallback(async () => {
@@ -115,6 +117,7 @@ export default function InboxBadge() {
   const waiting = state.status === 'ready' ? state.waiting : null;
   const failed = state.status === 'ready' ? state.failed : null;
   const sopClarifications = state.status === 'ready' ? state.sopClarifications : null;
+  const sopBlocked = state.status === 'ready' ? state.sopBlocked : null;
 
   // 0 件隐藏；未知（null）也不挂假数字——点击进收件箱看分小节真实状态。
   // R278：审批单数未知（null 且总数已归零）时同样不占顶栏；未知态在 /inbox 页
@@ -127,7 +130,9 @@ export default function InboxBadge() {
     const noApprovals = approvals === null || approvals === 0;
     const noFailures = failed === null || failed === 0;
     const noSopClarifications = sopClarifications === null || sopClarifications === 0;
-    if (noApprovals && noFailures && noSopClarifications) return null;
+    // R286：阻塞工单是第四个出场地——非 0/非未知时徽标必须出来。
+    const noSopBlocked = sopBlocked === null || sopBlocked === 0;
+    if (noApprovals && noFailures && noSopClarifications && noSopBlocked) return null;
   }
 
   const badgeContent = total === null ? UNKNOWN : total;
@@ -142,8 +147,13 @@ export default function InboxBadge() {
   const sopText = sopClarifications === 0
     ? ''
     : t('inbox.badge.sopClarifications', { n: sopClarifications === null ? UNKNOWN : sopClarifications });
-  const known = approvals !== null && waiting !== null && failed !== null && sopClarifications !== null;
-  const unitText = [approvalsText, waitingText, failedText, sopText].filter(Boolean).join(' · ');
+  // R286：`0` = 事实为零 ⇒ 不占位；`null` = 读不到 ⇒ 必须显示「阻塞工单 —」。
+  const sopBlockedText = sopBlocked === 0
+    ? ''
+    : t('inbox.badge.sopBlocked', { n: sopBlocked === null ? UNKNOWN : sopBlocked });
+  const known = approvals !== null && waiting !== null && failed !== null
+    && sopClarifications !== null && sopBlocked !== null;
+  const unitText = [approvalsText, waitingText, failedText, sopText, sopBlockedText].filter(Boolean).join(' · ');
 
   return (
     <Tooltip title={`${t('inbox.badge.tooltip')} · ${unitText}`}>
@@ -173,6 +183,12 @@ export default function InboxBadge() {
             <>
               <span data-testid="inbox-badge-sep3" aria-hidden="true">{t('common.listSep.space')}</span>
               <span data-testid="inbox-badge-sop-clarifications">{sopText}</span>
+            </>
+          )}
+          {sopBlockedText && (
+            <>
+              <span data-testid="inbox-badge-sep4" aria-hidden="true">{t('common.listSep.space')}</span>
+              <span data-testid="inbox-badge-sop-blocked">{sopBlockedText}</span>
             </>
           )}
         </span>

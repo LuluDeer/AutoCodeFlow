@@ -142,6 +142,45 @@ export const sopsApi = {
       params: { limit: limit ?? 100 },
       ...(signal ? { signal } : {}),
     }) as Promise<SopPendingClarificationsResponse>,
+  /**
+   * R286：滞留 blocked 工单（`status='blocked'` 且超过 `hours` 未推进）。
+   *
+   * **合同派生**（不手写形状）：admin-api 已用 `@ApiOkResponse` 导出
+   * `SopAssignmentLagResponseDto`；手写副本与生成物同名同义却互不约束，
+   * 后端改字段名时 tsc 照样绿、前端静默读 undefined（`check-web-type-drift` 的棘轮就在防这个）。
+   *
+   * ⚠️ 字段语义以**生成物注释**为权威（`api-types.ts` 的
+   * `SopAssignmentLag{Item,Response}Dto`），这里不复制一份会过期的版本。
+   * 三条与消费方式直接相关的仍写在这里：
+   *
+   * - `total` 为 `null` = **读不到**，绝不等于 0（`0` 是库里真 0 条）；
+   * - `blockedSince` 恒有值（谓词本身是 `updatedAt <= now - hours`，缺失时间戳的
+   *   行构造上选不中），且是「进入 blocked 的时刻」**不是**查询窗口 `hours`
+   *   ⇒ 行内「已阻塞 X 小时」走 `blockedHours()` 现算，不许拿窗口顶上；
+   * - `round: null` ⇔ 无可用 escalated 澄清（与 `staleClarificationId` 同真同假）
+   *   ⇒ 渲染「第 — 轮」，不编 1；它是**触顶那轮**（maxRounds=5 触顶 ⇒ 6），
+   *   不是「当前轮次」，也不是「已完成轮数」。
+   *
+   * 服务端**没有** `limit` 参数（行数上限是内部常量）⇒ 只按 `returned`/`total` 消费。
+   *
+   * ## `hours` 为什么是**必填**参数（不是 `hours?:`）
+   *
+   * 生成物把 `hours` 标成 `required: true`（`SopController_listLaggingAssignments`
+   * 的 `parameters.query.hours: string`）。事实是运行期可以不传（`@Query("hours")`
+   * 是可选，service 回落 24h）——这是 NestJS Swagger 未写 `@ApiQuery` 时的既有
+   * 推断行为，全库同形 36 处（`/agent/sessions` 的 `page`、`/sop/clarifications/pending`
+   * 的 `limit` 等），切片 A 已把它登记为遗留项。
+   *
+   * 对本方法的要求只有一条：**调用点必须给出窗口**，不在方法内再写一个默认值。
+   * 旧写法 `hours ?? 24` 会让「24」这个数字在仓库里出现两处（`SOP_BLOCKED_WINDOW_HOURS`
+   * 与这里的字面量），常量一改，这个方法就静默用旧窗口 —— 而窗口是**筛选条件**，
+   * 它会改变「哪些工单出现在本节」，不会报错。
+   */
+  laggingAssignments: (hours: number, signal?: AbortSignal) =>
+    client.get('/sop/assignments/lagging', {
+      params: { hours },
+      ...(signal ? { signal } : {}),
+    }) as Promise<components['schemas']['SopAssignmentLagResponseDto']>,
   get: (id: string) => client.get(`/sop/${id}`) as Promise<Sop>,
   draft: (data: {
     slug: string;

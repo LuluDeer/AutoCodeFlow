@@ -60,6 +60,8 @@ const readySections = (items: Partial<Record<keyof InboxSections, InboxItem[]>>)
   agentWaiting: { key: 'agentWaiting', status: 'ready', items: items.agentWaiting ?? [], error: null },
   agentFailures: { key: 'agentFailures', status: 'ready', items: items.agentFailures ?? [], error: null, total: 0 },
   sopClarifications: { key: 'sopClarifications', status: 'ready', items: items.sopClarifications ?? [], error: null, total: 0 },
+  // R286：第十个小节，本文件不是它的被测对象 ⇒ 恒为「确认清零」（0 ⇒ 隐藏）。
+  sopBlocked: { key: 'sopBlocked', status: 'ready', items: items.sopBlocked ?? [], error: null, total: 0 },
   stalled: { key: 'stalled', status: 'ready', items: items.stalled ?? [], error: null },
   backlogged: { key: 'backlogged', status: 'ready', items: items.backlogged ?? [], error: null },
   queueStall: {

@@ -121,6 +121,9 @@ function mockBackend(opts: { pending?: Record<string, unknown> | 'unavailable' }
     if (url === '/agent/approvals/pending') {
       return { items: [], total: 0, sessionTotal: 0, returned: 0, truncated: false, degraded: false };
     }
+    if (url === '/sop/assignments/lagging') {
+      return { items: [], total: 0, returned: 0, truncated: false, degraded: false };
+    }
     if (url === '/app-deployments/approvals/pending') return { data: [], total: 0 };
     if (url === '/agent/sessions/backlogged') return { sessionIds: [], probed: 0, truncated: false };
     if (url === '/agent/sessions/queue-stall') {
@@ -145,6 +148,8 @@ const sections = (sop: InboxSectionState): InboxSections =>
     agentWaiting: ready('agentWaiting', [], { total: 0 }),
     agentFailures: ready('agentFailures', [], { total: 0, rowTotal: 0 }),
     sopClarifications: sop,
+    // R286：第十个小节，恒为「确认清零」（0 ⇒ 隐藏），不干扰本文件的断言。
+    sopBlocked: ready('sopBlocked', [], { total: 0 }),
     stalled: ready('stalled', [], { total: 0 }),
     backlogged: ready('backlogged', [], { total: 0 }),
     queueStall: ready('queueStall', []),
@@ -157,6 +162,7 @@ const counts = (overrides: Partial<InboxCountMap> = {}): InboxCountMap => ({
   agentWaiting: 0,
   agentFailures: 0,
   sopClarifications: 0,
+  sopBlocked: 0,
   stalled: 0,
   backlogged: 0,
   queueStall: 0,
@@ -496,10 +502,12 @@ describe('R280 小节隔离：升级澄清端点挂掉只让它自己是 error �
     expect(section.queryByText('本类暂无待办')).toBeNull();
   });
 
-  it('`sopClarifications` 是第九个小节（`agentFailures` 之后、`stalled` 之前）', () => {
+  it('`sopClarifications` 紧跟在 `agentFailures` 之后（R286 之后仍是）', () => {
     expect(INBOX_SECTIONS.indexOf('sopClarifications')).toBe(INBOX_SECTIONS.indexOf('agentFailures') + 1);
-    expect(INBOX_SECTIONS.indexOf('sopClarifications')).toBe(INBOX_SECTIONS.indexOf('stalled') - 1);
-    expect(INBOX_SECTIONS).toHaveLength(9);
+    // R286：`sopBlocked` 插在 `sopClarifications` 与 `stalled` 之间 ⇒ 澄清不再是
+    // `stalled` 的前一个；位置断言改为「在 stalled 之前」，长度 9 → 10。
+    expect(INBOX_SECTIONS.indexOf('sopClarifications')).toBeLessThan(INBOX_SECTIONS.indexOf('stalled'));
+    expect(INBOX_SECTIONS).toHaveLength(10);
     expect(INBOX_SECTIONS[INBOX_SECTIONS.length - 1]).toBe('recentFailures');
   });
 });

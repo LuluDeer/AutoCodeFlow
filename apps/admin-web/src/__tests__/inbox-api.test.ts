@@ -22,6 +22,7 @@ const emptyCounts = (): InboxCountMap => ({
   agentWaiting: 0,
   agentFailures: 0,
   sopClarifications: 0,
+  sopBlocked: 0,
   stalled: 0,
   backlogged: 0,
   queueStall: 0,
@@ -49,6 +50,10 @@ describe('summarizeInboxCounts 总数口径', () => {
       if (url === '/sop/clarifications/pending') {
         return { items: [], total: 0, returned: 0, truncated: false, degraded: false };
       }
+      // R286：阻塞工单同理，额度是独立的 `getCount()`。
+      if (url === '/sop/assignments/lagging') {
+        return { items: [], total: 0, returned: 0, truncated: false, degraded: false };
+      }
       throw new Error(`Unexpected request: ${url}`);
     });
     const counts = await loadInboxCounts();
@@ -57,7 +62,8 @@ describe('summarizeInboxCounts 总数口径', () => {
     // 2（部署）+ 3（等待会话）+ 1（卡住）+ 0（积压）+ 0（停摆）= 6；审批单 4 不重复计入；
     // R280 的待答复澄清（0）同样是独立显示项，不进求和。
     expect(summarizeInboxCounts(counts)).toBe(6);
-    expect(get).toHaveBeenCalledTimes(2);
+    // R286：三路独立读面（主聚合 + 澄清 + 阻塞工单），各一次，没有 N+1。
+    expect(get).toHaveBeenCalledTimes(3);
   });
 
   it('全部读到：汇总可处置待办（不含最近失败）', () => {

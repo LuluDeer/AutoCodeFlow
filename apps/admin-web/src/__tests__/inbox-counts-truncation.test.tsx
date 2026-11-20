@@ -55,6 +55,7 @@ const counts = (overrides: Partial<InboxCountMap> = {}): InboxCountMap => ({
   agentWaiting: 0,
   agentFailures: 0,
   sopClarifications: 0,
+  sopBlocked: 0,
   stalled: 0,
   backlogged: 0,
   queueStall: 0,
@@ -103,8 +104,9 @@ describe('R278/U1 徽标双口径：审批单 ≠ 会话', () => {
     expect(summarizeInboxCounts(c)).toBe(3); // 1 + 2，审批单 5 不算进来
     // R279：`failed` 是新增的**独立显示项**，同样不参与 total。
     // R280：`sopClarifications` 同理（与「一会话」没有共同的去重单位）。
+    // R286：`sopBlocked` 是第四个独立显示项，同样不进 total。
     expect(splitInboxCounts(c)).toEqual({
-      approvals: 5, waiting: 2, failed: 0, sopClarifications: 0, total: 3,
+      approvals: 5, waiting: 2, failed: 0, sopClarifications: 0, sopBlocked: 0, total: 3,
     });
   });
 
@@ -213,6 +215,14 @@ describe('R278/U1 计数只发 1 个请求（防 N+1 / 429 回归）', () => {
           backlogTruncated: false, deployments: 3, queueStall: 0, degraded: false,
         };
       }
+      // R286：两个独立读面（澄清 / 阻塞工单）。本用例关心的是主聚合**只发一次**，
+      // 故它们照常回 0（真事实为零）。
+      if (url === '/sop/clarifications/pending') {
+        return { items: [], total: 0, returned: 0, truncated: false, degraded: false };
+      }
+      if (url === '/sop/assignments/lagging') {
+        return { items: [], total: 0, returned: 0, truncated: false, degraded: false };
+      }
       throw new Error(`Unexpected request: ${url}`);
     });
     const map = await loadInboxCounts();
@@ -222,19 +232,20 @@ describe('R278/U1 计数只发 1 个请求（防 N+1 / 429 回归）', () => {
       agentWaiting: 2,
       // R279：契约新增字段；mock 没给 ⇒ null（读不到），绝不是 0。
       agentFailures: null,
-      // R280：不在 inbox/counts 里，来自 `GET /sop/clarifications/pending` 的 total
-      // （mock 没给 ⇒ null，读不到 ≠ 0）。
-      sopClarifications: null,
+      // R280/R286：不在 inbox/counts 里，来自各自读面的 total（这里回 0）。
+      sopClarifications: 0,
+      sopBlocked: 0,
       stalled: 1,
       backlogged: 0,
       queueStall: 0,
       recentFailures: null,
     });
-    // 计数从**两个**端点来：主聚合一次 + 待答复澄清的 total 一次（后者是独立读面，
-    // 后端本轮没有把它塞进 inbox/counts）。两路各发一次，没有 N+1。
-    expect(get).toHaveBeenCalledTimes(2);
+    // 计数从**三个**端点来：主聚合一次 + 待答复澄清的 total + 阻塞工单的 total
+    // （后两者是独立读面，后端没有把它们塞进 inbox/counts）。三路各发一次，没有 N+1。
+    expect(get).toHaveBeenCalledTimes(3);
     expect(get.mock.calls.map(([url]) => url).sort()).toEqual([
       '/agent/inbox/counts',
+      '/sop/assignments/lagging',
       '/sop/clarifications/pending',
     ]);
   });

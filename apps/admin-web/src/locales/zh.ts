@@ -4176,5 +4176,19 @@ export default {
   'inbox.backlog.unknownHint': '本次没读到积压条数——这不是「0 条积压」：对账可能不完整，下方只列出已探到的条目，请重试。',
   'inbox.truncated.summary': '显示前 {{returned}} 条（共 {{total}} 条）',
   'inbox.truncated.hint': '显示前 {{returned}} 条（共 {{total}} 条）；其余未显示，完整列表请到原对象页查看。',
+  // ── R286：第十个小节「阻塞工单」（`sopBlocked`）─────────────────────────
+  // 口径与 sopClarifications 同款但**不许复用它的词条**：这一节说的是「工单卡住
+  // 多久」，不是「几问待答复」。共用词条会让两节的一句文案同时错两次。
+  'inbox.section.sopBlocked': '阻塞工单',
+  'inbox.badge.sopBlocked': '阻塞工单 {{n}} 条',
+  'inbox.sopBlocked.unnamed': '（未命名 SOP）',
+  'inbox.sopBlocked.round': '第 {{round}} 轮',
+  // 「第 {{round}} 轮」读不到（`round: null`）时的占位：说「轮次未知」，不编 1。
+  'inbox.sopBlocked.roundUnknown': '第 — 轮',
+  'inbox.sopBlocked.blockedFor': '已阻塞 {{hours}} 小时',
+  // `blockedSince` 读不到时**不显示时长**，改用这句说明「时长没读到」——绝不拿窗口值顶上。
+  'inbox.sopBlocked.sinceUnknown': '进入阻塞的时刻未记录',
+  'inbox.sopBlocked.unknownHint': '本节总数读取失败，无法确认一共多少条阻塞工单；下方只列出已读到的条目。',
+  'inbox.sopBlocked.pendingBeyondRows': '有 {{n}} 条阻塞工单只计入总数、未在下方列出（本次未能装配出对应行）。',
 } as const;
 

@@ -39,6 +39,8 @@ import { UserRole } from "../users/entities/user.entity";
 import { SopService } from "./sop.service";
 import { SopMediaService } from "./sop-media.service";
 import { SopClarificationInboxService } from "./sop-clarification-inbox.service";
+// R286：滞留 blocked 工单的只读观测面（不改状态机，只补可见性）。
+import { SopAssignmentLagService } from "./sop-assignment-lag.service";
 import { ExecutorService } from "../executor/executor.service";
 // LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
 import { AppError } from "../../common/errors/app-error";
@@ -58,6 +60,8 @@ import {
 } from "./dto/sop-response.dto";
 // R280：跨 SOP 的待答复澄清聚合（升级转人工后的权威可见面）。
 import { SopPendingClarificationsResponseDto } from "./sop-clarification-inbox.dto";
+// R286：滞留 blocked 工单的响应契约（收件箱第十小节 `sopBlocked` 的数据源）。
+import { SopAssignmentLagResponseDto } from "./sop-assignment-lag.dto";
 
 /**
  * R41-A1：审计行的 `userId` 列是**整数**（audit_logs.userId int），而控制器
@@ -228,6 +232,15 @@ export class SopController {
      */
     @Optional()
     private readonly clarificationsInbox?: SopClarificationInboxService | null,
+    /**
+     * R286：滞留 blocked 工单的只读观测（maxRounds 触顶路径没有服务端兜底，
+     * `blocked` 被超时扫描整体豁免 ⇒ 这些单永远停着且此前**没有任何可见面**）。
+     *
+     * 同样**末位 + `@Optional()`**：既有 spec 用定位参数装配本 controller
+     * （3 参 / 4 参两种形态），插在中间会让它们错位。缺席 ⇒ 503。
+     */
+    @Optional()
+    private readonly assignmentLag?: SopAssignmentLagService | null,
   ) {}
 
   /**
@@ -258,6 +271,41 @@ export class SopController {
     // **不 400**（本仓既有契约：非法深链安全回落）。
     return this.clarificationsInbox.pending({
       limit: limit ? parseInt(limit, 10) : undefined,
+    });
+  }
+
+  /**
+   * R286：**滞后的 blocked 工单**（只读观测面，ADMIN）。
+   *
+   * `maxRounds` 触顶路径把 assignment 写成 `blocked`（`sop.service.ts:1015-1026`），
+   * 而超时扫描只取 `assigned`/`in_progress`（`:1544-1546`）⇒ `blocked` 被整体豁免，
+   * 这条工单**永远停在 blocked，无任何服务端兜底**。本端点只补可见性，**不改状态机**：
+   * 把 `blocked` 改回 `in_progress` 会让「等人工」这个信号消失。
+   *
+   * ⚠️ **路由必须注册在 `assignments/:assignmentId` 与 `:id` 之前**：否则
+   * `lagging` 会被当成 assignmentId（或被当成 SOP id）匹配走，本路由永远不可达。
+   *
+   * `hours` 非法（`abc` / `0` / `9999`）在 service 内钳制/回落默认，**不 400**
+   * （本仓既有契约：非法深链安全回落、绝不 400）。
+   */
+  @Get("assignments/lagging")
+  @ApiOperation({
+    summary:
+      "列出超过 N 小时未推进的 blocked 指派（含总数、截断与降级标记；不改状态机）",
+  })
+  @ApiOkResponse({ type: SopAssignmentLagResponseDto })
+  async listLaggingAssignments(
+    @Query("hours") hours?: string,
+  ): Promise<SopAssignmentLagResponseDto> {
+    if (!this.assignmentLag) {
+      // 服务缺席 ⇒ 显式报不可用。回 `{items:[], total:0}` 会让运营以为
+      // 「没有滞留工单」，而事实是「读不到」——这正是本仓要消灭的那类假事实。
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    // 与 `listPendingClarifications` 同款：`parseInt("abc")` 的 NaN 直接透传，
+    // 由 service 的 `clampLagHours` 回落默认（不在 controller 抄第二份钳制逻辑）。
+    return this.assignmentLag.lagging({
+      hours: hours ? parseInt(hours, 10) : undefined,
     });
   }
 

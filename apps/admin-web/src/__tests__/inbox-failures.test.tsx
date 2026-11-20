@@ -127,6 +127,11 @@ function mockBackend(opts: {
     if (url === '/agent/approvals/pending') {
       return { items: [], total: 0, sessionTotal: 0, returned: 0, truncated: false, degraded: false };
     }
+    // R286：第十个小节的数据源。本文件不是它的被测对象 ⇒ 恒为「确认清零」
+    // （0 是事实 ⇒ 隐藏），既有断言因此不受影响。
+    if (url === '/sop/assignments/lagging') {
+      return { items: [], total: 0, returned: 0, truncated: false, degraded: false };
+    }
     if (url === '/app-deployments/approvals/pending') return { data: [], total: 0 };
     if (url === '/agent/sessions/backlogged') return { sessionIds: [], probed: 0, truncated: false };
     if (url === '/agent/sessions/queue-stall') {
@@ -154,6 +159,8 @@ const sections = (failures: InboxSectionState): InboxSections =>
     agentFailures: failures,
     // R280：第八节之外新增的第九个小节，本文件不是它的被测对象 ⇒ 恒为「确认清零」。
     sopClarifications: ready('sopClarifications', [], { total: 0 }),
+    // R286：第十个小节，本文件不是它的被测对象 ⇒ 恒为「确认清零」。
+    sopBlocked: ready('sopBlocked', [], { total: 0 }),
     stalled: ready('stalled', [], { total: 0 }),
     backlogged: ready('backlogged', [], { total: 0 }),
     queueStall: ready('queueStall', []),
@@ -166,6 +173,7 @@ const counts = (overrides: Partial<InboxCountMap> = {}): InboxCountMap => ({
   agentWaiting: 0,
   agentFailures: 0,
   sopClarifications: 0,
+  sopBlocked: 0,
   stalled: 0,
   backlogged: 0,
   queueStall: 0,
@@ -226,7 +234,7 @@ describe('R279 ① failedSessions 读不到（null）⇒ 显示「—」，绝�
     expect(splitInboxCounts(map)).toEqual(
       // R280：`sopClarifications` 也是独立显示项；本文件的 mockBackend 没有该端点
       // ⇒ 读不到 ⇒ null（同样绝不回落 0）。
-      { approvals: 0, waiting: 0, failed: null, sopClarifications: null, total: 0 },
+      { approvals: 0, waiting: 0, failed: null, sopClarifications: null, sopBlocked: 0, total: 0 },
     );
   });
 
@@ -274,9 +282,11 @@ describe('R279 ② failedSessions 为 0（事实为零）⇒ 小节隐藏', () =
     expect(isSectionVisible(ready('agentFailures', [], { total: 0 }))).toBe(false);
     expect(isSectionVisible(ready('agentFailures', [], { total: null, degraded: true }))).toBe(true);
     expect(isSectionVisible(ready('agentFailures', [failureItem('s1')], { total: 1 }))).toBe(true);
-    // 其余小节不因 0 而隐藏（既有交付面不动）。唯一同类是 R280 的
-    // `sopClarifications`——它同样「事实为零就隐藏」（brief §四），故一并排除。
-    for (const key of INBOX_SECTIONS.filter((k) => k !== 'agentFailures' && k !== 'sopClarifications')) {
+    // 其余小节不因 0 而隐藏（既有交付面不动）。同类还有 R280 的 `sopClarifications`
+    // 与 R286 的 `sopBlocked`——两者同样「事实为零就隐藏」，故一并排除。
+    for (const key of INBOX_SECTIONS.filter(
+      (k) => k !== 'agentFailures' && k !== 'sopClarifications' && k !== 'sopBlocked',
+    )) {
       expect(isSectionVisible(ready(key, [], { total: 0 }))).toBe(true);
     }
   });
@@ -516,6 +526,7 @@ describe('R279 小节隔离：失败源挂掉只让它自己是 error 态', () =
       }
       if (url === '/agent/sessions') return { items: [], total: 0 };
       if (url === '/agent/approvals/pending') return { items: [], total: 0, sessionTotal: 0, returned: 0, truncated: false, degraded: false };
+      if (url === '/sop/assignments/lagging') return { items: [], total: 0, returned: 0, truncated: false, degraded: false };
       if (url === '/app-deployments/approvals/pending') return { data: [], total: 0 };
       if (url === '/agent/sessions/backlogged') return { sessionIds: [], probed: 0, truncated: false };
       if (url === '/agent/sessions/queue-stall') return { stalled: false, reason: null, pendingJobs: 0, degraded: false, degradedCounts: false, workersKnown: true };
@@ -550,9 +561,10 @@ describe('R279 小节隔离：失败源挂掉只让它自己是 error 态', () =
 describe('R279 小节位置与请求形状', () => {
   it('`agentFailures` 紧跟在 `agentWaiting` 之后（不插到别处）', () => {
     expect(INBOX_SECTIONS.indexOf('agentFailures')).toBe(INBOX_SECTIONS.indexOf('agentWaiting') + 1);
-    // R280 契约变更：第 9 个小节 `sopClarifications` 追加在末尾——`agentFailures`
-    // 与 `agentWaiting` 的相对位置不变，长度从 8 变 9（不是既有断言被「修」）。
-    expect(INBOX_SECTIONS).toHaveLength(9);
+    // R280/R286 契约变更：新小节追加，`agentFailures` 与 `agentWaiting` 的相对位置
+    // 不变，长度从 8 → 9（R280）→ 10（R286，`sopBlocked`）。这是**事实更新**，
+    // 不是既有断言被「修」到能过。
+    expect(INBOX_SECTIONS).toHaveLength(10);
   });
 
   it('失败行走**独立**方法（不污染 `agentApi.list` 的调用计数）', async () => {

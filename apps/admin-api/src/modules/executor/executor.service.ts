@@ -8045,6 +8045,17 @@ export class ExecutorService implements OnModuleInit {
         `SUM(CASE WHEN e.status = '${ExecutionStatus.SUCCESS}' THEN 1 ELSE 0 END)`,
         "successful",
       )
+      // R286 裁决：这一列**刻意不迁移**到唯一事实源 `FAILED_EXECUTION_STATUSES`
+      // （= FAILED ∪ TIMEOUT）。上一段的 `failed` **不是**「失败数」，是
+      // **`FAILED` 这一个状态的计数**——它是「脚本失败」这一格的显示值，与之
+      // 并列的「超时」是下一段的 `timedOut`，两者在面板上是**两个独立格子**
+      // （`ExecutorDetailPage.statsCountsLine` 的 succFailTimeout 文案）。
+      // 若并入 TIMEOUT，`failed` 会把超时吞进来，面板上「失败 10 / 超时 10」
+      // 对同一批 10 条超时行**重复计数**，而「脚本失败」这一格再无真值
+      // ⇒ 正是 R285 裁决「加字段、不合并桶」要防的反向错误（R280 同类先例：
+      // 为对齐把正确实现改错）。语义上的「失败总数」另有其面，不在这里。
+      // ⚠️ `task-execution.entity.ts` 头注的「待迁移」清单仍列着本行，那条登记
+      // 已过期（它按 FAILED 单桶的**旧**形态判断缺口）；本裁决下这不是欠账。
       .addSelect(
         `SUM(CASE WHEN e.status = '${ExecutionStatus.FAILED}' THEN 1 ELSE 0 END)`,
         "failed",

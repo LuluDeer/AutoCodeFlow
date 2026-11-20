@@ -47,21 +47,25 @@ export enum ExecutionStatus {
  *
  * ⚠️ 其余调用点待迁移：本轮只钉 metrics 的三处（趋势已含 timeout、最近失败、
  *    成功率卡的失败计数）；以下仍未对齐，属后续批次：
- *    - modules/application/projects.service.ts:444-445（失败=FAILED，timeout
- *      单列后缀；列表查询已 IN(FAILED,TIMEOUT)，但计数口径两份）
- *    - apps/admin-web/src/utils/failure-reason-aggregate.ts 的
- *      `FAILURE_REASON_BUCKET_STATUSES`（FAILED+TIMEOUT+KILLED，执行页「当前页
- *      失败原因分布」口径，含 KILLED 与本常量口径不同）。R284 两条修正：
- *      ① 该文件在 **admin-web**（此前注释误写成 modules/metrics/，后端无此文件）；
- *      ② 该常量已从同名 `FAILED_EXECUTION_STATUSES` 改名为
- *      `FAILURE_REASON_BUCKET_STATUSES`——**刻意不同名**，避免下一个读者以为
- *      「该对齐」而把失败计数口径也加进 KILLED。
- *    - modules/executor/executor.service.ts:8025（`SUM(status='failed')` 单值，
- *      执行器 7 日面板）
- *    - modules/task/execution-read.collaborator.ts:551（深链等值过滤，前端另
- *      一切片处理）
- *    ✅ execution-read.collaborator.ts:798-800 已经是正确口径（FAILED+TIMEOUT
- *      全量，任务失败次数），**不要重复改**。
+ * ## 迁移状态（2026-11-20 复核，**这份清单曾是陷阱，已按实测重写**）
+ *
+ * ✅ **已全部迁移完毕**（此前这里列的都是「待迁移」，照它改会改错——故逐条改为完成态）：
+ *
+ *    - `modules/project/projects.service.ts` —— `failureRate` 分子已按本常量推导（R283）。
+ *    - `modules/executor/executor.service.ts` 执行器 7 日面板 —— **刻意不合并**：
+ *      同一 SQL 已并列返回 `failed`（FAILED 单桶）与 `timedOut`（TIMEOUT 桶），
+ *      前端渲染成「成功 / 失败 / 超时 / 其他」四个独立格（R285）。
+ *      ⚠️ 若把 `failed` 并入本常量 ⇒ 同一批超时行在「失败」与「超时」两格各计一次，
+ *      且「脚本失败」那格再无真值。**别照本常量去改它。**
+ *    - `modules/task/execution-read.collaborator.ts` 深链过滤 —— 已支持逗号多值（R281），
+ *      单值仍生成等值（执行页下拉里 failed / timeout 是两个独立意图）。
+ *    - `apps/admin-web/src/utils/failure-reason-aggregate.ts` —— 那是**另一个**常量
+ *      `FAILURE_REASON_BUCKET_STATUSES`（含 KILLED，按原因分桶，R284 已改名以示不同）。
+ *
+ * ⚠️ **本常量的语义边界**：它回答「哪些 status 值等于『失败』」，
+ * **不**回答「某个面板的某一格该显示什么」。面板若需要分桶明细（如失败 vs 超时），
+ * 就该用分桶字段，**不要**把本常量套上去把两格合并。
+
  */
 export const FAILED_EXECUTION_STATUSES = [
   ExecutionStatus.FAILED,
