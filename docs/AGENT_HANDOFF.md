@@ -3,6 +3,28 @@
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-19
 > 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
 
+## 告警静默留痕 / 日志已清理三态 / 原因常量消歧（R284，工作树，未发布）
+
+- **可用路径**：①审计页能看到 `notification.silenced`（「静默吞掉告警」），`detail.silence.endTime:null`
+  = 该规则**永久生效**（建规则时没填 `durationMinutes`）；指标
+  `autoflow_notification_silenced_total{level}` 可按 level 看吞了多少。
+  ②执行详情的日志空态现在分三态：**已清理（带截止时刻）/ 真没输出 / 判不出来**。
+- **契约**：`logsPurged: boolean | null`（`null` = **保留期读不到，未知**，不猜 30）；
+  `logsPurgedAt` 仅 `true` 时非 null。
+  ⚠️ **读侧 null vs 清理侧回落 30 的不对称是刻意的**：**删除必须猜，判断不必**，不要「统一」。
+- **不要做的事**：①**不要**把 `notification_silenced_total` 并进 `delivery_total` 的 `result` 枚举
+  （那四值是**扇出之后**的投递结果，静默在**扇出之前**，合并会伪造事实）；
+  ②**不要**给 silenced 指标登记 `critical`（无写点，只会造永 0 假序列）；
+  ③**不要**把前端 `FAILURE_REASON_BUCKET_STATUSES` 与后端 `FAILED_EXECUTION_STATUSES` 对齐
+  （前者是按原因分桶含 `killed`，后者是失败状态集，**同名不同值是靠改名解决的**）。
+- **新增审计动作的两处必配**（漏一处守卫就红）：
+  `docs/atlas/01-apps/admin-api/modules/audit.md`（表格 + 头部计数）、
+  `apps/admin-web/src/pages/audit/index.tsx` 的 `ACTION_LABEL_KEYS` + zh/en 词条
+  （`check:audit-actions-doc` / `check:interface-maps`）。
+- **验收**：`npx jest src/modules/notification src/modules/task src/modules/metrics`、
+  `npx vitest run`、`npx tsc -b`、`node scripts/guards-repo-matrix.mjs`（121 段）。
+- **发布前**：无迁移、无新 env 键。回滚 = `git revert`（三处均为新增字段/新增留痕，旧行为不变）。
+
 ## `/tasks?triggerType=` 与幽灵 `limit`（R283，工作树，未发布）
 
 - **可用路径**：任务列表的「触发方式」筛选现在**真的过滤**。（此前 DTO 用 `@IsEnum` 严格校验
