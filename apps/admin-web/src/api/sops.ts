@@ -116,15 +116,15 @@ export const sopsApi = {
    * R280：跨 SOP、**待人工答复**的升级澄清（`resolution = escalated_to_human` 且所属
    * 指派未终态）。收件箱第九个小节与顶栏「待答复澄清」计数共用这一个读面。
    *
-   * ## 为什么这里的响应形状是**内联**的（不新开顶层具名类型）
+   * ## 响应形状：**合同派生**（`SopPendingClarificationsResponse`）
    *
-   * 后端 `SopPendingClarificationsResponseDto` 已落地，但 `apps/admin-api/openapi.json`
-   * 生成物由主会话统一重生成，此刻 `types/generated/api-types.ts` 里**还没有**这个
-   * schema。若在这里写一个顶层具名副本，会同时踩两道棘轮：
-   * `check-web-type-drift`（新增手写 API 类型即红）与
-   * `check-web-type-field-drift`（未配对手写类型增长即红）。
-   * ⇒ 形状内联在方法返回注解上（与 `agent.ts` 的 `listFailedSessions` 同款写法）。
-   * 生成物重生成后应改为 `components['schemas']['SopPendingClarificationsResponseDto']`。
+   * 曾有一段时期 `types/generated/api-types.ts` 里还没有这个 schema，于是形状内联在
+   * 方法返回注解上（当时若写顶层手写副本会同时踩 `check:web-type-drift` 与
+   * `check:web-type-field-drift` 两道棘轮）。**生成物已重生成**，现在文件顶部的
+   * `SopPendingClarificationsResponse = components['schemas'][…]` 就是唯一事实源。
+   *
+   * ⚠️ 别再退回内联：手写形状与生成物同名同义却互不约束，后端改字段名时 tsc 照样绿、
+   * 前端静默读到 `undefined`——那正是这两道棘轮在挡的东西。
    *
    * ## 失败语义（与后端契约逐条对齐）
    *
