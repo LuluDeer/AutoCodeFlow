@@ -2069,7 +2069,7 @@
       "id": "STC-120",
       "tier": "P0",
       "spec": "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts",
-      "specLine": 2404,
+      "specLine": 2443,
       "needle": "const src = [\"task.service.ts\", \"execution-read.collaborator.ts\"]",
       "reads": [
         "apps/admin-api/src/modules/task/task.service.ts",

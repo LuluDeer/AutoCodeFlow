@@ -14957,8 +14957,6 @@ export interface operations {
                 runtime?: string;
                 /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时行为与引入该参数前完全一致。 */
                 cursor?: string;
-                /** @description 每页条数 */
-                limit?: unknown;
             };
             header?: never;
             path: {

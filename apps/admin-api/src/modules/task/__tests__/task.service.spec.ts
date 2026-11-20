@@ -124,6 +124,38 @@ const runtimeCount = (
     .get(name as never)
     ?.get(JSON.stringify(labels)) ?? 0;
 
+/**
+ * `task_executions` 的真实列名（含被列表投影刻意排除的两个重型 text 列）。
+ * 提成模块级常量而非内联在 `makeRepo` 里：元数据替身是「仓储像真的一样带
+ * metadata」这一前提的载体，与具体用例无关；内联会让工厂函数无谓地长 20+ 行。
+ */
+const EXECUTION_COLUMN_STUB = [
+  "id",
+  "taskId",
+  "taskName",
+  "status",
+  "executorAddress",
+  "logs",
+  "logStorage",
+  "logObjectKey",
+  "result",
+  "params",
+  "startTime",
+  "endTime",
+  "duration",
+  "retryCount",
+  "errorMessage",
+  "failureReason",
+  "exitCode",
+  "aiAnalysis",
+  "artifacts",
+  "triggerType",
+  "taskVersion",
+  "traceId",
+  "createdAt",
+  "version",
+].map((propertyName) => ({ propertyName }));
+
 const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
   const repo: Record<string, jest.Mock> = {
     create: jest.fn((d) => d),
@@ -151,32 +183,7 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
   // 列名取 task_executions 的真实列（含被排除的两个重型 text 列），使替身上的
   // 投影结果与生产一致。
   (repo as unknown as { metadata: unknown }).metadata = {
-    columns: [
-      "id",
-      "taskId",
-      "taskName",
-      "status",
-      "executorAddress",
-      "logs",
-      "logStorage",
-      "logObjectKey",
-      "result",
-      "params",
-      "startTime",
-      "endTime",
-      "duration",
-      "retryCount",
-      "errorMessage",
-      "failureReason",
-      "exitCode",
-      "aiAnalysis",
-      "artifacts",
-      "triggerType",
-      "taskVersion",
-      "traceId",
-      "createdAt",
-      "version",
-    ].map((propertyName) => ({ propertyName })),
+    columns: EXECUTION_COLUMN_STUB,
   };
   repo.createQueryBuilder = jest.fn(() => {
     let patch: Record<string, unknown> | null = null;
@@ -195,6 +202,8 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
       select: jest.fn().mockReturnThis(),
       // FIX-5.4: SSE flush 单轮 flush 行数上限（take(2000)）。
       take: jest.fn().mockReturnThis(),
+      // R283：lastStatus 分支的 exists 子查询用 limit(1)（此前替身无此方法）。
+      limit: jest.fn().mockReturnThis(),
       // FIX-5.1: getExecutionStats 的全量 GROUP BY status 计数（getRawMany）。
       getRawMany: jest.fn().mockResolvedValue([]),
       // handleCallback / killExecution 的终态 UPDATE 现携带 RETURNING，
@@ -408,6 +417,89 @@ describe("TaskService (__tests__)", () => {
     }).compile();
 
     service = module.get(TaskService);
+  });
+
+  // FEAT-TRIGGER-FILTER：`?triggerType=` 此前完全不过滤（DTO 已 @IsEnum 承诺），
+  // 选「触发方式=Cron」拿到未过滤全量。以下按 where 真过滤行集断言结果集。
+  describe("triggerType — 触发方式筛选", () => {
+    type Row = Record<string, unknown> & { id: string };
+    // where → 行判定：单对象 = AND、数组 = 元素间 OR；认 Not / ILike / And。
+    const eq = (row: Row, k: string, raw: unknown): boolean => {
+      const t = (raw as { type?: string })?.type;
+      const v = t ? (raw as { value: unknown }).value : raw;
+      if (k === "status")
+        return t === "not" ? row.status !== v : row.status === v;
+      if (t === "and") return (v as unknown[]).every((x) => eq(row, k, x));
+      if (t === "ilike")
+        return String(row[k] ?? "")
+          .toLowerCase()
+          .includes(String(v).replace(/%/g, "").toLowerCase());
+      return row[k] === v;
+    };
+    const mk = (id: string, tt: string, x: Partial<Row> = {}): Row => ({
+      id,
+      name: id,
+      description: `${id} job`,
+      triggerType: tt,
+      status: "active",
+      runtime: "python",
+      projectId: "p1",
+      ...x,
+    });
+    // cron / fixed_rate / manual；后两者与 cron 在 runtime/projectId 上错开。
+    const rows = [
+      mk("c1", "cron"),
+      mk("f1", "fixed_rate"),
+      mk("m1", "manual", { runtime: "node", projectId: "p2" }),
+    ];
+    const list = async (q: object) => {
+      taskRepo.findAndCount.mockImplementation(async (o: any) => {
+        const ws = Array.isArray(o.where) ? o.where : [o.where ?? {}];
+        const f = rows.filter((r) =>
+          ws.some((w: Record<string, unknown>) =>
+            Object.entries(w).every(([k, raw]) => eq(r, k, raw)),
+          ),
+        );
+        const n = o.skip ?? 0;
+        return [f.slice(n, n + (o.take ?? f.length)), f.length];
+      });
+      const r: any = await service.findAll({
+        page: 1,
+        pageSize: 10,
+        ...q,
+      } as any);
+      const w =
+        taskRepo.findAndCount.mock.calls[
+          taskRepo.findAndCount.mock.calls.length - 1
+        ][0].where;
+      return { ids: r.items.map((t: Row) => t.id), total: r.total, where: w };
+    };
+    it("① cron 真的过滤：只返回 cron 行，total 也是 1", async () => {
+      // 基线先行：不传该参数时三行全在（否则"只剩 c1"可能是空集假绿）
+      expect((await list({})).ids.sort()).toEqual(["c1", "f1", "m1"]);
+      const r = await list({ triggerType: "cron" });
+      expect((r.where as Record<string, unknown>).triggerType).toBe("cron");
+      expect(r.ids).toEqual(["c1"]);
+      expect(r.total).toBe(1);
+    });
+    it("② 与 q 组合：OR 两个分支都带 triggerType，描述命中的行不漏出", async () => {
+      const r = await list({ triggerType: "cron", q: "job" });
+      const ws = r.where as Record<string, unknown>[];
+      expect(ws).toHaveLength(2);
+      for (const b of ws) expect(b.triggerType).toBe("cron");
+      expect(r.ids).toEqual(["c1"]);
+    });
+    it("③ 与 runtime/projectId 组合取交集；不相交的组合须为空集", async () => {
+      const hit = await list({
+        triggerType: "cron",
+        runtime: "python",
+        projectId: "p1",
+      });
+      expect(hit.ids).toEqual(["c1"]);
+      expect((await list({ triggerType: "cron", runtime: "node" })).total).toBe(
+        0,
+      );
+    });
   });
 
   describe("create", () => {
@@ -780,6 +872,45 @@ describe("TaskService (__tests__)", () => {
   });
 
   describe("findAll", () => {
+    /**
+     * lastStatus 分支（手写 QB 链）的桩装配。此前同一份 27 行桩在多个用例里
+     * **逐字复制**——新增一个过滤项就得改 N 处，漏一处即"某个组合下悄悄不过滤"。
+     * 收成一处后，谓词断言仍打在各自的 taskQb 上（每个用例拿到独立实例）。
+     */
+    const stubLastStatusQb = (
+      opts: { teQbParams?: Record<string, unknown> } = {},
+    ) => {
+      const taskQb = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[{ id: "t1" }], 1]),
+      };
+      taskRepo.createQueryBuilder.mockReturnValue(taskQb);
+      const noopSub = (sql: string) => ({
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        setParameters: jest.fn().mockReturnThis(),
+        getParameters: jest.fn().mockReturnValue({}),
+        getQuery: jest.fn().mockReturnValue(sql),
+      });
+      const te2Qb = noopSub("SELECT te2.id FROM task_executions te2");
+      const teQb = noopSub("SELECT 1 FROM task_executions te");
+      if (opts.teQbParams) teQb.getParameters.mockReturnValue(opts.teQbParams);
+      execRepo.createQueryBuilder.mockImplementation((alias: string) =>
+        alias === "te2" ? te2Qb : teQb,
+      );
+      return { taskQb, te2Qb, teQb };
+    };
+
     it("returns paginated list", async () => {
       const tasks = [{ id: "1" }, { id: "2" }];
       taskRepo.findAndCount.mockResolvedValue([tasks, 2]);
@@ -940,44 +1071,10 @@ describe("TaskService (__tests__)", () => {
     // mock-repo 风格）：嵌套形态 EXISTS( SELECT 1 ... te.id = (最近一条子查询))
     // 与最近一条排序（createdAt DESC, id DESC LIMIT 1）由桩返回的 SQL 文本锁定。
     it("P2-18: lastStatus=failed 走 QB 分支且嵌入 EXISTS 关联子查询（findAndCount 不被调用）", async () => {
-      const taskQb = {
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        select: jest.fn().mockReturnThis(),
-        orderBy: jest.fn().mockReturnThis(),
-        // FIX-5.3: id DESC 决胜键
-        addOrderBy: jest.fn().mockReturnThis(),
-        skip: jest.fn().mockReturnThis(),
-        take: jest.fn().mockReturnThis(),
-        getManyAndCount: jest.fn().mockResolvedValue([[{ id: "t1" }], 1]),
-      };
-      taskRepo.createQueryBuilder.mockReturnValue(taskQb);
-
-      // execRepo 被调用两次：te2（最近一条标量子查询）与 te（EXISTS 外层）
-      const te2Qb = {
-        select: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        // S8：「最新执行」子查询要排除合成行（synthetic=false）
-        andWhere: jest.fn().mockReturnThis(),
-        orderBy: jest.fn().mockReturnThis(),
-        addOrderBy: jest.fn().mockReturnThis(),
-        limit: jest.fn().mockReturnThis(),
-        getParameters: jest.fn().mockReturnValue({}),
-        getQuery: jest
-          .fn()
-          .mockReturnValue("SELECT te2.id FROM task_executions te2"),
-      };
-      const teQb = {
-        select: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        setParameters: jest.fn().mockReturnThis(),
-        getParameters: jest.fn().mockReturnValue({ lastStatus: "failed" }),
-        getQuery: jest.fn().mockReturnValue("SELECT 1 FROM task_executions te"),
-      };
-      execRepo.createQueryBuilder.mockImplementation((alias: string) =>
-        alias === "te2" ? te2Qb : teQb,
-      );
+      // execRepo 被调用两次：te2（最近一条标量子查询）与 te（EXISTS 外层）。
+      const { taskQb, te2Qb, teQb } = stubLastStatusQb({
+        teQbParams: { lastStatus: "failed" },
+      });
 
       const result = await service.findAll({
         page: 1,
@@ -1025,34 +1122,7 @@ describe("TaskService (__tests__)", () => {
     });
 
     it("P2-18: QB 分支逐项镜像其余过滤项（显式 status 覆盖基线 / ILIKE / default 项目 OR 语义 / sortBy）", async () => {
-      const taskQb = {
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        select: jest.fn().mockReturnThis(),
-        orderBy: jest.fn().mockReturnThis(),
-        // FIX-5.3: id DESC 决胜键
-        addOrderBy: jest.fn().mockReturnThis(),
-        skip: jest.fn().mockReturnThis(),
-        take: jest.fn().mockReturnThis(),
-        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
-      };
-      taskRepo.createQueryBuilder.mockReturnValue(taskQb);
-      const noopSub = (sql: string) => ({
-        select: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        orderBy: jest.fn().mockReturnThis(),
-        addOrderBy: jest.fn().mockReturnThis(),
-        limit: jest.fn().mockReturnThis(),
-        setParameters: jest.fn().mockReturnThis(),
-        getParameters: jest.fn().mockReturnValue({}),
-        getQuery: jest.fn().mockReturnValue(sql),
-      });
-      const te2Qb = noopSub("SELECT te2.id FROM task_executions te2");
-      const teQb = noopSub("SELECT 1 FROM task_executions te");
-      execRepo.createQueryBuilder.mockImplementation((alias: string) =>
-        alias === "te2" ? te2Qb : teQb,
-      );
+      const { taskQb } = stubLastStatusQb();
 
       await service.findAll({
         page: 2,
@@ -1062,6 +1132,7 @@ describe("TaskService (__tests__)", () => {
         name: "备份",
         runtime: "python",
         applicationId: "app-1",
+        triggerType: "cron",
         projectId: "default",
         sortBy: "name",
         sortOrder: "asc",
@@ -1078,6 +1149,13 @@ describe("TaskService (__tests__)", () => {
       expect(taskQb.andWhere).toHaveBeenCalledWith(
         "task.runtime = :__runtime",
         { __runtime: "python" },
+      );
+      // FEAT-TRIGGER-FILTER：本分支不复用 buildTaskListWhere（手写 qb 镜像），
+      // 故 triggerType 必须在这里也有一条——漏了就是「lastStatus + 触发方式」
+      // 组合静默丢失触发方式过滤。
+      expect(taskQb.andWhere).toHaveBeenCalledWith(
+        "task.triggerType = :__triggerType",
+        { __triggerType: "cron" },
       );
       expect(taskQb.andWhere).toHaveBeenCalledWith(
         "task.applicationId = :__applicationId",
@@ -1107,33 +1185,7 @@ describe("TaskService (__tests__)", () => {
     // 分支逐项镜像——否则"带 lastStatus 筛选时搜索框按描述搜不到"会成为一个
     // 只在特定筛选组合下复现的隐蔽缺陷。
     it("FEAT-TASK-SEARCH: q 在 QB 分支生成带括号的 name OR description", async () => {
-      const taskQb = {
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        select: jest.fn().mockReturnThis(),
-        orderBy: jest.fn().mockReturnThis(),
-        addOrderBy: jest.fn().mockReturnThis(),
-        skip: jest.fn().mockReturnThis(),
-        take: jest.fn().mockReturnThis(),
-        getManyAndCount: jest.fn().mockResolvedValue([[{ id: "t1" }], 1]),
-      };
-      taskRepo.createQueryBuilder.mockReturnValue(taskQb);
-      const noopSub = (sql: string) => ({
-        select: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        orderBy: jest.fn().mockReturnThis(),
-        addOrderBy: jest.fn().mockReturnThis(),
-        limit: jest.fn().mockReturnThis(),
-        setParameters: jest.fn().mockReturnThis(),
-        getParameters: jest.fn().mockReturnValue({}),
-        getQuery: jest.fn().mockReturnValue(sql),
-      });
-      const te2Qb = noopSub("SELECT te2.id FROM task_executions te2");
-      const teQb = noopSub("SELECT 1 FROM task_executions te");
-      execRepo.createQueryBuilder.mockImplementation((alias: string) =>
-        alias === "te2" ? te2Qb : teQb,
-      );
+      const { taskQb } = stubLastStatusQb();
 
       await service.findAll({
         page: 1,
@@ -1151,33 +1203,7 @@ describe("TaskService (__tests__)", () => {
     });
 
     it("FEAT-TASK-SEARCH: QB 分支的 q 同样转义 LIKE 元字符", async () => {
-      const taskQb = {
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        select: jest.fn().mockReturnThis(),
-        orderBy: jest.fn().mockReturnThis(),
-        addOrderBy: jest.fn().mockReturnThis(),
-        skip: jest.fn().mockReturnThis(),
-        take: jest.fn().mockReturnThis(),
-        getManyAndCount: jest.fn().mockResolvedValue([[{ id: "t1" }], 1]),
-      };
-      taskRepo.createQueryBuilder.mockReturnValue(taskQb);
-      const noopSub = (sql: string) => ({
-        select: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        orderBy: jest.fn().mockReturnThis(),
-        addOrderBy: jest.fn().mockReturnThis(),
-        limit: jest.fn().mockReturnThis(),
-        setParameters: jest.fn().mockReturnThis(),
-        getParameters: jest.fn().mockReturnValue({}),
-        getQuery: jest.fn().mockReturnValue(sql),
-      });
-      const te2Qb = noopSub("SELECT te2.id FROM task_executions te2");
-      const teQb = noopSub("SELECT 1 FROM task_executions te");
-      execRepo.createQueryBuilder.mockImplementation((alias: string) =>
-        alias === "te2" ? te2Qb : teQb,
-      );
+      const { taskQb } = stubLastStatusQb();
 
       await service.findAll({
         page: 1,

@@ -627,10 +627,10 @@
     "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 7342,
-      "why": "R125 广播释放接线与 N=3 对账判据（+61）；回滚值 7273 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。",
+      "maxLines": 7385,
+      "why": "R125 广播释放接线与 N=3 对账判据（+61）；回滚值 7273 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。 【R283 重签：nonCommentLines/maxLines 7342 → 7385（+43 非注释行）】受控的测试新增：GET /tasks?triggerType= 此前 DTO 用 @IsEnum 严格校验（= 已对外承诺）而 buildTaskListWhere 一行不读 ⇒ 用户选「触发方式」拿到未过滤全量，且该面 filter matrix 零断言。本轮补 3 条真断言（写进 where / q 的两个 OR 分支都带上 / 与 projectId 取交集），反证：注释掉实现那一行 ⇒ 3 条全红。函数体与分支密度未变。",
       "ceiling": {
-        "nonCommentLines": 7342,
+        "nonCommentLines": 7385,
         "functionLines": 126,
         "ctorParams": 0,
         "exports": 0,
@@ -682,13 +682,13 @@
       "owner": "guard-smith",
       "review_by": "2026-12-15",
       "maxLines": 2929,
-      "why": "R125 广播释放依赖改为必填（漏接线变 TS2345 而非静默 no-op，+3）；回滚值 2860。 | **2026-11-15 本轮重签（+62 非注释行）**：P1-1 列表行批量回填最近一次真实执行摘要 lastExecution（8ccf6c42：响应 DTO 补 lastExecution 字段 + 服务层按任务 id 批量查询最近执行摘要，是前端任务列表「上次执行结果/耗时/深链」的数据来源）；P1-2 项目上下文过滤（878812db）另带 2 行查询条件。ceiling.nonCommentLines 2863→2925，函数体 316、exports 16 未变，密度 20.9 较基线 21 净降。 | **2026-11-16 P2-2 重签（+4 非注释行）**：执行列表/导出两路共享的过滤器入参类型补 runtime/triggerType 两个字段透传（谓词在 collaborator 唯一真值源，本文件仅接线）；ceiling.nonCommentLines 2925→2929，函数体 316、exports 16 未变，密度 20.9→21.0（分母变小的被动上升，判定点数未增）。",
+      "why": "R125 广播释放依赖改为必填（漏接线变 TS2345 而非静默 no-op，+3）；回滚值 2860。 | **2026-11-15 本轮重签（+62 非注释行）**：P1-1 列表行批量回填最近一次真实执行摘要 lastExecution（8ccf6c42：响应 DTO 补 lastExecution 字段 + 服务层按任务 id 批量查询最近执行摘要，是前端任务列表「上次执行结果/耗时/深链」的数据来源）；P1-2 项目上下文过滤（878812db）另带 2 行查询条件。ceiling.nonCommentLines 2863→2925，函数体 316、exports 16 未变，密度 20.9 较基线 21 净降。 | **2026-11-16 P2-2 重签（+4 非注释行）**：执行列表/导出两路共享的过滤器入参类型补 runtime/triggerType 两个字段透传（谓词在 collaborator 唯一真值源，本文件仅接线）；ceiling.nonCommentLines 2925→2929，函数体 316、exports 16 未变，密度 20.9→21.0（分母变小的被动上升，判定点数未增）。 【R283 重签：branchDensity 21 → 21.1】新增 triggerType 过滤必须在两条装配路径各判一次（buildTaskListWhere 的对象形态 + findAllByLastStatus 的手写 qb 链），二者无法共用同一判断——该分支刻意不复用 buildTaskListWhere（其注释已写明），否则 lastStatus 与 triggerType 组合会静默丢失过滤。这是**受控的逻辑新增**（1 条等值过滤），不是体量失控；分桶密度分母（函数总数）未变。",
       "ceiling": {
         "nonCommentLines": 2929,
         "functionLines": 316,
         "ctorParams": 0,
         "exports": 16,
-        "branchDensity": 21.0
+        "branchDensity": 21.1
       },
       "firstRun": {
         "bad": [

@@ -571,6 +571,19 @@ export {
   SCRIPT_ERROR_PATTERN,
 } from "../../common/failure-classification/failure-patterns";
 
+/**
+ * FEAT-TRIGGER-FILTER：`GET /tasks` 的**等值过滤**列。
+ *
+ * 三列语义同构（列 = 值，缺省不参与）。收成常量是为了让「OFFSET/keyset 的对象
+ * where」与「lastStatus 的手写 qb 链」共用同一份清单——后者是逐项镜像，此前
+ * 新增一个过滤项必须记得改两处，漏一处就是某个组合下悄悄不过滤且 200。
+ */
+const TASK_LIST_EQUALITY_FILTERS = [
+  "runtime",
+  "triggerType",
+  "applicationId",
+] as const;
+
 @Injectable()
 export class TaskService implements OnModuleInit {
   private readonly logger = new Logger(TaskService.name);
@@ -1852,15 +1865,17 @@ export class TaskService implements OnModuleInit {
     if (p.status) base.status = p.status as TaskStatus;
     if (p.name) base.name = ILike(`%${escapeLikePattern(p.name)}%`);
     const nameFilter = base.name as never;
-    if (p.runtime) base.runtime = p.runtime;
-    if (p.applicationId) base.applicationId = p.applicationId;
-    if (p.projectId) {
-      if (p.projectId === "default") {
-        base.projectId = Or(IsNull(), In([DEFAULT_PROJECT_ID]));
-      } else {
-        base.projectId = p.projectId;
-      }
-    }
+    // 等值过滤：runtime / triggerType / applicationId 同构，逐列写入 base。
+    // FEAT-TRIGGER-FILTER：triggerType 此前**一行没被读**——DTO 用
+    // @IsEnum(TaskTriggerType) 严格校验（= 已对外承诺），实现却忽略 ⇒ 前端选
+    // 「触发方式=Cron」拿到未过滤全量（200 + 全量 total），连"筛选没生效"都不说。
+    // 进 base 即对 q 的两个 OR 元素自动生效（元素内 AND）。
+    for (const k of TASK_LIST_EQUALITY_FILTERS) if (p[k]) base[k] = p[k];
+    if (p.projectId)
+      base.projectId =
+        p.projectId === "default"
+          ? Or(IsNull(), In([DEFAULT_PROJECT_ID]))
+          : p.projectId;
 
     // 关键字检索：name OR description。两个数组元素各自带上 base 的全部
     // AND 条件（TypeORM 的数组语义是元素间 OR，元素内 AND）——否则
@@ -2189,6 +2204,11 @@ export class TaskService implements OnModuleInit {
    *
    * 最近一次还在 pending/running 也如实参与筛选（值班看到的就是当前真实状态）。
    *
+   * ⚠️ 过滤项**不复用** `buildTaskListWhere`——本方法是手写 qb 链逐项镜像那份
+   * 对象 where。故任何新过滤项都必须在此再写一次（FEAT-TRIGGER-FILTER 的
+   * triggerType 即补的第二处），否则「lastStatus + 新过滤项」会静默丢弃新条件、
+   * 并与 OFFSET/keyset 两路给出不同结果集。
+   *
    * S8（迁移 1790000000091）：子查询里的「最新执行」带 `te2.synthetic = false` ——
    * 合成行（G2 为「因上游失败而没跑」的下游补的 cancelled 行）**从未运行**，
    * 不能代表「上次执行状态」。只影响筛选，不影响列表返回的行集。
@@ -2232,14 +2252,11 @@ export class TaskService implements OnModuleInit {
         __q: like,
       });
     }
-    if (p.runtime) {
-      qb.andWhere("task.runtime = :__runtime", { __runtime: p.runtime });
-    }
-    if (p.applicationId) {
-      qb.andWhere("task.applicationId = :__applicationId", {
-        __applicationId: p.applicationId,
-      });
-    }
+    // 等值过滤：与 buildTaskListWhere **逐个镜像**——本分支不复用那份对象
+    // where（手写 qb 链），故同一份列清单必须再走一遍；两边共用常量，
+    // 新增过滤项不会再出现"某条路径悄悄不过滤"（triggerType 即这样漏掉的）。
+    for (const k of TASK_LIST_EQUALITY_FILTERS)
+      if (p[k]) qb.andWhere(`task.${k} = :__${k}`, { [`__${k}`]: p[k] });
     // AUTH-01 同款语义："default" → 未分配行与默认项目行一起命中
     if (p.projectId) {
       if (p.projectId === "default") {

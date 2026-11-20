@@ -23845,14 +23845,6 @@
               "type": "string"
             },
             "x-i18n-en": "Opaque keyset cursor (the data.nextCursor from the previous page). When omitted, behaviour is exactly as before this parameter existed."
-          },
-          {
-            "description": "每页条数",
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {},
-            "x-i18n-en": "Items per page"
           }
         ],
         "responses": {
