@@ -3,6 +3,28 @@
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-19
 > 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
 
+## `/tasks?triggerType=` 与幽灵 `limit`（R283，工作树，未发布）
+
+- **可用路径**：任务列表的「触发方式」筛选现在**真的过滤**。（此前 DTO 用 `@IsEnum` 严格校验
+  这个参数 = 已对外承诺、前端也已下发，而实现一行没读 ⇒ 选了「Cron」拿到未过滤全量。）
+- **改代码前必读**：`p.triggerType` 在**两处**装配路径各判一次，缺一不可：
+  - `buildTaskListWhere`（对象形态，OFFSET / keyset / `q` 的 OR 分支共用）；
+  - `findAllByLastStatus`（**手写 qb 链，刻意不复用**上面那个装配）——
+    漏这处会让 `lastStatus + triggerType` 组合**静默丢失过滤**。
+- **测试必须按 where 真过滤行集**，不能只断言「调用参数」：后者在「写进 where 但被
+  `ILIKE`/OR 短路掉」时仍然全绿（本轮 3 条用例就是这么写的，反证：注释实现那行 ⇒ 3 条全红）。
+- **幽灵参数已删**：`GET /tasks/:id/executions` 上的 `@ApiQuery limit` 删掉了 ——
+  该端点 DTO 只有 `page/pageSize/status/cursor`，`forbidNonWhitelisted` 让 `?limit=` **必然 400**，
+  而 OpenAPI 却公示它。每页条数语义由 `pageSize` 承担。**`logs` 端点的 `limit` 是按行分页，与此无关。**
+- **两处体量基线已重签（不是放宽闸）**：`task.service.ts` branchDensity 21 → 21.1
+  （两条装配路径各需一次判断）；`task.service.spec.ts` nonCommentLines 7342 → 7385
+  （+43 行 = 3 条真断言）。`check-size-caps --selftest` 40/40。
+- **`STC-120` 按行号锚定**：往 `task.service.spec.ts` 插入代码会漂走 `specLine`，
+  改完要同步 `scripts/source-text-contracts.json`，否则 `check:source-text-contracts` 红。
+- **验收**：`npx jest src/modules/task`（78 套 / 1753 例）+ `npx tsc` + `npm run lint:api` +
+  `node scripts/guards-repo-matrix.mjs`（121 段）。
+- **发布前**：无迁移、无新 env 键。回滚 = `git revert`（`triggerType` 缺省即旧行为）。
+
 ## 「下次执行」与维护窗口（R282，工作树，未发布）
 
 - **可用路径**：任务列表的「下次执行」列与任务详情的「下次执行」Tag，在任务配了维护窗口且
