@@ -96,22 +96,56 @@ describe('WEB-5：模型接入与分配 —— 读失败 ≠ 没配置', () => {
     await screen.findByTestId('state-error');
     fireEvent.click(screen.getByText('重试'));
 
-    await waitFor(() => expect(screen.queryByTestId('state-error')).toBeNull());
+    // 方法学 529：点击重试时 load() 会先同步 setLoading(true) + setLoadError(null)，
+    // <Card loading={true}> 立即卸载 children，导致 state-error 在请求仍在途时即消失。
+    // 必须等只在终态（loading=false && !loadError）才出现的文案，而不是等错误块消失。
+    expect(await screen.findByText('按用途选用模型')).toBeTruthy();
+    expect(screen.queryByTestId('state-error')).toBeNull();
     expect(aiApi.listProviders).toHaveBeenCalledTimes(2);
     expect(document.querySelector('.ant-table')).toBeTruthy();
-    expect(screen.getByText('按用途选用模型')).toBeTruthy();
+  });
+
+  it('②b 回归（方法学 529）：重试在途骨架帧内错误块已消失但表格未就绪，待响应落地后才呈现终态', async () => {
+    let resolveRetry!: (value: unknown) => void;
+    const retryPending = new Promise((resolve) => {
+      resolveRetry = resolve;
+    });
+    vi.mocked(aiApi.listProviders)
+      .mockRejectedValueOnce(new Error('502'))
+      .mockReturnValueOnce(retryPending as never);
+    render(<AiProvidersSettings />);
+
+    await screen.findByTestId('state-error');
+    fireEvent.click(screen.getByText('重试'));
+
+    // 在途 loading 帧：state-error 已因 setLoadError(null) + Card loading 消失，但终态内容尚未挂载
+    await waitFor(() => expect(screen.queryByTestId('state-error')).toBeNull());
+    expect(aiApi.listProviders).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('.ant-table')).toBeNull();
+    expect(screen.queryByText('按用途选用模型')).toBeNull();
+
+    // 放行第 2 次响应后，终态文案与表格一同出现
+    resolveRetry(emptyView);
+    expect(await screen.findByText('按用途选用模型')).toBeTruthy();
+    expect(screen.queryByTestId('state-error')).toBeNull();
+    expect(document.querySelector('.ant-table')).toBeTruthy();
+    const emptyHint =
+      screen.queryAllByText('暂无数据').length + screen.queryAllByText('No data').length;
+    expect(emptyHint).toBeGreaterThan(0);
   });
 
   it('③ 对照组：真正的空结果仍渲染空表（空态与错误态不是一回事）', async () => {
     vi.mocked(aiApi.listProviders).mockResolvedValue(emptyView as never);
     render(<AiProvidersSettings />);
 
-    await waitFor(() => expect(document.querySelector('.ant-table')).toBeTruthy());
+    // 方法学 529：等终态文案而非裸 .ant-table 容器
+    expect(await screen.findByText('按用途选用模型')).toBeTruthy();
+    expect(aiApi.listProviders).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId('state-error')).toBeNull();
+    expect(document.querySelector('.ant-table')).toBeTruthy();
     // 空表在场（antd 空态文案随 locale 二选一）
     const emptyHint =
       screen.queryAllByText('暂无数据').length + screen.queryAllByText('No data').length;
     expect(emptyHint).toBeGreaterThan(0);
-    expect(screen.getByText('按用途选用模型')).toBeTruthy();
   });
 });
