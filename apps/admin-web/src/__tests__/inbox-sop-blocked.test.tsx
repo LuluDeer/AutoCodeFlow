@@ -486,6 +486,70 @@ describe('R286 ④ truncated:true ⇒ 显示「显示前 N 条（共 M 条）」
     }
   });
 
+  it('`degraded` 必须**原样透传**服务端值：false 不许被抬成 true', async () => {
+    // 为什么必须有这条（实测出来的空转）：把 loader 里 `degraded: !!res?.degraded`
+    // 改成 `degraded: true`（**恒为降级**）⇒ 本文件原 33 例**全绿**。
+    // 也就是说「服务端说一切正常」这条路径从未被断言过。
+    //
+    // 它为什么严重：`degraded` 是**唯一**区分「数字是事实」与「数字是下界」的标记。
+    // 恒 true ⇒ 每个正常页面都挂一条「计数可能不准」的告警 ⇒ 告警疲劳，真故障时
+    // 没人再看。反之恒 false 会把下界冒充事实。两侧都必须被钉住。
+    //
+    // 顺带钉住 `truncated`：服务端是截断判定的**权威**，不许被本地 `metaOf` 顶替
+    // （`returned=1 / total=7` 时本地也算得出 true，但 `returned=1 / total:null`
+    // 时本地必为 false，而服务端若说是 true 就是 true——后者才是权威差的体现）。
+    mockBackend({
+      lagging: { items: [lagRow()], total: 1, returned: 1, truncated: false, degraded: false },
+    });
+    const healthy = await loadInbox();
+    expect(healthy.sopBlocked.degraded).toBe(false);
+    expect(healthy.sopBlocked.truncated).toBe(false);
+    // 正常态 ⇒ 不该出现「计数不可用」类提示。
+    expect(describeSectionCount(healthy.sopBlocked)).toEqual({ kind: 'total', n: 1, source: 'server' });
+
+    mockBackend({
+      lagging: { items: [lagRow()], total: 7, returned: 1, truncated: true, degraded: true },
+    });
+    const degraded = await loadInbox();
+    expect(degraded.sopBlocked.degraded).toBe(true);
+    expect(degraded.sopBlocked.truncated).toBe(true);
+
+    // ⚠️ 上面那组证明不了「服务端是权威」——`returned=1 / total=7` 让**本地**
+    // `metaOf` 也算出 true，两种实现同结果。要钉住权威性，必须构造一组
+    // **本地与服务端结论相反**的输入：`total:null`（本地必 false）+ 服务端 `truncated:true`。
+    mockBackend({
+      lagging: { items: [lagRow()], total: null, returned: 1, truncated: true, degraded: true },
+    });
+    const authority = await loadInbox();
+    // 服务端说截断了，就信服务端；不许用本地 `metaOf`（`total` 未知 ⇒ false）顶替。
+    expect(authority.sopBlocked.truncated).toBe(true);
+    expect(authority.sopBlocked.total).toBeNull();
+  });
+
+  it('`truncated` 的两侧都有专门断言：true 与 false 各自被独立的输入钉住', async () => {
+    // 为什么单开一条：实测发现「`truncated` 恒 false」这个变异**只被上面那条
+    // `degraded` 用例顺带挡住**（1 红），而它并不是为 `truncated` 写的。
+    // ⇒ 那一侧的覆盖是**副作用**，不是设计——按第 ④ 类判据（有区分力），
+    // 它随时会因别人改夹具而静默失效。
+    // 这一条让两侧各有**专属的、指向自己的**断言。
+    //
+    // false 侧：全取到了（returned === total）⇒ 不许报截断。
+    mockBackend({
+      lagging: { items: [lagRow()], total: 1, returned: 1, truncated: false, degraded: false },
+    });
+    expect((await loadInbox()).sopBlocked.truncated).toBe(false);
+
+    // true 侧：服务端说没取全 ⇒ 必须报截断，且 N/M 来自服务端两个独立数。
+    mockBackend({
+      lagging: { items: [lagRow()], total: 9, returned: 1, truncated: true, degraded: false },
+    });
+    const cut = await loadInbox();
+    expect(cut.sopBlocked.truncated).toBe(true);
+    expect(cut.sopBlocked.total).toBe(9);
+    expect(cut.sopBlocked.returned).toBe(1);
+    expect(describeSectionCount(cut.sopBlocked)).toEqual({ kind: 'truncated', returned: 1, total: 9 });
+  });
+
   it('`metaOf`（共享函数，7 个入口的共同根）：非有限数一律判读失败', () => {
     // 为什么钉在**函数级**而不是再加一个入口级用例：
     // `metaOf` 在 `api/inbox.ts` 有 **7 个调用点**（deployments / agentWaiting×2 /
