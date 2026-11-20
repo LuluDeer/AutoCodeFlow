@@ -1451,7 +1451,7 @@ describe('acf deploy upgrade / stop 状态回执', () => {
     captureStdout();
     process.exitCode = 0;
     mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'stopped', applicationId: 'app-1', statusMessage: 'Stopped' });
-    await run(deployCommand(), 'deploy stop d1');
+    await run(deployCommand(), 'deploy stop d1 -y');
     expect(lastSpinner().succeed).toHaveBeenCalledWith(expect.stringContaining('Deployment d1 stopped'));
     expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
   });
@@ -1465,7 +1465,7 @@ describe('acf deploy upgrade / stop 状态回执', () => {
       applicationId: 'app-1',
       statusMessage: '[Stop not delivered] connect ECONNREFUSED',
     });
-    await run(deployCommand(), 'deploy stop d1');
+    await run(deployCommand(), 'deploy stop d1 -y');
     expect(lastSpinner().succeed).not.toHaveBeenCalled();
     expect(String(lastSpinner().warn.mock.calls[0]?.[0] ?? '')).toContain('signal was NOT delivered');
     expect(logs.join('\n')).toContain('acf app deployments app-1');

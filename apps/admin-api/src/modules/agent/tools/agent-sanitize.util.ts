@@ -16,9 +16,9 @@
 
 import { sanitizeSecrets } from "../../../common/utils/sanitize-secrets.util";
 
-/** 凭据类键名（顶层与嵌套层一视同仁剥除）。 */
+/** 凭据类键名（顶层与嵌套层一视同仁剥除；严禁裸匹配 `key` 以免误伤 `publicKey`/`approvalKey`）。 */
 const SECRET_KEYS_RE =
-  /token|password|passwd|secret|apikey|api_key|credential/i;
+  /token|password|passwd|secret|api[-_]?key|access[-_]?key|private[-_]?key|credential/i;
 
 /**
  * 参数脱敏。
