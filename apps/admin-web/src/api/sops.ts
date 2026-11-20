@@ -163,20 +163,28 @@ export const sopsApi = {
    *
    * 服务端**没有** `limit` 参数（行数上限是内部常量）⇒ 只按 `returned`/`total` 消费。
    *
-   * ## `hours` 的三方事实必须分开说（否则会选错签名）
+   * ## `hours`：曾是欠账，已回收（R287 收口，2026-11-20）
    *
-   * ① **运行期**：可选。`@Query("hours") hours?: string`，非法/缺省由 service 的
-   *    `clampLagHours` 回落默认，**绝不 400**；
-   * ② **生成物**：被标 `required: true`。这是 NestJS Swagger 读不到 TS 的 `?`
-   *    导致的既有误标，全库 36 处同形；`scripts/check-query-param-required.mjs`
-   *    把它登记为 `runtime-optional` **待回收的欠账**（回收动作 = controller 补
-   *    `@ApiQuery({required:false})` + 重跑 `swagger:export`）；
-   * ③ **本方法**：签名保持**可选**，与 ① 和回收后的 ② 都自洽。
+   * - **运行期**：可选。`@Query("hours") hours?: string`，缺省/非法由 service 的
+   *   `clampLagHours` 回落默认，**绝不 400**；
+   * - **生成物**：`required: false` + description + `x-i18n-en`（controller 补了
+   *   `@ApiQuery({ required:false })`，主会话重导出了 `openapi.json`）；
+   * - **`check-query-param-required.mjs`**：原先登记本站点为 `runtime-optional`
+   *   欠账，生成物对齐后该条已被**自动回收**（守卫判「陈旧登记」并勒令删除）。
    *
-   * ⇒ 所以这里**不写** `hours ?? 24`：那会让「24」在仓库里出现两处
-   * （`SOP_BLOCKED_WINDOW_HOURS` 与这里），常量一改方法就静默用旧窗口——而窗口是
-   * **筛选条件**，它改变「哪些工单出现在本节」且**不报错**。
-   * 不传 = 真的不带这个 query 参数（由 service 决定默认），而不是假装传了 24。
+   * ⇒ 三方现在同向：接口可选。**若哪天有人把这里改回必填**，请先确认生成物仍是
+   * `required:false`——把误标固化进消费方，比误标本身更坏（回收掉之后前端会反向不一致）。
+   *
+   * ⚠️ 生成物的 `hours` 类型是 `string`（HTTP query 参数一律是字符串），本方法是
+   * `number`。这不矛盾也不需要转换：本模块**不走** generated client（只用
+   * `components['schemas']` 取响应体），`params` 由 `client` 交给 axios 序列化。
+   * 若将来改用 `operations[...]` 的 typed client，这里就得改成 `String(hours)`。
+   *
+   * ## 为什么不写 `hours ?? 24`
+   *
+   * 那会让「24」在仓库里出现两处（`SOP_BLOCKED_WINDOW_HOURS` 与这里），常量一改
+   * 方法就静默用旧窗口——而窗口是**筛选条件**，它改变「哪些工单出现在本节」且
+   * **不报错**。不传 = 真的不带这个 query 参数（由 service 决定默认），而不是假装传了 24。
    *
    * 「窗口由谁定」只有一个答案：**调用点**（`api/inbox.ts` 传常量）。这样即使
    * 服务端默认值将来漂移，本前端也不会静默跟随。

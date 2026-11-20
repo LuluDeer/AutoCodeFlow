@@ -1095,6 +1095,18 @@ jobs:
       # **判据「跑不起来 ≠ 通过」**：探针 spawn 失败时脚本走 `process.exit(1)` 分支
       # （见 check-protocol-three-way.mjs 的 runNodeProbe / runPythonProbe 的 throw
       # → main() 的 catch → exit 1），**不会**把失败当成「无差异 ⇒ 通过」。
+      # R287（2026-11-20）：`in: query` + `required: true` 与运行期实现一致。
+      # 实测 openapi.json 里 **162 个 query 参数有 36 个标 required:true**，而绝大多数
+      # 运行期是可选的（`@Query("page") page?: string`）——`@nestjs/swagger` 对**具名**
+      # @Query 拿不到 TS 的 `?`，一律推断成必填。后果不是「文档不好看」：契约承诺了
+      # 运行期不存在的约束，照着它写的 SDK/前端类型要求必传，少传却照样 200；而真正
+      # 必填的（/ai/media 的 exp/sig、/auth/oidc/callback 的 code/state）混在同一批里，
+      # 谁都没法从生成物上分辨。判据：按 operationId 定位 controller，读 handler 签名
+      # 的 `?:` / `| undefined`，可选却标必填 ⇒ 红并点名 path+method+param+file:line；
+      # 真必填走 allowlist（每条 ≥12 字 reason），陈旧条目/过期 reviewBy 也红。
+      # 零依赖纯静态（只读已提交的 openapi.json + 源码），秒级，不跑 swagger:export。
+      - name: Query param required matches runtime signature (R287)
+        run: npm run check:query-param-required
       - name: Protocol three-way check (real execution on both sides)
         run: |
           node scripts/check-protocol-three-way.mjs --selftest

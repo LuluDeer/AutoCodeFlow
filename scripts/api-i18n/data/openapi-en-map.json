@@ -1625,5 +1625,6 @@
   "上述澄清的轮次（`sop_clarifications.round`，1 起）。**null = 未知或无**（没有 escalated 澄清，或该子查询读失败），不是「第 0 轮」——前端渲染「第 — 轮」，不要编造数字": "Which round the above clarification belongs to (`sop_clarifications.round`, 1-based). **null = unknown or none** (no escalated clarification, or that sub-query failed) and NOT \"round 0\" - the UI renders \"round -\"; do not fabricate a number",
   "按进入 blocked 的时刻升序（卡得最久的在最前——那正是最该被看见的）": "Ascending by the moment the assignment entered blocked (stuck longest first - exactly what most needs to be seen)",
   "滞留 blocked 工单**总数**（独立 `getCount()`，不是 `items.length` 的别名）；读不到 ⇒ null，**绝不 0**": "**Total** number of stuck blocked assignments (an independent `getCount()`, not an alias for `items.length`); null when it cannot be read - **never 0**",
-  "是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败；但装配缺失（服务未注入）是 503，不是空信封": "Whether any sub-query failed to read (the corresponding field is then null). **HTTP stays 200**: partially usable is not a broken page; but a missing wiring (service not injected) is 503, not an empty envelope"
+  "是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败；但装配缺失（服务未注入）是 503，不是空信封": "Whether any sub-query failed to read (the corresponding field is then null). **HTTP stays 200**: partially usable is not a broken page; but a missing wiring (service not injected) is 503, not an empty envelope",
+  "观测窗口（小时）。缺省 24；钳制 1..720；非法值安全回落默认，不 400": "Observation window in hours. Defaults to 24; clamped to 1..720; illegal values fall back to the default safely instead of returning 400"
 }

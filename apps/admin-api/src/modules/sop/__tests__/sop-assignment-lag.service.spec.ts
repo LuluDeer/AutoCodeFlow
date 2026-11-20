@@ -715,4 +715,30 @@ describe("R286 · controller 薄路由（GET /sop/assignments/lagging）", () =>
     expect(arg.hours).not.toBe(LAG_HOURS_DEFAULT);
     expect(arg.hours).not.toBe(24);
   });
+
+  /**
+   * R287 · `hours` 的**契约声明**必须是 `required: false`。
+   *
+   * Swagger 对 `@Query("hours") hours?: string` 一律推断成 `required: true`，
+   * 于是 `openapi.json` 会公示「必填」而运行期可选 —— 一条**不实声明**。修法是显式
+   * `@ApiQuery({ required: false })`。
+   *
+   * 该修法**已完成闭环**：`openapi.json` 现在 `hours` 是 `required: false`，
+   * `check:query-param-required` 的豁免条目也已回收。但这条用例仍然必要——
+   * 它防的是**反向冲动**：若有人见「生成物已是 false」，便觉得源码注解多余而删掉，
+   * 下一次重导出会把不实声明**重新生成**出来，且没有任何红灯。
+   * ⇒ 这条断言就是那个红灯（删注解 ⇒ 精确 1 条红）。
+   */
+  it("R287：hours 的 Swagger 声明是 required:false（源码侧已修，待生成物对齐）", () => {
+    const handler = (
+      SopController.prototype as unknown as Record<string, unknown>
+    ).listLaggingAssignments as object;
+    const params = (Reflect.getMetadata("swagger/apiParameters", handler) ??
+      []) as Array<{ name?: string; required?: boolean; in?: string }>;
+
+    const hours = params.filter((p) => p.name === "hours");
+    expect(hours).toHaveLength(1);
+    expect(hours[0].in).toBe("query");
+    expect(hours[0].required).toBe(false);
+  });
 });

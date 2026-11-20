@@ -261,9 +261,14 @@ describe('R279 ① failedSessions 读不到（null）⇒ 显示「—」，绝�
     vi.mocked(loadInboxCounts).mockResolvedValue(counts({ agentWaiting: 1, agentFailures: null }));
     render(<MemoryRouter><InboxBadge /></MemoryRouter>);
 
-    const failed = await screen.findByTestId('inbox-badge-failed');
-    expect(failed.textContent).toBe('会话失败 —');
-    expect(screen.getByTestId('inbox-badge-waiting').textContent).toBe('等待输入 1 会话');
+    // ⚠️ 不能只等 `inbox-badge-failed` 出现：loading 期 `failed === null` ⇒ 那一格
+    // **已经**渲染成「会话失败 —」，`findByTestId` 会立刻命中，而 `waiting` 此时
+    // 还是「—」⇒ 紧跟的同步断言间歇性红（实测连跑 12 轮抓到 1 次）。
+    // 等「计数已落地」的那个格子（`waiting` 变成 1）作为终态信号。
+    await waitFor(() =>
+      expect(screen.getByTestId('inbox-badge-waiting').textContent).toBe('等待输入 1 会话'),
+    );
+    expect(screen.getByTestId('inbox-badge-failed').textContent).toBe('会话失败 —');
     expect(screen.getByTestId('inbox-badge').getAttribute('data-degraded')).toBe('true');
   });
 });

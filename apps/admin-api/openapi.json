@@ -16893,7 +16893,7 @@
           {
             "in": "query",
             "name": "prefix",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -16901,7 +16901,7 @@
           {
             "in": "query",
             "name": "tag",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20163,7 +20163,7 @@
           {
             "in": "query",
             "name": "projectId",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20260,7 +20260,7 @@
           {
             "in": "query",
             "name": "projectId",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20295,7 +20295,7 @@
           {
             "in": "query",
             "name": "days",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20303,7 +20303,7 @@
           {
             "in": "query",
             "name": "projectId",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -21481,12 +21481,14 @@
         "operationId": "SopController_listLaggingAssignments",
         "parameters": [
           {
+            "description": "观测窗口（小时）。缺省 24；钳制 1..720；非法值安全回落默认，不 400",
             "in": "query",
             "name": "hours",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
-            }
+            },
+            "x-i18n-en": "Observation window in hours. Defaults to 24; clamped to 1..720; illegal values fall back to the default safely instead of returning 400"
           }
         ],
         "responses": {

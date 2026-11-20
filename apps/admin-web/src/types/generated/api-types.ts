@@ -11132,9 +11132,9 @@ export interface operations {
     };
     ConfigController_findAll: {
         parameters: {
-            query: {
-                prefix: string;
-                tag: string;
+            query?: {
+                prefix?: string;
+                tag?: string;
             };
             header?: never;
             path?: never;
@@ -13018,8 +13018,8 @@ export interface operations {
     };
     MetricsController_getRecentFailures: {
         parameters: {
-            query: {
-                projectId: string;
+            query?: {
+                projectId?: string;
             };
             header?: never;
             path?: never;
@@ -13078,8 +13078,8 @@ export interface operations {
     };
     MetricsController_getSummary: {
         parameters: {
-            query: {
-                projectId: string;
+            query?: {
+                projectId?: string;
             };
             header?: never;
             path?: never;
@@ -13099,9 +13099,9 @@ export interface operations {
     };
     MetricsController_getDailyTrend: {
         parameters: {
-            query: {
-                days: string;
-                projectId: string;
+            query?: {
+                days?: string;
+                projectId?: string;
             };
             header?: never;
             path?: never;
@@ -13794,8 +13794,9 @@ export interface operations {
     };
     SopController_listLaggingAssignments: {
         parameters: {
-            query: {
-                hours: string;
+            query?: {
+                /** @description 观测窗口（小时）。缺省 24；钳制 1..720；非法值安全回落默认，不 400 */
+                hours?: string;
             };
             header?: never;
             path?: never;

@@ -21,6 +21,7 @@ import {
   ApiOkResponse,
   ApiCreatedResponse,
   ApiExtraModels,
+  ApiQuery,
 } from "@nestjs/swagger";
 import {
   IsIn,
@@ -292,6 +293,28 @@ export class SopController {
   @ApiOperation({
     summary:
       "列出超过 N 小时未推进的 blocked 指派（含总数、截断与降级标记；不改状态机）",
+  })
+  // R287：`@Query("hours") hours?: string` 运行期可选，但 Swagger 对
+  // 「`@Query` 的提示类型是 `T | undefined`」一律推断成 `required: true`
+  // ⇒「契约说必填、实现说可选」的不实声明。这里显式标 false 修正**源码侧**。
+  //
+  // ⚠️ **这条修饰不是可选项**。曾经的过程：本注解写出前，`openapi.json` 里
+  // `hours` 是 `required: true`，`check:query-param-required` 把它登记为
+  // `class: "runtime-optional"` 的待回收欠账；重导出后已对齐为 `required: false`、
+  // 清单条目**已回收**（现总账 29 条 required:true / 27 条登记 / 陈旧 0）。
+  // ⇒ 现在源码与生成物一致。**若有人为了「让两边看起来一致」把本注解删掉**，
+  // 生成物会退回不实声明且**没有任何红灯**——`__tests__` 里那条装饰器元数据
+  // 用例就是为挡这个反向冲动而写的（删注解 ⇒ 精确 1 条红）。
+  //
+  // 同款先例：`metrics.controller.ts` / `config.controller.ts` 的
+  // `@ApiQuery({ required: false })`（见 `query-param-required-allowlist.json`
+  // 的 `$comment`）。
+  @ApiQuery({
+    name: "hours",
+    required: false,
+    type: String,
+    description:
+      "观测窗口（小时）。缺省 24；钳制 1..720；非法值安全回落默认，不 400",
   })
   @ApiOkResponse({ type: SopAssignmentLagResponseDto })
   async listLaggingAssignments(

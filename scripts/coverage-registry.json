@@ -41,7 +41,8 @@
     "**2026-11-07 扩面 73 → 82 条（R163 第四批）**：9 条。**本批多了一条准入判据**（由一条「假保护」实证倒逼出来）：**只有当 helper 计数 ≤ `--selftest` 用例数时才可以登记** —— 因为那保证「用例被删 ⇒ 计数必然下降」；若 helper 计数 **大于** 用例数，说明**同一个 helper 也被生产代码调用**（`check-migration-symmetry` 的 `push` 就是 `extractUpObjects` 的 Map 收集器）⇒ 清空整张用例表计数**纹丝不动** ⇒ **假保护**（比不登记更危险）。按此判据**拒收**的：`check-user-facing-language`（check 51 vs 29 用例 —— check 在生产循环里也调）、`check-web-type-field-drift`（runGuard 28 vs 27，超 1 亦按纪律不收）、`agent-event-projection-audit` / `check-openapi-response-schema` / `check-spec-coupling-surfaces` / `check-upgrade-notes`（用例数为数据驱动或无法读出，**无法证明会下降** ⇒ 暂不登记）。",
     "⚠️ **R163 再撤一条**：`check-npm-audit-exemptions` **不能带计数行** —— 它的 selftest 会把**自己复制进临时夹具树**（`/tmp/acf-audit-meta-*/scripts/check-npm-audit-exemptions.mjs`）再跑，而夹具树里**没有 `scripts/lib/`** ⇒ 加了 `import …/lib/agent-coverage.mjs` 后那份拷贝直接`ERR_MODULE_NOT_FOUND`（链第 18 段红，实测）。⇒ 准入判据再加一条：**会被复制进夹具树单独运行的守卫也不能带 lib import**。",
     "**2026-11-07 扩面 81 → 82 条（R165）**：check-spec-coupling-surfaces（helper=`ok`，计数 30 == `--selftest` 30 例 ⇒ 满足准入判据②；`ok` 是本文件真实的一次调用=一条用例的注册函数 ⇒ 满足①；本文件不被他人 import、selftest 不复制自身 ⇒ 满足③）⇒ floor 15。**其余仍未登记的 16 个都通不过准入判据**（如实记录，不硬凑）：`agent-event-projection-audit` must=79 vs 22 例（helper 也用于生产）· `check-user-facing-language` check=51 vs 29 例（同）· `check-web-type-field-drift` runGuard=28 vs 27 · `check-upgrade-notes` check=7 vs 6 例 · `check-openapi-response-schema`/`check-npm-audit-exemptions` 会被复制进夹具树（判据③）· `check-migration-symmetry` push 是生产收集器（假保护）· `check-credential-columns` 混合注册 （subprocess=5 + unit=6，单一 helper 数不全用例）· `check-alerts-rules`/`check-desktop-rollback-path`/`check-runner-labels` 计数 1–2（floor 只能是 0 或 1，`check-brand-drift` 连 selftest 都没有）。",
-    "**2026-11-07 扩面 81 → 82 条（R168：给判据④ 加「数据驱动用例表」的一等形态）**：`check-metric-docs` 此前**结构上登记不进来**（R167 记过原因：用例在表里、`must(` 数是断言语句数、哨兵的交叉核对要求 `helper` 是合法标识符而表长数不出）。R168 补了**第三种口径** —— `derivation: { kind: \"table-length\", tables: … }`：守卫用 `printTableCoverageBanner` 同时打 `COVERAGE_CASES`（总数）与 `COVERAGE_TABLE`（表名 + 各表长度）；哨兵用 `countTableEntries` **独立**在源码里定位每张表并数其**顶层条目**，再逐张与守卫打印值、与登记值三方对照 ⇒ **「把计数写死」「改表名」「换一张表」三种作弊都会红**。⚠️ 新形态**不放宽**原交叉核对：普通条目仍走 `countAssertionCallSites`（调用点数），一条没动。"
+    "**2026-11-07 扩面 81 → 82 条（R168：给判据④ 加「数据驱动用例表」的一等形态）**：`check-metric-docs` 此前**结构上登记不进来**（R167 记过原因：用例在表里、`must(` 数是断言语句数、哨兵的交叉核对要求 `helper` 是合法标识符而表长数不出）。R168 补了**第三种口径** —— `derivation: { kind: \"table-length\", tables: … }`：守卫用 `printTableCoverageBanner` 同时打 `COVERAGE_CASES`（总数）与 `COVERAGE_TABLE`（表名 + 各表长度）；哨兵用 `countTableEntries` **独立**在源码里定位每张表并数其**顶层条目**，再逐张与守卫打印值、与登记值三方对照 ⇒ **「把计数写死」「改表名」「换一张表」三种作弊都会红**。⚠️ 新形态**不放宽**原交叉核对：普通条目仍走 `countAssertionCallSites`（调用点数），一条没动。",
+    "**2026-11-20 扩面 86 → 87 条（R287）**：登记 check-query-param-required（push=14，floor 7）。它是「契约字段 required 与运行期签名一致性」的唯一判据：openapi.json 里 36 处 required:true 中 30 处运行期可选（@nestjs/swagger 对具名 @Query 推断不出 TS 的 `?`），而 4 处真必填（/ai/media 的 exp/sig、/auth/oidc/callback 的 code/state）混在同一批里 —— 判据必须能分辨这二者，所以用例面钉住「可选却标必填 ⇒ 红」「无法判定不许当绿」「陈旧登记必须回收」「reason <12 字 ⇒ 红」四族。**清空用例后 push 计数会掉**（已实证：14 条用例全在 runSelftest 里注册），不是 check-migration-symmetry 那种「计数来自生产代码」的假保护。"
   ],
   "scopePrefix": [
     "agent-",
@@ -591,6 +592,13 @@
       "helper": "expectExit",
       "floor": 8,
       "args": []
+    },
+    "scripts/check-query-param-required.mjs": {
+      "helper": "push",
+      "floor": 7,
+      "args": [
+        "--selftest"
+      ]
     }
   }
 }
