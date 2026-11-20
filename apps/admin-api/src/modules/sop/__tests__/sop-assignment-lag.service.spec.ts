@@ -657,6 +657,41 @@ describe("R286 · 滞留 blocked 口径（GET /sop/assignments/lagging）", () =
     expect(h.calls.sopTitles).toBe(0);
     expect(h.calls.escalations).toBe(0);
   });
+
+  /**
+   * R286 · `degraded` 的**两侧专属断言**（`degraded:true` 那侧此前只有副作用保护）。
+   *
+   * ## 这条用例是怎么来的（别删）
+   *
+   * 按「变异红的那条 `it()` 是不是为我要保护的字段而写」审全部变异时实测：
+   *
+   * | 变异 | 红条 | 其中 `it()` 标题描述 `degraded` 的 |
+   * |---|---|---|
+   * | `degraded` 恒 **true** | 5 | **仅 1**（①②⑤ 与 truncated 那条都是顺带）|
+   * | `degraded` 恒 **false** | 7 | 7（④/④b/④c/⑤c/澄清/脏数据/装配层）|
+   *
+   * ⇒ **false 那侧有 7 条专属、true 那侧只有 1 条**。后者一旦别人改夹具（例如把
+   * ①的断言换成 `toMatchObject`），「恒 true」这个错误就可能不再被任何用例挡住
+   * ——而**恒 true 的后果是每个正常页面都挂「计数可能不准」**，真故障时没人再看
+   * （告警疲劳），比恒 false 更难被用户察觉。
+   *
+   * 本用例把 true 侧钉成**唯一原因**驱动：只让一个子查询失败，断言 `degraded:true`
+   * **且**其余字段仍正确 —— 这样它红只可能是 `degraded` 的聚合逻辑坏了。
+   */
+  it("degraded 专属（true 侧）：子查询失败 ⇒ degraded:true，且失败不污染其它字段", async () => {
+    // 只让「标题」子查询失败：`total` 仍是真数、行仍返回 ⇒ 唯一异常就是降级。
+    const h = harness({
+      assignments: [asg({ updatedAt: new Date(NOW - 30 * HOUR) })],
+      failSopTitles: true,
+    });
+    const res = await h.svc.lagging({ hours: 24, now: NOW });
+
+    expect(res.degraded).toBe(true);
+    // 下面三条同时钉住「降级 ≠ 数据变假」：总数/行数/空标题各归各位。
+    expect(res.total).toBe(1);
+    expect(res.returned).toBe(1);
+    expect(res.items[0].sopName).toBeNull();
+  });
 });
 
 describe("R286 · controller 薄路由（GET /sop/assignments/lagging）", () => {
@@ -810,7 +845,7 @@ describe("R286 · controller 薄路由（GET /sop/assignments/lagging）", () =>
    * 下一次重导出会把不实声明**重新生成**出来，且没有任何红灯。
    * ⇒ 这条断言就是那个红灯（删注解 ⇒ 精确 1 条红）。
    */
-  it("R287：hours 的 Swagger 声明是 required:false（源码侧已修，待生成物对齐）", () => {
+  it("R287：hours 的 Swagger 声明是 required:false（源码与生成物已对齐，此断言防退回）", () => {
     const handler = (
       SopController.prototype as unknown as Record<string, unknown>
     ).listLaggingAssignments as object;

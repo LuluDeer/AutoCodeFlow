@@ -466,124 +466,6 @@ describe('R286 ④ truncated:true ⇒ 显示「显示前 N 条（共 M 条）」
     expect(section.getByTestId('inbox-truncated-sopBlocked')).toBeTruthy();
   });
 
-  it('非有限数 total（NaN / Infinity）⇒ 判读失败：null + degraded，不透出去', async () => {
-    // 为什么必须有这条：`metaOf` 里有一段
-    //   `typeof rawTotal === 'number' && Number.isFinite(rawTotal) ? rawTotal : null`
-    // **只把 `Number.isFinite` 去掉**（让 NaN/Infinity 透出去）时，本文件原本
-    // **128 例全绿** —— 即那个防御分支从未被喂过非法输入（与 A 那边
-    // 「非有限数 ⇒ 判读失败」守卫是同一类空转，实测双方各一处）。
-    //
-    // 它为什么该覆盖：`getCount()` 正常不回 NaN，但驱动/聚合/自定义 select 都可能
-    // 回 `NaN`/`Infinity`；而 `NaN` 进 JSON 会被序列化成 `null`，前端再判一次就失效。
-    // 契约是「读不到 ⇒ null + degraded」，不是「把不确定的数字透给 UI 显示」。
-    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
-      mockBackend({
-        lagging: {
-          items: [lagRow()],
-          total: bad,
-          returned: 1,
-          truncated: false,
-          degraded: true,
-        },
-      });
-      const result = await loadInbox();
-      // 关键：不能是 NaN / Infinity，也不能被悄悄换成 0——必须是 null。
-      expect(result.sopBlocked.total).toBeNull();
-      expect(result.sopBlocked.degraded).toBe(true);
-      // 行不能因总数不可读而丢。
-      expect(result.sopBlocked.items).toHaveLength(1);
-      expect(result.sopBlocked.returned).toBe(1);
-      // 总数未知 ⇒ 不许渲染「共 M 条」这种带具体数字的结论。
-      expect(describeSectionCount(result.sopBlocked)).toEqual({ kind: 'unknown', degraded: true });
-    }
-  });
-
-  it('`degraded` 必须**原样透传**服务端值：false 不许被抬成 true', async () => {
-    // 为什么必须有这条（实测出来的空转）：把 loader 里 `degraded: !!res?.degraded`
-    // 改成 `degraded: true`（**恒为降级**）⇒ 本文件原 33 例**全绿**。
-    // 也就是说「服务端说一切正常」这条路径从未被断言过。
-    //
-    // 它为什么严重：`degraded` 是**唯一**区分「数字是事实」与「数字是下界」的标记。
-    // 恒 true ⇒ 每个正常页面都挂一条「计数可能不准」的告警 ⇒ 告警疲劳，真故障时
-    // 没人再看。反之恒 false 会把下界冒充事实。两侧都必须被钉住。
-    //
-    // 顺带钉住 `truncated`：服务端是截断判定的**权威**，不许被本地 `metaOf` 顶替
-    // （`returned=1 / total=7` 时本地也算得出 true，但 `returned=1 / total:null`
-    // 时本地必为 false，而服务端若说是 true 就是 true——后者才是权威差的体现）。
-    mockBackend({
-      lagging: { items: [lagRow()], total: 1, returned: 1, truncated: false, degraded: false },
-    });
-    const healthy = await loadInbox();
-    expect(healthy.sopBlocked.degraded).toBe(false);
-    expect(healthy.sopBlocked.truncated).toBe(false);
-    // 正常态 ⇒ 不该出现「计数不可用」类提示。
-    expect(describeSectionCount(healthy.sopBlocked)).toEqual({ kind: 'total', n: 1, source: 'server' });
-
-    mockBackend({
-      lagging: { items: [lagRow()], total: 7, returned: 1, truncated: true, degraded: true },
-    });
-    const degraded = await loadInbox();
-    expect(degraded.sopBlocked.degraded).toBe(true);
-    expect(degraded.sopBlocked.truncated).toBe(true);
-
-    // ⚠️ 上面那组证明不了「服务端是权威」——`returned=1 / total=7` 让**本地**
-    // `metaOf` 也算出 true，两种实现同结果。要钉住权威性，必须构造一组
-    // **本地与服务端结论相反**的输入：`total:null`（本地必 false）+ 服务端 `truncated:true`。
-    mockBackend({
-      lagging: { items: [lagRow()], total: null, returned: 1, truncated: true, degraded: true },
-    });
-    const authority = await loadInbox();
-    // 服务端说截断了，就信服务端；不许用本地 `metaOf`（`total` 未知 ⇒ false）顶替。
-    expect(authority.sopBlocked.truncated).toBe(true);
-    expect(authority.sopBlocked.total).toBeNull();
-  });
-
-  it('`truncated` 的两侧都有专门断言：true 与 false 各自被独立的输入钉住', async () => {
-    // 为什么单开一条：实测发现「`truncated` 恒 false」这个变异**只被上面那条
-    // `degraded` 用例顺带挡住**（1 红），而它并不是为 `truncated` 写的。
-    // ⇒ 那一侧的覆盖是**副作用**，不是设计——按第 ④ 类判据（有区分力），
-    // 它随时会因别人改夹具而静默失效。
-    // 这一条让两侧各有**专属的、指向自己的**断言。
-    //
-    // false 侧：全取到了（returned === total）⇒ 不许报截断。
-    mockBackend({
-      lagging: { items: [lagRow()], total: 1, returned: 1, truncated: false, degraded: false },
-    });
-    expect((await loadInbox()).sopBlocked.truncated).toBe(false);
-
-    // true 侧：服务端说没取全 ⇒ 必须报截断，且 N/M 来自服务端两个独立数。
-    mockBackend({
-      lagging: { items: [lagRow()], total: 9, returned: 1, truncated: true, degraded: false },
-    });
-    const cut = await loadInbox();
-    expect(cut.sopBlocked.truncated).toBe(true);
-    expect(cut.sopBlocked.total).toBe(9);
-    expect(cut.sopBlocked.returned).toBe(1);
-    expect(describeSectionCount(cut.sopBlocked)).toEqual({ kind: 'truncated', returned: 1, total: 9 });
-  });
-
-  it('`metaOf`（共享函数，7 个入口的共同根）：非有限数一律判读失败', () => {
-    // 为什么钉在**函数级**而不是再加一个入口级用例：
-    // `metaOf` 在 `api/inbox.ts` 有 **7 个调用点**（deployments / agentWaiting×2 /
-    // agentFailures / sopClarifications / sopBlocked / stalled），而上面那条
-    // 「非有限数」用例只从 `sopBlocked` 这一个入口打进去 —— 实测：把
-    // `Number.isFinite` 去掉，整套 inbox 测试只红 **2 条**，且**全部来自同一入口**。
-    // 也就是说「变异会红」不等于「覆盖完整」：红 2 条 / 7 个入口 = 覆盖 2/7。
-    //
-    // 共享函数的契约钉在函数级，1 条用例覆盖 7 个入口的共同根；入口级只需再验证
-    // 「有没有把这个 total 如实透出去」（那部分已有各节用例）。
-    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-      expect(metaOf(1, bad)).toEqual({ total: null, returned: 1, truncated: false });
-    }
-    // 正常值必须原样通过（防「为了让 NaN 变 null 而把整数也吃掉」）。
-    expect(metaOf(1, 7)).toEqual({ total: 7, returned: 1, truncated: true });
-    expect(metaOf(0, 0)).toEqual({ total: 0, returned: 0, truncated: false });
-    // 非数字（缺字段 / null / 字符串）同样判读失败，不是 0。
-    expect(metaOf(1, null)).toEqual({ total: null, returned: 1, truncated: false });
-    expect(metaOf(1, undefined)).toEqual({ total: null, returned: 1, truncated: false });
-    expect(metaOf(1, '7' as unknown as number)).toEqual({ total: null, returned: 1, truncated: false });
-  });
-
   it('`total:null` 时 truncated 必须为 false，且不渲染「共 M 条」（没有 M）', async () => {
     mockBackend({
       lagging: { items: [lagRow()], total: null, returned: 1, truncated: false, degraded: true },
@@ -602,6 +484,94 @@ describe('R286 ④ truncated:true ⇒ 显示「显示前 N 条（共 M 条）」
 });
 
 // ── ⑤ 不进总结（yesterday 的教训：多一个求和项就是错的总数） ─────────────────
+
+describe('R286 状态透传：`total` 归一化 / `degraded` / `truncated` 的契约', () => {
+  // 这一块存在的理由：原来这几条被塞在 `R286 ④ truncated` 的 describe 里，
+  // 于是「`degraded` 恒 true」的变异红在**标题写着 truncated 的块**下 —— 报告读起来
+  // 像是截断出了问题，实际是降级标记。按「红的那条 `it()` 标题描述的是我要保护的
+  // 字段吗」这条判据（第 ⑤a 类：靠副作用保护），分组本身也是归因的一部分。
+  it('非有限数 total（NaN / Infinity）⇒ 判读失败：null + degraded，不透出去', async () => {
+    // 为什么必须有这条：`metaOf` 里有一段
+    //   `typeof rawTotal === 'number' && Number.isFinite(rawTotal) ? rawTotal : null`
+    // **只把 `Number.isFinite` 去掉**（让 NaN/Infinity 透出去）时，本文件原本
+    // **128 例全绿** —— 即那个防御分支从未被喂过非法输入（与 A 那边
+    // 「非有限数 ⇒ 判读失败」守卫是同一类空转，实测双方各一处）。
+    //
+    // 它为什么该覆盖：`getCount()` 正常不回 NaN，但驱动/聚合/自定义 select 都可能
+    // 回 `NaN`/`Infinity`；而 `NaN` 进 JSON 会被序列化成 `null`，前端再判一次就失效。
+    // 契约是「读不到 ⇒ null + degraded」，不是「把不确定的数字透给 UI 显示」。
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      mockBackend({
+        lagging: { items: [lagRow()], total: bad, returned: 1, truncated: false, degraded: true },
+      });
+      const result = await loadInbox();
+      expect(result.sopBlocked.total).toBeNull();
+      expect(result.sopBlocked.degraded).toBe(true);
+      expect(result.sopBlocked.items).toHaveLength(1);
+      expect(describeSectionCount(result.sopBlocked)).toEqual({ kind: 'unknown', degraded: true });
+    }
+  });
+
+  it('`degraded` 必须**原样透传**服务端值：false 不许被抬成 true', async () => {
+    // 实测：把 `degraded: !!res?.degraded` 改成 `degraded: true`（恒降级）⇒ 原 33 例全绿。
+    // `degraded` 是唯一区分「数字是事实」与「数字是下界」的标记：恒 true ⇒ 每页挂
+    // 「计数可能不准」⇒ 告警疲劳；恒 false ⇒ 下界冒充事实。两侧都要钉。
+    mockBackend({
+      lagging: { items: [lagRow()], total: 1, returned: 1, truncated: false, degraded: false },
+    });
+    const healthy = await loadInbox();
+    expect(healthy.sopBlocked.degraded).toBe(false);
+    expect(describeSectionCount(healthy.sopBlocked)).toEqual({ kind: 'total', n: 1, source: 'server' });
+
+    mockBackend({
+      lagging: { items: [lagRow()], total: 7, returned: 1, truncated: true, degraded: true },
+    });
+    expect((await loadInbox()).sopBlocked.degraded).toBe(true);
+  });
+
+  it('`truncated` 的服务端权威：本地与服务端结论相反时，信服务端', async () => {
+    // 第一版这条用例用的是 `returned=1 / total=7` ⇒ **无区分力**：
+    // 本地 `metaOf` 也算出 true，删掉服务端值照样绿。
+    // 必须构造两实现结论相反的输入：`total:null`（本地必 false）+ 服务端 true。
+    mockBackend({
+      lagging: { items: [lagRow()], total: null, returned: 1, truncated: true, degraded: true },
+    });
+    const authority = await loadInbox();
+    expect(authority.sopBlocked.truncated).toBe(true);
+    expect(authority.sopBlocked.total).toBeNull();
+  });
+
+  it('`truncated` 的两侧都有专门断言：true 与 false 各自被独立的输入钉住', async () => {
+    // 实测：`truncated` 恒 `false` 这个变异曾**只被 `degraded` 用例顺带挡住**（1 红），
+    // 而那条不是为 `truncated` 写的 ⇒ 靠副作用保护（第 ⑤a 类）。
+    mockBackend({
+      lagging: { items: [lagRow()], total: 1, returned: 1, truncated: false, degraded: false },
+    });
+    expect((await loadInbox()).sopBlocked.truncated).toBe(false);
+
+    mockBackend({
+      lagging: { items: [lagRow()], total: 9, returned: 1, truncated: true, degraded: false },
+    });
+    const cut = await loadInbox();
+    expect(cut.sopBlocked.truncated).toBe(true);
+    expect(cut.sopBlocked.total).toBe(9);
+    expect(cut.sopBlocked.returned).toBe(1);
+    expect(describeSectionCount(cut.sopBlocked)).toEqual({ kind: 'truncated', returned: 1, total: 9 });
+  });
+
+  it('`metaOf`（共享函数，7 个入口的共同根）：非有限数一律判读失败', () => {
+    // `metaOf` 在 `api/inbox.ts` 有 7 个调用点；入口级用例只覆盖其中 1 个
+    // （实测：去掉 `Number.isFinite` 只红 2 条且同源）。共享函数的契约钉在函数级。
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(metaOf(1, bad)).toEqual({ total: null, returned: 1, truncated: false });
+    }
+    expect(metaOf(1, 7)).toEqual({ total: 7, returned: 1, truncated: true });
+    expect(metaOf(0, 0)).toEqual({ total: 0, returned: 0, truncated: false });
+    expect(metaOf(1, null)).toEqual({ total: null, returned: 1, truncated: false });
+    expect(metaOf(1, undefined)).toEqual({ total: null, returned: 1, truncated: false });
+    expect(metaOf(1, '7' as unknown as number)).toEqual({ total: null, returned: 1, truncated: false });
+  });
+});
 
 describe('R286 ⑤ 阻塞工单**不**进入会话求和，但独立可显示', () => {
   it('summarizeInboxCounts 不含 sopBlocked：去重单位是「一张指派单」', () => {
