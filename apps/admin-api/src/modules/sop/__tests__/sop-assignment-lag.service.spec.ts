@@ -305,6 +305,36 @@ describe("R286 · 滞留 blocked 口径（GET /sop/assignments/lagging）", () =
     expect(res.truncated).toBe(false);
   });
 
+  /**
+   * ④c **非有限数**的 `total` 必须按「读失败」处理（`null` + `degraded`）。
+   *
+   * ## 这条用例是怎么来的（别删）
+   *
+   * R286 收尾时按前端切片的建议做**变异测试**：把 `read()` 里那条
+   * `typeof value === "number" && !Number.isFinite(value)` 守卫改成 `if (false)`，
+   * **28 条用例全绿** —— 即该守卫当时**没有被任何用例覆盖**，是空转的。
+   *
+   * 它为什么重要：`getCount()` 正常不会回 NaN，但**驱动/聚合/自定义 select 都可能**
+   * 让它回 `NaN`（例如 `COUNT` 走除法、或上游给了非法参数）。而 `NaN` 一旦进 JSON
+   * 响应体会被序列化成 `null` 或直接让前端 `Number.isFinite` 判断失效 ——
+   * 本仓的契约是「读不到 ⇒ `null` + `degraded`」，不是「把 NaN 透出去」。
+   */
+  it("④c total 是非有限数（NaN/Infinity）⇒ 按读失败处理：null + degraded（不透出去）", async () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const h = harness({
+        assignments: [asg({ updatedAt: new Date(NOW - 30 * HOUR) })],
+        total: bad,
+      });
+      const res = await h.svc.lagging({ hours: 24, now: NOW });
+
+      expect(res.total).toBeNull();
+      expect(res.degraded).toBe(true);
+      expect(res.truncated).toBe(false);
+      // 行本身没失败 ⇒ 仍返回（部分可用）。
+      expect(res.returned).toBe(1);
+    }
+  });
+
   it("④b items 抛错 ⇒ items 空 + degraded，但 total 仍是真数（不连坐）", async () => {
     const h = harness({
       assignments: [asg({ updatedAt: new Date(NOW - 30 * HOUR) })],

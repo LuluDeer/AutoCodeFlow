@@ -365,12 +365,29 @@ describe('R286 ③ 行渲染：SOP 名 + 第 N 轮 + 已阻塞 X 小时', () => 
     expect(row.queryByRole('button', { name: /批准|拒绝|接管/ })).toBeNull();
   });
 
-  it('`sopName: null` ⇒ 显示「（未命名 SOP）」，**绝不退回 uuid**', async () => {
-    vi.mocked(loadInbox).mockResolvedValue(
-      sections(ready('sopBlocked', [blockedItem({}, { sopName: null })], { total: 1, returned: 1 })),
-    );
-    renderPage();
+  it('`sopName: null` ⇒ 显示「（未命名 SOP）」，**绝不退回 uuid**（端到端：真 loader）', async () => {
+    // ⚠️ 这条**必须**从 HTTP 原始响应走一遍。原因是我实测出来的：
+    // 若只 mock `loadInbox` 的返回值（下面那条用例），loader 里的
+    // `row.sopName ?? row.sopId` 这种「退回 uuid」的改法**根本不会被执行**，
+    // 用例照样全绿——即断言存在但不可证伪（空转）。
+    // 实测：把 loader 改成 `title: row.sopName ?? row.sopId` ⇒ 本用例红、那条不红。
+    mockBackend({
+      lagging: {
+        items: [lagRow({ sopName: null })],
+        total: 1,
+        returned: 1,
+        truncated: false,
+        degraded: false,
+      },
+    });
+    const result = await loadInbox();
+    // 契约：`sopName: null` ⇒ loader 的 title 必须是**空串**（交给页面渲染占位），
+    // 绝不能是 uuid。这一层先钉住，防止页面层「渲染得对」掩盖 loader 已退回 uuid。
+    expect(result.sopBlocked.items[0].title).toBe('');
+    expect(result.sopBlocked.items[0].title).not.toContain(SOP_UUID);
 
+    vi.mocked(loadInbox).mockResolvedValue(sections(result.sopBlocked));
+    renderPage();
     const row = within(await screen.findByTestId('inbox-row-sopBlocked'));
     expect(row.getByText('（未命名 SOP）')).toBeTruthy();
     // uuid 不是给人看的标题：整行任何位置都不该出现 SOP uuid / assignment uuid。
