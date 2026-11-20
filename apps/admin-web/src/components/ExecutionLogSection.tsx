@@ -30,6 +30,10 @@ import { LOG_LEVEL_VALUES, logLineHighlightClass, jsonLineTokens } from '../util
 import type { JsonToken } from '../utils/logLevel';
 // UI-05: 搜索高亮分段（纯函数）+ 防抖常量
 import { buildLogSearchSegments, LOG_SEARCH_DEBOUNCE_MS } from '../utils/log-search';
+// R284-LOGPURGE-01：空日志区三态判定（已清理 / 真没输出 / 无法判定）
+import { useEmptyLogsVerdict } from '../hooks/useEmptyLogsVerdict';
+// R284-LOGPURGE-01：三态空态卡片（三条文案的唯一出口，见其头注）
+import EmptyLogsAlert from './EmptyLogsAlert';
 // UI-05: 失败定位映射（语义镜像 mcp FAILURE_RUNBOOK，BUG-10 分类 + 解释器不可用）
 import { failureRunbookAction, FAILURE_CARD_STATUSES } from '../pages/failure-runbook';
 // LOG-WIN-01：大日志窗口化渲染组件（零依赖虚拟滚动，见组件头注释）
@@ -394,6 +398,8 @@ export default function ExecutionLogSection({
   );
 
   const displayLogs = filteredLogs ?? fullLogs ?? rawLogs;
+  // R284-LOGPURGE-01：空日志区三态判定（判定逻辑与触发条件见 hook 头注）。
+  const emptyLogsVerdict = useEmptyLogsVerdict({ taskId, execId, status: data?.status, displayLogs });
 
   // LOG-WIN-01：行数超过阈值即切换 LogWindow 窗口化渲染（见组件头注释）。
   // 行数从 displayLogs 派生——SSE 流式追加时随 text 变化自动在两态间切换。
@@ -780,6 +786,7 @@ export default function ExecutionLogSection({
             style={{ marginBottom: 12 }}
           />
         )}
+        <EmptyLogsAlert verdict={emptyLogsVerdict} t={t} />
         {activeKeyword && displayLogs && !displayLogs.includes(activeKeyword) && (
           <Alert
             type="info"

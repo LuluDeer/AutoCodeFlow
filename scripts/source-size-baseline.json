@@ -681,10 +681,10 @@
     "apps/admin-api/src/modules/task/task.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 2929,
-      "why": "R125 广播释放依赖改为必填（漏接线变 TS2345 而非静默 no-op，+3）；回滚值 2860。 | **2026-11-15 本轮重签（+62 非注释行）**：P1-1 列表行批量回填最近一次真实执行摘要 lastExecution（8ccf6c42：响应 DTO 补 lastExecution 字段 + 服务层按任务 id 批量查询最近执行摘要，是前端任务列表「上次执行结果/耗时/深链」的数据来源）；P1-2 项目上下文过滤（878812db）另带 2 行查询条件。ceiling.nonCommentLines 2863→2925，函数体 316、exports 16 未变，密度 20.9 较基线 21 净降。 | **2026-11-16 P2-2 重签（+4 非注释行）**：执行列表/导出两路共享的过滤器入参类型补 runtime/triggerType 两个字段透传（谓词在 collaborator 唯一真值源，本文件仅接线）；ceiling.nonCommentLines 2925→2929，函数体 316、exports 16 未变，密度 20.9→21.0（分母变小的被动上升，判定点数未增）。 【R283 重签：branchDensity 21 → 21.1】新增 triggerType 过滤必须在两条装配路径各判一次（buildTaskListWhere 的对象形态 + findAllByLastStatus 的手写 qb 链），二者无法共用同一判断——该分支刻意不复用 buildTaskListWhere（其注释已写明），否则 lastStatus 与 triggerType 组合会静默丢失过滤。这是**受控的逻辑新增**（1 条等值过滤），不是体量失控；分桶密度分母（函数总数）未变。",
+      "maxLines": 2930,
+      "why": "R125 广播释放依赖改为必填（漏接线变 TS2345 而非静默 no-op，+3）；回滚值 2860。 | **2026-11-15 本轮重签（+62 非注释行）**：P1-1 列表行批量回填最近一次真实执行摘要 lastExecution（8ccf6c42：响应 DTO 补 lastExecution 字段 + 服务层按任务 id 批量查询最近执行摘要，是前端任务列表「上次执行结果/耗时/深链」的数据来源）；P1-2 项目上下文过滤（878812db）另带 2 行查询条件。ceiling.nonCommentLines 2863→2925，函数体 316、exports 16 未变，密度 20.9 较基线 21 净降。 | **2026-11-16 P2-2 重签（+4 非注释行）**：执行列表/导出两路共享的过滤器入参类型补 runtime/triggerType 两个字段透传（谓词在 collaborator 唯一真值源，本文件仅接线）；ceiling.nonCommentLines 2925→2929，函数体 316、exports 16 未变，密度 20.9→21.0（分母变小的被动上升，判定点数未增）。 【R283 重签：branchDensity 21 → 21.1】新增 triggerType 过滤必须在两条装配路径各判一次（buildTaskListWhere 的对象形态 + findAllByLastStatus 的手写 qb 链），二者无法共用同一判断——该分支刻意不复用 buildTaskListWhere（其注释已写明），否则 lastStatus 与 triggerType 组合会静默丢失过滤。这是**受控的逻辑新增**（1 条等值过滤），不是体量失控；分桶密度分母（函数总数）未变。 | **2026-11-20 R284-LOGPURGE-01 重签（+1 非注释行）**：日志 30 天 vs 执行 90 天 ⇒ 31~90 天前的执行详情日志区是空的，而此前唯一文案讲「切日志级别」，用户读成「没输出」并写「没有证据」（真相是证据已被策略删除）。本文件只做**依赖接线**：1 行 import（SystemConfigService）+ 2 行注入属性 + 1 行 @Optional 置尾构造器参数；所有权重（三态判定/回落链/文档）都下沉到 execution-log-read.collaborator.ts（净增 179 行在那个文件，不在基线里）。已实测把这两行压成单行会被 eslint --fix 拆回，注释内联后净增**恰为 1 行**（+5 → +1，其余被同期删除的行抵消）——这 1 行是无替代的 DI 接线。functionLines/ctorParams/exports/density 未变。",
       "ceiling": {
-        "nonCommentLines": 2929,
+        "nonCommentLines": 2930,
         "functionLines": 316,
         "ctorParams": 0,
         "exports": 16,

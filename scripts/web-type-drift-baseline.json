@@ -522,11 +522,6 @@
       "review_by": "2026-12-15"
     },
     {
-      "key": "apps/admin-web/src/api/tasks.ts\tExecutionLogsPage",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
       "key": "apps/admin-web/src/api/tasks.ts\tMaintenanceWindow",
       "owner": "arch-core",
       "review_by": "2026-12-15"

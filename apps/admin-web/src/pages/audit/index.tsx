@@ -149,7 +149,7 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'member.revoke': 'audit.action.member_revoke',
   'notification.channel.update': 'audit.action.notification_channel_update',
   'notification.silence.create': 'audit.action.notification_silence_create',
-  'notification.silence.delete': 'audit.action.notification_silence_delete',
+  'notification.silence.delete': 'audit.action.notification_silence_delete', 'notification.silenced': 'audit.action.notification_silenced',
   'registry.pypi.upload': 'audit.action.registry_pypi_upload',
   'registry.npm.list': 'audit.action.registry_npm_list',
   'subscription.create': 'audit.action.subscription_create',

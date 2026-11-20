@@ -880,6 +880,7 @@ export default {
   'audit.action.notification_channel_update': '更新通知渠道',
   'audit.action.notification_silence_create': '创建静默规则',
   'audit.action.notification_silence_delete': '删除静默规则',
+  'audit.action.notification_silenced': '静默吞掉告警',
   'audit.action.registry_pypi_upload': '上传 PyPI 包',
   'audit.action.registry_npm_list': '读取 npm 包列表失败',
   'audit.action.subscription_create': '创建事件订阅',
@@ -2709,6 +2710,20 @@ export default {
   'execDetail.log.noLevelLogs': '无 {{level}} 级别日志',
   'execDetail.log.noLevelLogsDesc': '当前执行未匹配到该级别的日志行，切换为全部级别可查看完整日志。',
   'execDetail.log.noSearchHit': '未找到匹配「{{keyword}}」的日志内容',
+  // R284-LOGPURGE-01：空日志区的**三态**文案，互不替代。此前只有「切日志级别」
+  // 一条，于是「已按保留期清理」与「这次执行真没输出」显示成同一句话——复盘时
+  // 会被写成「没有证据」，而真相是证据已按策略删除。
+  // 三态判据由后端 logsPurged 给出（true/false/null），前端不自行按时间推。
+  'execDetail.log.purgedTitle': '日志已被保留期清理',
+  'execDetail.log.purgedDesc':
+    '本次执行的日志行已按日志保留期策略删除（默认 30 天）；执行记录本身保留更久，所以这条执行还在、日志已不在。清理截止时刻：{{at}}。这不是「采集失败」，也不是「本次没有输出」——如需长期留存请调整日志保留期配置。',
+  'execDetail.log.purgedAtUnknown': '未知',
+  'execDetail.log.emptyTitle': '本次执行没有输出日志',
+  'execDetail.log.emptyDesc':
+    '这条执行确实没有产生任何日志行（例如任务立即失败、在派发前被终止，或本来就静默运行）。它与「日志已被保留期清理」是两件事——此处不是证据被删除。',
+  'execDetail.log.unknownTitle': '日志为空，但无法判定原因',
+  'execDetail.log.unknownDesc':
+    '未能从服务端取得「是否已按保留期清理」的判定（保留期配置不可读、接口不返回该字段，或本次读取失败）。请勿据此判定「本次执行没有输出」——先刷新重试。',
   // F-4（UIUX 审计 P2-3）：stick-to-bottom 上翻后的「回到底部」浮钮
   'execDetail.log.backToBottom': '回到底部',
   // LOG-JSON-01：日志行内 JSON 载荷的「展开看美化」浮层文案

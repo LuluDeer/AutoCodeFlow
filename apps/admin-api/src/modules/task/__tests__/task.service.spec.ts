@@ -7985,10 +7985,13 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
     expect(logLineRepo.count).toHaveBeenCalledWith({
       where: expect.objectContaining({ executionId: "exec-1" }),
     });
+    // R284-LOGPURGE-01：响应多带 logsPurged/logsPurgedAt（有行 ⇒ false/null）。
     expect(result).toEqual({
       lines: ["line0"],
       totalLines: 5,
       hasMore: true,
+      logsPurged: false,
+      logsPurgedAt: null,
     });
   });
 
@@ -8012,10 +8015,14 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
     expect(logLineRepo.count).toHaveBeenCalledWith({
       where: expect.objectContaining({ executionId: "exec-1", level: "ERROR" }),
     });
+    // R284-LOGPURGE-01：响应多带 logsPurged/logsPurgedAt（有行 ⇒ false/null），
+    // 分页三字段语义不变。
     expect(result).toEqual({
       lines: ["[ERROR] boom"],
       totalLines: 9,
       hasMore: true, // fromLine(2) + 1 < 9
+      logsPurged: false,
+      logsPurgedAt: null,
     });
   });
 

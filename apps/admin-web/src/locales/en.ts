@@ -871,6 +871,7 @@ export default {
   'audit.action.notification_channel_update': 'Update notification channel',
   'audit.action.notification_silence_create': 'Create silence rule',
   'audit.action.notification_silence_delete': 'Delete silence rule',
+  'audit.action.notification_silenced': 'Alert suppressed by silence rule',
   'audit.action.registry_pypi_upload': 'Upload PyPI package',
   'audit.action.registry_npm_list': 'npm package list read failed',
   'audit.action.subscription_create': 'Create event subscription',
@@ -2707,6 +2708,18 @@ export default {
   'execDetail.log.loadFull': 'Load full logs',
   'execDetail.log.noLevelLogs': 'No {{level}} logs',
   'execDetail.log.noLevelLogsDesc': 'The current execution has no log lines at this level; switch to All levels to view the full logs.',
+  // R284-LOGPURGE-01: three-state empty-state copy — they are NOT interchangeable
+  // (previously one sentence covered both "purged by retention" and "no output").
+  'execDetail.log.purgedTitle': 'Logs purged by retention policy',
+  'execDetail.log.purgedDesc':
+    'The log lines for this execution were deleted by the log retention policy (30 days by default); the execution row itself is kept longer, so the execution is still here while its logs are gone. Purge cutoff: {{at}}. This is neither a collection failure nor "nothing was printed" — adjust the log retention setting if you need longer history.',
+  'execDetail.log.purgedAtUnknown': 'unknown',
+  'execDetail.log.emptyTitle': 'This execution produced no log output',
+  'execDetail.log.emptyDesc':
+    'This execution genuinely produced no log lines (for example it failed immediately, was stopped before dispatch, or simply ran silently). That is a different fact from "logs purged by retention policy" — the evidence was not deleted here.',
+  'execDetail.log.unknownTitle': 'Logs are empty, but the reason is unknown',
+  'execDetail.log.unknownDesc':
+    'The server did not report whether the logs were purged by the retention policy (retention setting unreadable, the endpoint does not return that field, or this read failed). Do not conclude "this execution printed nothing" from this — refresh and retry first.',
   'execDetail.log.noSearchHit': 'No log content matching "{{keyword}}"',
   // F-4 (UIUX audit P2-3): "back to bottom" floating button after scrolling up
   'execDetail.log.backToBottom': 'Back to bottom',

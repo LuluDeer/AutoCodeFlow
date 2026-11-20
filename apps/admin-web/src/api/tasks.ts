@@ -491,11 +491,26 @@ export const TASK_LIST_MAX_PAGES = 20;
  * U2: GET /tasks/:id/executions/:execId/logs 响应形状
  * （task.service.ts getExecutionLogs：按行分页，limit 后端上限 2000）。
  */
-export interface ExecutionLogsPage {
-  lines: string[];
-  totalLines: number;
-  hasMore: boolean;
-}
+export type ExecutionLogsPage = components['schemas']['ExecutionLogsPageResponseDto'] & {
+  /**
+   * R284-LOGPURGE-01：日志是否**已被保留期清理**（日志行留 logRetention.days，
+   * 默认 30 天；执行行留 90 天 ⇒ 31~90 天前的执行详情日志区是空的）。
+   *
+   * 三态，**不可互相替代**（R278 的 null≠0 纪律）：
+   *   · `true`  = 已按策略清理（配 logsPurgedAt 给出截止时刻）；
+   *   · `false` = 日志为空/存在，但不是清理造成的（**真没输出**）；
+   *   · `null`/`undefined` = **未知**（旧后端、保留期不可读、请求失败）。
+   * 消费方必须把「未知」渲染成第三种文案，不许并入上面任一种。
+   *
+   * 为什么这两个字段**手写在交叉类型里**而不是直接等生成物：本轮硬约束
+   * 是不跑 `gen:api-types`（生成链由主会话统一收），而后端 DTO 已先行带上
+   * 它们 ⇒ 生成物要下一轮才追平。派生 + 局部叠加让类型**现在**就可用，
+   * 且不伪造合同（生成物一旦追平，这两个字段与生成侧逐字相同，无需改动）。
+   */
+  logsPurged?: boolean | null;
+  /** 清理截止时刻（ISO）；仅 `logsPurged === true` 时非 null。 */
+  logsPurgedAt?: string | null;
+};
 
 /**
  * `GET /tasks` 的请求配置——**游标三态的唯一落点**。

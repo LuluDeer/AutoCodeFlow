@@ -110,6 +110,8 @@ import { ExecutionLog } from "./execution-log.collaborator";
 import { TaskVersioning } from "./task-version.collaborator";
 // T2-B4 收尾刀：执行日志读面协作者（分页 / SSE / AI 分析）。
 import { ExecutionLogRead } from "./execution-log-read.collaborator";
+// R284-LOGPURGE-01：日志保留期配置服务（@Optional + 置尾 ⇒ 既有 11 处位置装配不错位）
+import { SystemConfigService } from "../config/config.service";
 // A6b：与调度器同源的「下一个 cron 落点」计算（登记侧与消费侧共用同一实现）
 import { computeNextCronFirePoint } from "./fire-point.util";
 // T2-B4 收尾：23505 判据与约束名读取的**唯一事实源**（收尾前有三份副本，
@@ -676,6 +678,8 @@ export class TaskService implements OnModuleInit {
         // AUTH 守卫留 Facade。
         assertCanWriteExecution: (execution, user) =>
           this.assertCanWriteExecution(execution, user),
+        configService: this.configService,
+        systemConfig: this.taskModuleSystemConfig ?? null,
       });
     }
     return this.executionLogReadCollaborator;
@@ -1193,6 +1197,8 @@ export class TaskService implements OnModuleInit {
     @Optional()
     @InjectRepository(ExecutionArtifactRow)
     private readonly artifactIndexRepo?: Repository<ExecutionArtifactRow> | null,
+    @Optional()
+    private readonly taskModuleSystemConfig?: SystemConfigService | null,
   ) {
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional 依赖缺失时降级不可观测——
     // 事件总线/审计静默缺失会让终态事件不发、依赖触发审计不写。生产装配下这些
