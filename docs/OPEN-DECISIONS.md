@@ -1,6 +1,6 @@
 # 待决策清单（OPEN DECISIONS）
 
-> **受众**：需要拍板的产品/技术负责人 · **状态**：内部 · **最后核对**：2026-11-19
+> **受众**：需要拍板的产品/技术负责人 · **状态**：内部 · **最后核对**：2026-11-21
 > 本文件只放**需要人拍板**的事，不放已完成的工作（那些在 `PLAN-CLAIMS.md` 的按轮记录里）。
 > 每条都带**证据出处**与**两个选项的代价** —— 目的是让决策可以在 5 分钟内做完，而不需要重读整本板子。
 >
@@ -27,8 +27,8 @@
 - **代价**：① 一条发布流水线 + 版本线决策（实测只差一个 publish job，见上「现象」）；② 丢掉 `R134-A1` 那批已写好的回归用例，且已打过 8 个 tag；③ 需要一次人去拍板 + 一次 README 标注，但对外承诺维持「不发布」的现状。
 - **守卫**：`check-publishable-wiring.mjs` 已把这条**钉成红灯风险**（新增第五个这样的包会立刻红）。
 
-### A3. `acf-cli` 破坏性命令的确认门：已收口 4 类 / 仍无门 3 条
-- **本轮处置（2026-11-19，R278）：不做。** 理由：`executor offline` 是自愈的（心跳无条件写回 `ONLINE`，最迟 30s 恢复，见下 `D7-2`），给它加门是把「误操作代价」与「多敲一个参数的成本」搞反；`task rollback` 每次写都落版本快照、可再回滚。`deploy stop` 虽有不对称（同文件 rotate 有门），但本轮写域只覆盖 CLI 输出层与文档，**不加命令级行为变更**——它单列一条待办：加 `-y/--yes` + `confirmDestructive`（`packages/acf-cli/src/commands/deploy.ts` 的 `stop` 分支），随下个 CLI 批次走。
+### A3. `acf-cli` 破坏性命令的确认门：已收口 5 类 / 维持不加门 2 条 — **已结案（2026-11-21，R289）**
+- **本轮收口（2026-11-21，R289，`1fb7d6f9`）**：`acf deploy stop <deploymentId>` 已补 `-y, --yes` + `confirmDestructive`（`packages/acf-cli/src/commands/deploy.ts`，位于 `ora().start()` 与 `post()` 之前）：非 TTY 且缺 `--yes` ⇒ 退出码 2（`EXIT_CODES.USAGE`）且 0 HTTP 请求；TTY 输 `n`/空回车 ⇒ `Aborted.` + 退出码 0 + 0 请求；与同文件 `remove` 及 `executor rotate` 完全对称。其余两条（`executor offline` 30s 心跳自愈、`task rollback` 落版本快照可再回滚）维持不加门，整条结案。
 - **已收口（R192-A1，均已加 `-y/--yes`）**：`task kill`（`packages/acf-cli/src/commands/tasks.ts:870`）、`task webhook enable·rotate·disable`（同文件 `:905` 选项，`:917-925` 只对非 `status` 动作询问）、`apikey revoke`（`packages/acf-cli/src/commands/apikeys.ts:115`）。语义统一：非 TTY 且缺 `--yes` ⇒ 退出码 2（`EXIT_CODES.USAGE`，见 `packages/acf-cli/src/ui.ts:29`/`:176-187`）且请求不发出。
 - **仍无门的 3 条（按后果分别判定，分级而非一刀切）**：
   - `task rollback`（`tasks.ts:510-522`）：每次写入都落版本快照、可再回滚（R192-A1 已判定不加门）。
@@ -95,9 +95,9 @@
 | Slack / Feishu **path 型凭据**日志不掩（掩 path 会破坏「掩码回传保存」） | 有意保留 | R150-A1 |
 | node `isNetworkLevelError` 白名单可能漏 `EPIPE` 类 | **未实测**（需真 socket 半关） | R177-A1 遗留 4 |
 
-### C1. 审批单 `preview` 的两条残余（S1-C3 落地时由实施方自析，2026-11-01）
+### C1. 审批单 `preview` 的两条残余（S1-C3 落地时由实施方自析，2026-11-01）— **残余①已由值级脱敏防线收口（2026-11-21，R289，`1fb7d6f9`）**
 
-**本轮处置（2026-11-19，R278）：不做。** 理由：本条落在 `apps/admin-api` 的脱敏层，而本轮 `apps/admin-api/**` 已被待办收件箱（S1 后端聚合）切片占用、写域互斥；且**实测已知漏网**（PEM 私钥头、无键名短 JWT 在 200 字符内原样落库）的修法（值级熵检测规则 + selftest 夹具）属**独立一批**。重开条件①（「出现值级熵检测的低成本方案」）已经成立，动作已写好（见下「重开时的动作建议」），只差一个不与之冲突的批次。
+**本轮收口（2026-11-21，R289，`1fb7d6f9`）**：重开条件①（「值级熵检测与格式特征的低成本单点方案」）已落地 `apps/admin-api/src/common/utils/sanitize-secrets.util.ts`（并同步 `scripts/check-sanitize-parity.mjs` 25 夹具 / 15 自检）：封堵无害键名（`note`/`url`/`body` ≤200 字及 `executableSourceFields` 480 字代码头）下的 ① PEM 私钥（多行 / JSON 转义 `\n` / 未闭合截断保尾，不误伤 `BEGIN CERTIFICATE`）、② 裸 JWT（`ey[A-Za-z0-9_-]{4,}\.ey...`）、③ 缺口供应商前缀（`github_pat_`/`AKIA`/`ASIA`/`xox*`/`glpat-`/Stripe/`AIza`/`npm_`/`hf_`）、④ 空用户名 URL 凭据（`redis://:pass@host`）、⑤ `Authorization: Basic` 先行序、⑥ 词元级 Shannon 高熵通道 A/B（`preserveDigests` 短路居首，扫 168 份 `.spec.ts` 零误伤，二次幂等）。残余②（≥180 天留存期长于 `tool_calls`）在 ADMIN 读面 + 值级脱敏双重保护下维持已接受状态。
 
 **背景**：S1-C3 给 `agent_approvals` 加了 `preview`（脱敏后的调用参数预览，≤2KB，带 `truncated`/`omittedBytes`），
 目的是让审批人不再「盲批」。但 preview 是一次**新的持久化留存**，实施方自析出两条残余：

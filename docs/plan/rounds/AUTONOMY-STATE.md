@@ -1,82 +1,38 @@
-# AUTONOMY-STATE — 状态卡（R286–R288 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R289 收尾交接版 · ≤50 行）
 
-**基线**：`7b4e5999`～`6ce165b4` · 本轮 **13 个提交**（R286–R288）· **守卫链 122 段，122/122 = exit 0**
-**轮次特征**：首次真跑「多 agent 并行 + **直连对话**」→ 14 轮互相纠正，**其中 3 次纠正的是主会话自己的结论**。
+**基线**：`bda8c9ce`～`bbd3e0ae` · 本轮 **4 个提交**（R289）· **守卫链 123 段，123/123 = exit 0**
+**轮次特征**：PM 编排 4 Agent（`be-sop` / `fe-sop` / `sec-cli` / `qa-auditor`）四阶段看板流水线，跨角色拦截 5 处高危缺陷并达 **级别 4b 真机浏览器终验**。
 
-## 已交付（用户可见面）
+## 已交付（用户可见面，R289）
 
 | 项 | 一句话 |
 |---|---|
-| `maxRounds` 触顶工单 | 原先**永远停在 `blocked` 且无兜底**（超时扫描只取 `assigned\|in_progress`）。新增只读 `GET /sop/assignments/lagging` + 收件箱第十节；**未改状态机**（改回去会让「等人工」信号消失） |
-| 7 日面板「其他」 | 原把「全是超时」藏进「其他」。改「加字段不合并桶」（`timedOut` 独立）；`failed` 保持单桶是**刻意**的 |
-| `web-flake` 根因 | **等 `inbox-page` = 没等**（shell 容器 loading 期已存在）。改等终态文案 ⇒ 连跑 **21 轮 128/128** |
-| query 参数 `required` | 162 个里 36 个标必填而多数可选。**三分类守卫**（真必填 6/可选 30）+ **强制回收路径** ⇒ 欠账 36→29 |
+| `blocked` 工单单条可处置 | 新增 `POST /api/sop/assignments/:assignmentId/cancel`（可选 `reason<=500`）+ `/inbox` 阻塞/澄清深链直达 `/sops?sop=<id>&assignment=<aid>` 高亮目标行与澄清 → 二次确认单条取消 → 衔接重派（**不误杀同 SOP 兄弟工单**） |
+| 取消后防复活 CAS + 拒答 | 内联修 `sop.service.ts:714`（`pollPending`）与 `:1046`（`ingestClarification`）缺 `status` 谓词的并发复活漏洞；`humanReply` 拦 `cancelled\|completed`、放行 `failed` |
+| 审批预览值级脱敏（C1） | `sanitize-secrets.util.ts` 单点补 PEM（多行/转义 `\n`/未闭合保尾）、裸 JWT、供应商前缀、`redis://:pass@host` 空用户名、`Authorization: Basic` 先行序与词元级高熵通道 A/B（扫 168 份 spec 零误伤） |
+| CLI `deploy stop` 确认门（A3） | `acf deploy stop` 补 `-y/--yes` + `confirmDestructive`（非 TTY 缺 `--yes` 返码 2 且 0 请求），收口 `OPEN-DECISIONS.md` A3 |
+| 529 弱等待清扫（#2） | `settings.ai-providers-load-error.test.tsx` 改等终态文案 `findByText('按用途选用模型')` + deferred Promise 钉死在途骨架帧，连跑 5 轮 20/20 零偶发 |
 
-## 验证（真实 exit）
+## 验证（真实 exit · 按 AGENTS.md §4.4 定级）
 
-守卫链 **122/122 = 0**；SOP 域 **336 例**；前端 inbox 组 **128/128（连跑 21 轮）**；
-反证全亲验：`status→in_progress` ⇒ 16 红 · `total ?? 0` ⇒ 2 红 · 删 `@ApiQuery` ⇒ 1 红并点名行号。
+- **级别 4b（真浏览器+真后端+真 PG/Redis）**：`level4b-sop-cancel-e2e.mjs` **7/7 Steps = 0**（A 取消、兄弟单 B 保持 `blocked`、`audit_logs` 三类凭据全脱敏、`/inbox` 双节 `2→1`）。
+- **级别 3（真 PG/Redis+真 Nest）**：`sop-assignment-cancel.integration.spec.ts` **4/4 = 0**（含 `Promise.all` 行锁并发双取消 1 胜 200 / 1 败 400）。
+- **级别 2 & 守卫**：SOP 后端 **24 套 415 例** · C1 **51/51** · CLI **16 套 466 例** · 前端相关 **13 套 149 例** · `openapi-response-schema` 上探 **251→252** · 守卫链 **123/123 = 0** · 11 组反证 `matched/total = 1.0` 且 `check:mutation-residue = 0`。
 
 ## 未结项（如实，勿当缺陷）
 
-- **23 条 `runtime-optional` 欠账**（owner `arch-core`，`reviewBy 2027-03-31`）：修法逐条加
-  `@ApiQuery({required:false})` 再统一重导出。
-- `settings.ai-providers-load-error` **1 例全量偶发**（单跑必绿），同类弱等待，**未猜测着改**。
-- `blocked` 工单**只是可见**，**仍需人工处置**（不自动解除是 brief 裁决）。
-- `LAG_ROW_LIMIT=200` 为常量、不暴露 `limit`；超 200 条翻页需扩契约。
-- **`git blame` 归因不可用**（多切片合并提交）⇒ 查归属用**认领板 + `git show` 正文**。
+- **23 条 `runtime-optional` query 欠账**（`scripts/query-param-required-allowlist.json`，跨 7 个 controller，`reviewBy 2027-03-31`）：本轮为保写域聚焦未并入。
+- `apps/admin-web/e2e/agent-session-journey.spec.ts:145` 离线夹具未登记 R278/R280/R286 新增的 4 条顶栏/收件箱轮询路由（存量夹具漂移，非本轮引入）。
+- 在途 `sop_review` Agent 直调 `SopService.replyClarification` 与取消含 `resolution IS NULL` 澄清单的 `sweepStuckClarifications` 通知属已知残余（不动 `sop.service.ts` 1708 顶格逻辑）。
 
 ## 下轮第一步（按价值排序，取 1 条）
 
-1. **`blocked` 从「可见」推进到「可处置」**（本端点下一步）。
-2. 按 529 判据清扫其余弱等待断言（`settings.ai-providers-load-error` 是已知一例）。
-3. 23 条 query 欠账批量补 `@ApiQuery` 后统一重导出。
+1. **批量收口 23 条 `runtime-optional` query 欠账**（7 个 controller 补 `@ApiQuery({required:false})` + OpenAPI 五步重导出 + 回收 allowlist）。
+2. 补齐 `apps/admin-web/e2e/agent-session-journey.spec.ts` 离线夹具的 4 条收件箱/顶栏 mock 路由，恢复 `test:e2e:agent` 4/4 全绿。
+3. 推进 `AGENT_HANDOFF.md:460` 直接 API 客户端在 Agent 会话 `running` 态处理新审批单的竞态验证。
 
-## 方法学（本轮 528–533，全文见 `PLAN-CLAIMS` / `AGENT_HANDOFF`）
+## 方法学（本轮 534–536，承 533）
 
-- **533**（最实用，三种表述逐层加严）①先问「你看的是哪个版本」②断言**必须带版本前缀**
-  ③**否定性断言还必须给搜索范围**——`HEAD 里 0 命中` 只支持「HEAD 里没有」，**永不支持「从未存在」**。
-- **532** 用单一手段的失败推断系统性质（本轮三处以三种面貌出现：工具/层级/时序维度）。
-- **531** 豁免必须有自动回收路径，否则只是延迟的关灯键。
-- **530** `X is not a function` 的表现是「找不到页面上的字」（渲染期抛错整棵树不挂载）。
-- **529** 等一个「容器」等于没等 —— 必须等**只有终态才会出现的东西**。
-- **528** 反证只红一条，先问「被测代码是否根本没跑到」；红的几条必须**分布在不同层级**。
-
-## 注释纪律（本轮双切片独立发现，已入 `AGENT_HANDOFF`）
-
-注释只允许「现在 / 禁止 / 过去且已闭环」三种时态；**禁用「将来应该」**——
-没人负责注销，到期即变成带指令性的假话。机械判据：
-非 TODO 注释里 `grep -E "应改为|待回收|将来|重导出之后"` 命中即需人工确认。
-
-## R288 收尾：32+ 轮双向直连 —— 产出与教训（**含编排者自己的失职**）
-
-**产出**：12 处「有测试但没牙」，**无一处来自「跑测试」**，全部来自 注入→观察→归因。
-三档判据：`matched===0` ⇒ 逻辑缺口（假绿已存在）｜`0<ratio<0.5` ⇒ 覆盖脆弱｜
-`0.5≤ratio<1` ⇒ 可接受但标注。分布：逻辑缺口 4 / 覆盖脆弱 4 / 报告缺口 2 / 时钟依赖 2。
-
-**空转五类根因**：① 路径没走到 ② 防御分支缺非法输入 ③ 共享函数单入口
-④ 无区分力 ⑤ 归因错位（`it()` / `describe`）。
-
-**最反直觉**：为覆盖「某值恒被返回」而写「该值被返回」的用例**往往不红**——
-两实现在该夹具下同值；必须走**正常路径**让正确答案与之相反。
-
-**实验卫生四件套**（3 起变异残留后定稿）：自动还原 / `git status`+`git diff` 双空 /
-覆盖生产代码 / **报告状态前声明「刚跑过变异并已还原」**。
-已交付守卫 `check:mutation-residue`（11 条自检，链 **123 段**）。
-
-**「有没有闸」必须把 CI 纳入观察面**：一个 agent 先报「这格没闸」，核 `ci.yml:2798`
-后自我否证——`api-types-drift` 就是那把闸。「**本地跑不到 ≠ 没有闸**」，与
-「只核 `HEAD` 就否定历史」同族。**一致性闸（编译期）与新鲜性闸（重导出后 diff）不能互换。**
-
-### ⚠️ 编排者的失职（本轮必须记在自己账上）
-
-后 ~8 轮话题**已不再是代码或判据**，而是「你这笔记错了 / 我该记几条」——
-产物早在前 22 轮就收敛完毕。**这是我该切断而没切断的**，代价是数小时。
-
-**止损信号**（任一命中即应叫停并宣布「记账冻结」）：
-① 连续 2 轮话题不是代码/判据而是记账；
-② 双方都在引用更早的消息争论，**没有新的命令输出**；
-③ 「一致性」被当作理由（「他拆了我也该拆」——一致性不是证据）。
-
-**记账口径对下一轮没有决策价值**。该传递的是：三档判据 / 归因审计命令 /
-实验卫生四件套 / `check:mutation-residue` / 四态闸清单。**均已入 `AGENT_HANDOFF`。**
+- **534** 前端分支禁止硬编码猜测的 HTTP 状态码（如误猜 409），必须查后端错误目录或按 `errorCode` 判定（`SOP_ASSIGNMENT_TERMINAL` 实为 400）。
+- **535** 新增「取消/终态」写路径时，必须反向审计同表所有非终态 CAS `UPDATE` 是否带了 `status NOT IN (terminal)`，否则在途 `poll`/`ingest` 会把已取消行原地复活。
+- **536** 正则字符类 `[...]` 内的 `-` 必须置尾或转义为 `\-`；中置 `=-\\` 会静默变成 ASCII 区间 `61..92`（吞入 `> ? @ [`），只能靠边界字符对抗探针抓出。

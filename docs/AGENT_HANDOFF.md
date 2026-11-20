@@ -1,6 +1,6 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-19
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-21
 > 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
 
 ## 并行编排的代价：**`git blame` 归因不可用，`git log/show` 归因完好**
@@ -257,6 +257,26 @@ grep -c SopAssignmentLagResponseDto src/types/generated/api-types.ts  →  2
    （删注解 ⇒ 精确 1 条红）。凡「为了两边看起来一致」就会改错的注解，都该有这样一条用例。
 3. **「本轮增量」与「累计 diff」要分层说**：一个文件在整个轮次里改过两次（先加注解又改回），
    只说「本轮只动注释」会误导复核者。汇报时区分两者。
+
+## SOP 阻塞工单单条可处置 + 审批预览值级脱敏 + CLI `deploy stop` 确认门（R289，工作树，未发布）
+
+- **可用路径**：
+  1. **阻塞/澄清工单精准深链与单条取消（`6ca1be1b`）**：从 `/inbox` 第九节「待答复澄清」或第十节「阻塞工单」点击任一工单，深链跳 `/sops?sop=<sopId>&assignment=<assignmentId>`，自动打开抽屉并切到「指派与澄清」Tab、高亮并滚动定位目标指派行与关联澄清卡。对非终态指派（`assigned | in_progress | blocked | stalled`）提供「取消指派」二次确认弹窗（可选填 ≤500 字原因），调 `POST /api/sop/assignments/:assignmentId/cancel` 仅取消该单（**绝不误杀同 SOP 下其余运行中/阻塞兄弟工单**），取消后同行立即展示「重派」按钮衔接换机重发、隐藏澄清「回复」入口，并派发 `INBOX_REFRESH_EVENT` 同步扣减顶栏与 `/inbox` 双节计数。
+  2. **审批单 `preview` 与共享脱敏值级防线（C1，`1fb7d6f9`）**：`sanitize-secrets.util.ts` 单点封堵无害键名（`note`/`url`/`body` ≤200 字符及 `executableSourceFields` 480 字符代码头）下的 PEM 私钥（多行 / JSON 转义 `\n` / 未闭合截断保尾，不误伤公钥证书）、裸 JWT（`ey[A-Za-z0-9_-]{4,}\.ey...`）、缺口供应商前缀（`github_pat_`/`AKIA`/`ASIA`/`xox*`/`glpat-`/Stripe/`AIza`/`npm_`/`hf_`）、空用户名 URL 凭据（`redis://:pass@host`）、`Authorization: Basic <b64>` 以及词元级 Shannon 高熵串（通道 A/B，`preserveDigests` 短路居首）。
+  3. **CLI `acf deploy stop` 破坏性确认门（A3，`1fb7d6f9`）**与 **529 弱等待清扫（`bbd3e0ae`）**：`acf deploy stop <id>` 补 `-y/--yes` + `confirmDestructive`（非 TTY 缺 `--yes` 返码 2 且 0 请求）；`settings.ai-providers-load-error.test.tsx` 改等终态文案 `findByText('按用途选用模型')` + 受控 deferred Promise 钉死在途骨架帧。
+- **契约与判据（改代码前必读）**：
+  - **为什么只做单条取消，不做原地 `unblock (blocked → in_progress)` 或后端复合 `reassign`**：① `maxRounds` 触顶单的 `clarificationRound >= maxRounds`，原地翻回 `in_progress` 下次提问会立即二次撞顶，且原单 `pulledAt` 非空、`pollPending` 不会重下发；② 后端复合 `reassign` 在旧执行器离线/租约过期时会造成「取消已提交但新建指派 403」的半失败；前端取消后复用既有「重派」选在线机器最干净。
+  - **⚠️ `SOP_ASSIGNMENT_TERMINAL` 的 HTTP 状态码是 `400` 而非 `409`**：`catalog/application.ts:570` 定义其 status 为 400（`sop-collab` 既有消费方依赖）。前端竞态刷新必须按 `errorCode === 'SOP_ASSIGNMENT_TERMINAL' | 'SOP_ASSIGNMENT_NOT_FOUND'` 判定，**严禁硬编码 `status === 409`**（否则成死代码）。
+  - **⚠️ `stalled` 属于可取消的活跃非终态**：后端 `pollPending`/`recordProgress`/`cancelOpenAssignments`/`deprecate` 均将 `stalled` 视为非终态（执行器心跳可将其自动恢复为 `in_progress`）。因此单条取消条件写覆盖 `['assigned','in_progress','blocked','stalled']`，前端对 `stalled` 同时开放「取消指派」与「重派」。
+  - **两处并发「取消后复活」CAS 已内联补齐**：`sop.service.ts:714`（`pollPending` 首领 CAS）与 `:1046`（`ingestClarification` 正常轮次 CAS）此前缺 `status` 谓词，与取消并发时会把 `cancelled` 复活回 `in_progress`/`blocked`，现已同行 0 行内联补上 `status: In(...)`。
+  - **`SopController.humanReply` 终态守卫**：拦截 `cancelled | completed` 抛 `400 SOP_ASSIGNMENT_TERMINAL`，**刻意放行 `failed`**（保住 R280 升级后执行器报 `failed` 仍允许人工修订发版再重派的既有语义）。
+  - **正则字符类纪律（红队教训）**：JS 正则字符类 `[...]` 中的 `-` 必须置尾或转义为 `\-`；中置 `=-\\` 会被解析为 ASCII 区间 `61..92`（吞入 `> ? @ [`）造成边界符号旁的密钥漏网。
+- **验收（按 AGENTS.md §4.4 定级，最高达级别 4b）**：
+  - **级别 4b（真浏览器 + 真后端 + 真 PG/Redis）**：`node artifacts/autonomy/R289/level4b-sop-cancel-e2e.mjs`（真 `vite build` + Chrome 158 + 真 `admin-api` + 真 PG 16 `15436` / Redis 7 `16383`）**7/7 Steps 全绿**——同 SOP 造阻塞单 A 与兄弟阻塞单 B，实测点深链仅高亮 A、取消 A 后 B 保持 `blocked` 完好、`audit_logs` 实落 1 条 `sop.assignment.cancel` 且 `redis://:pass@host`/`github_pat_`/裸 JWT 全脱敏、`/inbox` 双节 `2→1`、重复取消与迟到 `humanReply` 均 400。
+  - **级别 3（真 PG/Redis + 真 Nest）**：`sop-assignment-cancel.integration.spec.ts` **4/4 绿**（含 `Promise.all` 行锁并发双取消 1 胜 200 / 1 败 400）。
+  - **级别 2 & 守卫**：后端 SOP 24 套 415 例 · C1 51/51 + 5 域回归 + 20KB ReDoS (<0.4ms) + `check-sanitize-parity`（25 夹具/15 自检）· CLI 16 套 466 例 · 前端相关 13 套 149 例 + 529 连跑 5 轮 20/20 · OpenAPI 五步链路 + `check:response-schema` 上探 251→252 · `node scripts/guards-repo-matrix.mjs` **123/123 = 0** · 11 组反证 `matched/total = 1.0` 且 `check:mutation-residue = 0`。
+- **发布前与回滚**：无迁移、无新 env 键、无新错误码。回滚 = `git revert 6ca1be1b 1fb7d6f9 bbd3e0ae`。
+- **后续优先级（R290）**：① 批量收口 `scripts/query-param-required-allowlist.json` 的 23 条 `runtime-optional` query 欠账（跨 7 个 controller 补 `@ApiQuery({required:false})` + OpenAPI 五步重导出）；② 给 `apps/admin-web/e2e/agent-session-journey.spec.ts:145` 离线夹具补登记 R278/R280/R286 新增的 4 条顶栏/收件箱轮询 mock 路由；③ 验证直接 API 客户端在 Agent 会话 `running` 态处理新审批单的竞态。
 
 ## 滞留 blocked 工单 + 迁移清单纠错（R286，工作树，未发布）
 
