@@ -411,6 +411,9 @@ describe('R286 ③ 行渲染：SOP 名 + 第 N 轮 + 已阻塞 X 小时', () => 
 
   it('「已阻塞 X 小时」由 `blockedSince` 现算，**不拿窗口 24 顶上**', async () => {
     // 关键：窗口是 24，但这张单卡了 30 小时 ⇒ 必须显示 30，不是 24。
+    // 注入固定 `now`：与机器时钟解耦（同上一条的理由）。
+    const t0 = Date.UTC(2026, 10, 20, 12, 0, 0);
+    expect(blockedHours(new Date(t0 - 30 * 3_600_000).toISOString(), t0)).toBe(30);
     expect(blockedHours(hoursAgo(30))).toBeGreaterThanOrEqual(29);
     expect(blockedHours(hoursAgo(30))).not.toBe(SOP_BLOCKED_WINDOW_HOURS);
 
@@ -424,13 +427,22 @@ describe('R286 ③ 行渲染：SOP 名 + 第 N 轮 + 已阻塞 X 小时', () => 
   });
 
   it('`blockedSince` 不可解析 / 在未来 ⇒ 说「时刻未记录」，不编 0 小时', () => {
-    expect(blockedHours('not-a-date')).toBeNull();
-    expect(blockedHours(null)).toBeNull();
-    expect(blockedHours(undefined)).toBeNull();
+    // ⚠️ 全部**注入 `now`**，不靠 `Date.now()` 的双次读数：
+    // `blockedHours` 的默认 `now = Date.now()` 是在**调用时**求值的，若测试自己
+    // 也用 `Date.now()` 造夹具，两次读数之间有微秒级间隔 ⇒ 恰好跨整小时刻度时
+    // `floor()` 会把「0 小时」算成「-1」⇒ 走进未来分支返回 null ⇒ 偶发假红。
+    // 概率极低，但属于「测试依赖了不该依赖的外部状态」（与固定 NOW 造假红同类）。
+    const now = Date.UTC(2026, 10, 20, 12, 0, 0); // 固定基准，与机器时钟无关
+    expect(blockedHours('not-a-date', now)).toBeNull();
+    expect(blockedHours(null, now)).toBeNull();
+    expect(blockedHours(undefined, now)).toBeNull();
     // 未来时间（时钟漂移）同样算不出：说「已阻塞 -2 小时」是坏文案，说 0 是假事实。
-    expect(blockedHours(new Date(Date.now() + 7_200_000).toISOString())).toBeNull();
-    // 边界：恰好 0 分钟的过去 ⇒ 0 小时（这是真事实，不是未知）。
-    expect(blockedHours(new Date(Date.now() - 1_000).toISOString())).toBe(0);
+    expect(blockedHours(new Date(now + 7_200_000).toISOString(), now)).toBeNull();
+    // 边界：恰好 0 秒的过去 ⇒ 0 小时（这是真事实，不是未知）。
+    expect(blockedHours(new Date(now).toISOString(), now)).toBe(0);
+    // 边界：59 分 59 秒 ⇒ 仍 0 小时（向下取整）；60 分整 ⇒ 1 小时。
+    expect(blockedHours(new Date(now - 3_599_000).toISOString(), now)).toBe(0);
+    expect(blockedHours(new Date(now - 3_600_000).toISOString(), now)).toBe(1);
   });
 });
 

@@ -310,6 +310,7 @@
     "//lint:node": "R174：把 executor-node 的 lint 接进守卫链（**103 → 104 段**）。实测约 2.5s（覆盖 `src --ext .ts`，面窄、便宜）。该 script **无 `--fix`**（符合 R173 的新判据）⇒ 接进链后它**能红**。",
     "//lint:web": "R174：把 admin-web 的 lint 接进守卫链（**104 → 105 段**）。实测约 7s（`eslint .`，覆盖 309 个测试文件）。该 script **无 `--fix`** ⇒ 接进链后它**能红**。",
     "check:api-error-format": "node scripts/check-api-error-format.mjs --selftest && node scripts/check-api-error-format.mjs",
-    "//check:api-error-format": "R178：新增守卫 —— **文档里的「错误响应字段」必须和代码里的真实字段一致**。起因（实测抓到的真事）：`docs/api-reference.md` 的「错误响应格式」示例**漏了 `errorCode` 与 `params`**，而这两个字段正是**整套错误本地化的入口**（客户端按 `errorCode` 查文案表、按 `params` 插值，查不到才回落恒为中文的 `message`）⇒ **照旧示例实现的第三方等于「错误本地化不存在」**。同一轮里我自己也踩了一次（把 `code` 误写成 `statusCode`）⇒ **靠人眼核对两边都会漂**，要有机器判据。判据：①过滤器的 `response.status().json({…})` **每个键**都必须在文档示例里；②文档**多写**一个不存在的字段也红（客户端会去读永远是 undefined 的字段）；③两侧解析出空集 ⇒ **结构红**（不静默成「零差异全绿」）。只锚**字段名**，不锚示例值。"
+    "//check:api-error-format": "R178：新增守卫 —— **文档里的「错误响应字段」必须和代码里的真实字段一致**。起因（实测抓到的真事）：`docs/api-reference.md` 的「错误响应格式」示例**漏了 `errorCode` 与 `params`**，而这两个字段正是**整套错误本地化的入口**（客户端按 `errorCode` 查文案表、按 `params` 插值，查不到才回落恒为中文的 `message`）⇒ **照旧示例实现的第三方等于「错误本地化不存在」**。同一轮里我自己也踩了一次（把 `code` 误写成 `statusCode`）⇒ **靠人眼核对两边都会漂**，要有机器判据。判据：①过滤器的 `response.status().json({…})` **每个键**都必须在文档示例里；②文档**多写**一个不存在的字段也红（客户端会去读永远是 undefined 的字段）；③两侧解析出空集 ⇒ **结构红**（不静默成「零差异全绿」）。只锚**字段名**，不锚示例值。",
+    "check:mutation-residue": "node scripts/check-mutation-residue.mjs --selftest && node scripts/check-mutation-residue.mjs"
   }
 }

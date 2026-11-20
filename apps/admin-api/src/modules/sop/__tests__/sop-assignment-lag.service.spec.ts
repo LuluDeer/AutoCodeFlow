@@ -456,6 +456,57 @@ describe("R286 · 滞留 blocked 口径（GET /sop/assignments/lagging）", () =
     expect(h.repo.calls.count).toBe(1);
   });
 
+  /**
+   * R286 · `truncated` 的**两侧专属断言**（不是靠别的用例顺带挡住）。
+   *
+   * ## 这条用例是怎么来的（别删）
+   *
+   * 前端切片按「变异让几条红」的判据统计自己的 `truncated` 覆盖，发现
+   * `truncated:false` 一侧**只红 1 条、且那条是为 `degraded` 写的** ⇒ 属
+   * 「**靠副作用保护**」。我照同一把尺子量自己，发现同样的问题：
+   *
+   * | 变异 | 修前红条 | 其中「为 truncated 而写」的 |
+   * |---|---|---|
+   * | `truncated` 恒 false | 2 | **0**（④b 顺带断到的） |
+   * | `truncated` 恒 true | 5 | 有 |
+   * | `returned === total` 时也判 true | 2 | **0**（①② 顺带断到的） |
+   *
+   * ⇒ 两侧各有一个「会红，但红的那条不是为它写的」缺口。副作用保护的隐蔽性在于
+   * **变异会红**，于是看起来覆盖良好；但那几条用例的夹具一变（例如①改用「未超
+   * TTL 的夹具」），保护会**静默消失**，而没有任何东西会提醒你。
+   *
+   * 本用例把两侧的边界**成对**钉在一个地方：`returned === total` ⇒ false
+   * （数量恰好相等不算截断），`returned = total - 1` ⇒ true（少一条就算截断）。
+   */
+  it("truncated 两侧专属：returned===total ⇒ false；returned=total-1 ⇒ true", async () => {
+    // 侧一：恰好取全（returned === total）⇒ 不截断。
+    const exact = harness({
+      assignments: [
+        asg({ id: ASG_1, updatedAt: new Date(NOW - 30 * HOUR) }),
+        asg({ id: ASG_2, updatedAt: new Date(NOW - 40 * HOUR) }),
+      ],
+      total: 2,
+    });
+    const exactRes = await exact.svc.lagging({ hours: 24, now: NOW });
+    expect(exactRes.returned).toBe(2);
+    expect(exactRes.total).toBe(2);
+    expect(exactRes.truncated).toBe(false);
+    expect(exactRes.degraded).toBe(false);
+
+    // 侧二：只差一条（returned === total - 1）⇒ 截断。
+    const short = harness({
+      assignments: [
+        asg({ id: ASG_1, updatedAt: new Date(NOW - 30 * HOUR) }),
+        asg({ id: ASG_2, updatedAt: new Date(NOW - 40 * HOUR) }),
+      ],
+      total: 3,
+    });
+    const shortRes = await short.svc.lagging({ hours: 24, now: NOW });
+    expect(shortRes.returned).toBe(2);
+    expect(shortRes.total).toBe(3);
+    expect(shortRes.truncated).toBe(true);
+  });
+
   it("items 与 total 走同一份谓词（同一 status / 同一 cutoff），且带行数上限", async () => {
     const h = harness({
       assignments: [asg({ updatedAt: new Date(NOW - 30 * HOUR) })],
