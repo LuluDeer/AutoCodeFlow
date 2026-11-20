@@ -210,8 +210,10 @@ export function buildTrendData(
  *
  * ## 注意别认错常量
  *
- * `src/utils/failure-reason-aggregate.ts:24` 有**同名** `FAILED_EXECUTION_STATUSES`，
- * 但内容含 `killed`，是「失败原因分布」的口径，**不是**本深链要的那个集合。
+ * `src/utils/failure-reason-aggregate.ts` 里的 `FAILURE_REASON_BUCKET_STATUSES`
+ * （R284 从 `FAILED_EXECUTION_STATUSES` 改名而来）内容含 `killed`，
+ * 是「当前页失败原因分布」的口径，**不是**本深链要的那个集合——两者**刻意不同名**
+ * （同名不同值最容易让人以为「该对齐」而改错）。
  * 本文件按契约传字面量（不新增 import/常量：size-caps 对本文件的 nonCommentLines 与
  * 最长函数体都是**零余量**棘轮，函数体内加一行即红——故注释全部落在模块级）。
  */

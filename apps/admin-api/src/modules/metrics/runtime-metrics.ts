@@ -68,6 +68,25 @@ export const RUNTIME_NOTIFICATION_RESULTS = [
 ] as const;
 
 /**
+ * R284-A: `autoflow_notification_silenced_total` 的 `level` 标签全集。
+ *
+ * 取值 = 7 个「被静默 ⇒ 早退」写点实际传进来的 AlertLevel，**刻意不含
+ * critical**：没有生产者就不登记（同 RUNTIME_METRICS_RENDER_QUERIES 的纪律——
+ * 一条永远 0 的 series 会让 `increase(...) > 0` 的告警看起来"有覆盖"而实际
+ * 不可能触发，属于制造假安全感）。
+ *
+ * 为什么在这里本地定义而不 import notification 模块的 `AlertLevel`：metrics
+ * 位于依赖链上游（见 metrics.module.ts / AGENT_KINDS 的既有约束），反向
+ * import notification 会造编译期环。漂移由 `notification.service.spec.ts`
+ * 断言两侧一致（写点传的值 ⊆ 本表），与 AGENT_KINDS 的手工收口同一纪律。
+ */
+export const RUNTIME_NOTIFICATION_SILENCE_LEVELS = [
+  "error",
+  "warning",
+  "info",
+] as const;
+
+/**
  * autoflow_callback_business_total 的 result 标签全集——与 handleCallback
  * 的返回分类一一对应：
  * - accepted：终态条件 UPDATE 命中（winner，含 SUCCESS/FAILED/TIMEOUT 落库）
@@ -146,7 +165,14 @@ export type RuntimeCounterName =
   // 之外，代价是这条行继续占着执行器槽位（槽位只随终态释放）⇒ runningTaskCount
   // 虚高。本计数器是「护栏是否在造成运维积压」的**唯一监控信号**（warn 日志会
   // 随轮转消失，见 docs/operations.md「僵尸执行被门禁挡住」）。
-  | "autoflow_stale_finalization_deferred_total";
+  | "autoflow_stale_finalization_deferred_total"
+  // 静默吞噬轮（R284-A）：**告警被静默规则有意吞掉**的次数。
+  // 为什么需要新计数器而不是复用 delivery_total：delivery 的 result 四值
+  // （success/failure/blocked/skipped）全部描述**渠道投递**结局，而被静默
+  // 发生在扇出之前——零个渠道、零次尝试。把它塞进 skipped（= 渠道未配置）
+  // 或 failure（= 传输故障）都是伪造事实：前者会让「渠道没配」的看板骗人，
+  // 后者会触发一条不该响的投递故障告警。语义既不同，就不能合流。
+  | "autoflow_notification_silenced_total";
 
 /**
  * S3-C5：`autoflow_stale_finalization_deferred_total` 的 `reason` 标签全集。
@@ -351,6 +377,33 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       help: "SSE tickets rejected by the path-binding guard, by reason (wrong_path = a ticket was presented on a non-stream route, i.e. a leaked ticket being replayed)",
       labelNames: ["reason"],
       labelValueSets: [{ reason: "wrong_path" }],
+    },
+    // R284-A（告警被静默规则吞掉后零痕迹）：**有意抑制**的计数。
+    //
+    // 现场：`notification.service.ts` 有 7 处「被静默 ⇒ 只 logger.debug 就早退」，
+    // 而 LOG_LEVEL 默认 info（config/configuration.ts:57）⇒ 默认部署下那条
+    // debug **根本不输出**。一条 scope=global、没填 durationMinutes 的静默能
+    // 永久吞掉全部告警，而全平台零痕迹——运营两周后按「这次没失败」写复盘。
+    //
+    // 为什么 `level` 是标签：静默规则本身可按 level 匹配，值班要回答的第一个
+    // 问题是「哪些级别的告警在被吞」——error 被吞与 info 被吞完全不是一回事。
+    // `level` 是 AlertLevel 闭集、且是**写点常量**（不是模型/用户可写字符串）
+    // ⇒ 基数恒为 3，不随流量增长。
+    //
+    // 只登记 info/warning/error 三值、**刻意不登记 critical**：7 个静默早退点
+    // 无一以 CRITICAL 调用（notify 的缺省是 INFO），登记它只会造出一条永远 0
+    // 的假 series——正是 RUNTIME_METRICS_RENDER_QUERIES 那条「每个值都必须有
+    // 生产者」的纪律（见该常量注释）。
+    //
+    // 为什么必须登记 0 值基线：告警表达式是 `increase(...[15m]) > 0`，
+    // 未铺基线的组合在首次命中前是「无数据」而不是 0，而这条指标的**价值
+    // 恰恰在于「一直是 0」= 没人静默、或静默没吞到告警**。
+    autoflow_notification_silenced_total: {
+      help: "Alerts SUPPRESSED by an active silence rule before any channel fan-out, by alert level (zero channels attempted, zero delivery outcome — distinct from delivery_total skipped = channel not configured)",
+      labelNames: ["level"],
+      labelValueSets: RUNTIME_NOTIFICATION_SILENCE_LEVELS.map((level) => ({
+        level,
+      })),
     },
     autoflow_notification_delivery_total: {
       help: "Notification fan-out deliveries by channel and result (success / failure / blocked = SSRF policy block / skipped = channel not configured)",

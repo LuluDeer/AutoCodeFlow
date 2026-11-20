@@ -120,7 +120,8 @@ export default function NotificationBell() {
             会让「面板里明明有 10 条，点查看失败却是 0 条」。
             执行页的状态下拉只认 failed / timeout 两个独立单值选项（主动筛选意图不变），
             多值 URL 在那里匹配不到任何选项 ⇒ 下拉显示为空，属预期。
-            ⚠️ src/utils/failure-reason-aggregate.ts 的同名常量含 killed，不是这个集合。 */}
+            ⚠️ src/utils/failure-reason-aggregate.ts 的 FAILURE_REASON_BUCKET_STATUSES 含 killed，不是这个集合
+            （R284 改名：刻意与后端常量不同名，避免「同名不同值」被误对齐）。 */}
         <Button type="link" size="small" onClick={() => nav('/executions?status=failed,timeout')}>
           {t('nav.notify.viewAll')}
         </Button>

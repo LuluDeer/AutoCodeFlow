@@ -49,8 +49,13 @@ export enum ExecutionStatus {
  *    成功率卡的失败计数）；以下仍未对齐，属后续批次：
  *    - modules/application/projects.service.ts:444-445（失败=FAILED，timeout
  *      单列后缀；列表查询已 IN(FAILED,TIMEOUT)，但计数口径两份）
- *    - modules/metrics/failure-reason-aggregate.ts:24（FAILED+TIMEOUT+KILLED，
- *      执行页失败原因分布，含 KILLED 与本常量口径不同）
+ *    - apps/admin-web/src/utils/failure-reason-aggregate.ts 的
+ *      `FAILURE_REASON_BUCKET_STATUSES`（FAILED+TIMEOUT+KILLED，执行页「当前页
+ *      失败原因分布」口径，含 KILLED 与本常量口径不同）。R284 两条修正：
+ *      ① 该文件在 **admin-web**（此前注释误写成 modules/metrics/，后端无此文件）；
+ *      ② 该常量已从同名 `FAILED_EXECUTION_STATUSES` 改名为
+ *      `FAILURE_REASON_BUCKET_STATUSES`——**刻意不同名**，避免下一个读者以为
+ *      「该对齐」而把失败计数口径也加进 KILLED。
  *    - modules/executor/executor.service.ts:8025（`SUM(status='failed')` 单值，
  *      执行器 7 日面板）
  *    - modules/task/execution-read.collaborator.ts:551（深链等值过滤，前端另

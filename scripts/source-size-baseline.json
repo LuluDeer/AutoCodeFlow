@@ -518,14 +518,14 @@
     "apps/admin-api/src/modules/notification/__tests__/notification.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1529,
-      "why": "2026-11-04 实测 nonCommentLines=1529 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1712,
+      "why": "2026-11-20 R284-A 重签（原 maxLines=1529）：新增 7 例验收测试，钉住「被静默必须留痕」——①audit 真的落一条且参数含 taskId+silence.id/scope ②指标 level 计数 +1 ③把 debug 通道静音（等价 LOG_LEVEL=info）后 audit 仍可查 ④7 个早退点全覆盖 ⑤未被静默时两条落痕都不出现 ⑥审计写失败仍记指标且 warn 可见；另加一条登记表↔写点零漂移断言。首跑登记因由（非注释行超阈值）已被本次更大量取代。",
       "ceiling": {
-        "nonCommentLines": 1529,
+        "nonCommentLines": 1712,
         "functionLines": 19,
         "ctorParams": 0,
         "exports": 0,
-        "branchDensity": 0.6
+        "branchDensity": 0.8
       },
       "firstRun": {
         "bad": [
@@ -554,14 +554,14 @@
     "apps/admin-api/src/modules/notification/notification.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 753,
-      "why": "2026-11-04 实测 ctorParams=10 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 836,
+      "why": "2026-11-20 R284-A 重签（原 maxLines=753）：把 7 处「被静默 ⇒ 只 logger.debug 早退」改成统一的 handleSilenced 落痕路径（指标 autoflow_notification_silenced_total{level} + 审计 notification.silenced 带 taskId/level/silence.id/scope），并把 isSilenced 的匹配判据抽成 findMatchingSilence 以取回命中的规则对象（公开签名与匹配规则逐字不变）。净增是真实代码不是注释：7 个调用点 + 一个带 best-effort 审计的方法。branchDensity 29.9→30.5 同源（审计失败降级分支 + 规则对象判空）。原登记因由（ctorParams=10）仍成立。",
       "ceiling": {
-        "nonCommentLines": 753,
+        "nonCommentLines": 836,
         "functionLines": 182,
         "ctorParams": 10,
         "exports": 8,
-        "branchDensity": 29.9
+        "branchDensity": 30.5
       },
       "firstRun": {
         "bad": [
@@ -773,11 +773,11 @@
     "apps/admin-web/src/components/ExecutionLogSection.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 619,
-      "why": "2026-11-04 实测 functionLines=692 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 623,
+      "why": "2026-11-04 实测 functionLines=692 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | **2026-11-20 R284-LOGPURGE-01 重签（+4 非注释行 / +3 函数体）**：空日志区三态。日志行留 30 天、执行行留 90 天 ⇒ 31~90 天前的执行详情是空 <pre>，而此前唯一文案讲「切日志级别」，用户读成「没输出/采集坏了」，复盘写「没有证据」——真相是证据已被策略删除。净增 4 行是**接线**：2 行 import（hook + 三态卡片）、1 行 hook 调用、1 行 <EmptyLogsAlert/>。判定逻辑（4 个触发条件/3 个分支/timing 守卫）与三张卡片**已分别抽成** hooks/useEmptyLogsVerdict.ts 与 components/EmptyLogsAlert.tsx（本文件零判定逻辑）；先抽后压仍需要的 +4 已是**最小接线量**。branchDensity 19.1 未变（是接线，不是新判定）。",
       "ceiling": {
-        "nonCommentLines": 619,
-        "functionLines": 692,
+        "nonCommentLines": 623,
+        "functionLines": 695,
         "ctorParams": 0,
         "exports": 2,
         "branchDensity": 19.1

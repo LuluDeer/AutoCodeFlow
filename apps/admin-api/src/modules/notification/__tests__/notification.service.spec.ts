@@ -27,7 +27,11 @@ import {
   resetRuntimeMetrics,
 } from "../../metrics/runtime-metrics-entry";
 // R33-A1: 指标 result 值域登记（metrics 侧）；本 spec 校验映射表与之无漂移
-import { RUNTIME_NOTIFICATION_RESULTS } from "../../metrics/runtime-metrics";
+import {
+  RUNTIME_NOTIFICATION_RESULTS,
+  // R284-A: 被静默计数的 level 值域登记（校验写点传值 ⊆ 登记表）
+  RUNTIME_NOTIFICATION_SILENCE_LEVELS,
+} from "../../metrics/runtime-metrics";
 
 const mockChannel = () => ({ send: jest.fn() });
 
@@ -1807,6 +1811,240 @@ describe("NotificationService", () => {
       expect(sendToChannels).not.toHaveBeenCalled();
       sendAll.mockRestore();
       sendToChannels.mockRestore();
+    });
+  });
+
+  // ============================================================================
+  // R284-A（P1）：告警被静默规则吞掉后**零痕迹**。
+  //
+  // 7 个早退点此前只 `logger.debug` 就 return，而 LOG_LEVEL 默认 info
+  // （config/configuration.ts:57）⇒ 默认部署下那行 debug 根本不输出 ⇒ 一条
+  // `scope=global` 静默能永久吞掉全部告警而全平台零痕迹。
+  //
+  // 本组钉三件事（真断言，不是 toHaveBeenCalled）：
+  //   ① 被静默 ⇒ audit 真的落一条，且参数含 taskId + silence.id/scope；
+  //   ② 指标 `autoflow_notification_silenced_total{level}` +1；
+  //   ③ 未被静默 ⇒ 本组两条落痕**都不出现**（行为零变化）。
+  // ============================================================================
+  describe("R284-A: 被静默的告警必须留痕（指标 + 审计）", () => {
+    /** 独立模块 + 真 AuditService 桩；silence id 由 addSilence 返回，便于逐字断言 */
+    const makeServiceWithAudit = async (audit: unknown) => {
+      const module = await Test.createTestingModule({
+        providers: [
+          NotificationService,
+          { provide: WecomChannel, useFactory: mockChannel },
+          { provide: DingtalkChannel, useFactory: mockChannel },
+          { provide: EmailChannel, useFactory: mockChannel },
+          { provide: SlackChannel, useFactory: mockChannel },
+          { provide: WebhookChannel, useFactory: mockChannel },
+          { provide: FeishuChannel, useFactory: mockChannel },
+          { provide: AuditService, useValue: audit },
+        ],
+      }).compile();
+      return module.get(NotificationService);
+    };
+
+    const silencedCount = (level: "info" | "warning" | "error") =>
+      runtimeCount("autoflow_notification_silenced_total", { level });
+
+    beforeEach(() => {
+      resetRuntimeMetrics();
+    });
+    afterEach(() => {
+      resetRuntimeMetrics();
+    });
+
+    it("① 被静默 ⇒ audit 落一条 notification.silenced，参数含 taskId + silence.id/scope", async () => {
+      const auditLog = jest.fn().mockResolvedValue(undefined);
+      const svc = await makeServiceWithAudit({ log: auditLog });
+      const sendAll = jest.spyOn(svc, "sendAll");
+      // 关键现场形态：没填 durationMinutes 的 scope=global 静默
+      const silenceId = svc.addSilence({
+        scope: "global",
+        level: AlertLevel.ERROR,
+        durationMinutes: 0,
+      });
+
+      await svc.notifyFailure("job", "exec-1", "boom", undefined, "task-42");
+
+      // 行为不变：仍然不扇出
+      expect(sendAll).not.toHaveBeenCalled();
+      // 审计真的落了一条，且参数可查
+      expect(auditLog).toHaveBeenCalledTimes(1);
+      expect(auditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "notification.silenced",
+          resource: "notification",
+          resourceId: "task-42",
+          detail: expect.objectContaining({
+            taskId: "task-42",
+            level: "error",
+            silence: expect.objectContaining({
+              id: silenceId,
+              scope: "global",
+              level: "error",
+              // durationMinutes=0 ⇒ 无 endTime ⇒ 永久生效；这一点必须可查
+              endTime: null,
+            }),
+          }),
+        }),
+      );
+      sendAll.mockRestore();
+    });
+
+    it("③ 默认 LOG_LEVEL=info 下 audit 仍可查：落痕不依赖 debug 日志", async () => {
+      // 现场缺陷的根因就是「唯一落痕是一行 logger.debug，而默认 info 级别把它丢了」。
+      // 本用例把 debug 通道**整体吞掉**（mockImplementation 空实现 = 等价于
+      // LOG_LEVEL=info 下该行不产生任何可见输出），审计与指标仍必须成立——
+      // 否则「可查」只是靠 debug 侥幸成立，换个日志级别就again归零。
+      const auditLog = jest.fn().mockResolvedValue(undefined);
+      const svc = await makeServiceWithAudit({ log: auditLog });
+      const debugSpy = jest
+        .spyOn(Logger.prototype, "debug")
+        .mockImplementation(() => {});
+      const silenceId = svc.addSilence({
+        scope: "global",
+        level: AlertLevel.ERROR,
+        durationMinutes: 0,
+      });
+      const sendAll = jest.spyOn(svc, "sendAll");
+
+      await svc.notifyFailure("job", "exec-1", "boom", undefined, "task-7");
+
+      // 上面那条 spy 把 debug 造成**空实现**——正是 LOG_LEVEL=info 下这行的
+      // 效果：调用会发生，但**不产生任何可见输出**。此刻审计与指标仍必须成立，
+      // 才能证明落痕不是建立在那行 debug 之上（换任何级别都一样可查）。
+      expect(debugSpy).toHaveBeenCalled();
+      expect(auditLog).toHaveBeenCalledTimes(1);
+      expect(auditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "notification.silenced",
+          detail: expect.objectContaining({
+            taskId: "task-7",
+            level: "error",
+            silence: expect.objectContaining({ id: silenceId }),
+          }),
+        }),
+      );
+      expect(silencedCount("error")).toBe(1);
+      expect(sendAll).not.toHaveBeenCalled();
+      debugSpy.mockRestore();
+      sendAll.mockRestore();
+    });
+
+    it("② 指标 autoflow_notification_silenced_total{level} +1", async () => {
+      const svc = await makeServiceWithAudit({ log: jest.fn() });
+      svc.addSilence({
+        scope: "global",
+        level: AlertLevel.WARNING,
+        durationMinutes: 0,
+      });
+      const sendAll = jest.spyOn(svc, "sendAll");
+
+      expect(silencedCount("warning")).toBe(0);
+      await svc.notifyTimeout("job", "exec-1", 300, "task-1");
+      expect(silencedCount("warning")).toBe(1);
+      // 单调累计
+      await svc.notifyTimeout("job", "exec-2", 300, "task-1");
+      expect(silencedCount("warning")).toBe(2);
+      // 不串级别：warning 的抑制不该抬高 info
+      expect(silencedCount("info")).toBe(0);
+      expect(sendAll).not.toHaveBeenCalled();
+      sendAll.mockRestore();
+    });
+
+    it("③ 7 个早退点全部留痕（不是只修 notifyFailure 一条路径）", async () => {
+      const auditLog = jest.fn().mockResolvedValue(undefined);
+      const svc = await makeServiceWithAudit({ log: auditLog });
+      svc.addSilence({ scope: "global", durationMinutes: 0 });
+
+      await svc.notify("job", "hello", AlertLevel.INFO, "task-1");
+      await svc.notifyFailure("job", "exec-1", "boom", undefined, "task-1");
+      await svc.notifySuccess("job", "exec-1", 10, "task-1");
+      await svc.notifyTimeout("job", "exec-1", 300, "task-1");
+      await svc.notifyExecutorOffline("node-1", "10.0.0.9:3002");
+      await svc.notifyExecutorOnline("node-1", "10.0.0.9:3002");
+      await svc.notifyFailureWithConfig(
+        "job",
+        "exec-1",
+        "boom",
+        "",
+        undefined,
+        ["email"],
+        undefined,
+        "task-1",
+      );
+
+      expect(auditLog).toHaveBeenCalledTimes(7);
+      for (const call of auditLog.mock.calls) {
+        expect(call[0]).toEqual(
+          expect.objectContaining({ action: "notification.silenced" }),
+        );
+      }
+    });
+
+    it("④ 未被静默的告警行为零变化：不落 silenced 审计、不记 silenced 指标", async () => {
+      const auditLog = jest.fn().mockResolvedValue(undefined);
+      const svc = await makeServiceWithAudit({ log: auditLog });
+      const sendAll = jest
+        .spyOn(svc, "sendAll")
+        .mockResolvedValue({ email: "sent" });
+
+      await svc.notifyFailure("job", "exec-1", "boom", undefined, "task-1");
+
+      // 照常扇出（既有行为）
+      expect(sendAll).toHaveBeenCalledTimes(1);
+      // 两条新落痕都不该出现
+      expect(auditLog).not.toHaveBeenCalled();
+      expect(silencedCount("error")).toBe(0);
+      sendAll.mockRestore();
+    });
+
+    it("⑤ 审计写失败不炸主链，但 warn 可见（抑制的落痕不许再静默消失）", async () => {
+      const auditLog = jest.fn().mockRejectedValue(new Error("audit db down"));
+      const svc = await makeServiceWithAudit({ log: auditLog });
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      svc.addSilence({ scope: "global", durationMinutes: 0 });
+      const sendAll = jest.spyOn(svc, "sendAll");
+
+      await expect(
+        svc.notifyFailure("job", "exec-1", "boom", undefined, "task-1"),
+      ).resolves.toBeUndefined();
+
+      // 指标仍然记上了（先记指标后写审计：审计炸了也不许让告警变成无数据）
+      expect(silencedCount("error")).toBe(1);
+      // 审计失败可见
+      await new Promise((r) => setImmediate(r));
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("notification.silenced 审计写入失败"),
+      );
+      expect(sendAll).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+      sendAll.mockRestore();
+    });
+
+    it("metrics 侧登记表与写点传值零漂移（level 三值，无 critical 死 series）", async () => {
+      // 写点只可能传 info/warning/error；登记表若多登记 critical 就是一条
+      // 永远 0 的假 series（同 RUNTIME_METRICS_RENDER_QUERIES 的纪律）。
+      expect([...RUNTIME_NOTIFICATION_SILENCE_LEVELS].sort()).toEqual([
+        "error",
+        "info",
+        "warning",
+      ]);
+      const svc = await makeServiceWithAudit({ log: jest.fn() });
+      svc.addSilence({ scope: "global", durationMinutes: 0 });
+      await svc.notify("job", "hello", AlertLevel.INFO, "task-1");
+      await svc.notifyTimeout("job", "exec-1", 300, "task-1");
+      await svc.notifyFailure("job", "exec-1", "boom", undefined, "task-1");
+      // 实测落地的 label 全部在登记表内（不是无界字符串）
+      for (const [key] of getRuntimeCountersSnapshot().get(
+        "autoflow_notification_silenced_total" as never,
+      ) ?? []) {
+        const { level } = JSON.parse(key);
+        expect(RUNTIME_NOTIFICATION_SILENCE_LEVELS).toContain(level);
+      }
     });
   });
 });
