@@ -661,7 +661,7 @@ describe("R286 · 滞留 blocked 口径（GET /sop/assignments/lagging）", () =
   /**
    * R286 · `degraded` 的**两侧专属断言**（`degraded:true` 那侧此前只有副作用保护）。
    *
-   * ## 这条用例是怎么来的（别删）
+   * ## 这条用例是怎么来的（别删，含一次自我否证）
    *
    * 按「变异红的那条 `it()` 是不是为我要保护的字段而写」审全部变异时实测：
    *
@@ -670,27 +670,42 @@ describe("R286 · 滞留 blocked 口径（GET /sop/assignments/lagging）", () =
    * | `degraded` 恒 **true** | 5 | **仅 1**（①②⑤ 与 truncated 那条都是顺带）|
    * | `degraded` 恒 **false** | 7 | 7（④/④b/④c/⑤c/澄清/脏数据/装配层）|
    *
-   * ⇒ **false 那侧有 7 条专属、true 那侧只有 1 条**。后者一旦别人改夹具（例如把
-   * ①的断言换成 `toMatchObject`），「恒 true」这个错误就可能不再被任何用例挡住
-   * ——而**恒 true 的后果是每个正常页面都挂「计数可能不准」**，真故障时没人再看
-   * （告警疲劳），比恒 false 更难被用户察觉。
+   * ⇒ **false 那侧有 7 条专属、true 那侧只有 1 条**。「恒 true」的后果是每个正常
+   * 页面都挂「计数可能不准」⇒ 告警疲劳，真故障时没人再看，比恒 false 更难察觉。
    *
-   * 本用例把 true 侧钉成**唯一原因**驱动：只让一个子查询失败，断言 `degraded:true`
-   * **且**其余字段仍正确 —— 这样它红只可能是 `degraded` 的聚合逻辑坏了。
+   * ## ⚠️ 第一版本用例**没有区分力**（被自己抓出来，留作反面教材）
+   *
+   * 初版夹具用 `failSopTitles: true` 造「降级」，然后断言 `degraded:true`。
+   * 但把实现改成 **恒 true**，这条**照样绿**——因为该夹具下两个候选实现**都返回
+   * true**，落在「两者都对」的区间。这正是第 ④ 类「无区分力」。
+   * ⇒ 修法：夹具必须走**正常路径**（一切成功 ⇒ 正确答案是 `false`），这样
+   * 「恒 true」才会把它推翻。降级侧的断言交给上面 ④/④b/④c 那几条。
    */
-  it("degraded 专属（true 侧）：子查询失败 ⇒ degraded:true，且失败不污染其它字段", async () => {
-    // 只让「标题」子查询失败：`total` 仍是真数、行仍返回 ⇒ 唯一异常就是降级。
+  it("degraded 专属（正常路径）：一切子查询成功 ⇒ degraded:false（恒 true 会在此红）", async () => {
+    // ⚠️ 本用例只负责 `degraded:false` 这**一侧**（正常路径）。
+    // `true` 侧由 ④（计数抛错）/ ④b（items 抛错）/ ④c（非有限数）/ ⑤c（标题抛错）
+    // 各自专属覆盖 —— 这里不重复造失败夹具，否则又会落进「两候选实现同结果」的
+    // 无区分力区间（第一版就这么错过）。标题写「专属」指的是**这一侧专属**。
     const h = harness({
       assignments: [asg({ updatedAt: new Date(NOW - 30 * HOUR) })],
-      failSopTitles: true,
+      sops: [{ id: SOP_1, title: "部署 SOP" }],
+      clarifications: [
+        {
+          id: CLAR_1,
+          assignmentId: ASG_1,
+          round: 6,
+          resolution: "escalated_to_human",
+        },
+      ],
     });
     const res = await h.svc.lagging({ hours: 24, now: NOW });
 
-    expect(res.degraded).toBe(true);
-    // 下面三条同时钉住「降级 ≠ 数据变假」：总数/行数/空标题各归各位。
+    // 这条断言是「恒 true」变异唯一的专属杀手：正常路径必须为 false。
+    expect(res.degraded).toBe(false);
+    // 同时钉住「没降级 ≠ 少给了字段」。
     expect(res.total).toBe(1);
-    expect(res.returned).toBe(1);
-    expect(res.items[0].sopName).toBeNull();
+    expect(res.items[0].sopName).toBe("部署 SOP");
+    expect(res.items[0].round).toBe(6);
   });
 });
 

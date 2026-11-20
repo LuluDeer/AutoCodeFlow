@@ -512,7 +512,7 @@ describe('R286 状态透传：`total` 归一化 / `degraded` / `truncated` 的�
     }
   });
 
-  it('`degraded` 必须**原样透传**服务端值：false 不许被抬成 true', async () => {
+  it('`degraded` 两侧都被钉住：false 不许抬成 true，true 不许压成 false', async () => {
     // 实测：把 `degraded: !!res?.degraded` 改成 `degraded: true`（恒降级）⇒ 原 33 例全绿。
     // `degraded` 是唯一区分「数字是事实」与「数字是下界」的标记：恒 true ⇒ 每页挂
     // 「计数可能不准」⇒ 告警疲劳；恒 false ⇒ 下界冒充事实。两侧都要钉。
@@ -523,6 +523,23 @@ describe('R286 状态透传：`total` 归一化 / `degraded` / `truncated` 的�
     expect(healthy.sopBlocked.degraded).toBe(false);
     expect(describeSectionCount(healthy.sopBlocked)).toEqual({ kind: 'total', n: 1, source: 'server' });
 
+    // ⚠️ 上面那组（`degraded:false`）能推翻「恒 true」，但**推不翻「恒 false」**。
+    // 下面这组如果照直觉写成「夹具造降级 ⇒ 断言 degraded:true」，那它**同样推不翻
+    // 「恒 true」**——因为该夹具下两种实现**都返回 true**，正好落在「两者都对」的区间
+    //（第 ④ 类：无区分力）。这条反面教材是对方实测出来的，我照抄进注释：
+    //「为了覆盖 true 侧而写一条 true 侧用例」是直觉正确答案，而它恰恰不红。
+    //
+    // 要推翻「恒 false」，必须让**正确答案是 true**，即由**真实降级输入**推出 true：
+    // 这里用 `total:null`（子查询读不到 ⇒ degraded）而不是直接喂 `degraded:true`。
+    mockBackend({
+      lagging: { items: [lagRow()], total: null, returned: 1, truncated: false, degraded: false },
+    });
+    const viaData = await loadInbox();
+    // 服务端自己报 degraded:false，但 total 是 null ⇒ 仍然要能被看见（此处按服务端透传）。
+    expect(viaData.sopBlocked.degraded).toBe(false);
+    expect(viaData.sopBlocked.total).toBeNull();
+
+    // 真正的 true 侧：服务端报降级 ⇒ 必须原样透传 true（这一半能推翻「恒 false」）。
     mockBackend({
       lagging: { items: [lagRow()], total: 7, returned: 1, truncated: true, degraded: true },
     });
