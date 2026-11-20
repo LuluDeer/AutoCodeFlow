@@ -52,6 +52,29 @@ B 曾报告「A 的中间反馈收不到，只能等它提交后看 diff」；�
 | ③ 手写 + 无断言 | 无人 | ❌ | 真无闸 |
 | ④ 生成物新鲜性 | **CI `api-types-drift`** | ❌（需 DB+Redis、20min） | **不是"没有"，是"不在本地"** |
 
+### 三层闸判据（本轮方法论顶点，`be-assignment-reaper` 提炼）
+
+```
+第一层：有没有闸？                    ← 前 30 轮都在问这个
+第二层：闸在谁手上？                  ← 「本地跑不到 ≠ 没有闸」
+第三层：闸的判据是否覆盖该类变化？      ← 没有这层，「有闸 ⇒ 能兜住」是错的推理
+```
+
+**第三层的实例**：曾说「CI `api-types-drift` 能兜住装饰器漂移」——
+但**若某个装饰器变化不影响 `swagger:export` 的输出**（例如 i18n 未覆盖的 `description`、
+不参与导出的 Swagger 选项），**CI 也可能不红**。
+处置是标「未验证、不作断言」，而不是把「有闸」当成「能兜住」。
+
+### 「读装饰器」必须区分**哪种**元数据（全仓实测）
+
+| 元数据类型 | 读取点 | 覆盖面 |
+|---|---|---|
+| `swagger/apiParameters` | `apps/admin-api/src/modules/sop/__tests__/sop-assignment-lag.service.spec.ts:867`（**全仓唯一**） | 仅 `hours` 一个参数 |
+| class-validator `IsOptional` | `examples/scripts/check-task-examples.mjs`（文本正则扫 `@Xxx`） | **仅 `create-task.dto.ts` 单文件** |
+| 其余 swagger 元数据（summary / description / 响应 schema…） | **无** | — |
+
+⇒ **任何「装饰器已有守卫」的泛化说法都是假陈述。**
+
 **两条闸不能互换**（本轮实质收获）：
 - **一致性闸**（派生 ⇒ 编译期）：**schema 变了、代码没变 ⇒ 红**；
 - **新鲜性闸**（`swagger:export` 后 diff）：**源码变了、schema 没变 ⇒ 只有重导出才知道**。
