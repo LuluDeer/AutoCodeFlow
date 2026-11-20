@@ -1107,6 +1107,11 @@ jobs:
       # 零依赖纯静态（只读已提交的 openapi.json + 源码），秒级，不跑 swagger:export。
       - name: Query param required matches runtime signature (R287)
         run: npm run check:query-param-required
+
+      # R288：变异体残留扫描（扫未提交改动的 `+` 行；干净检出下恒绿，故只在有脏改动时有效，
+      # 这里放一份是为了让「这个守卫存在」在 CI 里可见）
+      - name: Mutation residue scan
+        run: npm run check:mutation-residue
       - name: Protocol three-way check (real execution on both sides)
         run: |
           node scripts/check-protocol-three-way.mjs --selftest
