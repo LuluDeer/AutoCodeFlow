@@ -61,6 +61,26 @@ B 曾报告「A 的中间反馈收不到，只能等它提交后看 diff」；�
 **唯一真实的不对等**（A 侧独有）：手写 DTO 没有编译期耦合 ⇒ 那条装饰器元数据断言
 **被删会静默**（无守卫保护）。建议纳入 `check-query-param-required`（`scripts/` 写域）。
 
+### R286 这批端点的生成物状态（主会话已核，可引为事实）
+
+`openapi.json` 与 `api-types.ts` **已随 `3eea12ca` 入库，当前无未提交漂移**：
+
+```
+git log --oneline -1 -- apps/admin-api/openapi.json apps/admin-web/src/types/generated/api-types.ts
+  3eea12ca feat(guards): query 参数 required 契约守卫 …
+git status --porcelain <这两个文件>   → 空
+
+node -e "…"  →  /sop/assignments/lagging 存在
+                  hours required: false
+                  $ref → SopAssignmentLagResponseDto
+grep -c SopAssignmentLagResponseDto src/types/generated/api-types.ts  →  2
+```
+
+⚠️ **这条要记的不是「已正确」，而是「如何确认」**：
+**「内容对」≠「已入库」**，前者只能证明生成物被写过，后者要 `git log + git status` 才算。
+本节把这个确认动作写下来，是因为它属于**主会话的闸**（`swagger:export`），
+切片侧无论如何都核不到。
+
 ---
 ## ⚠️ 编排止损：**记账循环**（R288 实测，30 轮里的后 8 轮是空转）
 
