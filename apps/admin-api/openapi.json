@@ -4926,6 +4926,13 @@
       },
       "ExecutionListItemDto": {
         "properties": {
+          "agentSessionId": {
+            "description": "该执行由哪个 Agent 会话触发（Agent 触发路径可空）",
+            "format": "uuid",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Which Agent session triggered this execution (nullable for non-Agent triggers)"
+          },
           "aiAnalysis": {
             "description": "列表/统计读取会排除该列（PERF-03）",
             "nullable": true,
@@ -5192,6 +5199,7 @@
           "exitCode",
           "artifacts",
           "triggerType",
+          "agentSessionId",
           "taskVersion",
           "traceId",
           "resolvedPackageUrl",
@@ -10673,6 +10681,13 @@
       },
       "TaskExecutionResponseDto": {
         "properties": {
+          "agentSessionId": {
+            "description": "该执行由哪个 Agent 会话触发（Agent 触发路径可空）",
+            "format": "uuid",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Which Agent session triggered this execution (nullable for non-Agent triggers)"
+          },
           "aiAnalysis": {
             "description": "AI 失败分析文本（空字符串 = 无分析）",
             "nullable": true,
@@ -10942,6 +10957,7 @@
           "aiAnalysis",
           "artifacts",
           "triggerType",
+          "agentSessionId",
           "taskVersion",
           "traceId",
           "resolvedPackageUrl",

@@ -608,6 +608,13 @@ export class TaskExecutionResponseDto {
 
   @ApiProperty({
     nullable: true,
+    format: "uuid",
+    description: "该执行由哪个 Agent 会话触发（Agent 触发路径可空）",
+  })
+  agentSessionId: string | null;
+
+  @ApiProperty({
+    nullable: true,
     description: "本次运行重放所固定的配置快照版本",
   })
   taskVersion: string | null;
