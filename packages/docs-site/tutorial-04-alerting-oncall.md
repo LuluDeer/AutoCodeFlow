@@ -1,6 +1,6 @@
 # 教程 04 · 告警接入值班
 
-> 重组自 [docs/tutorials/04-alerting-oncall.md](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/tutorials/04-alerting-oncall.md)（DOC-06）。
+> 重组自 [docs/tutorials/04-alerting-oncall.md](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/tutorials/04-alerting-oncall.md)（DOC-06）。
 > 目标：平台事件与 Alertmanager 告警统一汇入值班群，每条告警自带 runbook。
 
 ## 0. 通知体系一张图
@@ -78,10 +78,10 @@ receivers:
 
 ### 3.3 告警规则从哪来
 
-仓库内置 [alerting-rules.yml](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/alerting-rules.yml)
+仓库内置 [alerting-rules.yml](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/observability/alerting-rules.yml)
 （调度器停摆/指标目标失联/队列积压/回调鉴权异常等，series 与源码逐字核对）。
 Prometheus 抓取（含 JWT 鉴权两个解法）与 Grafana 导入见
-[可观测性指南](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md)。
+[可观测性指南](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/observability/README.md)。
 
 ## 4. 让告警带上 runbook（FEAT-11 / OBS-02）
 
@@ -105,5 +105,5 @@ Prometheus 抓取（含 JWT 鉴权两个解法）与 Grafana 导入见
 
 ## 6. 下一步
 
-「从 0 到生产」四篇至此走完。更多运维主题见
-[运维手册](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/operations.md)。
+「从 0 到生产」前四篇至此走完，继续体验 AI Agent 执行声明式 SOP 请看 [教程 05 · SOP 生态演示](tutorial-05-sop-agent-demo)（全系列共五篇）。更多运维主题见
+[运维手册](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/operations.md)。

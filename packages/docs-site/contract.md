@@ -1,6 +1,6 @@
 # 回调与信封契约（contract-fixtures）
 
-> 重组自 [packages/contract-fixtures/README.md](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/packages/contract-fixtures/README.md)。
+> 重组自 [packages/contract-fixtures/README.md](https://github.com/LuluDeer/AutoCodeFlow/blob/main/packages/contract-fixtures/README.md)。
 
 `contract-fixtures` 是 AutoCodeFlow 四个客户端包（`acf-cli`、
 `mcp-server`、`autocodeflow-node-sdk`、`autoflow-sdk`）的**共享契约测试

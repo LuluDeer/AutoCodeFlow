@@ -1,6 +1,6 @@
 # 教程索引 — 从 0 到生产
 
-> 重组自 [docs/tutorials/](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/tutorials)（DOC-06）。
+> 重组自 [docs/tutorials/](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/tutorials)（DOC-06）。
 > 五篇教程按真实上线顺序编排：每篇可独立阅读，也可以从头跟到尾走完
 > 「建任务 → 依赖私服化 → 执行器扩容 → 告警值班 → Agent 接 SOP」的完整生产化路径。
 
@@ -14,16 +14,17 @@
 
 ## 阅读前提
 
-- 已按 [快速上手指南](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/quickstart.md)
+- 已按 [快速上手指南](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/quickstart.md)
   用 Docker Compose 启动了全栈（或至少 admin-api / admin-web / 一个执行器在线）。
-- 四篇教程互相独立，但 03/04 的部分操作需要 ADMIN 角色。
+- 五篇教程互相独立，但 03/04 的部分操作与 05 全程需要 ADMIN 角色
+  （SOP 的发布/指派 = 间接指令注入权，管理面收紧到 ADMIN）。
 
 ## 与参考文档的关系
 
 教程讲「操作路径」，参考文档讲「完整契约」：
 
-- [API 参考](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/api-reference.md) — 所有端点的请求/响应契约
-- [部署指南](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/deployment.md) — 生产环境部署、HTTPS、安全加固
-- [应用开发指南](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/app-development-guide.md) — 自定义执行器与任务脚本开发
-- [可观测性指南](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md) — Prometheus 抓取/Grafana/告警规则细节
-- [SDK 指南](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/sdk-guide.md) — 双 SDK 能力矩阵与发布流程
+- [API 参考](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/api-reference.md) — 所有端点的请求/响应契约
+- [部署指南](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/deployment.md) — 生产环境部署、HTTPS、安全加固
+- [应用开发指南](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/app-development-guide.md) — 自定义执行器与任务脚本开发
+- [可观测性指南](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/observability/README.md) — Prometheus 抓取/Grafana/告警规则细节
+- [SDK 指南](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/sdk-guide.md) — 双 SDK 能力矩阵与发布流程

@@ -1,6 +1,6 @@
 # 教程 01 · 第一个定时任务
 
-> 重组自 [docs/tutorials/01-first-scheduled-task.md](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/tutorials/01-first-scheduled-task.md)（DOC-06）。
+> 重组自 [docs/tutorials/01-first-scheduled-task.md](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/tutorials/01-first-scheduled-task.md)（DOC-06）。
 > 目标：从登录到看到第一个定时任务的执行结果，全程 ≤ 10 分钟。
 
 ## 0. 三个核心概念
@@ -74,7 +74,7 @@ return { message: msg, success: true };
 | 状态/时长 | 成功、失败、超时（TIMEOUT）等终态与耗时 |
 | 执行日志 | stdout/stderr 实时流；失败时含错误摘要 |
 | 重试链路（CORE-02） | Attempt #N of M 与下次重试时刻 |
-| traceId（OBS-01） | 开启 OTEL 后到 Jaeger 查全链路 |
+| traceId（OBS-01） | 需显式开启 `OTEL_ENABLED=true` 才会生成并传播；span 仅在 admin-api 进程内输出 `[trace]` 结构化日志（无 OTLP exporter），Jaeger UI 暂搜不到 |
 
 ## 6. 失败了怎么办
 

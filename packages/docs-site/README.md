@@ -20,8 +20,8 @@ VitePress 构建的 SDK 文档站，**独立目录、独立 lockfile**，不进�
   PR/push 的构建验证仍由 ci.yml 的 `docs-site-build` 承担。
 - **一次性前置**（仓库管理员）：Settings → Pages → Source 选
   「GitHub Actions」。
-- **权限**：deploy workflow 声明 `permissions: pages: write, id-token: write`
-  （Pages 部署 + OIDC 凭证换取的最小集）。
+- **权限**：deploy workflow 按最小权限拆分为 `build`（`contents: read`）与
+  `deploy`（`pages: write`、`id-token: write`、`actions: read`）。
 
 ## 内容来源（重组而非重写）
 
@@ -32,13 +32,13 @@ VitePress 构建的 SDK 文档站，**独立目录、独立 lockfile**，不进�
 | `sdk-node.md` | packages/autocodeflow-node-sdk/README.md + SDK 源码 |
 | `sdk-python.md` | packages/autoflow-sdk/README.md + SDK 源码 |
 | `capability-matrix.md` | docs/sdk-guide.md「能力矩阵（ECO-01）」21 项 + 差异裁定 |
-| `examples.md` | examples/ 四示例 README 聚合 + 仓库路径跳转 |
+| `examples.md` | examples/ 八组官方示例 README 聚合 + 仓库路径跳转 |
 | `contract.md` | packages/contract-fixtures/README.md + CallbackItemDto 字段表 |
 | `release.md` | docs/sdk-guide.md「版本与发布流程」+ 双 SDK README 发布节 |
 
 **内容纪律**：所有代码块与 API 名从 SDK 源码/既有文档搬运核对（ECO-01
-时逐行核对过，ECO-05 重建页时再次核对），不臆造 API；版本号写当前实值
-1.3.0。文档站是镜像视图——**内容修改请改源头文档**，再同步到本站。
+时逐行核对过，ECO-05 重建页时再次核对），不臆造 API；版本号随四包 lockstep
+同步更新（当前 `2.3.0`）。文档站是镜像视图——**内容修改请改源头文档**，再同步到本站。
 
 ## 本地运行
 
@@ -74,9 +74,9 @@ npm run preview    # 本地预览构建产物
 
 | 判据 | 源头 ↔ 站点 |
 |------|------------|
-| lockstep 版本号 | 双 SDK/mcp-server manifest + py `__version__` ↔ 站点各页「当前版本」 |
+| lockstep 版本号 | 四包（双 SDK / mcp-server / acf-cli）manifest + py `__version__` ↔ 站点各页「当前版本」 |
 | 截断常量 | SDK 源码 `ERROR_MESSAGE_MAX_LENGTH`/`LOGS_MAX_LENGTH` ↔ 站点「4 KB/512 KB」表述 |
-| failureReason 枚举 | admin `ExecutionFailureReason` ↔ py 白名单 ↔ 站点「九类」表述 |
+| failureReason 枚举 | admin `ExecutionFailureReason`（15 类全集）↔ py 白名单（12 类可上报子集）↔ 契约 `protocol.json` |
 | CallbackItemDto 字段 | admin DTO 源码 ↔ 站点 contract.md 字段表 |
 | env 注入表 | docs/sdk-guide.md ↔ 站点 getting-started.md 变量清单 |
 | 能力矩阵行 | docs/sdk-guide.md ↔ 站点 capability-matrix.md 逐行比对 +「N 项」表述 |

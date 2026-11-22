@@ -1,6 +1,6 @@
 # 回调示例任务（Python SDK）
 
-> **受众**：要接回调上报的 Python 开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：要接回调上报的 Python 开发者 · **状态**：稳定 · **最后核对**：2026-11-22
 
 演示 `autoflow-sdk` 的**主动回调**：任务运行中把阶段性成功/失败信息，
 用执行器注入的 per-execution token 上报给 Admin API。
@@ -61,8 +61,6 @@ export AUTOFLOW_ADMIN_API_URL=http://localhost:3105
 export AUTOFLOW_CALLBACK_TOKEN="<admin-api 签发的 v1. 回调 token>"
 export AUTOFLOW_EXECUTOR_ADDRESS=executor-python:8001
 python callback_report.py           # mode 缺省 success → report_success
-
-AUTOFLOW_SOURCE_MODE=ignore python callback_report.py 2>/dev/null
 AUTOFLOW_MODE=fail python callback_report.py            # → report_failure 后 re-raise
 ```
 
@@ -77,4 +75,4 @@ AUTOFLOW_MODE=fail python callback_report.py            # → report_failure 后
 | 成功上报 | `ctx.report_success(summary=..., duration_ms=...)` | `await ctx.reportSuccess({ summary, durationMs })` |
 | 失败上报 | `ctx.report_failure(e, failure_reason="script_error")` | `await ctx.reportFailure(e, { failureReason: "script_error" })` |
 | 批量/自定义字段 | `ctx.callback.report([{...}])` | `await ctx.http.post('/api/executions/callback', [{...}])` |
-| 不可用异常 | `CallbackDisabledError` | 请求方法 rejects `Error("HttpClient is disabled...")` |
+| 不可用异常 | `CallbackDisabledError` | 请求方法 rejects `HttpClientDisabledError`（继承 `Error`，消息含缺失变量名） |

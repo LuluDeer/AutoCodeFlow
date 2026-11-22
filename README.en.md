@@ -47,15 +47,15 @@ The script generates random secrets, starts an **isolated** local stack (it neve
 - API docs: http://127.0.0.1:3105/api/docs
 - Stop: `./scripts/demo.sh --down`; reset: `./scripts/demo.sh --reset`
 
-![demo dashboard](docs/assets/screenshots/en/demo-dashboard.png)
+![AutoCodeFlow admin dashboard after running the one-command demo, showing seeded tasks, success rate KPIs and live executor status](docs/assets/screenshots/en/dashboard.png)
 
 Create from a template → trigger → artifacts (no code required):
 
-![template run](docs/assets/screenshots/en/demo-template-run.png)
+![Execution detail view of a task instantiated from a built-in template, showing live logs and generated artifacts](docs/assets/screenshots/en/demo-template-run.png)
 
 **Task templates** — instantiate a runnable task without writing code:
 
-![task templates](docs/assets/screenshots/en/task-templates.png)
+![Built-in task templates gallery for instantiating scheduled backups, health checks and webhooks without writing code](docs/assets/screenshots/en/task-templates.png)
 
 ## 🖥️ Desktop Agent demo (Linux X11)
 
@@ -73,7 +73,7 @@ Screenshot-diagnosis loop: `./scripts/demo-desktop-agent-diagnose.sh` intentiona
 
 Center ops Agent: `node scripts/demo-ops-agent.mjs` — the real model calls `get_execution_stats`/`list_executions`/`get_execution_logs` in an `ops_watch` session and returns a readable analysis (AI provider required).
 
-![desktop agent demo](docs/assets/screenshots/zh/desktop-agent-sop.png)
+![Desktop Agent executing an SOP in a Linux X11 session, showing GUI actions, sandboxed trial and acceptance checks](docs/assets/screenshots/en/desktop-agent-sop.png)
 
 ## 🎯 Three ways to use it
 
@@ -100,7 +100,7 @@ Center ops Agent: `node scripts/demo-ops-agent.mjs` — the real model calls `ge
 
 > Desktop GUI status: Linux X11/XWayland is verified on real machines; Windows GUI is beta (focus/click/type/screenshot + app allow-list); macOS is recon only. See the [executor agent roadmap](docs/design/agent-and-deployment/06-roadmap.md).
 
-> **Status**: **v2.1.0** is the current platform release (2026-11-02); the desktop executor ships on its own line (`desktop-v1.11.0`). Self-hosted first — APIs may still change within 2.x, so pin a release tag for production. · **Last checked**: 2026-11-02
+> **Status**: **v2.3.0** is the current platform release (2026-11-22); the desktop executor ships on an independent release line (`desktop-v1.12.0`, 2026-11-09, keeping GitHub Latest for desktop auto-updates). Self-hosted first — APIs may still change within 2.x, so pin a release tag for production. · **Last checked**: 2026-11-22
 
 ## 🖼️ Screenshots
 
@@ -112,35 +112,43 @@ Center ops Agent: `node scripts/demo-ops-agent.mjs` — the real model calls `ge
 
 **Dashboard** — task totals, success rate, execution trend, scheduler latency and executor resources.
 
-![Dashboard](docs/assets/screenshots/en/dashboard.png)
+![AutoCodeFlow admin dashboard displaying task totals, success rate, execution trends, scheduler latency and executor resources](docs/assets/screenshots/en/dashboard.png)
 
 **Task scheduling** — cron / fixed-rate / manual tasks with status, next run and runtime.
 
-![Task scheduling](docs/assets/screenshots/en/tasks.png)
+![Task scheduling list showing cron, fixed-rate and manual tasks with run status, next fire time and runtime](docs/assets/screenshots/en/tasks.png)
 
 **Execution history** — every run, filterable by status, executor and time window.
 
-![Execution history](docs/assets/screenshots/en/executions.png)
+![Execution history table with filters by status, executor and time range](docs/assets/screenshots/en/executions.png)
 
 **Execution detail** — logs, timeline, retry chain, parameters and artifacts.
 
-![Execution detail](docs/assets/screenshots/en/execution-detail.png)
+![Execution detail page showing streaming logs, timeline, retry chain, parameters and downloadable artifacts](docs/assets/screenshots/en/execution-detail.png)
 
 **Executors** — online state, CPU / memory / disk, heartbeat and task concurrency.
 
-![Executors](docs/assets/screenshots/en/executors.png)
+![Executor fleet overview displaying online status, CPU, memory, disk usage, heartbeat and task concurrency](docs/assets/screenshots/en/executors.png)
 
 **Executor detail** — resource trend, success rate and token rotation.
 
-![Executor detail](docs/assets/screenshots/en/executor-detail.png)
+![Executor detail page displaying resource trends, success rate metrics and token rotation controls](docs/assets/screenshots/en/executor-detail.png)
 
 **Task detail** — glue script, dependency DAG, runs, version history and rollback.
 
-![Task detail](docs/assets/screenshots/en/task-detail.png)
+![Task detail page showing glue script, dependency DAG, run history, version snapshots and rollback](docs/assets/screenshots/en/task-detail.png)
 
 **Applications** — app versions, deployment state and bulk upgrade.
 
-![Applications](docs/assets/screenshots/en/applications.png)
+![Applications management view listing app versions, deployment status and bulk upgrade actions](docs/assets/screenshots/en/applications.png)
+
+**SOPs** — declarative goal contracts with capability boundaries, immutable versions and agent assignments.
+
+![SOP management page listing published Standard Operating Procedures with capability domains, versions and assignment status](docs/assets/screenshots/en/sops.png)
+
+**Audit logs** — filterable operator trail across tasks, deployments, credentials and approvals.
+
+![Audit logs page displaying filterable operation trails across tasks, deployments, credentials and approvals](docs/assets/screenshots/en/audit.png)
 
 ### Desktop executor
 
@@ -148,19 +156,19 @@ An Electron executor that installs on any machine, stays in the system tray, reg
 
 **Setup wizard** — five steps: connection, machine info, download source, confirmation.
 
-![Desktop executor setup wizard](docs/assets/screenshots/en/executor-desktop/wizard.png)
+![Desktop executor five-step setup wizard for Admin API connection, machine details and runtime mirror settings](docs/assets/screenshots/en/executor-desktop/wizard.png)
 
 **Status** — online state, heartbeat, live run logs and recent failures.
 
-![Desktop executor status](docs/assets/screenshots/en/executor-desktop/status-live.png)
+![Desktop executor status monitor displaying online heartbeat, live task logs and recent failures](docs/assets/screenshots/en/executor-desktop/status-live.png)
 
 **Run history** — runs grouped by task with failure reasons inline.
 
-![Desktop executor history](docs/assets/screenshots/en/executor-desktop/history.png)
+![Desktop executor run history grouped by task with inline failure reasons and durations](docs/assets/screenshots/en/executor-desktop/history.png)
 
 **Local apps** — deployed apps, side-by-side versions, uninstall.
 
-![Desktop executor local apps](docs/assets/screenshots/en/executor-desktop/apps-detail.png)
+![Desktop executor local applications panel showing deployed versions, status and uninstall controls](docs/assets/screenshots/en/executor-desktop/apps-detail.png)
 
 > Chinese UI screenshots live in `docs/assets/screenshots/zh/`.
 
@@ -422,7 +430,7 @@ Capability matrix and known divergences: [SDK guide](docs/sdk-guide.md). Runnabl
 - **User JWT (needed for ADMIN-only tools)** — there is no "copy my token" button in the web UI; run `acf login` and read `token` (15 min) from `~/.config/acf-cli/config.json`. Add `AUTOCODEFLOW_API_REFRESH_TOKEN` (the `refreshToken` field, 30 days) so the server refreshes on 401 instead of needing a restart.
 
 56 tools cover tasks, executions, executors, app deployments, SOPs, audit and approvals; permissions are enforced server-side from the API-key scope or the JWT role.
-See [packages/mcp-server/README.md](packages/mcp-server/README.md).
+See [packages/mcp-server/README.md](packages/mcp-server/README.md) and the [MCP tools map](docs/atlas/05-interfaces/mcp-tools.md).
 
 ## 📦 Tech stack
 
@@ -438,28 +446,35 @@ See [packages/mcp-server/README.md](packages/mcp-server/README.md).
 
 ## 🗂️ Repository layout
 
-```
+```text
 AutoCodeFlow/
 ├── apps/
-│   ├── admin-api/         control plane (REST + SSE + scheduler + audit)
-│   ├── admin-web/         admin console SPA
-│   ├── executor-node/     Node.js executor (:8002)
-│   ├── executor-python/   Python executor (:8001, uv multi-version)
-│   ├── executor-desktop/  Electron desktop executor (tray resident)
-│   ├── registry-npm/      private npm registry config (Verdaccio)
-│   └── registry-pypi/     private PyPI registry (FastAPI)
+│   ├── admin-api/            control plane (REST + SSE + scheduler + audit)
+│   ├── admin-web/            admin console SPA
+│   ├── executor-node/        Node.js executor (:8002)
+│   ├── executor-python/      Python executor (:8001, uv multi-version)
+│   ├── executor-desktop/     Electron desktop executor (tray resident)
+│   ├── registry-npm/         private npm registry config (Verdaccio)
+│   └── registry-pypi/        private PyPI registry (FastAPI)
 ├── packages/
-│   ├── acf-cli/           the acf command line tool
-│   ├── mcp-server/        MCP server for AI agents
-│   ├── autocodeflow-node-sdk/  Node.js SDK
-│   ├── autoflow-sdk/      Python SDK
-│   ├── executor-protocol/ executor protocol contract
-│   └── docs-site/         VitePress documentation site
-├── docs/                  documentation (entry: docs/README.md) · media: docs/assets/
-├── examples/              runnable official examples
-├── infra/                 reverse proxy, monitoring, infrastructure compose
-├── scripts/               build, verification, self-test and guard scripts
-└── deploy.sh              one-command deployment (source / docker)
+│   ├── acf-cli/              the acf command line tool (@autocodeflow/cli)
+│   ├── mcp-server/           MCP server for AI agents (56 tools)
+│   ├── autocodeflow-node-sdk/ Node.js SDK (@autocodeflow/sdk)
+│   ├── autoflow-sdk/         Python SDK (autoflow-sdk)
+│   ├── autocodeflow-ai/      Python AI helper library (0.3.2, frozen in-repo)
+│   ├── autocodeflow-db/      Python DB helper library (0.3.2, unpublished)
+│   ├── autocodeflow-http/    Python HTTP helper library (0.3.2, frozen in-repo)
+│   ├── autocodeflow-notify/  Python notify helper library (0.3.2, frozen in-repo)
+│   ├── contract-fixtures/    shared client envelope & serialization fixtures
+│   ├── executor-protocol/    executor protocol contract (zod + pydantic schemas)
+│   └── docs-site/            VitePress documentation site
+├── deploy/                   frp / gost / local deployment overlays & runbooks
+├── design-system/            brand assets (fox mascot, hexagon tray mark, tokens)
+├── docs/                     documentation (entry: docs/README.md) · media: docs/assets/
+├── examples/                 8 runnable official examples
+├── infra/                    reverse proxy, monitoring, infrastructure compose
+├── scripts/                  build, verification, self-test and guard scripts
+└── deploy.sh                 one-command deployment (source / docker)
 ```
 
 Only repository-level files live at the root (README / LICENSE / CHANGELOG / CONTRIBUTING / SECURITY / deployment scripts and compose files).
@@ -471,7 +486,7 @@ enforced by the `DOC-GOV` CI guard (`scripts/docs/check-docs.mjs`: dead links / 
 | Document | Description |
 |---|---|
 | [**Documentation hub**](docs/README.md) | **Start here** — every doc indexed by role |
-| [Upgrading guide](docs/UPGRADING.md) | v1.15 → v2.0 migration matrix, breaking changes and rollback |
+| [Upgrading guide](docs/UPGRADING.md) | v1.15 → v2.3 migration matrix, breaking changes and rollback |
 | [Roadmap](docs/ROADMAP.md) | Current focus, P0–P2 and explicit non-goals |
 | [Quick start](docs/quickstart.md) | First scheduled task in five minutes |
 | [Deployment guide](docs/deployment.md) | Requirements, environment variables, upgrade and rollback |
@@ -489,7 +504,7 @@ enforced by the `DOC-GOV` CI guard (`scripts/docs/check-docs.mjs`: dead links / 
 
 - **RBAC** — project-scoped roles (owner / developer / viewer), route-level guards enforced in CI (`check-route-authz-matrix`).
 - **Credentials** — scoped API keys, per-execution callback tokens, executor shared-token rotation, TOTP 2FA, OIDC SSO.
-- **Isolation** — optional bubblewrap sandbox for Python tasks (secure overlay) (user namespaces, read-only root, private tmp) and a child-process env allowlist.
+- **Isolation** — optional bubblewrap sandbox for Python tasks (secure overlay: user namespaces, read-only root, private tmp) and a child-process env allowlist.
 - **Network** — all outbound requests go through an SSRF guard with DNS pinning (private ranges denied by default, opt-in per integration).
 - **Audit** — full operation audit trail, two-person approval for deployments, replayable configuration history.
 - **Supply chain** — dependency review log, secret scanning (gitleaks), multi-arch image build gate, release hygiene audit.
@@ -526,8 +541,6 @@ Versions up to v1.3.0 remain MIT.
 ---
 
 <p align="center"><sub>© 2026 LuluDeer · built with ❤️ in TypeScript &amp; Python</sub></p>
-
----
 
 
 ---

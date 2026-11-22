@@ -51,15 +51,15 @@ cd AutoCodeFlow
 - API 文档：http://127.0.0.1:3105/api/docs
 - 停止：`./scripts/demo.sh --down`；重置：`./scripts/demo.sh --reset`
 
-![demo dashboard](docs/assets/screenshots/zh/demo-dashboard.png)
+![一键 demo 启动后的 AutoCodeFlow 控制台仪表盘，展示预置演示任务、成功率指标与执行器状态](docs/assets/screenshots/zh/dashboard.png)
 
 从模板创建 → 触发 → 产物（无需写代码）：
 
-![template run](docs/assets/screenshots/zh/demo-template-run.png)
+![从内置任务模板一键创建并触发后的执行详情页，展示实时日志与生成的产物文件](docs/assets/screenshots/zh/demo-template-run.png)
 
 **任务模板** — 不写代码，直接实例化一个可运行任务：
 
-![任务模板](docs/assets/screenshots/zh/task-templates.png)
+![内置任务模板库页面，无需写代码即可一键实例化定时备份、健康巡检与 Webhook 探活任务](docs/assets/screenshots/zh/task-templates.png)
 
 ## 🖥️ 桌面 Agent 演示（Linux X11）
 
@@ -77,7 +77,7 @@ cd AutoCodeFlow
 
 中台 ops Agent：`node scripts/demo-ops-agent.mjs`——真实模型在 `ops_watch` 会话里调 `get_execution_stats`/`list_executions`/`get_execution_logs`，对 demo 任务给出可读结论（需 AI provider）。
 
-![desktop agent demo](docs/assets/screenshots/zh/desktop-agent-sop.png)
+![桌面 Agent 在 Linux X11 会话中执行 SOP 的演示界面，展示 GUI 操作、沙箱试跑与验收闭环](docs/assets/screenshots/zh/desktop-agent-sop.png)
 
 ## 🎯 三种用法
 
@@ -104,7 +104,7 @@ cd AutoCodeFlow
 
 > 桌面 GUI 能力现状：Linux X11/XWayland 已真机验收；Windows GUI 为 beta（focus/click/type/screenshot + 应用白名单）；macOS 仅侦察。详见 [执行器 Agent 路线图](docs/design/agent-and-deployment/06-roadmap.md)。
 
-> **Status**：当前平台版本为 **v2.1.0**（2026-11-02 发布）；桌面执行器独立发版（`desktop-v1.11.0`）。self-hosted first——2.x 内 API 仍可能变化，生产使用请钉 release tag。 · **最后核对**：2026-11-02
+> **Status**：当前平台版本为 **v2.3.0**（2026-11-22 发布）；桌面执行器独立发版（`desktop-v1.12.0`，2026-11-09，保留 GitHub Latest 以支持桌面端自动更新）。self-hosted first——2.x 内 API 仍可能变化，生产使用请钉 release tag。 · **最后核对**：2026-11-22
 
 ## 🖼️ 界面一览
 
@@ -116,35 +116,43 @@ cd AutoCodeFlow
 
 **控制台** — 任务总量、成功率、执行趋势、调度延迟与执行器资源。
 
-![控制台](docs/assets/screenshots/zh/dashboard.png)
+![AutoCodeFlow 管理台控制台页面，展示任务总量、成功率、执行趋势、调度延迟与执行器资源](docs/assets/screenshots/zh/dashboard.png)
 
 **任务调度** — Cron / 固定频率 / 手动任务，状态、下次执行与运行时一目了然。
 
-![任务调度](docs/assets/screenshots/zh/tasks.png)
+![任务调度列表页面，展示 Cron、固定频率与手动任务的状态、下次执行时间与运行时](docs/assets/screenshots/zh/tasks.png)
 
 **执行记录** — 全量执行历史，可按状态、执行器与时间窗口过滤。
 
-![执行记录](docs/assets/screenshots/zh/executions.png)
+![执行记录列表页面，支持按状态、执行器与时间窗口筛选历史运行](docs/assets/screenshots/zh/executions.png)
 
 **执行详情** — 执行日志、时间线、重试链、参数与产物。
 
-![执行详情](docs/assets/screenshots/zh/execution-detail.png)
+![执行详情页面，展示实时日志流、执行时间线、重试链、触发参数与可下载产物](docs/assets/screenshots/zh/execution-detail.png)
 
 **执行器** — 在线状态、CPU / 内存 / 磁盘、心跳与任务并发。
 
-![执行器](docs/assets/screenshots/zh/executors.png)
+![执行器集群列表页面，展示各节点在线状态、CPU、内存、磁盘、心跳与任务并发数](docs/assets/screenshots/zh/executors.png)
 
 **执行器详情** — 资源趋势、成功率与令牌轮换。
 
-![执行器详情](docs/assets/screenshots/zh/executor-detail.png)
+![执行器详情页面，展示资源使用趋势、成功率统计与令牌轮换操作](docs/assets/screenshots/zh/executor-detail.png)
 
 **任务详情** — Glue 脚本、依赖 DAG、执行记录、版本历史与回滚。
 
-![任务详情](docs/assets/screenshots/zh/task-detail.png)
+![任务详情页面，展示 Glue 脚本、依赖 DAG、执行记录、版本历史与一键回滚](docs/assets/screenshots/zh/task-detail.png)
 
 **应用管理** — 应用版本、部署状态与批量升级。
 
-![应用管理](docs/assets/screenshots/zh/applications.png)
+![应用管理页面，展示应用版本、部署状态与批量升级操作](docs/assets/screenshots/zh/applications.png)
+
+**SOP 管理** — 声明式目标契约、能力域边界、不可变版本与 Agent 指派追踪。
+
+![SOP 管理页面，展示已发布的标准作业程序、能力域、不可变版本与 Agent 指派状态](docs/assets/screenshots/zh/sops.png)
+
+**审计日志** — 任务、部署、凭据与审批的全量操作留痕与筛选检索。
+
+![审计日志页面，展示任务、部署、凭据与审批全量操作记录及筛选条件](docs/assets/screenshots/zh/audit.png)
 
 ### 执行器（executor-desktop）
 
@@ -152,21 +160,21 @@ Electron 桌面执行器：装在任何一台机器上，常驻系统托盘，�
 
 **连接向导** — 5 步完成连接、本机信息、下载源与确认。
 
-![桌面执行器连接向导](docs/assets/screenshots/zh/executor-desktop/wizard.png)
+![桌面执行器五步连接向导界面，引导完成 Admin API 地址、本机信息与下载源配置](docs/assets/screenshots/zh/executor-desktop/wizard.png)
 
 **状态监控** — 在线状态、心跳、实时运行日志与最近失败。
 
-![桌面执行器状态监控](docs/assets/screenshots/zh/executor-desktop/status-live.png)
+![桌面执行器状态监控界面，展示在线心跳、实时运行日志与最近失败记录](docs/assets/screenshots/zh/executor-desktop/status-live.png)
 
 **执行历史** — 按任务分组的运行记录，失败原因直接可见。
 
-![桌面执行器执行历史](docs/assets/screenshots/zh/executor-desktop/history.png)
+![桌面执行器执行历史界面，按任务分组展示历史运行状态与失败原因](docs/assets/screenshots/zh/executor-desktop/history.png)
 
 **本地应用** — 已部署应用、多版本并存与卸载。
 
-![桌面执行器本地应用](docs/assets/screenshots/zh/executor-desktop/apps-detail.png)
+![桌面执行器本地应用管理界面，展示已部署应用版本、运行状态与卸载入口](docs/assets/screenshots/zh/executor-desktop/apps-detail.png)
 
-> 英文界面截图见 [English](#english) 章节（`docs/assets/screenshots/en/`）。
+> 英文界面截图见 [English](README.md#english) 章节（`docs/assets/screenshots/en/`）。
 
 ## 🏗️ 系统架构
 
@@ -441,28 +449,35 @@ ctx.report_success(summary="etl done", duration_ms=412)
 
 ## 🗂️ 仓库结构
 
-```
+```text
 AutoCodeFlow/
 ├── apps/
-│   ├── admin-api/         控制面后端（REST + SSE + 调度 + 审计）
-│   ├── admin-web/         管理台 SPA
-│   ├── executor-node/     Node.js 执行器（:8002）
-│   ├── executor-python/   Python 执行器（:8001，uv 多版本）
-│   ├── executor-desktop/  Electron 桌面执行器（托盘常驻）
-│   ├── registry-npm/      私有 npm 仓库（Verdaccio 配置）
-│   └── registry-pypi/     私有 PyPI 仓库（FastAPI）
+│   ├── admin-api/            控制面后端（REST + SSE + 调度 + 审计）
+│   ├── admin-web/            管理台 SPA
+│   ├── executor-node/        Node.js 执行器（:8002）
+│   ├── executor-python/      Python 执行器（:8001，uv 多版本）
+│   ├── executor-desktop/     Electron 桌面执行器（托盘常驻）
+│   ├── registry-npm/         私有 npm 仓库（Verdaccio 配置）
+│   └── registry-pypi/        私有 PyPI 仓库（FastAPI）
 ├── packages/
-│   ├── acf-cli/           acf 命令行工具
-│   ├── mcp-server/        MCP Server（AI Agent 集成）
-│   ├── autocodeflow-node-sdk/  Node.js SDK
-│   ├── autoflow-sdk/      Python SDK
-│   ├── executor-protocol/ 执行器协议契约
-│   └── docs-site/         VitePress 文档站
-├── docs/                  文档（入口：docs/README.md）· 展示图：docs/assets/
-├── examples/              可运行的官方示例
-├── infra/                 反向代理、监控、基础设施 compose
-├── scripts/               构建、校验、自检与守卫脚本
-└── deploy.sh              一键部署（源码 / Docker 双模）
+│   ├── acf-cli/              acf 命令行工具（@autocodeflow/cli）
+│   ├── mcp-server/           MCP Server（AI Agent 集成，56 个工具）
+│   ├── autocodeflow-node-sdk/ Node.js SDK（@autocodeflow/sdk）
+│   ├── autoflow-sdk/         Python SDK（autoflow-sdk）
+│   ├── autocodeflow-ai/      Python AI 辅助库（0.3.2，仓内冻结）
+│   ├── autocodeflow-db/      Python 数据库辅助库（0.3.2，暂未发公共 PyPI）
+│   ├── autocodeflow-http/    Python HTTP 辅助库（0.3.2，仓内冻结）
+│   ├── autocodeflow-notify/  Python 通知辅助库（0.3.2，仓内冻结）
+│   ├── contract-fixtures/    四端共享响应信封与序列化契约向量
+│   ├── executor-protocol/    执行器协议契约（zod + pydantic 双生成）
+│   └── docs-site/            VitePress 文档站
+├── deploy/                   frp / gost / 单机部署叠加配置与指南
+├── design-system/            品牌资产（狐狸形象、六边形托盘、设计令牌）
+├── docs/                     文档（入口：docs/README.md）· 展示图：docs/assets/
+├── examples/                 8 组可运行的官方示例
+├── infra/                    反向代理、监控、基础设施 compose
+├── scripts/                  构建、校验、自检与守卫脚本
+└── deploy.sh                 一键部署（源码 / Docker 双模）
 ```
 
 根目录只放仓库级文件（README / LICENSE / CHANGELOG / CONTRIBUTING / SECURITY / 部署脚本与 compose），
@@ -474,7 +489,7 @@ AutoCodeFlow/
 | 文档 | 说明 |
 |---|---|
 | [**文档中心**](docs/README.md) | **从这里开始**——按角色索引全部文档 |
-| [升级指南](docs/UPGRADING.md) | v1.15 → v2.0 迁移矩阵、破坏性变更与回滚 |
+| [升级指南](docs/UPGRADING.md) | v1.15 → v2.3 迁移矩阵、破坏性变更与回滚 |
 | [路线图](docs/ROADMAP.md) | 当前重点、P0–P2 与明确不做清单 |
 | [快速上手](docs/quickstart.md) | 5 分钟跑通第一条定时任务 |
 | [部署指南](docs/deployment.md) | 系统要求、环境变量、升级与回滚 |
@@ -492,7 +507,7 @@ AutoCodeFlow/
 
 - **RBAC** — 项目级角色（owner / developer / viewer），路由级门控与 CI 守卫（`check-route-authz-matrix`）。
 - **凭证** — 作用域 API Key、per-execution 回调令牌、执行器共享令牌轮换、TOTP 双因子、OIDC SSO。
-- **隔离** — Python 任务可选 bubblewrap 沙箱（用户命名空间 + 只读根 + PrivateTmp）；子进程环境变量白名单。
+- **隔离** — Python 任务可选 bubblewrap 沙箱（secure overlay：用户命名空间 + 只读根 + PrivateTmp）；子进程环境变量白名单。
 - **网络** — 出站请求统一 SSRF 守卫 + DNS pin（私网默认拒绝，按集成按需开启）。
 - **审计** — 全量操作审计日志、部署第二人审批、可回溯的配置历史。
 - **供应链** — 依赖审计日志、密钥扫描（gitleaks）、镜像多架构构建闸、发布卫生审计。

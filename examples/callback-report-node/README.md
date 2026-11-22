@@ -1,6 +1,6 @@
 # 回调示例任务（Node SDK）
 
-> **受众**：要接回调上报的 Node 开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：要接回调上报的 Node 开发者 · **状态**：稳定 · **最后核对**：2026-11-22
 
 演示 `@autocodeflow/sdk` 的**主动回调**：任务运行中把阶段性成功/失败信息，
 用执行器注入的 per-execution token 上报给 Admin API。
@@ -21,7 +21,7 @@
 
 平台自带的 executor-node / executor-python 均已注入上述变量。**旧版自建
 执行器**不注入 → `ctx.http.enabled` 为 `false`，任何请求方法 rejects
-`Error("HttpClient is disabled...")`（fail-closed）。本示例在不可回调时
+`HttpClientDisabledError`（继承 `Error`，消息含缺失变量名，fail-closed）。本示例在不可回调时
 降级为"只打日志、继续执行"，正好演示能力探测的正确姿势。
 
 ## 运行
@@ -80,4 +80,4 @@ AUTOFLOW_MODE=fail node callback_report.js   # → reportFailure 后 re-throw
 | 成功上报 | `await ctx.reportSuccess({ summary, durationMs })` | `ctx.report_success(summary=..., duration_ms=...)` |
 | 失败上报 | `await ctx.reportFailure(e, { failureReason: "script_error" })` | `ctx.report_failure(e, failure_reason="script_error")` |
 | 批量/自定义字段 | `await ctx.http.post('/api/executions/callback', [{...}])` | `ctx.callback.report([{...}])` |
-| 不可用异常 | 请求方法 rejects `Error("HttpClient is disabled...")` | `CallbackDisabledError` |
+| 不可用异常 | 请求方法 rejects `HttpClientDisabledError` | `CallbackDisabledError` |

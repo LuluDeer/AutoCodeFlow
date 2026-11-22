@@ -1,6 +1,6 @@
 # 桌面自动化示例任务集合
 
-> **受众**：要做桌面自动化的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：要做桌面自动化的开发者 · **状态**：稳定 · **最后核对**：2026-11-22
 
 这个目录包含了使用 AutoCodeFlow 实现桌面自动化的示例任务，类似于影刀（RPA）的功能。
 
@@ -331,7 +331,7 @@ curl -X POST http://<HOST>:3105/api/applications/upload \
   -F "file=@my-app-1.0.0.zip"
 ```
 
-> 完整规范见 [`.qoder/skills/acf-python-task-package/SKILL.md`](../../docs/skills/python-task-package/SKILL.md)
+> 完整规范见 [`docs/skills/python-task-package/SKILL.md`](../../docs/skills/python-task-package/SKILL.md)
 > 与 [`docs/autoapp-skill.md`](../../docs/autoapp-skill.md)。
 
 ### 方式四：本地测试
@@ -464,17 +464,14 @@ python browser_automation.py
 
 ### Q: 为什么我传的参数不生效？
 
-A: 这是**参数键名大小写**导致的静默失效，最隐蔽的一类问题：
+A: 常见原因是**旧版 SDK / 直接索引 `ctx.params` 时的参数键名大小写不一致**：
 
-- 执行器注入时把键名**大写**：`AUTOFLOW_{k.upper()}`
-- Python SDK 读回时把键名**小写**：`params[...lower()]`
+- 执行器逐键注入时把键名转**大写**：`AUTOFLOW_{k.upper()}`（协议 v5 起同时注入类型化通道 `AUTOFLOW_PARAMS_JSON`）
+- Python SDK 构造 `ctx.params` 时把键名归一化为**小写**：`params[...lower()]`
 
-于是任务配置里写成 camelCase 的键（`sourceDir`），在 `ctx.params` 里只以小写
-形态（`sourcedir`）存在，脚本按原样 `ctx.get_param("sourceDir")` 恒为 `None`，
-**静默落回代码里的默认值**——不报错，只是参数被忽略。
+**v2.0.0（SDK-DX-09）起**：Python `ctx.get_param()` 与 Node `ctx.getParam()` 均已支持**大小写不敏感**匹配（精确命中优先，再按大写等价回落），因此 `ctx.get_param("sourceDir")` 与 `ctx.get_param("sourcedir")` 都能正常命中。但如果你仍在使用 `< v2.0.0` 旧版 SDK、或直接写 `ctx.params["sourceDir"]` 索引字典，仍会因键名小写化拿到 `None` 并静默回落默认值。
 
-**建议**：顶层参数名一律用**全小写**（`sourcedir` / `createtestfiles`）。示例脚本
-同时做了一次小写回退查找作为兜底，但不要依赖它。
+**建议**：统一使用 `ctx.get_param(...)` / `ctx.getParam(...)` 读取参数，且顶层参数名推荐保持全小写（如 `sourcedir` / `createtestfiles`）以兼容旧版执行器与裸环境变量读取。
 
 ### Q: 任务失败了，为什么平台显示成功？
 
@@ -570,4 +567,4 @@ A: 平台只接受**严格 5 段**（`分 时 日 月 周`）、**纯数字**的
 
 ## 📄 许可证
 
-本项目采用 MIT 许可证。
+本目录示例代码随仓库提供；AutoCodeFlow 自 v1.4.0 起采用分组件许可（平台核心 AGPL-3.0-only，客户端 SDK / 工具 / 协议 MIT），详见仓库根 [LICENSE](../../LICENSE)。

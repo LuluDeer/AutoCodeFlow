@@ -1,5 +1,7 @@
 # autocodeflow-ai
 
+> **版本与发布状态**：`0.3.2`（独立版本线，仓内冻结，**不对外发布至公共 PyPI**；详见 `scripts/version-lines.json`）。
+
 AutoCodeFlow 任务脚本的 AI 分析辅助库：为任务失败日志提供**根因分析**
 （OpenAI / Ollama 后端，基于 openai SDK + httpx）。
 
@@ -20,10 +22,15 @@ AutoCodeFlow 任务脚本的 AI 分析辅助库：为任务失败日志提供**�
 
 ## 安装
 
+本包未发布至公共 PyPI，请从本仓库源码安装，或先构建并推送至私有 PyPI（`apps/registry-pypi`）后安装：
+
 ```bash
-pip install autocodeflow-ai
-# 或作为任务依赖（AutoCodeFlow 任务 requirements 字段）：
-#   requirements: ["autocodeflow-ai"]
+# 方式一：从本仓库根目录源码安装
+pip install -e packages/autocodeflow-ai
+
+# 方式二：上传至私有 PyPI 后安装
+pip install --index-url http://<registry-pypi-host>:8003/simple/ autocodeflow-ai
+# 若在任务 requirements 中声明 ["autocodeflow-ai"]，需先将 wheel 发布到执行器所配置的私有 PyPI
 ```
 
 ## 最小示例

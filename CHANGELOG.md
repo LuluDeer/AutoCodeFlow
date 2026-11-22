@@ -94,8 +94,6 @@
 * **ai,agent,deploy,deps,guards:** OSS 对照调研第二批 ([7895ba9](https://github.com/LuluDeer/AutoCodeFlow/commit/7895ba9370a413c55e3c88b4cacf71dcb04cdebc))
 * **brand:** 中台与桌面把狐狸放到产品形象位 ([f2fd8c9](https://github.com/LuluDeer/AutoCodeFlow/commit/f2fd8c97f578a83cce4be3e8ede6c2924e4d720a))
 * **brand:** 狐狸形象落地——应用图标/中台 favicon/文档站 logo，托盘保留六边形 ([95fbe67](https://github.com/LuluDeer/AutoCodeFlow/commit/95fbe67b5762833756fb8645f622cb51f4b36e31))
-* **deploy:** --project / --overlay——修「部署报成功但线上没变」 ([3159ad8](https://github.com/LuluDeer/AutoCodeFlow/commit/3159ad868244bf2a8c2727e31bd3490c859dd57d))
-* **deploy:** --project / --overlay——修「部署报成功但线上没变」 ([5d303e7](https://github.com/LuluDeer/AutoCodeFlow/commit/5d303e7fd625b942e182c08606543df7d28ced66))
 * **deploy:** --project / --overlay——修「部署报成功但线上没变」 ([07ea00e](https://github.com/LuluDeer/AutoCodeFlow/commit/07ea00ef5ad34e9634c17e792a72232e9250df3e))
 * **guards:** 事件尺寸上限一致性守卫——把**只存在于注释里**的推导变成机械保证（N13） ([d53a8d7](https://github.com/LuluDeer/AutoCodeFlow/commit/d53a8d77a8dc3a26c7e5e1593498e14e159eb43a))
 * OSS 对照调研首批落地（安全/正确性/工程纪律 11 项） ([65a90a7](https://github.com/LuluDeer/AutoCodeFlow/commit/65a90a70b406efa3c6a35826577c3c5d18d9a65e))
@@ -109,7 +107,6 @@
 * **deploy:** $name 紧跟全角括号 → ${name}（macOS bash 3.2 会当场中止） ([fb462bc](https://github.com/LuluDeer/AutoCodeFlow/commit/fb462bc03bc0d46063f218d2df54e5ca1c717084))
 * **deploy:** frpc poolCount 200 → 0——关闭预热池，止住「随机 404」 ([ff2d182](https://github.com/LuluDeer/AutoCodeFlow/commit/ff2d18296ee8facbf0ee93af7f60fa470cd91e32))
 * **executor:** 包下载同源改写 + 连接期重试，pull 长轮询语义修复，补单机部署方案 ([a505f39](https://github.com/LuluDeer/AutoCodeFlow/commit/a505f39dd1164062963eed22ddddd8ab9c1d2178))
-* **executor:** 包缓存可观测性 + 5 处真实缺陷修复 ([4a74b0f](https://github.com/LuluDeer/AutoCodeFlow/commit/4a74b0f05b76473035057b19276bae09d43a0f4a))
 * **executor:** 包缓存可观测性 + 5 处真实缺陷修复 ([#137](https://github.com/LuluDeer/AutoCodeFlow/issues/137)) ([4e3a07a](https://github.com/LuluDeer/AutoCodeFlow/commit/4e3a07a208d0e2aa564f652398c7d4a5a1741819))
 * **frp:** loginFailExit=false —— frps 重启不再打死客户端 ([8a58516](https://github.com/LuluDeer/AutoCodeFlow/commit/8a5851620a52a7b6ebea1fc37af949a4fc29789d))
 * **guards:** 补齐三条守卫缺口（image-pinned / 测试数字 / shell 多字节变量） ([1998cfe](https://github.com/LuluDeer/AutoCodeFlow/commit/1998cfe327308e22667ad2dab8b9728d84ed731e))
@@ -230,7 +227,6 @@
 * **mcp-server:** 收紧 8 个枚举入参并为 params:{} 恢复「无覆盖」语义（R107-A1） ([58a551e](https://github.com/LuluDeer/AutoCodeFlow/commit/58a551e486f26a75be7b676249eef4d04bb9df07))
 * **mcp-server:** 空载荷不再伪装成成功——get_execution / timeline 补 isError（R112） ([5c42f74](https://github.com/LuluDeer/AutoCodeFlow/commit/5c42f74e321559a84e4c8771a3c03abbf5bd03ba))
 * **notification:** 出站面审计——未注册渠道静默丢告警、渠道开关失效、读面 ?key= 明文（R150-A1） ([ce67bc7](https://github.com/LuluDeer/AutoCodeFlow/commit/ce67bc7ededcfd5587a9c0fa29c15374ce1a84b5))
-* **release:** atlas 的两处 lockstep 版本声明纳入 release-please 广播 ([fbdc812](https://github.com/LuluDeer/AutoCodeFlow/commit/fbdc8120c49db8acc0512c818341ab9f13fefd54))
 * **release:** 把 atlas 的两处 lockstep 版本声明纳入 release-please 广播 ([53f0f22](https://github.com/LuluDeer/AutoCodeFlow/commit/53f0f222974cc93d10131ceba8239219ca19ea34))
 * **sdk:** 对外 SDK 健壮性审计——错误面统一 / 尊重 Retry-After / 回调路径判定修正（R177-A1） ([103cff3](https://github.com/LuluDeer/AutoCodeFlow/commit/103cff341f0cfd8fc1cc902fae85e70d8d157996))
 * **sdk:** 终态回调的单次重试等待封顶 5s——别让「为可靠性做的重试」把终态丢掉（R191） ([135f4b3](https://github.com/LuluDeer/AutoCodeFlow/commit/135f4b332838e632a76643870b2b183de80ed7fb))
@@ -274,7 +270,6 @@ develop 直推 commit」与 release-please 的遍历交互。此处按 1.11.0 �
 
 * **api:** 游标分页加性过渡 / 跨实例配置缓存失效 / 可观测性遗留清理 ([704f749](https://github.com/LuluDeer/AutoCodeFlow/commit/704f749e69f30ea52bee2f2ef174e7fd9679af66))
 * **api:** 限流白名单守卫 / HTTP RED 指标 / 磁盘堆健康检查 / 备份恢复演练 ([6087b47](https://github.com/LuluDeer/AutoCodeFlow/commit/6087b47fed806411f78f1b8e9fc06b833680e355))
-* 优化 CI 流水线并升级 README ([95fa789](https://github.com/LuluDeer/AutoCodeFlow/commit/95fa7892a6d5bdf5f00a95a7ede9632c6c3f91a8))
 * 优化 CI 流水线并升级 README ([2060b7d](https://github.com/LuluDeer/AutoCodeFlow/commit/2060b7dff7f747630ba3d174d7073bd0ec3e6b33))
 
 
@@ -321,7 +316,6 @@ A-11R 消息）。根因是「非规范 merge 标题 + develop 直推 commit」�
 
 ### Bug Fixes
 
-* **executor,admin,sdk:** A-11R——params 注入字符串回归裸值 + 类型化通道，修 12 天静默停摆 ([8cbb22f](https://github.com/LuluDeer/AutoCodeFlow/commit/8cbb22f6fae64b582025e24c4c49f9dc26699845))
 * **executor,admin,sdk:** A-11R——params 注入字符串回归裸值 + 类型化通道，修 12 天静默停摆 ([2b4a52f](https://github.com/LuluDeer/AutoCodeFlow/commit/2b4a52f29fc37bdfb046feaa34b242cbe4281ff4))
 
 ## [1.10.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.9.1...v1.10.0) (2026-10-09)

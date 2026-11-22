@@ -21,7 +21,7 @@ traceparent）、回调载荷（failureReason 枚举 / 日志截断 / artifacts�
 |---|---|---|
 | `readiness` | `/health/ready` 的**状态码与 body 形状**（`ready`→200 / `not_ready`→503，body 扁平、不得有 `detail` 包裹，`reason` 非空） | admin-api `health.controller/health.service`；executor-node `routes/health.ts`；executor-python `routers/health.py` |
 | `timeout` | 任务超时解析语义（`0` = 显式不限时；`1..86400` 有界；越界/负值拒绝；缺省回落执行器默认） | admin-api `create-task.dto` 语义；executor-node `routes/execute.ts`；executor-python `routers/execute.py` |
-| `failureReason` | 枚举全集（以 admin `ExecutionFailureReason` 为准）与**执行器可上报子集**（全集减去 admin 内部专用的 `stale_recovered`） | admin-api `dto/execution-callback.dto.ts` 的 `@IsIn`；executor-node `callback.ts` 的 `CallbackFailureReason`；executor-python 回调载荷 |
+| `failureReason` | 枚举全集（15 项，以 admin `ExecutionFailureReason` 为准）与**执行器可上报子集**（12 项，全集减去 admin 内部专用的 `stale_recovered` / `application_missing` / `never_dispatched`） | admin-api `dto/execution-callback.dto.ts` 的 `@IsIn`；executor-node `callback.ts` 的 `CallbackFailureReason`；executor-python 回调载荷 |
 | `secrets` | 任务级 secrets 的**键名规则**：白名单正则 + 保留名/前缀拒绝的**运行时语义向量**（非法键的线上语义是「静默跳过并 warn」，不是 400——故刻意不进 schema 闸） | executor-node `secret-env.ts` `isInjectableSecretName`；executor-python `secret_env.py` `is_injectable_secret_name`；admin-api 侧另有 DTO 层校验 |
 | `params` | 任务 params 的**键名规则**（`^[A-Za-z0-9_]{1,64}$`，非法键 skip-and-warn）+ **键名折叠冲突**（`keyUniqueness`：`{"limit":1,"LIMIT":2}` 折叠成同一个 `AUTOFLOW_LIMIT` → **400 fail-closed**，含逐字节文案向量） | executor-node `param-env.ts`（`isInjectableParamEnvKey` / `findParamEnvKeyCollisions`）+ `routes/execute.ts` accept 闸；executor-python `routers/execute.py`（`_is_injectable_param_key` / `_param_env_key_collisions`） |
 | `envForward` | 任务子进程**环境变量转发清单**：`common`（两端必须完全一致）+ `runtimeOnly`（按运行时区分的**允许差异**，每条带 reason）+ `neverForward`（执行器凭据） | executor-node `env-whitelist.ts` `ENV_WHITELIST`（守卫 `env-whitelist.spec.ts`）；executor-python `routers/execute.py` `_ENV_WHITELIST`（守卫 `tests/test_env_forward_parity.py`） |
@@ -74,7 +74,7 @@ npm run check:protocol-sync     # 生成 + git diff --exit-code（CI 同款）
 > 改写后接受了。实爆：`{"timeout_seconds": "3600"}` 在 zod 侧被拒、在 pydantic
 > 侧通过。语义后果：`{"timeout": "0"}`（显式不限时）也会被 python 静默接受，
 > 而 node 直接 400——同一条任务派到两台执行器上一台跑一台拒。生产流量不受影响
-> （admin 的派发载荷由 Prisma 实体序列化，数值恒为 JSON 数字）。由
+> （admin 的派发载荷由 TypeORM 实体序列化，数值恒为 JSON 数字）。由
 > `tests/test_protocol_schemas.py` 的两条用例钉住（配置位 + 实际行为）。
 
 > **别名必须与正名同严**（新增纪律）。本文件的 `*_source` / `*_language` /

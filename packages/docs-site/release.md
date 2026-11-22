@@ -1,6 +1,6 @@
 # 版本与发布流程
 
-> 重组自 [docs/sdk-guide.md「版本与发布流程」](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/sdk-guide.md)
+> 重组自 [docs/sdk-guide.md「版本与发布流程」](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/sdk-guide.md)
 > 与双 SDK README「版本与发布」节。
 
 ## 版本矩阵
@@ -23,7 +23,7 @@
 ## 发布管道
 
 发布**只由 push tag `vX.Y.Z` 触发**
-[.github/workflows/release.yml](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/.github/workflows/release.yml)：
+[.github/workflows/release.yml](https://github.com/LuluDeer/AutoCodeFlow/blob/main/.github/workflows/release.yml)：
 
 1. **version-guard**：校验 tag 与各包 `package.json` / `pyproject.toml` /
    `__init__.py` 的 version 完全一致，不一致即 fail（无
@@ -32,14 +32,15 @@
    --dry-run` / `python -m build` 结构校验），并经 GitHub
    `environment: release` 人工审批闸门。
 
-凭证：GitHub secret `NPM_TOKEN`（node 24）/ `PYPI_API_TOKEN`（python 3.12）。
+凭证：npm 侧使用 GitHub secret `NPM_TOKEN`（node 24）；PyPI 侧采用 **PyPI Trusted Publishing（OIDC，`id-token: write`，python 3.12）**，不再使用 `PYPI_API_TOKEN` secret。
 
 ## 标准发布步骤
 
 ```bash
-# 1) 三包 version 同批 bump（package.json ×2 + pyproject.toml + __init__.py）
-# 2) 提交后打 tag
-git tag v1.4.4 && git push origin v1.4.4
+# 1) release-please 自动维护 Release PR，同批 bump 四包 version
+#    （package.json ×3 + pyproject.toml + __init__.py）
+# 2) 合并 Release PR 后，release-please 自动打 tag v2.3.0 并触发 release.yml
+#    （未配 RELEASE_PLEASE_TOKEN 时的兜底恢复：git tag v2.3.0 && git push origin v2.3.0）
 # 3) GitHub Actions → release.yml → version-guard → 人工 Approve → publish
 ```
 
@@ -78,7 +79,7 @@ release-please 打 tag 使用 `secrets.RELEASE_PLEASE_TOKEN || github.token`。G
 cd apps/executor-desktop
 # 1) bump apps/executor-desktop/package.json 到新版本
 # 2) 提交后打独立 tag
-git tag desktop-v1.4.4 && git push origin desktop-v1.4.4
+git tag desktop-v1.12.0 && git push origin desktop-v1.12.0
 # 3) GitHub Actions → release-desktop.yml → 守卫 + 三平台出包 + 上传
 ```
 
@@ -100,8 +101,8 @@ python -m pip install build && python -m build --wheel
 
 ## 本文档站的构建与发布
 
-文档站（`packages/docs-site`）为独立 VitePress 站点，与 SDK 包版本解耦
-（本包 version 跟随 lockstep 但不发布）。
+文档站（`packages/docs-site`）为独立 VitePress 站点（`private: true`，不发布至 npm），
+与 SDK 包版本解耦——其自身 `package.json` 维护独立版本（当前 `1.0.1`，见 `scripts/version-lines.json`），不跟随 lockstep。
 
 - **host（P0-3 裁定）**：GitHub Pages 项目页
   （`https://<owner>.github.io/AutoCodeFlow/`），`base: '/AutoCodeFlow/'`

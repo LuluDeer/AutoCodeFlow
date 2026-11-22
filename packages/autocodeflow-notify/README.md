@@ -1,5 +1,7 @@
 # autocodeflow-notify
 
+> **版本与发布状态**：`0.3.2`（独立版本线，仓内冻结，**不对外发布至公共 PyPI**；详见 `scripts/version-lines.json`）。
+
 AutoCodeFlow 任务脚本的告警通知库：任务代码经 admin-api 的
 `/api/notification/send` 发送告警，支持官方渠道表（PK-12）。
 
@@ -21,10 +23,15 @@ AutoCodeFlow 任务脚本的告警通知库：任务代码经 admin-api 的
 
 ## 安装
 
+本包未发布至公共 PyPI，请从本仓库源码安装，或先构建并推送至私有 PyPI（`apps/registry-pypi`）后安装：
+
 ```bash
-pip install autocodeflow-notify
-# 或作为任务依赖（AutoCodeFlow 任务 requirements 字段）：
-#   requirements: ["autocodeflow-notify"]
+# 方式一：从本仓库根目录源码安装
+pip install -e packages/autocodeflow-notify
+
+# 方式二：上传至私有 PyPI 后安装
+pip install --index-url http://<registry-pypi-host>:8003/simple/ autocodeflow-notify
+# 若在任务 requirements 中声明 ["autocodeflow-notify"]，需先将 wheel 发布到执行器所配置的私有 PyPI
 ```
 
 ## 最小示例

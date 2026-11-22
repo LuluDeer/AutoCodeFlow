@@ -1,6 +1,6 @@
 # Node.js SDK — @autocodeflow/sdk
 
-> 重组自 [packages/autocodeflow-node-sdk/README.md](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/packages/autocodeflow-node-sdk/README.md)
+> 重组自 [packages/autocodeflow-node-sdk/README.md](https://github.com/LuluDeer/AutoCodeFlow/blob/main/packages/autocodeflow-node-sdk/README.md)
 > 与 SDK 源码（`src/context.ts` / `src/http-client.ts` / `src/logger.ts` / `src/types.ts`）。
 
 AutoCodeFlow 任务执行器（executor-node）侧的 Node.js/TypeScript SDK：
@@ -28,21 +28,24 @@ import { TaskContext } from '@autocodeflow/sdk';
 | `TaskContext.create(env)` | 显式构造 `TaskEnv`（测试/自托管场景） |
 | `ctx.executionId` / `ctx.taskId` / `ctx.taskName` | 任务标识（`fromEnv` 必填三件） |
 | `ctx.executorAddress` | 执行器注册地址（`AUTOFLOW_EXECUTOR_ADDRESS`，N27）；旧版执行器上为 `undefined` |
-| `ctx.env` | 解析后的完整 `TaskEnv` |
+| `ctx.deviceFingerprint` | 执行器稳定安装身份（`AUTOFLOW_DEVICE_FINGERPRINT`，协议 v6）；旧版执行器上为 `undefined` |
+| `ctx.getParam(key, fallback?)` | 读取触发参数（**大小写不敏感**，优先 `AUTOFLOW_PARAMS_JSON` 真实类型，旧执行器回落逐键 `AUTOFLOW_<KEY>` 并尽力还原类型） |
+| `ctx.env` | 解析后的完整 `TaskEnv`（含 `params`） |
 | `ctx.http` | Admin API 回调客户端（见下） |
 | `ctx.logger` | 结构化日志器（见下） |
 
-### 凭据 env 识别（fromEnv）
+### 凭据与上下文 env 识别（fromEnv）
 
 | 变量 | 映射 | 说明 |
 |------|------|------|
 | `AUTOFLOW_ADMIN_API_URL` | `env.adminApiUrl` | Admin API 基地址 |
 | `AUTOFLOW_CALLBACK_TOKEN` | `env.executorToken` | 一次性 per-execution token |
 | `AUTOFLOW_EXECUTOR_ADDRESS` | `env.executorAddress` | 执行器地址（N27） |
+| `AUTOFLOW_DEVICE_FINGERPRINT` | `env.deviceFingerprint` | 执行器稳定安装身份（协议 v6） |
+| `AUTOFLOW_PARAMS_JSON` | `env.params` | 触发参数类型化 JSON 对象（协议 v5，供 `ctx.getParam()` 优先读取） |
 | `ADMIN_API_URL` / `EXECUTOR_TOKEN` / `TRACE_ID` | 同上对应字段 | 旧式手动覆盖变量，**显式设置时优先** |
 
-> 注意：`fromEnv()` **不读** `AUTOFLOW_<KEY>` 触发参数（node 任务用
-> `process.env.AUTOFLOW_X` 直读；与 py SDK 的设计分歧见[能力矩阵](capability-matrix)）。
+> 提示：推荐使用 `ctx.getParam(key, fallback?)` 读取触发参数——`fromEnv()` 会自动解析 `AUTOFLOW_PARAMS_JSON` 并在旧执行器上回落逐键 `AUTOFLOW_<KEY>`（大小写不敏感，与 Python `ctx.get_param()` 语义对齐）；直接读取 `process.env.AUTOFLOW_X`（字符串裸值）同样可用。
 
 ## HttpClient（回调 + 通用请求）
 
@@ -60,7 +63,7 @@ const tasks = await http.get('/api/tasks');   // 返回已解包的 body（envel
 | API | 说明 |
 |-----|------|
 | `http.get/post/put/delete(url, data?)` | 泛型请求，返回**已解包**的 `{code,message,data}` envelope `data`；非信封 body 原样返回 |
-| `http.enabled` / `http.disabledReason` | 凭据缺失时可构造但 disabled；任何请求方法 rejects `Error("HttpClient is disabled: …")`（fail-closed，原因含缺失变量名） |
+| `http.enabled` / `http.disabledReason` | 凭据缺失时可构造但 disabled；任何请求方法 rejects `HttpClientDisabledError`（继承 `Error`，包入口已导出，fail-closed，原因含缺失变量名） |
 | executorAddress 自动补齐 | 对 `/api/executions/callback` 请求，数组项缺 `executorAddress` 时自动补（显式书写不被覆盖）；其他端点透传（N27） |
 | 默认超时 | 10 s（axios 全局，回调与通用请求同一客户端） |
 | 错误形态 | axios error 携带 `response.status`；拦截器把 4xx/5xx envelope 的 `message` 追加进 `error.message` |
@@ -98,7 +101,8 @@ await ctx.http.post('/api/executions/callback', [
 ```
 
 回调契约字段（`CallbackItemDto`）：`executionId` / `status: success|failed` /
-`executorAddress` / `logs` / `errorMessage` / `failureReason` / `durationMs`。
+`executorAddress` / `deviceFingerprint` / `exitCode` / `logs` /
+`errorMessage` / `failureReason` / `durationMs` / `artifacts` / `result`。
 per-execution token 只对该端点有效，越权或过期一律 401（fail-closed）。
 
 ## TaskLogger
@@ -125,11 +129,10 @@ return ctx.failure('boom', { partial: state }); // TaskResult{ success: false, .
 
 ## 公开导出清单
 
-`TaskContext`、`ReportSuccessOptions`、`ReportFailureOptions`（类型）、
-`ERROR_MESSAGE_MAX_LENGTH`、`LOGS_MAX_LENGTH`、`TaskLogger`、`HttpClient`、
-`TaskEnv` / `TaskResult` / `LogEntry` / `LogLevel`（类型）。
+- **类与函数 / 常量**：`TaskContext`、`ERROR_MESSAGE_MAX_LENGTH`、`LOGS_MAX_LENGTH`、`TaskLogger`、`HttpClient`、`HttpClientDisabledError`、`CircuitBreakerOpenError`、`getErrorCode`、`getErrorParams`、`attachErrorCode`、`normalizeRetry`、`DEFAULT_HTTP_RETRY`
+- **类型导出**：`ReportSuccessOptions`、`ReportFailureOptions`、`HttpClientError`、`HttpRetryConfig`、`TaskEnv`、`TaskResult`、`LogEntry`、`LogLevel`
 
 ## 下一步
 
-- [能力矩阵](capability-matrix)：与 py SDK 的 5 条差异逐条裁定
-- [官方示例库](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples)
+- [能力矩阵](capability-matrix)：与 py SDK 的差异逐条裁定
+- [官方示例库](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples)

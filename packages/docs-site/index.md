@@ -15,6 +15,9 @@ hero:
     - theme: alt
       text: 官方示例库
       link: /examples
+    - theme: alt
+      text: 平台文档中心 ↗
+      link: https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/README.md
 
 features:
   - icon: 🧩
@@ -29,7 +32,7 @@ features:
     linkText: Node.js 参考
   - icon: 🗂️
     title: 可复制即跑的示例
-    details: 回调上报（能力探测 + 成功/失败双路径）与私服依赖（PYPI_REGISTRY_URL / NPM_REGISTRY_URL）四组官方示例。
+    details: 覆盖每日报表导出、内网巡检、桌面填报、双 SDK 回调上报、私服依赖与桌面自动化的 8 组官方示例。
     link: /examples
     linkText: 浏览示例库
   - icon: 🔒

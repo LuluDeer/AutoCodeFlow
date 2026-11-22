@@ -371,7 +371,7 @@ export function checkEnvInjectionTable() {
   // docs/sdk-guide.md 的注入表与站点 getting-started.md 的镜像表里。漏同步
   // 会让用户照着站点文档读一个不存在的变量——与 A-11 引号事故同类的静默
   // 文档漂移，故纳入本判据。
-  const vars = ["TASK_ID", "TASK_NAME", "EXECUTION_ID", "AUTOFLOW_<KEY>", "AUTOFLOW_PARAMS_JSON", "AUTOFLOW_ADMIN_API_URL", "AUTOFLOW_CALLBACK_TOKEN", "AUTOFLOW_EXECUTOR_ADDRESS"];
+  const vars = ["TASK_ID", "TASK_NAME", "EXECUTION_ID", "AUTOFLOW_<KEY>", "AUTOFLOW_PARAMS_JSON", "AUTOFLOW_ADMIN_API_URL", "AUTOFLOW_CALLBACK_TOKEN", "AUTOFLOW_EXECUTOR_ADDRESS", "AUTOFLOW_DEVICE_FINGERPRINT"];
   for (const v of vars) {
     const inGuide = guide.includes(`| \`${v}\` |`);
     const inSite = site.includes(`| \`${v}\` |`);

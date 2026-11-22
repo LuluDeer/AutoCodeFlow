@@ -54,6 +54,15 @@ The server registers **56 tools** (see `src/tools.ts`), grouped below.
 | `delete_application` | Delete an application by ID |
 | `analyze_application` | AI health analysis across an app's tasks |
 
+### Mutex groups
+
+| Tool | Description |
+|------|-------------|
+| `list_mutex_groups` | List application mutex groups (`scope=device` serialises per device, `scope=global` serialises platform-wide; use the returned `id` as `update_application`'s `mutexGroupId`) |
+| `create_mutex_group` | Create an application mutex group (`name`, optional `maxConcurrentPerDevice` 1–100, `scope: device\|global`, `description`) (ADMIN only) |
+| `update_mutex_group` | Update a mutex group (`name` / `maxConcurrentPerDevice` / `scope` / `description`; requires at least one field) (ADMIN only) |
+| `delete_mutex_group` | Delete a mutex group; refuses with 409 while apps are still attached unless `force=true` (ADMIN only) |
+
 ### Deployments & approval (DEP-04)
 
 | Tool | Description |
@@ -117,6 +126,27 @@ no guessed cause — and every coded error also carries `structuredContent.error
 
 ## Setup
 
+### Quick start via npx (recommended)
+
+Use the published npm package directly — no local clone or build required:
+
+```json
+{
+  "mcpServers": {
+    "autocodeflow": {
+      "command": "npx",
+      "args": ["-y", "autocodeflow-mcp-server"],
+      "env": {
+        "AUTOCODEFLOW_API_URL": "http://localhost:3105",
+        "AUTOCODEFLOW_API_TOKEN": "acf_<your-api-key>"
+      }
+    }
+  }
+}
+```
+
+### Build from source (monorepo development)
+
 ```bash
 cd packages/mcp-server
 npm install
@@ -125,7 +155,7 @@ npm run build
 
 ## Claude Desktop config
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Add the snippet above (or the local build variant below) to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {

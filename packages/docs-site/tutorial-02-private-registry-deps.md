@@ -1,6 +1,6 @@
 # 教程 02 · 私服依赖
 
-> 重组自 [docs/tutorials/02-private-registry-deps.md](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/tutorials/02-private-registry-deps.md)（DOC-06）。
+> 重组自 [docs/tutorials/02-private-registry-deps.md](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/tutorials/02-private-registry-deps.md)（DOC-06）。
 > 目标：任务脚本 `import` 一个只存在于**私有包仓库**的依赖，由执行器在
 > 任务执行前自动安装，全程不改执行器镜像。
 
@@ -16,7 +16,7 @@ admin 下发任务(requirements)
 （node 侧等价：任务隔离目录生成 `.npmrc` 后 `npm install --prefix`。）
 
 关键事实（源码证据见
-[examples/private-registry-deps](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/examples/private-registry-deps/README.md)）：
+[examples/private-registry-deps](https://github.com/LuluDeer/AutoCodeFlow/blob/main/examples/private-registry-deps/README.md)）：
 
 - **requirements 仅对 entrypoint（打包）任务**生效，glue 脚本任务忽略；
 - requirements 只能写**包规格**（`name` / `name>=1.0`），以 `-` 开头的

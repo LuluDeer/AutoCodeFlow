@@ -1,6 +1,6 @@
 # 快速开始（5 分钟上手）
 
-> 本页从 [docs/sdk-guide.md](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/sdk-guide.md)
+> 本页从 [docs/sdk-guide.md](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/sdk-guide.md)
 > 与双 SDK README 提炼。所有 API 均与 SDK 源码逐行核对（ECO-01/ECO-05）。
 
 AutoCodeFlow 的任务脚本由执行器以子进程运行：执行器注入环境变量（任务标识、
@@ -50,7 +50,7 @@ python tasks/fetch_data.py       # 未注入回调凭证 → 走降级分支
 ```
 
 完整示例（含失败上报与 `CallbackDisabledError` 降级）见
-[examples/callback-report](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/callback-report)。
+[examples/callback-report](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples/callback-report)。
 
 ## Node.js（@autocodeflow/sdk）
 
@@ -97,7 +97,7 @@ npx tsx tasks/send_report.ts
 ```
 
 完整示例见
-[examples/callback-report-node](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/callback-report-node)。
+[examples/callback-report-node](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples/callback-report-node)。
 
 ## 执行器注入的环境变量
 
@@ -111,6 +111,7 @@ npx tsx tasks/send_report.ts
 | `AUTOFLOW_ADMIN_API_URL` | Admin API 基地址（非机密路由信息，N23 起注入） | `http://admin-api:3105` |
 | `AUTOFLOW_CALLBACK_TOKEN` | 本次执行的一次性回调 token（`v1.` HMAC，绑定 executionId、随任务超时+15 分钟宽限过期，N23 起注入） | `v1.<uuid>.<exp>.<hmac>` |
 | `AUTOFLOW_EXECUTOR_ADDRESS` | 当前执行器注册地址（非机密路由信息，N27 起注入；SDK 自动填入回调请求） | `executor-node:8002` |
+| `AUTOFLOW_DEVICE_FINGERPRINT` | 当前执行器的稳定安装身份（非机密，协议 v6 起注入；SDK 经 `ctx.deviceFingerprint`（Node）/ `ctx.device_fingerprint`（Python）暴露并自动填入回调请求），用于区分 pull 模式下共用同一地址的执行器行 | `<64 位小写十六进制>` |
 
 > 触发参数 `{ "source_url": "https://api.example.com", "limit": 100 }` 会注入为
 > `AUTOFLOW_SOURCE_URL` 与 `AUTOFLOW_LIMIT`；字符串按裸值注入（`欧盟` 就是 `欧盟`，
@@ -128,4 +129,4 @@ npx tsx tasks/send_report.ts
 
 - [Node.js SDK 参考](sdk-node) / [Python SDK 参考](sdk-python)
 - [能力矩阵](capability-matrix)：两侧行为差异逐条裁定
-- [示例库](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples)：回调上报、私服依赖完整链路
+- [示例库](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples)：场景示例、回调上报与私服依赖完整链路

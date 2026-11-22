@@ -1,9 +1,9 @@
 # 官方示例库（examples/）
 
-> 本页聚合 [examples/](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples)
-> 四个 ECO-01 官方示例的 README 精要并回链仓库路径。每个示例自包含：
-> 入口脚本（与双 SDK 源码逐行核对的真实 API）+ README（executor 侧前置
-> 条件）+ `task.example.json`（最小任务配置）。
+> 本页聚合 [examples/](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples)
+> 全部 **8 组**官方示例的 README 精要并回链仓库路径。前 7 组示例均自包含：
+> 入口脚本（与双 SDK 源码逐行核对的真实 API 或零依赖脚本）+ README（前置条件）+
+> `task.example.json`（最小任务配置）。
 >
 > `task.example.json` 可直接当作 `POST /api/tasks` 的请求体（键集 ⊆
 > `CreateTaskDto` 白名单、必填 `name`/`triggerType` 齐全、cron 为 5 段纯数字），
@@ -11,13 +11,29 @@
 
 | 示例 | 语言 | 演示内容 | 仓库路径 |
 |------|------|---------|---------|
-| 回调示例 | Python | 能力探测（`ctx.callback.enabled`）+ `report_success`/`report_failure` 双路径 + `CallbackDisabledError` 降级 | [`examples/callback-report`](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/callback-report) |
-| 回调示例 | Node | 同上对等实现（`ctx.http.enabled` + `ctx.reportSuccess`/`reportFailure`） | [`examples/callback-report-node`](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/callback-report-node) |
-| 私服依赖示例 | Python | 任务 `requirements` + executor `PYPI_REGISTRY_URL` → per-task venv `uv pip install --index-url` | [`examples/private-registry-deps`](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/private-registry-deps) |
-| 私服依赖示例 | Node | 任务 `requirements` + executor `NPM_REGISTRY_URL`（凭据 `NPM_REGISTRY_TOKEN` 或 `NPM_REGISTRY_USER/PASS` 任一，compose 缺省回落 `REGISTRY_USER/PASS`）→ 隔离目录 `.npmrc` + `npm install --prefix` | [`examples/private-registry-deps-node`](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/private-registry-deps-node) |
+| 每日报表导出 | Node | 定时 cron + CSV 文件产物 + 告警占位（零依赖 TTFV 首跑） | [`examples/daily-report`](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples/daily-report) |
+| 内网巡检 | Node | 批量 TCP 连通性并发探测 + 结果汇总回调（零依赖） | [`examples/intranet-inspection`](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples/intranet-inspection) |
+| 桌面数据填报 | Node | 桌面执行器标签路由 + 本地 CSV 校验与 JSON 产物输出 | [`examples/desktop-data-entry`](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples/desktop-data-entry) |
+| 回调示例 | Python | 能力探测（`ctx.callback.enabled`）+ `report_success`/`report_failure` 双路径 + `CallbackDisabledError` 降级 | [`examples/callback-report`](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples/callback-report) |
+| 回调示例 | Node | 同上对等实现（`ctx.http.enabled` + `ctx.reportSuccess`/`reportFailure`） | [`examples/callback-report-node`](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples/callback-report-node) |
+| 私服依赖示例 | Python | 任务 `requirements` + executor `PYPI_REGISTRY_URL` → per-task venv `uv pip install --index-url` | [`examples/private-registry-deps`](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples/private-registry-deps) |
+| 私服依赖示例 | Node | 任务 `requirements` + executor `NPM_REGISTRY_URL`（凭据 `NPM_REGISTRY_TOKEN` 或 `NPM_REGISTRY_USER/PASS` 任一，compose 缺省回落 `REGISTRY_USER/PASS`）→ 隔离目录 `.npmrc` + `npm install --prefix` | [`examples/private-registry-deps-node`](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples/private-registry-deps-node) |
+| 桌面自动化集合 | Python / Node | 浏览器（Selenium / Puppeteer）、桌面 GUI、文件系统与系统集成 RPA 多脚本 | [`examples/desktop-automation`](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples/desktop-automation) |
 
-另有 [`examples/desktop-automation`](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/desktop-automation)
-（桌面自动化/RPA 任务集合，浏览器与 GUI 自动化多脚本，非 ECO-01 四例）。
+---
+
+## 零依赖场景示例（daily-report / intranet-inspection / desktop-data-entry）
+
+三组 v2.3.0 场景示例均无需安装第三方依赖，配合 `acf task create --file <path>` 即可直接体验首次成功路径：
+
+```bash
+export ACF_API_URL=http://localhost:3105
+export ACF_TOKEN=acf_<你的 API Key>
+
+acf task create --file examples/daily-report/task.example.json
+acf task create --file examples/intranet-inspection/task.example.json
+acf task create --file examples/desktop-data-entry/task.example.json --executor <桌面执行器 UUID>
+```
 
 ---
 
@@ -36,7 +52,7 @@ per-execution token 上报给 Admin API。
 
 旧版自建执行器不注入 → `ctx.callback.enabled`（py）为 `False` /
 `ctx.http.enabled`（node）为 `false`，上报调用抛
-`CallbackDisabledError`（py）/ rejects `Error("HttpClient is disabled…")`
+`CallbackDisabledError`（py）/ rejects `HttpClientDisabledError`
 （node），fail-closed。示例在不可回调时降级为「只打日志、继续执行」，
 正是能力探测的正确姿势。
 
@@ -73,7 +89,7 @@ admin 下发任务(requirements)
 
 | 配置 | 位置 | 说明 |
 |------|------|------|
-| `PYPI_REGISTRY_URL` | executor-python 启动环境 | 私服 PyPI 地址（如 `http://registry-pypi:3110/simple`）。未配置走公共 PyPI；平台内置私服见 `apps/registry-pypi` |
+| `PYPI_REGISTRY_URL` | executor-python 启动环境 | 私服 PyPI 地址（如 `http://registry-pypi:8003/simple/`）。未配置走公共 PyPI；平台内置私服见 `apps/registry-pypi` |
 | `NPM_REGISTRY_URL` | executor-node 启动环境 | 私服 npm 地址（如 `http://registry-npm:4873`）。未配置走公共 npm；内置私服见 `apps/registry-npm`（verdaccio） |
 | `NPM_REGISTRY_TOKEN` / `NPM_REGISTRY_USER`/`NPM_REGISTRY_PASS` | 同上（二者配一即可） | 私服对 `**` 的 access 是 `$authenticated`（匿名安装必 401）时必配其一；token 优先（`_authToken` 行），user/pass 写 `_auth`（Basic）行。compose 缺省回落 `REGISTRY_USER/PASS` |
 | 私有包已发布 | 私服 | pypi 侧演示包 `acfdemopkg` / `example_pkg`；npm 侧为任务引用的 scoped 包 |
@@ -109,7 +125,7 @@ python private_dep_task.py               # 包缺席时输出 degraded 分支
 
 | 动作 | Python | Node |
 |------|--------|------|
-| 读参数 | `ctx.get_param("pkg_name")` | `getParam('pkg_name')`（示例内 JSON 容错 helper，读 `AUTOFLOW_*`） |
+| 读参数 | `ctx.get_param("pkg_name")` | `ctx.getParam('pkg_name')`（大小写不敏感，优先 `AUTOFLOW_PARAMS_JSON`） |
 | 能力探测 | `ctx.callback.enabled` | `ctx.http.enabled` |
 | 成功上报 | `ctx.report_success(summary=...)` | `await ctx.reportSuccess({ summary })` |
 | 失败上报 | `ctx.report_failure(e, failure_reason=...)` | `await ctx.reportFailure(e, { failureReason })` |

@@ -11,9 +11,9 @@ AutoCodeFlow 任务执行器（executor-python）侧的 Python SDK：提供任�
 ## 安装
 
 ```bash
-pip install autoflow-sdk                     # 公共 PyPI（发布后）
+pip install autoflow-sdk                     # 公共 PyPI
 # 内网私有 registry（apps/registry-pypi）：
-pip install --index-url http://<registry-pypi-host>/simple autoflow-sdk
+pip install --index-url http://<registry-pypi-host>:8003/simple/ autoflow-sdk
 ```
 
 要求 Python ≥ 3.10；运行时依赖 `httpx`、`pyyaml`、`pydantic>=2`
@@ -104,7 +104,8 @@ async with AsyncHttpClient(base_url=...) as ahttp:
 | `TASK_ID` | 当前任务的唯一标识 | `task_abc123` |
 | `TASK_NAME` | 当前任务名称 | `fetch_data` |
 | `EXECUTION_ID` | 本次执行记录的唯一标识 | `exec_xyz789` |
-| `AUTOFLOW_<KEY>` | 触发参数，按参数名转大写后注入 | `AUTOFLOW_SOURCE_URL=https://api.example.com` |
+| `AUTOFLOW_<KEY>` | 触发参数，按参数名转大写后注入。**字符串是裸值**（不加引号），数字/布尔/数组/对象是对应 JSON 字面量 | `AUTOFLOW_SOURCE_URL=https://api.example.com` |
+| `AUTOFLOW_PARAMS_JSON` | 整个参数的 JSON 对象（A-11R 起，协议 v5）。需要精确类型时读它：逐键通道的值恒为字符串（`TaskContext.from_env()` 会自动优先本通道并还原真实类型） | `AUTOFLOW_PARAMS_JSON={"limit":100}` |
 | `AUTOFLOW_ADMIN_API_URL` | Admin API 基地址（非机密路由信息，N23 起注入） | `AUTOFLOW_ADMIN_API_URL=http://admin-api:3105` |
 | `AUTOFLOW_CALLBACK_TOKEN` | 本次执行的一次性回调 token（`v1.` HMAC，绑定 executionId、随 TTL 过期，N23 起注入） | `AUTOFLOW_CALLBACK_TOKEN=v1.<uuid>.<exp>.<hmac>` |
 | `AUTOFLOW_EXECUTOR_ADDRESS` | 当前执行器注册地址（非机密路由信息，N27 起注入；SDK 经 `ctx.executorAddress`（Node）/ `ctx.executor_address`（Python）暴露并自动填入回调请求） | `AUTOFLOW_EXECUTOR_ADDRESS=executor-node:8002` |
@@ -114,21 +115,23 @@ async with AsyncHttpClient(base_url=...) as ahttp:
 
 `POST {AUTOFLOW_ADMIN_API_URL}/api/executions/callback`，请求体为
 `CallbackItemDto[]`：`executionId` / `status: success|failed` /
-`executorAddress` / `logs` / `errorMessage` / `failureReason` /
-`durationMs`。per-execution token 仅授权本 `executionId` 的回调，越权或
+`executorAddress` / `deviceFingerprint` / `exitCode` / `logs` /
+`errorMessage` / `failureReason` / `durationMs` / `artifacts` /
+`result`。per-execution token 仅授权本 `executionId` 的回调，越权或
 过期一律 401（fail-closed）；执行器共享 token 绝不进入任务子进程（SEC-01）。
 
 ## 版本与发布
 
-- 版本策略：与 `@autocodeflow/sdk`（npm）、`autocodeflow-mcp-server` 走
-  **lockstep** 单版本线，当前 `2.3.0`。<!-- x-release-please-version -->
+- 版本策略：与 `@autocodeflow/sdk`（npm）、`autocodeflow-mcp-server`（npm）、
+  `@autocodeflow/cli`（npm）四包走 **lockstep** 单版本线，当前 `2.3.0`。<!-- x-release-please-version -->
 - 发布管道：[.github/workflows/release.yml](../../.github/workflows/release.yml)。
   push tag `vX.Y.Z` 触发：版本一致性守卫（tag 必须等于本包
   `pyproject.toml` version 与 `autoflow_sdk.__version__`，不一致直接
   fail）→ `publish-pypi` job（python 3.12，`python -m build` +
   `pypa/gh-action-pypi-publish`）。
-- 凭证：GitHub secret `PYPI_API_TOKEN`（pypi.org API token）；如改用
-  PyPI Trusted Publishing（OIDC）则删 workflow 中 `password` 行。
+- 凭证：采用 **PyPI Trusted Publishing（OIDC）**——workflow 的 `publish-pypi`
+  job 声明 `permissions: id-token: write`，直接向 pypi.org 换取临时发布令牌，
+  **不再使用 `PYPI_API_TOKEN` secret**。
 - 元数据单一来源：`pyproject.toml`（`setup.py` 仅留 `setup()`）。
 - 本地演练（不真发布）：
 
