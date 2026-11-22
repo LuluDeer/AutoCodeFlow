@@ -448,31 +448,74 @@ const tasks = tasksPage?.list ?? tasksPage?.items ?? [];
 const task = tasks.find((t) => t.name === "demo-hello-fixed");
 if (!task) throw new Error("demo-hello-fixed not found — did scripts/demo-seed.mjs run?");
 
-const exec = await api(`/api/tasks/${task.id}/trigger`, {
-  method: "POST",
-  token,
-  body: {},
-});
-const executionId = exec?.id;
-if (!executionId) throw new Error("trigger returned no execution id");
-
 const terminal = new Set(["success", "failed", "timeout", "killed", "cancelled"]);
-let last = "pending";
-for (let i = 0; i < 45; i += 1) {
-  const page = await api(`/api/tasks/${task.id}/executions?page=1&pageSize=10`, { token });
-  const rows = page?.list ?? page?.items ?? [];
-  const row = rows.find((r) => r.id === executionId) ?? rows[0];
-  if (row) {
-    last = row.status;
-    if (terminal.has(last)) {
-      const duration = row.durationMs ?? row.duration ?? null;
-      console.log(`  execution ${executionId}: ${last}${duration == null ? "" : ` in ${duration}ms`}`);
-      process.exit(last === "success" ? 0 : 1);
-    }
+async function triggerAndWait(targetTask) {
+  const exec = await api(`/api/tasks/${targetTask.id}/trigger`, {
+    method: "POST", token, body: {},
+  });
+  const executionId = exec?.id;
+  if (!executionId) throw new Error("trigger returned no execution id");
+  for (let i = 0; i < 45; i += 1) {
+    const page = await api(`/api/tasks/${targetTask.id}/executions?page=1&pageSize=10`, { token });
+    const rows = page?.list ?? page?.items ?? [];
+    const row = rows.find((r) => r.id === executionId) ?? rows[0];
+    if (row && terminal.has(row.status)) return { executionId, row };
+    await new Promise((r) => setTimeout(r, 2000));
   }
-  await new Promise((r) => setTimeout(r, 2000));
+  throw new Error(`execution ${executionId} did not finish`);
 }
-throw new Error(`execution ${executionId} did not finish (last status: ${last})`);
+
+// ① 核心承诺前半：一个任务从 trigger 到 success（第一个结果）。
+const ok = await triggerAndWait(task);
+if (ok.row.status !== "success") {
+  throw new Error(`demo-hello-fixed did not succeed: ${ok.row.status}`);
+}
+const duration = ok.row.durationMs ?? ok.row.duration ?? null;
+console.log(`  execution ${ok.executionId}: success${duration == null ? "" : ` in ${duration}ms`}`);
+
+// ② 核心承诺后半：「愿意把第二件事交给它」——失败能否被诊断。
+// demo-fragile 每次抛 "demo intentional failure"；验证失败样本有有效分类 +
+// 原始错误信息，证明详情页/失败分类演示真的可解释，而不是空失败。
+const fragile = tasks.find((t) => t.name === "demo-fragile");
+if (!fragile) throw new Error("demo-fragile not found — seed 不完整？");
+const bad = await triggerAndWait(fragile);
+if (bad.row.status !== "failed") {
+  throw new Error(`demo-fragile should fail but got: ${bad.row.status}`);
+}
+const reason = bad.row.failureReason;
+// 后端 ExecutionFailureReason 是 snake_case 小写（含 UNKNOWN="unknown"，见
+// task-execution.entity.ts）；大写比较会放过退化分类，故统一转大写再比。
+if (!reason || typeof reason !== "string" || reason.toUpperCase() === "UNKNOWN") {
+  throw new Error(`失败样本缺少有效 failureReason: ${JSON.stringify(reason)}`);
+}
+// errorMessage 故意只存退出摘要（"进程以退出码 1 结束"，见 execute.ts describeProcessExit）；
+// 原始错误在日志端点（list 端点按 PERF-03 排除 logs）。验证完整诊断链：日志能读到原始错误。
+const logsPage = await api(`/api/tasks/executions/${bad.executionId}/logs`, { token });
+const logText = (logsPage?.lines ?? []).join("\n");
+if (!logText.includes("demo intentional failure")) {
+  throw new Error(`失败样本日志缺原始错误 "demo intentional failure": ${JSON.stringify(logText.slice(0, 300))}`);
+}
+console.log(`  execution ${bad.executionId}: failed, failureReason=${reason}, 日志含原始错误 ✓`);
+
+// ③ 第三句承诺：「不用写代码，从模板就能跑起来」——引导语指向的路径必须有真数据。
+// 官方模板由 migration 预置（webhook_ping: manual 触发、无 url 时只预览 payload，安全必然成功）。
+const tplPage = await api("/api/task-templates?page=1&pageSize=100", { token });
+const tplRows = tplPage?.list ?? tplPage?.items ?? (Array.isArray(tplPage) ? tplPage : []);
+const tpl = tplRows.find((t) => t.key === "webhook_ping");
+if (!tpl) throw new Error("官方模板 webhook_ping 不存在——迁移未跑？模板引导会是死路");
+// 实例化防重：同名任务已存在（重复跑 demo）则复用，否则新建。
+const fromTplName = "demo-from-template";
+const existing = tasks.find((t) => t.name === fromTplName);
+const fromTpl = existing ?? await api(`/api/task-templates/${tpl.id}/instantiate`, {
+  method: "POST", token, body: { name: fromTplName },
+});
+if (!fromTpl?.id) throw new Error("模板 instantiate 未返回任务 id");
+const tplExec = await triggerAndWait(fromTpl);
+if (tplExec.row.status !== "success") {
+  throw new Error(`模板实例化的任务未成功: ${tplExec.row.status}`);
+}
+console.log(`  template ${tpl.key} → task ${fromTpl.name} → success ✓（零代码路径可用）`);
+process.exit(0);
 NODE
 
 # ── summary ──────────────────────────────────────────────────────────────
