@@ -3,6 +3,29 @@
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-21
 > 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
 
+## 本次交接（R459 · 2026-11-22）：68 轮改动按主题分组提交（11 组 + docs 收尾，未 push）
+
+**用户指令**：「分组对你的修改进行 git 提交」。执行结果——工作树由 151 项未提交收敛为 0（`git status --short` 空），按依赖顺序分 11 组：
+
+| # | commit | 范围 |
+|---|---|---|
+| 1 | `fbb9eaba` feat(agent): TTFV 漏斗埋点体系 | 迁移 0101/0102 + 实体 + FunnelEventsService + 90天清理 + HMAC 匿名 ID + 四类 listener + 真库 e2e（24 files, +3882） |
+| 2 | `d7e7e284` feat(agent): 北极星判据 + 确认端点 + 数据 API | 判据 D + 确认端点 + NorthStarMetricsService 双口径 + promotionEligibility + 真库 e2e（6 files, +1317） |
+| 3 | `bad8ebeb` fix(agent): 审批 granted 丢失唤醒竞态 | 尾钩 probe 补偿 + 独立 dedup 命名空间 + waitingForApproval 常量 + 真栈 e2e（11 files, +1437/−7） |
+| 4 | `36743dbf` feat(agent): 模块接线 + 控制器 + query 契约 | AgentModule provider + 端点 + domain-events + 7 controller 可选 query（11 files, +505） |
+| 5 | `e42f05f1` feat(web): 北极星双口径看板 + TTFV 授权页 | NorthStarCard + TelemetrySettings + api/hook + i18n + 真栈 e2e（16 files, +2601/−33） |
+| 6 | `616d548d` test(web): 清 4 处全量并发假红 + e2e 配置 | CPU 口径/时间基准/vi.fn 计数/DOM 就绪信号 + playwright 配置（12 files, +317/−52） |
+| 7 | `a1c4fef4` feat(scripts): 运营指标/对账/健康度 + demo 修复 | north-star-weekly/pg-reconcile/api-reconcile/health + w4/sop/metrics-health(-collect) + ttfv 三脚本 + demo heredoc 修复（16 files, +4959/−7） |
+| 8 | `a7e82a95` chore(ci,guards): CI 接线 + 生成物 + 基线 | ci.yml 真栈/迁移 job + openapi/api-reference + 6 份 baseline + AGENTS.md 编排章节（16 files, +838/−194） |
+| 9 | `c06358e6` docs: 方案与验收 + 状态总览 + ROADMAP | 24 篇 plan + PROJECT-STATUS + README/ROADMAP/AGENT_HANDOFF/UPGRADING 等（34 files, +4167/−12） |
+| 10 | `0f8c7d91` feat(examples): 3 个真实场景示例 | daily-report / intranet-inspection / desktop-data-entry（10 files, +600） |
+| 11 | `2ddeb422` chore(repo): 忽略 pytest-cov 生成物 | `.gitignore` 精确忽略 `apps/executor-python/coverage.json`（1 file, +2） |
+
+**提交后验证（HEAD 完整性）**：`git diff HEAD` 空；typecheck:all exit 0；全守卫链 exit 0；11 组累计 157 files / +20625 / −309；完整提交清单见 `git log a234863c..HEAD`。**未 push**（用户只要求提交；本地 develop 领先 origin/develop 180 个提交，push 需单独指令）。
+
+**过程诚实记录**：第 9 组首次提交信息里 `` `:prod` `` 的反引号在 bash 双引号中触发命令替换，导致 message 少了一段（"命令序列/ 复演/"）——用 `git commit --amend -F 文件` 修复。这与 R458 修的 demo.sh 是同一类 shell 陷阱，说明写提交信息也要防反引号。
+
+---
 ## 本次交接（R458 · 2026-11-22）：真跑产品核心 demo + 修复 heredoc 命令替换 bug（真栈最高级）
 
 **产品判断（自己找方向）**：连续多轮做"运营侧"（指标/遥测/守卫），本轮转向从没真验证过的**开发者核心承诺——"10 分钟跑出第一个结果"**。R446 只静态检查过 demo.sh，从未真跑。demo 用独立 compose project（`acf-demo`）+ 独立 .env.demo + 回环端口，PG/Redis 只走内部网络不与现有 5432 冲突——可安全真跑。

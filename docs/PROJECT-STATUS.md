@@ -1,14 +1,14 @@
 # 项目状态总览（R290–R457 收口快照）
 
 > **受众**：接手维护者 / 发布决策者 · **状态**：内部 · **最后核对**：2026-11-22
-> 一页看懂这批未提交改动的整体状态：68 轮交付地图、当前验证数字、已知未决项、发布与接手指引。本文是阶段性快照，不替代各专项文档，也不声称已 commit。
+> 一页看懂这批改动的整体状态：68 轮交付地图、当前验证数字、已知未决项、发布与接手指引。本文是阶段性快照，不替代各专项文档。**R459 已按主题分 11 组提交（a234863c..HEAD，157 files / +20625 / −309），未 push。**
 > **数字口径**：轮次/项数均由命令实测（`git status --short | wc -l`、`ls docs/plan/*.md | wc -l`），不手写估计——历史快照的手写值曾漂移，本版已按实测校正。
 
 ---
 
 ## 1. 一句话状态
 
-当前 `develop` 工作树累积 **R290–R457 共 68 轮、149 项未提交改动**（实测：含 2 个新迁移、11 个新脚本、24 篇 plan 文档）。整批在「admin-api/admin-web 全量测试 + 全守卫链 + typecheck 8 端 + 迁移 up/幂等/down 全链（dev 与 :prod 双路径真机复演）+ 北极星健康自检 + **真浏览器+真后端端到端**」下全绿，**处于可发布态**；按 House Rules 未主动 commit，等用户明确指令。R436/R437 补上最后一层覆盖（看板与生产启用路径真栈端到端）；R439 把两个真栈 e2e 接入 CI；R440/R441 空库复演 CI 精确序列与 `:prod` 迁移路径（无 dev/prod 分叉）。R442–R452 清掉全量回归的 4 处并发 flake、拍板升主三阈值并贯通脚本→API→看板→真栈回归闸、补齐 W4 留存与 SOP 成功率/接管率两个 ROADMAP 先行指标。R453–R457 把指标脚本 selftest 接入 CI、新建先行指标健康度判定（`evaluateHealth`，无样本不算达标）+ 一条命令采集入口（`metrics-health-collect`）。**至此 ROADMAP 先行指标全部有可复算实现或明确放弃结论，autonomous 可落地的产品工作已穷尽——剩余全部依赖外部输入。**
+当前 `develop` 已提交 **R290–R457 共 68 轮改动**（R459 按主题分 11 组入库；含 2 个新迁移、11 个新脚本、24 篇 plan 文档；工作树干净）。整批在「admin-api/admin-web 全量测试 + 全守卫链 + typecheck 8 端 + 迁移 up/幂等/down 全链（dev 与 :prod 双路径真机复演）+ 北极星健康自检 + **真浏览器+真后端端到端**」下全绿，**处于可发布态**；R459 已按主题分组提交（未 push）。R436/R437 补上最后一层覆盖（看板与生产启用路径真栈端到端）；R439 把两个真栈 e2e 接入 CI；R440/R441 空库复演 CI 精确序列与 `:prod` 迁移路径（无 dev/prod 分叉）。R442–R452 清掉全量回归的 4 处并发 flake、拍板升主三阈值并贯通脚本→API→看板→真栈回归闸、补齐 W4 留存与 SOP 成功率/接管率两个 ROADMAP 先行指标。R453–R457 把指标脚本 selftest 接入 CI、新建先行指标健康度判定（`evaluateHealth`，无样本不算达标）+ 一条命令采集入口（`metrics-health-collect`）。**至此 ROADMAP 先行指标全部有可复算实现或明确放弃结论，autonomous 可落地的产品工作已穷尽——剩余全部依赖外部输入。**
 
 ## 2. 68 轮交付地图
 
@@ -55,7 +55,7 @@
 
 1. **启用**：接手方（appa）按 [生产启用 runbook](plan/north-star-enablement.md) 操作。三项前置缺一不可且按顺序——① 生产库真跑 `0101`/`0102` 迁移并核对账本（`:prod` 入口、`migrationsRun=false` 不自愈）；② `SEC_SECRETS_KEY` 配非空 32 字节 hex（空 key 会致授权端点 503 + listener 静默跳过）；③ 至少一个带 `deviceFingerprint` 的执行器在线（先装执行器再授权，避免 `coverage=no_executors` 静默零采集）。授权后用 `GET /agent/telemetry/status` 验 `coverage` 与 `count`（`count=0` 一律视为未启用）、用 `GET /agent/north-star/metrics?as_of=` 验出数。
 2. **发布前 rebuild dist**：R327 曾因 stale dist 导致 warnings 缺项被真库对账抓红——改过后端再验前端/脚本前必须重建产物，勿用旧 dist 数字。
-3. **commit 等指令**：工作树 68 轮改动按 House Rules 不主动 commit；用户明确指令后再统一提交。
+3. **提交状态**：68 轮改动已于 R459 按主题分 11 组提交（未 push，等用户指令再 push）。
 4. **隐私红线不可破**：生产唯一 grant 写入点是显式 `POST /agent/telemetry/consent`（ADMIN + JWT）；新设备永不自动授权；漏斗只落匿名 HMAC ID + 90 天 TTL。
 
 ## 6. 证据索引
