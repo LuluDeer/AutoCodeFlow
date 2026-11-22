@@ -287,6 +287,8 @@ export interface TaskExecution {
   exitCode?: number | null;
   aiAnalysis?: string;
   retryCount?: number;
+  /** 该执行由哪个 Agent 会话触发（Agent 触发路径可空；存量行恒 null） */
+  agentSessionId?: string | null;
   taskVersion?: string | null;
   /** OBS-01: W3C trace-id（admin OTEL_ENABLED=true 时落库；null=未追踪） */
   traceId?: string | null;
