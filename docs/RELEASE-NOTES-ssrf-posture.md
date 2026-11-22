@@ -1,6 +1,6 @@
-# 发版公告：执行器中台出站 SSRF 闸收紧（develop，未发布）
+# 发版公告：执行器与中台出站 SSRF 闸收紧（已随 v2.3.0 发布）
 
-> **受众**：执行器运维 / 中台运维 · **影响版本**：`develop`（未发布）· **最后核对**：2026-11-06
+> **受众**：执行器运维 / 中台运维 · **影响版本**：`v2.3.0`（2026-11-22 已发布）· **最后核对**：2026-11-22
 >
 > 依据：本文所有行为结论均对得上 `docs/UPGRADING.md` §10（Lead 已写）、`docs/adr/adr-032-python-switch-posture-parity.md`、`docs/adr/adr-033-admin-webhook-posture-parity.md` 与 `docs/adr/adr-034-network-category-table-in-contract.md`。行为引用处均标注「依据」。
 
@@ -73,7 +73,7 @@ grep -n 'EXECUTOR_ALLOW_PRIVATE_NETWORK' .env apps/executor-node/.env 2>/dev/nul
 
 ### 3.3 发版
 
-按 `docs/UPGRADING.md` §3「执行器升级」与 §9「v2.0.0 → develop 增量」执行。python 执行器**无需**再配灰度阀：`PY_EXECUTOR_SWITCH_POSTURE_STRICT` 已删除，默认即新姿态。（依据：ADR-032 Step 5）
+按 `docs/UPGRADING.md` §3「执行器升级」与 §9「v2.0.0 → v2.3.0 增量」执行。python 执行器**无需**再配灰度阀：`PY_EXECUTOR_SWITCH_POSTURE_STRICT` 已删除，默认即新姿态。（依据：ADR-032 Step 5）
 
 ## 4. 回滚
 

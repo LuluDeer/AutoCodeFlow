@@ -1,6 +1,6 @@
 # API 参考
 
-> **受众**：要直接调用 HTTP 接口做集成的开发者与 CI/CD 维护者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：要直接调用 HTTP 接口做集成的开发者与 CI/CD 维护者 · **状态**：稳定 · **最后核对**：2026-11-22
 
 所有接口基础路径：`http://localhost:3105/api`
 
@@ -19,16 +19,16 @@
 - [App Deployments — 应用部署](#app-deployments--应用部署)
 - [Releases — 统一发布追溯（DEP-01 新增）](#releases--统一发布追溯dep-01-新增)
 - [应用版本动作：设为当前版本 / 下发到设备（R1，2026-10-24 部署模型评审 §4.2）](#应用版本动作设为当前版本--下发到设备r12026-10-24-部署模型评审-42)
-- [Rollout 灰度发布与健康检查（DEP-02/03，本轮新增）](#rollout-灰度发布与健康检查dep-0203本轮新增)
+- [Rollout 灰度发布与健康检查（DEP-02/03）](#rollout-灰度发布与健康检查dep-0203)
 - [Tasks — 任务管理](#tasks--任务管理)
   - [任务/应用属主写面守卫（NF-03 预研）](#任务应用属主写面守卫nf-03-预研)
   - [依赖扇出与上游数据契约（G6）](#依赖扇出与上游数据契约g6)
 - [Executors — 执行器管理](#executors--执行器管理)
   - [设备级版本事实（R3-A，心跳/注册可选键 deployedApps，2026-10-24 部署模型评审 §4.3）](#设备级版本事实r3-a心跳注册可选键-deployedapps2026-10-24-部署模型评审-43)
 - [Executions — 执行记录](#executions--执行记录)
-- [Distributed Tracing — 分布式追踪契约（OBS-01，本轮新增）](#distributed-tracing--分布式追踪契约obs-01本轮新增)
-- [Artifacts — 执行产物（FEAT-05，本轮新增）](#artifacts--执行产物feat-05本轮新增)
-- [Task Templates — 任务模板（CORE-03，本轮新增）](#task-templates--任务模板core-03本轮新增)
+- [Distributed Tracing — 分布式追踪契约（OBS-01）](#distributed-tracing--分布式追踪契约obs-01)
+- [Artifacts — 执行产物（FEAT-05）](#artifacts--执行产物feat-05)
+- [Task Templates — 任务模板（CORE-03）](#task-templates--任务模板core-03)
 - [Notifications — 通知渠道配置](#notifications--通知渠道配置)
   - [FEAT-10 — 渠道级通知模板](#feat-10--渠道级通知模板)
   - [Alerts — 告警入站路由（OBS-02，第十六轮新增）](#alerts--告警入站路由obs-02第十六轮新增)
@@ -443,7 +443,7 @@ Content-Type: application/json
 
 ---
 
-## Rollout 灰度发布与健康检查（DEP-02/03，本轮新增）
+## Rollout 灰度发布与健康检查（DEP-02/03）
 
 **`POST /api/applications/:id/upgrade-all`**（ADMIN）：请求体全可选，**缺省（不传 body 或不传 `rollout`）= `all` 全量升级，既有语义逐字节保持**。批次本体是 admin-api 进程内状态（最低正确形态）：**服务重启即暂停灰度**——启动 sweep 把遗留 `pending/probing` 行标记 `failed`（`rolloutMeta.failureReason = "admin-api restarted — rollout batch not resumed"`），需人工重发；批次硬超时 15 分钟兜底收尾，canary 首批心跳确认宽限窗 120 秒。
 
@@ -587,7 +587,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | POST | `/tasks/:id/versions/:versionId/rollback` | 是 | 回滚任务配置到指定历史版本 |
 | POST | `/tasks/:id/rollback` | 是 | Git 类型任务回滚到指定 commit |
 
-**任务定义导入/导出（E-1，本轮新增）：**
+**任务定义导入/导出（E-1）：**
 
 任务定义的跨环境迁移通道。导出物即导入请求体，两端口径完全对称。
 
@@ -852,7 +852,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 
 ---
 
-## Distributed Tracing — 分布式追踪契约（OBS-01，本轮新增）
+## Distributed Tracing — 分布式追踪契约（OBS-01）
 
 平台在 `OTEL_ENABLED=true` 时启用跨三端（admin-api → 执行器 → 回调）的 W3C Trace Context 贯穿。**默认 `false`——零开销零行为变化**（不生成 traceId、不带头、不落库，执行行 `traceId` 保持 null）。范围上**只用 `@opentelemetry/api`**（轻量 API 包，不引 `sdk-*`/exporter——无稳定 collector 部署）；注意该包**当前零 import**，它是刻意的 SDK 挂载锚点（且 `prom-client` 已传递依赖它）。span 树在 admin-api 进程内管理并输出结构化日志（`[trace] start/end` 行）；接 Jaeger/Tempo 的升级路径见 deployment.md「OTEL / Jaeger」段。
 
@@ -871,7 +871,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 
 ---
 
-## Artifacts — 执行产物（FEAT-05，本轮新增）
+## Artifacts — 执行产物（FEAT-05）
 
 执行器任务可在其工作目录约定的 `artifacts/` 子目录写入交付物（截图 / 报表 / CSV 等）。任务结束时双执行器（executor-node、executor-python）会：
 
@@ -887,13 +887,13 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | GET | `/tasks/executions/:execId/artifacts` | 是 | 读取执行记录的产物清单（来自终态回调落库的 `artifacts`） |
 | GET | `/tasks/executions/:execId/artifacts/:name` | 是 | 流式下载单个产物（JWT）；`name` 必须是裸安全文件名，服务端二次校验防路径穿越，文件缺失返回 404 |
 
-> *上传端点豁免全局 JWT（`@Public`），处理器内复用回调的凭据形态校验：执行器共享 token（`verifyExecutorToken`）**或** 每执行器动态 token（`validateTokenByAddress`，按执行行的 `executorAddress` 绑定）任一命中即放行；执行行不存在返回 404，凭据均不匹配返回 401。
+> *上传端点豁免全局 JWT（`@Public`），v2.0.0（SEC-1）起默认**仅接受与该执行行 `executorAddress` 绑定的 per-executor 动态令牌**（`validateTokenByAddress`）；直接携带共享令牌（`EXECUTOR_SECRET`）默认返回 **403 `ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN`**（`reason: shared_token`）。仅当显式开启过渡兼容开关 `EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true` 时才临时放行共享令牌并打印 `SEC-1 兼容模式` 告警（升级过渡完毕后应关闭，见 [UPGRADING.md §6.4/§7.2](UPGRADING.md)）；执行行不存在返回 404，凭据均不匹配返回 401。
 >
 > **存储与生命周期**：产物字节落在 admin 的 `uploads/artifacts/<execId>/<name>`（与执行器安装包同 `uploads` 卷；根目录可用 `LOG_ARTIFACT_DIR` 环境变量覆盖，缺省回退该 uploads 路径）。每日 03:45 的 TTL 清理服务复用 `LOG_RETENTION_DAYS`（默认 30 天），按子目录最旧文件 mtime 超期即整目录回收——与日志保留策略搭车，无需单独配置。
 
 ---
 
-## Task Templates — 任务模板（CORE-03，本轮新增）
+## Task Templates — 任务模板（CORE-03）
 
 常用任务形态（定时备份 / 健康巡检 / 数据同步 / 日志清理 / Webhook 探活）固化为模板。迁移 `1789800000000` 建表并幂等 seed 5 个官方模板（`INSERT ... ON CONFLICT (key) DO NOTHING`），五个 key（`scheduled_backup` / `health_check` / `data_sync` / `log_cleanup` / `webhook_ping`）与 mcp-server `TASK_TEMPLATES`（ECO-03）**同一口径**，避免 admin 与 MCP 两套模板语义漂移。
 
@@ -949,8 +949,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 - **变量集**：`{{task}}` / `{{taskName}}`（任务名）、`{{executionId}}`（执行 ID）、`{{failedReason}}`（失败原因/错误摘要）、`{{logs}}`（日志摘要，失败路径）、`{{duration}}`（执行时长 ms，成功路径）、`{{runbook}}`（运行手册链接，若任务已配置）、`{{level}}`（通知级别）、`{{taskId}}`、`{{aiAnalysis}}`、`{{content}}`；
 - **单 pass 替换**：变量值中的 `{{...}}` 不再展开（阻断 `{{a}}→{{b}}` 递归注入——变量值来自不可信的任务日志/错误信息）；
 - **未知变量保留原文**：`{{nope}}` 原样留在输出（配置拼写错误可见）；
-- **8KB 输出上限**：超限截断并追加 `
-…[已截断: 超过 8KB 模板输出上限]`；
+- **8KB 输出上限**：超限截断并追加 `\n…[已截断: 超过 8KB 模板输出上限]`；
 - 变量值 null/undefined 渲染为空串；数字 String() 化。
 
 **生效语义（零破坏）**：
@@ -1019,7 +1018,7 @@ Alertmanager 侧 route/receiver 配置样例与加签提示见 `docs/observabili
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
 | GET | `/event-subscriptions` | 是 | 列出订阅：ADMIN 看全部；普通用户看自己的 + 系统级（`userId=null`）。`secret` 恒脱敏为 `******` |
-| POST | `/event-subscriptions` | 是（**仅 ADMIN**） | 新建订阅（SUB-SCOPE-01：出站 webhook 属管理面能力，已由「任何已登录」收紧为 `@Roles(ADMIN)`）。body: `{ url（必填，公网 http(s)）, eventTypes（1-10 个，取值=上表事件名）, secret?（≥16 字符；省略则服务端生成 64 字符 hex 并在**本次响应** `generatedSecret` 字段一次性回显） }`。url 经 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据）→ 400。ARCH-31：`EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true` 时放行 loopback/restricted/private-LAN；**云元数据地址恒拒**（契约 `networkPolicy.metadataAddresses`，ADR-029，任何开关都不放行），默认 false 姿态不变 |
+| POST | `/event-subscriptions` | 是（**仅 ADMIN**） | 新建订阅（SUB-SCOPE-01：出站 webhook 属管理面能力，已由「任何已登录」收紧为 `@Roles(ADMIN)`）。body: `{ url（必填，公网 http(s)）, eventTypes（1-10 个，取值=上表事件名）, secret?（≥16 字符；省略则服务端生成 64 字符 hex 并在**本次响应** `generatedSecret` 字段一次性回显） }`。url 经 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据）→ 400。R66/ADR-033 契约口径：`EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true` 时**仅放行 RFC1918 `privateIPv4`（`10/8`、`172.16/12`、`192.168/16`）**；`loopback`（`127.0.0.1`/`[::1]`/`localhost`）、`cgnat`（`100.64/10`）、`restricted` 与云元数据地址（`networkPolicy.metadataAddresses`，ADR-029）在**任何开关状态下恒拒**，默认 `false` 姿态不变 |
 | PATCH | `/event-subscriptions/:id` | 是 | 更新（属主/ADMIN）。body: `{ enabled?, url?, eventTypes?, secret? }`（url 变更时再次 SSRF 校验） |
 | DELETE | `/event-subscriptions/:id` | 是 | 删除订阅（属主/ADMIN），死信级联删除（FK ON DELETE CASCADE） |
 | GET | `/event-subscriptions/:id/dead-letters` | 是 | 死信分页列表（属主/ADMIN）。`page` 默认 1，`limit` 默认 20、最大 100。行含 `eventType` / `payload`（发送时完整载荷）/ `error`（末次失败摘要）/ `attempts` / `createdAt` |

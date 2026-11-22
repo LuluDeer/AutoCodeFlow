@@ -1,6 +1,6 @@
 # 开发指南
 
-> **受众**：在本地开发、调试或向仓库提交代码的贡献者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：在本地开发、调试或向仓库提交代码的贡献者 · **状态**：稳定 · **最后核对**：2026-11-22
 
 ## 环境要求
 
@@ -351,10 +351,11 @@ docs: 更新 SDK 使用示例
 
 ### 分支策略
 
-- `main`：主分支，仅接受经过 Review 的 PR
+- `main`：稳定发布分支，合并进入 `main` 会触发 `release-please` 生成/更新 Release PR（以及文档站部署与 README 切片同步）
+- `develop`：日常集成分支，功能与修复 PR 默认面向 `develop`（与 [CONTRIBUTING.md](../CONTRIBUTING.md) 对齐），确认稳定后再合入 `main` 发版
 - `feat/xxx`：功能开发分支
 - `fix/xxx`：Bug 修复分支
-- `release/x.x.x`：发布分支
+- `chore/xxx`：治理、构建或文档维护分支
 
 ## PR 前检查清单（DOC-01）
 
@@ -420,26 +421,16 @@ docs: 更新 SDK 使用示例
 ### 与 release.yml 的衔接（release.yml 本体零改动）
 
 ```text
-push main ──→ release-please.yml：开/更新 Release PR（version bump + CHANGELOG）
-Release PR 合并 ──→ release-please 打 tag v(X.Y.Z)
-tag v* push ──→ 既有 release.yml：version-guard → environment 审批闸 → npm + PyPI 发布
+push main ──→ release-please.yml：开/更新 Release PR（version bump + 根 CHANGELOG.md）
+Release PR 合并 ──→ release-please 自动打 tag v(X.Y.Z)
+tag v* push ──→ 既有 release.yml：version-guard → environment 审批闸 → npm (3 包) + PyPI (OIDC) 发布 → demote-sdk-release
 ```
 
 即 release-please 产出的 tag **恰好触发**既有 tag 触发的 `release.yml`——发布管道、
 审批闸、幂等语义全部复用既有实现（见 `docs/sdk-guide.md`「版本与发布流程」）。
-
-### 首次启用观察点
-
-- **版本漂移兜底**：三包独立提议版本时可能漂移，但 tag 一旦 push 会被
-  version-guard 拦截（fail 安全，不会发出不一致的包）；首次 Release PR 合并前
-  **人工核对三包 version 已收敛为同一值**。
-- `autoflow_sdk.__version__`（`packages/autoflow-sdk/autoflow_sdk/__init__.py`）
-  由 python release-type 的 extra-files 机制同步，首次 Release PR 里核对四处
-  version 是否齐全。
-- **真跑验证不可行**（需 main push 权限 + 实际 PR 流程），已以 actionlint 语法
-  校验 + 本节干跑说明代替；首次发布时观察：① Release PR 是否正确汇总
-  conventional commits；② 合并后 tag 是否触发 release.yml；③ 根级
-  `CHANGELOG.md` 是否生成（当前仓库无根级 CHANGELOG.md，追加式生成不覆盖历史）。
+根级 `CHANGELOG.md` 与四个 lockstep 包（`@autocodeflow/sdk`、`@autocodeflow/cli`、
+`autocodeflow-mcp-server`、`autoflow-sdk`）均由单一 root 条目（`.`）统一广播更新，
+无需人工同步版本或手写根级 CHANGELOG；配置一致性由 `npm run check:release-config` 在 CI 守护。
 
 ### v1.2.0 遗留排查：tag 需人工推的根因与修复（2026-09-13）
 
@@ -475,29 +466,44 @@ tag v* push ──→ 既有 release.yml：version-guard → environment 审批�
 ```text
 AutoCodeFlow/
 ├── apps/
-│   ├── admin-api/          # NestJS 后端 API
-│   │   ├── src/
-│   │   │   ├── modules/    # 业务模块（auth/task/executor/application/notification/...）
-│   │   │   ├── common/     # 公共工具、守卫、过滤器、拦截器、DTO
-│   │   │   ├── config/     # 配置管理
-│   │   │   └── migrations/ # 数据库迁移文件
-│   ├── admin-web/          # React 管理前端
-│   ├── executor-python/    # Python 执行器 (FastAPI)
-│   ├── executor-node/      # Node.js 执行器 (Express)
-│   └── executor-desktop/   # Electron 桌面执行器
+│   ├── admin-api/             # NestJS 后端 API（22 模块 / 146 迁移）
+│   │   └── src/
+│   │       ├── modules/       # 业务模块（auth/task/scheduler/executor/application/sop/agent/...）
+│   │       ├── common/        # 公共工具、守卫、过滤器、拦截器、DTO
+│   │       ├── config/        # 配置管理（ARCH-27）
+│   │       └── migrations/    # 数据库迁移文件
+│   ├── admin-web/             # React 19 管理前端（Vite 8 / Ant Design 6）
+│   ├── executor-python/       # Python 执行器 (FastAPI, :8001)
+│   ├── executor-node/         # Node.js 执行器 (Express, :8002)
+│   ├── executor-desktop/      # Electron 桌面执行器（独立版本线 desktop-v*）
+│   ├── registry-npm/          # 私有 npm 注册中心 (Verdaccio, :4873)
+│   └── registry-pypi/         # 私有 PyPI 注册中心 (FastAPI, :8003)
 ├── packages/
-│   ├── acf-cli/               # 命令行工具
-│   ├── mcp-server/            # MCP Server
-│   ├── autoflow-sdk/          # Python 任务 SDK
-│   ├── autocodeflow-node-sdk/ # Node.js 完整 SDK
-│   ├── autocodeflow-ai/       # AI 分析引擎
-│   ├── autocodeflow-db/       # 数据库连接工具
-│   ├── autocodeflow-http/     # HTTP 客户端
-│   └── autocodeflow-notify/   # 通知发送工具
+│   ├── acf-cli/               # 命令行工具（@autocodeflow/cli，bin: acf）
+│   ├── mcp-server/            # MCP Server（autocodeflow-mcp-server，56 工具）
+│   ├── autoflow-sdk/          # Python 任务 SDK（PyPI: autoflow-sdk）
+│   ├── autocodeflow-node-sdk/ # Node.js 完整 SDK（@autocodeflow/sdk）
+│   ├── autocodeflow-ai/       # AI 分析引擎（Python，仓内）
+│   ├── autocodeflow-db/       # 数据库连接工具（Python，仓内）
+│   ├── autocodeflow-http/     # HTTP 客户端（Python，仓内）
+│   ├── autocodeflow-notify/   # 通知发送工具（Python，仓内）
+│   ├── executor-protocol/     # 跨端执行器协议与网络策略契约（protocol.json）
+│   ├── contract-fixtures/     # 跨端响应信封与失败分类契约夹具（contract.json）
+│   └── docs-site/             # VitePress SDK 文档站（GitHub Pages）
 ├── examples/
-│   └── desktop-automation/    # 桌面自动化（RPA）示例
-├── design-system/             # 设计系统规范
-├── docs/                      # 项目文档
+│   ├── daily-report/          # 每日报表导出场景示例
+│   ├── intranet-inspection/   # 内网巡检场景示例
+│   ├── desktop-data-entry/    # 桌面数据填报场景示例
+│   ├── desktop-automation/    # 桌面自动化（RPA）示例
+│   ├── callback-report/       # Python 回调上报示例
+│   ├── callback-report-node/  # Node.js 回调上报示例
+│   ├── private-registry-deps/      # Python 私服依赖示例
+│   └── private-registry-deps-node/ # Node.js 私服依赖示例
+├── deploy/                    # 隧道/反代与本地部署配置（frp/gost/local）
+├── design-system/             # 设计系统与品牌视觉源资产
+├── infra/                     # nginx 与本地基础设施 compose
+├── scripts/                   # 部署、demo、守卫与自测脚本
+├── docs/                      # 项目文档与 Atlas 图谱
 ├── docker-compose.yml         # 容器编排配置
 ├── .env.example               # 环境变量模板
 └── Makefile                   # 常用命令快捷方式

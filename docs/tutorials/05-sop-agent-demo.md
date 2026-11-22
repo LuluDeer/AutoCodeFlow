@@ -1,13 +1,13 @@
 # 教程 05 · SOP 生态演示：从种子到 Agent 执行
 
-> **受众**：想看 SOP 起草→执行→复核全链路与 GUI 演示的进阶用户 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：想看 SOP 起草→执行→复核全链路与 GUI 演示的进阶用户 · **状态**：稳定 · **最后核对**：2026-11-22
 > 目标：跑通「SOP 起草 → 发布 → 版本 → 指派 → 执行 → 平台复核」的完整链路，
 > 并在 Linux X11 会话里演示 GUI 能力域。内容面全程 ≤ 15 分钟、零配置；
 > 执行面（§4 起）需要 Agent 执行器在线，前置单独列出。
 > 前提：已按[快速上手](../quickstart.md)启动全栈，并跑过一次种子：
 >
 > ```bash
-> npm run demo:seed -- --base-url http://localhost:3105 --username admin --password 'Admin@123456'
+> npm run demo:seed -- --base-url http://localhost:3105 --username admin --password '<你的 INITIAL_ADMIN_PASSWORD>'
 > ```
 >
 > 种子会预置 3 条已发布的演示 SOP（`demo-sop-` 前缀，v1.0.0）+ 3 个演示任务
@@ -45,6 +45,8 @@ front-matter 是 SOP 的机器契约（严格校验、未知键拒绝）：
 登录管理台 → **SOP 页面**：三条 `demo-sop-` 前缀的 SOP 已在列表里，状态
 published。点开任意一条：
 
+![SOP 契约管理页面：已发布 SOP 列表、能力域标签与版本指派入口](../assets/screenshots/zh/sops.png)
+
 - **front-matter**：对照上表逐字段看一遍——特别看 `acceptance`：每条
   `kind: platform` 的 `task` 字段是一个**任务 id**（不是任务名）。中台复核
   会话触发该任务并用 id 精确比对作用域白名单（[03 §5.3](../design/agent-and-deployment/03-agent-tools-and-boundary.md)），
@@ -74,9 +76,8 @@ SOP 发布产生**不可变版本快照**（v1.0.0，contentHash 锚定），执
 ## 3. 指派与执行链路（前置：Agent 执行器在线）
 
 > **前置**（缺任一则本节只能看不能跑）：
-> - 一台 desktop 执行器（AutoFlow 桌面端）在线，且「Agent（实验性）」已启用；
-> - Agent 需要真实 LLM——桌面端配置里填好模型与 Key（当前 qwen 分支已就绪，
->   DashScope Key 未开通前本节不可跑，见认领板 N-05 备注）。
+> - 一台桌面执行器（AutoCodeFlow 桌面执行器）在线，且「Agent（实验性）」已启用；
+> - 已配置可用的真实 LLM 供应商与 API Key（在桌面端设置中填写兼容 OpenAI 协议的模型与 Key，或通过中台「AI 接入注册表」配置并启用中台 LLM relay）。
 
 指派是管理面动作（ADMIN-only——发布权 = 间接的指令注入权，见
 [04 §4.3](../design/agent-and-deployment/04-sop-protocol.md)）：

@@ -1,17 +1,16 @@
-# 升级指南：v1.15.0 → v2.0.0（已发布），以及 v2.0.0 → develop
+# 升级指南：v1.15.0 → v2.0.0，以及 v2.0.0 → v2.3.0（均已发布）
 
-> **受众**：正在执行版本升级的自托管运维 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：正在执行版本升级的自托管运维 · **状态**：稳定 · **最后核对**：2026-11-22
 > **读者**：自托管运维。本文覆盖两段路，按需取用：
 > - **① v1.15.0（上一稳定线）→ v2.0.0（2026-10-30 已发布）**——**必须做**，含 15 个迁移与 3 条破坏性改动（§0–§8）；
-> - **② v2.0.0 → develop**——§9 是截至迁移 `0093` 的历史快照。升级到含 `0100` 的版本前，请另读 **§15**：Agent 工具调用表会重写；写入审批业务键后不可直接将该列降回 UUID。
+> - **② v2.0.0 → v2.3.0（2026-11-22 已发布）**——累计 20 个新迁移（`0082`–`0102`，全库共 **146 个迁移**），含 SSRF 出站闸收紧（§10–§13）、令牌派生轮换（§14）、Agent 工具调用审批键重写（§15，迁移 `0100`）以及 TTFV 漏斗与北极星体系（迁移 `0101`/`0102`，详见 [北极星/TTFV 生产启用 runbook](plan/north-star-enablement.md)）；桌面端最新为 **`desktop-v1.12.0`**。§9 保留截至 `0093` 的阶段快照以便对照。
 >
-> **核实基线**（R58 刷新：2026-11-05，`git log -1 --oneline` ⇒ `907879f0`，工作区 `/home/yongsheng/project/AutoCodeFlow`）：
-> - **核实方法**：`git log -1 --oneline`（取当前 HEAD）；本文的行号/命令以**该提交**为准，合并后可能漂移。
-> - **覆盖范围**：v1.15.0 → v2.0.0 的迁移矩阵、§9 的 develop 增量清单、§11 执行器出站姿态升级段、§8 的 v2.0.0 核实记录（附录）。**不覆盖** v1.15.0 之前的历史版本。
-> - 历史基线（保留可追溯）：`main` = `3159ad86`（v2.0.0 之后 31 个提交）（v2.0.0 之后 31 个提交）；`develop` = `e3cb0797`（领先 main 45 个提交，main 无独有提交）。
-> - `version.txt` = `2.0.0`；`release-please-manifest.json` 的 `"."` = `2.0.0`；最新平台 tag = `v2.0.0`（2026-10-30 04:44 +0800，commit `4da13ab3`）；桌面最新 tag = `desktop-v1.10.2`。
-> - 本文所有命令/路径/env 键均可在仓库内核对；锚点写成 `file:line`，行号取上述基线，合并后可能漂移，**以符号名/文件名兜底**。
-> - v2.0.0 的三条破坏性改动**已随版本发布**（不再是「在途」）；§6.4 保留可直接复制的验收命令。
+> **当前发布基线（2026-11-22 核对）**：
+> - `version.txt` = `2.3.0`；`release-please-manifest.json` 的 `"."` = `2.3.0`；最新平台 tag = `v2.3.0`（2026-11-22）；桌面最新 tag = `desktop-v1.12.0`（2026-11-09）。
+> - **历史核实基线（保留可追溯）**：v2.0.0 阶段（2026-11-05，commit `907879f0`）：`main` = `3159ad86`（v2.0.0 之后 31 个提交）；`develop` = `e3cb0797`（领先 main 45 个提交，main 无独有提交）；v2.0.0 tag commit `4da13ab3`（2026-10-30 04:44 +0800）；当时桌面 tag `desktop-v1.10.2`。
+> - **覆盖范围**：v1.15.0 → v2.0.0 的迁移矩阵（§0–§8）、v2.0.0 → v2.3.0 增量与破坏性变更（§9–§15）。**不覆盖** v1.15.0 之前的历史版本。
+> - 本文所有命令/路径/env 键均可在仓库内核对；锚点写成 `file:line`，合并后行号可能漂移，**以符号名/文件名兜底**。
+> - v2.0.0 与 v2.3.0 的破坏性改动**均已随版本发布**；§6.4 保留可直接复制的验收命令。
 
 ## 0. 一页纸结论
 
@@ -370,7 +369,7 @@ curl -s -o /dev/null -w 'live=%{http_code}\n' http://127.0.0.1:3105/api/health/l
 
 ### 6.1 中台
 
-- [ ] `node scripts/check-migrations.mjs` 通过（v2.0.0 tag 有 126 个；§9 的 `0093` 快照有 138 个；到 §15 的 `0100` 为 144 个。后续版本以脚本实测为准）
+- [ ] `node scripts/check-migrations.mjs` 通过（v2.0.0 tag 有 126 个；§9 的 `0093` 快照有 138 个；到 §15 的 `0100` 为 144 个；`v2.3.0` 含 `0101`/`0102` 为 **146 个**。后续版本以脚本实测为准）
 - [ ] `(cd apps/admin-api && npm run migration:run)` 二次执行输出 `No migrations are pending`
 - [ ] `node scripts/check-env-drift.mjs` 退出 0
 - [ ] `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3105/api/health/live` → `200`
@@ -474,8 +473,8 @@ done
 
 **桌面是既有先例**：`desktop-vX.Y.Z` 独立 tag + `release-desktop.yml`，version-guard 只比
 `apps/executor-desktop/package.json`，不参与 root lockstep。v2.0.0 发布时桌面是 **1.10.0**；
-当前最新是 **1.11.0**（`package.json` + lock 已同步），需要发桌面时直接
-`git tag desktop-v1.11.0 && git push origin desktop-v1.11.0`（`desktop-version-guard` 要求
+当前最新是 **1.12.0**（`package.json` + lock 已同步），需要发桌面时直接
+`git tag desktop-v1.12.0 && git push origin desktop-v1.12.0`（`desktop-version-guard` 要求
  tag 与 `apps/executor-desktop/package.json` **逐字相等**，写错版本号会被它当场拒掉）。
 
 > 结论：**这次选 A 或 B 都不动流水线**，区别只在 commit 里有没有 `!`。选 C 才需要改造。
@@ -495,7 +494,7 @@ npm run check:release-config   # 六层一致性全绿才打 tag
 - CHANGELOG 顶部应出现 `⚠ BREAKING CHANGES` 两条（产物上传鉴权 / webhook 投递语义）；
 - SDK 的 GitHub Release 会被 `release.yml` 的 `demote-sdk-release` 自动标成 **prerelease**
   （这是刻意的：GitHub `latest` 必须留给 `desktop-v*`，否则桌面自动更新会去比 SDK 版本号）；
-- 桌面单独打 `desktop-v1.11.0`（当前桌面最新），与平台 `v2.1.0` 互不影响。
+- 桌面单独打 `desktop-v1.12.0`（当前桌面最新），与平台 `v2.3.0` 互不影响。
 
 ## 7. 已知取舍
 
@@ -521,17 +520,18 @@ npm run check:release-config   # 六层一致性全绿才打 tag
 - **迁移不是必须先手动跑**：`main.ts` 在非 development 环境会先跑 `runBootstrapMigrations()`。本文仍推荐手动先跑，理由是**失败可见性**（容器崩溃循环 vs 一条 SQL 报错），不是能力缺失。
 - **`0061` 的 `up()` 在 v2.0.0 里从 `CREATE INDEX` 改成了 `CREATE INDEX CONCURRENTLY`**，但该迁移在 v1.15.0 已执行过、TypeORM 按 `name` 记账不会重跑 ⇒ 存量库的该索引仍是普通方式建的，**本次升级不会自动重建成 CONCURRENTLY**（无害，仅记录）。
 
-## 9. v2.0.0 → develop（未发布，可选灰度）
+## 9. v2.0.0 → v2.3.0（已发布，增量总览与 0082–0093 快照）
 
-**结论：纯增量，**但有 1 条破坏性变更** —— 执行器出站姿态（R05，见 [§11](#11-执行器出站姿态r05-起破坏性)）。
-只追稳定版的部署可以停在 v2.0.0；想提前拿安全/可观测性修复的，按本节灰度，并**先读 §11**。
+**结论：纯增量，**但有 1 条破坏性变更** —— 执行器与中台出站 SSRF 姿态收紧（R05/R66，见 [§10](#10-行为变更执行器出站-ssrf-闸收紧r2-1p1ba7)–[§13](#13-oracle-元数据地址-19200192-恒拒r09-起行为收紧)），且迁移 `0100` 会重写 `agent_tool_calls` 表（见 [§15](#15-agent-工具调用审批键迁移-1790000000100)）。
+升级到 `v2.3.0` 前请务必逐一通读 **§10–§15**。
 
-| 项 | v2.0.0 | develop（2026-11-02） | 影响 |
+| 项 | v2.0.0 | v2.3.0（2026-11-22 已发布） | 影响 |
 |---|---|---|---|
-| 迁移 | 126 | **138**（+12：`0082`–`0093`） | 建表 / 加列 / 建索引；新列可空或有默认值，**不删数据** |
-| env 键 | — | **+2**：`AGENT_DEPLOY_APPROVAL_REQUIRED`（默认 `true`）、`SOP_BODY_SCAN_MODE`（默认 `warn`） | 不配也能起来 |
+| 迁移 | 126 | **146**（+20：`0082`–`0102`；下表为 `0082`–`0093` 阶段快照，`0100` 见 §15，`0101`/`0102` 为 TTFV/北极星表） | `0100` 含列类型改写与表锁（见 §15）；其余为建表 / 加列 / 建索引，不删数据 |
+| 桌面端 | `1.10.0` | **`desktop-v1.12.0`**（独立发布线） | 建议升；不做自动降级，回退见 `docs/deployment.md` |
+| env 键 | — | **+2**：`AGENT_DEPLOY_APPROVAL_REQUIRED`（默认 `true`）、`SOP_BODY_SCAN_MODE`（默认 `warn`）；北极星遥测复用 `SEC_SECRETS_KEY` | 不配也能起来；启用北极星需配非空 `SEC_SECRETS_KEY` |
 | 线缆协议 | 8 | **9**（heartbeat 新增可选 `taskSandbox`） | `supportedMinProtocolVersion` 仍为 1；老执行器照常注册 |
-| 破坏性变更 | — | **1 条**：执行器出站姿态（R05） | 内网执行器需显式开开关；**同机 `127.0.0.1` 执行器不再可用**，见 [§11](#11-执行器出站姿态r05-起破坏性) |
+| 破坏性变更 | — | **1 条**：执行器/中台出站 SSRF 姿态收紧（R05/R66） | 内网执行器/webhook 需显式开开关；**同机 `127.0.0.1` 任何开关态不再可用**，见 [§11](#11-执行器出站姿态r05-起破坏性) |
 
 **新增的 12 个迁移（按时间戳）**：
 
@@ -550,12 +550,13 @@ npm run check:release-config   # 六层一致性全绿才打 tag
 | `0092` | `task_executions.attemptSeq` |
 | `0093` | `agent_events.causedBySeq`（事件流从扁平日志变因果图） |
 
-**灰度步骤**（与 §2 同一流程，只换目标分支）：
+**升级步骤**（与 §2 同一流程，只换目标 tag）：
 
 ```bash
-git checkout develop
+git fetch --all --tags
+git checkout v2.3.0
 sudo ./deploy.sh --mode source --env production --build
-node scripts/check-migrations.mjs          # 应报 138 个迁移
+node scripts/check-migrations.mjs          # 应报 146 个迁移
 ```
 
 - 回滚：`git checkout v2.0.0` 再跑一次同一条 `deploy.sh` 即可；新表/新列全部向后兼容（旧代码不读不写）。
@@ -569,15 +570,15 @@ node scripts/check-migrations.mjs          # 应报 138 个迁移
 - 迁移、审批、事件写入失败等静默降级补了指标计数（可查询，不再「闸门自己失明」）；
 - SOP 正文供应链扫描（`SOP_BODY_SCAN_MODE`，默认 `warn`，设 `block` 才拦截发布）。
 
-> 本节是 2026-11-02 的快照；develop 随时前进，升级前以 `version.txt`、`node scripts/check-migrations.mjs` 与实际 tag 为准。
+> 上表 `0082`–`0093` 为阶段快照；v2.3.0 实测共 146 个迁移，升级前以 `version.txt`、`node scripts/check-migrations.mjs` 与实际 tag 为准。
 >
-> 若本次升级目标是启用 develop 的北极星双口径看板 / TTFV 漏斗，另读 [北极星/TTFV 生产启用 runbook](plan/north-star-enablement.md)：它依赖 `0101`(funnel_events) / `0102`(telemetry_optin) 两条迁移真正落库（`migrationsRun=false` 不自愈）、非空 `SEC_SECRETS_KEY` 与带指纹的执行器授权，缺任一项看板为空。
+> 若本次升级目标是启用 v2.3.0 的北极星双口径看板 / TTFV 漏斗，另读 [北极星/TTFV 生产启用 runbook](plan/north-star-enablement.md)：它依赖 `0101`(funnel_events) / `0102`(telemetry_optin) 两条迁移真正落库（`migrationsRun=false` 不自愈）、非空 `SEC_SECRETS_KEY` 与带指纹的执行器授权，缺任一项看板为空。
 
 ---
 
 ## 10. 【行为变更】执行器出站 SSRF 闸收紧（R2-1/P1b·A7）
 
-> **受众**：执行器运维（node）· **影响版本**：develop（未发布）· **可回滚**：是（单 commit revert）
+> **受众**：执行器运维（node）· **影响版本**：已随 `v2.3.0` 发布 · **可回滚**：是（单 commit revert）
 
 ### 10.1 变了什么
 

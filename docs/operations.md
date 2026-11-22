@@ -1,6 +1,6 @@
 # 运维手册
 
-> **受众**：日常值守与故障处置的运维值班人员 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：日常值守与故障处置的运维值班人员 · **状态**：稳定 · **最后核对**：2026-11-22
 
 ## 目录
 
@@ -836,7 +836,7 @@ chaos-drill 注入的是**基础设施故障**；要演练**应用层故障面**
 一键预置四件套（全部 `demo-failure-` 前缀，幂等可重跑）：
 
 ```bash
-ACF_PASSWORD='Admin@123456' pnpm demo:failure:seed          # 预置 + 触发
+ACF_PASSWORD='<你的管理员口令>' npm run demo:failure:seed   # 预置 + 触发
 node scripts/demo-failure-seed.mjs --clean                  # 一键清理
 node scripts/demo-failure-seed.mjs --skip-trigger           # 只建不触发
 ```
@@ -851,7 +851,7 @@ node scripts/demo-failure-seed.mjs --skip-trigger           # 只建不触发
 教程四篇的演练点直接复用本包：失败样本见[教程 01 §6](tutorials/01-first-scheduled-task.md)、
 审批样例见[教程 03](tutorials/03-multi-executor-scaling.md)、告警/runbook/死信
 验收见[教程 04 §5](tutorials/04-alerting-oncall.md)。脚本逻辑自检：
-`pnpm demo:failure:seed:selftest`。
+`npm run demo:failure:seed:selftest`。
 
 ---
 
@@ -939,7 +939,7 @@ SELFTEST_SKIP_ENV_FILE=1 npm test -- --maxWorkers=2   # 全量（夹具干净态
 | ② | admin **webhook 面不在真四向判据内** | **覆盖缺口**（守卫没跟上实现，不是承诺分歧） | R66 已把 webhook 面收紧到与契约**逐类同构**（`safe-http.util.ts:89-94` 注释），它有明确 posture，**应当**被四向判据覆盖；而 `check:protocol-three-way` 目前只看执行器面 | 登记为下一步：给 `check:protocol-three-way` 补 webhook 面覆盖（需真跑两侧实现，属独立改动） |
 
 > 守卫侧的同款裁决写在 `scripts/check-posture-matrix-tables.mjs` 头注（`## 两处「覆盖边界」的裁决`）。
-> 台账（`docs/PLAYBOOK`/PLAN-CLAIMS）由 Lead 独占，本 worker 未改。
+> 台账（`docs/AGENT-SWARM-PLAYBOOK.md` / `docs/PLAN-CLAIMS.md`）由 Lead 独占，本 worker 未改。
 
 ## 自检环境隔离（SELFTEST_SKIP_ENV_FILE）
 
@@ -999,14 +999,13 @@ SELFTEST_SKIP_ENV_FILE=1 npm test -- --maxWorkers=2   # 全量（夹具干净态
 真正会变的是：**跨实例幂等**（K 不一致时两实例对同一纪元派生出不同令牌，输家复核失败会退到
 「随机兜底」，多花一次轮换）与**下次按需轮换的产出**（该行旧令牌被覆盖 = 正常轮换语义）。
 
-<table>
-<tr><th>受影响</th><th>表现</th><th>自愈</th></tr>
-<tr><td>已签发令牌</td><td><b>不受影响</b></td><td>—</td></tr>
-<tr><td>跨实例幂等</td><td>混跑期两个实例派生不同令牌 ⇒ 输家复核不中 ⇒ 兜底随机（令牌仍可用，但多一次轮换）</td><td>全部实例换成同一 K</td></tr>
-<tr><td>按需轮换的那一行</td><td>该身份下次取令牌拿到用新 K 派生的令牌，旧哈希被覆盖 ⇒ 该行旧令牌作废</td><td>执行器下一次 `POST /executors/token` 即拿到新令牌</td></tr>
-<tr><td>回调 HMAC</td><td>执行器仍用旧 `tokenHash` 签回调 ⇒ 回调校验被拒</td><td>取令牌/心跳时同步新哈希（≤ 一次心跳间隔）</td></tr>
-<tr><td>数据</td><td><b>无丢失</b>：执行、历史、派发都不依赖令牌明文</td><td>—</td></tr>
-</table>
+| 受影响 | 表现 | 自愈 |
+|---|---|---|
+| 已签发令牌 | **不受影响** | — |
+| 跨实例幂等 | 混跑期两个实例派生不同令牌 ⇒ 输家复核不中 ⇒ 兜底随机（令牌仍可用，但多一次轮换） | 全部实例换成同一 K |
+| 按需轮换的那一行 | 该身份下次取令牌拿到用新 K 派生的令牌，旧哈希被覆盖 ⇒ 该行旧令牌作废 | 执行器下一次 `POST /executors/token` 即拿到新令牌 |
+| 回调 HMAC | 执行器仍用旧 `tokenHash` 签回调 ⇒ 回调校验被拒 | 取令牌/心跳时同步新哈希（≤ 一次心跳间隔） |
+| 数据 | **无丢失**：执行、历史、派发都不依赖令牌明文 | — |
 
 **失败半径量化**：以「一台执行器」为单位，影响面 = 该执行器下一次取令牌时多一次轮换 +
 最多一次回调被拒；**不是**全机队 401。⇒ 但**仍不要在业务高峰做**：会叠加「取令牌 + 回调重试」

@@ -1,6 +1,6 @@
 # 教程 02 · 私服依赖
 
-> **受众**：任务需要引用私有 npm/PyPI 包的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：任务需要引用私有 npm/PyPI 包的开发者 · **状态**：稳定 · **最后核对**：2026-11-22
 > 目标：任务脚本 `import` 一个只存在于**私有包仓库**的依赖，由执行器在
 > 任务执行前自动安装。全程不修改执行器镜像。
 > 前提：已完成[教程 01](01-first-scheduled-task.md)，平台全栈在线。
@@ -18,7 +18,7 @@ admin 下发任务(requirements)
 `npm install --prefix <隔离目录>`，`NODE_PATH` 指向隔离目录。）
 
 关键事实（源码证据见
-[examples/private-registry-deps](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/examples/private-registry-deps/README.md)）：
+[examples/private-registry-deps](../../examples/private-registry-deps/README.md)）：
 
 - 任务表单的 **requirements** 字段仅对 **entrypoint（打包）任务**生效，
   glue 脚本任务忽略；
@@ -129,7 +129,7 @@ npm publish --registry http://localhost:4873/
 node 版等价实验：entrypoint 用
 `examples/private-registry-deps-node/private_dep_task.js`，
 requirements 填你的私有 npm 包名，完整说明见
-[examples/private-registry-deps-node/README.md](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/examples/private-registry-deps-node/README.md)。
+[examples/private-registry-deps-node/README.md](../../examples/private-registry-deps-node/README.md)。
 
 ## 5. 常见坑
 

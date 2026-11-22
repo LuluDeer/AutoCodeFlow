@@ -1,6 +1,6 @@
 # 教程 04 · 告警接入值班
 
-> **受众**：负责告警接入与值班响应的运维 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：负责告警接入与值班响应的运维 · **状态**：稳定 · **最后核对**：2026-11-22
 > 目标：任务失败、执行器掉线这类事件能在 5 分钟内出现在值班群
 > （企业微信/钉钉/Slack/邮件），Prometheus/Alertmanager 告警也能汇入同一
 > 套通知渠道，且每条告警自带 runbook。
@@ -26,6 +26,8 @@
 等配置、`enabled` 开启，可点「发送测试」即时验证（`POST
 /api/notification/channels/:key/test`）。配置保存在 ChannelConfigStore，
 **保存的配置优先于 env 回退**。
+
+![通知渠道与静默规则配置界面：多渠道开关、测试发送与静默窗口管理](../assets/screenshots/zh/notifications.png)
 
 **方式 B：环境变量**——`.env` 中至少配一个：
 
@@ -126,7 +128,7 @@ receivers:
 
 ## 5. 端到端验收（值班演练）
 
-> 想跳过手工造数据？`pnpm demo:failure:seed` 一键预置故障演练四件套
+> 想跳过手工造数据？`npm run demo:failure:seed` 一键预置故障演练四件套
 > （失败任务 / runbook 任务 / 死信订阅 / 审批待办各一例，全部
 > `demo-failure-` 前缀、幂等可重跑，`--clean` 一键清理），详见
 > [运维手册·故障演练演示包](../operations.md#故障演练演示包demo-failure-seed)。
@@ -144,6 +146,7 @@ receivers:
 
 ## 6. 下一步
 
-至此「从 0 到生产」四篇走完。更多运维主题（备份恢复、容量规划、升级
+想进一步把长尾操作（浏览器/桌面 GUI）交给 SOP + Agent 执行器闭环？继续阅读
+[教程 05 · SOP 生态演示：从种子到 Agent 执行](05-sop-agent-demo.md)。更多运维主题（备份恢复、容量规划、升级
 runbook）见 [运维手册](../operations.md)；监控细节见
 [可观测性指南](../observability/README.md)。

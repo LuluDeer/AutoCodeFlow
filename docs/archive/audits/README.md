@@ -4,6 +4,7 @@
 
 | 文档 |
 |---|
+| [2026-10-30-docs-redrift.md](2026-10-30-docs-redrift.md) |
 | [audit-ledger-2026-10.md](audit-ledger-2026-10.md) |
 | [cli-agent-ux-audit-2026-10-08.md](cli-agent-ux-audit-2026-10-08.md) |
 | [deep-audit-2026-09-22.md](deep-audit-2026-09-22.md) |

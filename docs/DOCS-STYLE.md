@@ -1,7 +1,7 @@
 # 文档写作与维护规范
 
 > **受众**：所有改仓库文档的人（含 AI agent）。
-> **状态**：生效中 · **最后核对**：2026-11-02
+> **状态**：生效中 · **最后核对**：2026-11-22
 > 适用范围：根 `README.md`、`docs/**/*.md`、`packages/*/README.md`、`examples/**/README.md`。
 > 内部流程文档（`PLAN-CLAIMS.md`、`AGENT_HANDOFF.md`、`docs/archive/**`）只要求文首标注
 > 「内部」或「归档」，其余规范按需遵守。
@@ -71,12 +71,13 @@
 
 ```text
 docs/assets/
-├── banner-{zh,en}.png                 # 首屏横幅
-├── architecture-{zh,en}.png           # 架构图
+├── banner-{zh,en}.png                         # 首屏横幅
+├── architecture-{zh,en}.png                   # 架构图
 └── screenshots/
-    ├── zh/<page>.png                  # 中台中文界面
-    ├── en/<page>.png                  # 中台英文界面
-    └── {zh,en}/executor-desktop/<page>.png
+    ├── zh/<page>.png                          # 中台中文界面（13 页）
+    ├── en/<page>.png                          # 中台英文界面（13 页）
+    ├── {zh,en}/desktop-agent-sop.png          # 桌面 Agent GUI 实机演示证据图（成对存放）
+    └── {zh,en}/executor-desktop/<page>.png    # 桌面执行器 Electron 界面（4 页）
 ```
 
 - 文件名用**页面语义**（`dashboard.png`、`execution-detail.png`），不要用日期或 `截图1.png`。
@@ -114,16 +115,16 @@ docs/assets/
 # 中台：先起隔离 demo 栈（不要用生产栈截图）
 ./scripts/demo.sh --port 8090 --api-port 3115 --executor-port 8012 --python-executor-port 8011
 
-# 中台：一条命令出「中英 9 页 × 1760×1100」，文件名与 README 引用一致，自动断言成对
+# 中台：一条命令出「中英 13 页 × 1760×1100」，文件名与 README/教程引用一致，自动断言成对
 cd apps/admin-web
 node scripts/docs-screenshots.mjs --base-url http://127.0.0.1:8090 --password '<demo 栈的 INITIAL_ADMIN_PASSWORD>'
 # 只重拍 / 只出一门语言：--pages dashboard,tasks  --langs zh
 
-# 桌面：仓库自带视觉审计脚本，使用假数据，不需要登录
+# 桌面：唯一权威采集入口为 apps/executor-desktop/e2e/visual-audit.cjs（使用假数据，无需登录；遗留 screenshots.cjs 不再作为文档截图来源）
 cd apps/executor-desktop
 node e2e/visual-audit.cjs --sizes=1440x900 --lang=zh --tag=docs-zh
 node e2e/visual-audit.cjs --sizes=1440x900 --lang=en --tag=docs-en
-# 产物在 apps/executor-desktop/e2e/.visual/，按 6.1 命名后拷入 docs/assets/screenshots/
+# 产物在 apps/executor-desktop/e2e/.visual/，按 6.1 命名后拷入 docs/assets/screenshots/{zh,en}/executor-desktop/
 ```
 
 ## 7. 代码块与命令

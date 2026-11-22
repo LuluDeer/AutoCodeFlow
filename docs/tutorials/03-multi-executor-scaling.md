@@ -1,6 +1,6 @@
 # 教程 03 · 多执行器扩容
 
-> **受众**：需要横向扩容执行器并灰度发布的运维 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：需要横向扩容执行器并灰度发布的运维 · **状态**：稳定 · **最后核对**：2026-11-22
 > 目标：把执行器从 1 台扩到 2 台，理解平台如何分派任务、如何在应用发布时
 > 用灰度策略保护生产。
 > 前提：已完成[教程 02](02-private-registry-deps.md)；你有 ADMIN 角色账号。
@@ -68,6 +68,8 @@ curl -fsSL 'http://<admin>:3105/api/executors/install.sh' \
 **预期结果**：「执行器」页出现新行，状态约 10 秒内变**在线**；
 `GET /api/executors` 返回两台。
 
+![执行器列表：多节点在线状态、运行时标签与并发槽位占用](../assets/screenshots/zh/executors.png)
+
 > 仅想在本机再起一个执行器做实验？直接在 `docker-compose.yml` 复制
 > `executor-node` 服务改个名字/端口即可，环境变量同源。
 
@@ -82,6 +84,8 @@ curl -fsSL 'http://<admin>:3105/api/executors/install.sh' \
 
 进阶：给长任务填 `estimatedDurationSec`（如 3600），再混布一个 1 秒任务，
 观察长任务是否被派给更空闲的一台（CORE-05 的长任务惩罚生效）。
+
+![执行器详情：节点健康指标、7 日执行统计与实时并发负载](../assets/screenshots/zh/executor-detail.png)
 
 ## 3. 灰度发布应用（DEP-02）
 
@@ -128,7 +132,7 @@ curl -X POST -H "Authorization: Bearer <JWT>" \
 
 ## 5. 下一步
 
-> 需要一个待审批部署样本来练手审批收件箱？`pnpm demo:failure:seed`
+> 需要一个待审批部署样本来练手审批收件箱？`npm run demo:failure:seed`
 > 预置的 `demo-failure-gated` 应用（approvalRequired）自带一条
 > `pending_approval` 部署行，审批/驳回流程可直接演示。
 

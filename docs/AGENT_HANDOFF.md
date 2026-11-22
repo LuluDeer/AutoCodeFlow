@@ -1,7 +1,26 @@
 # AutoCodeFlow Agent Handoff
 
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-22
-> 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
+> 当前治理分支为 `chore/repo-governance-2026-11`（基于 `origin/main` `v2.3.0`，`develop` 已 fast-forward 同步至 `origin/main`）。其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
+
+## 本轮（2026-11-22）：GitHub 仓库全面规范化治理与多 Agent 流水线优化（v2.3.0 / desktop-v1.12.0）
+
+**编排方式**：3 阶段共享消息板多 Agent 流水线（Stage 1 四路只读审计 `audit-{surface,github,docs,visuals}` → Stage 2 四路零写域重叠并行整改 `writer-{github,docs,surface}` + `media-runner` → Stage 3 独立只读复核 `reviewer-gate` + 主控收口与远端治理）。
+
+| 切片 | 核心交付 | 关键文件 / 远端动作 |
+|---|---|---|
+| GitHub 与 CI 治理 | 拆分 `docs-site-deploy.yml` 为 `build` + `deploy` 双 job 修 Pages artifact 索引竞态；移除外露模板 `cost-monitor.md`；6 处 Issue 模板 `develop` → `main` 与版本对齐；补齐 `ci.yml` `lockfile-integrity`（含 `docs-site`）、`release-desktop.yml` 上一 `desktop-v*` 对比与 SHA256 说明、`labeler.yml` / `CODEOWNERS` / `CONTRIBUTING` / `SECURITY` / `SUPPORT` / `CODE_OF_CONDUCT` | `.github/**`、`CONTRIBUTING.md`、`SECURITY.md`、`SUPPORT.md`、`CODE_OF_CONDUCT.md` |
+| 门面与文档站 | 刷新 `README.md` 及切片 `README.{en,zh}.md` 至 `v2.3.0` / `desktop-v1.12.0`、补 `sops`/`audit` 截图与描述型 alt、去 `demo-dashboard` 重复与断锚；修 `docs-site` favicon 404（`${BASE_PATH}logo.svg`）+ 37 处 `develop` → `main` + `AUTOFLOW_DEVICE_FINGERPRINT` + `sdk-python` 断表 + PyPI OIDC + 4 包 lockstep；新建 `apps/{admin-api,executor-node,executor-python}/README.md`、重写 `apps/admin-web/README.md`、补齐 `mcp-server` 56 工具与 4 个冻结 Python 包安装说明、`examples/` 8 示例索引 | `README*.md`、`CHANGELOG.md`、`docs/sdk-guide.md`、`packages/docs-site/**`、`packages/*/README.md`、`examples/**`、`apps/*/README.md` |
+| 文档纠偏与归档 | 修正 `deployment.md` / `api-reference.md` 与源码相反的 SSRF / SEC-1 产物鉴权 / 桌面发布文档；全仓活跃文档去 `pnpm`；18 篇一次性评审/复演与旧计划 `git mv` 归档至 `docs/archive/{reviews,verifies,plans}/` 并补齐 16 篇历史漏登索引；刷新 `docs/README.md`、`docs/adr/README.md`、`UPGRADING.md`、`ROADMAP.md`、5 篇教程（补 7 张截图）及 6 篇核心 Atlas；同步 `check-doc-style.mjs` `USER_FACING` | `docs/**`、`scripts/docs/check-doc-style.mjs` |
+| 品牌图与全量真机截图 | 架构图补 `SOP · Agent` 并 `brand:build`；修 `ExecutorListPage` 英文 `Actions` 折行、`apps/admin-web/src/i18n/index.ts` `returnEmptyString: true`（修 `i18next@27` 裸露 `execs.col.action` 回归）、桌面端英文 `未启用` / `桌面端日志` 两处泄露与 `visual-audit.cjs` 英文夹具；隔离 demo 栈真浏览器重拍中英 13 对中台图（26 张）+ Electron 重拍中英 4 对新版狐狸桌面图（8 张，清除旧 ⚡ 与个人路径泄露）+ 补齐 `en/desktop-agent-sop.png` | `docs/assets/**`、`design-system/brand/**`、`scripts/brand/build-brand-assets.py`、`apps/admin-web/scripts/docs-screenshots.mjs`、`apps/admin-web/src/{i18n/index.ts,pages/ExecutorListPage.tsx}`、`apps/executor-desktop/**` |
+| GitHub 远端治理 | 开启合并自动删分支；补建 `performance` 并规范 15 个标签色与描述；为 `v2.3.0`（保留 `prerelease` 以保护 `electron-updater`）与 `desktop-v1.12.0` 顶部补充双版本线导读与校验指引；更新 Issue #103 滚动标题；禁用幽灵 workflow `v2-verify.yml`；清理 15 个已合并/已关闭远端旧分支与 6 个本地 `pr-*` 分支；fast-forward `develop` 对齐 `origin/main`；分组 commit 并提 PR 至 `main` | GitHub Repo `LuluDeer/AutoCodeFlow` |
+
+**验收证据（最高级别：真实构建产物 + 隔离 demo 真栈浏览器 + 真 Electron + 31 项本地门禁）**：
+- `reviewer-gate` 独立复核 31/31 项仓库守卫/类型/lint/desktop test/VitePress 生产构建 + 107 条 `admin-web` 关联单测全绿；拦截的 2 项 P1（`SHA256SUMS-<os>.txt` 文档对齐 + `i18next@27` `returnEmptyString: true` 修复并重拍 `{zh,en}/executions.png`）已由主控收口并二次验绿。
+- 41 张 PNG 全量 IHDR 分辨率与体积校验 100% 合规且中英严格成对；关键图均经人工目视复核。
+- **未覆盖边界**：`docs-site-deploy.yml` 双 job 真实 Pages 部署与 `release-desktop.yml` 发版需在 PR 合入 `main` / 下次打 tag 时由 GitHub Actions 线上验收；后端 `executor-node` 历史中文报错文案与 `task-template.constants.ts` DB 中文模板描述保留为后续国际化候选。
+
+---
 
 ## 本轮（2026-11-22）：审计页 resource 筛选补齐（未提交）
 
@@ -234,7 +253,7 @@
 | 2 | `test(web): demo 三句产品承诺真跑验证 + 防复发守卫` | `scripts/demo.sh`、`scripts/demo.selftest.sh` | R458/460/461/463 同一文件族的验证+守卫，内聚 |
 | 3 | `test(guards): CLI flag / 示例配置一致性守卫` | `scripts/check-cli-doc-flags.mjs`、`scripts/check-examples-code.mjs`、`package.json`（三处接线） | R465/R467 两个新守卫 + 接线，互相独立但同属守卫层 |
 | 4 | `test(sdk): SDK 编程式集成冒烟测试 + 文档计数同步` | `packages/.../example-integration.test.ts`、`docs/atlas/07-testing/README.md` | R468 SDK 测试 + check-atlas-counts 触发的计数同步，强绑定 |
-| 5 | `docs: demo 真栈验收报告 + 状态同步` | `docs/plan/demo-first-experience-review.md`、`docs/README.md`、`docs/PROJECT-STATUS.md`、`docs/AGENT_HANDOFF.md` | R462/469 文档收口，放最后含最终 handoff |
+| 5 | `docs: demo 真栈验收报告 + 状态同步` | `docs/archive/reviews/demo-first-experience-review.md`、`docs/README.md`、`docs/PROJECT-STATUS.md`、`docs/AGENT_HANDOFF.md` | R462/469 文档收口，放最后含最终 handoff |
 
 **批次一致性证据（R469 已验证）**：全守卫链 exit 0；admin-api 509 suites/8605 passed；admin-web 350 files/2847 passed；文档三守卫 exit 0。4 个新文件 + 9 个修改全部就位、无半成品。`package.json` 4 处接线（test:docs / check:cli-doc-flags / check:examples-code / chain）经 check:guards-wired 确认 CI 可达。
 
@@ -330,7 +349,7 @@
 **产品判断（自己找方向）**：连续四轮"逐句真跑产品承诺"已把 demo 三句引导语全部闭环，同镜头无新东西。转做 PM 该做的交付归档——把 R458/R460/R461 三次真跑证据固化成可交付文档；同时借此**验证子 agent 编排能力**（近期 R448–R461 子 agent 持续在探查阶段失败、我一直亲自接管，偏离 objective 的"流水线编排多 agent"核心要求）。
 
 **交付（流水线：1 子 agent + 主 agent 集成）**：
-- **子 agent `r462-demo-report`**：单一文档任务、证据全给、无需代码探查——新建 `docs/plan/demo-first-experience-review.md`（8 节：验收目标/真栈环境/三句承诺逐句证据/heredoc bug/3 守卫/幂等清理/边界声明/证据索引）。**子 agent 成功完成**——打破了 R448 之后连续失败的模式，objective 要求的多 agent 编排恢复可用。
+- **子 agent `r462-demo-report`**：单一文档任务、证据全给、无需代码探查——新建 `docs/archive/reviews/demo-first-experience-review.md`（8 节：验收目标/真栈环境/三句承诺逐句证据/heredoc bug/3 守卫/幂等清理/边界声明/证据索引）。**子 agent 成功完成**——打破了 R448 之后连续失败的模式，objective 要求的多 agent 编排恢复可用。
 - **主 agent 集成**：按 AGENTS §4.3 不采信自述——独立审阅报告（8 节齐全、fenced 块带语言、验收级别诚实标注为"真进程内+容器级"而非冒充浏览器级）；发现 orphan（子 agent 写域不含 README），主 agent 挂链 README；文档三守卫 + 全守卫链全 exit 0。
 
 **方法论沉淀**：① 子 agent 连续失败的模式在"单一文档任务 + 证据全给 + 无需探查"下被打破——近期失败集中在探查阶段，把任务写成"直接执行、零开放探查"可显著提高成功率；② objective 的"流水线编排多 agent"要求主 agent 即使能亲自做，也要在合适切片（尤其独立交付物）上坚持派发——本轮证明编排能力没坏，只是任务书形态要适配；③ 验收级别诚实标注（真进程内+容器级 vs 浏览器/真机级标尺）是 AGENTS §4.4 底线，汇编报告不能拔高证据；④ 子 agent 写域边界（不含 README）导致 orphan 是预期的——集成期挂链是主 agent 固定动作。
@@ -550,7 +569,7 @@
 
 **交付（2 切片 + 主 agent 集成）**：
 - **① 修复**：`apps/admin-web/src/__tests__/task-form-affinity.test.tsx`（sha 76cea21b）。根因探针实证：卡点不是 findByPlaceholderText，而是 `pickTag` 的 `waitFor(getAllByText(tag)>0)`——标签选项走 `useTaskFormReferenceData` 的 `useEffect→setAllTags` 异步回填（非 react-query），mousedown 时下拉已 `ant-select-open` 但 option=0，单跑窗口 0.3s、全量并发放大到 2.5-3s，与 10s waitFor/15s 用例预算竞速⇒表现为 15s 超时。修法：每拍检查 open 未开补 mousedown（R445 补点自愈同款）+ 交互前等 `daily-report`/`broadcast-pin-cleared` DOM 就绪信号 + pinned 后断言包进 waitFor 等状态落地。**15_000 七处原样未改、业务断言逐字未改、无 skip**。
-- **② 独立验收**：`docs/plan/affinity-flake-fix-review.md`，静态逐字 diff + 全量 2 次 + 双手法反证，无 P0/P1。
+- **② 独立验收**：`docs/archive/reviews/affinity-flake-fix-review.md`，静态逐字 diff + 全量 2 次 + 双手法反证，无 P0/P1。
 
 **验收（分级：单测 + 全量并发真跑）**：单跑 12/12、eslint 0；验收方全量 2 次（run1 目标绿 7508ms、run2 全量 350/350 exit 0 目标绿 3981ms），实现方隔离全量 exit 0 目标绿 4055ms——目标用例 4/4 全量未超时。双反证（实现方翻 broadcast 断言、验收方翻 pinned 断言）均转红、还原 sha 逐字一致。**主 agent 串行独立验证最终版**（sha 76cea21b）：**全量 350/350 / 2845 passed exit 0**（目标 12/12、20403ms）——无并行干扰、完全稳定。全守卫链 exit 0（集成期挂链报告）。
 
@@ -599,7 +618,7 @@
 
 **交付（2 切片 + 主 agent 集成裁决）**：
 - **① 修复**：`apps/admin-web/src/__tests__/maintenance-window-parity.test.tsx` 性能 describe——墙钟 `performance.now()` → **`process.cpuUsage(before).user` 差值**（µs→ms），best-of-5（仅滤进程内 JIT/GC 多线程记账抖动，不靠它防抢占），预热 3 次保留，`expect(...).toBeLessThan(50)` + kinds 断言 + fail-closed（typeof/finite）全保留。
-- **② 独立验收**：`docs/plan/perf-flake-fix-review.md`，逐字确认阈值未放宽、两次全量目标用例绿、双手法反证转红。
+- **② 独立验收**：`docs/archive/reviews/perf-flake-fix-review.md`，逐字确认阈值未放宽、两次全量目标用例绿、双手法反证转红。
 
 **关键裁决过程（流水线价值）**：第一版 best-of-9 被验收方实测**全量仍假红**（9/9 samples 全被抢占、61.94ms）——多采样取最小在 350 workers 无上限 forks 并发下不可靠。主 agent 实测 `process.cpuUsage()` 在 vitest forks 可用（返回 `{user:µs, sys:undefined}`，jsdom 无 sys）、独立标定 CPU 基线（20 任务 wall 12.48ms / CPU 11.17ms），裁决换 CPU 口径。阈值推导：R282 墙钟 13ms/50ms=3.8× 余量 → CPU 实测 10.59–34.90ms（中位~20ms）/50ms=1.4–4.7× 余量，同量级且部分更严，**保持 50ms 数值不放宽**。
 
@@ -645,7 +664,7 @@
 **产品判断（自己找方向）**：R433/R440 验证的都是 dev 迁移路径（`ts-node -r tsconfig-paths/register src/...`），而生产/CI 发布实际走 `:prod` 变体（`node dist/migration-lock-cli.js up`）——两条不同代码路径（TS 源码 vs 编译产物、有无 tsconfig-paths），从没验过 prod 变体。若 dist 编译/模块解析有缺陷，发布会失败。这是 dev 验证覆盖不到的发布就绪最后一块，当前可验证。
 
 **交付（1 复演切片 + 主 agent 集成）**：
-- **① 复演**：`docs/plan/prod-migration-replay.md`。7 步全 exit 0——pg_dump schema+data 双备份 → rebuild dist（0101/0102 .js 产物齐）→ CREATEDB 建空库 → **`npm run migration:run:prod`（核心）**：57 表/146 迁移、三关键表齐、0101/0102 记录落库、**0 条 MODULE_NOT_FOUND/SyntaxError/tsconfig-paths 报错** → prod 启动（`node dist/main`）+ northstar spec **1 passed/login 201** → `:prod` 幂等 no-op → 全量 dump 精确恢复基线。
+- **① 复演**：`docs/archive/verifies/prod-migration-replay.md`。7 步全 exit 0——pg_dump schema+data 双备份 → rebuild dist（0101/0102 .js 产物齐）→ CREATEDB 建空库 → **`npm run migration:run:prod`（核心）**：57 表/146 迁移、三关键表齐、0101/0102 记录落库、**0 条 MODULE_NOT_FOUND/SyntaxError/tsconfig-paths 报错** → prod 启动（`node dist/main`）+ northstar spec **1 passed/login 201** → `:prod` 幂等 no-op → 全量 dump 精确恢复基线。
 - **② 集成**：报告挂链 README + PROJECT-STATUS CI 防线加 R441 证据；PROJECT-STATUS 数字再按实测校正（52 轮/134 项/18 plan）。
 
 **核心结论**：dist 产物用 commonjs + 相对 require（`./data-source`、`./migration-runner.util`），不依赖 tsconfig-paths；migrations glob 按 dist `__dirname` 解析、0101/0102 真实加载；advisory lock 同键保留。空库表/迁移数、关键表、锁日志、幂等、prod 启动+spec 全绿——与 R440 dev 路径逐项一致，**无 dev/prod 分叉风险**。
@@ -662,7 +681,7 @@
 **产品判断（自己找方向）**：R439 把两个最高级真栈 e2e 接入 CI，但明确标注"未真跑 GH Actions、命令可行性依据 R436/R437 分开跑"——而 CI job 实际是**空库→migration:run→build→两 spec 串联**这条从没验证过的序列。若该序列在 CI 必红，整个防复发闸就是假的。本轮用 CI job 精确序列在本机空库真机复演，验证可行性。
 
 **交付（1 复演切片 + 主 agent 集成）**：
-- **① 复演**：`docs/plan/ci-replay-verification.md`。7 步全 exit 0——pg_dump schema 备份（105KB/57 CREATE TABLE）→ CREATEDB 角色 DROP+重建空库（public 表数=0）→ `npm run migration:run`（57 表/146 迁移/三关键表齐）→ build 产 dist → `playwright test --config playwright.northstar.config.ts`（**1 passed**）→ `playwright test --config playwright.telemetry.config.ts`（**3 passed**）→ 库/端口/进程/临时口令全恢复。
+- **① 复演**：`docs/archive/verifies/ci-replay-verification.md`。7 步全 exit 0——pg_dump schema 备份（105KB/57 CREATE TABLE）→ CREATEDB 角色 DROP+重建空库（public 表数=0）→ `npm run migration:run`（57 表/146 迁移/三关键表齐）→ build 产 dist → `playwright test --config playwright.northstar.config.ts`（**1 passed**）→ `playwright test --config playwright.telemetry.config.ts`（**3 passed**）→ 库/端口/进程/临时口令全恢复。
 - **② 集成**：报告挂链 README + PROJECT-STATUS CI 防线加 R440 证据；PROJECT-STATUS 数字按命令实测校正（轮次 50→51、项数 131→133、脚本 10→7、plan 18→17——上轮手写估计值曾漂移，本版改实测口径）。
 
 **修正一处认知**：admin seed 在后端 bootstrap `UsersService.onModuleInit()`（users.service.ts:65-100），**不在 migration:run**——空库迁移后 users=0/config=0。两 spec 登录 201 的前提是 Playwright webServer 继承 `INITIAL_ADMIN_PASSWORD=admin123`（与 CI job 配置一致），已实证通；弱口令 fail-fast 被 `NODE_ENV=production` 包住，CI 非 production 故可用。
@@ -682,7 +701,7 @@
 
 **交付（2 切片 + 集成裁决）**：
 - **① CI job**：`ci.yml:2306` 新增 `north-star-real-e2e` job（90 行/9 steps，`if: event_name != 'schedule'` 旁路 nightly）；services PG（POSTGRES_DB=autoflow_ttfv_e2e <!-- metric-docs:ignore-unknown 这是 PostgreSQL 测试数据库名，不是指标名 -->）+ Redis；steps：checkout/setup-node（SHA pinned）→ npm ci ×2（admin-api+admin-web）→ build admin-api 产 dist → migration:run 空库建表 → chrome apt 源双删+playwright deps → 两个真栈 config 各一步。
-- **② 独立验收**：`docs/plan/ci-realstack-e2e-review.md`（8 项全 PASS，无 P0/P1，README+PROJECT-STATUS 挂链）。
+- **② 独立验收**：`docs/archive/reviews/ci-realstack-e2e-review.md`（8 项全 PASS，无 P0/P1，README+PROJECT-STATUS 挂链）。
 
 **关键裁决（库名冲突，实现方+验收方独立发现同一问题）**：两个 config 的 webServer.env 硬编码 `DB_DATABASE=autoflow_ttfv_e2e` <!-- metric-docs:ignore-unknown 这是 PostgreSQL 测试数据库名，不是指标名 --> 会覆盖 job 进程 env；若按 admin-api-e2e 范式设 autoflow_test，会导致后端连 e2e 库、spec PG Client 连 test 库、两边不同库必败。裁决：service POSTGRES_DB 与 job/spec DB_DATABASE 统一 `autoflow_ttfv_e2e` <!-- metric-docs:ignore-unknown 这是 PostgreSQL 测试数据库名，不是指标名 -->（含 e2e 过守卫），不改任何 config、不做 CI sed（保持 CI 与本地同一份 config，防复发价值才成立）。INITIAL_ADMIN_PASSWORD=admin123（与 admin-api-e2e 长期绿 job 同值、seed 链核实）、SEC_SECRETS_KEY=fixture 64hex（job/两 config/spec 四处逐字一致）。
 
@@ -718,7 +737,7 @@
 
 **交付（2 切片 + 集成裁决）**：
 - **① 真栈 e2e**：新建 `apps/admin-web/e2e/telemetry-enablement-real.spec.ts` + `playwright.telemetry.config.ts`（复用 R436 webServer 两段，testMatch 改本 spec）。3 场景全部真 UI 点击驱动（非 API 直调 consent）。
-- **② 独立验收**：`docs/plan/telemetry-enablement-e2e-review.md`（7 项全 PASS、无 P0/P1，README 挂链），独立复跑 3 passed/15.7s EXIT=0 + 既有 smoke 9 passed。
+- **② 独立验收**：`docs/archive/reviews/telemetry-enablement-e2e-review.md`（7 项全 PASS、无 P0/P1，README 挂链），独立复跑 3 passed/15.7s EXIT=0 + 既有 smoke 9 passed。
 
 **验收（分级：浏览器/真机，AGENTS §4.4 最高级）**：
 - 场景1 完整启用：no_executors 告警 0/0 → UI 撤销 → 插执行器 Refresh 0/1 → 真点 Switch+Popconfirm OK（consent 201，响应在点击后 479ms）→ coverage 1/1、告警消失、真库 full/source=admin-ui。
@@ -739,7 +758,7 @@
 
 **交付（2 切片 + 主 agent 集成）**：
 - **① 真栈 e2e**：新建 `apps/admin-web/e2e/north-star-real-backend.spec.ts` + `playwright.northstar.config.ts`（webServer 同时拉后端 dist 3105 + vite 5176、系统 chrome channel）。真 env 覆盖（DB_DATABASE=autoflow_ttfv_e2e <!-- metric-docs:ignore-unknown 这是 PostgreSQL 测试数据库名，不是指标名 -->、SEC_SECRETS_KEY=fixture、口令 dotenv 安全读入 /tmp、不落仓）。
-- **② 独立验收**：`docs/plan/browser-real-backend-review.md`，独立复跑 + 7 项清单全 PASS，无 P0/P1/P2。
+- **② 独立验收**：`docs/archive/reviews/browser-real-backend-review.md`，独立复跑 + 7 项清单全 PASS，无 P0/P1/P2。
 
 **验收（分级：真浏览器 + 真后端 + 真 PG，最高级）**：
 - 真栈起：后端 `/api/health/live` 200、vite proxy 就绪；真 POST /auth/login 201 → consent 用 deviceFingerprint 授权（后端派生 installId）→ PG 造 executor(64hex)/task/execution(synthetic=false+artifacts) → 真 `POST /confirm` 201 → listener 真落 `funnel_events` 1 行 business_confirmed（dedupe_key=confirmed:<hash>）→ `GET /north-star/metrics` confirmed=1/proxy=1/warnings=2。
@@ -775,7 +794,7 @@
 
 **交付（CI 配置 + 独立验收 + follow-up）**：
 - **① CI 改动**：`admin-api-migrations` job 的 revert drill 去掉 `if: schedule`（PR/push/schedule/dispatch 全跑，秒级开销），步骤名 `(schedule only)`→`(all triggers)`，注释块同步；**drift check 步保持 schedule only**（不同闸、按月跑即可）。revert 在 job 末步，之后无依赖 DB 的 step（typecheck 在前且不连 DB），末态 re-run 恢复全链一致。
-- **② 独立验收**：`docs/plan/ci-revert-always-review.md`（7 项全 PASS，无 P0/P1，已在 README 挂链）；关键排除「revert 后依赖 DB 的 step 导致 PR 误红」路径。
+- **② 独立验收**：`docs/archive/reviews/ci-revert-always-review.md`（7 项全 PASS，无 P0/P1，已在 README 挂链）；关键排除「revert 后依赖 DB 的 step 导致 PR 误红」路径。
 - **③ P2 follow-up（PM 裁决当场修）**：验收发现 revert 步无副作用断言——空实现 down() 也会 exit 0（undoLastMigration 无回退项只打日志），IF NOT EXISTS 的 up() 也不报错 ⇒ 假绿。给 revert 步加两条断言（仿幂等守卫范式）：捕获输出后 `grep -qE 'DELETE FROM "migrations"'` + `grep -qE 'DROP (TABLE|INDEX) IF EXISTS'`，不匹配则 exit 1。
 
 **验收（分级）**：静态 CI 配置 + grep 正反例反证级（本机未跑 GH Actions，诚实标注）。三个 CI 守卫 `check:workflow-yaml`/`check:actions-pinned`/`check:runner-labels` 全 exit 0（109/109 action SHA 保留、13/13+7/7 selftest）。断言有牙实证：正例（R433 step5-revert1.log）两条 grep 匹配、断言序列 exit 0；反例（no-op down 输出含 Nothing to revert 但无 DROP/DELETE）两条不匹配、断言序列 exit 1。**全守卫链 `test:guards:chain` exit 0**。ci.yml diff 单 hunk 无越界。
@@ -793,7 +812,7 @@
 
 **验证（主 agent 集成责任 + 1 子切片）**：
 - **全量测试（主 agent 亲跑）**：`cd apps/admin-api && npm test --silent` → **509 suites / 8602 passed / 6 skipped exit 0**（255s）；`cd apps/admin-web && npm test --run` → **350 files / 2845 passed / 1 skipped exit 0**。`typecheck:all` 8 端 exit 0、`test:guards:chain` exit 0。这是 R330 之后（status 覆盖率/confirm pipe/health 脚本等改动）的首次全量复验。
-- **迁移回滚链（子切片，真实 PG 进程级）**：独立库 `acf_migration_r433`（特权角色 user_bDWm8S，凭证取容器 env 不落报告）六步全 exit 0——①建库 ②全量 146 up（含 0101/0102 两表+COMMIT）③二次 up `[migration-lock] No migrations are pending` 幂等 ④验证两表+三索引+迁移记录 ⑤`migration:revert` ×2（telemetry_optin→funnel_events 依次 DROP，终态 144 迁移=146−2）⑥DROP DATABASE 残留 0。主库 autoflow/测试库 autoflow_ttfv_e2e <!-- metric-docs:ignore-unknown 这是 PostgreSQL 测试数据库名，不是指标名 --> 全程未连、末尾复核仍在。报告 `docs/plan/migration-roundtrip-review.md`。这补齐了 R314 只验 up+幂等、从未验 down() 的缺口。
+- **迁移回滚链（子切片，真实 PG 进程级）**：独立库 `acf_migration_r433`（特权角色 user_bDWm8S，凭证取容器 env 不落报告）六步全 exit 0——①建库 ②全量 146 up（含 0101/0102 两表+COMMIT）③二次 up `[migration-lock] No migrations are pending` 幂等 ④验证两表+三索引+迁移记录 ⑤`migration:revert` ×2（telemetry_optin→funnel_events 依次 DROP，终态 144 迁移=146−2）⑥DROP DATABASE 残留 0。主库 autoflow/测试库 autoflow_ttfv_e2e <!-- metric-docs:ignore-unknown 这是 PostgreSQL 测试数据库名，不是指标名 --> 全程未连、末尾复核仍在。报告 `docs/archive/verifies/migration-roundtrip-review.md`。这补齐了 R314 只验 up+幂等、从未验 down() 的缺口。
 
 **CI 事实核查（避免误报）**：CI `admin-api-migrations` job（ci.yml:330-382）只断言 exit code + "No migrations are pending" 字样，**不断言 no ERROR**——子切片担心的 up 首跑 `relation "migrations" does not exist` 探测噪音（countMigrations before=-1）不会让 CI 红（exit 0 已证）。CI 另有 QA-08 月度 revert drill（schedule only）覆盖 down 路径；把 revert 纳入 PR/push 常规 job 是有价值的后续增强，本轮不改 CI 配置（避免扩大范围）。
 
@@ -810,7 +829,7 @@
 
 **交付（2 切片 + 集成）**：
 - **① 自检脚本**：`scripts/north-star-health.mjs`（33KB）6 项检查——①表结构（真库可选 to_regclass，防误生产+redact）、②4 个 listener eventName+6 订阅（静态）、③判据哨针（复用 weekly.checkDrift 全串相等，R324 P0 教训）、④数据 API 路由+DTO+module（静态）、⑤看板双区+warnings 渲染+反证锚点（静态）、⑥opt-in 双闸 fail-closed+coverage 四态（静态）；逐项 PASS/FAIL/SKIP + `NORTH_STAR_HEALTH: N/M`、`--json`、`--selftest`、`--root` 注入；诚实标注「静态 PASS ≠ 运行时健康」。
-- **② 独立验收**：`docs/plan/north-star-health-review.md`（6 项全 PASS、无 P0/P1/P2）。
+- **② 独立验收**：`docs/archive/reviews/north-star-health-review.md`（6 项全 PASS、无 P0/P1/P2）。
 
 **验收（分级）**：纯函数 selftest + 真库查询级（仅①真库项）。主 agent 独立复跑：selftest 6/6、无 DSN 静态 5/5（①SKIP）、`--from-env` 真库 6/6 全 exit 0。验收 agent 关键反证：①静态检查非恒 PASS（/tmp 镜像删片段→对应项 FAIL）；②真库项真连 to_regclass+无 DSN SKIP+口令零泄漏；③**假绿反证**——挑 token 表未覆盖的语义点（GROUP BY 1→2、`ts<=`→`>=`、COUNT 列替换）篡改，哨针全转红，坐实全串相等主判据落实 R324 P0 教训；④篡改 checker 本体→selftest 夹具转红；⑤边界诚实（静态/真库分离输出）；⑥script-main-guard 0。集成期修 metric-docs 把 DB 名当指标（4 处 ignore 注释）+ 报告挂链。全守卫链 `test:guards:chain` exit 0、typecheck 8 端 exit 0。
 
@@ -843,7 +862,7 @@
 
 **交付（2 切片 + 集成）**：
 - **① 实现**：`agent-telemetry.dto.ts` 内加 `RAW_FINGERPRINT_RE=/^[0-9a-f]{64}$/` + `@ValidatorConstraint InstallIdNotRawFingerprintConstraint` + installId 字段追加 `@Validate`；错误文案逐字「installId 不接受原始设备指纹（64 位 hex）；请改传 deviceFingerprint 由服务端派生，或传已派生的匿名 installId」。不动 controller/main 逻辑、不强制 32hex；spec 新增 4 例共 22/22。
-- **② 独立验收**：[b3-installid-guard-review.md](plan/b3-installid-guard-review.md)（12 形状实测 ALL_SHAPES_OK、反证有牙、无 P0）。
+- **② 独立验收**：[b3-installid-guard-review.md](archive/reviews/b3-installid-guard-review.md)（12 形状实测 ALL_SHAPES_OK、反证有牙、无 P0）。
 
 **验收（分级）**：单测/DTO 校验级（本轮最高可达，未做真 HTTP 400）。后端 22/22；验收 agent 用 ts-node + validateSync 实测 12 种形状：原始 64hex 小写被拒（带逐字文案）、32hex/`inst-1`/`ttfv-e2e-<uuid>`/大写 64hex/63·65hex/非 hex/空值/deviceFingerprint 原始指纹路径**全放行**；主 agent 另用编译产物独立复测 6 形状全对（BAD=0）。反证去 `@Validate` → 用例①转红、sha 还原。验收 agent 全量 `npm test` 509 suites / 8601 tests passed。build、lint:api、check:api-reference/api-i18n/response-schema、typecheck 8 端、全守卫链 `test:guards:chain` 全 exit 0。Swagger 描述未改 ⇒ 无需重生成 openapi。
 
@@ -861,7 +880,7 @@
 - **① status 后端**：`AgentTelemetryStatusDto` 加 `knownExecutorCount` + `coverage`（四态 `gate_off`/`no_executors`/`partial`/`full`）；`telemetryStatus` 纯只读计算（gate on+0 executor ⇒ no_executors；HMAC 集合 ⊆ 授权集合 ⇒ full 否则 partial；derive 失败降级 partial 不伪造 full）；6 新用例共 18/18；反证 no_executors→full 转红。
 - **② UI**：TelemetrySettings 加覆盖率行（count/knownExecutorCount 不隐藏）+ 三态告警（no_executors warning / partial info / full·gate_off 无告警）+「重新授权全部」按钮（显式点击走全量 consent，无自动授权）；5 新用例共 13/13；反证去告警转红。
 - **③ 发布文档**：新建 `docs/plan/north-star-enablement.md`（169 行 runbook：迁移/密钥/授权/验证/隐私/排障/故障表）+ README 挂链 + release-checklist 1.5 勾选项 + deployment/UPGRADING/quickstart 指针。
-- **独立验收**：`docs/plan/north-star-enablement-review.md`，6 项全 PASS、无 P0/P1；两条定向反证转红、sha 还原；隐私红线（无自动授权）坐实。
+- **独立验收**：`docs/archive/reviews/north-star-enablement-review.md`，6 项全 PASS、无 P0/P1；两条定向反证转红、sha 还原；隐私红线（无自动授权）坐实。
 
 **验收（分级）**：单测/内存替身 + 组件渲染 + 文档守卫级（本轮无新 e2e）。后端 18/18、前端 13/13、build exit 0、typecheck 8 端 exit 0、全守卫链 `test:guards:chain` exit 0、check-docs 7/7、metric-docs、lint:i18n 全绿。coverage 四态是 HMAC 集 × 授权集纯运算，未做真库 e2e（诚实降级）。集成期还修了 runbook 的 P2/P3（status 行号 :1050-1132、Popconfirm :239-255、指纹列 :41、删「正在落盘」陈旧措辞）。
 
@@ -879,7 +898,7 @@
 **交付（流水线 3 切片 + 主 agent 集成裁决）**：
 - **① client**：`api/metrics.ts` 追加 `NorthStarReport`/`NorthStarWeek` 类型（与后端 DTO 逐字核对）+ `metricsApi.getNorthStar()`；tsc 全树 0 错。
 - **② UI**：新建 `NorthStarCard.tsx` + 4 例组件测试；`queries.ts` 加 `useNorthStarReport`（全局裸键 `['north-star-report']`、无 projectId、5 分钟轮询）；Dashboard 全局口径分组接线 `<NorthStarCard/>`；zh/en 各 12 键。严格值（success 色+严格 Tag，confirmed_events 主/installs 辅）与近似值（opacity 0.72+分隔线+参考 Tag）物理隔离不混算；warnings 逐条原文常驻（空数据/空周序列也不隐藏）；as_of 按界面语言本地化。
-- **③ 验收**：`docs/plan/north-star-ui-review.md`（中途快照→落盘后复验附录），清单 6 项 PASS、无 P0/P1。
+- **③ 验收**：`docs/archive/reviews/north-star-ui-review.md`（中途快照→落盘后复验附录），清单 6 项 PASS、无 P0/P1。
 
 **验收（分级）**：
 - 组件渲染级（RTL，本轮最高可达）：4/4 测试绿（双口径并列/警告常驻/空态/错误态）；反证摘掉 warnings 逐条渲染→仅警告用例转红、sha 字节级还原；全量 web 350 文件 / **2840 passed** / 1 skipped exit 0；Dashboard baseline 47 测试绿。
@@ -902,7 +921,7 @@
 
 **交付（流水线 2 切片 + 主 agent 集成）**：
 - **A 后端 API**：新建 `NorthStarMetricsService`（注入 DataSource，queryRunner 同事务 `SET LOCAL TIME ZONE 'UTC'` 后跑两条原生 SQL——strict 的 timestamptz 按 UTC 截断、proxy 的 naive endTime 靠 SQL 内 `AT TIME ZONE 'UTC'` 解释，commit/rollback/release）；新建响应 DTO（7 @ApiProperty 类）；`agent.controller.ts` 末尾 @Optional 依赖 + `GET /api/agent/north-star/metrics?as_of=`（ADMIN，非 metrics @Public scraper 面）；`agent.module.ts` 注册 provider；9 单测。
-- **B 独立验收**：新建 `scripts/north-star-api-reconcile.mjs` + `docs/plan/north-star-api-review.md`；require 编译产物注入真 DataSource 直调 service.report()，与 CLI `--report --json` 在同一份 r327_ 种子上**六字段逐字对账**（as_of/strict weeks+totals/proxy weeks+totals/warnings），28 项断言全绿。
+- **B 独立验收**：新建 `scripts/north-star-api-reconcile.mjs` + `docs/archive/reviews/north-star-api-review.md`；require 编译产物注入真 DataSource 直调 service.report()，与 CLI `--report --json` 在同一份 r327_ 种子上**六字段逐字对账**（as_of/strict weeks+totals/proxy weeks+totals/warnings），28 项断言全绿。
 
 **验收（分级）**：
 - 单测/内存替身 + 构建：A 9/9（SQL 顺序/UTC_PIN 先于查询/week 映射/totals/warnings/空数据/as_of 校验/rollback-release/AppError 守卫）；反证去代理警告→2 例红、sha 还原；`npm run build` exit 0；lint exit 0。
@@ -922,7 +941,7 @@
 
 **交付（流水线 3 切片 + 主 agent 集成）**：
 - **A 对账脚本**：新建 `scripts/north-star-pg-reconcile.mjs`（export+main-guard）；造 r326_ 前缀种子（周A 同 install 2 确认+另一 install 1 确认⇒active=2/confirmed=3、周B 单确认、两类干扰行、as_of 上界、proxy 三过滤）→ 真起子进程跑 `north-star-weekly.mjs --report --json --dsn=<e2e>` → 21 项逐字段对账 → finally 按前缀清理三表并复查 0；防误生产（库名含 test|e2e，否则 exit 2）。
-- **B 独立验收**：新建 `docs/plan/north-star-pg-reconcile-review.md`（7 项清单全 PASS，三种不同于 A 的反证手法，独立扫三表残留=0，建议关闭）。
+- **B 独立验收**：新建 `docs/archive/reviews/north-star-pg-reconcile-review.md`（7 项清单全 PASS，三种不同于 A 的反证手法，独立扫三表残留=0，建议关闭）。
 - **tz-fix 缺口修复**：改 `scripts/north-star-weekly.mjs`（sha e99c6000）——真库对账发现代理 SQL 的 `endTime` 是 `timestamp WITHOUT time zone`，ambient TZ=Asia/Shanghai 时 proxy week_start 漂移 -8h（strict 的 timestamptz 不受影响）。修复：代理周桶改 `date_trunc('week', e."endTime" AT TIME ZONE 'UTC')`（naive 显式解释为 UTC），strict 保持 SET LOCAL UTC 不动（避开 R324 反向坑）；checkDrift 代理约束收紧并纳入新 token。
 
 **验收（分级）**：
@@ -969,7 +988,7 @@
 - 调研（只读）：6 问字段报告，产出候选判据 A–H + 可用性分级，是拍板的事实源。
 - A 决策文档：`docs/plan/north-star-business-confirmed.md`（十节）+ README:97 挂链；sha 终值 db6453f0（lead 微调 §6:99 措辞）。
 - B 可复算脚本：`scripts/north-star-weekly.mjs`（sha 冻结 f55571ee）；严格值 SQL 走 funnel_events+business_confirmed+confirmed: 前缀+周桶+双 COUNT；代理值 SQL 走 task_executions SUCCESS+artifacts 非空+synthetic=false，两口径分字段输出+强制警告；computeWeekly 内存复刻 8 例夹具；checkDrift 升级全串相等。
-- C 独立验收：`docs/plan/north-star-review.md`（sha 14030a6e，§0-6 快照 + §7 修复复验），README:98 挂链。
+- C 独立验收：`docs/archive/reviews/north-star-review.md`（sha 14030a6e，§0-6 快照 + §7 修复复验），README:98 挂链。
 
 **P0 闭环（流水线价值再次兑现）**：C 独立验收抓到**哨针虚绿**——旧 checkDrift 只查 4-token 存在性，把 doc §5 SQL 整段替换/改 GROUP BY 1→1,2（token 全留）仍 exit 0，防不住语义分叉；且 doc §5 原 SQL 与脚本分叉（GROUP BY 1,2 明细行致 COUNT(DISTINCT install_id) 恒 1）+ 一处数学错误注释。PM 复核：具体分叉经 A 修订已消解（doc/script SQL 现全串相等），但根因（弱哨针）必修。派 B 加固：checkDrift 改 strip 注释+归一空白后**全串逐字相等**主判据（firstDiffAt 点名差异）+ 代理 SQL 7 条约束自检 + `SET LOCAL TIME ZONE 'UTC'` 时区钉死（不改 SQL 主体故文档无需动）+ 代理 SQL CASE 包裹消除 jsonb 求值顺序依赖。C 闭环反证：GROUP BY 1→1,2（4 token 全留）新哨针 exit 2 点名 @字符259，旧哨针同输入 exit 0；跨 TZ=UTC/New_York/Shanghai 三次 selftest 输出 sha 一致。**P0 正式关闭**。
 
@@ -3782,7 +3801,7 @@ grep -c SopAssignmentLagResponseDto src/types/generated/api-types.ts  →  2
   - **N-02（ADR-013 保留缺口清偿）→ 复核后转 blocked（`55893ee7` + 入板）**。计划纪律要求「逐项复核现状」，四项实测后**性质与原判断不同**：① **已兑现**（2026-09-15 TASK-SCOPE-01，且 `configuration.ts:390` 实测 `TASK_OPERATE_SCOPE === "any" ? "any" : "owner"` —— **默认即收紧档 owner**，宽松需显式声明，比原设想更进一步）；② **已兑现**（AUTH-02-B `0318dfe`）；④ **已兑现**（`ProjectsPage.tsx` 用 `isAdminUser` 门控）；**③ 复核后判定为「能力扩张」而非缺口** —— 实测 `executor.controller.ts` **全部写端点**均带 `@Roles(UserRole.ADMIN)`、`executor-package.controller.ts:118` 更是**类级** `@Roles(ADMIN)`，即现状**比项目角色细分更严**；故「细分」真实含义是**把权限下放给项目 editor/admin**（能改执行器元数据/轮换令牌/删执行器的席位变多），与 ADR-013 §2「只增放行、不收紧」方向相反，**必须产品拍板**。附实测：`executor.projectId`/`executor_packages.projectId` 两列**已存在**（迁移 1790000000009）但**全仓零处读用**（模块内 grep 仅命中实体定义，计数=1）——拍板后可直接接判定，无需再动迁移。ADR-013 §3 已追加 2026-09-27 更新段为事实源。
   - **待办（轮 29/30）**：N-06 打包接线（host 拆子进程 + Playwright 分发）、N-10 Electron e2e 扩例入 CI、N-11 Linux 打包/自动更新真机、N-05 P7d 端到端（需 DashScope）、N-07 macOS GUI 侦察、N-08 SOP 演示包、N-09 微基准 CI 接线、N-12 ARCH-23 复核销账。
   - **CI 状态**：轮 27 三项（`36314393614`，14m16s）**全绿**；轮 28 各次 push 的 run 随后续 push 正常 superseded（cancelled 为 concurrency 语义，非失败）。
-- **本轮（2026-09-27 → 2026-10 期轮 27：N-01 / N-03 / N-13 三项清偿，develop）**：用户指令「作为负责人推进后续所有开发任务」。先把 `DEVELOPMENT-PLAN-2026-10.md` 的 N-01~N-13 任务池**注册进 PLAN-CLAIMS**（此前只存在于计划文档，而认领板是唯一认领事实源），然后按建议排期执行轮 27 三项。
+- **本轮（2026-09-27 → 2026-10 期轮 27：N-01 / N-03 / N-13 三项清偿，develop）**：用户指令「作为负责人推进后续所有开发任务」。先把 `docs/archive/plans/development-plan-2026-10.md` 的 N-01~N-13 任务池**注册进 PLAN-CLAIMS**（此前只存在于计划文档，而认领板是唯一认领事实源），然后按建议排期执行轮 27 三项。
   - **N-01（turbo 增量接入）→ 结论：不接入；交付 no-hoisting 守卫 + A/B 实测报告**（commit `a4fe0aea`）。沙箱 worktree 实测证伪 ARCH-28 §2 的「turbo 可增量接入、风险低」判断：**turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 `workspaces`，**8 个子项目 `npm ci` 全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）。三个让回退极难归因的放大器：① 报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；② **部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；③ 既有 lockfile-integrity 守卫的红**指向错误修法**（文案说"运行 npm install 同步"，而 `--legacy-peer-deps` 会把 hoist 写进根 lockfile，1→866 条目，固化破坏）。另测 runner 委派语义（turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突）。单包模式缓存生效但对 CI 无收益（每 job 独立 runner）。**真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s。**交付**：`check-no-hoisting.mjs`（5 判据结构守卫 + 13 项有齿自检）接入 CI + `docs/ARCH-28b-turbo-adoption.md`（9 节实测报告）+ ARCH-28 §5.1 回填。**CI 关键路径实测（run 36300739454）**：瓶颈是 `selftests` 544s（串行自检 **518s**）与 `admin-web-build` 320s（vitest 286s），`npm ci` 仅占 2.5~10%——turbo 用不上（不是包级任务）。
   - **N-13（BUG-04 复查机制化）→ 机制落地 + 实质复查提前执行 + 顺带清偿 1 条豁免**（commit `e60c182e`）。**机制**：`check-dependency-review.mjs` 把「等人记得复查」变成「到期即红」——到期当天 fail-closed、CI 活跃豁免 ↔ 脚本注册表**双向**一致（未登记/僵尸豁免/日期漂移三类）、解析失败不放过，接入 CI。18 项有齿自检。**★ 复查核心发现**：SEC-06 当年登记的「10-01 评估 overrides 强升」计划，**两条里有一条会砸掉整条 S3 链路**——用**真实 MinIO 服务端**逐条验证：`query-string@9` → `qs.stringify is not a function`（ESM-only）；`stream-json@3` → **`require('minio')` 本身抛 MODULE_NOT_FOUND**（v3 改名 `src/jsonl/parser.js` 小写 + exports map，而 minio `notification.js:7` 硬 require `stream-json/jsonl/Parser.js`；且 `minio.js:32` **无条件 eager require**，故整条链路全废）。该破坏**不会被现有测试发现**（`s3-log-storage.spec.ts:14` 是 `jest.mock("minio")`）。**已落地**：唯一安全的 `decode-uri-component@0.5.0` override（真实 MinIO e2e 4/4 + 全量 3790 例全绿），`GHSA-vcc3-ghjq-m6fr` 清偿；`stream-json` 到期动作改为 **DO_NOT_OVERRIDE**（写进 CI 注释与注册表，避免后人重走死路）。上游状态：minio npm 最新仍 8.0.7（2026-02-27，**7 个月未发版**）。**自检抓到首版解析器自身缺陷**：全块扫 GHSA 会把注释里"已清偿"的散文当活跃豁免报红 → 改为只认 CI 的 `known='...'` 变量。
   - **N-03（覆盖率棘轮续期）→ 四档地板全部上探**（commit `8c282e4c`）。实测 stmts 87.64→**88.59**、branches 76.40→**77.58**、funcs 80.60→**82.45**、lines 88.56→**89.54**；地板 84/75/78/85 → **87/76/81/88**（反证：临时改成 99 → exit 1 并打印 `Coverage for functions (82.45%) does not meet "global" threshold (99%)`，证明地板真在生效）。**三处定向补测 +56 例（226→229 套件、3790→3846 例）**：① `agent-runtime.service.ts` **0%→fn/lines/stmts 100%**（P2 推理循环此前一行未测——补测可重入/闸门位置/失败归因三条运行时不变量的实现本身）；② `sop.controller.ts` **0%→100%**（ADMIN 管理面：跨工单答复防线、指派目标解析、工作副本语义、媒体响应头防注入）；③ `sop.service.ts` 读面+校验面+清洗面（fn 21%→46%）。**反证 6 条全部实测转红后还原**。**纪律**：不写凑数弱断言。**如实**：洼地未清完（tool-binder 59% / task.controller 57% / clamd-scan 42% 等留轮 28）。

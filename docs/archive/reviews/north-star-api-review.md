@@ -2,14 +2,14 @@
 
 > 验收 agent：`r327-api-verify`  
 > 验收对象：A 切片 `NorthStarMetricsService` / `GET /api/agent/north-star/metrics` 的数据口径  
-> 权威参照：[north-star-weekly.mjs](../../scripts/north-star-weekly.mjs) `buildPayload()` + `--report --json`  
-> 新增证据脚本：[north-star-api-reconcile.mjs](../../scripts/north-star-api-reconcile.mjs)
+> 权威参照：[north-star-weekly.mjs](../../../scripts/north-star-weekly.mjs) `buildPayload()` + `--report --json`  
+> 新增证据脚本：[north-star-api-reconcile.mjs](../../../scripts/north-star-api-reconcile.mjs)
 
 ## 1. 结论
 
 **数据口径建议关闭。** 在同一测试库、同一 `as_of = 2026-11-21T12:00:00.000Z` 下，权威 CLI 与被测 API service 的六个核心字段逐字一致，且与独立期望常量 `EXPECTED` 一致；反证注入后稳定转红（exit 1），正常态 exit 0；清理复查三表前缀残留均为 0。
 
-需 lead 知悉一项非数据口径差异：任务书文字写的是 `GET /agent/metrics/north-star`，A 实现落盘路由是 `GET /api/agent/north-star/metrics`（见 [agent.controller.ts](../../apps/admin-api/src/modules/agent/agent.controller.ts) L1113）。本次走 **service 直调**，未做 HTTP 传输层/鉴权可达性验证；若路由字面量要求严格一致，需另开 HTTP e2e 小题裁决。
+需 lead 知悉一项非数据口径差异：任务书文字写的是 `GET /agent/metrics/north-star`，A 实现落盘路由是 `GET /api/agent/north-star/metrics`（见 [agent.controller.ts](../../../apps/admin-api/src/modules/agent/agent.controller.ts) L1113）。本次走 **service 直调**，未做 HTTP 传输层/鉴权可达性验证；若路由字面量要求严格一致，需另开 HTTP e2e 小题裁决。
 
 ## 2. 采用的对账路径与验收级别
 
@@ -67,7 +67,7 @@
 ## 4. 清理与写域
 
 - 每次真库运行前后均按 `r327_api_rec_v1_%` 复查 `funnel_events` / `task_executions` / `tasks`；最终三表残留均为 0。
-- 本次只新增：[north-star-api-reconcile.mjs](../../scripts/north-star-api-reconcile.mjs)、本报告。
+- 本次只新增：[north-star-api-reconcile.mjs](../../../scripts/north-star-api-reconcile.mjs)、本报告。
 - 未修改 A 的实现文件、R326 脚本、生产代码或任何 baseline；未改 README（按任务书要求由 lead 挂链）。
 
 ## 5. 哈希留痕

@@ -37,8 +37,8 @@
 | [deployment-ops.md](deployment-ops.md) | 部署与运维 |
 | [development-plan-2026-09.md](development-plan-2026-09.md) | 2026-09 开发计划（已清偿） |
 | [development-plan-2026-09h2.md](development-plan-2026-09h2.md) | 2026-09 下半期计划（已清偿） |
+| [development-plan-2026-10.md](development-plan-2026-10.md) | 2026-10 开发计划（v1.5.0 轮 27-30 历史计划，已归档） |
 | [windows-testing-plan.md](windows-testing-plan.md) | Windows 深度测试任务书（已执行完） |
 | [a11r-deploy-agent-prompt.md](a11r-deploy-agent-prompt.md) | A-11R 部署代理提示词（一次性） |
 
-> 当前期计划仍在维护，不在归档区：
-> [DEVELOPMENT-PLAN-2026-10.md](../../DEVELOPMENT-PLAN-2026-10.md)。
+> 当前开源路线图见 [ROADMAP.md](../../ROADMAP.md)，活跃任务认领见 [PLAN-CLAIMS.md](../../PLAN-CLAIMS.md)。

@@ -1,6 +1,6 @@
 # 教程 01 · 第一个定时任务
 
-> **受众**：第一次在平台上创建定时任务的新用户 · **状态**：稳定 · **最后核对**：2026-11-06
+> **受众**：第一次在平台上创建定时任务的新用户 · **状态**：稳定 · **最后核对**：2026-11-22
 > 目标：从登录到看到第一个定时任务的执行结果，全程 ≤ 10 分钟。
 > 前提：已用 `docker compose up -d` 启动全栈（见[快速上手](../quickstart.md)第一步）。
 
@@ -26,6 +26,8 @@
 
 > 登录后先到「系统 → 用户管理」→ 对应用户行「重置密码」改掉初始口令。
 > （原「设置 → 个人信息」菜单已在 W8 移除；quickstart 早前也同步过该路径，两份文档现已一致。）
+
+![控制台总览：项目与全局双口径 KPI、执行趋势与北极星指标](../assets/screenshots/zh/dashboard.png)
 
 ## 2. 建应用
 
@@ -72,6 +74,8 @@ return { message: msg, success: true };
 
 点 **「保存并启用」**。
 
+![任务列表：触发方式、运行状态与快捷操作入口](../assets/screenshots/zh/tasks.png)
+
 ## 4. 手动触发一次（不等调度）
 
 1. 进入任务详情页 → 点 **「立即执行」**（`POST /api/tasks/:id/trigger`）
@@ -86,6 +90,8 @@ return { message: msg, success: true };
 
 ## 5. 看懂执行详情
 
+![执行详情：终态摘要、实时日志流、产物与重试时间线](../assets/screenshots/zh/execution-detail.png)
+
 | 区块 | 内容 |
 |------|------|
 | 状态/时长 | 成功、失败、超时（TIMEOUT）等终态与耗时 |
@@ -95,7 +101,7 @@ return { message: msg, success: true };
 
 ## 6. 失败了怎么办
 
-> 想要一个现成的失败样本？`pnpm demo:failure:seed` 会预置一个故意失败的
+> 想要一个现成的失败样本？`npm run demo:failure:seed` 会预置一个故意失败的
 > `demo-failure-fragile` 任务（含失败分类与错误详情），无需手工构造。
 
 | 现象 | 排查 |
