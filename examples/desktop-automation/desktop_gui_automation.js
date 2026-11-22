@@ -1,7 +1,7 @@
 /**
  * 桌面GUI自动化示例任务 (Node.js版本)
  * 功能：鼠标键盘操作、屏幕截图
- * 依赖：npm install robotjs @nut-tree/nut-js
+ * 依赖：npm install robotjs canvas
  */
 
 const robot = require('robotjs');
