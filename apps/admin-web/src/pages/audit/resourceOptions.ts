@@ -16,23 +16,25 @@
  *   · __tests__/audit-action-labels.test.ts 的 resource 守卫可以直接对这份文件做 AST
  *     扫描（选项与后端写入集合求差），新增 resource 写入而清单没跟上 ⇒ 测试红。
  *
- * 分组只是给下拉一个可读的结构；`label` 直接用 token，不新增 i18n key（resource 是
- * 后端写入的机器码，翻译它反而让「知道 CSV 里那个 code」的人找不到）。
+ * 分组只是给下拉一个可读的结构；`label` 是 **i18n key**（不硬编码中文），由消费方
+ * 用 `t(label)` 翻译。组内 `resources` 仍是后端机器码 token（保持原样，翻译反而让
+ * 「知道 CSV 里那个 code」的人找不到）。
  */
 export type ResourceOptionGroup = {
   label: string;
   options: { value: string; label: string }[];
 };
+type Translate = (key: string) => string;
 
 /** 按域分组、组内字母序。resources 数组的字符串字面量是守卫的扫描对象，勿改成模板。 */
-export const AUDIT_RESOURCE_GROUPS: readonly { label: string; resources: readonly string[] }[] = [
-  { label: 'Task', resources: ['task', 'task_execution', 'task_template'] },
-  { label: 'Application', resources: ['application', 'app_deployment', 'artifact'] },
-  { label: 'SOP', resources: ['sop', 'sop_assignment', 'sop_clarification'] },
-  { label: 'Auth & keys', resources: ['api_key', 'auth', 'user'] },
-  { label: 'Project', resources: ['project', 'project_member'] },
+export const AUDIT_RESOURCE_GROUPS: readonly { labelKey: string; resources: readonly string[] }[] = [
+  { labelKey: 'audit.group.task', resources: ['task', 'task_execution', 'task_template'] },
+  { labelKey: 'audit.group.application', resources: ['application', 'app_deployment', 'artifact'] },
+  { labelKey: 'audit.group.sop', resources: ['sop', 'sop_assignment', 'sop_clarification'] },
+  { labelKey: 'audit.group.auth', resources: ['api_key', 'auth', 'user'] },
+  { labelKey: 'audit.group.project', resources: ['project', 'project_member'] },
   {
-    label: 'Notification',
+    labelKey: 'audit.group.notification',
     resources: [
       'notification',
       'notification_channel',
@@ -41,13 +43,15 @@ export const AUDIT_RESOURCE_GROUPS: readonly { label: string; resources: readonl
       'notification_silence',
     ],
   },
-  { label: 'Event subscription', resources: ['event_subscription', 'event_subscription_dead_letter'] },
-  { label: 'Config & executor', resources: ['config', 'executor'] },
-  { label: 'Registry', resources: ['registry', 'registry-package'] },
+  { labelKey: 'audit.group.eventSubscription', resources: ['event_subscription', 'event_subscription_dead_letter'] },
+  { labelKey: 'audit.group.configExecutor', resources: ['config', 'executor'] },
+  { labelKey: 'audit.group.registry', resources: ['registry', 'registry-package'] },
 ];
 
-/** antd `<Select options>` 的分组形状（label=域名，options=该域的 resource token）。 */
-export const RESOURCE_OPTIONS: ResourceOptionGroup[] = AUDIT_RESOURCE_GROUPS.map((group) => ({
-  label: group.label,
-  options: group.resources.map((value) => ({ value, label: value })),
-}));
+/** antd `<Select options>` 的分组形状（label=翻译后的域名，options=该域的 resource token）。 */
+export function buildResourceOptions(t: Translate): ResourceOptionGroup[] {
+  return AUDIT_RESOURCE_GROUPS.map((group) => ({
+    label: t(group.labelKey),
+    options: group.resources.map((value) => ({ value, label: value })),
+  }));
+}

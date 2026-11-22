@@ -832,6 +832,15 @@ export default {
   // AUDIT-01: localized audit action labels (unknown values fall back to the raw code)
   'audit.operator.system': 'System (scheduler/API)',
   // R6-P3: punctuation lives in the entry — no full-width parens assembled in code
+  'audit.group.task': 'Task',
+  'audit.group.application': 'Application',
+  'audit.group.sop': 'SOP',
+  'audit.group.auth': 'Auth & keys',
+  'audit.group.project': 'Project',
+  'audit.group.notification': 'Notification',
+  'audit.group.eventSubscription': 'Event subscription',
+  'audit.group.configExecutor': 'Config & executor',
+  'audit.group.registry': 'Registry',
   'audit.resourceId.openHint': '{{id}} (Open detail)',
   'audit.action.auth_login': 'Log in',
   'audit.action.auth_logout': 'Log out',

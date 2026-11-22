@@ -5,7 +5,7 @@ import { SearchOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, LeftOutl
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 // resource 过滤器的完整选项集（外提：本页双顶格 + 守卫可单独 AST 扫描）
-import { RESOURCE_OPTIONS } from './resourceOptions';
+import { buildResourceOptions } from './resourceOptions';
 // A-12: 审计 CSV 导出（GET /audit/export，携带当前筛选，axios blob 下载）
 // AUDIT-KEYSET: 列表请求也挪进 api 层——游标三态（undefined / '' / 非空）由
 // buildAuditListQuery 一处把关，页面不再手拼 URLSearchParams。
@@ -624,7 +624,7 @@ export default function AuditLogPage() {
           mode="tags"
           value={pending.resource ? [pending.resource] : []}
           onChange={(vals) => setPending((p) => ({ ...p, resource: (vals as string[]).slice(-1)[0] ?? '' }))}
-          options={RESOURCE_OPTIONS}
+          options={buildResourceOptions(t)}
           virtual={false}
           placeholder={t('audit.filter.resourceType')}
           style={{ width: 160 }}

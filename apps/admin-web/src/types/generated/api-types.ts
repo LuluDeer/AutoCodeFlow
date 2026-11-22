@@ -6099,6 +6099,11 @@ export interface components {
             taskId: string;
         };
         ExecutionListItemDto: {
+            /**
+             * Format: uuid
+             * @description 该执行由哪个 Agent 会话触发（Agent 触发路径可空）
+             */
+            agentSessionId: string | null;
             /** @description 列表/统计读取会排除该列（PERF-03） */
             aiAnalysis?: string | null;
             /** @description 该次执行上传的产物 */
@@ -8219,6 +8224,11 @@ export interface components {
             triggerType: "cron" | "fixed_rate" | "api" | "manual";
         };
         TaskExecutionResponseDto: {
+            /**
+             * Format: uuid
+             * @description 该执行由哪个 Agent 会话触发（Agent 触发路径可空）
+             */
+            agentSessionId: string | null;
             /** @description AI 失败分析文本（空字符串 = 无分析） */
             aiAnalysis: string | null;
             /** @description 该次执行上传的产物 */
