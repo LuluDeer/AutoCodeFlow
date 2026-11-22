@@ -328,6 +328,215 @@
         ],
         "type": "object"
       },
+      "AgentNorthStarConfirmedDto": {
+        "properties": {
+          "totals": {
+            "$ref": "#/components/schemas/AgentNorthStarConfirmedTotalsDto"
+          },
+          "weeks": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNorthStarConfirmedWeekDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "weeks",
+          "totals"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarConfirmedTotalsDto": {
+        "properties": {
+          "active_install_weeks": {
+            "description": "各周 active_installs 之和（周-实例对，非全局去重实例数）",
+            "type": "number",
+            "x-i18n-en": "Sum of active_installs across weeks (week-install pairs, not globally deduplicated installs)"
+          },
+          "confirmed_events": {
+            "description": "各周 confirmed_events 之和",
+            "type": "number",
+            "x-i18n-en": "Sum of confirmed_events across weeks"
+          }
+        },
+        "required": [
+          "active_install_weeks",
+          "confirmed_events"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarConfirmedWeekDto": {
+        "properties": {
+          "active_installs": {
+            "description": "该周去重活跃实例数",
+            "type": "number",
+            "x-i18n-en": "Distinct active installs for the week"
+          },
+          "confirmed_events": {
+            "description": "该周去重确认事件数（每次执行最多一次）",
+            "type": "number",
+            "x-i18n-en": "Distinct confirmed events for the week (at most one per execution)"
+          },
+          "week_start": {
+            "description": "UTC 周一 00:00:00.000Z",
+            "type": "string",
+            "x-i18n-en": "UTC Monday 00:00:00.000Z"
+          }
+        },
+        "required": [
+          "week_start",
+          "active_installs",
+          "confirmed_events"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarPromotionDto": {
+        "properties": {
+          "activeInstallWeeks": {
+            "description": "活跃 install 周合计",
+            "type": "number",
+            "x-i18n-en": "Active-install weeks total"
+          },
+          "eligible": {
+            "description": "两数值阈值是否均满足（不含运营前置 coverage=full）",
+            "type": "boolean",
+            "x-i18n-en": "Whether both numeric thresholds are met (excludes ops prerequisite coverage=full)"
+          },
+          "reasons": {
+            "description": "未达标逐条说明 + 运营前置提示（脚本不验证 coverage）",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Per-threshold unmet reasons + ops prerequisite note (coverage not verified by script)"
+          },
+          "thresholds": {
+            "$ref": "#/components/schemas/AgentNorthStarPromotionThresholdsDto"
+          },
+          "weeks": {
+            "description": "严格值周数",
+            "type": "number",
+            "x-i18n-en": "Number of strict-caliber weeks"
+          }
+        },
+        "required": [
+          "eligible",
+          "reasons",
+          "weeks",
+          "activeInstallWeeks",
+          "thresholds"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarPromotionThresholdsDto": {
+        "properties": {
+          "minActiveInstallWeeks": {
+            "description": "活跃 install 周合计下限",
+            "type": "number",
+            "x-i18n-en": "Lower bound of active-install weeks total"
+          },
+          "minWeeks": {
+            "description": "最小样本期周数",
+            "type": "number",
+            "x-i18n-en": "Minimum observation window in weeks"
+          }
+        },
+        "required": [
+          "minWeeks",
+          "minActiveInstallWeeks"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarProxyDto": {
+        "properties": {
+          "totals": {
+            "$ref": "#/components/schemas/AgentNorthStarProxyTotalsDto"
+          },
+          "weeks": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNorthStarProxyWeekDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "weeks",
+          "totals"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarProxyTotalsDto": {
+        "properties": {
+          "executions": {
+            "description": "各周 executions 之和",
+            "type": "number",
+            "x-i18n-en": "Sum of executions across weeks"
+          }
+        },
+        "required": [
+          "executions"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarProxyWeekDto": {
+        "properties": {
+          "executions": {
+            "description": "该周 SUCCESS 且 artifacts 非空、非 synthetic 的执行数",
+            "type": "number",
+            "x-i18n-en": "Executions for the week with SUCCESS status, non-empty artifacts, and non-synthetic"
+          },
+          "week_start": {
+            "description": "UTC 周一 00:00:00.000Z",
+            "type": "string",
+            "x-i18n-en": "UTC Monday 00:00:00.000Z"
+          }
+        },
+        "required": [
+          "week_start",
+          "executions"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarResponseDto": {
+        "properties": {
+          "as_of": {
+            "description": "观测截止时间（ISO-8601），与脚本 buildPayload 同口径",
+            "type": "string",
+            "x-i18n-en": "Observation cutoff time (ISO-8601), consistent with the buildPayload script"
+          },
+          "business_confirmed": {
+            "$ref": "#/components/schemas/AgentNorthStarConfirmedDto"
+          },
+          "business_results_proxy": {
+            "$ref": "#/components/schemas/AgentNorthStarProxyDto"
+          },
+          "promotionEligibility": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AgentNorthStarPromotionDto"
+              }
+            ],
+            "description": "R448 升主判据（eligible 仅判数值阈值，运营前置 coverage=full 见 reasons）",
+            "x-i18n-en": "R448 primary-metric promotion eligibility (eligible covers numeric thresholds only; ops prerequisite coverage=full in reasons)"
+          },
+          "warnings": {
+            "description": "强制口径护栏（不可省略）：严格口径说明 + 「有产物/有证据 ≠ 被业务确认，代理值勿当严格值」强警告",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Mandatory metric guardrail (must not be omitted): strict metric definition + strong warning that \"has artifacts/evidence ≠ business-confirmed; do not treat proxy values as strict values\""
+          }
+        },
+        "required": [
+          "as_of",
+          "business_confirmed",
+          "business_results_proxy",
+          "promotionEligibility",
+          "warnings"
+        ],
+        "type": "object"
+      },
       "AgentPendingApprovalItemDto": {
         "properties": {
           "approvalKey": {
@@ -908,6 +1117,130 @@
           "model",
           "summary",
           "createdAt"
+        ],
+        "type": "object"
+      },
+      "AgentTelemetryConsentDto": {
+        "properties": {
+          "deviceFingerprint": {
+            "description": "原始设备指纹；派生为匿名安装标识",
+            "type": "string",
+            "x-i18n-en": "Raw device fingerprint; derived into an anonymous install id"
+          },
+          "installId": {
+            "description": "不透明的安装标识；优先于设备指纹",
+            "type": "string",
+            "x-i18n-en": "Opaque install id; takes precedence over the device fingerprint"
+          },
+          "optIn": {
+            "description": "是否启用 TTFV 采集",
+            "type": "boolean",
+            "x-i18n-en": "Whether TTFV collection is enabled"
+          },
+          "source": {
+            "description": "本次授权动作的来源标记",
+            "enum": [
+              "admin-ui",
+              "api"
+            ],
+            "type": "string",
+            "x-i18n-en": "Provenance label of this consent action"
+          }
+        },
+        "required": [
+          "optIn"
+        ],
+        "type": "object"
+      },
+      "AgentTelemetryConsentResultDto": {
+        "properties": {
+          "count": {
+            "description": "本次涉及的安装数量",
+            "type": "number",
+            "x-i18n-en": "Number of installs touched by this action"
+          },
+          "installIds": {
+            "description": "本次涉及的安装标识（匿名）",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Anonymous install ids touched by this action"
+          },
+          "optedIn": {
+            "description": "是否已授权采集",
+            "type": "boolean",
+            "x-i18n-en": "Whether collection is consented to"
+          },
+          "source": {
+            "description": "实际落库的来源标记",
+            "type": "string",
+            "x-i18n-en": "Provenance label actually persisted"
+          },
+          "systemEnabled": {
+            "description": "本次操作后的系统总闸状态",
+            "type": "boolean",
+            "x-i18n-en": "System gate state after this action"
+          }
+        },
+        "required": [
+          "systemEnabled",
+          "optedIn",
+          "installIds",
+          "count",
+          "source"
+        ],
+        "type": "object"
+      },
+      "AgentTelemetryStatusDto": {
+        "properties": {
+          "count": {
+            "description": "当前已授权采集的安装数",
+            "type": "number",
+            "x-i18n-en": "Number of installs currently consenting to collection"
+          },
+          "coverage": {
+            "description": "授权覆盖率状态：gate_off=总闸未开；no_executors=总闸开但无已知执行器（先开闸后装执行器陷阱）；partial=部分执行器已授权；full=全部已授权",
+            "enum": [
+              "no_executors",
+              "partial",
+              "full",
+              "gate_off"
+            ],
+            "type": "string",
+            "x-i18n-en": "Authorization coverage: gate_off=system gate off; no_executors=gate on but no known executor (install-executor-first trap); partial=some executors authorized; full=all authorized"
+          },
+          "installs": {
+            "description": "按安装维度的授权概览",
+            "items": {
+              "$ref": "#/components/schemas/TelemetryOptinInstallViewDto"
+            },
+            "type": "array",
+            "x-i18n-en": "Consent overview by install"
+          },
+          "knownExecutorCount": {
+            "description": "已知 executor 数（去重 deviceFingerprint 后）",
+            "type": "number",
+            "x-i18n-en": "Known executor count (distinct deviceFingerprint)"
+          },
+          "latestOptedAt": {
+            "description": "各安装中最近的授权时间（ISO-8601；可为空）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Latest consent time across installs (ISO-8601; nullable)"
+          },
+          "systemEnabled": {
+            "description": "系统总闸状态",
+            "type": "boolean",
+            "x-i18n-en": "System gate state"
+          }
+        },
+        "required": [
+          "systemEnabled",
+          "count",
+          "installs",
+          "knownExecutorCount",
+          "coverage"
         ],
         "type": "object"
       },
@@ -11367,6 +11700,43 @@
         ],
         "type": "object"
       },
+      "TelemetryOptinInstallViewDto": {
+        "properties": {
+          "installId": {
+            "description": "匿名安装标识",
+            "type": "string",
+            "x-i18n-en": "Anonymous install id"
+          },
+          "optIn": {
+            "description": "当前安装的授权状态",
+            "type": "boolean",
+            "x-i18n-en": "Current consent state of the install"
+          },
+          "optedAt": {
+            "description": "最近一次授权变更时间（ISO-8601；可为空）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Time of the latest consent change (ISO-8601; nullable)"
+          },
+          "source": {
+            "description": "最近一次变更的来源标记",
+            "type": "string",
+            "x-i18n-en": "Provenance label of the latest change"
+          },
+          "userIdHash": {
+            "description": "HMAC 派生的用户标识，绝不是用户名原文",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "HMAC-derived user id, never the raw username"
+          }
+        },
+        "required": [
+          "installId",
+          "optIn",
+          "source"
+        ],
+        "type": "object"
+      },
       "TerminalStateItemDto": {
         "properties": {
           "endedAt": {
@@ -12959,7 +13329,7 @@
           {
             "in": "query",
             "name": "limit",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -13021,6 +13391,39 @@
         }
       }
     },
+    "/agent/executions/{execId}/confirm": {
+      "post": {
+        "operationId": "AgentController_confirmExecution",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "确认成功（幂等，重复确认同样返回成功并 emit execution.confirmed）",
+            "x-i18n-en": "Confirmation succeeded (idempotent; repeated confirmation also succeeds and emits execution.confirmed)"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "显式确认执行已被业务确认（北极星 business_confirmed 事件源）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "An execution explicitly confirmed as business-confirmed (NorthStar business_confirmed event source)"
+        }
+      }
+    },
     "/agent/inbox/counts": {
       "get": {
         "operationId": "AgentController_inboxCounts",
@@ -13051,6 +13454,47 @@
         }
       }
     },
+    "/agent/north-star/metrics": {
+      "get": {
+        "operationId": "AgentController_northStarReport",
+        "parameters": [
+          {
+            "description": "观测截止 ISO-8601；缺省 now",
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Observation cutoff in ISO-8601; defaults to now"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentNorthStarResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "北极星双口径周报（严格 business_confirmed + 代理值，绝不混用）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "NorthStar dual-metric weekly report (strict business_confirmed + proxy values, never mixed)"
+        }
+      }
+    },
     "/agent/sessions": {
       "get": {
         "operationId": "AgentController_list",
@@ -13058,7 +13502,7 @@
           {
             "in": "query",
             "name": "kind",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -13066,7 +13510,7 @@
           {
             "in": "query",
             "name": "status",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -13074,7 +13518,7 @@
           {
             "in": "query",
             "name": "page",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -13082,7 +13526,7 @@
           {
             "in": "query",
             "name": "stalled",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -13090,7 +13534,7 @@
           {
             "in": "query",
             "name": "stalledMinutes",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -13098,7 +13542,7 @@
           {
             "in": "query",
             "name": "pageSize",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -13106,7 +13550,7 @@
           {
             "in": "query",
             "name": "since",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -13549,6 +13993,76 @@
         }
       }
     },
+    "/agent/telemetry/consent": {
+      "post": {
+        "operationId": "AgentController_setTelemetryConsent",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentTelemetryConsentDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentTelemetryConsentResultDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "设置 TTFV 授权状态与系统总闸",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Set TTFV consent state and the system gate"
+        }
+      }
+    },
+    "/agent/telemetry/status": {
+      "get": {
+        "operationId": "AgentController_telemetryStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentTelemetryStatusDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "读取 TTFV 授权状态供管理端展示",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Read TTFV consent status for the admin UI"
+        }
+      }
+    },
     "/ai/config": {
       "get": {
         "operationId": "AiController_getConfig",
@@ -13850,7 +14364,7 @@
           {
             "in": "query",
             "name": "page",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -13858,7 +14372,7 @@
           {
             "in": "query",
             "name": "pageSize",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -15038,7 +15552,7 @@
           {
             "in": "query",
             "name": "projectId",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -16458,7 +16972,7 @@
           {
             "in": "query",
             "name": "error",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -18840,7 +19354,7 @@
           {
             "in": "query",
             "name": "deviceFingerprint",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -18848,7 +19362,7 @@
           {
             "in": "query",
             "name": "executorId",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -19388,7 +19902,7 @@
           {
             "in": "query",
             "name": "deviceFingerprint",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -19396,7 +19910,7 @@
           {
             "in": "query",
             "name": "executorId",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20881,7 +21395,7 @@
           {
             "in": "query",
             "name": "page",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20889,7 +21403,7 @@
           {
             "in": "query",
             "name": "pageSize",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20897,7 +21411,7 @@
           {
             "in": "query",
             "name": "q",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -21399,7 +21913,7 @@
           {
             "in": "query",
             "name": "status",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -21407,7 +21921,7 @@
           {
             "in": "query",
             "name": "page",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -21415,7 +21929,7 @@
           {
             "in": "query",
             "name": "pageSize",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -21754,7 +22268,7 @@
           {
             "in": "query",
             "name": "limit",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }

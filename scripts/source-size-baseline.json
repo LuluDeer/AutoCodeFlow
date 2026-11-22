@@ -117,10 +117,10 @@
     "apps/admin-api/src/modules/agent/runtime/__tests__/agent-session.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1130,
-      "why": "2026-11-04 实测 nonCommentLines=1130 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1149,
+      "why": "2026-11-04 实测 nonCommentLines=1130 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【R300 重签 1130→1149：+17 行系 sweep 判据由 hasPendingForSession 改为 hasPendingOrGrantedForSession 后补齐 mock 与新增 1 条 granted 未消费跳过测试；生产文件 agent-session.service.ts 非注释行未涨】",
       "ceiling": {
-        "nonCommentLines": 1130,
+        "nonCommentLines": 1149,
         "functionLines": 70,
         "ctorParams": 0,
         "exports": 0,
@@ -191,10 +191,10 @@
     "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1087,
-      "why": "2026-11-04 实测 nonCommentLines=1099 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R199 下调：1099 → 1087（函数体 116 → 116）】** R199 给 Agent 会话列表加「卡住」筛选（Roadmap P1「异常接管台」的另一半）时，本文件**双顶格**（1042/1042、1029/1029）⇒ 就地新增**必然破顶** ⇒ 按 R380 的做法**外提**：① URL 深链同步整块外提成 `hooks/useAgentListUrlState.ts`（不碰会话数据、只碰 URL ⇒ 最独立的一块职责）；② 徽标组外提成 `components/AgentAttentionBadges.tsx`（桌面页头与移动端筛选栏**两处复用**）；③ 后端 `agent-session.service.ts` 把**分页钳制**外提成 `agent-pagination.ts`、把「卡住」谓词外提成 `agent-stalled-thresholds.ts` ⇒ 该文件亦净减。⇒ **基线下调，不是放宽**。",
+      "maxLines": 1098,
+      "why": "2026-11-04 实测 nonCommentLines=1099 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R199 下调：1099 → 1087（函数体 116 → 116）】** R199 给 Agent 会话列表加「卡住」筛选（Roadmap P1「异常接管台」的另一半）时，本文件**双顶格**（1042/1042、1029/1029）⇒ 就地新增**必然破顶** ⇒ 按 R380 的做法**外提**：① URL 深链同步整块外提成 `hooks/useAgentListUrlState.ts`（不碰会话数据、只碰 URL ⇒ 最独立的一块职责）；② 徽标组外提成 `components/AgentAttentionBadges.tsx`（桌面页头与移动端筛选栏**两处复用**）；③ 后端 `agent-session.service.ts` 把**分页钳制**外提成 `agent-pagination.ts`、把「卡住」谓词外提成 `agent-stalled-thresholds.ts` ⇒ 该文件亦净减。⇒ **基线下调，不是放宽**。 **【R322 重签 1087→1098：nonCommentLines +14，系 R296 尾钩接线的最小增量——共享前缀常量 import(1)、approvalWakeupProbe 字段与 attachApprovalWakeupProbe 方法(4)、markWaiting 在 UPDATE 命中后的 fail-closed try/catch 补偿(8)、sweep 判据换常量后的 prettier 折行(1)，另一处 startsWith 换常量等长；PM 已裁决 E-pure（R321 §7）并批准本次重签。只改 nonCommentLines/maxLines，functionLines=116、ctorParams=7、exports=21、branchDensity=25.6 一律不放宽】**",
       "ceiling": {
-        "nonCommentLines": 1087,
+        "nonCommentLines": 1098,
         "functionLines": 116,
         "ctorParams": 7,
         "exports": 21,
@@ -463,10 +463,10 @@
     "apps/admin-api/src/modules/executor/executor.controller.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1218,
-      "why": "2026-11-04 实测 nonCommentLines=1218 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1222,
+      "why": "2026-11-04 实测 nonCommentLines=1218 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【R292 重签 1218→1222：+4 行系 pullExecutorConfig（@Get config）/getTerminalStates 两 handler 各补 2 条 @ApiQuery({required:false})，消除 openapi 契约把可选 query 标必填的欠账（query-param-required 守卫已回收对应条目）；为必要的契约正确性修复，非无上限增长】",
       "ceiling": {
-        "nonCommentLines": 1218,
+        "nonCommentLines": 1222,
         "functionLines": 145,
         "ctorParams": 0,
         "exports": 1,
@@ -921,11 +921,11 @@
     "apps/admin-web/src/pages/DashboardPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 550,
-      "why": "2026-11-04 实测 functionLines=479 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | **2026-11-15 本轮重签（+10 非注释行 / 函数体 +24）**：P1-2 项目上下文过滤贯通指标查询（878812db，Dashboard 卡片/趋势按当前项目上下文收口，+38/−10）。ceiling.nonCommentLines 497→507、functionLines 479→503、密度 19.1→19.9（仍 <20 阈值，比值记录口径）。 | **2026-11-16 P2-1 指标口径分离重签（+43 非注释行 / 函数体 +1）**：指标区拆「随当前项目」「全局口径（机队/调度）」两组分区标题 + 逐卡口径徽章（ScopeBadge/ScopeSectionHeader 本地组件，文字+图标双编码，全局卡 hover 说明口径）；summary 拆随项目/全局两路查询——在线执行器计数改走不带 projectId 的全局 summary 键（后端 executorRepo.count 无项目条件），其余随项目卡按 projectId 收口。实测 nonCommentLines 507→550、functionLines 503→504、exports 3、ctorParams 0 未变，branchDensity 19.9→18.7（净降，<20 阈值豁免记录口径）。",
+      "maxLines": 554,
+      "why": "2026-11-04 实测 functionLines=479 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | **2026-11-15 本轮重签（+10 非注释行 / 函数体 +24）**：P1-2 项目上下文过滤贯通指标查询（878812db，Dashboard 卡片/趋势按当前项目上下文收口，+38/−10）。ceiling.nonCommentLines 497→507、functionLines 479→503、密度 19.1→19.9（仍 <20 阈值，比值记录口径）。 | **2026-11-16 P2-1 指标口径分离重签（+43 非注释行 / 函数体 +1）**：指标区拆「随当前项目」「全局口径（机队/调度）」两组分区标题 + 逐卡口径徽章（ScopeBadge/ScopeSectionHeader 本地组件，文字+图标双编码，全局卡 hover 说明口径）；summary 拆随项目/全局两路查询——在线执行器计数改走不带 projectId 的全局 summary 键（后端 executorRepo.count 无项目条件），其余随项目卡按 projectId 收口。实测 nonCommentLines 507→550、functionLines 503→504、exports 3、ctorParams 0 未变，branchDensity 19.9→18.7（净降，<20 阈值豁免记录口径）。 | **2026-11-21 R328 重签（+4 非注释行 / 函数体 +4，PM 批准）**：北极星双口径看板接线——在全局口径分组末尾新增一行 `<NorthStarCard/>` 渲染 + import。卡片本体是独立组件（不进本文件体量），本文件仅 +1 import +1 渲染行 + 空行/缩进。实测 nonCommentLines 550→554、functionLines 504→508；exports/ctorParams/branchDensity 未变。这是产品可见交付的必要接线，非放任增长；回滚值 550/504。",
       "ceiling": {
-        "nonCommentLines": 550,
-        "functionLines": 504,
+        "nonCommentLines": 554,
+        "functionLines": 508,
         "ctorParams": 0,
         "exports": 3,
         "branchDensity": 18.7

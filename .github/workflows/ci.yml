@@ -370,11 +370,16 @@ jobs:
             || { echo "::error::second migration:run was not a no-op"; exit 1; }
       - run: npm run typecheck
         working-directory: apps/admin-api
-      # ── QA-08：跨版本迁移演练月度增强步（仅 schedule 触发时执行）──────
-      # 在 PR/push 轮，上面三步已覆盖「空库全量 + 二次幂等」；月度轮追加：
+      # ── QA-08：跨版本迁移演练增强步（revert 全触发 / drift 月度）──────
+      # PR/push 轮：上面三步已覆盖「空库全量 + 二次幂等 + typecheck」，
+      # 并追加最新迁移 revert → 重跑（R434 起 ALL triggers，秒级开销）——
+      # 目的是让新写/改的 down() 路径在日常 CI 就被真实执行，堵住
+      # 「down() 写了但从没在日常 CI 跑过」的防复发缺口（R433 发现）。
+      # revert 掉最新迁移后立即 re-run 恢复：job 结束时 DB 状态与全链一致；
+      # 本 job 之后无依赖 DB 的 step（typecheck 在前、不依赖 DB）。
       # ① 迁移链 ↔ 实体定义漂移检查（migration:generate 必须产出空迁移，
-      #    否则说明实体与迁移链脱节——历史真机轮抓过迁移链断裂，此为防复发闸）；
-      # ② 最新迁移单步 revert → 重跑（演练 down 路径可达，部署回滚依赖它）。
+      #    否则说明实体与迁移链脱节——历史真机轮抓过迁移链断裂，此为防复发闸）
+      #    仍保持 schedule only（下方 if 不动）：秒级之外的漂移检查按月跑。
       # 两种形态共用本 job：schedule 触发时主套件已被 if 旁路，本 job 独跑。
       - name: QA-08 drill — entity/migration drift check (schedule only)
         if: github.event_name == 'schedule'
@@ -382,13 +387,20 @@ jobs:
         # typeorm 原生 check 模式：实体与迁移链一致时 exit 0（"No changes in
         # database schema were found"），有漂移时 exit 1 并打印差异迁移。
         run: npm run migration:generate -- --check ./src/migrations/Qa08DriftCheck
-      - name: QA-08 drill — revert latest then re-run (schedule only)
-        if: github.event_name == 'schedule'
+      - name: QA-08 drill — revert latest then re-run (all triggers)
         working-directory: apps/admin-api
         run: |
-          npm run migration:revert
+          out=$(npm run migration:revert 2>&1)
+          echo "$out"
+          # 断言 down() 真的执行了反向 DDL + 删除迁移记录，而不只是 exit 0。
+          # 空实现 down() 也会 exit 0（undoLastMigration 无回退项只打日志），
+          # 但不会产生 DROP/DELETE —— 必须点名这些副作用才不算假绿（R434 P2）。
+          echo "$out" | grep -qE 'DELETE FROM "migrations"' \
+            || { echo "::error::revert did not delete a migration record (down() may be a no-op)"; exit 1; }
+          echo "$out" | grep -qE 'DROP (TABLE|INDEX) IF EXISTS' \
+            || { echo "::error::revert did not execute reverse DDL (down() may be a no-op)"; exit 1; }
           npm run migration:run
-          echo "revert + re-run OK：down 路径可达"
+          echo "revert + re-run OK：down 路径可达且有副作用"
 
   # ── 依赖安全审计：prod 依赖链 moderate 及以上红灯（SEC-06）────────
   # ① 门槛从 high 升到 moderate：moderate 已是可利用 DoS 级（如
@@ -1869,6 +1881,19 @@ jobs:
       - name: load-test selftest
         # 压测脚本的 SSE 路径解析 / 参数边界 / 速率校验，26 组断言。
         run: node scripts/load-test.selftest.mjs
+      # ── R453/R455：运营指标脚本口径自检接入 CI ──────────────────────
+      # north-star-weekly / w4-retention / sop-success-rate 的 selftest
+      # 只靠手工跑——未来有人改坏指标口径（周桶/留存窗/接管信号）CI 抓不到。
+      # R455 追加 metrics-health（达标判定，含"无样本不算达标"语义）。
+      # 四者均零依赖、离线（--selftest 不连库），与上方各 selftest 同型。
+      # 注意：这些脚本文件名不含 selftest、也不在 check-guards-wired 的
+      # check-*/agent-* 扫描面内，必须在这里显式执行。
+      - name: Operations metric selftests (R453/R455)
+        run: |
+          node scripts/north-star-weekly.mjs --selftest
+          node scripts/w4-retention.mjs --selftest
+          node scripts/sop-success-rate.mjs --selftest
+          node scripts/metrics-health.mjs --selftest
       # ── 2026-10-17 优化计划轮：限流白名单同源守卫 ──────────────────
       # PLAN-SECURITY-HARDENING §1.1 的落地。白名单
       # （EXECUTOR_MACHINE_PATH_PATTERNS）与真实机器面路由不同源时，
@@ -2281,6 +2306,96 @@ jobs:
             /tmp/e2e-*.png
           if-no-files-found: ignore
           retention-days: 7
+
+  # ── R439：北极星两个最高级真栈 e2e 常态化（R436/R437 防复发闸）──────────
+  # R436/R437 建成「真浏览器 + 真后端 + 真 PG」的两个 spec，但 .github/ 与
+  # scripts/ 零引用 ⇒ 从不自动跑；看板口径/生产启用路径改坏后 CI 抓不到。
+  # 本 job 与 admin-api-e2e 同触发口径（PR/push/dispatch，旁路 nightly
+  # schedule），把两个 spec 固化为日常防复发闸（R434 范式延续）。
+  # 库名刻意与两个 playwright config 的 webServer.env 硬编码值一致：
+  # webServer.env 会覆盖 Playwright 进程 env，若这里换成别的库名，spec 的
+  # PG Client 与真后端会连到两个不同的库，造数不可见 ⇒ 假红/假绿。
+  # autoflow_ttfv_e2e 含 e2e，同样过 spec 的库名守卫。
+  north-star-real-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: github.event_name != 'schedule'
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+        env:
+          POSTGRES_USER: autoflow
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: autoflow_ttfv_e2e
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USERNAME: autoflow
+      DB_PASSWORD: test
+      # 与两个 config 的 webServer.env DB_DATABASE 逐字一致（见上方注释）
+      DB_DATABASE: autoflow_ttfv_e2e
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      JWT_SECRET: test-jwt-secret-32chars-long-here
+      JWT_REFRESH_SECRET: test-refresh-secret-32chars-long
+      EXECUTOR_SECRET: test-executor-secret
+      INITIAL_ADMIN_USERNAME: admin
+      # 测试库 seed 口令：与 admin-api-e2e job 同值（app bootstrap 建初始 admin）
+      INITIAL_ADMIN_PASSWORD: admin123
+      AI_PROVIDER: disabled
+      # 非秘密 fixture key：与两个 config / R437 spec 的 FIXTURE_SECRETS_KEY 同值
+      SEC_SECRETS_KEY: 4a6b8c0d2e1f3a5b7c9d0e2f4a6b8c0d2e1f3a5b7c9d0e2f4a6b8c0d2e1f3a5b
+      PLAYWRIGHT_CHROMIUM_CHANNEL: chrome
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/admin-api/package-lock.json
+            apps/admin-web/package-lock.json
+      # spec 用 createRequire 从 admin-api/package.json 加载 pg，两边依赖都要装
+      - run: npm ci
+        working-directory: apps/admin-api
+      - run: npm ci
+        working-directory: apps/admin-web
+      # 两个 config 的 webServer 都跑 `cd ../admin-api && node dist/main`
+      - name: Build admin-api dist
+        run: npm run build
+        working-directory: apps/admin-api
+      # 空库全链迁移：funnel_events / telemetry_optin / system_configs 等表
+      - name: Apply migrations for real-stack e2e
+        run: npm run migration:run
+        working-directory: apps/admin-api
+      # runner 镜像自带 google-chrome apt 源偶发 Hash Sum mismatch，装依赖前
+      # 通配删两种命名（.list 与 deb822 .sources）；channel=chrome 用预装本体
+      - name: Install chromium (+ system deps)
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/google-chrome.sources
+          npx playwright install --with-deps chromium
+        working-directory: apps/admin-web
+      - name: R436 north-star dashboard (real backend + real PG)
+        run: npx playwright test --config playwright.northstar.config.ts
+        working-directory: apps/admin-web
+      - name: R437 telemetry enablement (real backend + real PG)
+        run: npx playwright test --config playwright.telemetry.config.ts
+        working-directory: apps/admin-web
 
   # ── W-28：Windows 全栈 e2e（29 例）— PR / 手动触发 ──────────────
   # ubuntu e2e 全绿的盲区恰是 Windows：本轮 W-22/W-26 都是 Windows runner

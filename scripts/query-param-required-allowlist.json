@@ -1,6 +1,6 @@
 {
   "$schema": "scripts/query-param-required-allowlist.json",
-  "$comment": "R287：openapi.json 里 `in: query` + `required: true` 参数的分类登记表。,守卫：scripts/check-query-param-required.mjs（判据与回收纪律见该文件头注）。,键格式：\"<METHOD> <path> :: <name>\"，与 openapi.json 的 path / 参数名逐字对应。,class 三选一：semantic-required（签名可选但缺值恒被拒，契约没错）/ runtime-optional（确实可选，待加 @ApiQuery({required:false}) 的欠账）/ undecidable（静态定位不到，人工判定过）。,纪律：每条 reason ≥12 字；条目一旦不再红（参数被删/改成可选/路径改了）守卫判「陈旧登记」并红 —— 必须回收，不许留成永久豁免。,为什么不全改 required:false：/ai/media 的 exp/sig 与 /auth/oidc/callback 的 code/state 是真必填，一刀切会把签名校验与 state 校验从契约里抹掉。,**源码已修、生成物未更的 6 条**（metrics summary/failures/trend ×days、config prefix/tag）：对应 controller 已挂 @ApiQuery({required:false})，但本轮**不跑 swagger:export**（需真环境且会大改生成物）⇒ openapi.json 里仍是 required:true。重导出那一轮这 6 条会变成「陈旧登记」而被要求删除 —— 这是设计中的回收路径，不是回归。 【R287 回收：7 条源码已加 @ApiQuery({required:false}) 的参数在 openapi 重导出后成陈旧登记，按守卫要求删除】",
+  "$comment": "R287：openapi.json 里 `in: query` + `required: true` 参数的分类登记表。,守卫：scripts/check-query-param-required.mjs（判据与回收纪律见该文件头注）。,键格式：\"<METHOD> <path> :: <name>\"，与 openapi.json 的 path / 参数名逐字对应。,class 三选一：semantic-required（签名可选但缺值恒被拒，契约没错）/ runtime-optional（确实可选，待加 @ApiQuery({required:false}) 的欠账）/ undecidable（静态定位不到，人工判定过）。,纪律：每条 reason ≥12 字；条目一旦不再红（参数被删/改成可选/路径改了）守卫判「陈旧登记」并红 —— 必须回收，不许留成永久豁免。,为什么不全改 required:false：/ai/media 的 exp/sig 与 /auth/oidc/callback 的 code/state 是真必填，一刀切会把签名校验与 state 校验从契约里抹掉。,**源码已修、生成物未更的 6 条**（metrics summary/failures/trend ×days、config prefix/tag）：对应 controller 已挂 @ApiQuery({required:false})，但本轮**不跑 swagger:export**（需真环境且会大改生成物）⇒ openapi.json 里仍是 required:true。重导出那一轮这 6 条会变成「陈旧登记」而被要求删除 —— 这是设计中的回收路径，不是回归。 【R287 回收：7 条源码已加 @ApiQuery({required:false}) 的参数在 openapi 重导出后成陈旧登记，按守卫要求删除】 【R292 收口：23 条 runtime-optional 已全部在 controller 补 @ApiQuery({required:false}) 并重跑 swagger:export，openapi.json 中这些参数已变 required:false，守卫报陈旧登记后回收本条 ⇒ 现仅剩 4 条 semantic-required（exp/sig/code/state 真必填，签字保留）。】",
   "owner": "arch-core（admin-api 契约面）",
   "reviewBy": "2027-03-31",
   "entries": {
@@ -19,98 +19,6 @@
     "GET /auth/oidc/callback :: state": {
       "class": "semantic-required",
       "reason": "OIDC CSRF 防护用的 state（与 state cookie 配对）：缺它 fail(missing_code_or_state)，永不 200。放松成可选等于把「不校验 state」写进契约"
-    },
-    "GET /agent/approvals/pending :: limit": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。limit 经 clampPendingApprovalLimit 钳 1..200，缺省 100"
-    },
-    "GET /sop/clarifications/pending :: limit": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。limit 在 service 内回落默认，NaN 不 400"
-    },
-    "GET /agent/sessions :: kind": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。kind 在 list() 里按需 parseInt/parseSinceParam，缺省=不筛不翻页，旧行为不变"
-    },
-    "GET /agent/sessions :: status": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。status 在 list() 里按需 parseInt/parseSinceParam，缺省=不筛不翻页，旧行为不变"
-    },
-    "GET /agent/sessions :: page": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。page 在 list() 里按需 parseInt/parseSinceParam，缺省=不筛不翻页，旧行为不变"
-    },
-    "GET /agent/sessions :: stalled": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。stalled 在 list() 里按需 parseInt/parseSinceParam，缺省=不筛不翻页，旧行为不变"
-    },
-    "GET /agent/sessions :: stalledMinutes": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。stalledMinutes 在 list() 里按需 parseInt/parseSinceParam，缺省=不筛不翻页，旧行为不变"
-    },
-    "GET /agent/sessions :: pageSize": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。pageSize 在 list() 里按需 parseInt/parseSinceParam，缺省=不筛不翻页，旧行为不变"
-    },
-    "GET /agent/sessions :: since": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。since 在 list() 里按需 parseInt/parseSinceParam，缺省=不筛不翻页，旧行为不变"
-    },
-    "GET /ai/sop-sessions :: page": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。page 用 Number(x)||1 / ||20 兜底"
-    },
-    "GET /sop :: page": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。page 由 sops.list 在缺省时分页回落"
-    },
-    "GET /projects :: page": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。page 经 parsePaging，两者都缺省时返回旧的全量数组契约（双形态分水岭）"
-    },
-    "GET /ai/sop-sessions :: pageSize": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。pageSize 用 Number(x)||1 / ||20 兜底"
-    },
-    "GET /sop :: pageSize": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。pageSize 由 sops.list 在缺省时分页回落"
-    },
-    "GET /projects :: pageSize": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。pageSize 经 parsePaging，两者都缺省时返回旧的全量数组契约（双形态分水岭）"
-    },
-    "GET /projects :: q": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。q 给 service.findAll 做字面量模糊匹配，缺省不过滤"
-    },
-    "GET /sop :: status": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。status 缺省列出全部状态"
-    },
-    "GET /applications :: projectId": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。projectId 缺省不按项目过滤；'default' 是独立取值而非必填"
-    },
-    "GET /executors/config :: deviceFingerprint": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。源码注释明确「可选查询参数；旧执行器不传」，deviceFingerprint 只用于同址多行的行定位提示"
-    },
-    "GET /executors/{address}/terminal-states :: deviceFingerprint": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。deviceFingerprint 同为行定位提示（executorId 绑定到 reportedExecutorId 形参），缺省按地址+指纹定位"
-    },
-    "GET /executors/config :: executorId": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。源码注释明确「可选查询参数；旧执行器不传」，executorId 只用于同址多行的行定位提示"
-    },
-    "GET /executors/{address}/terminal-states :: executorId": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。executorId 同为行定位提示（executorId 绑定到 reportedExecutorId 形参），缺省按地址+指纹定位"
-    },
-    "GET /auth/oidc/callback :: error": {
-      "class": "runtime-optional",
-      "reason": "R287 登记：运行期可选（缺省/非法值安全回落、绝不 400），待 controller 加 @ApiQuery({required:false}) 并重跑 swagger:export 后回收本条。error 是 IdP 拒绝授权时的**替代**参数（与 code 互斥），标必填与 OIDC 语义相反，应改 required:false"
     }
   }
 }

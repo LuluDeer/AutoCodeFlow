@@ -1585,14 +1585,15 @@
         "apps/admin-web/src/pages/task-detail/ExecutionsTab.tsx",
         "apps/admin-web/src/pages/ExecutionsPage.tsx",
         "apps/admin-web/src/pages/AgentSessionsPage.tsx",
-        "apps/admin-web/src/pages/SopsPage.tsx"
+        "apps/admin-web/src/pages/SopsPage.tsx",
+        "apps/admin-web/src/pages/sops/AssignmentClarificationsList.tsx"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。 **R157 更新 reads**：`TaskDetailPage` 的「执行记录」Tab 在 R151 外提到 `pages/task-detail/ExecutionsTab.tsx` ⇒ 该 spec 的读取面同步扩到 4 个文件（否则登记表与事实不符，而这类「按文件路径读源码」的断言**不会**因为外提而自动跟随）。"
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。 **R157 更新 reads**：`TaskDetailPage` 的「执行记录」Tab 在 R151 外提到 `pages/task-detail/ExecutionsTab.tsx` ⇒ 该 spec 的读取面同步扩到 4 个文件（否则登记表与事实不符，而这类「按文件路径读源码」的断言**不会**因为外提而自动跟随）。 **R298 更新 reads**：`sopClarResolutionLabel`/`sopMediaKindLabel` 的渲染在 SOP 子详情页外提到 `pages/sops/AssignmentClarificationsList.tsx` ⇒ 该 spec 读取面扩到含该文件（与 R157 同款同步，否则登记表低估读取面）。"
     },
     {
       "id": "STC-092",

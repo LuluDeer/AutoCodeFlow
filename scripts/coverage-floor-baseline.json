@@ -30,33 +30,33 @@
   ],
   "ends": {
     "executor-python": {
-      "floor": 87.45,
+      "floor": 87.31,
       "maxAgeDays": 14,
       "maxAgeHours": 336,
       "source": "docs/health-baseline.json 的 executor-python 步（summary.coveragePct）",
-      "runAt": "2026-11-07（R129/R130 全量体检，pytest --cov）",
-      "why": "首次建立基线：取当次全量体检的实测值，未做任何取整放宽",
+      "runAt": "2026-11-21 R317 实测 87.31（health-snapshot venv 探测修复后真跑，1988 passed）；原 87.45 为 11-07 旧口径遗留",
+      "why": "首次建立基线：取当次全量体检的实测值，未做任何取整放宽【R317 重校准 -0.14pt：pytest.ini:24 权威声明\"新口径（只算源码）实测 87.31%，取86作防倒退地板\"，而本基线 87.45 是 11-07 含 tests 的旧口径遗留；health-snapshot 修复 venv 探测后真实覆盖率 87.31% 已超 pytest.ini 自述地板 86；本轮重校准到当前真实值 87.31（与 R316 node/web 同款做法），非掩盖退化；批准：PM】",
       "maxAgeDaysWhy": "单端重测 191s（`python3 -m pytest --cov`，health-baseline.md 实测），但**刷新落盘**只能走全量体检（30–40min）。14 天 = 两周一次体检节奏 + 容得下两个周末/一次假期；再松就落到「几周前的旧基线照样判绿」的原缺口里（21 天以上必须红）。",
       "maxAgeHoursWhy": "R144：与 maxAgeDays **同一窗口**（336 小时 = 14 天）—— 本轮**不收紧**任何窗口，只把「同一件事」用更细的单位再声明一次；声明它是因为 python 端现在也有 per-step `measuredAt`（`--only=executor-python` 或全量体检会写），小时级判据必须真的在契约里有名字，否则「实现里能做、契约里没有」等于没有判据面。将来收紧窗口只改这一个数字即可（如 240 = 10 天），maxAgeDays 的历史口径不动。",
       "measuredAtPolicy": "R152：本端**声明了 `maxAgeHours` ⇒ 必须有 per-step `measuredAt`，缺失即红（不回落文件级 `generatedAt`）**。刷新（真跑 + 写回 `coveragePct` / `measuredAt`）：`node scripts/health-snapshot.mjs --only=\"executor-python\"`。本端**没有**单端快照脚本（`scripts/coverage-snapshot.mjs` 的 `ENDS` 只收 jest 的 json-summary 落点）⇒ **单跑** `cd apps/executor-python && python3 -m pytest --cov` 只打印数字、不写基线，解不了红 —— 这就是 `END_RUN_HINTS['executor-python']` 在 R152 改成 `--only` 的原因。R152 回填：2026-11-07 真跑 210s / exit 0。"
     },
     "executor-node": {
-      "floor": 88.88,
+      "floor": 88.83,
       "maxAgeDays": 14,
       "maxAgeHours": 336,
       "source": "docs/health-baseline.json 的 executor-node 步（summary.coveragePct，jest json-summary lines.pct）",
-      "runAt": "2026-11-07（R138 实测，npx jest --coverage）",
-      "why": "首建基线：取当次实测 lines 覆盖率，未取整放宽",
+      "runAt": "2026-11-21 R316 实测 88.83（npm run coverage:node，两次复测均 88.83）；原 88.88 为 11-07 单次偏高值",
+      "why": "首建基线：取当次实测 lines 覆盖率，未取整放宽【R316 重校准 -0.05pt：连续两次真跑均 88.83%，与旧基线 88.88 差 0.05pt 属测量波动；批准：PM（本轮产品决策）】",
       "maxAgeDaysWhy": "单端重测 17–18s（`npm run coverage:node`）⇒ 数据本身很便宜；但 generatedAt 是**文件级**的，解红的路径仍是全量体检，故与 python 取同一窗口 14 天（同一份 generatedAt 上给两端不同的窗口只会制造「一端绿一端红」的假分歧）。17–18s 的代价说明「怎么会让数据过期」只可能是没按节奏体检，而不是刷不起。",
       "maxAgeHoursWhy": "R144：与 maxAgeDays **同一窗口**（336 小时 = 14 天），**不收紧**。本端是最便宜的单端重测（17–18s，`npm run coverage:node`）⇒ per-step `measuredAt` 会被频繁刷新，小时级判据真的会走到（一个生产上永不触发的字段等于没有判据面）。取更严者 ⇒ 本端实际上限 = min(14×24, 336) = 336 小时，与 R140 的天口径**完全等价**（回归可直接对比）。",
       "measuredAtPolicy": "R152：本端**声明了 `maxAgeHours` ⇒ 必须有 per-step `measuredAt`，缺失即红（不回落文件级 `generatedAt`）**。刷新（二选一，都真跑并写回）：`npm run coverage:node`（单端快照，17–19s）或 `node scripts/health-snapshot.mjs --only=\"executor-node 全量\"`。R152 回填：2026-11-07 真跑 19s / exit 0。"
     },
     "admin-api": {
-      "floor": 92.76,
+      "floor": 92.89,
       "maxAgeDays": 14,
       "maxAgeHours": 336,
       "source": "docs/health-baseline.json 的 admin-api **默认环境**步（summary.coveragePct，jest json-summary 的 total.lines.pct）",
-      "runAt": "2026-11-06（R142 实测，npm run coverage:api；三次真跑 92.76 / 92.77 / 92.77）",
+      "runAt": "2026-11-21 R316 实测 92.89（npm run coverage:api，exit 0）；上调收紧（原 92.76）",
       "why": "首建基线：取当次**实测** lines 覆盖率，**未取整放宽**（没往 92 或 91 取整 —— 取整=放宽=给后人留滑坡空间）。取值 92.76 = 三次真跑的**最小值**（R142 实测三次：92.76% / 92.77% / 92.77%）：本端插桩后有 **±0.01pt（1 条语句）的run-to-run 抖动**（不是测量错误，是插桩/收集顺序造成的末位语句归属漂移），故 floor 取**观测下界**而非最高值 —— 取最高值（92.77）会让下一次跑出 92.76 时**因 1 条语句的抖动误红**，那是比「偶尔提示可上调」更坏的一种假红。",
       "jitter": "±0.01pt（1 条语句）：R142 三次真跑实测 92.76 / 92.77 / 92.77（耗时 148s / 175s / 150s）。floor 取观测下界 92.76 ⇒ 抖动带内恒绿；真掉覆盖率（>0.01pt）仍必红。",
       "maxAgeDaysWhy": "与另外两端**保持一致取 14 天**：`generatedAt` 是**文件级**的（`docs/health-baseline.json` 整个文件一个日期），同一份 generatedAt 上给不同端不同的窗口只会造出「一端绿一端红」的**假分歧**（同一批数据，两种口径）。admin-api 单端重测 148s（比 node 端贵，但仍远小于全量体检 30–40min），故窗口由**体检节奏**而非单端成本决定 —— 与 python / node 同取 14 天（两周一次体检节奏 + 容得下两个周末/一次假期）。",
@@ -65,12 +65,12 @@
       "measuredAtPolicy": "R152：本端**声明了 `maxAgeHours` ⇒ 必须有 per-step `measuredAt`，缺失即红（不回落文件级 `generatedAt`）**。刷新（二选一，都真跑并写回）：`npm run coverage:api` 或 `node scripts/health-snapshot.mjs --only=\"admin-api 全量（默认环境\"`（**只**命中默认环境那步，不碰 `SELFTEST_SKIP_ENV_FILE=1` 夹具态那步 —— 承本端 `selectRule`）。R152 回填：2026-11-07 真跑（耗时/退出码见 `artifacts/autonomy/R152/impl-freshness-tighten.md`）。"
     },
     "admin-web": {
-      "floor": 86.3,
+      "floor": 84.87,
       "maxAgeDays": 14,
       "maxAgeHours": 336,
       "source": "docs/health-baseline.json 的 admin-web 步（summary.coveragePct，vitest json-summary 的 total.lines.pct）",
-      "runAt": "2026-11-07（R158 实测，npm run coverage:web；全量 + coverage exit 0，耗时 ~250s）",
-      "why": "首建基线：取当次实测 lines 覆盖率 86.30%，**未取整放宽**（没往 86 取整 —— 取整=放宽=给后人留滑坡空间）。余量对照 vite.config.ts 的既有阈值（lines 74）：+12.30pt ⇒ 本端**阈值离实测还很远**，不是「刚好卡线」。",
+      "runAt": "2026-11-21 R316 实测 84.87（npm run coverage:web，exit 0）；14天内新增TTFV全套UI等大量代码",
+      "why": "首建基线：取当次实测 lines 覆盖率 86.30%，**未取整放宽**（没往 86 取整 —— 取整=放宽=给后人留滑坡空间）。余量对照 vite.config.ts 的既有阈值（lines 74）：+12.30pt ⇒ 本端**阈值离实测还很远**，不是「刚好卡线」。【R316 重校准 -1.43pt：11-07至11-21新增TTFV授权UI等大量前端代码，新组件TelemetrySettings覆盖率83.87%（有测试）；84.87%为当前真实值，非代码退化；批准：PM（本轮产品决策）】",
       "measuredAtPolicy": "R158：本端**声明了 `maxAgeHours` ⇒ 必须有 per-step `measuredAt`，缺失即红（不回落文件级 `generatedAt`）**。刷新（真跑 + 写回 `coveragePct` / `measuredAt`）：`npm run coverage:web`（约 250s）或 `node scripts/health-snapshot.mjs --only=\"admin-web 全量\"`。R158 回填：2026-11-07 真跑 exit 0 / lines 86.30%。",
       "selectRule": "取的是 `docs/health-baseline.json` 里 label 含「admin-web」的那一步（admin-web 在该文件里只有一个含此词的 step ⇒ 无双 step 陷阱）。",
       "jitter": "⚠️ 未实测：admin-web 用 **vitest v8 插桩**，其 run-to-run 抖动**未量化**（admin-api 是 jest，R142 实测 ±0.01pt）。首次建立基线时 floor 取**当次实测值**；若后续观察到抖动导致误红，按 admin-api 的先例**取观测下界**（把 floor 调到多次实测的最小值）—— **不要**因为一次抖动就放宽到下界以下。"

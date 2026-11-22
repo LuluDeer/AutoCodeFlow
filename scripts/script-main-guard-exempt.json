@@ -201,6 +201,10 @@
     {
       "path": "scripts/verify-smoke-s3.mjs",
       "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/ttfv-pg-integration.mjs",
+      "why": "R310 无 export 的可执行 CLI：真 PG 验证脚本，需 --dsn 直接执行，不可被 import 复用"
     }
   ]
 }
