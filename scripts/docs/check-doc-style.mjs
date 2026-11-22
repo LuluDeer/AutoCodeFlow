@@ -103,8 +103,11 @@ export const USER_FACING = [
   "SECURITY.md",
   "SUPPORT.md",
   // 应用 / 部署 / 示例 README：都是「照着做就能跑」的用户入口
+  "apps/admin-api/README.md",
   "apps/admin-web/README.md",
   "apps/executor-desktop/README.md",
+  "apps/executor-node/README.md",
+  "apps/executor-python/README.md",
   "apps/registry-npm/README.md",
   "apps/registry-pypi/README.md",
   "deploy/README.md",
@@ -112,7 +115,10 @@ export const USER_FACING = [
   "examples/README.md",
   "examples/callback-report/README.md",
   "examples/callback-report-node/README.md",
+  "examples/daily-report/README.md",
   "examples/desktop-automation/README.md",
+  "examples/desktop-data-entry/README.md",
+  "examples/intranet-inspection/README.md",
   "examples/private-registry-deps/README.md",
   "examples/private-registry-deps-node/README.md",
 ];
@@ -134,7 +140,6 @@ export const FRESHNESS_EXEMPT = new Set([
   "packages/autocodeflow-notify/CHANGELOG.md",
   // 规则模板：Issue / PR 模板与守卫脚本的规格说明
   ".github/PULL_REQUEST_TEMPLATE.md",
-  ".github/ISSUE_TEMPLATE/cost-monitor.md",
   "scripts/check-release-hygiene.md",
   // 包级 README：内容随发布走（版本由 release-please 广播），单独维护日期会与
   // 包版本说明打架；它们由 docs/sdk-guide.md 与文档站统一对外。
@@ -167,7 +172,6 @@ export const FRESHNESS_EXEMPT = new Set([
   "docs/PLAN-CLAIMS.md",
   "docs/AGENT_HANDOFF.md",
   "docs/OPEN-DECISIONS.md",
-  "docs/DEVELOPMENT-PLAN-2026-10.md",
   "docs/audit-playbook.md",
   "docs/feature-dev-workflow.md",
   "docs/AGENT-SWARM-PLAYBOOK.md",
@@ -190,7 +194,6 @@ export const FRESHNESS_EXEMPT = new Set([
 export const HEADING_EXEMPT = new Set([
   // GitHub Issue/PR 模板：正文由 GitHub 预填，没有独立标题（标题另填）
   ".github/PULL_REQUEST_TEMPLATE.md",
-  ".github/ISSUE_TEMPLATE/cost-monitor.md",
   // VitePress 首页：layout: home 由 frontmatter 驱动，没有 Markdown H1
   "packages/docs-site/index.md",
 ]);

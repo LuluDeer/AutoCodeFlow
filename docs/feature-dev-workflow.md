@@ -1,6 +1,6 @@
 # AutoCodeFlow · 功能开发标准流程
 
-> **受众**：开发新功能的贡献者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：开发新功能的贡献者 · **状态**：稳定 · **最后核对**：2026-11-22
 
 > 给 AI agent 用的 step-by-step checklist。开发任何新功能前，按顺序执行。
 
@@ -98,9 +98,9 @@ npm run start:dev
 ```bash
 cd apps/admin-web
 npx tsc --noEmit   # 0 error
-pnpm lint          # 0 error
+npm run lint       # 0 error
 # 启动开发服务器手动验证功能
-pnpm dev
+npm run dev
 ```
 
 ---
@@ -111,7 +111,7 @@ pnpm dev
 - [ ] 边界情况：空数据、空列表、0值
 - [ ] 错误路径：接口报错时前端有友好提示
 - [ ] 类型检查：后端 `typecheck`、前端 `tsc --noEmit` 均 0 error
-- [ ] Lint：`npm run lint` / `pnpm lint` 无报错
+- [ ] Lint：`npm run lint:all`（或对应子包 `npm run lint`）无报错
 - [ ] 有无影响已有功能（回归）
 
 ---

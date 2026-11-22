@@ -1,7 +1,11 @@
 # AutoCodeFlow · 发版 Checklist
 
-> **受众**：负责执行发版的仓库维护者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：负责执行发版的仓库维护者 · **状态**：稳定 · **最后核对**：2026-11-22
 > 每次发版前，按顺序过一遍。AI agent 可直接执行各步骤命令。
+>
+> **两条独立发版线**：
+> - **平台与 4 包 lockstep 线（`vX.Y.Z`）**：由 `release-please.yml` 在 `main` 自动维护 Release PR、根 `CHANGELOG.md` 与打 tag，触发 `release.yml` 发布 npm 3 包（`@autocodeflow/sdk`、`@autocodeflow/cli`、`autocodeflow-mcp-server`）+ PyPI（`autoflow-sdk`，OIDC Trusted Publishing），并自动将 `v*` Release 降级为 `prerelease`；
+> - **桌面端独立发布线（`desktop-vX.Y.Z`）**：`apps/executor-desktop` 独立版本线，推送 `desktop-vX.Y.Z` tag 触发 `release-desktop.yml` 构建三平台安装包与 `latest*.yml` 并发布为 GitHub Release `latest`。
 
 ---
 
@@ -19,18 +23,14 @@ git log --oneline -5  # 确认最新 commit 符合预期
 ### 1.2 跑全量检查
 
 ```bash
-# 后端
-cd apps/admin-api
-npm run typecheck
-npm run lint
-npm test
-cd ../..
+# 全仓统一类型检查与 Lint（本仓为 npm-only，禁止使用 pnpm）
+npm run typecheck:all
+npm run lint:all
+npm run check:release-config
 
-# 前端
-cd apps/admin-web
-npx tsc --noEmit
-pnpm lint
-cd ../..
+# 核心单元测试（按需全量可用 npm run test:unit）
+cd apps/admin-api && npm test -- --maxWorkers=2 && cd ../..
+cd apps/admin-web && npm test -- --run && cd ../..
 ```
 
 所有命令 **0 error** 才继续。
@@ -142,36 +142,39 @@ docker compose logs admin-web --tail=20
 
 ---
 
-## Phase 4 · 发版后
+## Phase 4 · 开源包与桌面端发版
 
-### 4.1 打 Git Tag
+### 4.1 平台与 4 包 lockstep 发布（`release-please` 全自动管道）
 
-```bash
-git tag -a v1.x.x -m "release: v1.x.x"
-git push origin v1.x.x
+npm / PyPI 包发布与根级 `CHANGELOG.md` 更新均走 `release-please` 自动管道，**不要手工改 `CHANGELOG.md` 或在常规发版中手工打 `v*` tag**：
+
+```text
+合入 main → release-please.yml 开/更新 Release PR（单一 root 条目 `.` 自动广播 4 包与文档版本 + 追加根 CHANGELOG.md）
+         → 合并 Release PR → release-please 自动打 tag vX.Y.Z 并建 GitHub Release
+         → tag push 自动触发 release.yml（version-guard → environment: release 审批闸 → npm 3 包 + PyPI OIDC 发布 → demote-sdk-release）
 ```
 
-当前 tag 发布链路发布 npm/PyPI 包；Docker 镜像发布启用前，multi-arch 验收以 CI buildx
-构建通过和部署机本地/私有仓库镜像冒烟为准。若后续接入 GHCR/DockerHub，发布前必须保留
-`docker buildx imagetools inspect` manifest 核对步骤。
-
-### 4.2 包发布（release-please 管道，R19 修复后全自动）
-
-npm/PyPI 包发布**不走**上节人工 tag——走 release-please 管道：
-`push main → Release PR（三包 lockstep bump）→ 合并 Release PR（即一次
-push main）→ 自动打 tag v* → 触发 release.yml（version-guard + environment
-审批 + npm/PyPI publish）`。
-
-**v1.5.0 实测结论（2026-09-19，自动化已打通）**：自动打 tag **已打通**——
-release-please 的永久卡点（PR #4 停留在 `autorelease: pending` 标签）解除后，
-合并 Release PR 即自动打 `v*` tag 并触发 release.yml。下列人工步骤**已废弃**：
-- ~~Release PR 合并后人工 `git tag`~~ — 自动完成；
-- ~~发布后手工补建 GitHub Release 对象~~ — 自动完成。
-
-- [ ] tag push 自动触发「Release」workflow（version-guard → environment 审批
-  → publish）；**审批闸需人工 Approve**（`environment: release`）。
-- [ ] 发布后核对注册表：npm 三个包 + PyPI `autoflow-sdk` 均到达目标版本。
+- [ ] 合入 `main` 前执行 `npm run check:release-config`，确认 4 包广播配置无漂移。
+- [ ] Release PR 合并后，`release-please` 自动生成 `vX.Y.Z` tag 与 GitHub Release（仅当 `RELEASE_PLEASE_TOKEN` 失效导致未级联触发时，才需要人工 `git push origin vX.Y.Z` 重推触发）。
+- [ ] 在 GitHub Actions `Release` workflow 的 `environment: release` 审批闸人工 Approve。
+- [ ] 发布后核对注册表：npm 三个包（`@autocodeflow/sdk`、`@autocodeflow/cli`、`autocodeflow-mcp-server`）与 PyPI `autoflow-sdk` 均到达目标版本。
 - [ ] 发布后核对桌面自动更新源未被抢占（见 4.2.2）。
+
+> Docker 镜像发布尚未启用；multi-arch 验收以 CI `docker-multiarch-build` job 构建通过和部署机本地/私有仓库镜像冒烟为准。若后续接入 GHCR/DockerHub，发布前必须保留 `docker buildx imagetools inspect` manifest 核对步骤。
+
+### 4.2 桌面端独立发版（`desktop-vX.Y.Z` + `release-desktop.yml`）
+
+`apps/executor-desktop` 已从平台 4 包 lockstep 解耦，走独立版本号与发布工作流（详述见 [packages/docs-site/release.md](../packages/docs-site/release.md)）：
+
+```bash
+# 1. 更新 apps/executor-desktop/package.json（及 lockfile）并合入 main
+# 2. 打与 package.json version 逐字一致的 tag 并推送：
+git tag desktop-v<version>
+git push origin desktop-v<version>
+```
+
+- [ ] `release-desktop.yml` 自动运行 `desktop-version-guard` → 三平台（Windows / macOS / Linux）构建 → 上传安装包、`latest*.yml` 与三平台校验清单 `SHA256SUMS-{windows-latest,macos-latest,ubuntu-24.04}.txt` 至 GitHub Release（作为 `/releases/latest`）。
+- [ ] 核对 GitHub Release `latest` 已更新至目标 `desktop-v<version>` 且三平台 channel file 可达。
 
 ### 4.2.1 PyPI 发布凭证：Trusted Publishing（OIDC）登记
 
@@ -203,11 +206,6 @@ pypi.org → 登录 → Your projects → `autoflow-sdk` → **Publishing** →
 > commit message 里的「发布前唯一待办的外部手动步骤」——但 commit message
 > 不是清单，没人会翻。凡是**仓库外的手动步骤**，必须写进本节这类发版清单。
 
-> **桌面端独立发布（round-14 起）**：`apps/executor-desktop` 已从上述 lockstep
-> 解耦，走独立 `release-desktop.yml` + `desktop-vX.Y.Z` tag——纯桌面 hotfix
-> 只发安装包，不再连带 bump/重发 npm/PyPI。详见
-> docs/release-checklist.md 头部与 packages/docs-site/release.md「桌面端独立发布」。
-
 ### 4.2.2 发版后核对：桌面自动更新源（GitHub latest）未被抢占
 
 **为什么必须核对**：electron-updater 的 github provider **硬编码**查仓库的
@@ -225,7 +223,7 @@ Releases 池**；`v*` Release 不含任何安装包，一旦它成为 latest，�
 gh api repos/LuluDeer/AutoCodeFlow/releases/latest --jq '{tag:.tag_name, assets:(.assets|length)}'
 ```
 
-- [ ] `tag` 以 `desktop-v` 开头（而非 `v1.x.x`），且 `assets` > 0。
+- [ ] `tag` 以 `desktop-v` 开头（而非 `v2.x.x`），且 `assets` > 0。
 - [ ] 若显示为 `v*`：立刻 `gh release edit <v-tag> --prerelease` 纠正，
       然后重新核对——此时客户端更新会自行恢复，无需重装。
 
@@ -233,19 +231,9 @@ gh api repos/LuluDeer/AutoCodeFlow/releases/latest --jq '{tag:.tag_name, assets:
 > `https://github.com/LuluDeer/AutoCodeFlow/releases/latest/download/latest.yml`
 > （另有 `latest-mac.yml` / `latest-linux.yml`）。
 
-### 4.3 更新 CHANGELOG（可选）
+### 4.3 CHANGELOG 说明
 
-在 `CHANGELOG.md`（如有）记录本次变更，格式：
-
-```markdown
-## v1.x.x (YYYY-MM-DD)
-
-### 新增
-- feat(task): 触发弹窗支持运行时参数覆盖
-
-### 修复
-- fix(executor): 心跳超时误下线
-```
+根级 [`CHANGELOG.md`](../CHANGELOG.md) 由 `release-please` 按 Conventional Commits 自动生成与维护，**发版时勿手工改写**；若需补充运维升级/破坏性变更说明，请同步更新 [UPGRADING.md](UPGRADING.md) 或独立 `docs/RELEASE-NOTES-*.md`。
 
 ---
 

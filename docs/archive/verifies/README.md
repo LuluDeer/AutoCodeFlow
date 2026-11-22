@@ -4,11 +4,15 @@
 
 | 文档 |
 |---|
+| [ci-replay-verification.md](ci-replay-verification.md) |
+| [migration-roundtrip-review.md](migration-roundtrip-review.md) |
+| [prod-migration-replay.md](prod-migration-replay.md) |
 | [verify-2026-09-23-executor-identity.md](verify-2026-09-23-executor-identity.md) |
 | [verify-2026-09-27-gui-x11.md](verify-2026-09-27-gui-x11.md) |
 | [verify-2026-10-06-desktop-update-roundtrip.md](verify-2026-10-06-desktop-update-roundtrip.md) |
 | [verify-2026-10-07-cli-totp-pty-smoke.md](verify-2026-10-07-cli-totp-pty-smoke.md) |
 | [verify-2026-10-07-r7-contract-audit.md](verify-2026-10-07-r7-contract-audit.md) |
+| [verify-2026-10-23-sec07-sandbox-failclosed.md](verify-2026-10-23-sec07-sandbox-failclosed.md) |
 | [verify-round11-dep04-approval.md](verify-round11-dep04-approval.md) |
 | [verify-round11-e2e.md](verify-round11-e2e.md) |
 | [verify-round5-e2e.md](verify-round5-e2e.md) |

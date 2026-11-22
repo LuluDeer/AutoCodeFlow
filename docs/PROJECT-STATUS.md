@@ -1,14 +1,14 @@
 # 项目状态总览（R290–R475 收口快照）
 
 > **受众**：接手维护者 / 发布决策者 · **状态**：内部 · **最后核对**：2026-11-22
-> 一页看懂这批改动的整体状态：73 轮交付地图、当前验证数字、已知未决项、发布与接手指引。本文是阶段性快照，不替代各专项文档。**R459 按主题分 11 组提交（157 files）；R475 追加 5 组提交（demo 验证/两守卫/SDK 测试/文档收口）；工作树干净，本地 develop 领先 origin/develop 5 提交，未 push。**
+> 一页看懂这批改动的整体状态：73 轮交付地图、当前验证数字、已知未决项、发布与接手指引。本文是阶段性快照，不替代各专项文档。**R290–R475 共 73 轮改动（R459 按主题分 11 组提交 + R475 追加 5 组提交）已合入 `main` 并随 `v2.3.0`（2026-11-22）发布；一次性验收/复演报告已归档至 `docs/archive/{reviews,verifies}/`。**
 > **数字口径**：轮次/项数均由命令实测（`git status --short | wc -l`、`ls docs/plan/*.md | wc -l`），不手写估计——历史快照的手写值曾漂移，本版已按实测校正。
 
 ---
 
 ## 1. 一句话状态
 
-当前 `develop` 已提交 **R290–R475 共 73 轮改动**（R459 按主题分 11 组入库 + R475 追加 5 组；含 2 个新迁移、13 个新脚本、25 篇 plan 文档；工作树干净）。整批在「admin-api/admin-web 全量测试 + 全守卫链 + typecheck 8 端 + 迁移 up/幂等/down 全链（dev 与 :prod 双路径真机复演）+ 北极星健康自检 + **真浏览器+真后端端到端**」下全绿，**处于可发布态**；R459/R475 已按主题分组提交（本地领先 origin 5 提交，未 push）。R458–R475 补齐 demo 三句产品承诺真跑验证（成功执行/失败可诊断/零代码模板）、CLI flag 与示例配置一致性守卫、SDK 编程式集成冒烟测试，并经两轮独立 review 修复 7+ 真实缺口。R436/R437 补上最后一层覆盖（看板与生产启用路径真栈端到端）；R439 把两个真栈 e2e 接入 CI；R440/R441 空库复演 CI 精确序列与 `:prod` 迁移路径（无 dev/prod 分叉）。R442–R452 清掉全量回归的 4 处并发 flake、拍板升主三阈值并贯通脚本→API→看板→真栈回归闸、补齐 W4 留存与 SOP 成功率/接管率两个 ROADMAP 先行指标。R453–R457 把指标脚本 selftest 接入 CI、新建先行指标健康度判定（`evaluateHealth`，无样本不算达标）+ 一条命令采集入口（`metrics-health-collect`）。**至此 ROADMAP 先行指标全部有可复算实现或明确放弃结论，autonomous 可落地的产品工作已穷尽——剩余全部依赖外部输入。**
+**R290–R475 共 73 轮改动**（R459 按主题分 11 组入库 + R475 追加 5 组；含 2 个新迁移、13 个新脚本；`docs/plan/` 保留 8 篇活跃方案/口径/runbook，其余 17 篇一次性验收/复演报告已归档至 `docs/archive/{reviews,verifies}/`）已合入 `main` 并随 **`v2.3.0`** 发布。整批在「admin-api/admin-web 全量测试 + 全守卫链 + typecheck 8 端 + 迁移 up/幂等/down 全链（dev 与 :prod 双路径真机复演）+ 北极星健康自检 + **真浏览器+真后端端到端**」下全绿。R458–R475 补齐 demo 三句产品承诺真跑验证（成功执行/失败可诊断/零代码模板）、CLI flag 与示例配置一致性守卫、SDK 编程式集成冒烟测试，并经两轮独立 review 修复 7+ 真实缺口。R436/R437 补上最后一层覆盖（看板与生产启用路径真栈端到端）；R439 把两个真栈 e2e 接入 CI；R440/R441 空库复演 CI 精确序列与 `:prod` 迁移路径（无 dev/prod 分叉）。R442–R452 清掉全量回归的 4 处并发 flake、拍板升主三阈值并贯通脚本→API→看板→真栈回归闸、补齐 W4 留存与 SOP 成功率/接管率两个 ROADMAP 先行指标。R453–R457 把指标脚本 selftest 接入 CI、新建先行指标健康度判定（`evaluateHealth`，无样本不算达标）+ 一条命令采集入口（`metrics-health-collect`）。**至此 ROADMAP 先行指标全部有可复算实现或明确放弃结论，autonomous 可落地的产品工作已穷尽——剩余全部依赖外部输入。**
 
 ## 2. 73 轮交付地图
 
@@ -18,11 +18,11 @@
 |---|---|---|---|
 | **TTFV 埋点线** | R290–R318 | [埋点方案](plan/ttfv-funnel-instrumentation.md)；迁移 `0101`（`funnel_events`）/ `0102`（`telemetry_optin`）；opt-in 双闸 + `deriveAnonymousId` HMAC 匿名 ID；`FunnelEventsService` + install/success/attempt 三类 listener；真实口径指标脚本；24h 激活率 `task_first_attempted` 事件 | 真实进程内集成（R310 / R316） |
 | **北极星判据线** | R324–R326 | [判据方案](plan/north-star-business-confirmed.md)（严格判据 D：`business_confirmed`，`dedupe_key=confirmed:<hash>`）；可复算脚本 `north-star-weekly.mjs`（全串相等哨针 + `SET LOCAL TIME ZONE 'UTC'`）；显式确认端点 + `FunnelConfirmationListener`；真库对账脚本 `north-star-pg-reconcile.mjs`（R326 修代理时区漂移） | 真实进程内集成 + 真库逐字段对账 |
-| **生产启用线** | R327–R330 / R431 / R436 | 数据 API `GET /agent/north-star/metrics`（CLI/API 真库同源）；[启用 runbook](plan/north-star-enablement.md)；双口径看板 `NorthStarCard` + `TelemetrySettings`（coverage 四态 + 显式重授权）；B3 原始指纹拦截；R431 确认端点非法 id 第一现场收口；[真栈浏览器 e2e](plan/browser-real-backend-review.md) | **真浏览器 + 真后端 + 真 PG（R436，AGENTS §4.4 最高级）**；生产启用实跑仍需目标环境按 runbook 执行 |
-| **CI 防复发线** | R314 / R433–R434 / R439–R441 | CI 迁移闸本地复现；[迁移 roundtrip 报告](plan/migration-roundtrip-review.md)；[CI revert drill 常态化报告](plan/ci-revert-always-review.md)——revert 去 `if: schedule` 改每 PR 跑 + 加副作用断言（`grep DELETE/DROP`，防空 `down()` 假绿）；R439 新增 `north-star-real-e2e` job 把 R436/R437 两个真栈 spec 接入 CI（此前 CI 零引用、从不自动跑），[接入验收](plan/ci-realstack-e2e-review.md)；R440 [空库→迁移→两 spec 序列本机复演](plan/ci-replay-verification.md) 7 步全绿；R441 [`:prod` 迁移路径空库复演](plan/prod-migration-replay.md) 7 步全绿、无 dev/prod 分叉 | 真实 PG 进程级（R433 迁移链、R440 CI 序列、R441 `:prod` 路径真机复演）；静态 CI 配置 + 守卫（R434/R439）；仍未真跑 GitHub Actions / 生产环境（PG16 vs 本机 18 差异） |
+| **生产启用线** | R327–R330 / R431 / R436 | 数据 API `GET /agent/north-star/metrics`（CLI/API 真库同源）；[启用 runbook](plan/north-star-enablement.md)；双口径看板 `NorthStarCard` + `TelemetrySettings`（coverage 四态 + 显式重授权）；B3 原始指纹拦截；R431 确认端点非法 id 第一现场收口；[真栈浏览器 e2e](archive/reviews/browser-real-backend-review.md) | **真浏览器 + 真后端 + 真 PG（R436，AGENTS §4.4 最高级）**；生产启用实跑仍需目标环境按 runbook 执行 |
+| **CI 防复发线** | R314 / R433–R434 / R439–R441 | CI 迁移闸本地复现；[迁移 roundtrip 报告](archive/verifies/migration-roundtrip-review.md)；[CI revert drill 常态化报告](archive/reviews/ci-revert-always-review.md)——revert 去 `if: schedule` 改每 PR 跑 + 加副作用断言（`grep DELETE/DROP`，防空 `down()` 假绿）；R439 新增 `north-star-real-e2e` job 把 R436/R437 两个真栈 spec 接入 CI（此前 CI 零引用、从不自动跑），[接入验收](archive/reviews/ci-realstack-e2e-review.md)；R440 [空库→迁移→两 spec 序列本机复演](archive/verifies/ci-replay-verification.md) 7 步全绿；R441 [`:prod` 迁移路径空库复演](archive/verifies/prod-migration-replay.md) 7 步全绿、无 dev/prod 分叉 | 真实 PG 进程级（R433 迁移链、R440 CI 序列、R441 `:prod` 路径真机复演）；静态 CI 配置 + 守卫（R434/R439）；仍未真跑 GitHub Actions / 生产环境（PG16 vs 本机 18 差异） |
 | **质量与守卫线** | R297–R301 / R321–R323 / R432 / R444–R447 | 审批 granted 丢失唤醒 E-pure 修复 + 补偿 job 独立 dedup 命名空间（[方案](plan/approval-lost-wakeup-fix.md)）；全守卫链跨轮回归修复；[健康自检](../scripts/north-star-health.mjs)（一条命令验表/事件/口径/API/看板/双闸）；4 处全量并发 flake 清除（墙钟→CPU 口径、时间漂移、vi.fn 计数、DOM 就绪信号）——全量回归信号可信 | 真实进程内集成（R322 / R323）+ 纯函数 selftest / 真库查询（R432）+ 全量并发真跑（R444–R447） |
 | **先行指标补全线** | R451–R452 / R455–R457 | [W4 实例留存](plan/w4-retention.md) ≥40%、[SOP 成功率/人工接管率](plan/sop-success-rate.md) ≥90%/≤10% 可复算脚本（复用漏斗/SOP 数据，零 DDL）；[健康度判定](plan/metrics-health.md)（`evaluateHealth`，无样本不算达标）+ [一条命令采集](plan/metrics-health-collect.md)（`metrics-health-collect`，fail-closed）；升主三阈值（R448–R450）贯通脚本→API→看板→真栈回归闸 | 纯函数 selftest + 真库造数对账 + 真浏览器+真后端（升主看板 R450）；指标脚本 selftest 已接 CI（R453/R455） |
-| **首次体验验证线** | R458–R475 | [demo 真栈验收报告](plan/demo-first-experience-review.md)——三句产品承诺逐句真跑（成功执行/失败可诊断/零代码模板）；CLI flag 对账守卫 `check-cli-doc-flags`、示例配置/代码守卫 `check-examples-code`、SDK 编程式集成冒烟测试；两轮独立多 agent review 修复 7+ 真实缺口（含 SDK env 串扰、失败分类假绿、静态锚点假绿）；R475 分 5 组提交 | 真 docker compose 全栈真跑（R461 exit 0 两次含幂等）+ 静态守卫 selftest + SDK 进程内集成；未真跑生产环境 |
+| **首次体验验证线** | R458–R475 | [demo 真栈验收报告](archive/reviews/demo-first-experience-review.md)——三句产品承诺逐句真跑（成功执行/失败可诊断/零代码模板）；CLI flag 对账守卫 `check-cli-doc-flags`、示例配置/代码守卫 `check-examples-code`、SDK 编程式集成冒烟测试；两轮独立多 agent review 修复 7+ 真实缺口（含 SDK env 串扰、失败分类假绿、静态锚点假绿）；R475 分 5 组提交 | 真 docker compose 全栈真跑（R461 exit 0 两次含幂等）+ 静态守卫 selftest + SDK 进程内集成；未真跑生产环境 |
 
 ## 3. 当前验证状态
 
@@ -60,7 +60,7 @@
 
 1. **启用**：接手方（appa）按 [生产启用 runbook](plan/north-star-enablement.md) 操作。三项前置缺一不可且按顺序——① 生产库真跑 `0101`/`0102` 迁移并核对账本（`:prod` 入口、`migrationsRun=false` 不自愈）；② `SEC_SECRETS_KEY` 配非空 32 字节 hex（空 key 会致授权端点 503 + listener 静默跳过）；③ 至少一个带 `deviceFingerprint` 的执行器在线（先装执行器再授权，避免 `coverage=no_executors` 静默零采集）。授权后用 `GET /agent/telemetry/status` 验 `coverage` 与 `count`（`count=0` 一律视为未启用）、用 `GET /agent/north-star/metrics?as_of=` 验出数。
 2. **发布前 rebuild dist**：R327 曾因 stale dist 导致 warnings 缺项被真库对账抓红——改过后端再验前端/脚本前必须重建产物，勿用旧 dist 数字。
-3. **提交状态**：68 轮改动已于 R459 按主题分 11 组提交（未 push，等用户指令再 push）。
+3. **发布状态**：R290–R475 共 73 轮改动（R459 分 11 组 + R475 追加 5 组）已合入 `main` 并随 **`v2.3.0`**（2026-11-22）发布。
 4. **隐私红线不可破**：生产唯一 grant 写入点是显式 `POST /agent/telemetry/consent`（ADMIN + JWT）；新设备永不自动授权；漏斗只落匿名 HMAC ID + 90 天 TTL。
 
 ## 6. 证据索引
@@ -73,13 +73,14 @@
 - [审批 granted 丢失唤醒修复方案](plan/approval-lost-wakeup-fix.md)
 - [W4 实例留存（R451）](plan/w4-retention.md) · [SOP 成功率/接管率（R452）](plan/sop-success-rate.md) · [健康度判定（R455）](plan/metrics-health.md) · [健康度采集入口（R456）](plan/metrics-health-collect.md)
 
-**独立验收报告**
+**独立验收报告（历史快照，已归档）**
 
-- [北极星判据验收（R324）](plan/north-star-review.md) · [真库对账验收（R326）](plan/north-star-pg-reconcile-review.md)
-- [数据 API 验收（R327）](plan/north-star-api-review.md) · [双口径看板验收（R328）](plan/north-star-ui-review.md)
-- [生产启用断点验收（R329）](plan/north-star-enablement-review.md) · [B3 指纹拦截验收（R330）](plan/b3-installid-guard-review.md)
-- [健康自检验收（R432）](plan/north-star-health-review.md) · [迁移 roundtrip 验收（R433）](plan/migration-roundtrip-review.md) · [CI revert 常态化验收（R434）](plan/ci-revert-always-review.md)
-- [真浏览器+真后端端到端验收（R436）](plan/browser-real-backend-review.md) · 真栈 e2e spec `apps/admin-web/e2e/north-star-real-backend.spec.ts`
+- [北极星判据验收（R324）](archive/reviews/north-star-review.md) · [真库对账验收（R326）](archive/reviews/north-star-pg-reconcile-review.md)
+- [数据 API 验收（R327）](archive/reviews/north-star-api-review.md) · [双口径看板验收（R328）](archive/reviews/north-star-ui-review.md)
+- [生产启用断点验收（R329）](archive/reviews/north-star-enablement-review.md) · [B3 指纹拦截验收（R330）](archive/reviews/b3-installid-guard-review.md)
+- [健康自检验收（R432）](archive/reviews/north-star-health-review.md) · [迁移 roundtrip 验收（R433）](archive/verifies/migration-roundtrip-review.md) · [CI revert 常态化验收（R434）](archive/reviews/ci-revert-always-review.md)
+- [真浏览器+真后端端到端验收（R436）](archive/reviews/browser-real-backend-review.md) · [生产启用路径真栈验收（R437）](archive/reviews/telemetry-enablement-e2e-review.md) · [CI 真栈接入验收（R439）](archive/reviews/ci-realstack-e2e-review.md)
+- [CI 复演（R440）](archive/verifies/ci-replay-verification.md) · [`:prod` 迁移复演（R441）](archive/verifies/prod-migration-replay.md) · [性能红线 flake 验收（R444）](archive/reviews/perf-flake-fix-review.md) · [affinity flake 验收（R447）](archive/reviews/affinity-flake-fix-review.md) · [demo 真栈验收（R462）](archive/reviews/demo-first-experience-review.md) · 真栈 e2e spec `apps/admin-web/e2e/north-star-real-backend.spec.ts`
 
 **交接与决策事实源**
 

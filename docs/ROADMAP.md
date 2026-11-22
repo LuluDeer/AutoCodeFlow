@@ -1,6 +1,6 @@
 # AutoCodeFlow Roadmap
 
-> 面向开发者的开源路线图。最后更新：2026-11-21（当前发布 **v2.2.0**，与 `version.txt` 一致）。
+> 面向开发者的开源路线图。最后更新：2026-11-22（当前发布 **v2.3.0**，与 `version.txt` 一致）。
 > 目标不是「功能更多」，而是「**开发者 10 分钟内跑出第一个结果，并且愿意把第二件事交给它**」。
 
 ## 定位
@@ -16,7 +16,7 @@
 
 ## 当前阶段：2.0 已发布，2.x 稳定化（2026-11）
 
-> 截至 2026-11-22，2.x 稳定化已推进到 **v2.2.0**：P1 的 TTFV 首次成功漏斗与北极星可运营体系（埋点 / 判据 / 数据 API / 看板 / 生产启用 / 四级验收 / CI 防复发）均已交付，完整证据见 [PROJECT-STATUS.md](PROJECT-STATUS.md)。
+> 截至 2026-11-22，2.x 稳定化已推进到 **v2.3.0**：P1 的 TTFV 首次成功漏斗与北极星可运营体系（埋点 / 判据 / 数据 API / 看板 / 生产启用 / 四级验收 / CI 防复发）均已交付，完整证据见 [PROJECT-STATUS.md](PROJECT-STATUS.md)。
 
 **v2.0.0（2026-10-30）交付了第一批「平台级」能力**：
 
@@ -105,7 +105,7 @@ N5 实测本机 139 行 `tokensIn` 全为 0，零样本上建「模型→窗口�
 
 - [x] ✅ **首次成功漏斗（已交付）**：记录 opt-in 的 TTFV（安装 → 首个成功执行），目标中位数 ≤10 分钟；demo 完成率。已落地迁移 0101/0102、opt-in 双闸 + HMAC 匿名 ID、三类 listener、真实口径脚本、北极星判据、数据 API、双口径看板、生产启用 runbook、四级验收（真浏览器 + 真后端）与 CI 防复发；证据见 [TTFV 埋点方案](plan/ttfv-funnel-instrumentation.md)、[北极星判据](plan/north-star-business-confirmed.md)、[生产启用 runbook](plan/north-star-enablement.md)、[PROJECT-STATUS.md](PROJECT-STATUS.md)。
 - [x] ✅ **3 个真实场景示例（已交付）**：每日报表导出、内网巡检、桌面数据填报；每个含代码、依赖、凭据占位、告警。已落地 [daily-report](../examples/daily-report/README.md)、[intranet-inspection](../examples/intranet-inspection/README.md)、[desktop-data-entry](../examples/desktop-data-entry/README.md)（各含代码 / `task.example.json` / README），有 `check:task-examples` 守卫 + 真跑验收。
-- [x] ✅ **CLI / MCP 一行接入（已交付）**：`acf` 与 MCP 配置的复制即用片段；MCP 工具收敛到高频集合，减少 LLM 选择成本。已落地 [quickstart「一行接入」](quickstart.md) + [sdk-guide](sdk-guide.md) 对齐 + `mcpServers.autocodeflow` JSON 片段 + MCP 收敛到 6 工具 + `test:mcp-tool-surface` 守卫。
+- [x] ✅ **CLI / MCP 一行接入（已交付）**：`acf` 与 MCP 配置的复制即用片段；MCP 工具面保持 56 工具全量覆盖并在上手入口聚焦高频集合，减少 LLM 选择成本。已落地 [quickstart「一行接入」](quickstart.md)（展示 8 个高频工具）+ [sdk-guide](sdk-guide.md) 对齐 + `mcpServers.autocodeflow` JSON 片段 + `test:mcp-tool-surface` 守卫（56 工具面全量校验）。
 - [x] ✅ **异常接管台（已落地）**：stalled / escalated 统一队列，运营视角一键接管，而不是只看 Agent 会话日志。已落地 [AgentSessionsPage](../apps/admin-web/src/pages/AgentSessionsPage.tsx) / [InboxPage](../apps/admin-web/src/pages/InboxPage.tsx) 的 stalled / escalated 徽标 + 判据。
 - [ ] **安装包瘦身（未做）**：桌面安装包按需下载 runtime；首装体积目标 ≤100MB。仓库内暂无相关实现，保持未完成。
 

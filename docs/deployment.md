@@ -1,6 +1,6 @@
 # 部署指南
 
-> **受众**：负责把平台部署到服务器/生产环境的运维与实施人员 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：负责把平台部署到服务器/生产环境的运维与实施人员 · **状态**：稳定 · **最后核对**：2026-11-22
 
 ## 目录
 
@@ -192,14 +192,14 @@ docker compose -f docker-compose.yml -f docker-compose.secure.yml up -d
 | `THROTTLE_LIMIT` / `THROTTLE_TTL` | `60` / `60000` | admin-api 全局限流（次/窗口毫秒，默认 60/分钟）；压测前建议调高，见 `scripts/load-test.README.md` |
 | `LOGIN_THROTTLE_LIMIT` | `20` | 登录接口限流（默认 20/分钟，生产建议 5） |
 | `STALE_RECOVERY_RETRY_ENABLED` | `true` | stale sweep 兑现重试预算开关（`false` 恢复旧行为：只置 FAILED 不重试） |
-| `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | SSRF 防护回环/私网出站白名单开关；同机部署（admin-api 与执行器都在本机）必须设 `true` |
+| `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | SSRF 防护私网出站白名单开关（R05/ADR-029 契约口径）：**`true` 仅放行 RFC1918 `privateIPv4`（`10/8`、`172.16/12`、`192.168/16`）**；`loopback`（`127.0.0.1`/`::1`/`localhost`）、`cgnat`（`100.64/10`）、`link-local`/`metadataAddresses`、`restricted` 在**任何开关状态下恒拒**。内网执行器需设 `true`（compose 默认栈已内置）；同机部署不可用 `127.0.0.1`/`localhost`，必须改用宿主机 RFC1918 内网 IP 或容器网络地址（见 [UPGRADING.md §11](UPGRADING.md#11-执行器出站姿态r05-起破坏性)） |
 | `EXECUTOR_MIN_VERSION` | （空） | 执行器最低版本门禁（EXE-VER-1）：点分数字 1~4 段（如 `1.3.0`），空=关闭零行为变化。开启后 register 的 version 低于下限被拒 403（报文含升级指引），未上报版本的存量执行器放行；heartbeat 响应回显 `minVersion`/`versionCompliant`，执行器侧打版本漂移告警日志（10 分钟节流） |
-| `AI_ALLOW_PRIVATE_NETWORK` | `false` | AI 出站私网豁免（ARCH-31）：默认 false 时本地 Ollama（localhost:11434）也被 SSRF 闸拒绝；true 放行 loopback/restricted/private-LAN；**云元数据地址另由契约 `networkPolicy.metadataAddresses` 恒拒**（如阿里云 `100.100.100.200`，见 ADR-029），任何开关取值都不放行 |
-| `EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK` | `false` | 事件订阅 webhook 私网豁免（ARCH-31）：订阅校验与派发复核共用；事件订阅普通用户可建，开启即信任所有登录用户可向内网发 webhook，生产建议 false |
-| `NOTIF_ALLOW_PRIVATE_NETWORK` | `false` | 通知渠道私网豁免（R17）：企业微信/钉钉/Slack/飞书/自定义 webhook 五渠道共用；内网自建网关需 true；**云元数据地址恒拒**（契约 `metadataAddresses`，不受开关影响）；email 走 SMTP 不受影响 |
+| `AI_ALLOW_PRIVATE_NETWORK` | `false` | AI 出站私网豁免（R66/ADR-033 契约口径）：`true` **仅放行 RFC1918 `privateIPv4`**（`10/8`、`172.16/12`、`192.168/16`）；`loopback`（`127.0.0.1`/`::1`/`localhost`）、`cgnat`（`100.64/10`）、`restricted` 及云元数据地址（`networkPolicy.metadataAddresses`，如阿里云 `100.100.100.200`，ADR-029）在**任何开关状态下恒拒**。自建内网 Ollama/vLLM 请监听宿主机内网 IP 或容器网络地址，勿指向 `localhost` |
+| `EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK` | `false` | 事件订阅 webhook 私网豁免（R66/ADR-033）：订阅校验与派发复核共用；`true` **仅放行 RFC1918 `privateIPv4`**，`loopback`/`cgnat`/`restricted`/云元数据恒拒；生产建议 `false` |
+| `NOTIF_ALLOW_PRIVATE_NETWORK` | `false` | 通知渠道私网豁免（R66/ADR-033）：企业微信/钉钉/Slack/飞书/自定义 webhook 五渠道共用；内网自建 RFC1918 网关需 `true`；`loopback`/`cgnat`/`restricted`/云元数据任何开关态恒拒；email 走 SMTP 不受影响 |
 | `OIDC_ENABLED` | `false` | OIDC SSO 总开关（AUTH-04，ADR-014）：false 时 SSO 端点关闭、本地密码登录零变化；OIDC_* 其余键见 `.env.example` 与「OIDC SSO」段 |
 | `OIDC_AUTO_PROVISION` | `false` | SSO JIT 自动建号开关：true 时未知 IdP 用户首登自动建 USER 账号；生产建议保持 false（管理员预建同名账号 → 首登绑定） |
-| `OIDC_ALLOW_PRIVATE_NETWORK` | `false` | IdP 私网豁免：自建内网 Keycloak/Entra 网关需 true（云元数据段恒拒） |
+| `OIDC_ALLOW_PRIVATE_NETWORK` | `false` | IdP 私网豁免（R66/ADR-033）：自建内网 RFC1918 Keycloak/Entra 网关需 `true`；`loopback`/`cgnat`/`restricted`/云元数据任何开关态恒拒 |
 | `OIDC_GROUPS_CLAIM` | `groups` | 组声明名（R20）：组→角色映射的数据来源 |
 | `OIDC_ADMIN_GROUPS` | （空） | 命中即授 ADMIN 的组清单（逗号分隔）；空=SSO 建号恒 USER；**仅在 JIT 建号时生效**，已绑定账号角色不受 IdP 组影响 |
 | `EXECUTION_CALLBACK_SECRET` | - | 执行回调 token 的 HMAC 密钥（可选，≥16 字符；缺省回落 `EXECUTOR_SECRET`，两侧须同源） |
@@ -1074,8 +1074,7 @@ Ubuntu 无 Gatekeeper；对应关注点是 **apt/dpkg 签名与来源信任**：
 
 - 官方渠道为 GitHub Releases；从 Releases
   下载的 deb 是未签名的自发布包，`dpkg -i` 直接装，不经过 apt 签名校验。
-  请只从本仓库 Releases 页面下载，并核对随产物提供的 `SHA256SUMS.txt`
-  （DSK-06 起每个平台的 artifact 都会生成该清单）。
+  请只从本仓库 Releases 页面下载，并核对随产物提供的按平台拆分的校验清单（Linux 为 `SHA256SUMS-ubuntu-24.04.txt`，Windows/macOS 对应 `SHA256SUMS-windows-latest.txt` / `SHA256SUMS-macos-latest.txt`，DSK-06 起每个平台 runner 都会生成各自清单）。
 - AppImage 首次运行如被文件管理器拦截（"untrusted application launcher"
   提示），右键 → Properties → Allow executing（或终端 `chmod +x`）即可；
   这是 GNOME 对可执行位 + 自定义 launcher 的常规提示，不是病毒告警。
@@ -1093,46 +1092,35 @@ Ubuntu 无 Gatekeeper；对应关注点是 **apt/dpkg 签名与来源信任**：
    `electron-builder.yml` 的 `publish: { provider: github, owner: LuluDeer,
    repo: AutoCodeFlow }`，检测 Releases 上的 `latest-linux.yml`。
 
-**版本流**：
+**版本流（独立桌面发版线 `release-desktop.yml`）**：
 
 ```text
-git tag v<version> → push tag → release.yml
-  ├→ version-guard（tag == 三包 + desktop 的 version 一致性，违反即整轮拒绝）
-  ├→ publish-npm / publish-pypi（environment: release 人工审批闸）
-  └→ desktop-installer（win/mac/linux 三平台原生 runner 构建安装包）
+git tag desktop-v<version> → push tag → release-desktop.yml
+  ├→ desktop-version-guard（tag == apps/executor-desktop/package.json version，违反即拒绝）
+  ├→ build-desktop（win/mac/linux 三平台原生 runner 构建安装包 + latest*.yml + SHA256SUMS-<os>.txt）
+  └→ publish-desktop-release（上传三平台安装包与 latest*.yml 至 GitHub Releases 并设为 latest）
 客户端：启动 30s 延迟检查 → 发现新版本 → 状态监控页顶部提示 → 用户点「下载更新」
       → 进度条（updater:progress）→ 下载完成 →「重启并安装」
-      → quitAndInstall（AppImage 原地替换 / deb 走 dpkg）
+      → quitAndInstall（AppImage 原地替换；deb/rpm 无应用内自更新，需手动装包）
 ```
+
+> 说明：平台包发布 workflow（`release.yml`，由 `v*` tag 触发）**只发布四个 lockstep 包**（`@autocodeflow/sdk`、`@autocodeflow/cli`、`autocodeflow-mcp-server`、`autoflow-sdk`），不构建桌面包，且通过 `demote-sdk-release` 把 `v*` Release 标为 `prerelease`，确保 GitHub `/releases/latest` 始终指向最新的 `desktop-v*` 桌面发布。
 
 ### 桌面端安装包发布（DSK-06）
 
-**当前姿态：CI 已就绪，但安装包不自动发布到 Releases。**
+**当前姿态：已通过独立 workflow `release-desktop.yml` 自动发布至 GitHub Releases。**
 
-`release.yml` 的 `desktop-installer` job 在每个 tag 上构建三平台安装包
-（`dist:win` / `dist:mac` / `dist:linux`，均带 `--publish never`），产物以
-workflow artifact 形式上传（保留 30 天）并附 `SHA256SUMS.txt`，**不上传
-GitHub Releases**。原因与启用步骤：
+推送 `desktop-v<version>` tag 后，`release-desktop.yml` 会执行：
 
-- **为何不自动发布**：electron-builder 检测到 `package.json` 的 `repository`
-  字段会默认走 GitHub publisher（provider/repo 见 `electron-builder.yml` 的
-  `publish` 段）；无 `GH_TOKEN` 时该路径硬失败。改用 `--publish never` 后
-  构建可稳定出包，是否上架由人工决定——首次接入不宜直接放出 96MB 级产物。
-- **启用自动发布的前置条件**：
-  1. 从 workflow artifact 下载产物、核对 `SHA256SUMS.txt`，真机安装验证；
-  2. **macOS 需 Apple Developer ID 并完成公证**——当前 CI 以
-     `CSC_IDENTITY_AUTO_DISCOVERY=false` 跳过签名，产物在 Gatekeeper 下
-     不可直接分发；
-  3. 把 job 内的 `--publish never` 去掉（或在 tag 上追加一步把 artifact
-     附到既有 Release），并配置 `GH_TOKEN` secret；
-  4. 确认 desktop 的 `version` 与 tag 一致——`version-guard` 已把
-     `apps/executor-desktop/package.json` 纳入 lockstep 检查清单，
-     漂移会在发布前拦截（安装包版本号同时是 `latest.yml` 与客户端
-     electron-updater 的比较基准，漂移会让自动更新永久失效）。
+1. **`desktop-version-guard`**：校验 tag 与 `apps/executor-desktop/package.json` 的 `version` 逐字一致（不参与平台 4 包 lockstep），防止版本号漂移导致 `electron-updater` 失效；
+2. **三平台构建**：在 Windows / macOS / Linux 原生 runner 构建安装包，产出：
+   - Linux：`AutoCodeFlow-Executor-<version>.AppImage`、`executor-desktop_<version>_amd64.deb`、`latest-linux.yml`
+   - Windows：`AutoCodeFlow-Executor-Setup-<version>.exe`、`latest.yml`
+   - macOS：`AutoCodeFlow-Executor-<version>-{x64,arm64}.dmg`、`latest-mac.yml`
+   - 校验清单：`SHA256SUMS-windows-latest.txt`、`SHA256SUMS-macos-latest.txt`、`SHA256SUMS-ubuntu-24.04.txt`
+3. **发布到 GitHub Releases**：将上述安装包、更新清单（`latest.yml` / `latest-mac.yml` / `latest-linux.yml`）与三平台校验清单（`SHA256SUMS-{windows-latest,macos-latest,ubuntu-24.04}.txt`）附到对应 `desktop-v<version>` Release；客户端 `electron-updater` 直接从 `/releases/latest` 拉取更新元数据。
 
-**注意**：客户端自动更新读取的 `latest.yml` / `latest-mac.yml` /
-`latest-linux.yml` 只有在安装包真正挂到 Releases 后才可达。当前姿态下
-自动更新链路是「代码就绪、无可用更新源」。
+> **平台签名注记**：macOS 如未配置 Apple Developer ID 公证，CI 默认跳过签名（`CSC_IDENTITY_AUTO_DISCOVERY=false`），首次打开需在系统设置中放行 Gatekeeper；私有化/离线环境可通过 `AUTOUPDATE_URL` 指向自建静态 HTTP 源托管同款产物布局。
 
 **行为细节**：
 
@@ -1156,11 +1144,7 @@ GitHub Releases**。原因与启用步骤：
 旧包来自 `release-desktop.yml` 在 `desktop-v<版本>` tag 上发布的 Release
 （`release.yml` 不产桌面包）。
 
-> 注：同章「桌面端安装包发布（DSK-06）」里的「不上传 GitHub Releases」与
-> 「无可用更新源」是 2026-09 首次接入时的旧姿态；`desktop-v*` Release 现已带三平台安装包与
-> `latest*.yml`（`desktop-v1.9.3` 实测：`AutoCodeFlow-Executor-1.9.3.AppImage`、
-> `AutoCodeFlow-Executor-Setup-1.9.3.exe`、`AutoCodeFlow-Executor-1.9.3-{x64,arm64}.dmg`、
-> `executor-desktop_1.9.3_amd64.deb`）。
+> 实测参考：`desktop-v1.9.3` 起各 `desktop-v*` Release 均带三平台安装包与 `latest*.yml`（例如 `AutoCodeFlow-Executor-1.9.3.AppImage`、`AutoCodeFlow-Executor-Setup-1.9.3.exe`、`AutoCodeFlow-Executor-1.9.3-{x64,arm64}.dmg`、`executor-desktop_1.9.3_amd64.deb`）。
 
 配置与任务数据都在 Electron 的 userData 目录（`app.getPath('userData')`；
 Linux 为 `${XDG_CONFIG_HOME:-$HOME/.config}/executor-desktop/`）。目录名取
@@ -1228,7 +1212,7 @@ node dist\main.js         # 生产；开发可 npm run start:dev
 ```
 
 - 生产模式有密钥 fail-fast（`DB_PASSWORD>=16` 非弱值、JWT>=32 等，configuration.ts M3）；示例占位值会被拒绝——本地冒烟建议用 dev 模式或改成强值。
-- 同机部署（admin-api 与 executor 都在本机）时，`.env` 必须设 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`：SSRF 防护默认拦回环/私网出站（F-3），否则调度器把 localhost:8002 判为受限地址。
+- 同机部署（admin-api 与 executor 都在本机）时，**不要把 `EXECUTOR_ADDRESS` 设为 `127.0.0.1` 或 `localhost`**——按 SSRF 契约口径，`loopback` 在任何开关状态下恒拒（`EXECUTOR_ALLOW_PRIVATE_NETWORK=true` 仅放行 RFC1918 `privateIPv4`）。请将执行器注册地址设为本机 RFC1918 内网 IP（如 `http://192.168.x.y:8002`）并在 admin-api `.env` 中设 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（详见 [UPGRADING.md §11](UPGRADING.md#11-执行器出站姿态r05-起破坏性)）。
 
 ### 3. executor-node（手动路线，替代 systemd）
 
@@ -1301,7 +1285,7 @@ node dist\main.js
 4. **前端**：登录页在 `GET /auth/oidc/status` 返回 enabled 时自动出现「企业账号（SSO）登录」按钮，回调落地页 `/auth/sso/complete` 完成 token 注入。
 
 **部署注意**：
-- IdP 在同机/内网（如本机 Keycloak）：需 `OIDC_ALLOW_PRIVATE_NETWORK=true`（SSRF 态势默认拒内网出站，云元数据段恒拒）；
+- IdP 在内网 RFC1918 地址（`10/8`、`172.16/12`、`192.168/16`）时：需设 `OIDC_ALLOW_PRIVATE_NETWORK=true`；注意 `loopback`（`127.0.0.1`/`localhost`）、`cgnat`、`restricted` 与云元数据地址在任何开关态下均恒拒，同机 Keycloak 须改用宿主机内网 IP 或容器网络地址；
 - 反代需放行 `/api/auth/oidc/*` 且**不得缓存** callback 响应；token 仅经 `#fragment` 回传前端，不会出现在访问日志；
 - 多实例部署无需共享会话存储：state/nonce 为 HMAC 签名 cookie（密钥复用 `JWT_REFRESH_SECRET`），任一实例均可独立完成回调校验；
 - SSO 与 TOTP 正交：IdP 侧 MFA 责任面由 IdP 承担，平台侧 TOTP 仍只作用于密码登录。

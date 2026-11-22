@@ -16,13 +16,13 @@
 
 | 目录 | 内容 | 典型来源 |
 |---|---|---|
-| [`plans/`](plans/) | 已完成的优化计划与历史开发计划 | 根目录 `PLAN-*.md`、`PLANS-INDEX.md`、`docs/DEVELOPMENT-PLAN-2026-09*` |
+| [`plans/`](plans/) | 已完成的优化计划与历史开发计划 | 根目录 `PLAN-*.md`、`PLANS-INDEX.md`、`docs/DEVELOPMENT-PLAN-2026-{09*,10}.md` |
 | [`reports/`](reports/) | 一次性实施报告、审计结论、排查记录 | 根目录 `AUDIT-*.md`、`FINAL-SUMMARY.md`、`NEXT-ACTIONS.md`、`docs/CI_*` |
 | [`audits/`](audits/) | 全栈 / 前端 / UX / 安全专项审计 | `docs/*-AUDIT-*.md`、`docs/SEC-01-*` |
-| [`reviews/`](reviews/) | 深度评审与逐轮复核报告 | `docs/DEEP_REVIEW_*`、`docs/review_*`、`docs/reviews/*` |
+| [`reviews/`](reviews/) | 深度评审、逐轮复核与独立验收报告 | `docs/DEEP_REVIEW_*`、`docs/review_*`、`docs/reviews/*`、`docs/plan/*-review.md` |
 | [`progress/`](progress/) | 轮次进度快照 | `docs/PROGRESS-round*` |
 | [`handoffs/`](handoffs/) | 已过期的会话交接 | `docs/HANDOFF-*` |
-| [`verifies/`](verifies/) | 真机验证记录 | `docs/VERIFY-<日期>-*.md` |
+| [`verifies/`](verifies/) | 真机验证与复演记录 | `docs/VERIFY-<日期>-*.md`、`docs/plan/{ci-replay-verification,migration-roundtrip-review,prod-migration-replay}.md` |
 | [`incidents/`](incidents/) | 事故复盘与演练报告 | `docs/INCIDENT-*`、`docs/CHAOS-DRILL-*` |
 
 ## 使用约定
@@ -43,6 +43,5 @@
 |---|---|
 | [`../PLAN-CLAIMS.md`](../PLAN-CLAIMS.md) | 任务认领唯一事实源，脚本会读（`check-migrations.mjs`） |
 | [`../AGENT_HANDOFF.md`](../AGENT_HANDOFF.md) | 跨会话交接的活文档，持续追加 |
-| [`../DEVELOPMENT-PLAN-2026-10.md`](../DEVELOPMENT-PLAN-2026-10.md) | 本期计划，尚未清偿 |
 | [`../VERIFY-MATRIX.md`](../VERIFY-MATRIX.md) | 长期复用的验证清单，不是一次性记录 |
 | [`../ARCH-MULTI-INSTANCE-MATRIX.md`](../ARCH-MULTI-INSTANCE-MATRIX.md) | 多实例行为矩阵，结论仍然有效 |

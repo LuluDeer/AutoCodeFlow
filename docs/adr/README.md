@@ -1,7 +1,7 @@
 # 架构决策记录（ADR）索引
 
 > 固化历轮开发中“代价高昂才学到”的架构/契约决策。每篇 ADR 记录：背景、决策、后果、被否掉的替代方案。
-> 状态：Accepted（现行）/ Proposed（待拍板）/ Superseded（被 ADR-xxx 取代）。新决策按序号追加。
+> 状态：Accepted（现行）/ Proposed（待拍板）/ Superseded（被 ADR-xxx 取代）。新决策按序号追加。最后核对：2026-11-22。
 
 ## 写作规则
 
@@ -41,12 +41,12 @@
 | [ADR-025](adr-025-audit-log-tamper-evidence.md) | 审计日志不可篡改性——append-only 触发器已是有效控制，不引入哈希链（PLAN-SECURITY-HARDENING §6.1-6.2；五类假阴性 + 实测 TRUNCATE/DBA 绕过边界 + 本轮不实施） | Accepted |
 | [ADR-026](adr-026-conditional-state-writes.md) | 状态迁移写必须条件化——四个模块的同一根因（整行回写 / 无前置状态 UPDATE）与六条可验收规则（R32-C3 / R32-C1 / R33-B2 / R33-A2） | Accepted |
 | [ADR-027](adr-027-test-double-fidelity.md) | 测试替身必须保真——替身不保真 ⇒ 整类缺陷隐形（FindOperator 求值 / 快照读 / save 逐列 diff / 并发交错钩子 / 未知操作符必须抛错） | Accepted |
-| [ADR-028](adr-028-config-secret-at-rest.md) | 配置类密钥的静态加密边界——**接受现状**（现值明文），明确**拒绝**「只加密历史表」的安全剧场，并给出四条重开条件（R83 顺着密钥脱敏数据流发现） |
+| [ADR-028](adr-028-config-secret-at-rest.md) | 配置类密钥的静态加密边界——**接受现状**（现值明文），明确**拒绝**「只加密历史表」的安全剧场，并给出四条重开条件（R83 顺着密钥脱敏数据流发现） | Accepted |
 | [ADR-029](adr-029-metadata-addresses-outbound-deny.md) | 出站地址闸的「元数据地址恒拒」契约段——把云元数据地址从 `restricted` 拆出单列，任何 posture/开关都拒，三端从契约派生（R07 裁决方案②） | Accepted |
 | [ADR-030](adr-030-executor-token-cross-instance-idempotency.md) | per-executor 令牌签发的**跨实例幂等**——三方案对比（Redis 明文缓存 / hash+DB 幂等键 / 单写者 lease），采纳「确定性派生 + `tokenRotationEpoch` CAS」，否决另两条（R12 P1） | Accepted（设计；落地排下一轮） |
 | [ADR-031](adr-031-replay-decision-hoist.md) | replay 决策前移——把「台账写哪一行」从两个判据（`opts.replayApproved` vs `verdict.approvedApprovalKey`）收成一个 per-call `ToolCallContext.ledger`，为 R57 blocked 的 `ToolCallLedger` 接缝清障（5 步计划 + 回滚开关；本轮零业务代码） | Proposed |
 | [ADR-032](adr-032-python-switch-posture-parity.md) | python 执行器出站闸的「开关姿态」与契约对齐——开关只放行 `privateIPv4`（原先额外放行 linkLocal/cgnat/unspecified/multicast/reserved，含云元数据 `169.254.169.254`），与 node gitRepo / admin 执行器同构；Step 1–3 已落地（`8f04f468`/`4cf4ebdb`），含失效半径、`PY_EXECUTOR_SWITCH_POSTURE_STRICT` 灰度与「粒度不足 ⇒ 契约层拆分」后续立项（R61 立、R63 落） | Accepted（Step 1–3 已落地；Step 4–5 待办） |
-| [ADR-033](adr-033-admin-webhook-posture-parity.md) | admin webhook 出站面的开关姿态与契约同构——开关只解锁 `privateIPv4`，`loopback`/`cgnat`/`benchmark` 任何开关态都拒；覆盖 11 个共享谓词的调用点（事件订阅入站+出站、5 个通知渠道、AI/OIDC 出站），与 node 下载面 / python 闸门结论一致（R66；11 个面的清单 + 失效半径 + 表驱动收敛） | Proposed |
+| [ADR-033](adr-033-admin-webhook-posture-parity.md) | admin webhook 出站面的开关姿态与契约同构——开关只解锁 `privateIPv4`，`loopback`/`cgnat`/`benchmark` 任何开关态都拒；覆盖 11 个共享谓词的调用点（事件订阅入站+出站、5 个通知渠道、AI/OIDC 出站），与 node 下载面 / python 闸门结论一致（R66；11 个面的清单 + 失效半径 + 表驱动收敛） | Accepted |
 | [ADR-034](adr-034-network-category-table-in-contract.md) | 网络类别表收敛到契约——三份手抄表 + 一层运行时别名（`CATEGORY_ALIASES`）改为「契约 `networkPolicy.categories` → 三端生成物」的编译期同源；收益是**编译期同源而非修行为**（三端决策已逐格一致），admin 保留粗标签靠 `endLabels` 反查（R70；8 处文件 + 5 步计划 + 回滚零风险） | Proposed |
 | [ADR-035](adr-035-zip-channel-determination-parity.md) | zip 渠道判定的两端对齐——歧义行「无 codeSource + 有 applicationId + 无 packageUrl」：admin 判 zip（派发期解析不到就失败）、python 判非 zip（照常跑）⇒ 同一行两结论；判定 **admin 侧正确**（契约 CONTRACT.md §2.1/§2.4 两处都是 admin 口径，且 admin 判定时还没有 packageUrl），python 去掉 `packageUrl` 条件对齐（R75；5 步计划，首步先加跨端对照判据） | Proposed |
 | [ADR-036](adr-036-localhost-dns-bypass.md) | `localhost` 系主机名**先于 DNS** 拒绝——旧实现只在 DNS 解析到 127.x 时才拒，`*.localhost` 解析到公网即被放行（R80 实测：注入公网解析 ⇒ 4 条用例红）；改用 R79 的零依赖 `isLoopbackHostname` 在 `lookup()` 前短路，并**刻意接受错误码变更**（`SSRF_HOST_DNS_LOOKUP_FAILED` → `SSRF_HOST_DENIED[_PINNED]`）；同族 git/executor 面登记为遗留 | Accepted |
@@ -56,4 +56,4 @@
 
 ## DOC-04 覆盖状态
 
-DOC-04 原目标是把历轮关键决策固化为 ADR-001~010。当前已覆盖到 ADR-031，并补充了后续写作模板与索引规则，因此该项视为已完成；后续新增架构决策按模板继续顺延编号。
+DOC-04 原目标是把历轮关键决策固化为 ADR-001~010。当前已覆盖到 ADR-039，并补充了后续写作模板与索引规则，因此该项视为已完成；后续新增架构决策按模板继续顺延编号。

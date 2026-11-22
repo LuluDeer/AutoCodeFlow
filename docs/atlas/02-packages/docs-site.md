@@ -1,6 +1,6 @@
 # docs-site — SDK 文档站
 
-> 所属: docs/atlas/02-packages · 最后核对: 2026-09-13 · 对应代码: packages/docs-site
+> 所属: docs/atlas/02-packages · 最后核对: 2026-11-22 · 对应代码: packages/docs-site
 
 ## 职责
 
@@ -14,16 +14,16 @@ npm 包 `autocodeflow-docs-site`（v1.0.1，**private**，不发布）：面向 
 packages/docs-site/
 ├── package.json             scripts: dev / build / preview（vitepress 三件套）
 ├── .vitepress/config.mts    base: '/AutoCodeFlow/'、nav/sidebar、ignoreDeadLinks: false
-├── index.md … release.md    站点源页面（共 14 个 .md）
+├── index.md … release.md    站点源页面（共 15 个路由 .md，不含 srcExclude 的 README.md）
 │   ├── getting-started.md   快速开始（5 分钟）
-│   ├── tutorial-01..04*.md  教程：第一个任务 / 私服依赖 / 多执行器扩容 / 告警接入（DOC-06）
+│   ├── tutorial-01..05*.md  教程：第一个任务 / 私服依赖 / 多执行器扩容 / 告警接入 / SOP 演示（DOC-06）
 │   ├── sdk-node.md / sdk-python.md        双 SDK 参考
 │   ├── capability-matrix.md 能力矩阵（ECO-01）
 │   ├── examples.md          官方示例库（重组自 examples/*/README.md）
 │   ├── contract.md          回调与信封契约（重组自 packages/contract-fixtures/README.md）
 │   └── release.md           版本与发布流程
 ├── scripts/
-│   ├── sync-check.mjs       DOC-09 漂移校验：站点 vs 源头（版本号/截断常量/枚举/DTO 字段/env 表/能力矩阵/契约面/教程索引，共八面）
+│   ├── sync-check.mjs       DOC-09 漂移校验：站点 vs 源头（版本号/截断常量/枚举/DTO 字段/env 表/能力矩阵/契约面/教程索引/代码即真值，共九面）
 │   └── sync-check.selftest.mjs
 └── .vitepress/dist/         构建产物（已提交在库内）
 ```
@@ -46,14 +46,16 @@ npm run preview    # 本地预览构建产物
 
 - **宿主裁定**：GitHub Pages（ADR 简记）——零服务器成本、CI 已验证构建、仓库公开无鉴权需求。
 - **触发**：仅 `push main` 或手动 `workflow_dispatch`；develop push 不部署（文档站非发布物，避免噪音）。
-- **流程**：checkout → setup-node 24（缓存 packages/docs-site/package-lock.json）→ **DOC-09 sync-check**（漂移即拦）→ `npm ci` → `npm run build` → `configure-pages`/`upload-pages-artifact`/`deploy-pages`（Pages 官方三件套，权限 `pages: write` + `id-token: write`，environment `github-pages`）。
+- **流程（双 job 最小权限拆分）**：
+  - `build` job（`contents: read`）：checkout → setup-node 24（缓存 `packages/docs-site/package-lock.json`）→ **DOC-09 sync-check**（9 面漂移即拦 + selftest）→ `npm ci` → `npm run build` → `configure-pages` / `upload-pages-artifact`；
+  - `deploy` job（`needs: build`，权限 `pages: write` + `id-token: write` + `actions: read`，`environment: github-pages`）：`deploy-pages` 发布至 GitHub Pages。
 - **一次性前置**：仓库 Settings → Pages → Source 选 "GitHub Actions"。
 - **base 一致性**：项目页部署在 `/AutoCodeFlow/` 子路径，`.vitepress/config.mts` 的 `base: '/AutoCodeFlow/'` 必须与之对齐（两处之一改动即白屏 404）；并发组互斥防产物交错覆盖。
 
 ## 与其他组件的关系
 
 - **内容来源**：[autoflow-sdk](autoflow-sdk.md)、[autocodeflow-node-sdk](autocodeflow-node-sdk.md) 的 README 与能力矩阵、[contract-fixtures](contract-fixtures.md) 的 README、`examples/`、`docs/sdk-guide.md`——改这些源头时**必须**过 `sync-check`（版本号/端点/契约面漂移会被 CI 拦下）。
-- **独立性**：纯静态构建产物，不进任何运行时包、不被其他包依赖；版本 1.0.1 与三包 lockstep 无关。
+- **独立性**：纯静态构建产物，不进任何运行时包、不被其他包依赖；其包内版本为私有站点元信息，与四包 lockstep 无关（站点内正文引用的平台/SDK 版本由 `release-please` extra-files 与 `sync-check` 保持与四包同步）。
 - **发布链路**：与 [release.yml](../08-workflows/release-process.md) 无耦合；只跟 main 分支走。
 
 ## 站点页面清单与信息源对照
@@ -62,12 +64,12 @@ npm run preview    # 本地预览构建产物
 |---|---|
 | index.md | 站点首页，链接各板块 |
 | getting-started.md | docs/sdk-guide.md 快速开始部分 |
-| tutorials.md + tutorial-01..04*.md | DOC-06 教程系列（第一个任务 / 私服依赖 / 多执行器扩容 / 告警值班） |
+| tutorials.md + tutorial-01..05*.md | DOC-06 教程系列（第一个任务 / 私服依赖 / 多执行器扩容 / 告警值班 / SOP 演示） |
 | sdk-node.md / sdk-python.md | packages/autocodeflow-node-sdk、packages/autoflow-sdk 各自 README |
 | capability-matrix.md | ECO-01 双 SDK 能力矩阵（docs/sdk-guide.md） |
 | examples.md | examples/*/README.md 官方示例库索引 |
 | contract.md | packages/contract-fixtures/README.md（回调与信封契约） |
-| release.md | docs/sdk-guide.md「版本与发布流程」（lockstep 三包） |
+| release.md | docs/sdk-guide.md「版本与发布流程」（lockstep 四包 + 桌面独立线） |
 
 侧边栏分组（config.mts）：上手 / 教程 / SDK 参考 / 对照与示例 / 契约与发布。
 
