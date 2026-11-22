@@ -20,6 +20,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { Modal } from 'antd';
 import '../i18n';
 import AgentSessionsPage from '../pages/AgentSessionsPage';
+import { agentSessionUrl } from '../utils/agentSessionUrl';
 import { agentApi } from '../api/agent';
 import type { AgentApproval, AgentSession, AgentToolCall } from '../api/agent';
 
@@ -132,9 +133,9 @@ const toolCallOf = (overrides: Partial<AgentToolCall> = {}): AgentToolCall => ({
   ...overrides,
 });
 
-function renderPage() {
+function renderPage(initialEntry = '/agent-sessions') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <AgentSessionsPage />
     </MemoryRouter>,
   );
@@ -462,7 +463,9 @@ describe('WEB-4：审批单的决策依据（入参 / 全文理由 / 批准前�
     expect(content).toContain('task_restart');
     expect(content).toContain('taskId=t-42');
     expect(content).toContain('等 1 项');
-    expect(content).toContain('批准后将立即执行且不可撤销');
+    expect(content).toContain('批准不可撤销，只放行这一次工具调用');
+    expect(content).toContain('没有其他待批单');
+    expect(content).not.toContain('立即执行');
 
     // ② 未确认 = 未执行
     expect(agentApi.grantApproval).not.toHaveBeenCalled();
@@ -531,5 +534,30 @@ describe('WEB-4：审批单的决策依据（入参 / 全文理由 / 批准前�
       (URL as unknown as Record<string, unknown>).createObjectURL = origCreate;
       (URL as unknown as Record<string, unknown>).revokeObjectURL = origRevoke;
     }
+  });
+});
+
+describe('审批单深链', () => {
+  it('链接内已处置的请求只读，不显示同工具另一张待批单的操作', async () => {
+    vi.mocked(agentApi.list).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(agentApi.listApprovals).mockResolvedValue([
+      approvalOf({ id: '1', approvalKey: 'older', status: 'denied', reason: '先前的请求' }),
+      approvalOf({ id: '2', approvalKey: 'pending', reason: '后续的请求' }),
+    ]);
+    renderPage(agentSessionUrl('s-wait', { tab: 'approvals', approvalKey: 'older' }));
+    await screen.findByText('先前的请求');
+    expect(screen.queryByText('后续的请求')).toBeNull();
+    expect(screen.queryByRole('button', { name: /批\s*准/ })).toBeNull();
+    expect(agentApi.grantApproval).not.toHaveBeenCalled();
+    expect(agentApi.denyApproval).not.toHaveBeenCalled();
+  });
+
+  it('单号不存在时不展示或批准其他单，点“查看全部”才显示同会话其余记录', async () => {
+    renderPage(agentSessionUrl('s-wait', { tab: 'approvals', approvalKey: 'missing' }));
+    await screen.findByText('此会话中未找到链接指定的审批单。');
+    expect(screen.queryByRole('button', { name: /批\s*准/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '查看此会话的全部审批单' }));
+    await screen.findByRole('button', { name: /批\s*准/ });
+    expect(agentApi.grantApproval).not.toHaveBeenCalled();
   });
 });

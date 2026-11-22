@@ -186,6 +186,7 @@ import {
   ExecutorCommandFailedEventPayload,
   ExecutorOfflineEventPayload,
   ExecutorOnlineEventPayload,
+  type ExecutorRegisteredEventPayload,
 } from "../../common/events/domain-events";
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
 import { Optional } from "@nestjs/common";
@@ -1652,6 +1653,11 @@ export class ExecutorService implements OnModuleInit {
     }
   }
 
+  // R309（TTFV §7.6）：首次注册锚点。本文件在 size-caps 顶格基线（非注释行 / 最长函数），
+  // 故 emit 实现压缩为单行并保持 prettier-ignore——语义是完整 fail-open 派生+发布。
+  // prettier-ignore
+  private emitInstallCompleted(executor: Pick<Executor, "deviceFingerprint" | "createdAt" | "type">, appName: string): void { if (!this.eventBus) return; try { const installId = this.secretsCrypto.deriveAnonymousId(executor.deviceFingerprint, "ttfv-install"); if (!installId) return; const payload: ExecutorRegisteredEventPayload = { installId, appName, executorType: executor.type, observedAt: executor.createdAt.toISOString() }; this.eventBus.emit(DOMAIN_EVENTS.EXECUTOR_REGISTERED, payload); } catch { /* fail-open：总线缺席/异常不影响注册主链 */ } }
+
   public getExecutorUrl(address: string, path: string): string {
     // SEC-SSRF-03：地址来自执行器自报的 register/heartbeat 字段，未做归一。
     // 若地址里含 '#'，URL 解析会把其后内容当作 fragment，导致我们拼出的
@@ -2818,8 +2824,8 @@ export class ExecutorService implements OnModuleInit {
             );
           });
         }
-        // E-03: send notification on first registration
         if (isFirstTime) {
+          this.emitInstallCompleted(saved, data.appName); // E-03/R309: first registration anchor
           this.notificationService
             .notifyExecutorOnline(data.appName, data.address)
             .catch((err) =>
@@ -7983,7 +7989,31 @@ export class ExecutorService implements OnModuleInit {
     sevenDayStats: {
       totalExecutions: number;
       successful: number;
+      /**
+       * `failed` **只数 status = FAILED 这一桶**，不含 timeout。
+       *
+       * 为什么不合并：同一个 timeout 语义会**分叉落两个 status 桶**（见
+       * `task-execution.entity.ts` 的 `FAILED_EXECUTION_STATUSES` 头注）——
+       * 回调上报 ⇒ `status = TIMEOUT`；stale sweep ⇒ `status = FAILED` +
+       * `failureReason = TIMEOUT`。因此「只看 failed」既不完整（漏掉 TIMEOUT 行），
+       * 又会让前者从统计面上彻底消失：面板上只列成功/失败，10 条 timeout、
+       * 0 条 failed 时显示成「成功 0 / 失败 0 / 其他 10」——「其他」把
+       * 「全是超时」这个事实藏了起来。产品裁决是**加字段、不合并桶**：
+       * 用户要分别看「脚本失败」「超时」各多少，所以 `failed` 保持是
+       * FAILED 单桶，超时由下面的 `timedOut` 独立呈现。
+       * （复用 `FAILED_EXECUTION_STATUSES` 的只读语义，仅为说明；不把它并进 failed。）
+       */
       failed: number;
+      /**
+       * `status = 'timeout'` 的计数（7 日窗口、与 successful/failed 同一聚合）。
+       *
+       * 恒为 `number`：聚合行缺失（0 行窗口）时回落 0，不会是 null/undefined——
+       * 只有**旧后端**才会整个缺这个键，前端据此判「无此维度」并退回旧文案
+       * （见 `ExecutorDetailPage` 的 `typeof timedOut === "number"` 判据）。
+       * 「其他」= total − successful − failed − timedOut，含未终态与
+       * CANCELLED/KILLED，故 clamp ≥ 0。
+       */
+      timedOut: number;
       successRate: number;
       averageDurationMs: number;
     };
@@ -8021,9 +8051,28 @@ export class ExecutorService implements OnModuleInit {
         `SUM(CASE WHEN e.status = '${ExecutionStatus.SUCCESS}' THEN 1 ELSE 0 END)`,
         "successful",
       )
+      // R286 裁决：这一列**刻意不迁移**到唯一事实源 `FAILED_EXECUTION_STATUSES`
+      // （= FAILED ∪ TIMEOUT）。上一段的 `failed` **不是**「失败数」，是
+      // **`FAILED` 这一个状态的计数**——它是「脚本失败」这一格的显示值，与之
+      // 并列的「超时」是下一段的 `timedOut`，两者在面板上是**两个独立格子**
+      // （`ExecutorDetailPage.statsCountsLine` 的 succFailTimeout 文案）。
+      // 若并入 TIMEOUT，`failed` 会把超时吞进来，面板上「失败 10 / 超时 10」
+      // 对同一批 10 条超时行**重复计数**，而「脚本失败」这一格再无真值
+      // ⇒ 正是 R285 裁决「加字段、不合并桶」要防的反向错误（R280 同类先例：
+      // 为对齐把正确实现改错）。语义上的「失败总数」另有其面，不在这里。
+      // ⚠️ `task-execution.entity.ts` 头注的「待迁移」清单仍列着本行，那条登记
+      // 已过期（它按 FAILED 单桶的**旧**形态判断缺口）；本裁决下这不是欠账。
       .addSelect(
         `SUM(CASE WHEN e.status = '${ExecutionStatus.FAILED}' THEN 1 ELSE 0 END)`,
         "failed",
+      )
+      // R285：`failed` 只数 FAILED 桶 ⇒ 10 条 timeout、0 条 failed 时面板显示
+      // 「成功 0 / 失败 0 / 其他 10」，「其他」把「全是超时」藏了。同一条 SQL 里
+      // **再聚合一列**（不拆查询：本方法刻意「Merge 4 serial queries into 1」），
+      // 超时独立成列、`failed` 保持 FAILED 单桶（用户要分别看两类）。
+      .addSelect(
+        `SUM(CASE WHEN e.status = '${ExecutionStatus.TIMEOUT}' THEN 1 ELSE 0 END)`,
+        "timedOut",
       )
       .addSelect(
         "AVG(CASE WHEN e.duration IS NOT NULL THEN e.duration END)",
@@ -8043,6 +8092,9 @@ export class ExecutorService implements OnModuleInit {
     const totalExecutions = parseInt(statsQuery?.total ?? "0", 10);
     const successful = parseInt(statsQuery?.successful ?? "0", 10);
     const failed = parseInt(statsQuery?.failed ?? "0", 10);
+    // R285：window 内 0 行时 SUM 返回 NULL ⇒ 回落 0（对外恒为 number，
+    // 前端用 typeof === "number" 区分「真有 0 条超时」与「旧后端缺键」）。
+    const timedOut = parseInt(statsQuery?.timedOut ?? "0", 10);
     const avgDurationQuery = { avg: statsQuery?.avgDuration };
 
     return {
@@ -8055,6 +8107,7 @@ export class ExecutorService implements OnModuleInit {
         totalExecutions,
         successful,
         failed,
+        timedOut,
         successRate:
           totalExecutions > 0
             ? Math.round((successful / totalExecutions) * 10000) / 100

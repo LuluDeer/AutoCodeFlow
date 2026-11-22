@@ -12,6 +12,7 @@ import {
   computeApprovalPolicyFingerprint,
   isSessionScopeEligible,
 } from "../runtime/agent-approvals.service";
+import { waitingForApproval } from "../runtime/agent-approval-waiting";
 import { AgentBoundaryService } from "../boundary/agent-boundary.service";
 import { EXECUTABLE_SOURCE_KEYS } from "../boundary/agent-boundary.service";
 import { SopService } from "../../sop/sop.service";
@@ -310,7 +311,7 @@ export class ToolExecutorService implements AgentToolExecutor {
     // 更新一行不存在的记录（0 行，返回值没人看）⇒ 本次执行失去在途痕迹，
     // 且原行永久停在 awaiting_approval。详见 ADR-031 §1.3 与 R60 回执。
     const priorCall = await this.sessions.findToolCall(session.id, call.id);
-    const ledgerRowExists = priorCall !== null;
+    let ledgerRowExists = priorCall !== null;
     // 声明重放 vs 库里事实不一致 ⇒ 以事实为准并留痕（唯一的漂移信号）。
     if (ctx.replayDeclared && !ledgerRowExists) {
       this.logger.warn(replayDriftMessage(ctx, toolName));
@@ -325,22 +326,13 @@ export class ToolExecutorService implements AgentToolExecutor {
         await this.sessions.recordToolCall(input);
         return;
       }
+      // 更新入口只选取状态/结果字段并使用与插入相同的缺省值；保留原行身份与审批键。
       const updated = await this.sessions.updateToolCallByToolCallId(
         session.id,
         input.toolCallId,
-        {
-          toolName: input.toolName,
-          tier: input.tier,
-          status: input.status,
-          args: input.args ?? null,
-          result: input.result ?? null,
-          resultTruncated: input.resultTruncated ?? false,
-          errorMessage: input.errorMessage ?? null,
-          durationMs: input.durationMs ?? 0,
-          stateChangedAt: input.stateChangedAt,
-        },
+        input,
       );
-      // 行不在了（被清理/被别的路径更新）→ 退回插入，宁可多一行也不能丢审计
+      // 行已被清理 → 退回插入；0 行以外的写入错误照常抛出。
       if (!updated) await this.sessions.recordToolCall(input);
     };
 
@@ -583,22 +575,22 @@ export class ToolExecutorService implements AgentToolExecutor {
         );
         return { content: `【调用被拒绝】${why}`, truncated: false };
       }
-      const approvalId = await this.requestApproval(
+      const { spec, message } = verdict;
+      const pending = awaitingRow(
+        rowIds,
+        spec.tier,
+        this.sanitizeArgs(args),
+        approvalKey,
+        message,
+      );
+      await this.requestApproval(
         session,
-        verdict.spec,
-        verdict.message,
+        spec,
+        message,
         approvalKey,
         args,
         currentPolicyFingerprint,
-      );
-      await persist(
-        awaitingRow(
-          rowIds,
-          verdict.spec.tier,
-          this.sanitizeArgs(args),
-          approvalId,
-          verdict.message,
-        ),
+        () => persist(pending),
       );
       // A1 审批闭环（实施轮 #12 申请侧 / #14 执行侧）：审批单已落库
       // （agent_approvals）、会话已 markWaiting 挂起。`needsApproval` 让运行时
@@ -608,7 +600,7 @@ export class ToolExecutorService implements AgentToolExecutor {
       return {
         content:
           `【需人工审批，已提交审批单】${verdict.message}` +
-          `（审批单 ${approvalId}）会话已挂起等待人工处置；` +
+          `（审批单 ${approvalKey}）会话已挂起等待人工处置；` +
           `管理员批准后将自动恢复会话并执行本次调用，请勿重复提交同一工具调用。`,
         truncated: false,
         needsApproval: true,
@@ -747,6 +739,8 @@ export class ToolExecutorService implements AgentToolExecutor {
       args: this.sanitizeArgs(args),
       ledgerRowExists,
     });
+    // 在途行已成功插入或更新；终局要更新这一行，不能再按入口时的快照插入。
+    ledgerRowExists = true;
 
     const started = Date.now();
     // ── 缺陷 A ①：取消通道 ────────────────────────────────────────
@@ -1308,10 +1302,9 @@ export class ToolExecutorService implements AgentToolExecutor {
     approvalKey: string,
     args: Record<string, unknown> | null,
     policyFingerprint: string,
-  ): Promise<string> {
-    // 键由调用方按 (会话, 工具, 参数) 确定性生成（approvals.buildKey）：
-    // 同参重试命中同一行，管理员批的那张就是模型正在等的那张。
-    const approvalId = approvalKey;
+    persistAwaiting: () => Promise<void>,
+  ): Promise<void> {
+    // 键由调用方按 (会话, 工具, 参数) 确定性生成（approvals.buildKey）。
     // A1 审批闭环（实施轮 #12）：先落库（agent_approvals，approvalKey 唯一
     // 约束保证重试幂等）再把会话挂起——「先落盘后发送」同款纪律。挂起用
     // markWaiting 的条件写（R36）：会话恰好被 finish 收敛到终态时挂起让位，
@@ -1324,7 +1317,7 @@ export class ToolExecutorService implements AgentToolExecutor {
     // 两者在这里只算一次、随申请一起落库——审批卡片与导出接口读的是同一份事实，
     // 而不是读侧各算各的（那样「审批人看到的」与「被批准的」可能不一致）。
     await this.approvals.request({
-      approvalKey: approvalId,
+      approvalKey,
       sessionId: session.id,
       toolName: spec.name,
       reason,
@@ -1334,15 +1327,24 @@ export class ToolExecutorService implements AgentToolExecutor {
       // 之外的两列（scope 由服务端固定 once）——申请方不能自选授权范围。
       policyFingerprint,
     });
-    await this.sessions.markWaiting(session.id, `等待审批 ${approvalId}`);
+    // waiting_input 一旦可见，新 worker 就可能开始重放；其候选行必须先落盘。
+    await persistAwaiting();
+    await this.sessions.markWaiting(
+      session.id,
+      waitingForApproval(approvalKey),
+    );
     this.logger.log(
-      `Agent approval requested: session=${session.id} tool=${spec.name} approval=${approvalId}`,
+      `Agent approval requested: session=${session.id} tool=${spec.name} approval=${approvalKey}`,
     );
     // P4：审批单推送到配置渠道（WARNING 级）——审批不催等于没审，管理员
     // 不该靠轮询会话列表发现挂着的单子。fail-open：通知失败不影响工具
     // 调用路径（AgentNotifyService 内部已吞异常）。
-    await this.notify.approvalRequested(session, spec.name, approvalId, reason);
-    return approvalId;
+    await this.notify.approvalRequested(
+      session,
+      spec.name,
+      approvalKey,
+      reason,
+    );
   }
 }
 

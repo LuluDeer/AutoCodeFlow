@@ -32,17 +32,29 @@ import StateError from '../components/StateError';
 import { Modal as ConfirmModal } from '../utils/modal';
 import { message } from '../utils/toast';
 import { showApiError } from '../utils/error';
+import { agentApprovalStatusLabel } from '../utils/agent-label';
 import { formatRelativeTime } from '../utils/timeFormat';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import {
   INBOX_REFRESH_EVENT,
+  SECTION_PAGE_SIZE,
+  NOTICE_TESTID,
+  isInboxAllClear,
+  isSectionVisible,
+  noticeTitle,
+  emptySectionReason,
+  sectionCountLabel,
+  sectionNotices,
+  sectionWindowLabel,
   deploymentsApi,
   agentApi,
   isSelfDeployment,
+  blockedHours,
   loadInbox,
   sortInboxItemsByWaitingSince,
   type InboxItem,
   type InboxSectionKey,
+  type InboxSectionState,
   type InboxSections,
 } from '../api/inbox';
 
@@ -53,6 +65,13 @@ const SECTION_ORDER: InboxSectionKey[] = [
   'deployments',
   'agentApprovals',
   'agentWaiting',
+  // R279：紧跟等待输入——两者是「Agent 会话出了状况」的连续视角（还在等 / 已终止）。
+  'agentFailures',
+  // R280：「升级到人工」是 Agent 串出状况后的**第三站**（机器答不了，要你上）。
+  'sopClarifications',
+  // R286：阻塞工单紧跟在澄清之后——同一批工单的「前夜」（卡住未升级）与「当天」
+  // （升级到人工），连续视角；与 `stalled` 分开是因为后者是会话维度。
+  'sopBlocked',
   'stalled',
   'backlogged',
   'queueStall',
@@ -63,20 +82,57 @@ const SECTION_TAG_COLOR: Record<InboxSectionKey, string> = {
   deployments: 'orange',
   agentApprovals: 'gold',
   agentWaiting: 'blue',
+  agentFailures: 'red',
+  sopClarifications: 'purple',
+  sopBlocked: 'geekblue',
   stalled: 'red',
   backlogged: 'volcano',
   queueStall: 'magenta',
   recentFailures: 'default',
 };
 
-/** 只读参考小节（不提供处置动作）。 */
-const READONLY_SECTIONS: ReadonlySet<InboxSectionKey> = new Set(['recentFailures']);
+/**
+ * 只读参考小节（不提供处置动作，只给详情深链）。
+ *
+ * R279：`agentFailures` 也是只读——失败会话的处置（改配置 / 改预算 / 重跑）在会话
+ * 详情页做，不在收件箱点按钮：同一行可能是配置问题、也可能是个例，收件箱不该替
+ * 运营猜是哪一个（brief D4）。放行动作只有「去会话详情」。
+ *
+ * R280：`sopClarifications` 同样只读——答复澄清要看到 SOP 版本/上下文（该页的
+ * 答复弹窗），本页只给「去哪个 SOP 看」的深链，不在这里猜答复方式。
+ */
+const READONLY_SECTIONS: ReadonlySet<InboxSectionKey> = new Set([
+  'recentFailures',
+  'agentFailures',
+  'sopClarifications',
+  // R286：阻塞工单同样只读——要不要取消/重派这张单取决于 SOP 版本与执行器现场，
+  // 收件箱不该替运营猜处置方式；这里只给「去哪个 SOP 看」的深链。
+  'sopBlocked',
+]);
 
 function dispatchInboxRefresh(): void {
   window.dispatchEvent(new Event(INBOX_REFRESH_EVENT));
 }
 
 /** 副标题本地化组合：提交者前缀 / 工具名 + 理由；API 层只回原始字段。 */
+/**
+ * 主标题的本地化组合（API 层只回原始字段）。
+ *
+ * R280：澄清行的标题是执行器的**原始疑问**，可能是空串（`question` 未记录）——
+ * 空标题会被读成「标题渲染坏了」，所以这里显式说「未记录原文」而不是留白。
+ */
+function inboxTitleText(item: InboxItem, t: ReturnType<typeof useTranslation>['t']): string {
+  if (item.section === 'sopClarifications' && !item.title.trim()) {
+    return t('inbox.sop.noQuestion');
+  }
+  // R286：`sopName: null`（读不到 / 空串 / 纯空白）⇒ 「（未命名 SOP）」。
+  // **绝不退回 uuid**——一串十六进制对运营没有任何信息量，还会被误读成「已定位」。
+  if (item.section === 'sopBlocked' && !item.title.trim()) {
+    return t('inbox.sopBlocked.unnamed');
+  }
+  return item.title;
+}
+
 function inboxSubtitleText(item: InboxItem, t: ReturnType<typeof useTranslation>['t']): string | undefined {
   if (item.section === 'deployments' && item.subtitle) {
     return t('inbox.subtitle.requester', { name: item.subtitle });
@@ -84,6 +140,35 @@ function inboxSubtitleText(item: InboxItem, t: ReturnType<typeof useTranslation>
   if (item.section === 'agentApprovals') {
     const reason = item.approval?.reason;
     return item.subtitle ? `${item.subtitle}${reason ? ` · ${reason}` : ''}` : undefined;
+  }
+  // R279/D4：失败原因**必须一眼可见**。会话没记 errorMessage 时明确说出来——
+  // 留白会被读成「没有原因」和「读取失败」中不确切的那一个。
+  if (item.section === 'agentFailures') return item.subtitle ?? t('inbox.failed.noReason');
+  // R280：`SOP 名 · 第 N 轮`。SOP 名读不到（`sopName: null`）⇒ 「（未命名 SOP）」，
+  // **绝不退回 uuid**——一串十六进制对运营没有任何信息量，还会被误读成「已定位」。
+  if (item.section === 'sopClarifications') {
+    const c = item.clarification;
+    if (!c) return item.subtitle;
+    const name = c.sopName ?? t('inbox.sop.unnamed');
+    return `${name} · ${t('inbox.sop.round', { round: c.round })}`;
+  }
+  // R286：`第 N 轮` + `已阻塞 X 小时`。
+  //
+  // 两段各有各的「算不出」出口，都不许用别的数字顶上：
+  // - `round: null` ⇒ 「第 — 轮」（它**不是**当前轮次，是触顶/卡住的那一轮；
+  //   null = 没有可用澄清，编个 1 就是假事实）；
+  // - 时长由 `blockedHours` 现算，`null` ⇒ 说「时刻未记录」，**不拿窗口 24 顶上**。
+  if (item.section === 'sopBlocked') {
+    const b = item.blockedAssignment;
+    if (!b) return item.subtitle;
+    const hours = blockedHours(b.blockedSince);
+    const round = b.round === null
+      ? t('inbox.sopBlocked.roundUnknown')
+      : t('inbox.sopBlocked.round', { round: b.round });
+    const since = hours === null
+      ? t('inbox.sopBlocked.sinceUnknown')
+      : t('inbox.sopBlocked.blockedFor', { hours });
+    return `${round} · ${since}`;
   }
   return item.subtitle;
 }
@@ -95,12 +180,11 @@ interface InboxRowActionsProps {
   userId: number | null | undefined;
   onApprove: (item: InboxItem) => void;
   onReject: (item: InboxItem) => void;
-  onGrant: (item: InboxItem) => void;
   onDeny: (item: InboxItem) => void;
   onResume: (item: InboxItem) => void;
 }
 
-/** 行内动作按钮组：按小节渲染批准/拒绝/授予/拒绝/接管/查看详情；只读小节只给深链。 */
+/** Agent 放行前须到审批页签核对工具参数；其余动作按小节、权限及可用性展示。 */
 function InboxRowActions({
   item,
   canWrite,
@@ -108,7 +192,6 @@ function InboxRowActions({
   userId,
   onApprove,
   onReject,
-  onGrant,
   onDeny,
   onResume,
 }: InboxRowActionsProps) {
@@ -159,15 +242,7 @@ function InboxRowActions({
     case 'agentApprovals':
       return (
         <Space size={4} wrap>
-          <Button
-            size="small"
-            type="primary"
-            disabled={!canWrite || actingId === item.id}
-            loading={actingId === item.id}
-            onClick={() => onGrant(item)}
-          >
-            {t('inbox.action.grant')}
-          </Button>
+          {item.detailUrl && <Link to={item.detailUrl}>{t('inbox.action.reviewApproval')}</Link>}
           <Button
             size="small"
             danger
@@ -177,11 +252,6 @@ function InboxRowActions({
           >
             {t('inbox.action.deny')}
           </Button>
-          {item.detailUrl && (
-            <Link to={item.detailUrl}>
-              <Button size="small">{t('inbox.action.viewSession')}</Button>
-            </Link>
-          )}
         </Space>
       );
     case 'agentWaiting':
@@ -189,25 +259,117 @@ function InboxRowActions({
     case 'backlogged':
       return (
         <Space size={4} wrap>
-          <Button
-            size="small"
-            type="primary"
-            disabled={!canWrite || actingId === item.id || !item.session}
-            loading={actingId === item.id}
-            onClick={() => onResume(item)}
-          >
-            {t('inbox.action.resume')}
-          </Button>
-          {item.detailUrl && (
-            <Link to={item.detailUrl}>
-              <Button size="small">{t('inbox.action.viewSession')}</Button>
-            </Link>
+          {item.canResume && (
+            <Button
+              size="small"
+              type="primary"
+              disabled={!canWrite || actingId === item.id}
+              loading={actingId === item.id}
+              onClick={() => onResume(item)}
+            >
+              {t('inbox.action.resume')}
+            </Button>
           )}
+          {item.detailUrl && <Link to={item.detailUrl}>{t('inbox.action.viewSession')}</Link>}
         </Space>
       );
     default:
       return null;
   }
+}
+
+/**
+ * 空列表时的措辞（四种形态的唯一翻译出口，判定在 `api/inbox.emptySectionReason`）。
+ *
+ * ①「本类暂无待办」只有在**确认清零**时才说；②③ 是「有 N 条但不在下方」的两种成因
+ * （口径差 / 未被装配出来），④ 是「读不到」——四种说成一句话就是结论错。
+ */
+function emptySectionText(section: InboxSectionState, t: ReturnType<typeof useTranslation>['t']): string {
+  const reason = emptySectionReason(section);
+  switch (reason.kind) {
+    case 'unknown':
+      return t('inbox.empty.unknownSection');
+    case 'budgetExcluded':
+      return t('inbox.failed.pendingBeyondRows', { n: reason.n });
+    case 'beyondRows':
+      // 措辞按小节选：失败会话那边是「预算耗尽」，澄清这边是「行没装配出来」——
+      // 同一句数字、两种成因，说错成因等于给运营一条错线索。
+      if (section.key === 'sopClarifications') return t('inbox.sop.pendingBeyondRows', { n: reason.n });
+      // R286：阻塞工单的成因不同（行没装配出来），措辞不能复用澄清那句。
+      if (section.key === 'sopBlocked') return t('inbox.sopBlocked.pendingBeyondRows', { n: reason.n });
+      return t('inbox.empty.pendingBeyondRows', { n: reason.n });
+    default:
+      return t('inbox.empty.section');
+  }
+}
+
+interface InboxRowProps {
+  item: InboxItem;
+  canWrite: boolean;
+  actingId: string | null;
+  userId: number | null | undefined;
+  onApprove: (item: InboxItem) => void;
+  onReject: (item: InboxItem) => void;
+  onDeny: (item: InboxItem) => void;
+  onResume: (item: InboxItem) => void;
+}
+
+/**
+ * 一行待办的版式（标题 / 时间 / 副标题 + 右侧动作）。
+ *
+ * 为什么是模块级组件而不是页面里的局部闭包：页面组件体是 `check:size-caps` 的
+ * 度量单元（单函数 > 300 行 ⇒ 红）。R279 加第八个小节后它已到 296 行——离红线
+ * 只剩 4 行，下一个加个小节的人会先撞墙再拆，那时改动面已经更大。
+ * 外提的是**纯版式**：动作回调仍由页面注入，`InboxRowActions` 的权限/动作块一行未动。
+ */
+function InboxRow({ item, canWrite, actingId, userId, onApprove, onReject, onDeny, onResume }: InboxRowProps) {
+  const { t } = useTranslation();
+  const subtitle = inboxSubtitleText(item, t);
+  const title = inboxTitleText(item, t);
+  return (
+    <div
+      data-testid={`inbox-row-${item.section}`}
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        gap: 12,
+        flexWrap: 'wrap',
+        padding: '10px 0',
+        borderBottom: '1px solid var(--ant-color-border-secondary, #f0f0f0)',
+      }}
+    >
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          <Text strong style={{ fontSize: 13 }}>
+            {title}
+          </Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {item.section === 'stalled' ? t('inbox.inspectProgress') : item.waitingSince
+              ? formatRelativeTime(item.waitingSince, t)
+              : t('inbox.noTimeInfo')}
+          </Text>
+        </div>
+        {subtitle && (
+          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 2 }}>
+            {subtitle}
+          </Text>
+        )}
+      </div>
+      <Space wrap>
+        <InboxRowActions
+          item={item}
+          canWrite={canWrite}
+          actingId={actingId}
+          userId={userId}
+          onApprove={onApprove}
+          onReject={onReject}
+          onDeny={onDeny}
+          onResume={onResume}
+        />
+      </Space>
+    </div>
+  );
 }
 
 export default function InboxPage() {
@@ -239,36 +401,32 @@ export default function InboxPage() {
 
   // ── 写动作 ────────────────────────────────────────────────────────────────
 
-  const confirmThen = (title: string, onOk: () => Promise<unknown>, successKey: string) => {
+  const confirmThen = (title: string, action: () => Promise<void>) => {
     ConfirmModal.confirm({
       title,
       okText: t('inbox.action.confirm'),
       cancelText: t('inbox.action.cancel'),
-      onOk: () => runActionConfirm(onOk, successKey),
+      onOk: async () => {
+        try {
+          await action();
+        } catch (err) {
+          showApiError(err);
+          // 竞争后的 409 表示此行已变化：关闭旧确认框并重取，其他错误留在原位重试。
+          if ((err as { __status?: number } | null)?.__status !== 409) throw err;
+        }
+        dispatchInboxRefresh();
+        await reload();
+      },
     });
-  };
-
-  // Modal.confirm 的 onOk 返回 Promise：失败时弹层不关闭（antd 等待 reject）。
-  const runActionConfirm = async (onOk: () => Promise<unknown>, successKey: string) => {
-    try {
-      await onOk();
-      message.success(t(successKey));
-      dispatchInboxRefresh();
-      await reload();
-    } catch (err) {
-      showApiError(err);
-      throw err;
-    }
   };
 
   const handleApprove = (item: InboxItem) => {
     const dep = item.deployment;
     if (!dep) return;
-    confirmThen(
-      t('inbox.approveConfirm.title', { title: item.title }),
-      () => deploymentsApi.approve(dep.id),
-      'inbox.success.approved',
-    );
+    confirmThen(t('inbox.approveConfirm.title', { title: item.title }), async () => {
+      await deploymentsApi.approve(dep.id);
+      message.success(t('inbox.success.approved'));
+    });
   };
 
   const openReject = (item: InboxItem) => {
@@ -293,113 +451,91 @@ export default function InboxPage() {
     }
   };
 
-  const handleGrant = (item: InboxItem) => {
-    if (!item.session || !item.approval) return;
-    confirmThen(
-      t('inbox.grantConfirm.title', { title: item.title }),
-      () => agentApi.grantApproval(item.session!.id, item.approval!.approvalKey),
-      'inbox.success.granted',
-    );
+  const handleDeny = ({ session, approval, title }: InboxItem) => {
+    if (!session || !approval) return;
+    confirmThen(t('inbox.denyConfirm.title', { title, tool: approval.toolName }), async () => {
+      const result = await agentApi.denyApproval(session.id, approval.approvalKey);
+      if (result.ok && result.approval.status === 'denied') {
+        message.success(t('inbox.success.denied'));
+      } else {
+        message.warning(t('inbox.approvalState', { status: agentApprovalStatusLabel(result.approval.status, t) }));
+      }
+    });
   };
 
-  const handleDeny = (item: InboxItem) => {
-    if (!item.session || !item.approval) return;
-    confirmThen(
-      t('inbox.denyConfirm.title', { title: item.title }),
-      () => agentApi.denyApproval(item.session!.id, item.approval!.approvalKey),
-      'inbox.success.denied',
-    );
-  };
-
-  const handleResume = (item: InboxItem) => {
-    if (!item.session) return;
-    confirmThen(
-      t('inbox.resumeConfirm.title', { title: item.title }),
-      () => agentApi.resume(item.session!.id),
-      'inbox.success.resumed',
-    );
+  const handleResume = ({ canResume, session, title }: InboxItem) => {
+    if (!canResume || !session) return;
+    confirmThen(t('inbox.resumeConfirm.title', { title }), async () => {
+      const result = await agentApi.resume(session.id);
+      if (result.ok) message.success(t('inbox.success.resumed'));
+      else message.warning(result.reason || t('inbox.resumeNotQueued'));
+    });
   };
 
   // ── 渲染 ────────────────────────────────────────────────────────────────────
 
-  const totalReadyItems = sections
-    ? SECTION_ORDER.reduce((acc, key) => acc + (sections[key].status === 'ready' ? sections[key].items.length : 0), 0)
-    : 0;
   const anyError = sections ? SECTION_ORDER.some((key) => sections[key].status === 'error') : false;
-  const allReady = sections ? SECTION_ORDER.every((key) => sections[key].status === 'ready') : false;
+  // R278/D3 + R279：「清零」必须是被证实的事实。四条判据（全 ready / 计数已知 /
+  // 队列未停摆 / 没有「只计入总数却没行」的待办）收在 api/inbox.isInboxAllClear
+  // 里——页面只读一个布尔，判定不再散落在组件体里（check:size-caps 是结构闸）。
+  const allClear = sections ? isInboxAllClear(sections) : false;
   const queueStall = sections?.queueStall.snapshot;
 
-  const renderRow = (item: InboxItem) => {
-    const subtitle = inboxSubtitleText(item, t);
-    return (
-    <div
+  // 行的 JSX 已外提为模块级 `InboxRow`（与 `InboxRowActions` 同理）：这里是
+  // 「把已有动作回调绑到当前身份/权限上」的唯一接线点，不再持有 40 行版式。
+  const renderRow = (item: InboxItem) => (
+    <InboxRow
       key={item.id}
-      data-testid={`inbox-row-${item.section}`}
-      style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'flex-start',
-        gap: 12,
-        flexWrap: 'wrap',
-        padding: '10px 0',
-        borderBottom: '1px solid var(--ant-color-border-secondary, #f0f0f0)',
-      }}
-    >
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-          <Text strong style={{ fontSize: 13 }}>
-            {item.title}
-          </Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {item.waitingSince
-              ? formatRelativeTime(item.waitingSince, t)
-              : t('inbox.noTimeInfo')}
-          </Text>
-        </div>
-        {subtitle && (
-          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 2 }}>
-            {subtitle}
-          </Text>
-        )}
-      </div>
-      <Space wrap>
-        <InboxRowActions
-          item={item}
-          canWrite={canWrite}
-          actingId={actingId}
-          userId={user?.id}
-          onApprove={handleApprove}
-          onReject={openReject}
-          onGrant={handleGrant}
-          onDeny={handleDeny}
-          onResume={handleResume}
-        />
-      </Space>
-    </div>
-    );
-  };
+      item={item}
+      canWrite={canWrite}
+      actingId={actingId}
+      userId={user?.id}
+      onApprove={handleApprove}
+      onReject={openReject}
+      onDeny={handleDeny}
+      onResume={handleResume}
+    />
+  );
 
   const renderSection = (key: InboxSectionKey) => {
     const section = sections?.[key];
     if (!section) return null;
+    // R279/D1：`agentFailures` 的 0 是**事实**（隐藏）；null 是**读不到**（保留并显示「—」）。
+    // 判定在 api/inbox.isSectionVisible，其余七个小节恒为 true（既有交付面不动）。
+    if (!isSectionVisible(section)) return null;
 
     const title = (
       <Space size={8}>
         <Tag color={SECTION_TAG_COLOR[key]}>{t(`inbox.section.${key}`)}</Tag>
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          {section.status === 'ready' ? `· ${section.items.length}` : ''}
+        <Text type="secondary" style={{ fontSize: 12 }} data-testid={`inbox-count-${key}`}>
+          {sectionCountLabel(section, t)}
+          {sectionWindowLabel(section, t)}
         </Text>
       </Space>
     );
 
     return (
       <Card key={key} size="small" title={title} style={{ marginBottom: 16 }} data-testid={`inbox-section-${key}`}>
-        {section.status === 'error' ? (
-          <StateError
-            error={section.error}
-            title={t('inbox.loadFailed')}
-            onRetry={() => void reload()}
+        {/* R278/D2+D3：截断 / 未知 / 降级 / 上限四条告警的判定全在 api/inbox.ts 的纯函数里。 */}
+        {sectionNotices(section, SECTION_PAGE_SIZE).map((notice) => (
+          <Alert
+            key={notice}
+            type="warning"
+            showIcon
+            style={{ marginBottom: 8 }}
+            data-testid={NOTICE_TESTID[notice](key)}
+            title={noticeTitle(notice, section, t)}
           />
+        ))}
+        {section.status === 'error' ? (
+          <>
+            <StateError
+              error={section.error}
+              title={key === 'agentApprovals' && section.items.length ? t('inbox.approvalsIncomplete') : t('inbox.loadFailed')}
+              onRetry={() => void reload()}
+            />
+            {sortInboxItemsByWaitingSince(section.items).map(renderRow)}
+          </>
         ) : key === 'queueStall' ? (
           queueStall ? (
             <Alert
@@ -415,7 +551,7 @@ export default function InboxPage() {
                   </Text>
                   <div style={{ marginTop: 8 }}>
                     <Link to="/agent-sessions">
-                      <Button size="small">{t('inbox.queueStall.viewSessions')}</Button>
+                      {t('inbox.queueStall.viewSessions')}
                     </Link>
                   </div>
                 </div>
@@ -425,7 +561,20 @@ export default function InboxPage() {
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('inbox.empty.section')} />
           )
         ) : section.items.length === 0 ? (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('inbox.empty.section')} />
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={
+              // 总数读不到 / 降级 ⇒ 不能把空列表说成「本类暂无待办」。
+              // 注：`agentFailures` 的专属措辞由标题上方的 unknown 告警承担
+              // （`noticeTitle` 对失败小节返回 inbox.failed.unknownHint）——同一件事
+              // 在同一个卡片里说两遍不会更清楚，只会把两条告警挤在一起。
+              // R279 补充：还有第五种情形 —— **计数>0 但一行都没有**（`budget_exceeded`
+              // 只进计数、不进行列表）。这时既不能说「暂无」（有 N 条待处理），也不能
+              // 只说「读不到」（读到了，是 5）。所以这一格单独说清「几条、为什么不在下方」，
+              // 否则 `isInboxAllClear` 因为这个差值判「未清零」，而页面上看不到原因。
+              emptySectionText(section, t)
+            }
+          />
         ) : (
           sortInboxItemsByWaitingSince(section.items).map(renderRow)
         )}
@@ -445,7 +594,7 @@ export default function InboxPage() {
         }
       />
 
-      {allReady && totalReadyItems === 0 && !queueStall?.stalled ? (
+      {allClear ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={

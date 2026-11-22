@@ -268,10 +268,24 @@ cases.push({
       "exec-only.mjs": 'spawn("node",["apps/executor-node/dist/main.js"],{env:{}});\n',
       // ④ 与 admin 无关的脚本 ⇒ 不扫
       "other.mjs": "console.log(1);\n",
+      // ⑤ **R230：提到 admin-api 但从不起进程** ⇒ **不该被扫**（原实现把它误判成 offenders）。
+      //    真实来源：`r209-queue-idle-http-probe.mjs` 的头注写「前置：admin-api 已构建并**在跑**
+      //    （`node dist/main.js`）」、正文 `fetch` 探活 —— 它**从不 spawn**。
+      "mentions-only.mjs":
+        '// 前置：admin-api 已构建并在跑（node dist/main.js），apps/admin-api 目录\n' +
+        'const BASE = "http://127.0.0.1:3105";\n' +
+        'await fetch(`${BASE}/api/health`);\n',
     });
     try {
       const r = scanAdminSpawns(fx.dir);
-      if (r.scanned !== 2) throw new Error(`扫描面应为 2，实际 ${r.scanned}`);
+      // ⚠️ R230：扫描面从 2 变 **2**（mentions-only 不算）—— 若实现退回「提到即算」，
+      //    这里会变成 3 且 offenders 多一条 ⇒ 本条红。这正是本条守卫的对象。
+      if (r.scanned !== 2) {
+        throw new Error(
+          `扫描面应为 2（只算**真的起进程**的），实际 ${r.scanned} —— ` +
+            `「提到 admin-api」不等于「起 admin-api」（R230）`,
+        );
+      }
       if (r.offenders.length !== 1 || r.offenders[0] !== "leaky-selftest.mjs") {
         throw new Error(`应点名 leaky-selftest.mjs，实际 ${JSON.stringify(r.offenders)}`);
       }

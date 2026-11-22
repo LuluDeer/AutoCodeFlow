@@ -318,6 +318,37 @@
 
 | 任务 | 优先级 | 状态 | Owner | 认领时间 | 文件足迹 | commit | 备注 |
 |---|---|---|---|---|---|---|---|
+| R278-INBOX-01 | P1 | done | lead（PM 编排）· 切片 be-inbox / fe-inbox | 2026-11-19 | apps/admin-api/src/modules/agent/runtime/agent-inbox.service.ts（新）+ dto/agent-inbox.dto.ts（新）+ __tests__/agent-inbox.service.spec.ts（新）+ agent.controller.ts（+70 只追加）+ agent.module.ts（+6）；apps/admin-web/src/api/{inbox,agent}.ts + components/InboxBadge.tsx + pages/InboxPage.tsx + __tests__/inbox-*；生成物 openapi.json / api-types.ts / api-reference.md / openapi-en-map.json | 54ea04f7 | **待办收件箱：从「少报且不说明少报」到「可对账」**。根因是前端「先拉 50 个 waiting_input 会话、再逐个 `listApprovals`」⇒ ① 顶栏按会话计 vs 列表按审批单行计（同一会话多单必然不等）② 第 51 个起**静默丢弃无标记** ③ 51 次请求共用 60/min 全局限流桶（第 51 个必 429）。修法=**把聚合搬到服务端**：新 `GET /agent/approvals/pending`（独立 `count()` 出 `total`、`COUNT(DISTINCT sessionId)` 出 `sessionTotal`、一次 `In(...)` 批量标题 ⇒ 查询数与会话数无关）与 `GET /agent/inbox/counts`（6 项计数并行、各自独立降级），信封强制带 `total`/`truncated`/`degraded`；装配缺失抛 503，**不回 200 空信封**。前端 `listApprovals` 调用归零（`toHaveBeenCalledTimes(1)` 钉死防回归），计数 5 请求 → 1。顺带修真缺陷两条：全部计数未知时原渲染「当前没有待你处理的事项」（空态谎报）；无 `total` 时原把已取条数渲染成「共 N 条」（编造总数）。**验证**：后端 `npx jest` 全量 **494 套件 / 8305 例** 绿（新增 inbox 16 例）；前端 `vitest run` **337 文件 / 2661 例** 绿（新增 45 例）；`route-authz-matrix` 10/10（262 路由，**未改 spec**）；双端 tsc/eslint 0；守卫链 **121/121 = 0**。**未覆盖**：真 PG/Redis 集成与生产包浏览器 E2E 未跑，故「429 是否真发生」仍是侦察推断 |
+| R279-FAILED-01 | P1 | done | lead（PM 编排）· 切片 be-failed / fe-failed | 2026-11-19 | apps/admin-api/src/modules/agent/runtime/agent-inbox.service.ts（+方法/字段）+ dto/agent-inbox.dto.ts（+2 字段）+ agent.controller.ts（+`since`）+ agent-session.service.ts（+可选 since）+ config/configuration.ts + 两份 .env.example；apps/admin-web/src/api/{inbox,agent}.ts + pages/InboxPage.tsx + components/InboxBadge.tsx + locales/{zh,en}.ts + __tests__/inbox-failures.test.tsx（新）；docs/observability/agent-failed-session-criterion.md（新）+ README | 378a1243 | **Agent 会话失败在收件箱里完全不可见**（真机造数据才发现）。真机造 3 条 failed 会话：`GET /agent/sessions?status=failed → total=3`，而 `GET /agent/inbox/counts → 七项全 0`。**根因是建模缺口不是读数错误**：`INBOX_SECTIONS` 前六项只看非终态，唯一的失败小节 `recentFailures` 查 `task_executions` 而非 `agent_sessions`；`AGENT_SESSION_STATUSES` 七值里 `failed`/`budget_exceeded`/`aborted` **一个都不进任何观测面**。判据（先定后写，见 criterion 文档）：计入 `failed`+`budget_exceeded`、**不计 `aborted`**（人主动停的）、窗口默认 24h（`AGENT_FAILED_SESSION_WINDOW_HOURS`）；**计数含两者、行只列 `failed`** 的不对称是刻意的 ⇒ 新增 `rowTotal`（行口径）与 `budgetExcludedCount()`（口径差 ≠ 截断差）；`failedSessions` 独立 `count()`、不进会话求和（同一会话可先 failed 后 succeeded）。前端加第八小节，行内显示 `errorMessage` + 深链，`null`⇒「—」/`0`⇒隐藏。**`isInboxAllClear` 纳入「计数>行」守卫**（否则「5 条待办、0 行」会渲染成「当前没有待处理的事项」——数字对、结论错）。**验证**：真机 `failedSessions:5`（修复前无此字段）；`since` 四语义实测（缺省 5 / 未来 0 / 过去 5 / 非法 200）；后端 494 套 8316 例绿；前端**连续两轮 2693 例绿**；守卫链 121/121 |
+| R279-EVID-01 | P2 | done | lead（PM） | 2026-11-19 | artifacts/autonomy/R279/{throttle-evidence,failed-sessions-invisible,brief}.md；docs/observability/agent-failed-session-criterion.md | 378a1243 | **把 R278 的两条「推断」升为真机实测**：① **限流边界**——真 PG16+Redis7+真 admin-api（生产默认 `THROTTLE_LIMIT=60`）实测 `第 1..60 次 200、第 61 次 429`，精确到个位；据此旧实现「50 会话+50 approvals」单次装载不炸（50<60）、但**同分钟第二次装载 100>60** ⇒ 第 11 个 approvals 起全 429，运营看到「部分行消失+读取失败」而非「被限流」。② **会话失败缺席**——见 R279-FAILED-01。**方法学**：515「`0` 是事实还是缺席，要先问这个面建模了哪些状态」·516「后端暴露了字段、注释也写明不接会漂移，不等于前端会接」 |
+| R279-OFFLINE-01 | P1 | done | lead（PM 编排）· 切片 fix-offline-window | 2026-11-19 | apps/admin-web/src/api/executors.ts + pages/ExecutorDetailPage.tsx + locales/{zh,en}.ts + __tests__/executor-offline-window.test.ts（新）+ 13 个既有 spec 的 mock 形态 + scripts/web-type-field-drift-baseline.json | 378a1243 | **产品级事实错误：UI 显示的判死窗口比后端真实行为小一半**。真机 `GET /executors/runtime-config` = `{heartbeatTimeoutMs:90000, staleOfflineConfirmations:2, effectiveOfflineAfterMs:180000}`；后端 `executor.service.ts:4270-4279` 注释逐字写「不暴露这两项会让 UI 展示的『多久判离线』与后端实际行为不符」——**字段早已暴露，只有前端没接**：手写类型缺 2 字段、UI 用 90s、注释还把单次墙钟误称「有效判死阈值」。运维后果：把「90 秒仍在线」当后端 bug 报障 / 按 90s 估停机 SLA（偏小一半）。修法：补类型 + 改读 `effectiveOfflineAfterMs` + 文案说清迟滞成因（「单次墙钟 90s，需连续 2 次未确认，故 180s」），兜底 `heartbeatTimeoutMs × (staleOfflineConfirmations ?? 1)`，**永不静默回落 90s**。**修正了一个把 bug 钉成期望的既有用例**（`shard-c-executor-detail-diagnostics.test.tsx:99` 用真机不存在的夹具形状断言 90s）。**反证**：改回 90s ⇒ 红 / 改回 ⇒ 绿。size-caps 净减 3 行（等量压缩，无豁免） |
+| R279-GUARD-02 | P3 | done | lead（PM）· 切片 fix-offline-window | 2026-11-19 | scripts/web-type-field-drift-baseline.json | 378a1243 | **基线陈旧即红**：补上 `effectiveOfflineAfterMs`/`staleOfflineConfirmations` 后，基线里那 2 条 `ExecutorRuntimeConfig missing:*` 已不存在 ⇒ 守卫按「基线只减不增、消失即红」判红。删 2 条 + `--selftest` 27/27 绿。**这不是豁免，是收口**：留着它们会让守卫继续放过同类新漂移 |
+| R280-SOPESC-01 | P1 | done | lead（PM 编排）· 切片 be-sop-pending / fe-sop-pending | 2026-11-20 | 新建 apps/admin-api/src/modules/sop/{sop-clarification-inbox.service.ts,sop-clarification-inbox.dto.ts,__tests__/sop-clarification-inbox.service.spec.ts}；sop.controller.ts（+45 只追加）、sop.module.ts（+11）；apps/admin-web/src/api/{inbox,sops}.ts + pages/InboxPage.tsx + components/InboxBadge.tsx + locales/{zh,en}.ts + __tests__/inbox-sop-clarifications.test.tsx（新）；生成物 openapi.json / api-types.ts / api-reference.md / openapi-en-map.json | 8c9e3510 | **升级到人工的 SOP 澄清：三条通道全部失效**。①收件箱八小节无一涉及 SOP 澄清；②兜底扫描把 assignment `blocked→in_progress`（`sop.service.ts:1745-1752`）⇒ 按 blocked 筛不到；③`notifyEscalation` 调 `notify()` **不传 taskId**，而 `isSilenced` 的 global 分支 `!silence.taskId \|\| …` 无条件命中 ⇒ 一条 scope=global 静默规则可吞掉，外层还刻意 **fail-open**。且全仓无跨 SOP 聚合端点。⇒ 新建 `GET /sop/clarifications/pending`（`total` 独立 `getCount()`、`truncated`、`degraded`、查询 ≤3 无 N+1、装配缺失 503、路由注册在 `:id` 之前）。**★ 一个必须真机才发现的裁决错误**：最初照搬既有终态黑名单 `['completed','failed','cancelled']`，真机上正确待办在 assignment 变 failed 后**从列表消失**；而执行器 `agent-host.ts:688-700` 逐字写「升级后…运维在 Admin Web 处理后重派」并报 `failed + outcome=escalated_to_human` ⇒ **failed 在此不是结束而是「等人接管」**。修法：黑名单只留 completed/cancelled，注释写透「failed 刻意不在内，别修正回去」+ `maxRounds` 写 blocked 且超时扫描只扫 `assigned\|in_progress` ⇒ blocked 无兜底。**真机对账**：五状态矩阵 ⇒ 修复前计入 2（failed 消失）、修复后 **3**；真相 HTTP `total=2`（failed+blocked）、completed/cancelled 排除；`limit=1` ⇒ `returned=1/total=3/truncated=true`；`limit=9999/abc/-5` 全 200 安全回落。后端 495 套 8349 例绿；前端 340 文件 2720 例绿；守卫链 121/121 |
+| R280-FAILSEM-01 | P1 | done | lead（PM 编排）· 切片 be-failure-semantics | 2026-11-20 | apps/admin-api/src/modules/task/entities/task-execution.entity.ts（+31 常量）、modules/metrics/metrics.service.ts（+20/−4）、modules/metrics/__tests__/metrics.service.spec.ts（+179） | 8c9e3510 | **同一屏两句互斥的「失败」断言**：Dashboard 失败趋势曲线**含 timeout**（`DashboardPage.tsx:160-165`，注释写明告警口径为 `failed\|timeout`），而「最近失败」只查 `status=FAILED`（`metrics.service.ts:244/274`）⇒ **超时风暴时曲线涨到 10、卡片说「近期无失败记录」**。更麻烦：同一 `timeout` 语义**分叉落两桶**——回调 ⇒ `status=TIMEOUT`（`execution-callback.collaborator.ts:470`）、sweep ⇒ `status=FAILED`+`failureReason=TIMEOUT`（`scheduler.service.ts:1838`）⇒ **只数 FAILED 的桶本身也不纯**。修法：实体立**唯一事实源** `FAILED_EXECUTION_STATUSES=[FAILED,TIMEOUT]`（`KILLED`/`CANCELLED` 不算，与 `alerts.yml`/`docs/operations.md:1273` 一致），`getRecentFailures` 两分支 + 成功率卡 failed 均改用；常量注释列出**其余未迁移调用点**并标明 `execution-read.collaborator.ts:798-800` **已正确、勿重改**。**真机取证**：造 2×timeout+1×failed+1×killed+1×cancelled ⇒ `/metrics/failures` 返回 3（含 2 timeout，killed/cancelled 正确排除）、`/metrics/summary` 的 `failed:3`（修复前为 1）。**反证**：改回 `status=FAILED` ⇒ 3 例红 / 再改回成功率卡 ⇒ 4 例红，恢复即绿 |
+| R280-EVID-01 | P2 | done | lead（PM） | 2026-11-20 | artifacts/autonomy/R280/{brief,recon-sop-escalation,recon-failure-semantics}.md | 8c9e3510 | **两条侦察、两条真机、一次自我推翻**：①`recon-sop-escalation` 推翻我 brief 里的假设——`maxRounds` 路径写 `blocked` **停在那儿**而超时扫描只扫 `assigned\|in_progress` ⇒ 该路径**连自愈都没有**（比我原判断更严重）；②`recon-failure-semantics` 追加发现「timeout 分叉落两桶」，使「只数 FAILED」这条建议本身也不完整；③真机发现我自己的口径裁决错误（failed 被误排除）。**方法学**：517「照搬既有定义前先问它在**这个语境**里指什么」·518「同一语义落两个字段值，是『只数某一个值』这类统计的隐形毒药」 |
+| R281-DEEPLINK-01 | P1 | done | lead（PM 编排）· 切片 be-status-multi / fe-deeplink / test-invariant | 2026-11-20 | apps/admin-api/src/modules/task/execution-read.collaborator.ts（+109/−8：3 个纯函数 + 4 个使用点）+ __tests__/execution-read.collaborator.spec.ts（+534：27 例）；apps/admin-web/src/pages/DashboardPage.tsx（2 处调用 + 模块 docblock）、components/NotificationBell.tsx（1 处 URL）、__tests__/failed-deeplink-invariant.test.tsx（新 452 行）+ 2 个 multistatus spec | 1e5ee470 | **「点了但看不到」**：R280 已把「失败」口径统一为 `FAILED ∪ TIMEOUT`，但**深链仍是单值**——前端「失败 Top·全部失败」与铃铛「全部失败」都链到 `?status=failed`，后端 `e.status = :status` 是单值等值 ⇒ **超时风暴（10 timeout、0 failed）时卡片显示 10 条、点进去 0 条**，空态还说「没有匹配的执行记录」（把「筛选比数据源窄」谎报成「真的没有」）。**后端**：侦察核出 `p.status` 共 **4 处**（我 brief 只点出 1 处）——`:551` 的共用装配（覆盖 all OFFSET/keyset + **CSV 导出**三条路径）、`:149` 对象形态、`:335`/`:384` keyset 的 count 与页查询；新增纯函数 `parseExecutionStatusFilter()`（剥空白/去重保序/**白名单**/非法逐条丢弃**不 400**/全非法=未传）+ 2 个执行器，**单值仍生成 `=`**（执行页下拉 `failed`/`timeout` 是两个独立意图，不能共用一个词；且三条既有 spec 按 `= :status` 逐字钉住）。**前端只改 2 处**：`DashboardPage.tsx:530`、`NotificationBell.tsx:116` → `failed,timeout`；**`:545`「全部记录」刻意不改**（它本不带 status 能看到全部，改成多值会把「全部」偷换成「全部失败」——我 brief 该条决策**是错的**，已反向并在 docblock 固化「别为了一致改掉」）。**验证**：真机 `?status=failed`⇒0 / `failed,timeout`⇒3 / `failed%2Ctimeout`⇒3 / `foo`⇒全量 / `failed, timeout`⇒3；CSV 多值 11 行 vs 单值仅表头。后端 495 套 **8375** 例绿；守卫链 121/121 |
+| R281-INVARIANT-01 | P1 | done | lead（PM 编排）· 切片 test-invariant | 2026-11-20 | apps/admin-web/src/__tests__/failed-deeplink-invariant.test.tsx（新） | 1e5ee470 | **补上全仓缺失的那条不变式**：侦察 §C.2 指出「卡片数 == 点进去条数」**一条用例都没有**——`executions-deeplink.test.tsx` 的 fixture **恒为空**（`:100`），4 条用例只验「URL 对不对」，**不验「用户看到什么」** ⇒ 本轮缺陷能长期潜伏，**修完也没有东西阻止它回来**（方法学 519）。新增 4 条**真断言**：①种 3 条 timeout ⇒ 点进去 `.ant-table-row` 计数=3 且不出现「没有匹配」（反谎报）；②旧 `?status=failed` 下 status **不含** timeout（反证，钉住「后端单值语义刻意保留」）；③`%2C` 编码形态端到端 3 行；④「全部记录」href **不含** status。**反证**：`MULTI_STATUS` 改回 `'failed'` ⇒ `3 failed / 1 passed`、exit 1；改回即绿 4/4 |
+| R281-EVID-01 | P2 | done | lead（PM） | 2026-11-20 | artifacts/autonomy/R281/{brief,recon-deeplink,recon-product2}.md | 1e5ee470 | **侦察纠正我两处判断 + 我纠正侦察一处**：①侦察 A④ 判「`URLSearchParams` 把逗号编码成 `%2C` ⇒ 服务端按整串字面量匹配、静默 0 行」——**真机证伪**（`%2C` 正常返回 3 条，Express 解码 query），若采信会去做无用的手工解码改造；②侦察证明「最近失败·全部记录」**本来就不带 status** ⇒ 我 brief 的 D3 决策反向；③侦察核出 `p.status` 有 **4 处**而非我 brief 的 1 处（含 CSV 导出这条独立入口）。**方法学**：519「只验『请求发出去了』的测试会在功能全废时全绿」·520「决策要限制在证据能支撑的粒度上」。**另一条侦察（recon-product2）登记三项新候选未做**：维护窗口让「下次执行」成假时刻（推荐下一轮做）、告警被静默吞掉后零痕迹、日志 30 天 vs 执行行 90 天的空白期 |
+| R282-WINDOW-01 | P1 | done | lead（PM 编排）· 切片 fe-window | 2026-11-20 | apps/admin-web/src/utils/trigger-preview.ts（+353 **纯新增零删除**）、pages/task-list-columns.tsx、pages/TaskDetailPage.tsx（仅 TaskScheduleTags）、locales/{zh,en}.ts（成对 6 键）、__tests__/task-list-next-run.test.ts（+40）、__tests__/maintenance-window-parity.test.tsx（新 586 行） | d1346b1c | **「下次执行」承诺了一次不会发生的执行**。`nextRunAt` 入参**无 `maintenanceWindows`**（grep 命中 0），而实体有该字段（`task.entity.ts:394`）；调度器命中窗口 `return null`（`scheduler.service.ts:2804-2816`，**不建行不补跑**）。侦察核实四个面：**列表**窗口内与正常**渲染逐字相同**（tooltip 不提窗口）；**详情**窗口可视化**有**（橙 Tag）但「会被跳过」**只在代码注释**，且 Tag 用 `processing` **蓝**——**窗口存在反而让用户更确信它会跑**；**执行记录零解释**（反推向「调度没生效」误导）；**告警 0 条**（指标可抓无消费端）。修法：新增 `nextRunOutcome()`（**`nextRunAt` 一字未动**），分支序即语义 `none→at→unknown-window→skipped-by-window`；**时区不明时即便算出「在窗口内」也不报 skipped**（结论可能正好反了，而**负面断言的代价是用户不去排查**）。判据**复刻**后端 `maintenance-window.util.ts:371-399` 的「最近触达比较」（半开 `[start,end)`、平局归关窗、**`endFire===null` 是开窗**），复用本文件零依赖 cron 引擎，**不新增依赖**。**★ 性能红线**：照抄后端回扫实测 **127ms（日级）/962ms（周级）** ⇒ 改壁钟日回扫 + 日级收紧 3 天（永不超过后端 7 天）⇒ **11.97ms**，写成 `toBeLessThan(50)` 断言。**一致性对拍 33 例**（黄金表抽 6 条含跨午夜/DST/平局，结论逐条一致）。前端全量 344 文件 **2772** 例绿、**本轮无 flake**；守卫链 121/121；**反证主会话亲验**（变异成 `at` ⇒ 4 红） |
+| R282-EVID-01 | P2 | done | lead（PM） | 2026-11-20 | artifacts/autonomy/R282/{brief,recon-maintenance}.md | d1346b1c | **侦察抓到一条我原本会踩的硬风险**：逐 instant 回扫 7 天 × 20 行 = 40 万次 `formatToParts` **会卡死列表**——若不先测速就照抄后端判据，修完会变成「显示不了」，比缺陷更坏（实测证实 962ms）。**侦察还纠正我一处判断**：我原以为「详情页看不到窗口」是更严重的一面，实际**详情页有窗口可视化**——但**正因为有它，「会被跳过」只在代码注释里更危险**（橙 Tag 让用户确信窗口存在，蓝 Tag 又暗示会跑）。**刻意不做**：执行记录空白解释 + 告警规则卡在同一个根（跳过事件不落持久化痕迹），任何方案都要**推翻 `scheduler.service.spec.ts:2004` 的「不建行」契约** ⇒ 产品语义变更而非修 bug。**方法学**：521「正确的计算用错输入比算错更隐蔽」·522「修『显示假事实』前先测『更真实的算法要多久』」 |
+| R283-PROJRATE-01 | P1 | done | lead（PM 编排）· 切片 be-project-rate | 2026-11-20 | apps/admin-api/src/modules/project/projects.service.ts（+26/−1）、dto/project-response.dto.ts、__tests__/projects.service.spec.ts（+137）；生成物 openapi.json / api-types.ts / openapi-en-map.json | a2acbdbe | **「同一页自相矛盾」的最后一块**：项目概览页 `failedExecutionsLast7d`=FAILED 桶（`:444`）、`timeoutExecutionsLast7d`=TIMEOUT 桶（`:445`）**分桶明细**，但 `recentFailures` 是 `IN(FAILED,TIMEOUT)`（`:451-453`）、而 `failureRate = failed/total`（`:333`）只含 FAILED ⇒ 2 failed + 1 timeout 时：明细「失败2/超时1」、列表列 **3 条**、失败率 **22.22%**。**决定性证据（不是我推的，是仓内已宣示的口径）**：`locales/zh.ts:1479`「失败 = 失败 + 超时（人工终止不计入失败率）」+ `en.ts:1473` 双语佐证 + `task.service.spec.ts:8288` 已按此实现 ⇒ 项目页是**唯一没跟上**的。修法：分子用 `FAILED_EXECUTION_STATUSES.reduce(...)`（常量新增成员自动纳入，不手写相加）；**两个明细字段语义不变**（用户要分别看脚本失败与超时各多少）⇒ **`failureRate ≠ failed/total`** 这个「不等」在代码注释与 DTO description **都写透并引了 zh.ts:1479 原文**（否则下一个人一定「顺手修正」回 22.22）。`recentFailures` 零改动。**验证**：既有断言 `22.22→33.33`（注明「旧断言把错误口径钉成期望」）+ 新增 **4 例**（①同一屏一致性：明细2/1+失败率33.33+`not.toBe(failed/total)`+列表3条+两桶和==列表数，**一次钉四者** ②只有 timeout ⇒ 25 而非 0 ③口径一致性：常量不含 killed/cancelled 且造 60% ④total=0 ⇒ null）。后端 495 套 **8378** 例绿；守卫链 121/121；**反证主会话亲验**（改回单桶 ⇒ 4 failed/99 passed） |
+| R283-EVID-01 | P2 | done | lead（PM） | 2026-11-20 | artifacts/autonomy/R283/recon-search.md（520 行） | a2acbdbe | **换轴扫「检索/筛选面」（前五轮一次没扫过）**，找到两条真缺陷并**登记为下一轮**：①**`/tasks` 的 `triggerType` 筛选静默失效**——DTO 用 `@IsEnum(TaskTriggerType)` 严格校验（说明被承诺）、前端已下发，而 `buildTaskListWhere`（`task.service.ts:1846-1885`）读了 status/name/runtime/applicationId/projectId/q **唯独不读 triggerType** ⇒ 用户选「触发方式=Cron」拿到**未过滤全量**（比口径不同更坏：连「没生效」都不说）；且 `task.service.spec` 的 filter matrix **零断言**。②**`@ApiQuery limit` 承诺一个必然 400 的参数**——挂在 `GET :id/executions`（`task.controller.ts:1153`），而 DTO `extends PaginationDto` 无 `limit`，`forbidNonWhitelisted` 必拒；OpenAPI 也公示它 ⇒ **文档承诺可用、实现必然失败**。**侦察同时确认多处「没问题」**（推翻候选）：`q` 的 name OR description 与实际一致、LIKE 元字符全覆盖转义、时间窗双闭区间与 UI 文案「及之后/及之前」一致、非法时间串 400 明确、`total` 在加游标前取故口径一致、keyset 与 OFFSET 共用同一 where 装配、前端 debounce 300ms + queryKey 含全参故无竞态。**方法学**：523「同一屏三个数各自自洽、彼此矛盾，比三个数全错更难发现」 |
+| R283-TRIGGER-01 | P1 | done | lead（PM 编排）· 切片 be-trigger-filter | 2026-11-20 | apps/admin-api/src/modules/task/task.service.ts（+triggerType 两处装配）、task.controller.ts（删幽灵 @ApiQuery limit）、__tests__/task.service.spec.ts（+3 真断言）、__tests__/execution-query.dto.spec.ts；scripts/{source-size-baseline,source-text-contracts}.json | 44332474 | **`GET /tasks?triggerType=` 静默失效**：DTO 用 `@IsEnum(TaskTriggerType)` **严格校验**（= 已对外承诺）、前端已下发，而 `buildTaskListWhere`（`:1846-1885`）读了 status/name/runtime/applicationId/projectId/q **唯独不读 triggerType** ⇒ 选「触发方式=Cron」拿到**未过滤全量**（HTTP 200 + 全量 total）——**比口径不同更坏：连「没生效」都不说**。且 `findAllByLastStatus`（独立手写 qb、**不复用**该装配）需单独再判一次，否则 `lastStatus+triggerType` 组合静默丢过滤。**另一条**：`task.controller.ts:1153` 在 `GET :id/executions` 挂 `@ApiQuery limit`，而 DTO 无 `limit` 且 `forbidNonWhitelisted` ⇒ **传必 400**，OpenAPI 却公示它 ⇒ 删除该行（`pageSize` 已覆盖语义）。**验证**：3 条**按 where 真过滤行集**的断言（看调用参数会在 OR 短路时假绿）；任务域 78 套 **1753 例**绿；守卫链 121/121；**反证**：注释实现那行 ⇒ 3 条全红。两处体量基线**重签并写明理由**（不是放宽闸）：`task.service.ts` branchDensity 21→21.1（两条装配路径各需一次判断）、spec nonCommentLines 7342→7385（+43 行 = 3 条真断言）；`STC-120` specLine 随插入同步。**方法学 524**：DTO 用 `@IsEnum` 校验一个字段就等于对外承诺，而实现可以一行不读——Swagger 有、前端有、校验认、类型对，**只有 where 里没有**，而表现是「全量」，用户只会觉得「任务怎么这么多」 |
+| R284-SILENCE-01 | P1 | done | lead（PM 编排）· 切片 be-silence-audit | 2026-11-20 | apps/admin-api/src/modules/notification/notification.service.ts（+`findMatchingSilence` 抽取 + `handleSilenced`，7 个早退点改写）、metrics/runtime-metrics.ts（新计数器）、notification/__tests__/notification.service.spec.ts（+240）、docs/observability/README.md、docs/atlas/01-apps/admin-api/modules/audit.md、scripts/source-size-baseline.json | 7f089625 | **告警被静默规则吞掉后零痕迹**：7 处「被静默 ⇒ 只 `logger.debug` 就早退」而 `LOG_LEVEL` **默认 info**（`configuration.ts:57`）⇒ 默认部署下那行 debug 不输出 ⇒ 一条没填 `durationMinutes` 的 `scope=global` 静默可永久吞掉全部告警，**运营按「这次没失败」写复盘**。修法：①审计 `notification.silenced`（`detail` 含 taskName/taskId/level/applicationId + `silence:{id,scope,taskId,applicationId,level,endTime}`；`endTime:null` = 永久生效正是现场形态）②指标 `autoflow_notification_silenced_total{level}` —— ⚠️**刻意不并入 `delivery_total` 既有 result 枚举**（那四值是**扇出之后**的渠道投递结果，静默在**扇出之前**，塞 `skipped`/`failure` 会伪造事实），且**刻意不登记 critical**（7 写点均无 CRITICAL 调用，登记只会造永 0 假序列）。`isSilenced` 语义与签名**逐字不变**（抽 `findMatchingSilence`，外部 `!= null`），匹配判据一字未改。**验证**：通知/指标 27 套 535 例绿；`enum-drift` 0；**反证主会话亲验**（改 audit action 名 ⇒ 3 failed/379 passed）。**两处文档欠账由主会话补齐**——切片主动停在红灯而**拒绝 `--update`**（那会把基线欠账 0→1，正是脚本头注名的「关灯键」），这一点值得记 |
+| R284-LOGPURGE-01 | P2 | done | lead（PM 编排）· 切片 be-log-purge | 2026-11-20 | apps/admin-api/src/modules/task/execution-log-read.collaborator.ts（+137 三态判定）、dto/task-response.dto.ts、task.service.ts（仅 DI 接线）；apps/admin-web/src/hooks/useEmptyLogsVerdict.ts（新）、components/EmptyLogsAlert.tsx（新）、ExecutionLogSection.tsx（+4 接线）、api/tasks.ts、locales；测试 +5/+7；scripts/{source-size-baseline,web-type-drift-baseline}.json | 4a78d3b2 | **日志「已按保留期清理」显示成空白**：日志行留 **30 天**、执行行留 **90 天** ⇒ 翻 31~90 天前的执行详情，日志区是空 `<pre>` 而唯一文案说「切日志级别」⇒ 用户读成「没输出/采集坏了」，**复盘写『没有证据』而真相是证据已删**。后端 `logsPurged: boolean\|null` + `logsPurgedAt`：空日志 **且** 基准时刻早于 `now − days` ⇒ `true`+截止时刻；空但**在**保留期内 ⇒ `false`（真没输出）；保留期**读不到** ⇒ `null`（**不猜 30**）。⚠️ 此刻意的不对称：读侧非法/缺失 ⇒ null（认未知），清理 job ⇒ 回落 30（**删除必须猜、判断不必**）。**未加迁移**（读侧推导，避免与清理 job 形成第二份事实源）。前端三态文案**互不相同**：已清理（带截止时刻）/真没输出/判不出来。**验证**：后端 19 例 + 任务域 78 套 **1758** 例绿、前端 7 例绿、守卫链 121/121；**反证**：去掉 purged 分支 ⇒ 前后端各 1 红。主会话收口修两处跨切片连带（`t` 类型→`TFunction`；`audit/index.tsx` 标签映射并与既有行合并保持净增 0） |
+| R284-RENAME-01 | P3 | done | lead（PM 编排）· 切片 fe-rename-const | 2026-11-20 | apps/admin-web/src/utils/failure-reason-aggregate.ts（常量改名 `FAILURE_REASON_BUCKET_STATUSES`）、其 `__tests__`、pages/DashboardPage.tsx + components/NotificationBell.tsx（注释）、apps/admin-api/src/modules/task/entities/task-execution.entity.ts（**仅注释**路径修正） | 7f089625 | **常量撞名消歧（只改名 + 改注释，零逻辑）**：后端 `FAILED_EXECUTION_STATUSES`（2 值 failed,timeout）与前端**同名**常量（3 值含 killed）**同名不同值** —— 最容易让下一个人「对齐」而改错的形态。前端改名表达「按原因分桶」而非「失败状态集」；同时修正注释里把前端文件写成后端路径 `modules/metrics/…`（实际在 `apps/admin-web/src/utils/`）。**取值未动**（含 killed 是刻意口径：页面上可见的 killed 行就该进原因分布）。**验证**：`grep modules/metrics/failure-reason-aggregate` 命中 **0**（反证：只改名不改注释仍红 ⇒ 判据为真）；api 495 套 **8381** / web 344 文件 **2772** 例绿（证明逻辑未动） |
+| R285-EXECSTATS-01 | P1 | done | lead（PM 编排）· 切片 be-exec-stats / fe-exec-stats | 2026-11-20 | apps/admin-api/src/modules/executor/executor.service.ts（+36 timedOut 聚合）、common/dto/misc-2xx-response.dto.ts、`__tests__/executor.service.spec.ts`（+150）；apps/admin-web/src/api/executors.ts、pages/ExecutorDetailPage.tsx（+55）、`__tests__/executor-detail-stats-timedout.test.tsx`（新 177）、locales | f5e8a434 | **7 日面板把「全是超时」藏进「其他」**：`executor.service.ts:8024` 的 `SUM(CASE WHEN e.status = 'failed' …)` 只数 FAILED 桶，而同一 `timeout` 语义**分叉落两桶**（回调⇒TIMEOUT / sweep⇒FAILED+failureReason）⇒ 10 timeout、0 failed 时显示「成功 0 / 失败 0 / **其他 10**」——「其他」把「全是超时」这个事实藏起来了。**产品裁决：加字段、不合并桶**（`sevenDayStats.timedOut` 独立；`failed` 保持 FAILED 单桶——合并会让「超时」从面板彻底消失，正是 R280 修过的错误方向）。**缺失语义**（同 R278 `null≠0`）：`timedOut` 非 number ⇒ **不显示「超时 0」**（凭空断言），判据必须 `typeof === 'number'`，**不能** `?? 0` 或 `if(!timedOut)`（`0` 是合法真值）。**验证**：后端 397 例绿、前端 4 例绿、`tsc` 双端 0、守卫链 121/121。**方法学 527**：「其他」是会吞掉结论的桶——`其他=总−成功−失败` 看似完备（三者相加=全部）但对「其他里是什么」零信息，当某类能占满整个其他时，它就从兜底变成隐瞒 |
+| R285-BACKLOG-01 | P2 | done | lead（PM 编排）· 切片 fe-backlog-text | 2026-11-20 | apps/admin-web/src/api/inbox.ts（+152 `describeBacklogCount` + `probed: number|null`）、locales/{zh,en}.ts | f5e8a434 | **backlogged 文案统一到 D2 口径**：说清 `truncated` 指的是**对账探针有上限**（`BACKLOG_PROBE_LIMIT` 条 pending 会话）而**不是**「列表显示有上限」——被截的是「能确认多少」不是「渲染多少」⇒ 它的 M 是**下界**。`probed: number \| null`（`null` = 读不到，**不是 0**）。inbox 组 97 例绿、`lint:i18n` 键集 3718/3718 对齐 |
+| R286-BLOCKED-01 | P1 | done | lead（PM 编排）· 切片 **be-assignment-reaper ↔ fe-assignment-lag（直连对话 5–6 轮）** | 2026-11-20 | 新建 apps/admin-api/src/modules/sop/{sop-assignment-lag.service.ts,sop-assignment-lag.dto.ts,__tests__/sop-assignment-lag.service.spec.ts}；sop.controller.ts（只追加）、sop.module.ts（只追加）；apps/admin-web/src/api/{inbox,sops}.ts、pages/InboxPage.tsx、components/InboxBadge.tsx、locales、__tests__/inbox-sop-blocked.test.tsx（新）；生成物 openapi.json / api-types.ts / api-reference.md / openapi-en-map.json | 0d6a17eb | **`maxRounds` 触顶的工单永远停在 blocked、无服务端兜底**：`:1015-1026` 写 `blocked`，而超时扫描 `:1544-1546` **只取** `assigned\|in_progress` ⇒ blocked 被整体豁免（另一条升级路径 `:1745-1752` 是 blocked→in_progress，那条有兜底）。**不改状态机**（改回 in_progress 会让「等人工」信号消失），改为新增只读端点 `GET /sop/assignments/lagging?hours=N`：`status='blocked' AND updatedAt<=now-hours`（默认 24、钳 1..720、非法不 400）、`total` 独立 `getCount()`、`sopName` 一次 `In(...)` **无 N+1** 且纯空白⇒null、任一子查询失败⇒`degraded` 仍 200、装配缺失⇒503、路由在 `:id`(:426)/`assignments/:id`(:329) **之前**(:291)。前端第十节 `sopBlocked`（`null`⇒「—」/`0`⇒隐藏/`truncated`⇒「共 M 条」，不进求和，`isInboxAllClear` 加一条）。**★ 本轮模式：两 agent 直连 `send_message` 5–6 轮，产生 3 处真实修订**：①`round:null` 语义从「非轮次制」改为「**未知或无**」且明确是**触顶那轮**（maxRounds=5⇒6）②`hours` 澄清为**查询窗口**而非单行阻塞时长（前端差点用它算「已阻塞 X 小时」）③**B 发现 A 的反证有洞**（页面层 mock 掉 loader ⇒ `total ?? 0` 只红 1 条），B 补端到端用例、**A 据此改自己的代码**（加装配层用例）使同一反证 **1 红→2 红**。**验证**：SOP 域 21 套 **334** 例绿（含真 PG 集成 19 断言）、前端 inbox 组 127/127、守卫链 121/121、i18n **1826/1826**、合同派生 24→25。**反证**：状态改 in_progress⇒16 红；`total??0`⇒2 红。**遗留**：`hours` 在 openapi 被标 `required:true`（全库 36 处同形），另派守卫收口 |
+| R286-EXECSTATS2-01 | P3 | done | lead（PM 编排）· 切片 be-exec-single-bucket | 2026-11-20 | apps/admin-api/src/modules/executor/executor.service.ts（**仅 11 行注释**）、modules/task/entities/task-execution.entity.ts（**仅注释**：把已全部过期的「待迁移清单」改写为完成态 + 语义边界） | 0d6a17eb | **推翻「这里该迁移」这个前提**：`executor.service.ts:8049` 的 `SUM(CASE WHEN status='failed')` 看起来是 R280 遗留的未迁移点，实测它是**对的**——同一 SQL 已并列返回 `failed`(FAILED 单桶) 与 `timedOut`(TIMEOUT 桶)，前端渲染「成功/失败/超时/其他」四个独立格；并入 `FAILED_EXECUTION_STATUSES` 会让同一批超时行在两格各计一次、且「脚本失败」那格再无真值。⇒ **零行为改动，只补注释**。**顺带收口一份陷阱**：`task-execution.entity.ts` 的「待迁移清单」4 条**全部已过期**（projects 失败率 R283 / 7 日面板 R285 / 深链多值 R281 / 常量改名 R284）⇒ 下一个人照它改会把**正确实现改错**（尤其 7 日面板单桶是 R285 刻意裁决）。已逐条改为 ✅ 完成态，并补**语义边界**：「本常量回答『哪些 status 等于失败』，**不**回答『某面板某一格该显示什么』」 |
+| R287-QP-REQUIRED-01 | P2 | done | lead（PM 编排）· 切片 guard-query-required | 2026-11-20 | 新建 scripts/check-query-param-required.mjs（14 条 selftest）+ scripts/query-param-required-allowlist.json；scripts/guards-repo-matrix.mjs（+第 122 段）、package.json、.github/workflows/ci.yml、scripts/coverage-registry.json；顺手修 7 处 controller 装饰器（metrics×4 / config×2 / sop×1） | 3eea12ca | **162 个 query 参数里 36 个被标 `required:true`** 而多数运行期可选（Swagger 对 `@Query(name) x?: string` 的推断），⇒ **契约承诺必填、少传却照样 200**。**关键是不能一刀切**：三分类 **真必填 6 / 实际可选 30 / 无法判定 0**（初版把 21 条误判为无法判定，根因是**注释里的括号打乱配对** + `findAll(` 先匹配到内部调用）。守卫按 `operationId` 定位 handler 读 `@Query` 绑定声明，标必填而声明可选 ⇒ 红并点名 `path+method+param+file:line`；真必填进 allowlist 且 **reason ≥12 字**，空/过短/分类非法/**陈旧登记**/reviewBy 过期全红。**14 条 selftest** 含 3 条结构红（openapi 缺失、扫到的 query 参数 <100 时**不**把「0 条=通过」当绿、登记表缺 owner）。**完整走通欠账生命周期**：守卫判欠账 → 源码加 `@ApiQuery({required:false})` → 重导出 ⇒ **守卫立即判 7 条为陈旧登记**（这是设计内行为，selftest 反例⑦钉住）→ 回收 ⇒ **36→29**、未登记账 0、27 条全有理由。接入链 **121→122 段**。**验证**：守卫 0（14/14）、**反向**删一条登记 ⇒ 1 并点名 `metrics.controller.ts:78`、守卫链 **122/122 = 0**、`guards-wired` 102 个守卫全接线。**遗留**：23 条 `runtime-optional` 带 reason 待修（owner `arch-core` / `reviewBy 2027-03-31`） |
+| R287-RACE-01 | P1 | done | lead（PM 编排）· 切片 fe-assignment-lag | 2026-11-20 | apps/admin-web/src/__tests__/{inbox-failures,inbox-badge,inbox-sop-blocked,inbox-sop-clarifications,execution-detail-trace}.test.tsx | 8ff239b4 / ed71e0ac | **长期 `web-flake-not-reproduced` 的一个真实根因**：`inbox-failures.test.tsx` 等 `inbox-page` —— 而它是 **shell 容器，loading 期就已存在** ⇒ **等它等于没等**，后续断言与渲染赛跑。本会话 R281 时它就表现为「单跑必绿、全量必红」，当时只能记录。修法：改等**终态文案**（只在「全 ready + 确认清零」时渲染）。**实测**：修复前 2/6 复现；修复后 inbox 组**连跑 21 轮 128/128**。**另修两处**：①装配层用例用固定 `NOW` 造夹具但**走真时钟** ⇒ 机器时间早于该时刻时 `updatedAt` 落「未来」⇒ **假红**，改 `Date.now()-30h`；②补 `execution-detail-trace` 缺失的 `executionLogs` mock（R284 引入的**真实回归**：渲染期抛 `is not a function` ⇒ 整屏空白 ⇒ 4 例全红却报「找不到文字 nightly」）。**方法学 529/530** |
+| R289-SOP-CANCEL-01 | P1 | done | lead（PM 编排）· 切片 **be-sop ↔ fe-sop ↔ qa-auditor（看板四阶段流水线协作）** | 2026-11-21 | 新建 apps/admin-api/src/modules/sop/{sop-assignment-actions.dto.ts,sop-assignment-actions.service.ts,__tests__/sop-assignment-actions.service.spec.ts,__tests__/sop-assignment-cancel.integration.spec.ts}；修改 sop.{controller,module,service}.ts、`__tests__/{sop.controller,sop.service.state-cas}.spec.ts`；新建 apps/admin-web/src/pages/sops/{sop-deeplink.ts,useCancelAssignment.ts,CancelAssignmentModal.tsx,AssignmentActionCell.tsx,AssignmentClarificationsList.tsx}、`__tests__/sops-assignment-cancel.test.tsx`；修改 api/{inbox,sops}.ts、pages/SopsPage.tsx（-13 非注释行）、locales/{zh,en}.ts、`__tests__/inbox-sop-{blocked,clarifications}.test.tsx`；生成物 openapi.json / api-types.ts / api-reference.md / openapi-en-map.json / openapi-response-schema-baseline.json（251→252） | 6ca1be1b | **滞留 `blocked` 工单从「只读可见」推进到「单条可处置」**：此前唯一取消接口 `POST /sop/:id/assignments/cancel` 按 SOP 批量取消，会误杀同 SOP 其余在跑工单。**产品裁决**：只增单条取消 `POST /api/sop/assignments/:assignmentId/cancel`（可选 `reason<=500`），**不做原地 unblock**（`clarificationRound>=maxRounds` 会立即再撞顶，且 `pulledAt` 非空 `pollPending` 不重下发）、**不做后端复合 reassign**（防旧机离线导致「取消成功但新建 403」半提交；前端取消后衔接既有「重派」弹窗选在线机器）。**★ 四 Agent 看板协作产出 4 处实质纠偏**：①`qa-auditor` & `be-sop` 实证 `SOP_ASSIGNMENT_TERMINAL` 真实 HTTP 状态码为 **400 而非 409**，`fe-sop` 改按 `errorCode === 'SOP_ASSIGNMENT_TERMINAL'` 分支关窗刷新（防 409 死代码）；②后端 4 处将 `stalled` 视为活跃非终态（心跳可复活回 `in_progress`），前后端对齐可取消集合 `['assigned','in_progress','blocked','stalled']`（`stalled` 同时支持取消与重派），并对 `cancelled\|completed` 隐藏澄清「回复」（`SopController.humanReply` 同步拦截 `cancelled\|completed`、刻意放行 `failed` 保 R280 语义）；③`qa-auditor` 抓出 `sop.service.ts:714`（`pollPending` 首领 CAS）与 `:1046`（`ingestClarification` 正常轮次 CAS）**缺 `status` 谓词导致并发取消后被复活**，`be-sop` 同行 0 行内联修复（守 `1708/1708` 棘轮）；④复用 `sop.assignment.cancel` 审计（`resource:'sop_assignment'` + `detail.sopId` + 脱敏 `detail.reason` + `reasonLength`），零触碰 `561/561` 零余量 `audit/index.tsx`。**验证（最高达级别 4b）**：级别 4b 真 `vite build` + Chrome 158 + 真 `admin-api` + 真 PG 16 / Redis 7 **7/7 Steps 全绿**（同 SOP 双阻塞单对照：A 取消、兄弟单 B 保持 `blocked` 完好、`audit_logs` 脱敏落库、`/inbox` 双节 `2→1`）；级别 3 真 PG 集成 **4/4 绿**（含 `Promise.all` 行锁并发双取消 1 胜 200 / 1 败 400）；后端 SOP 24 套 415 例、前端 8 套 101 例、守卫链 **123/123 = 0**；**反证 7 组** `matched/total` 全 1.0 并还原通过 `check:mutation-residue`。**方法学 534/535** |
+| R289-SANITIZE-C1-01 | P1 | done | lead（PM 编排）· 切片 **sec-cli ↔ qa-auditor（红队对抗探针）** | 2026-11-21 | apps/admin-api/src/common/utils/sanitize-secrets.util.{ts,spec.ts}、modules/agent/tools/agent-sanitize.util.ts、新建 modules/agent/__tests__/agent-approval-preview-secrets.spec.ts、scripts/check-sanitize-parity.mjs | 1fb7d6f9 | **收口 `OPEN-DECISIONS.md` C1（审批单 `preview` 值级敏感凭据脱敏防线）**：单点落地 `sanitize-secrets.util.ts`，封堵无害键名（`note`/`url`/`body` ≤200 字及 `executableSourceFields` 480 字代码头）下的 6 类明文漏网：①PEM 私钥（多行 / JSON 转义 `\n` / 未闭合截断，先闭合后未闭合防吞尾，不误伤 `BEGIN CERTIFICATE`）②裸 JWT（`ey[A-Za-z0-9_-]{4,}\.ey...` 覆盖 `eyI`/`eyA` 等非 `eyJ` 头）③缺口供应商前缀（`github_pat_` / `AKIA` / `ASIA` / `xox[baprs]-` / `glpat-` / Stripe / `AIza` / `npm_` / `hf_`）④**`CONN_USERINFO_RE` 空用户名正则缺陷修复**（`[^:/@\s]+:` → `[^:/@\s]*:`，封堵 `redis://:pass@host`）⑤`Authorization[:=]\s*Basic`（排在 `SECRET_ASSIGN_RE` 之前防 `Basic` 被吞裸露 base64）⑥**词元级 Shannon 高熵通道 A/B**（`preserveDigests` 短路居首，3 字符类齐全 + 跳变密度 ≥0.25 + `H>=4.4/4.5`，扫 **168 份真实 `.spec.ts` 语料零误伤**，二次调用 100% 幂等）。**★ 红队捕获（`qa-auditor` #21 → `sec-cli` #22）**：对抗探针抓出 `ENTROPY_TOKEN_WITH_SLASH_RE` 前瞻字符类 `[...=-\\]` 未转义中置 `-`，被 JS 正则解析为 ASCII `61..92`（吞入 `> ? @ [`）致 `[awsSecret]`/`user@awsSecret` 明文漏网，修正为 `-` 置尾并补 3 入口回归。**验证**：专项 51/51 + 跨 5 消费域单测全绿 + 20KB ReDoS (<0.4ms) + `check-sanitize-parity`（25 夹具 + 15/15 selftest）+ 级别 4b 真 PG `audit_logs` 脱敏实证；**反证 3 组** `matched/total` 全 1.0。**方法学 536** |
+| R289-CLI-A3-01 | P2 | done | lead（PM 编排）· 切片 sec-cli ↔ qa-auditor | 2026-11-21 | packages/acf-cli/src/{commands/deploy.ts,help.ts}、src/__tests__/{commands,cli-gaps,r192-a1-hardening}.test.ts、packages/acf-cli/README.md、docs/atlas/05-interfaces/cli.md | 1fb7d6f9 | **收口 `OPEN-DECISIONS.md` A3（`acf deploy stop` 破坏性确认门）**：在 `ora().start()` 与 `post('/app-deployments/:id/stop')` 之前接入 `-y, --yes` + `confirmDestructive`（对齐同文件 `remove` 与 `executor rotate`）：非 TTY 缺 `--yes` 返 `EXIT_CODES.USAGE = 2` 且 0 HTTP 请求；TTY 输 `n`/空回车返 `Aborted.` + 码 0 + 0 请求；`sec-cli` 事实核对确认 `deploy stop` 无 `--json` 选项（遵循 D2）。原位更新 `commands.test.ts:980` 与 `cli-gaps.test.ts:1454,1468` 保 **0 净增行**（守 `1478`/`1535` 棘轮），在 `r192-a1-hardening.test.ts` 新增 6 条确认门用例。**验证**：`acf-cli` 16 套 **466/466** 绿 + `tsc` + `build` + `check-cli-doc`（69 命令）全 0；**反证**注释 `confirmDestructive` ⇒ 3/3 matched `it()` 转红（1.0） |
+| R289-FLAKE-529-01 | P2 | done | lead（PM 编排）· 切片 fe-sop ↔ qa-auditor | 2026-11-21 | apps/admin-web/src/__tests__/settings.ai-providers-load-error.test.tsx | bbd3e0ae | **收口 `AUTONOMY-STATE.md` #2（`settings.ai-providers-load-error` 全量偶发）**：`AiProvidersSettings.tsx:66-68` 点「重试」同步 `setLoading(true); setLoadError(null)`，`<Card loading={true}>` 以骨架屏卸载 children，致 `state-error` 在**请求仍在途的中间帧**即消失；原用例 ② 仅等 `queryByTestId('state-error')===null`，高负载下在骨架帧提前放行致后续断言必红（方法学 529）。修法：用例 ②③ 改等终态文案 `findByText('按用途选用模型')`，并新增用例 ②b 用受控 deferred Promise 钉死「在途骨架帧 → 终态渲染」两阶段转换。**验证**：连跑 5 轮 × 4 例 = **20/20 零偶发**；**反证**退回旧等待 + 80ms 延迟 Promise ⇒ 1/1 必红（已还原） |
+| R278-DEC-01 | P2 | done | lead（PM 编排）· 切片 decisions | 2026-11-19 | docs/OPEN-DECISIONS.md + packages/acf-cli/src/ui.ts(+spec) + packages/executor-protocol/protocol.json + docs/atlas/01-apps/admin-api/modules/task.md | 13368858 | **待决策清单收口**：拍板并落地 5 条零成本项——**A4** 容器任务内存上限维持 768/512（证据：`check-sandbox-limit-order` exit 0 / 16 例）；**H1** `docs/atlas/.../task.md` 的「默认 any」改为 `owner`（与 `configuration.ts:568` 一致，非成员恒 403）；**D1** `--json` 加入 `VALUE_TAKING_OPTIONS` + `looksLikeJsonPayload` 反向判据（`--json <body>` 不再被当输出开关，**命令末尾的 `--json` 仍作开关**，不破坏 `task list --json`）；**B4/B5** 协议 `adminApiUrls` 与 v7/v8 加 `$comment` 标注 python 侧未（部分）实现（`check-protocol-breaking` 判 compatible、生成物 `--check` 幂等）。**明确不做并写理由 12 条**：B1/B2/B3/C1/D2/D3/D5/D6/A2/A3/D7 + D4（棘轮不加第 7 类，顺带把文档里的 73 改成实测 76）。**反证**：把 `'--json'` 从表里删掉 ⇒ **2 failed / 48 passed**，恢复 ⇒ 50/50。**验证**：`check-docs` 7/7、`check:cli-doc`、`check:sandbox-limit-order`(16)、`check:protocol-three-way`(三向 33 + 逐格 14)、`check-protocol-breaking`、`acf-cli tsc` 全 0；`acf-cli` 全量 **460 例** 绿 |
+| R278-GUARD-01 | P2 | done | lead（PM 编排）· 切片 guardfix | 2026-11-19 | scripts/check-agent-stub-fidelity.mjs + scripts/agent-runtime-check.mjs | 6a4b1141 | **修本轮自造的守卫红（不是既有欠账）**：`declaredTypeOf()` 正则不容 `?`，认不出本仓 `@Optional()` 标准写法 `private readonly x?: T | null` ⇒ 把 `Repository<AgentApproval>` 判成 `AgentApprovalsService`，一条误判造两条红（`approvals 保真 2/13`、`sessionService 保真 12/13`）。修法：正则加 `\??` + `stripNullUnion()`（**只**剥 `| null`/`| undefined`，别的联合原样保留 ⇒ 保守方向：宁可多要求替身，不把真缺口藏起来），补 2 条 selftest（含「换成服务类型必须红」对照）。同时补**替身真缺口**：`makeSessionService()` 增 `list`，按 `agent-session.service.ts:623-662` 逐条复刻（stalled 谓词看 **step 而非 updatedAt**、`clampPagination` 的 NaN 回落、`createdAt DESC`、`total` 与 skip/take 无关），**零白名单豁免**。自测探针顺带抓到自己一个真 bug：同毫秒兜底原按 id **升序** ⇒ `pageSize:1` 取到最老会话，与 `createdAt DESC` 相反，已改同向。**反证**：去掉 `\??` ⇒ 新用例红（`✖ 失败：1/17`），恢复即绿 **17/17**。**验证**：守卫 0、selftest 17/17、`agent-runtime-check` 0、`agent-sop-check` 0 | | 2026-09-27 | scripts/check-no-hoisting.mjs（新；T4 起伴生 selftest 已并入 --selftest，用例扩到 17 条真子进程断言，伴生文件已删）+ 根 package.json（两 script）+ .github/workflows/ci.yml + docs/ARCH-28b-turbo-adoption.md（新）+ docs/arch-28-workspace-evaluation.md §5.1 回填 | 见本轮 commit | **turbo 增量接入 —— 实测结论=不接入；交付 no-hoisting 守卫 + A/B 实测报告。**沙箱 worktree（develop @ d3804307 detached，仓库零污染）逐项实测：**①turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 workspaces，8 个子项目 `npm ci` **全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）；报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；**部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；`--legacy-peer-deps` 会把 hoist 写进根 lockfile（1→866 条目）固化破坏。**②runner 委派语义**：turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突（无 workspace 清单时 pnpm 直接 ERR_PNPM_OTHER_PM_EXPECTED）。**③单包模式缓存生效但对 CI 无收益**（每 job 独立 runner + 全新 checkout，本地缓存不可跨 job 复用；§2 预判的重复 build 实测每处仅 8~12s）。**④真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s（收益真实但前提不可用）。**交付**：check-no-hoisting.mjs 结构守卫（5 判据，13 项有齿自检，含 4 负例族）+ 接入 CI check-migrations job + 根两 script + ARCH-28b 实测报告（含 CI 关键路径实测：瓶颈=selftests 518s 串行自检 / admin-web 286s vitest，npm ci 仅占 2.5~10%，与 ARCH-28 §1.3 结论一致且强化）。**如实**：turbo 依赖未入 package.json（沙箱实测用）；turbo.json 未落地（验收原文要求——不落地即结论）。 |
 | N-01 | P2 | done | main-A（轮 27） | 2026-09-27 | scripts/check-no-hoisting.mjs（新；T4 起伴生 selftest 已并入 --selftest，用例扩到 17 条真子进程断言，伴生文件已删）+ 根 package.json（两 script）+ .github/workflows/ci.yml + docs/ARCH-28b-turbo-adoption.md（新）+ docs/arch-28-workspace-evaluation.md §5.1 回填 | 见本轮 commit | **turbo 增量接入 —— 实测结论=不接入；交付 no-hoisting 守卫 + A/B 实测报告。**沙箱 worktree（develop @ d3804307 detached，仓库零污染）逐项实测：**①turbo 多包模式与本仓 ARCH-20 no-hoisting 互斥**——根一旦声明 workspaces，8 个子项目 `npm ci` **全部 exit 1**（ERESOLVE，撞 ARCH-28 §1.5 的 161 处版本分裂）；报错文本**与被跑项目无关**（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm）；**部分列出时红一半绿一半**（仅列 docs-site → docs-site exit 1、其余 exit 0），最易被当 flake；`--legacy-peer-deps` 会把 hoist 写进根 lockfile（1→866 条目）固化破坏。**②runner 委派语义**：turbo 按 workspace 根的 packageManager 委派，与子项目各自声明 npm 必然冲突（无 workspace 清单时 pnpm 直接 ERR_PNPM_OTHER_PM_EXPECTED）。**③单包模式缓存生效但对 CI 无收益**（每 job 独立 runner + 全新 checkout，本地缓存不可跨 job 复用；§2 预判的重复 build 实测每处仅 8~12s）。**④真实 A/B**：本机 8 包串行 28.1s → turbo 多包冷 6.2s / 热 0.02s（收益真实但前提不可用）。**交付**：check-no-hoisting.mjs 结构守卫（5 判据，13 项有齿自检，含 4 负例族）+ 接入 CI check-migrations job + 根两 script + ARCH-28b 实测报告（含 CI 关键路径实测：瓶颈=selftests 518s 串行自检 / admin-web 286s vitest，npm ci 仅占 2.5~10%，与 ARCH-28 §1.3 结论一致且强化）。**如实**：turbo 依赖未入 package.json（沙箱实测用）；turbo.json 未落地（验收原文要求——不落地即结论）。 |
 | N-02 | P1 | done | main-A（轮 28 复核） | 2026-09-27 | docs/adr/adr-013-project-roles.md | 见本轮 commit | | **ADR-013 保留缺口清偿**（四项，均 AUTH-02 行明示）：① 非成员 trigger/pause/resume 宽松语义收紧（⚠️破坏性，**需产品拍板**）；② 项目列表按成员过滤（**已由 AUTH-02-B `0318dfe` 落地，认领前须复核销账**）；③ 项目内 executor/package 角色细分；④ admin-web 权限门控 UI。**破坏性项纪律**：ADR 修订 + 前后端同批 + CHANGELOG 显著位 + 升级说明 **轮 28 复核销账（2026-09-27）**：四项逐条回读源码实测——**①③④ 性质与原判断不同**：① 已兑现（2026-09-15 TASK-SCOPE-01）且**比原设想更进一步**——`configuration.ts:390` 实测`TASK_OPERATE_SCOPE === "any" ? "any" : "owner"`，**默认即收紧档 owner**，宽松需显式声明；② 已兑现（AUTH-02-B `0318dfe`，`projects.controller.ts:83-102`）；④ 已兑现（`ProjectsPage.tsx` 用 `isAdminUser` 门控，3 处引用）；**③ 复核后判定为「能力扩张」而非缺口**——实测 `executor.controller.ts` 全部写端点（PATCH :id / :id/reload-config / :id/rotate-token / :id/set-offline / DELETE :id）均带`@Roles(UserRole.ADMIN)`，`executor-package.controller.ts:118` 更是**类级** `@Roles(ADMIN)`；即现状**比项目角色细分更严**，故「细分」真实含义是**把权限下放给项目 editor/admin**（能改执行器元数据/轮换令牌/删执行器的席位变多），与 ADR-013 §2「只增放行、不收紧」方向相反，**必须产品拍板**。附实测：`executor.projectId`/`executor_packages.projectId` 两列**已存在**（迁移 1790000000009）但**全仓零处读用**（模块内 grep 仅命中实体定义，计数=1）——拍板后可直接接权限判定，无需再动迁移。ADR-013 §3 已追加 2026-09-27 更新段为事实源。**如实**：本轮**零代码改动**（纯复核销账）；③ 若做属放行权扩张，按纪律须 ADR 修订 +前后端同批 + CHANGELOG 显著位 + 升级说明。（**阻塞原因**：③ 属放行权扩张，需产品拍板；①②④ 已兑现无需改动）。**2026-10-02 产品拍板（AskUserQuestion 留痕）：③ 取温和下放**——PATCH `:id` 与 POST `:id/reload-config` 下放项目 editor/admin（ProjectAccessService 判定 + executor.projectId 接线），rotate-token / set-offline / DELETE 保留 ADMIN 独占，executor-package 类级 ADMIN 不动；ADR-013 已追加拍板段，实施本轮进行中。**验收兑现（2026-10-02）**：executor.controller PATCH `:id` / POST `:id/reload-config` 移除 @Roles(ADMIN)，判定下沉 assertCanManageMetadata（ADMIN 短路 + ProjectAccessService 项目 editor+；projectId=null 平台级执行器非 ADMIN 恒 403，不落 DEFAULT_PROJECT_ID；@Optional 缺席退化仅 ADMIN fail-closed）；A2 授权形态声明 @WriteGuard("executor",{scope:"ownership"}) + recordOwnershipAssertion("executor","write") 落证，穷举守卫清单显式登记；rotate-token/set-offline/DELETE 与 executor-package 类级 ADMIN 未动。admin-web 详情页头部按钮拆分（编辑/热更=canManageMetadata，下线/轮换/删除=isAdmin；列表页批量入口维持 ADMIN）。RBAC 矩阵 +6（editor 放行/成员被拒/null 短路/ADMIN 免查/reload 双向），write-guard-coverage 清单登记，admin-api 全量 253 套件 4206 例绿，admin-web 176 套件 1346 例绿，双端 lint/tsc 绿，swagger/api-types 同批（纯描述+403 文档 diff）。子代理平台复现 reasoning-level-missing，按既有降级纪律主会话直落。 |
 | N-03 | P2 | done | main-A（轮 27） | 2026-09-27 | apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts（新）+ src/modules/sop/__tests__/sop.controller.spec.ts（新）+ src/modules/sop/sop.service.read-and-guards.spec.ts（新）+ apps/admin-api/package.json（coverageThreshold） | 见本轮 commit | 覆盖率棘轮续期 —— 四档地板**全部上探**，全在**定向补测真实逻辑**之后。**实测（本机 baseline → now）**：stmts 87.64→**88.59**、branches 76.40→**77.58**、funcs 80.60→**82.45**、lines 88.56→**89.54**；地板 84/75/78/85 → **87/76/81/88**（jest coverageThreshold；**反证实测**：把 functions 临时改成 99 → 全量跑 exit 1 并打印`Coverage for functions (82.45%) does not meet "global" threshold (99%)`，证明地板真在生效而非装饰）。**三处定向补测（+56 例，226→229 套件；3790→3846 例）**：① **`agent-runtime.service.ts`（0% → fn/lines/stmts 100%，branches 87.03）**——P2 推理循环此前**一行未测**，而它承载三条只能在运行时暴露的不变量：**可重入**（每轮从 DB steps 重建messages 而非复用内存数组——依赖内存则重启后 resume 丢上下文）、**闸门在循环开头**（预算触顶时不得再发起推理与工具调用；判在末尾则最后一轮副作用已发生）、**模型调用失败 ≠ 预算超限**（链路坏 vs 花超了，运维含义不同必须落不同终态）。另测上下文窗口管理：已折叠步用 [阶段小结] 替身、tool 步折叠后降级 user 角色（tool 角色缺 tool_call_id 会触发上游 400）、tool 结果 tool_call_id 严格配对。② **`sop.controller.ts`（0% → 100%）**——ADMIN 管理面。发布权 = 间接指令注入权（04 §4.3），故钉住：**跨工单答复防线**（澄清不属于该指派即 Forbidden 且**拒绝发生在写之前**）、**指派目标解析**（地址查不到/两者都缺一律 Forbidden 且不落指派，不得退化成"随便派一台"）、**编辑走工作副本**（经 draft() 而非直改实体；title 缺省沿用原值不清空）、**媒体下载响应头**（Content-Length 取真实对象大小、文件名经 encodeURIComponent 防头注入、mime 缺失回落 octet-stream）、query 字符串转数字（不转会让分页变字符串拼接）。③ **`sop.service.ts` 读面 + 校验面 + 清洗面**（fn 21%→46%）——读面此前一行未测：分页双向钳位、slug 未命中抛 NotFound（不返回 null）、getAssignment 只带本指派澄清（防跨指派泄漏）、listActiveAssignments **投影字段封闭**（多出的列不得透出）、setExecutorSession 钳 128 位；校验面 mediaRefs **只认平台内 /api/ 路径**（外链/协议相对/相对路径全拒——SSRF 转嫁面）+ 上限 4 条 + kind 封闭枚举 + URL 长度 + note 钳 256；清洗面凭据打码（key=value 八形态 + sk-/gh[pousr]_ 前缀）、普通文本不误伤、超长截断到导出的 SOP_CLARIFICATION_QUESTION_MAX（**对着常量断言而非硬编码**——初版硬编码 2000 实测为 4000 立刻转红，正是"钉旧值假绿"的现场纠偏）。**反证均有牙（逐条实测转红后还原）**：预算闸门改 `if(false)` → 2 例红；折叠语义失效（强制 summary=null）→ 2 例红；移除 mediaRefs 外链拒绝 → 1 例红；listActiveAssignments 投影改 `{...a}` → 1 例红；删跨工单守卫 → 1 例红；assign 缺目标改回落常量 → 1 例红。**纪律遵守**：不写凑数弱断言——三处补测全部针对安全边界/可重入/失败归因这类"错了会静默"的语义；tsc 0 错、eslint 0 错（新文件）、全量 229 套件 3846 例绿。**如实**：洼地未清完——`tool-binder.service.ts`(fn 59%)、`task.controller.ts`(57%)、`clamd-scan.util.ts`(42%)、`executor.service.ts`(90% 但绝对缺口 17)、`application.controller.ts`(33%)、`auth.controller.ts`(42%)、`executor-package.controller.ts`(33%)仍待下轮；本次地板上探幅度按"最坏情况 ±1"保守取值（实测值全部高于地板 ≥1.45 个百分点）。 |
@@ -479,6 +510,10 @@
 | 1790000000096 | AddTaskConsumedFirePointAt | A6b：显式「提前触发并消耗下一个计划点」入口的**登记载体**（产品 2026-11-03 拍板：「手动执行不算覆盖计划落点；除非给一个入口提前触发，去消耗最近 1 次 cron」）。**为什么是新列而不是复用 `lastTriggerTime`（丙方案已证伪，非倾向性否）**：该列有 **3 个写点**——`scheduler.claimTaskTrigger`（条件 UPDATE 推进触发时刻）、`task.claimDependencyTrigger`（**依赖扇出复用同列**，A1 文档点名的那条路径）、`task.rollbackDependencyClaim`（②的 CAS 回滚）；**读点 4 处**——`checkMisfiresBody` 的 gap 推导、闸 1 复核、闸 2 落点比较、`auditMissedFirePointsBody`。把**未来落点**写进去会让 `now - lastTriggerTime` 变**负** ⇒ ①`gap > threshold` 恒不成立 ⇒ **misfire 永久失明**；②`claimTaskTrigger` 的谓词 `"lastTriggerTime" IS NULL OR < :windowStart` 永不命中 ⇒ 该任务**再也无法被任何路径触发**（永久死任务）；③CAS 回滚会把它回滚到未来值 ⇒ **破坏性**，否。**为什么不是新表（乙方案）**：登记**恒为「每任务至多一条」**（重复勾选按 409 拒绝）⇒ 无历史流水/无 join/无清理策略 ⇒ 单列 + 条件 UPDATE 天然满足「至多一条 + 原子」⇒ 新表属**过度建模**。**形状**：可空、**无 DEFAULT** ⇒ metadata-only、**零回填**（存量全 NULL = 「没有未消耗登记」，语义天然正确）；`ADD COLUMN IF NOT EXISTS` 幂等；不用 CONCURRENTLY（`tasks` 非百万级表，且 CONCURRENTLY 不能在迁移事务里跑） | 本批落盘：ALTER TABLE ADD COLUMN（TIMESTAMP NULL、无 DEFAULT、metadata-only、零回填）/ down DROP COLUMN IF EXISTS |
 | 1790000000097 | AddExecutorTokenRotationEpoch | ADR-030（R14 落地）：per-executor 令牌的**轮换纪元**，作为「确定性派生 + 条件更新」的 CAS 谓词与派生输入。**为什么需要**：ADR-030 §4 采纳 ②′——令牌 `HMAC(K, identity‖startupEpoch‖rotationEpoch)`；两实例读到同一 epoch ⇒ 派生结果**逐字节相同** ⇒ 后到者不必拿明文，`bcrypt.compare(自算, 库里新 hash)` 命中即把**同一枚**令牌返回（跨实例幂等的全部机制）。没有该列只能回到 ADR-030 §3 方案①的明文缓存（已否决）。**形状**：`integer NOT NULL DEFAULT 0` ⇒ PG 11+ catalog-only（不重写表、**零回填**）；`0` = 从未按纪元轮换（该列只在 `EXECUTOR_TOKEN_EPOCH_MODE=on` 时读写，默认 `off`，旧代码完全不认识它 ⇒ 灰度互不干扰）。**不建索引**：唯一查询形态 `WHERE id=:id AND "tokenRotationEpoch"=:epoch`，主键已定位单行。 | 本批落盘：ALTER TABLE ADD COLUMN（integer NOT NULL DEFAULT 0，metadata-only、零回填）/ down DROP COLUMN IF EXISTS（回滚不打断在跑执行器：库里存的是派生令牌的 bcrypt 哈希，与派生方式无关） |
 | 1790000000098 | AddBroadcastReservedCount | ADR-038（方案 B 落地）：给**广播占坑**独立计数列，把「单播占坑靠行数下限」与「广播占坑靠心跳覆写纠正」两种相反语义**分开**（`executor.service.ts:6034` 每台 +1 但只有一行执行记录，`executorAddress` 只能落一个地址 ⇒ 未持行目标「计数1/行数0」）。**为什么需要**：与 `runningTaskCount` 共用一列时，ADR-037 的行数下限会抹掉广播占坑、而广播既有设计又依赖心跳覆写纠正少计 ⇒ 互相抵消 ⇒ 容量少计。**形状**：`integer NULL DEFAULT 0` ⇒ PG 11+ catalog-only（不重写表、**零回填**），`null` 与 `0` 等价。**不建索引**：唯一访问形态是按主键读单行。 | 本批**只加列**（步骤 2）；写路径与容量谓词在步骤 3。回滚：down `DROP COLUMN IF EXISTS`，值可由「在途广播执行数」重建 ⇒ 最坏从 0 累计 = 短时少派单、**不超卖** |
+| 1790000000099 | AddBacklogReenqueueCount | R216（「积压」自动补入队）：给**自动补**一个持久化计数列。**为什么需要**：「积压」= 会话 `pending` 但队列里没有指向它的 job ⇒ **永远不会被执行**；自动补是本仓**唯一**自动处置的判据，副作用必须封顶。**为什么落库而不是进程内 Set**：多副本 + 重启下，进程内计数 = N 次补 / 重启后无限补；条件写 `"backlogReenqueueCount" < 1 AND status = 'pending'` 让「每会话最多自动补一次」在多实例下也成立。**为什么不能只看队列**：「补了但队列里查不到」有 ① add 失败（该重试）② add 成功但 job 已被消费（不该再补）两种成因，队列**分不开**，落库的计数**记得**「我试过」。**为什么不复用 `autoResumeCount`**：语义完全不同（`pending` 无 job vs `waiting_input`），共用会让两条自动处置互相吃掉额度。**形状**：`integer NULL DEFAULT 0` ⇒ PG 11+ catalog-only、**零回填**，存量 `0` = 「从未自动补过」语义天然正确。**不建索引**：唯一访问形态是按主键条件写（CAS）。 | 本批**只加列**；写路径见 `agent-backlog-reenqueue-claim.ts` 的 `claim`（外提，因 `agent-session.service.ts` 已在 size-caps 基线上顶格）。回滚：down `DROP COLUMN IF EXISTS`，最坏从 0 重新累计 = 短时**多补一次**（`jobId = session.id` 幂等 ⇒ 无害）|
+| 1790000000100 | AlignAgentToolCallApprovalKey | 修复工具调用审批关联：以 `agent_approvals.approvalKey`（业务键）而非 UUID 为新写入契约。 | `approvalId` 从可空 uuid 转为可空 varchar(128)；保留历史 UUID 文本及 NULL，不推断主键映射。down 遇到非规范 UUID 文本即报错，保留数据。 |
+| 1790000000101 | AddFunnelEvents | R302 / TTFV 阶段2：新建 append-only `funnel_events`，按 `dedupe_key` 唯一收敛多副本/重试投递，按 `(install_id, event_name)` 支撑 §4.3 的 JOIN。新建窄表而非复用 `agent_events`（后者身份是 `sessionId + seq`，与 install 维度不匹配）；只存事件名、时间、哈希与去重键。 | 本批落盘：CREATE TABLE + 复合索引 + 唯一索引；down 逆序 DROP INDEX ×2 + DROP TABLE。`check:migrations` 明确要求在盘时间戳先登记，故补此行。 |
+| 1790000000102 | AddTelemetryOptin | R305 / TTFV opt-in 授权闸门：新建 `telemetry_optin`（`install_id` 唯一 ⇒ 一个 install 一条当前状态；`opt_in` 布尔 + `opted_at` 时点，撤销保留行而非删除，避免「未登记」与「已撤销」塌成同一形态）。双闸判定（系统总闸 `telemetry.ttfv.enabled` + 实例级 opt_in）默认不采集，授权前行为不追溯补采。 | 本批落盘：CREATE TABLE + `uq_telemetry_optin_install_id` 唯一索引；down 逆序 DROP INDEX + DROP TABLE。`check:migrations` 要求在盘时间戳先登记，故补此行。 |
 | 1790000000093 | AddAgentEventCausation | A2（Temporal 对照调研，**该文档自定的最高优先级项**，此前一直没落地）：把事件流从「扁平日志」变「**因果图**」。Temporal 用 `ScheduledEventId` 给每个结果事件精确配对起因（`mutable_state_impl.go:4777-4783`）；我们此前要回答「这条 `tool_call_status_changed` 是被哪条事件引起的」，只能靠 payload 里的 `toolCallId`/`approvalKey` **猜**——那是**推断**不是**事实**。加 `causedBySeq integer NULL`（**可空 + 零回填**：存量事件没有因果信息，**不假装知道**；metadata-only）。**刻意不加 FK/唯一约束**（三条否决理由：① 与 `appendEvents` 的**单语句批量插入**（`WITH ORDINALITY`）原子性纠缠；② 保留期删除时外键会把清理 cron 拖死或被迫改写历史；③ 一因多果不是 1:1，唯一约束本就错）⇒ 改用「**投影运行期断言**（`causedBySeq >= seq` 或跨会话 ⇒ 记缺口，不静默接受）+ **静态守卫** `scripts/check-agent-event-causation.mjs`（11 例自检含正例控制组、`--strict` 可把「待接线」升红）」代替约束。**因果规则**：`tool_call_recorded` ← 请求它的 step；`tool_call_status_changed` ← 该工具的 `tool_call_recorded` 或引起变化的 `approval_decided`；`approval_decided` ← 需审批的 `tool_call_recorded`；`prompt_fingerprint` ← 触发该轮 LLM 调用的 `step_appended`；`step_appended`/`session_finished` 可 NULL。 | 本批落盘：ALTER TABLE ADD COLUMN（integer NULL、无默认、metadata-only、零回填）/ down DROP COLUMN |
 | 1790000000092 | AddExecutionAttemptSeq | OSS 对照调研 R7（S7 §2 **G3**，2026-11-01）：**给执行加「尝试世代」维度**。缺陷：终态门是**纯状态**的（`execution-terminal.ts` 的 `id IN (…) AND status IN (gate)`，gate = PENDING/RUNNING/WAITING，**无 attempt/epoch**）；而 `task.processor.ts` 的 `claimable` **含 `FAILED`**（注释自陈「BullMQ retries run through here again」）⇒ **同一个 `executionId` 会被重新 claim 成 RUNNING**（三条入队点对同一 job 给 `attempts`，payload 只有 `{executionId}`；该路径 `retryCount` 从不自增）。⇒ **同一执行器上「上一回合的迟到回调」与「本回合的正常回调」在 SQL 上不可区分**（跨执行器的迟到回调已被回调地址/行身份三级校验挡住）。加 `attemptSeq integer NOT NULL DEFAULT 0`（存量 0 = 第一次尝试，语义正确）；claim 时自增、随派发下传、终态门加 `AND attemptSeq = :expected`——**`expected` 不传即不加谓词**（逐字节等价，先只在回调路径传）。⚠ 这条曾被我错误结案为「不是缺口」（只查 1 条重试路径就断言「每次重试建新 executionId」），由对抗式复核推翻 ⇒ 纪律 **R2c 全称断言必须枚举**。 | 本批落盘：ALTER TABLE ADD COLUMN（NOT NULL DEFAULT 0，metadata-only、零回填）/ down DROP COLUMN |
 | 1790000000089 | AddAgentEvents | OSS 对照调研 R7（S7 §2 G1，**取证型事件日志**第一阶段）：我们**没有**事件日志（`event_log`/`events_store`/`rehydrate` 非测试文件命中 0），`rebuildMessages` 是从 `agent_steps` + `agent_tool_calls` 的**当前行**拼上下文（快照重建），而 `agent_tool_calls.status` 是**就地更新**（`in_flight` → `ok`/`error`）⇒ 历史状态不保留，「第 N 轮当时看到什么」答不出来；`stateChangedAt`（0083）只有**一个**时间戳，**不是序列**——加了列 ≠ 有了事件日志。建 `agent_events`（`sessionId` + 会话内单调 `seq` + `kind` + `payload` jsonb + `createdAt`，**唯一 `(sessionId, seq)`**）作 append-only 事实日志。**抄了 Temporal 两条适用的硬不变量**（`common/persistence/history_manager.go`）：同批 ID 连续、超限整批拒（不许部分写入）；**刻意不抄**另两条（同批版本一致、`node_id = 首批事件ID`）——那是分片/重放锚点，我们单 PG 不需要。**本阶段只写不读**（投影 `projectSession` 与 `promptFingerprint` 的落地情况以实施报告为准）。**明确不做**：Temporal 式「重算型 replay」——它服务端**根本不检测非确定性**（`NON_DETERMINISTIC_ERROR` 全仓仅 1 处且只打日志；35 种失败原因无一「与历史不一致」；SDK replayer 引用数 0），其 replay 成立于「重放的是确定性代码」，而我们的 LLM 步骤不是。 | 本批落盘：CREATE TABLE（新表，无存量行，不回填）+ 唯一索引 `(sessionId, seq)`；down DROP TABLE |
@@ -520,6 +555,343 @@
 | 记忆域 / 子 agent | **推迟**（写明前置条件） | 裁定 R12；记忆需先解决多租户分桶与跨会话注入的不可撤销性 |
 
 ## 变更日志
+
+- 2026-11-20 **产品轮 · R283（PM 立项 + 1 个实现切片 + 1 路侦察）（1 个提交 `a2acbdbe` · 修「同一页三个数彼此矛盾」的最后一块；侦察另登记两条下一轮）**：
+
+  - **① 缺陷：项目概览页同一屏三个「失败」数各自自洽、彼此矛盾**。
+    `failedExecutionsLast7d`=FAILED 桶、`timeoutExecutionsLast7d`=TIMEOUT 桶（**分桶明细**），
+    但 `recentFailures` 是 `IN(FAILED,TIMEOUT)`、而 `failureRate = failed/total` 只含 FAILED
+    ⇒ 2 failed + 1 timeout 时：明细「失败 2 / 超时 1」、列表列 **3 条**、失败率 **22.22%**。
+  - **② 决定性证据不是我推的，是仓内已宣示的口径**：`locales/zh.ts:1479`
+    「失败 = 失败 + 超时（人工终止不计入失败率）」+ `en.ts:1473` 双语佐证
+    + `task.service.spec.ts:8288` 已按此实现 ⇒ 项目页是**唯一没跟上**的地方。
+    （我最初的立论是「分桶语义的另一种表达」，一处证据就把方向改正了。）
+  - **③ 修法**：分子用 `FAILED_EXECUTION_STATUSES.reduce(...)`（**常量新增成员自动纳入**，
+    不手写相加）；**两个明细字段语义不变**（用户要分别看脚本失败与超时各多少）
+    ⇒ **`failureRate ≠ failed/total`** 这个「不等」在**代码注释与 DTO description 都写透**
+    并引 `zh.ts:1479` 原文 —— 否则下一个人看到分子是两个桶之和、分母边上就摆着
+    `failedExecutionsLast7d`，一定会「顺手修正」回 22.22。
+  - **④ 新增「同一屏一致性」用例（这类跨字段不变式此前全仓零覆盖）**：
+    明细 2/1 + 失败率 33.33 + **`not.toBe(failed/total)`** + 列表 3 条 + **两桶之和 == 列表条数**，
+    **一次钉住四者**。另加「只有 timeout ⇒ 25 而非 0」（缺陷的正面形态）与
+    「口径一致性：常量不含 killed/cancelled，造 60%」。
+  - **⑤ 侦察换轴扫「检索/筛选面」（前五轮一次没扫过）**，登记两条**下一轮**真缺陷：
+    - **`/tasks` 的 `triggerType` 筛选静默失效**：DTO 用 `@IsEnum` 严格校验（说明被承诺）、
+      前端已下发，而 `buildTaskListWhere` **唯独不读它** ⇒ 用户选「触发方式=Cron」
+      拿到未过滤全量（比口径不同更坏：连「没生效」都不说）；filter matrix **零断言**。
+    - **`@ApiQuery limit` 承诺一个必然 400 的参数**：挂在 `GET :id/executions`，
+      而 DTO 无 `limit` 且 `forbidNonWhitelisted` 必拒；OpenAPI 也公示它
+      ⇒ **文档承诺可用、实现必然失败**。
+    - 同时**推翻**了多个候选：`q` 的 name OR description 一致、LIKE 元字符全覆盖转义、
+      时间窗双闭区间与 UI 文案一致、`total` 口径一致、keyset 与 OFFSET 共用同一装配、
+      前端 debounce + queryKey 无竞态。
+
+  **验证（真实 exit，分级如实）**：
+  - 后端全量 **495 套 / 8378 例**绿（项目域 103 例）；既有断言 `22.22→33.33` 已改并注明
+    「旧断言把错误口径钉成期望」。
+  - 生成物：`swagger:export` + i18n **1810/1810**（en-map 新增 3 条纯追加）；
+    `gen:api-types`；`check:api-reference` 226 路径逐字节一致；`check:response-schema` 250/263。
+  - 守卫链 **121/121 = 0**；`eslint`/`tsc`（app+specs）/`size-caps`/`enum-consumers` 全 0。
+  - **反证由主会话亲验**（不采信子代理自述）：分子改回 `exec.failed` ⇒ **4 failed / 99 passed**。
+
+  **方法学沉淀（接 522）**：
+  - **523「同一屏上三个数各自自洽、彼此矛盾，比三个数全错更难发现」**。每个数单独看都能
+    自圆其说（「失败 2 + 超时 1 = 3 条，没毛病」），只有把「明细 + 列表 + 比率」摆在一起
+    才看得出 22.22% 与 3 条对不上。⇒ 这类缺陷的正确修法不是逐个调数字，而是**先找出这条
+    口径的单一事实源在哪**——本轮它在**产品文案**（`zh.ts:1479`）和**实体常量**里，
+    两处都不在代码中「看起来像」的地方。
+
+- 2026-11-20 **产品轮 · R282（PM 立项 + 1 路侦察 + 1 个切片）（1 个提交 `d1346b1c` · 首次扫**调度面**：修「下次执行」承诺一次不会发生的执行）**：
+
+  任务书 `artifacts/autonomy/R282/brief.md`；侦察 `recon-maintenance.md`（402 行）。
+
+  - **① 缺陷：前四轮都没扫过调度面**。`nextRunAt` 的入参**没有 `maintenanceWindows`**
+    （`trigger-preview.ts:342-368`，grep 命中 0），而任务实体有该字段（`task.entity.ts:394`）；
+    调度器命中窗口后 `scheduler.service.ts:2804-2816` **`return null`：不建执行行、不补跑**。
+    ⇒ 列表「下次执行」列与详情「下次执行」Tag 都在**承诺一次不会发生的执行**。
+  - **② 侦察核实四个面（比我预想的更糟）**：列表窗口内与正常**渲染逐字相同**；
+    **详情页有**窗口可视化（橙 Tag）但「会被跳过」**只写在代码注释里**，
+    且 `TaskScheduleTags` 用 `processing` **蓝色** ⇒ **窗口存在反而让用户更确信它会跑**；
+    执行记录**零解释**（反把用户推向「调度没有生效」的误导）；告警 **0 条规则**。
+  - **③ 一处我原本会踩的硬风险（侦察抓到）**：照抄后端「逐 instant 回扫 7 天」的判据，
+    20 行列表 = 40 万次 `formatToParts` **会卡死列表**。**实测基线证实**：
+    **127.26ms（日级）/ 962.43ms（周级）**。改法：按**壁钟日**回扫 + 日级 cron 收紧到 3 天
+    （其余沿用 7 天且**永不超过后端**以防结论漂移）⇒ **11.97ms**，并写成
+    `toBeLessThan(50)` 断言——**没有这条断言功能不许上**（把「显示假时刻」换成
+    「显示不了」比缺陷更坏）。
+  - **④ 判据复刻的语义细节**（这些都是会写反的地方）：半开 `[start,end)`、**平局归关窗**、
+    **`endFire === null` 是开窗**（`:395` 的 `endFire &&` 短路）。复用本文件已有的零依赖
+    cron 引擎（`parseCronExpression`/`nextCronFireTimes`/`validateTimezone`）⇒ **不新增依赖**。
+  - **⑤ 一个刻意的产品顺序**：**时区不明时即便按浏览器时区算出来「在窗口内」也不报 skipped** ——
+    那个结论可能正好反了，而**负面断言的代价是用户不去排查**（他说「跳过」而实际会跑 ⇒ 白等）。
+    改报 `unknown-window`：「窗口内？时区未知」。
+  - **⑥ 文案点出原因**：「跳过（维护窗口 02:30–04:00）」而不是只说"跳过"（用户不知道该改什么）。
+
+  **验证（真实 exit，分级如实）**：
+  - 前端全量 `npx vitest run` **344 文件 / 2772 例**绿（**本轮无 flake**）；
+    一致性对拍 **33 例**（后端黄金表抽 6 条含跨午夜/DST/平局，**结论逐条一致**）；
+    `nextRunAt` **353 行纯新增、零删除**（9 例既有测试逐字通过）。
+  - 守卫链 **121/121 = 0**；`tsc -b`/`eslint`/`lint:i18n`（键集 3704/3704）/`size-caps`/
+    `web-type-drift` 全 0。
+  - **反证由主会话亲验**（不采信子代理自述）：把 `skipped-by-window` 变异成 `at`（假装会跑）
+    ⇒ **4 条红**；还原 ⇒ 零删除行。
+
+  **刻意的界（不是遗漏）**：执行记录空白解释 + 告警规则**卡在同一个根**——跳过事件
+  **不落任何持久化痕迹**。任何能解释历史的方案都要先决定「是否落库」，那会**推翻
+  `scheduler.service.spec.ts:2004` 钉死的「不建行」契约** ⇒ 属**产品语义变更**，不是修 bug。
+  且告警有判据难题：窗口长期生效是**意图**还是**配错**，计数器分不出来，阈值告警会每天误报。
+
+  **方法学沉淀（接 520）**：
+  - **521「一个『正确的计算』用错了输入，比算错更隐蔽」**。`nextRunAt` 的 cron 计算完全正确、
+    9 例测试全绿、时区处理也对——它只是**不知道调度器会在窗口内跳过**。这类缺陷不会出现在
+    任何单元测试里，因为**测试与实现共享了同一个错误的输入定义**。
+  - **522「修一个『显示假事实』的缺陷时，先测『更真实的算法要多久』」**。照抄后端判据要
+    962ms/20 行；不做这一步，修好之后列表会卡到不可用，**用户会把『卡』归因为新产品缺陷
+    而不是旧缺陷的残留**。
+
+- 2026-11-20 **产品轮 · R281（PM 立项 + 2 路侦察 + 3 个切片）（1 个提交 `1e5ee470` · 修「点了但看不到」，并补上全仓缺失的那条不变式；期间纠正了侦察一处、也被侦察纠正一处）**：
+
+  任务书 `artifacts/autonomy/R281/brief.md`；侦察 `recon-deeplink.md` / `recon-product2.md`。
+
+  - **① 缺陷：前三轮缺陷在「用户动作」层面的合成结果**。R280 已把「失败」口径统一为
+    `FAILED ∪ TIMEOUT`，但**深链仍是单值**：前端两处入口都链到 `?status=failed`，
+    后端 `e.status = :status` 是单值等值 ⇒ **超时风暴（10 timeout、0 failed）时
+    卡片显示 10 条、点进去 0 条**，空态还把「筛选比数据源窄」谎报成「真的没有」。
+  - **② 侦察核出 `p.status` 共 4 处（我 brief 只点了 1 处）**：`:551` 的共用装配
+    （覆盖 all OFFSET/keyset + **CSV 导出**三条路径）、`:149` 对象形态、`:335`/`:384`
+    keyset 的 count 与页查询。⇒ 只改一处会让「导出 CSV」与「单任务历史」继续失效。
+    新增纯函数 `parseExecutionStatusFilter()`（剥空白/去重保序/**白名单**/非法逐条丢弃
+    **不 400**/全非法=未传）；**单值仍生成 `=`**——执行页下拉里 `failed` 与 `timeout`
+    是两个独立意图，不能共用一个词；三条既有 spec 也正按 `= :status` 逐字钉住。
+  - **③ 我 brief 里有一条决策是错的，已反向**：原要求「最近失败·全部记录」也改多值。
+    侦察证明它**本来就不带 status**（能看到全部），改成多值会把「全部」偷换成
+    「全部失败」——**用一个更坏的谎报换掉一个谎报**。已在模块 docblock 用表格固化两个方向。
+  - **④ 补上全仓缺失的那条不变式（本轮最有价值的一半）**。侦察 §C.2 指出：
+    「卡片数 == 点进去条数」**一条用例都没有**，既有深链测试的 fixture **恒为空**，
+    只验「URL 对不对」**不验「用户看到什么」** ⇒ 缺陷能长期潜伏，**修完也没有东西
+    阻止它回来**。新增 4 条真断言（含「点进去真的渲染出 3 行」），
+    **反证**：改回单值 ⇒ 3 条红，改回即绿。
+  - **⑤ 我纠正了侦察一处**：它判「`URLSearchParams` 把逗号编码成 `%2C` ⇒ 服务端按整串
+    字面量匹配、静默 0 行」。**真机证伪**——`?status=failed%2Ctimeout` 正常返回 3 条
+    （Express 会解码 query）。若采信，下一轮会去做无用的手工解码/双重编码改造。
+
+  **验证（真实 exit，分级如实）**：
+  - **真机（真实进程内集成）**：真 PG16/Redis7 + 真 admin-api + 144 迁移，造 3 条 timeout：
+    `?status=failed` ⇒ **0**（复现缺陷）；`failed,timeout` ⇒ **3**；`failed%2Ctimeout` ⇒ **3**；
+    `foo` ⇒ 全量（安全回落）；`failed, timeout` ⇒ **3**（剥空白）。
+    **CSV 导出**：多值 11 行（含表头 = 10 条数据）vs 单值仅表头。
+  - 后端 `npx jest` **495 套 / 8375 例**绿（任务域 +27 例）。
+  - 前端 `npx vitest run`：**1 failed / 2730 passed**——失败的是 `inbox-failures.test.tsx`
+    一条**既有偶发失败**；我在**未改动的基线 `a99f927c`** 上跑同一组得到**完全相同的
+    1 failed / 96 passed**，与本轮无关，属既有未结项 `web-flake-not-reproduced`。
+    **不猜测着改**（405：无法复现即无法验证改对）。
+  - 守卫链 **121/121 = 0**；`size-caps` / `enum-drift` / `collaborator-self-call` /
+    `source-text-contracts` 全 0。
+
+  **方法学沉淀（接 518）**：
+  - **519「只验『请求发出去了』的测试，会在功能全废时全绿」**。深链测试的 fixture 恒为空，
+    于是「URL 对」与「用户看到内容」之间没有任何断言。**修完一个缺陷时要问
+    『什么用例能阻止它回来』**——若答案是没有，那修的是当下，不是形态（478 的同族）。
+  - **520「决策要限制在『证据能支撑的粒度』上」**。我 brief 断言「全部记录应带 status」，
+    那是从「与其他入口保持一致」推出来的，**不是从「用户会做错什么决定」推出来的**。
+    侦察一给出「它本来就不带 status」这个事实，该决策立刻反向。
+
+- 2026-11-20 **产品轮 · R280（PM 立项 + 2 路侦察 + 3 个实现切片）（1 个提交 `8c9e3510` · 补齐两处「没有接收方」；其中一处是我自己的裁决被真机推翻）**：
+
+  任务书 `artifacts/autonomy/R280/brief.md`；侦察 `recon-sop-escalation.md` / `recon-failure-semantics.md`。
+
+  - **① 主线：升级到人工的 SOP 澄清，三条通道全部失效**。收件箱八小节无一涉及 SOP 澄清；
+    兜底路径把 assignment `blocked → in_progress`（`sop.service.ts:1745-1752`）⇒ 按 blocked
+    筛不到；`notifyEscalation` 调 `notify()` **不传 taskId**，而 `isSilenced` 的 global 分支
+    `!silence.taskId || …` 无条件命中 ⇒ 一条 scope=global 静默规则就能吞掉，外层还刻意
+    **fail-open**；全仓也没有跨 SOP 的待答复澄清聚合端点。
+    ⇒ 新建 `GET /sop/clarifications/pending`（`total` 独立 `getCount()`、`truncated`/`degraded`、
+    查询 ≤3 无 N+1、装配缺失 503、路由注册在 `:id` **之前**）。
+  - **② 一个必须真机才发现的裁决错误（本轮转折点）**。我最初照搬既有终态黑名单
+    `['completed','failed','cancelled']`，真机上那条正确的待办在 assignment 变 `failed` 后
+    **从列表消失**。而执行器 `agent-host.ts:688-700` 逐字写着「升级后…**运维在 Admin Web
+    处理后重派**」并以 `status:'failed'` + `outcome:'escalated_to_human'` 上报
+    ⇒ **`failed` 在这里不是「结束」而是「等人接管」**，是「请运维去处理」这个动作的触发条件。
+    排除它 = 把那个入口本身删掉。修法：黑名单只留 `completed`/`cancelled`，并在常量注释里
+    写透「`failed` 刻意不在内，别把它『修正』回去」（含 `maxRounds` 写 `blocked`、
+    超时扫描只扫 `assigned|in_progress` ⇒ `blocked` 无服务端兜底这一事实）。
+    **真机对账**：五种 assignment 状态各挂一条 ⇒ 修复前计入 2、修复后 **3**；
+    真实 HTTP `total=2`（failed+blocked）而 completed/cancelled 排除。
+  - **③ 第二条：同一屏两句互斥的「失败」断言**。Dashboard 失败趋势曲线**含 timeout**
+    （注释写明告警口径 `failed|timeout`），而「最近失败」只查 `status=FAILED`
+    ⇒ 超时风暴时曲线涨到 10 而卡片说「近期无失败记录」。
+    侦察还追加了一层：同一个 `timeout` 语义**分叉落两桶**（回调 ⇒ `TIMEOUT`；
+    sweep ⇒ `FAILED`+`failureReason=TIMEOUT`）⇒ **只数 FAILED 的桶本身也不纯**。
+    修法：实体立**唯一事实源** `FAILED_EXECUTION_STATUSES=[FAILED,TIMEOUT]`
+    （`KILLED`/`CANCELLED` 不算，与 `alerts.yml` 及 `docs/operations.md:1273` 一致），
+    注释列出其余未迁移调用点并标明哪一条**已经是对的、不要重改**。
+  - **④ 侦察推翻了我 brief 里的一处假设**：`maxRounds` 路径（`sop.service.ts:1018-1025`）
+    写 `blocked` 且**停在那儿**，而超时扫描只扫 `status IN ('assigned','in_progress')`
+    ⇒ 该路径**连自愈都没有**。这比我原判断更严重，已并入上面的常量注释。
+
+  **验证（真实 exit，分级如实）**：
+  - **真机（真实进程内集成）**：真 PG16/Redis7 + 真 admin-api + 144 迁移。
+    升级澄清五种状态矩阵；`limit=1` ⇒ `returned=1/total=3/truncated=true`（最久等待者排第一）；
+    `limit=9999/abc/-5` 全 200 安全回落。失败口径：造 `2×timeout+1×failed+1×killed+1×cancelled`
+    ⇒ `/metrics/failures` 返回 3（含 2 timeout，**killed/cancelled 正确排除**）、
+    `/metrics/summary` 的 `failed:3`（修复前为 1）。**探针数据已全部清理**。
+  - 后端 `npx jest` **495 套 / 8349 例**绿；前端全量 **340 文件 / 2720 例**绿；守卫链 **121/121 = 0**。
+  - 生成物：`swagger:export` + i18n **1810/1810**；`gen:api-types`（新 DTO 改为**合同派生**，
+    手写类型 126 处不变、派生 22 → 23）；`check:response-schema` 250/263（棘轮 `--update`）；
+    `check:api-reference` 226 路径逐字节一致。
+  - **反证**：失败口径改回 `status=FAILED` ⇒ 3 例红；成功率卡再改回 ⇒ 4 例红；恢复即绿。
+
+  **未覆盖**：生产包浏览器 E2E 未跑（前端证据级 = 单测/内存替身 + 静态守卫）。
+
+  **方法学沉淀（接 516）**：
+  - **517「照搬既有定义前，先问那个定义在**这个语境**里指什么」**。`completed/failed/cancelled`
+    在 SOP 语境里不是「工单结束」而是「谁在等谁」——`failed` 是执行器**把球交回人工**的信号。
+    照搬让错误实现看起来毫无破绽（单测全绿、注释还引了「判据来源」），**只有真机造一条数据才暴露**。
+  - **518「同一个语义落两个字段值，是『只数某一个值』这类统计的隐形毒药」**。`timeout` 分叉落
+    `TIMEOUT` 与 `FAILED+failureReason` ⇒ 任何按 `status` 单值过滤的统计都不完整且**看上去完全正常**。
+    解法不是逐个修查询，而是先立唯一事实源。
+
+- 2026-11-19 **产品轮 · R279（PM 立项 + 3 个 agent 编排）（1 个提交 `378a1243` · 收件箱补上「终态」这一格；并修一条 UI 显示判死窗口小一半的事实错误）**：
+
+  任务书 `artifacts/autonomy/R279/brief.md`；证据 `throttle-evidence.md` / `failed-sessions-invisible.md`；
+  判据文档 `docs/observability/agent-failed-session-criterion.md`。
+
+  - **① 先做「把上一轮的推断变成实测」这件事**。R278 交接里唯一没闭合的证据缺口是
+    「旧实现第 51 个请求必 429」。本轮起真 PG16 + Redis7 + 真 admin-api（生产默认
+    `THROTTLE_LIMIT=60`），对同一 handler 连打：**第 1..60 次 200、第 61 次 429**，
+    边界精确到个位。推论也随之精确：单次装载 50 次 **不炸**（50 < 60），但
+    **同一分钟内第二次装载 = 100 > 60** ⇒ 从第 11 个 approvals 起全部 429，
+    前端逐个 `.catch()` 吞掉失败 ⇒ 运营看到「部分行消失 + 读取失败」而非「被限流」。
+  - **② 真机造数据时撞见一个更严重的缺口**：为验证限流而真实创建 3 个 Agent 会话，
+    全部 `failed`，而收件箱**七项计数全 0**。根因不是读数错误（那是 R278 修的），
+    而是**建模缺口**：`INBOX_SECTIONS` 前六项只看非终态；唯一的失败小节
+    `recentFailures` 查 `task_executions` 而**不是** `agent_sessions`；
+    `AGENT_SESSION_STATUSES` 七个值里 `failed`/`budget_exceeded`/`aborted`
+    **一个都不进任何观测面**。⇒ **这些计数确实为 0，数字是对的 —— 真实的 0
+    掩盖了「有 3 条失败等你处理」**。这比谎报更隐蔽。
+  - **③ 判据先定后写**（criterion 文档）：计入 `failed`+`budget_exceeded`、
+    **不计 `aborted`**（人主动停的，是「已决定」不是「待办」——本判据与
+    `AGENT_TERMINAL_STATUSES` 的唯一分歧点，故意的）；窗口默认 24h；
+    **计数含两者、行只列 `failed`** 的不对称是刻意的 ⇒ 新增 `rowTotal`（行口径）
+    与 `budgetExcludedCount()`（**口径差 ≠ 截断差**，两者各自表达、不相加）。
+    `failedSessions` 独立 `count()`、**不进会话求和**（同一会话可先 failed 后 succeeded，
+    相加会重复计且让顶栏在「重跑」时凭空跳动）。
+  - **④ 一个容易被当成「孤儿键」删掉的东西**：`pendingBeyondRows()` 原本只参与
+    `isInboxAllClear` 守卫、**用户看不到**。它的 i18n key 在守卫里报「孤儿」——
+    但孤儿不是冗余，是**用户看不到的真相**：若不渲染，「计数 5、行 0」会被全空态
+    说成「当前没有待你处理的事项」（数字对、结论错）。已把它接进失败小节的空态文案。
+  - **⑤ 顺手修掉一条产品级事实错误**：真机 `GET /executors/runtime-config` 返回
+    `effectiveOfflineAfterMs: 180000`，而后端注释逐字写「不暴露这两项会让 UI 展示的
+    『多久判离线』与后端实际行为不符」——**字段早已暴露，只有前端没接**：手写类型缺
+    2 字段、UI 用 `heartbeatTimeoutMs`(90s)、注释还把单次墙钟误称「有效判死阈值」。
+    运维读到的窗口**比实际小一半**：会把「90 秒仍在线」当后端 bug 报障，或按 90s 估
+    SLA。已补类型 + 改读真值 + 文案说清迟滞成因；兜底用
+    `heartbeatTimeoutMs × (staleOfflineConfirmations ?? 1)`，**永不静默回落 90s**。
+    顺带**修正了一个把 bug 钉成期望的既有用例**（`shard-c-executor-detail-diagnostics.test.tsx:99`
+    用真机不存在的夹具形状断言 90s）。
+
+  **验证（真实 exit，分级如实）**：
+  - **真机（真实进程内集成）**：真 PG16/Redis7 + 真 admin-api，144 条迁移。
+    同一环境 `failedSessions: 5`（修复前该字段不存在、七项全 0）；`since` 四语义实测
+    （缺省 total=5 / 未来 0 / 过去 5 / 非法值 200 不 400）。
+  - 后端 `npx jest` **494 套件 / 8316 例** 绿；`modules/agent` 889 例；`route-authz-matrix` 10/10。
+  - 前端全量 `vitest run` **连续两轮 2693 例绿**（+1 skip）；`tsc -b` 0；`eslint` 0；`lint:i18n` 0。
+  - 守卫链 `guards-repo-matrix` **121/121 = 0**；`check-size-caps`（页面净减 3 行，无豁免）、
+    两个 web-type 守卫（基线陈旧 2 条已删 + `--selftest` 27/27）、`check-env-drift` 全 0。
+  - **反证**：把离线窗口改回只用 `heartbeatTimeoutMs` ⇒ 用例红
+    （`expected '…连续 90 秒…' to match /…180 秒/`），改回即绿。
+  - **flaky 如实记录**：全量 web 首跑 7 个红、次跑 1 个（`python-multiversion-form-wiring`
+    耗时 72s 超时），**单文件均全绿 + 连续两轮全量 2693 例全绿** ⇒ 属既有未结项
+    `web-flake-not-reproduced`（文档已记录同族机制：多文件并行 + 高负载下 0ms 定时器
+    与 `waitFor` 窗口赛跑）。**不猜测着改**（无法复现即无法验证改对，方法学 405）——
+    这条仍然**未结项**，本轮没有把它变得更糟也没有假装修好。
+
+  **方法学沉淀（接 514）**：
+  - **515「`0` 是事实还是缺席，要先问『这个面建模了哪些状态』」**。R278 修的是
+    「读数不可信」（`null` vs `0`、截断可见）；R279 暴露的是更上游一层
+    「**该数的东西根本没被数**」。宽键枚举表里没出现的状态，永远不会有人看见 ——
+    而这类缺口的数字**全程都是对的**，所以任何「数值校验」都发现不了它。
+  - **516「后端暴露了字段、注释也写明『不接就会漂移』，不等于前端会接」**。
+    离线窗口这条：DTO 有、后端注释有两段警告、生成类型里也有 —— 唯独手写类型缺字段。
+    跨仓契约的**最后一公里没有机械判据**，只能靠「打开真实 UI 读一次」发现。
+    ⇒ 凡「某字段被声明为『UI 的唯一依据』」，应有守卫钉住**消费点确实读了它**
+    （当前只能靠这类人工真机复核，已记入下一轮候选）。
+
+- 2026-11-19 **产品轮 · R278（PM 立项 + 4 个 agent 编排）（2 个提交面 · 待办收件箱从「少报且不说明少报」变成「可对账」；顺带结清 5 条待决策 + 修 1 处守卫盲区）**：
+
+  任务书在 `artifacts/autonomy/R278/brief.md`，侦察在 `recon-approvals.md` /
+  `recon-decisions.md`，各切片回执 `be-inbox.md` / `fe-inbox.md` / `decisions.md` / `guardfix.md`。
+
+  - **① PM 选靶：不是找 bug，是选一条用户可感知的路径**。侦察交付的 U1–U5 五个现象
+    （徽标 3 vs 列表 7、第 51 个凭空消失、转圈+偶发读取失败、200 钳到 100、部署只显示 20）
+    **同一根因**：前端「先拉 50 个 `waiting_input` 会话，再逐个 `listApprovals`」。
+    ⇒ 补丁式修法会造出第三、第四份截断；**决定把聚合搬到服务端**，一次返回
+    「审批单行 + 两个计数 + `truncated` + `degraded`」。
+  - **② 四条产品决策（写进 brief，两侧不得各自发挥）**：
+    **D1** 顶栏口径以**审批单**为准（用户心智是「几件活」），`waitingSessions` 保留会话
+    数但**措辞不同**（「待审批 N 单」/「等待输入 M 会话」）；**D2** 任何「取了 N 条但
+    不保证是全部」必须带 `truncated` + `total`，**不许静默截断**；**D3** 读失败回 `null`
+    + `degraded`，**绝不回 0**（「没读到」≠「没有」是三处既有徽标的同一纪律，本轮补到
+    收件箱）；**D4** 顺带结清 5 条零成本待决策（A4 定 768/512、H1 改过期描述、
+    D1 修 `--json` 误判、B4/B5 协议标注），其余 12 条本轮**明确不做并写理由**。
+  - **③ 后端聚合（S1）**：新 `runtime/agent-inbox.service.ts`（+218 行）两条端点——
+    `GET /agent/approvals/pending` 与 `GET /agent/inbox/counts`。
+    **`total` 走独立 `count()`**（不是 `items.length`）、`sessionTotal` 走
+    `COUNT(DISTINCT sessionId)`、标题用一次 `In(...)` 批量取 ⇒ **查询数与会话数无关**（N+1 清零）。
+    `truncated = returned < total`；`total` 未知时 `truncated:false`、由 `degraded` 说
+    「未知」——**三个字段各自只说自己的事**。装配缺失抛 `DEPENDENCY_UNAVAILABLE`（503），
+    **不回 200 空信封**（不回空信封 = 不让运营以为活干完了）。
+  - **④ 前端接线（S2）**：`loadAgentWaiting` 改为**一次** `approvals/pending`
+    （`listApprovals` 调用归零，`toHaveBeenCalledTimes(1)` 钉死防 N+1 回归）；
+    `loadInboxCounts` 由 5 个分散请求（共用一个 60/min 限流桶）并为**一次**
+    `inbox/counts`。顺带修掉两条**真缺陷**：① 全部计数未知时原会渲染
+    「当前没有待你处理的事项」（空态谎报）；② 没有 `total` 时原会把已取条数
+    渲染成「共 N 条」（编造总数）。
+  - **⑤ 决策落地（S3）**：`--json <body>` 不再被当成输出开关（`VALUE_TAKING_OPTIONS`
+    加 `--json` + `looksLikeJsonPayload` 反向判据，**命令末尾的 `--json` 仍作开关**，
+    不反向破坏 `task list --json`）；协议 `adminApiUrls` / v7-v8 加 `$comment`
+    标注 python 侧未（部分）实现（生成物 `--check` 幂等，`check-protocol-breaking`
+    判 compatible）；`docs/atlas/.../task.md` 的「默认 any」改为 `owner`（与
+    `configuration.ts:568` 一致）；A4 从「选项」改「已定」。
+  - **⑥ 修一处**守卫盲区**（本轮自造的红，不是既有欠账）**：`check:agent-stub-fidelity`
+    的 `declaredTypeOf()` 正则不容 `?`，认不出本仓 `@Optional()` 标准写法
+    `private readonly x?: T | null` ⇒ 把 `Repository<AgentApproval>` 当成
+    `AgentApprovalsService`，一条误判造出两条红。修法：正则加 `\??` +
+    `stripNullUnion()`（**只**剥 `| null` / `| undefined`，别的联合原样保留 ⇒
+    保守方向：宁可多要求替身，不把真缺口藏起来），并补 2 条 selftest 用例
+    （含「换成服务类型必须红」的对照）。同时**补齐替身真缺口**：`makeSessionService()`
+    补 `list`，按生产 `agent-session.service.ts:623-662` 逐条复刻
+    （stalled 谓词看 **step 而非 updatedAt**、`clampPagination`、`createdAt DESC`），
+    **没有用白名单豁免**。自测探针顺带抓到自己的一个真 bug：同毫秒兜底原按 id
+    **升序** ⇒ `pageSize:1` 取到最老会话，与 `createdAt DESC` 相反，已改为同向。
+
+  **验证（真实 exit，分级如实）**：
+  - **守卫链 121/121 = 0**（`guards-repo-matrix` 全链解析 121 段 / 执行 121 段 / diff 空）；
+    `check:agent-stub-fidelity` **0**（1 替身 / 27 生产方法全覆盖）+ `--selftest` **17/17**；
+    **反证**：去掉 `\??` ⇒ 新用例红、恢复即绿。
+  - **后端**：`npx jest` 全量 **0**；`modules/agent` 52 套 **878 例**绿（新增 inbox 16 例）；
+    `route-authz-matrix` 10/10（262 路由，新路由落角色限制形态，**未改 spec**）；
+    `tsc`（app + specs）**0**；`eslint` 0。
+  - **前端**：`vitest run` **337 文件 / 2661 例通过**（+1 skip）；`inbox` 5 文件 **45 例**；
+    `tsc -b` **0**；`eslint` 0；`lint:i18n` 0；新增 13 条 zh/en 成对 key。
+  - **生成物**：`openapi:export` + `inject-openapi-en`（**1793/1793** 中文节点有英文，
+    en-map 新增 24 条**纯追加**，24 → 25 行 diff）；`gen:api-types` **+130 行**
+    （3 个 schema + 2 条 path）；`check-openapi-response-schema` 249/262 **棘轮已 --update**；
+    `check:api-reference` 225 路径逐字节一致。
+  - **级别声明（不越级）**：本轮最高到「真实进程内集成」的**前置**——
+    Jest 内存替身 + 真子进程跑真守卫脚本；**未**跑真 PG/Redis 集成、**未**跑生产包
+    浏览器 E2E。故「429 是否真的会发生」仍是**推断**（侦察给出的限流桶证据），
+    未实测复现，已记入 `docs/AGENT_HANDOFF.md` 的未覆盖项。
+
+  **方法学沉淀（接 510）**：
+  - **511「产品视角的第一件事是把 N 个现象归到一个根因，然后决定『不做哪几个补丁』」**。
+    U1–U5 看着是五个 bug，逐个修会得到五份截断逻辑与五种「未知」表达；归因到
+    「客户端聚合 + 无上限」后，正确解是**搬迁**（服务端一次返回带信封），
+    且**删掉的代码比新增的多**（`api/inbox.ts` 的 51 次请求变 2 次）。
+  - **512「`null` 与 `0` 的区分要在契约层强制，不能靠前端记得」**。本轮把
+    `total` / `degraded` / `truncated` 三个字段做成**响应信封的必填项**后，
+    前端「读失败渲染成没有」的可能性被**类型系统**挡住了 —— 而在此之前，
+    同一个错误在本仓已以「徽标 0 条」「空态：没有待办」两种形态复发过三次。
 
 - 2026-10-28 主会话（第三轮）：**LLM 接入与分配 done（后端地基）**——把「一个全局 provider + 每个厂商一套分支」换成「注册表 + 按用途路由」。
   ①**注册表**（`modules/ai/ai-providers.ts`）：provider 条目 = id + baseUrl + model + maxTokens/timeoutMs + **supportsVideo 能力位** + enabled；厂商名只是 id，代码里不再有 `provider === 'qwen'` 的分支（`chatMultimodal` 对任何 OpenAI 兼容端点生效）。存储 `ai.providers`（JSON，**不含密钥**）+ `ai.providers.<id>.apiKey`（isSecret，`***` 哨兵表示不改）。未配置时用旧键合成三条内置条目、旧键继续回落 → 存量部署零行为变化。
@@ -4058,6 +4430,2242 @@
     再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
     也不要用「先接上再观察」把 floor 变成摆设。
 
+- 2026-11-19 **自治优化 · R262（并行第 189 批）（1 提交 · `GSTC-B07` 判 **P0** —— 并记录一个「注释未剥离」的形态风险）**：
+
+  - **判定（三点）**：`GSTC-B07`（`check-cli-doc.mjs`）——
+    ① 读 `packages/acf-cli/src/commands` + `docs/atlas/05-interfaces/cli.md`；
+    ② 数每个命令文件里 `.command(` 的出现次数（+ `new Command(` 根命令数），
+    与文档标题 `### …（N）` 的数字**逐节比对**；
+    ③ ⇒ **P0**（断**代码结构的计数**；文档那侧是**手写**的 ⇒ 加了命令而文档没跟，立刻红）。
+  - **处置 `keep-and-accept`，附一个**已知形态风险**（写进 `dispositionNote`）**：
+    计数直接对 `readText` 的**原文**跑 `match(/\.command\(/g)`、**未剥注释** ⇒
+    源码注释里若出现 `.command(` 会被多算。
+    **实测当前 0 处**；若将来出现，症状是「文档数字对不上但代码没改」，**可自愈**、
+    **不掩盖真缺陷**；且有 `MIN_COMMAND_FILES` 下界 + 「无法解析父命令名 ⇒ 红」兜底。
+    ⇒ 按 487 判为**风险可控**，**只记录不改**（改扫描器属另一件事，且要重跑 CLI 计数全表）。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **23 → 24 条**、**P0 9 → 10**、backlog **24 → 23** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+- 2026-11-19 **自治优化 · R277（并行第 204 批）（1 提交 · 补上「状态→色」单一事实源的零测试；顺带修正我一处**扫描面漏层**）**：
+
+  - **① 先修正自己的扫描错误（507 的第一次落地就漏了层）**：首版按
+    `apps/admin-web/src/__tests__/` 找测试，报出 **27 个「被引用但未断言」**；
+    抽查发现 `secretKeyPolicy` / `passwordPolicy` **本来就有专属测试**——
+    它们放在 `src/utils/__tests__/`（**另一层目录**）。改用
+    `src/**/*.test.ts*` 递归后，数字降到 **2**（`maintenance-desc` / `status-color`）。
+    ⇒ 这正是 507 要防的：**「搜哪里」决定了结论**，而漏一层就多报 25 个假缺口。
+  - **② 选定 `status-color.ts`（真缺口）**：它收口了此前**散落 5 处**的「状态→色」知识
+    （TaskDetailPage / ExecutionRetryChain / AgentSessionsPage / ApplicationDetailPage /
+    SopsPage 经 sop-label），收敛纪律是**只搬运、不改值**；而表全是
+    `Record<string, …>` **宽键**、调用点 `?? 'default'` 兜底 ⇒ 两个**编译器拦不住**的静默失败：
+    ① **迁移错值**（`killed` 的 Tag 从 `volcano` 写成 `red`，类型合法、颜色变了、无人红）；
+    ② **键集漂移**（后端新增状态、前端没跟 ⇒ 静默渲染成中性色，「看起来正常」实为「未知」）。
+  - **③ 测的是什么**：**对拍**（`AGENT_SESSION_STATUS_COLOR` 键集 == `AGENT_SESSION_STATUSES`、
+    `AGENT_APPROVAL_STATUS_COLOR` == `AGENT_APPROVAL_STATUSES`）+ **逐字取值**
+    （成功=green / 失败=red / 超时=volcano / 在途=gold / 审批 consumed=blue）。
+    `killed` 那条单独钉住：Badge=error 而 Tag=volcano **故意不同**，
+    收口时若「合并成一个值」会让某一侧变色。
+  - **④ 两条反证（475 方法）**：① 把 `killed` 的 Tag 改成 `red` ⇒ **1 例红**；
+    ② 删掉 `budget_exceeded` 键 ⇒ **2 例红**（键集对拍 + 取值）。均已恢复原值。
+
+  **验证（真实 exit）**：单跑 **10/10** · `tsc -b` 0 · `eslint` 0 · `check-size-caps` 0。
+
+  **方法学沉淀（接 508）**：
+  - **509「『我搜过了』必须带上『我搜了哪一层』——否则 27 与 2 的差别会被当成事实」**。
+    首版 27 个「未断言」里 **25 个是假缺口**，只因测试放在 `src/utils/__tests__/`
+    而我只扫了 `src/__tests__/`。若直接按 27 个去补测试，会**重复造 25 份已有测试**。
+    ⇒ 任何「没有 X」的结论，必须同时给出**扫描面**（哪几个目录、哪个 glob），
+    否则它只是「在我看的地方没有」。
+  - **510「`Record<string, T>` 宽键 + `?? 默认` 兜底，是把『未知枚举』变成『看起来正常』的标准配方」**。
+    `status-color` 的每张表都是宽键、每个调用点都 `?? 'default'` ——
+    这让「后端新增状态、前端没跟」的后果从**编译错**降级成**一个中性色**。
+    ⇒ 这种收敛型常量表，必须配一条**对拍规范枚举**的测试；否则收敛越彻底，
+    漂移越无声（散落 5 处时至少还有 5 个地方各自可能被发现）。
+
+- 2026-11-19 **自治优化 · R276（并行第 203 批）（1 提交 · 补上**唯一安全闸**的零覆盖：`isSessionPathSegment`）**：
+
+  - **① 并发工作者的三个提交先跑了一遍全链**：`2ceaaa2a` / `a8d59a5c` / `b5b182bb`
+    落地后 `guards-repo-matrix` **122/122 = 0** —— 它们的改动没有破任何守卫
+    （按 506：别人的扰动先当压力测用）。其中 `b5b182bb` 移除的
+    `AgentWaitingResult` 类型漂移基线**是对的**（前端内部判别联合、非 API 响应体，
+    基线因此从 119 → 118，属**棘轮收紧**而非放宽）。
+  - **② ★ 找出的真缺口（不是补覆盖率）**：`apps/admin-web/src/utils/agentSessionUrl.ts`
+    三个导出**全部零测试**。其中：
+    ```ts
+    // AgentSessionsPage.tsx:274
+    const validId = sessionId !== null && isSessionPathSegment(sessionId) ? sessionId : null;
+    ```
+    `validId` 为 `null` 时 `useAgentSessionDetail(null)` **完全不发请求**
+    ⇒ `isSessionPathSegment` 是**把 URL query（不可信）变成 API 路径段的唯一闸**，
+    而它此前全仓**没有任何测试引用**。另两个（`agentSessionUrl` / `agentSessionTab`）
+    只在别处**被当工具传参**，从未被断言过自己的输出。
+  - **③ 测的是判据不是数字**：闸的三条 —— ① 拒绝穿越/分段（`/`、`\`、`.`、`..`、`%2F`）；
+    ② 接受真实 id 形态；③ **长度边界两侧封闭**（128 过 / 129 不过 / 空串不过）。
+    `agentSessionTab`：未知值必须回落 `steps`（坏 URL 不许弄崩页面）。
+    `agentSessionUrl`：`tab=steps` 省略、`approvalKey` 只在 `approvals` 带、
+    `status`/`stalled` 叠加、session 值解码可还原。
+  - **④ 反证（475 方法）**：把闸改成 `return true` 后重跑 ⇒
+    **3 条安全用例立刻变红**、其余仍绿 ⇒ 证明这组用例**测的正是那道闸**。已恢复。
+
+  **验证（真实 exit）**：单跑 **11/11** · `tsc -b` 0 · `eslint` 0 ·
+  `guards-repo-matrix` **122/122 = 0** · `check-size-caps` 0。
+
+  **方法学沉淀（接 506）**：
+  - **507「『被用到』不等于『被测到』——工具函数在别人的用例里出现，只证明它没崩溃」**。
+    `agentSessionUrl` 在 `agent-sessions-approvals.test.tsx` 里出现两次（构造 URL 传参），
+    但**从未断言过它的输出**；`isSessionPathSegment` 连出现都没有。
+    ⇒ 判「有没有覆盖」不能搜「有没有 import / 有没有调用」，
+    要搜「**有没有 expect 断言它的返回值**」。
+  - **508「安全类的纯函数，其测试的价值集中在**拒绝面**而不是接受面」**。
+    接受面（合法 id 返回 true）即使实现写宽了也不会红 —— 真正该钉的是
+    「穿越串必须 false」。本轮反证也印证：拆掉闸后**只有拒绝面那三条变红**。
+    ⇒ 给校验函数写测试时，**先列它必须拒绝什么**，再列必须接受什么。
+
+- 2026-11-19 **自治优化 · R275（并行第 202 批）（1 提交 · 修正一处**由并发改动暴露的真实缺陷**：基线 key 含行号）**：
+  跑全链时第 96 段 `check:spec-coupling-surfaces` 红，报「R1 基线腐烂」——**但代码一行没动**。
+
+  - **① 现象**：`R1_BASELINE` 的 key 是 `file:member:assignLine`。并发改动在
+    `agent-runtime.service.spec.ts` 的**第 1590 行之前插入了一行** ⇒ 三处
+    `enqueueLlmResume` 的 assignLine 全部 **+1**（1590/1605/1629 → 1591/1606/1630）
+    ⇒ **三条基线同时被判「腐烂」**，而守卫报的是「已修好，删掉这条登记」——**完全误导**
+    （真实的债还在，照文案做会把还没修的债从账上抹掉）。
+  - **② 修的是**两个**缺陷，不是一个**：
+    (a) **自检断言的假红**：`assert(total === bucketed)` 里 `r1Failures` **混了两类**
+    —— 真实命中（有 `assignLine`）+ 基线腐烂项（**只有 `key`**）。
+    只要存在腐烂项，`total === bucketed` 必然不成立 ⇒ **假红，与命中无关**。
+    修法：只把「有 `assignLine` 的」计入分桶，腐烂项单独计数并写进文案。
+    (b) **基线 key 的设计缺陷（根因）**：改用**稳定序号** `file:member:序号`
+    （同 `file:member` 按 assignLine 升序取第 N 个）。只要**命中数量与顺序不变** key 就稳定
+    ⇒ 插入/删除无关行不再误报。新增导出的 `r1BaselineKey()` 并附头注解释这次事故。
+
+  **验证（真实 exit）**：`check:spec-coupling-surfaces` **0**（自检 **30 例全过**、
+  主判据绿、腐烂误报消失）· **`guards-repo-matrix` 121/121 = 0**（修前第 96 段红）·
+  `check-size-caps` 0。
+
+  **方法学沉淀（接 504）**：
+  - **505「判据的 key 若含**易变属性**（行号/序号/时间），它就会把『无关变化』渲染成『相关变化』」**。
+    一行无关的插入让三条基线同时报错 —— 而**错误的文案**比错误本身更危险：
+    它让下一个人按「已修好，删掉登记」去操作，**把还没修的债从账上抹掉**。
+    ⇒ key 只能用**语义上稳定**的属性；必须含位置时，用**相对序号**而不是绝对行号。
+  - **506「并发改动是缺陷的**免费压力测**」**。
+    这个 bug 在我自己改动的时序里**从没出现过**（我从不往那个文件里插行）；
+    是别人的一次无关插入把它逼出来的。
+    ⇒ 长时间自治循环里，**别人制造的扰动**（497/498 已记提交边界与总量信号）
+    除了要「避开」，还应当**当成一次额外的验证机会** ——
+    它跑到你从没跑过的路径上，把你以为稳的东西撞松。
+
+- 2026-11-19 **自治优化 · R274（并行第 201 批）（1 提交 · 登记真缺口 `GSTC-048`；并**撤回**一个 5/6 误报率的自动判据）**：
+
+  - **① 真缺口（已登记）**：`check-agent-index-names.mjs` 读
+    `agent-unique-violation.util.ts` 抽 `AGENT_UNIQUE_CONSTRAINTS` 三个约束名，
+    同时逐迁移文件抽 `CREATE UNIQUE INDEX` 名，**两侧集合对账** ⇒ **P0**。
+    价值：三个名字**直接决定 23505 的归因是否生效** —— 对不上时违反约束会静默落到通用错误
+    （本仓「agent 域 23505 按约束名归因」那条债正卡在这里）。两处解析失败各报**结构红**。
+  - **② ★ 撤回的尝试（本轮的主要判断）**：曾给守卫侧加「新增即红」判据
+    （复用 spec 侧的 `looksLikeImplementationRead`）⇒ **6 个命中里 5 个是误报**；
+    收紧三轮（排除 `replayFile` / `REAL_*_REL` / `runtimeCopy` / 文档字符串行）后**仍剩 3 个**。
+    **根因不是参数没调好，是两侧语义模型不同**：
+    - spec 侧：读源码文本 ⟺ 拿它做断言（**一对一**）；
+    - 守卫侧：读源码文本有**三种用途**（当断言对象 / 复制进夹具 / 读自己的产出），
+      而前两者**语法上无法区分**（都是 `readFileSync(join(ROOT, X_REL))`），
+      差别在「那个变量之后被用来做什么」——**需要数据流分析**。
+    ⇒ 做一个 5/6 误报率的判据，结果必然是「被人加豁免或注释掉」（435），**比没有更糟**。
+    手工登记这 1 条真缺口的代价远低于那个。已 `git checkout` 撤回，工作区恢复。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **47 → 48 条（P0 31 → 32）**、backlog 仍 **0** · `--selftest` **59/59**。
+
+  **方法学沉淀（接 502）**：
+  - **503「启发式不可跨侧复用 —— 当同一段代码在两处的**语义模型**不同时，参数怎么调都错」**。
+    `looksLikeImplementationRead` 在 spec 侧是准的（读源码 = 断言），
+    在守卫侧只有 1/6 的命中是真正的「读源码做断言」。我试了三轮收紧，
+    每次都在为「上一条误报」打补丁，而**下一批误报还没出现** ——
+    这正是 490（「在少数样本上验证不了判别标准」）的升级版：
+    **不是样本不够，是模型不对**。
+    ⇒ 判断「能否复用」的标准不是「函数签名像不像」，而是「**两侧对『读』这件事的定义是否相同**」。
+  - **504「判定『这个自动化不值得做』也是工程产出 —— 前提是把原因写到能被复核的程度」**。
+    本轮撤回判据时没有留一句「不做了」，而是写清了：测了多少命中、误报几个、
+    收紧几轮、根因是哪三处语义差异、为什么「误报率高的判据比没有更糟」。
+    ⇒ 只有这样，下一轮才不会**重新尝试同一个想法**（本仓已有先例：R237 的两次 mock 修法、
+    R273 的两个方向，都靠留痕避免重复）。
+
+- 2026-11-19 **自治优化 · R273（并行第 200 批）（0 提交 · 核查 501：「backlog 清零后会不会重新长回来」——结论是**不会自己长，但也不会自动发现新守卫**，而实测**无漏登记**）**：
+
+  - **① 机制核实（读实现）**：`coverageBacklog` 是**人工登记**的
+    （`registry.coverageBacklog`，守卫只校验 `owner`/`reviewBy` 与到期），
+    **不是机器自动产出**。且判据头注第 71 行明写：
+    「**不扫** `scripts/check-*.mjs` 类守卫脚本 —— 它们同样读源码文本，但属
+    guard-smith 的足迹，另行登记」。
+    ⇒ **两个方向都确认**：backlog 不会自涨（501 担心的那种回涨不成立），
+    但**新守卫也不会被自动发现**（这是真的风险面）。
+  - **② 实测那个风险面**：全仓 `check-*.mjs` 里「真读 `apps/*/src` 或 `packages/*/src`
+    路径、但未登记进 `entries`」的，精确筛出 **3 个**：
+    `check-posture-matrix-tables` / `check-sanitize-parity` / `check-source-text-contracts`（自己）。
+  - **③ 逐个读代码核实（关键）**：
+    - `check-source-text-contracts` → 第 2051 行读的是**它自己**（自检用），非外部源码；
+    - `check-posture-matrix-tables` → L301/L304 把两个 util **复制进 fixture**
+      （`REAL_UTIL_REL` / `REAL_CAT_REL`，注释写明「让『真跑』在 `--root` 夹具上下文里也能成立」）；
+    - `check-sanitize-parity` → L676 把两个 util **复制进 runtimeCopy**（同上，夹具用）。
+    ⇒ **三条都不是「把源码文本当断言对象」** —— 两条是「把源码当**数据**搬进夹具」，
+    一条是自读。`entries` 登记的是「断源码文本形态」的那类，**它们的读取面不在判据范围内**。
+  - **④ 结论：无漏登记**。501 提出的「新守卫可能被漏看」这条路，**本轮实测为零**。
+    但这也意味着：**新守卫若真的断源码文本，判据⑨ 不会主动发现它** ——
+    那仍是**结构性缺口**（只是当前没有实例）。
+
+  **验证**：本轮 0 源码改动；`coverageBacklog` 保持 **0**、`entries` **47** 不动。
+
+  **方法学沉淀（接 501）**：
+  - **502「『风险会不会发生』与『风险存不存在』是两个问题；核完前者才轮到后者」**。
+    501 担心 backlog 回涨 —— 实测**不会**（人工登记，非自动）。
+    但同一次核实暴露出**另一件真事**：新守卫**不会被自动发现**。
+    ⇒ 若只核「501 担心的事」，会得出「一切正常」；**多问一句「那它的反面呢」**，
+    才看见真正的缺口。这与 412（「一个布尔别承载两个相反的风险方向」）同源：
+    **一个机制的正面结论，往往掩盖了它的反面**。
+
+- 2026-11-19 **自治优化 · R272（并行第 199 批）（1 提交 · 判定最后 3 条；**★ 判据⑨ backlog 清零 ☆**）**：
+
+  - **`GSTC-B17` → P0**（`check-failure-classifiers`）：把
+    `generated/failure-classifier.{mjs,py}` 两份生成物**真跑一遍**（node + python3 进程），
+    对**输出**做等价性比对 ⇒ 断**跨语言行为等价**，不是源码相似。
+    价值：不一致会让同一故障在两侧显示不同原因，运维按原因排查会**找错方向**。
+  - **`GSTC-B18` → P0**（`…-reverse-proof`）：对 B17 做**反向实证** ——
+    构造「必然不等价」的变体、断言 B17 **必须红**。这是**元判据**（对判据的判据），
+    防「B17 恒绿但什么也没验」。
+  - **`GSTC-B25` → P0**（`check-release-config`）：从 `release.yml` 切出 `publish-npm` 的
+    `include:` 段与 `version-guard:` 段，抽矩阵条目与 version 守卫路径，
+    与待发布包集合**双向对账** ⇒ 断**四份互不校验的配置之间集合一致**。
+    价值：任一处漏配 ⇒ 某个包**静默地永远发不出去**。
+
+  **★ 里程碑：`coverageBacklog` 29 → 0**。
+  守卫侧 **47 条已登记（P0=31 / P1=8 / P2=8）、0 条待深审**。
+  判据⑨ 从 **R168** 挂了一百余轮的「29 条待深审」，
+  经 **R257–R272 共 16 轮**全部判定完毕。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0**（backlog 0 / entries 47 / P0 31）·
+  `--selftest` **59/59**。
+
+  **⚠️ 环境状态（如实）**：`check-size-caps` 现有 **10 处超限，全部来自并发工作者的改动**
+  （`admin-api/src/modules/agent/runtime/` 下的 service 与 spec：1139>1130、2474>2451 等），
+  **与本提交无关**（本文件是 JSON，不在 size-caps 扫描面）。按 497 只提交自己的文件。
+
+  **方法学沉淀（接 499）**：
+  - **500「一个挂了一百轮的『待深审』清单，真正需要的不是『某天专门处理』，而是**一个可重复的单条判定流程****。
+    R257 第一次判 B28 时花了整轮（读代码 → 三点判据 → 迁 entries → 过判据④）；
+    到 R271–R272 已经能**一轮判 3 条**。差别不在我读得快了，
+    而在**流程固定后，每条的工作量变得可预测**（读什么/比什么/归哪档/怎么迁/怎么验）。
+    ⇒ 长清单的正确处理方式是**先跑通一条**，再**批量复用流程**；
+    「等有空一次做完」在 29 条规模上**永远不会发生**（482 已述，500 是它的**规模化版本**）。
+  - **501「清零的判据要立刻问『它会不会重新长回来』」**。
+    `coverageBacklog` 现在 0，但**新增守卫仍可能进入 backlog**（判据⑨ 的机制是自动发现）。
+    本轮没改那个机制 —— 若新守卫出现，backlog 会重新非零。
+    ⇒ 清零不是终点：**要么让「新守卫必须先判定再入库」成为流程**（本轮的批量化已让它便宜），
+    要么接受「backlog 会周期性回涨」。这条留给下一轮核（**不假装清零等于永久解决**）。
+
+- 2026-11-19 **自治优化 · R271（并行第 198 批）（1 提交 · 批量判定 3 条全 P0：B05 / B06 / B11；**backlog 6 → 3**）**：
+
+  - **`GSTC-B05` → P0**（`check-atlas-counts`）：`readdirSync` 数迁移/模块/应用目录得**实际数量**，
+    与 atlas 文档手写的数字对账；事实源读不到即**结构红**。防「1122 个」冒充「122 个」
+    （数字前后不许是数字）、`…InitialSchemaV2` 满足 `…InitialSchema`（迁移名不许是前缀）。
+    价值：本仓有过「迁移数文档写 142、实际 143」的真实漂移（R219 就是修它）。
+  - **`GSTC-B06` → P0**（`check-brand-drift`）：`Buffer.from([0x89,0x50,…])` 校验 PNG 魔数 +
+    **逐字节**比对品牌资产（源 SVG → 生成物 → 落地副本）+ 检查 `data:image/png;base64,` 内联。
+    价值：「同一只狐狸三种颜色」；文本比对会放过空白与编码差异。
+  - **`GSTC-B11` → P0**（`check-desktop-agent-packaging`）：按文件类型**剥注释**后做锚点匹配
+    （字符串字面量原样保留 —— 锚点里一半是路径字面量）+ 针尾标识符边界检查。
+    头注自己记录了 T4 修掉的**四类假绿**：① 整篇 `includes` 让注释也算接线；
+    ② 前缀误配（`build:agent-worker` ⊂ `…worker2`）；③ 崩溃/空跑≠红灯；
+    ④ 字节行必须在行首或换行后（假红）。
+    价值：「把打包接线**注释掉** —— 最省事的临时关掉手法 —— 在本闸下会红」。
+
+  **① 判据⑧ 抓到我的一个真实遗漏（本轮最有价值的一次「被抓」）**：
+    首次迁移后守卫直接报
+    「`GSTC-043` 读了 `scripts/brand/build-brand-assets.py` 但它**不在** reads 里」⇒ 已补进 reads。
+    **这是判据在真实工作**：`reads` 漏登记会让「守卫脚本的读取面」被低估，
+    外提/搬迁时没人知道要同步它。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **41 → 44 条**、**P0 25 → 28**、backlog **6 → 3** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **方法学沉淀（接 498）**：
+  - **499「判据抓到你自己的疏漏时，那次被抓的价值高于十条自己写对的」**。
+    本轮我照惯例写了 `reads`，漏了 `build-brand-assets.py` —— 判据⑧（R165 的
+    「读到的源码字面量必须被某个 reads 覆盖」）当场点名。
+    若没有它，这个漏登记会**一直躺在 entries 里**：不红、不影响任何测试，
+    只在「哪天把 brand 脚本搬走」时表现为「守卫静默失真」。
+    ⇒ 自查 vs 判据自查的差别：**自查只检查你想到要查的**；判据检查**它被设计来查的那一面**，
+    而那一面恰好是你最容易忘的（因为你在忙着写结论）。
+
+- 2026-11-19 **自治优化 · R270（并行第 197 批）（1 提交 · 批量判定 3 条全 P0：B02 / B16 / B14；backlog 9 → 6）**：
+
+  - **`GSTC-B02` → P0**（`check-agent-stub-fidelity`）：抽出测试替身实现体后比对
+    **替身返回面**与真实实现（ADR-027「替身必须保真」）。自带下界防
+    「0 个替身 = 全部保真」的假绿；**已知盲区写在脚本头注**（不是「未知风险」）。
+    价值：本仓有过「替身返回 `undefined` 而生产返 Promise ⇒ 调用点 `.catch` 抛错被外层吞
+    ⇒ 弹假错误 toast」的真实事故。
+  - **`GSTC-B16` → P0**（`check-error-i18n`）：`placeholderSet(template)` 抽 `{{name}}` 集合
+    断 zh/en **集合相等**；错误码则由 `matchAll` + `Map.get` **双向**对账。
+    价值：「中文正常、英文一片空白」；比文本相似度能正确处理「顺序不同但集合相同」。
+  - **`GSTC-B14` → P0**（`check-enum-consumers`）：`MEMBER_RE` 抽枚举成员值，
+    与**消费清单**对账 ⇒ 断「**枚举扩了、消费者没跟**」。
+    价值：新枚举成员没人处理会静默落 `default`；目录改名/全排除时**显式红**，
+    不允许「0 命中 ⇒ 一致」。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **38 → 41 条**、**P0 22 → 25**、backlog **9 → 6** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **并发情况（如实）**：工作区仍有并发工作者的 `apps/admin-web` 改动，
+  且**在持续写入**（`check-size-caps` 文件数 2114 → 2115、函数 12703 → 12716）。
+  本提交**只含 `scripts/guard-source-text-contracts.json`**（497 的纪律）。
+
+  **方法学沉淀（接 497）**：
+  - **498「`check-size-caps` 的文件/函数计数，是这个仓最可靠的『有人在动』信号」**。
+    本轮两次读到文件数变化（2111→2114→2115、12692→12703→12716）——
+    它比 `git status` **更早、更不依赖路径猜测**：`git status` 只告诉你「哪些文件变了」，
+    而计数变化告诉你「**外面还有人正在写**」（因为我的提交每次只加一两条 JSON 条目，
+    不新增 .ts 文件）。⇒ 长时间自治循环里，**用总量指标判断「世界是否稳定」**比看 diff 更划算。
+
+- 2026-11-19 **自治优化 · R269（并行第 196 批）（1 提交 · `GSTC-B22` 判 **P0**；**backlog 首次降到个位数 9**）**：
+
+  - **判定（三点）**：`GSTC-B22`（`check-migration-symmetry.mjs`）——
+    ① 读迁移文件的 `up`/`down` 方法体；
+    ② `collectMethodText()` **跟随被调用子方法**抽取（`seen` 防环）→ `sanitize()` →
+    正则识别 DDL 对象（`table:x` / `column:x.y` / `index:z`）→ **两侧对象集合对称性**校验；
+    ③ ⇒ **P0**（断**对象集合**，不是文本 1:1 —— 正确处理「索引随表消失」「分区子表
+    不属独立对象」两类不属于字面 1:1 的情况）。
+  - **处置 `keep-and-accept`**：价值是「每个迁移都**可回滚**」（不可逆迁移在生产上等于
+    「出问题只能靠备份」）。`collectMethodText` 跟随子方法调用是**必要复杂度**
+    —— 很多迁移把 DDL 抽到 helper 里，只看 `up`/`down` 字面段会漏。
+  - **⚠️ 并发工作者的改动（如实记录，未提交）**：本轮期间工作区出现
+    `apps/admin-web` 的 URL 状态重构（新增 `agentSessionUrl.ts` /
+    `useAgentSessionDetail.ts` / `AgentSessionCreateModal.tsx`，改 7 个文件），
+    时间戳在 03:00 前后、**非本会话所为**。按协作纪律**只提交自己的文件**，
+    那条线留给它的作者。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **37 → 38 条**、**P0 21 → 22**、**backlog 10 → 9**（首次个位数）·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **方法学沉淀（接 496）**：
+  - **497「大仓里同时有别人在改代码时，提交边界必须显式到**文件**，不能靠 `git add -A`」**。
+    本轮工作区里 12 个文件的改动**不是我的**（时间戳在会话期间、内容属另一条线）。
+    若图省事用 `git add -A`，会把别人的**未完成改动**混进我的提交 ——
+    那会让两条线性纠缠，且**追溯责任时无法分辨**。
+    ⇒ 多人/多 agent 并行时，`git add <具体路径>` 是纪律，不是谨慎。
+    同时：**`check-size-caps` 的文件数/函数数变化**是「有人在外面加代码」的**免费信号**
+    （本轮 2111 → 2114、12692 → 12703）—— 它比 `git status` 更早暴露这件事。
+
+- 2026-11-19 **自治优化 · R268（并行第 195 批）（1 提交 · 批量判定 3 条，全 P0：B12 / B19 / B21）**：
+
+  - **`GSTC-B12` → P0**（`check-desktop-rollback-path`）：按**标题层级**定位文档节
+    （`headingRe` + `headings[k].level <= headings[h].level`），再要求「回滚路径」那一节
+    描述的步骤能在 builder/updater/config-store 找到对应实现 ⇒ 断**节内语义与代码事实一致**，
+    不是全文关键词命中（否则关键词写在别的节也会假绿）。
+  - **`GSTC-B19` → P0**（`check-index-drift`）：
+    `matchAll(/CREATE … INDEX … "name" ON "table" (cols)/gis)` 建 DDL 侧 Map，
+    与实体具名 `@Index("name",[cols])` 做**集合对账** ⇒ 断两侧集合相等。
+    价值：`@Index` 不许是**死声明**（本仓有过「声明的索引数十周期从未落库」的真实事故）。
+    R263 已把它的 `stripComments` 换成共用件，修掉唯一的形态漏洞。
+  - **`GSTC-B21` → P0**（`check-metric-docs`）：从 `runtime-metrics` 注册表建
+    `entries.set(name,{kind,reason})`，再从文档抽 `autoflow_*` 提及，做**双向集合对账**
+    （注册未文档 / 文档未注册 / allowlist 越界）。
+    价值：文档里的指标清单**不是手抄的** —— 单向只能发现「注册了没写」，
+    发现不了「写了但根本不存在」；allowlist 是**棘轮**（只许缩小）。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **34 → 37 条**、**P0 18 → 21**、backlog **13 → 10** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **方法学沉淀（接 495）**：
+  - **496「『双向对账』与『单向清单』的区别，在于它能发现**根本不存在的东西****。
+    `GSTC-B21` 是双向（注册表 ↔ 文档），所以「文档里写了一个不存在的指标」会红；
+    若只做单向（「注册的都要在文档里」），那个假指标会**永远留着**。
+    ⇒ 判据设计时先问：**这个方向能不能发现「多出来的」**？
+    只能发现「少了的」的判据，对「臆造」类缺陷**完全无效**。
+
+- 2026-11-19 **自治优化 · R267（并行第 194 批）（1 提交 · 批量判定 3 条，**全部 P0**：B27 / B29 / B30）**：
+
+  - **`GSTC-B27` → P0**（`check-template-manifest`）：解析 `manifest.json` 后做
+    **封闭键集合**断言（未知键即失败，明确拒绝 `hook`/`command`/`script` 这类可执行片段）
+    + 字段值语义校验（`name` == 目录名等）⇒ 断**结构化语义值**。
+    价值：清单是**机器契约**，不接受自由字段。
+  - **`GSTC-B29` → P0**（`check-web-type-drift`）：`scanApiDeclarations` 抽顶层类型声明、
+    按 `CONTRACT_RE`/`MIRROR_RE` 分类，再与 `parseGeneratedSchemas(api-types.ts)` 对账。
+    断**两端类型声明集合关系**；**五处下界**防扫描面塌方 ——
+    注释原话「扫到 0 处不是『没有漂移』，是『一处都没看』」。
+  - **`GSTC-B30` → P0**（`check-web-type-field-drift`）：`bodyTxt.startsWith("{")` 判形态后
+    `.has(f)` 做**字段集合差集**，与生成物字段对账；基线文件登记「已知合法差异」
+    （棘轮只许缩小）⇒ B29 是「声明是否存在」，这条是「**字段逐个对上**」，更细。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **31 → 34 条**、**P0 15 → 18**、backlog **16 → 13** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **方法学沉淀（接 494）**：
+  - **495「同族的三条一起判，能暴露**分档标准的边界**——本轮三条全 P0，正说明边界在哪」**。
+    B27（JSON 清单）/ B29（类型声明集合）/ B30（字段集合）机制各不相同
+    （序列化对象 / 结构扫描 / 字段差集），却都判 P0 ——
+    因为它们**都先把输入变成结构化表示，再比集合或值**。
+    ⇒ 这正是 P0 的**充分特征**：**「能变成结构」就不依赖书写形态**。
+    反过来说，P1 那 8 条的共性是「**只能按文本抽**」（跨语言、无解析器、PS1/正则矩阵）。
+    本轮让「P0 与 P1 的边界」从直觉变成了**可陈述的判据**。
+
+- 2026-11-19 **自治优化 · R266（并行第 193 批）（1 提交 · 批量判定 3 条：B10→P0 / B15→P0 / B26→P1）**：
+
+  - **`GSTC-B10` → P0**（`check-cron-guard`）：**括号配平**定位每个 `@Cron` 方法体边界，
+    再判开头是否 `try/catch` 或被 `guardedCron(` 包裹 ⇒ 断**代码结构事实**
+    （闸必须在**方法体开头**，不是「文件某处有 try/catch」）。
+    价值：`@nestjs/schedule` **不 await** 回调 Promise ⇒ 裸奔方法体的异常变未处理拒绝。
+  - **`GSTC-B15` → P0**（`check-enum-drift`）：`matchBracket()` 括号配平定位枚举字面量，
+    再对**掩码文本**做成员匹配 ⇒ 断**跨端枚举值集合一致**（entity / 迁移 DDL / 前端三侧）。
+    价值：迁移少一个值 ⇒ PG 拒写；前端少一个 ⇒ UI 空白。
+  - **`GSTC-B26` → P1**（`check-ssrf-deny-parity`）：三处测试文本**先剥注释**再抽
+    `addr: "..."` 条目集合对账 ⇒ 读的是**三种语言**（.ts/.py）的测试源码文本，
+    靠正则抽条目 ⇒ **依赖书写形态**；引入跨语言 AST 解析代价远高于收益。
+    补偿：**剥注释**（前身曾因注释命中假绿）+ **各条目数下界**（防「失配 ⇒ 集合空 ⇒ 恒绿」）。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **28 → 31 条**、**P0 13 → 15 / P1 7 → 8**、backlog **19 → 16** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **方法学沉淀（接 493）**：
+  - **494「『它有下界』不等于『它不会失明』—— 要看下界**拦的是哪种失明****。
+    `B26` 有「各条目数下界」，但那个下界拦的是「正则失配 ⇒ 集合变空」；
+    它**拦不住**「换引号后部分条目仍被抽到」这种**部分失明**。
+    ⇒ 判档时对补偿控制的评估要具体到「**它拦的是全失明还是部分失明**」；
+    只拦全失明的下界，不足以把一条 P1 升成 P0。
+
+- 2026-11-19 **自治优化 · R265（并行第 192 批）（1 提交 · **批量判定 3 条**：B13→P0 / B31→P1 / B03→P0）**：
+  提速轮 —— 每条仍**逐条读代码**，只是把结论合并到一次提交。
+
+  - **`GSTC-B13` → P0**（`check-desktop-update-chain`）：读 `electron-builder.yml` + `updater.ts`；
+    `parseYamlSubset()` **解析成结构树**（非按行匹配）后核对 linux 段 `artifactName`、
+    模板 `${...}` 占位符与 updater 替换点**逐名对应** ⇒ 断**结构化名字对应**。
+  - **`GSTC-B31` → P1**（`check-windows-gui-script`）：
+    `items.filter(item => !item.re.test(text))` —— **逐条正则对整个 PS1 文本做 test**
+    ⇒ 判据对象**就是**那段脚本的文本形态（多写/重排/换引号都可能失配）。
+    PS1 无进仓解析器（引 PSScriptAnalyzer 是重依赖决策）；
+    已有补偿：除 `catchIndex >= 0` 外还要求 `Reply` 出现在 catch **之后**的文本里。
+  - **`GSTC-B03` → P0**（`check-agent-write-sanitize`）：抽出写入点调用参数后
+    `SANITIZER_RE.test(prop.value)` 判是否过脱敏 ⇒ 断**值级事实**
+    （实参是否被 sanitizer 包裹）；两道**结构红**兜底
+    （`scannedFiles < MIN` / `sanitizerDefinitions === 0`）⇒ 规则被搬走会红，不静默失明。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **25 → 28 条**、**P0 11 → 13 / P1 6 → 7**、backlog **22 → 19** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **方法学沉淀（接 492）**：
+  - **493「批量判定的前提是**判据可枚举、结论不互相影响**，而不是『读得快』」**。
+    本轮 3 条并行，成立的原因是：三条的判定各自只依赖**它自己读的文件**
+    （B13 读 yml+ts、B31 读 ps1、B03 读 ts），**互不引用**。
+    ⇒ 若两条之间存在「A 的结论依赖 B 的分档」，就必须**串行判定**；
+    能批量的前提是**判定之间无依赖**，不是有并行工具。
+
+- 2026-11-19 **自治优化 · R264（并行第 191 批）（1 提交 · `GSTC-B04` 判 **P0** —— 并厘清「**读 YAML** ≠ **依赖书写形态**」）**：
+
+  - **判定（三点）**：`GSTC-B04`（`check-alerts-rules.mjs`）——
+    ① 读 `alerts.yml` · `grafana-dashboard.json` · `alerting-rules.yml` ·
+    `docs/observability/README.md` · `docs/operations.md`；
+    ② `parseYamlSubset(alerts.yml)` **解析成结构树**后做**语义级对账**：
+    alert 名合法且唯一、`expr` 引用的指标名 ∈ 代码指标清单、`runbook_url` 锚点真实存在；
+    ③ ⇒ **P0**（断**结构化语义值**，缩进错一格会被解析器如实报红）。
+  - **★ 为什么不是 P1（承 488 的关键厘清）**：P1 的门槛是「**依赖书写形态**」。
+    这条确实读 YAML，但它**自带解析器**（`parseYamlSubset`，不支持锚点等高级语法、
+    遇到即报错）⇒ 它**理解结构**而非匹配文本。书写形态变化（缩进/引号）
+    会被**正确解析或明确报错**，不会静默失明。
+    ⇒ 与 `B08`（跨 YAML+TS **按行匹配**键名）有**本质区别**：
+    **B08 依赖写法，B04 理解结构** —— 同样读 YAML，分档不同。
+  - **处置 `keep-and-accept`**：价值是「告警规则**接线了**且**引用的指标真的存在**」——
+    只读文本无法判断 `expr` 里的指标名是否在代码里注册过，也无法判断 runbook 锚点是否真实存在。
+    它自带探针防「锚点面为空 ⇒ 死链判据空转」，**解析失败显式红**而非静默跳过。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **24 → 25 条**、**P0 10 → 11**、backlog **23 → 22** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **方法学沉淀（接 491）**：
+  - **492「『读什么格式』不决定分档，『拿什么去比』才决定」**。
+    `B08` 与 `B04` **都读 YAML**，分档却不同（P1 / P0）：
+    B08 用**逐行正则**抽 `environment` 键（写法一变就失明）；
+    B04 用**自带的子集解析器**把 YAML 变成结构树再比语义（写法变化被正确消化）。
+    ⇒ 判 P1 的真正条件是「**判据依赖的形态，能不能被它自己的解析消化**」；
+    不能消化 ⇒ P1（脆），能消化 ⇒ 按它比什么定档（这里比语义值 ⇒ P0）。
+
+- 2026-11-19 **自治优化 · R263（并行第 190 批）（1 提交 · 478 的第三次触发落地：抽出共用 `stripComments`，修掉**唯一真正有 bug** 的那份）**：
+
+  - **① 触发**：R253（YAML 注释当接线）· R255（JSON 注释键当依赖）·
+    R262（CLI 计数未剥注释，0 处、仅记录风险）—— **同类第三次出现**后，
+    按 478 去查**全仓的「剥注释」实现**。
+  - **② 实测面（先数，不猜）**：共 **16 份各自实现**，形态三类 ——
+    **字符机 6 份**（正确处理行尾/块注释 + 字符串字面量）·
+    **正则版 3 份**（用 `\s+\/\/.*$`，**能剥行尾**）·
+    **1 份用 `^\s*\/\/.*$` ⇒ 只剥行首**。
+  - **③ 缺陷（唯一真正有 bug 的那 1 个）**：`check-index-drift.mjs`
+    只匹配行首 `//` ⇒ **行尾注释完全漏剥**。**实测反证**：
+    | 输入 | 旧实现 | 共用件 |
+    |---|---|---|
+    | `@Index("foo_idx",["a"]) // 说明里有 @Index( 不算` | **2** | **1** |
+    旧实现把注释里的 `@Index(` 也算成声明 ⇒ **该守卫的计数基准本身是错的**。
+  - **④ 修法**：抽出 `scripts/lib/strip-comments.mjs`（与 `check-agent-event-causation`
+    的字符机版**同语义**：逐字符扫描、正确处理 `'"\`` 与 `\` 转义、**等长替换**保留换行
+    ⇒ 行号列号不变），`check-index-drift` 改为 import。
+    **刻意没批量替换另外 15 份** —— 它们**当前行为是对的**（3 份能剥行尾、6 份字符机、
+    其余是不同语法的变体如 Python `#`）。按 478：修**真正有 bug 的那一份**，
+    并把正确实现变成**可复用的默认**。
+
+  **验证（真实 exit）**：`check-index-drift` **0**（72 个命名 @Index 已比对、无漂移）·
+  `--selftest` **8/8** · **反证 旧=2/新=1** · `guards-repo-matrix` **121/121 = 0** ·
+  `check-size-caps` 0 · `check-script-main-guard` 0。
+
+  **方法学沉淀（接 489）**：
+  - **490「『重复实现』不都是债 —— 先数、再按**行为差异**分类，只有行为错的那份才是 bug」**。
+    16 份 `stripComments` 看似「明显的重复债」，但实测**只有 1 份行为错**。
+    若不做这一步直接「统一重构」，会把 15 份**当前正确**的实现一起改掉 ——
+    而它们各自的语法变体（Python `#`、YAML `#`）是**真需求**，不是重复。
+    ⇒ 「重复」是**表象**，**行为是否等价**才是判据。
+  - **491「把正确实现变成共用件，比逐个修错的那份更有长期价值」**。
+    本轮除了修 `check-index-drift`，还留下 `scripts/lib/strip-comments.mjs` 作为**默认选择**
+    —— 下一个要剥注释的守卫会先看到它。⇒ 修一个 bug 的收益是**当下**；
+    提供共用件的收益是**让同类 bug 不再被写出来**，这正是 478 要的「修形态」。
+
+- 2026-11-19 **自治优化 · R261（并行第 187 批）（1 提交 · `GSTC-B24` 判 **P0** —— 并纠正一个「看起来像 P2」的误判风险）**：
+
+  - **判定（三点）**：`GSTC-B24`（`check-password-policy-sync.mjs`）——
+    ① 读后端 `users.service.ts` + 前端 `passwordPolicy.ts`（**两侧都是 TS**，同语言跨文件）；
+    ② 抽出 `minLength` 数值 + 三条正则，再 `charSet(compile(re))` **展开成字符集逐字符比对**；
+    ③ ⇒ **P0**：比的是**语义层的值**（数值 + 展开后的字符集），不是正则字面量的文本形态。
+  - **★ 为什么不是 P2（本轮的关键判断）**：P2 的定义是「判据对象**即**文本形态」。
+    若这条只比 `/[...]/` 的**源码字符串**，把 `/[A-Z]/` 写成 `/[A-Za-z]/` 会**误判成漂移**
+    （文本不同、语义相同）；反过来 `/[A-Z]/` vs `/[a-z]/` 也可能被误判成一致。
+    它**编译并展开**字符集，比的是「**跑起来会不会拒同一个密码**」⇒ 属**值级**判据 ⇒ P0。
+  - **处置 `keep-and-accept`**：全部价值是「前后端密码策略**真的等价**」——
+    用户在后端能设的密码、前端不能拒。这**只能**从两侧源码抽出并编译比对
+    （比文本会漏、比手抄清单会漂）。代价已由**抽取失败 ⇒ 结构错**兜住。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **22 → 23 条**、**P0 8 → 9**、backlog **25 → 24** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **方法学沉淀（接 487）**：
+  - **488「『跨文件』不等于『跨格式』—— 分档看的是**判据比什么**，不是它读几个文件」**。
+    B08（跨 YAML+TS）判 P1，B24（跨两个 TS）判 P0 —— 两者都读两个文件，
+    **差别不在文件数**，而在：B08 依赖**书写格式**（YAML 键的写法一变扫描器就可能失明），
+    B24 则把两侧**编译成字符集**再比，**与写法无关只与语义有关**。
+    ⇒ 判 P1 的门槛是「**依赖书写形态**」，不是「读了多处」。
+  - **489「『看起来该是 P2』的条目，恰恰最需要走一遍 P0 的推理」**。
+    B24 读的是「正则字面量」，第一直觉很像「判据对象即文本形态」⇒ P2。
+    但读到 `charSet(compile(b))` 那行才发现它**把文本编译成了语义**。
+    ⇒ **判档要读到「它拿什么去比」那一行**，而不是停在「它读了什么」。
+
+- 2026-11-19 **自治优化 · R260（并行第 186 批）（1 提交 · `GSTC-B08` 判 **P1** —— 三档首次全部有真实条目）**：
+
+  - **判定（三点）**：`GSTC-B08`（`check-compose-service-env.mjs`）——
+    ① 读 **YAML**（`docker-compose.yml`）+ **TS**（`registry.controller.ts`）；
+    ② YAML 的 `services.admin-api.environment` 抽注入键、TS 的 `config.get('X')` 抽读取键，
+    **两侧对账**；两侧先剥注释，各有下界（`MIN_ADMIN_ENV_KEYS=15` / `MIN_CONTROLLER_KEYS`）
+    防扫描器失效退化永真；
+    ③ ⇒ **P1**（跨格式读 ⇒ 最脆）—— 天然依赖两个文件的**路径与书写形态**。
+  - **★★ 三档首次全部有真实条目**：R257(B28) P0 · R258(B01) P0 · R259(B23) P2 ·
+    **本轮(B08) P1** ⇒ `tierDefinitions` 的 P0/P1/P2 **现在各至少有一条经人工判定的实例**，
+    判据区分力得到**完整验证**（485 从「给出过不同答案」→「三档都有答案」）。
+  - **处置 `keep-and-accept`**：该判据的全部价值就是跨两种格式对账 ——
+    YAML 注入了什么、TS 读了什么，**只有同时读两边**才能发现「读了但没注入」
+    （容器起得来但运行时 500）。脆弱点（改任一侧写法可能让扫描器失明）
+    已由**两处下界断言 + 「事实源缺失 ⇒ 结构红」**作为补偿控制。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **21 → 22 条**、**P1 5 → 6**、backlog **26 → 25** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **方法学沉淀（接 485）**：
+  - **486「分类体系被『验证完』的标志，不是每类都有条目，而是**每类都有独立判定出来的条目****。
+    若 P1 那一条是「顺手把一条 P0 改标成 P1」，三档都有条目这件事**毫无意义**。
+    本轮 B08 是**独立判出来的**（它读两种格式，与前三条的机制都不同），
+    这才让「三档都成立」成为**证据**而不是**填充**。
+    ⇒ 报告「分类覆盖完整」时，要说清**每一类是怎么被独立判出来的**；
+    否则那只是**把样本塞进类别**。
+  - **487「补偿控制可以从根上改变一个缺陷的严重度」**。
+    P1 的定义是「跨语言/跨仓读 ⇒ **最脆**」—— 脆在「改写法就失明」。
+    但这条判据有**两处下界断言**（解析不到足够多键 ⇒ 结构红）+ 「事实源缺失 ⇒ 结构红」
+    ⇒ **失明会立刻变成红**，而不是静默放行。
+    ⇒ 判档时不能只看「它属于哪类」，还要看**这类风险被什么措施兜住了**；
+    否则会把「有防护的脆」与「无防护的脆」判成同一档。
+
+- 2026-11-19 **自治优化 · R259（并行第 185 批）（1 提交 · 判据⑨ backlog 推进第三条：`GSTC-B23` 判 **P2（非债）** —— 分档标准首次给出**不同**结论）**：
+
+  - **判定（三点）**：`GSTC-B23`（`check-migrations.mjs`）——
+    ① 读 `apps/admin-api/src/migrations` 下的迁移文件；
+    ② `stripComments(src)` 后测 SQL 文本里的 `CONCURRENTLY` / `SET statement_timeout = 0` /
+    `RESET` / `transaction = false` 是否配套；
+    ③ ⇒ **P2**：判据对象**就是** SQL 的文本形态（注释已剥）。
+  - **★ 与前两轮的关键区别**：R257（B28）/ R258（B01）都是 **P0**（断「常量存在性 / 数值关系」），
+    本条断的是「**SQL 里有没有那几条语句**」—— 判据对象**本身就是文本**。
+    ⇒ **分档标准第一次给出不同结论**，说明它不是「一律判保守」的橡皮图章（484 的验证）。
+  - **处置 `keep-and-accept`**：这条判据**不可能脱离 SQL 文本** —— PostgreSQL 是否允许在
+    事务块内跑 `CONCURRENTLY`、连接池 30s 超时会不会取消建索引并留下 `indisvalid=false`
+    的同名索引，**全都体现在那几句 SQL 里**。改成「不读 SQL」只能靠人工 checklist，
+    而那正是它会漏的地方。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **20 → 21 条**、**P2 7 → 8（首次增加 P2）**、backlog **27 → 26** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **方法学沉淀（接 484）**：
+  - **485「判别标准是否真的在判别，看它有没有**给出过不同答案****。
+    若三条都判 P0，我无法证明三点判据有效 —— 那也可能只是「我倾向于保守」。
+    B23 判成 P2 之后，判据的**区分力**才被证实：
+    它区分的是「断**代码结构**（P0）」与「断**文本形态本身**（P2）」，
+    而这正是 `tierDefinitions` 原本写的两档。
+    ⇒ 使用一套判别标准时，**要主动找一条「应该给出另一答案」的样本**去验它；
+    只在同类样本上验证，永远证明不了它在判别。
+
+- 2026-11-19 **自治优化 · R258（并行第 184 批）（1 提交 · 判据⑨ backlog 推进第二条：`GSTC-B01` 判 P0）**：
+
+  - **判定（三点）**：`GSTC-B01`（`check-agent-event-limits.mjs`）——
+    ① 读 `agent-session.service.ts` + `agent-event.entity.ts`；
+    ② `parseConstNumber()` 把 `AGENT_EVENT_BATCH_MAX` 等常量**求值成数值**，
+    断言其 × jsonb 最坏转义倍数（6）不超过上限；
+    ③ ⇒ **P0**（断的是**数值关系**，不是文本形态 ⇒ 重构/改值即红）。
+  - **处置 `keep-and-accept`**：该判据的全部价值是「批量上限与最坏转义膨胀的**数值**关系」，
+    必须读源码并求值；否则只能比对手抄数字 —— 那正是会漂移的东西。
+    代价已由 `parseConstNumber` 的**显式错误**兜住（`找不到 export const X` /
+    `不是纯算术字面量` / `求值失败`）⇒ 不会静默变永真。
+  - **与前一轮的关系**：R257 跑通路径（判一条 → 迁 entries → 判据④ 不许两处各一份），
+    本轮按同一路径推进第二条 ⇒ **backlog 正在变成递减队列**（482 的落地）。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  守卫侧 **19 → 20 条（P0 7 → 8）**、backlog **28 → 27** ·
+  `--selftest` **59/59** · `check-size-caps` 0。
+
+  **方法学沉淀（接 483）**：
+  - **484「可重复的判定，靠的是**判据本身可枚举**，而不是判定者的记忆」**。
+    两条 backlog（B28 / B01）都用同一组三点（读什么 → 断言什么 → 归哪档）判完，
+    且两次结论都落到了**同一个处置**（`keep-and-accept`）——
+    原因不是「我倾向保守」，而是**这两个判据的机制相同**：都必须读源码才能做它要做的事。
+    ⇒ 若剩下的 26 条里出现 `fix-before-B*` / `no-debt`，那才是**真正需要区分**的地方；
+    现在这种「大量同构」恰恰说明**分档标准是有效的**（能把同类聚到一起）。
+
+- 2026-11-19 **自治优化 · R257（并行第 183 批）（1 提交 · 判据⑨ 的 backlog **首次真正推进**：判一条 P0 并迁入 entries）**：
+
+  - **① 为什么动它（460/477 的合流）**：`coverageBacklog` 有 **29 条「待深审」**，
+    从 R168 起挂了**十余轮**，每轮只打印「29 条待深审（owner / reviewBy=2027-02-01）」。
+    **「复查日还没到」不等于「当下不需要动」** —— 这类条目**永远不会在当下产生动作**。
+  - **② 判定（三点判据，来自 `tierDefinitions`）**：取 `GSTC-B28`
+    （`check-throttler-whitelist.mjs`）：
+    ① 读 `apps/admin-api/.../executor-aware-throttler.guard.ts`（`readFileSync`，行 308）；
+    ② 断言 `includes("export const EXECUTOR_MACHINE_PATH_PATTERNS")` +
+    `includes("isExecutorMachinePath(")` —— **常量存在性 + 消费点**；
+    ③ ⇒ **P0**（读实现源码 + 断言常量值/函数形状，重构即红）。
+  - **③ 处置 `keep-and-accept`（关键：这是「接受这个依赖是对的」，不是「保留债」）**：
+    该判据的**全部价值**就是「白名单与真实机器面路由同源」，**必须**读 guard 源码；
+    改成不读源码就只能核对**手抄清单**，而那正是它要防的漂移。
+    代价（guard 重命名/搬家要同步更新）**已由脚本自己的「事实源缺失 ⇒ 结构红」兜住**，
+    不会静默变永真 ⇒ 这个依赖是**正当的**，应显式接受而非继续挂着。
+  - **④ 迁移遵守判据④（不许两处各一份）**：从 `backlog` **移除** B28、`entries` **追加**
+    `GSTC-019`（specLine=308 / reads / asserts / disposition / **dispositionNote**
+    （`keep-and-accept` 必填）/ owner / reviewBy）。
+  - **⑤ 结构约束是判据自己拦出来的**：初版想「就地补 `tier`」，被守卫自检的硬约束否掉 ——
+    `assert(b.tier === undefined && b.disposition === undefined, "backlog 条目不许被补上
+    tier/disposition（那会伪装成已甄别）")` ⇒ **必须走「迁入 entries」这条唯一正确的路**。
+
+  **验证（真实 exit）**：`check-source-text-contracts` **0** ——
+  **守卫侧 18 → 19 条（P0 6 → 7）**、backlog **29 → 28** ·
+  `--selftest` **59/59**（判据④「backlog 与 entries 不许重复」仍生效）·
+  `check-size-caps` 0 · `check:guards-wired` 0。
+
+  **方法学沉淀（接 481）**：
+  - **482「『等复查日』的待办，等于永远不会在当下产生动作」**。
+    这 29 条挂着 owner + reviewBy，形式上**完全合规**（守卫每轮打印它、没到期不红）——
+    但正因为合规，它**永远不会被推动**：到期那天才有信号，而那天之前**没有任何理由动它**。
+    ⇒ 对这类「长周期待办」，正确做法是**每轮顺手判一条**（把 backlog 变成**递减的队列**），
+    而不是等某个日期一次性处理 29 条。**能不能每轮推进一步**，取决于条目是否可**单条独立**处理 ——
+    这批恰好可以（每条的判定只依赖它自己读的文件）。
+  - **483「判据自己拦下的路，往往比人想走的那条更对」**。
+    我想「就地补 tier」（一步到位），被 `assert` 否掉并给出理由（会伪装成已甄别）；
+    改成「迁入 entries」后，**同一个事实有了唯一的归属**，且被判据④ 持续守着。
+    ⇒ 当工具拒绝你的写法并**说出理由**时，那通常不是「工具太严」，而是**它在守一条你没想到的不变量**。
+
+- 2026-11-19 **自治优化 · R256（并行第 182 批）（0 提交 · 478 要求的第三次同族扫描 + R255 加固的真实反证）**：
+
+  - **① 478 的第三次扫描（问：还有没有「注释混进判据」）**：全仓精确探测 41 处
+    「读文件内容后做字符串级匹配」的站点，收窄到最危险的一类 ——
+    「**`includes('某调用形态')`** ⇒ 注释里写了也会命中 ⇒ 漏报」：**仅 1 处**
+    （`check-executor-node-env-hermetic.mjs:84` 的 `includes("dotenv.config(")`）。
+    核实后：该处**已经 `stripComments()` 剥离注释**，是**正确写法**
+    ⇒ **同族缺陷到此为 2 处（R253 / R255 已修），没有第三处**。
+  - **② 另一条筛查面（问：有没有遍历 `package.json` scripts 却不过滤 `//` 键）**：
+    3 个守卫遍历 script 键 —— `check-guards-wired`（**已过滤**）、
+    `check-lint-gates`（用 `scriptNames.includes(name)` **精确匹配**，不是文本误判）、
+    `check-env-switch-default-policy`（**已 `stripComments` + 逐行判**）
+    ⇒ **无缺口**。
+  - **③ ★ R255 加固的**真实仓库反证**（475 方法）**：临时构造 ——
+    拆掉 `test:demo-seed` 的本地 chain 与 CI 两处接线，**同时在 `package.json` 里加一个
+    `//r255-probe` 注释键提到 `node scripts/demo-seed.selftest.mjs`**
+    ⇒ 守卫**仍精确判红**「叫 selftest 却没人跑」。
+    **这正是 R255 要保证的行为**（旧实现会因注释键命中而判绿）。两处均已恢复。
+
+  **验证（真实 exit）**：反证后恢复 ⇒ 主判据 **0**；工作区干净；本轮无源码改动。
+
+  **方法学沉淀（接 479）**：
+  - **480「同族扫描的『收窄』必须收到「误命中的那个语法形态」上，否则数出来的是一堆无关调用」**。
+    第一遍按「读文件 + 字符串匹配」拿到 **41 处**，看起来是大问题；
+    收窄到「`includes(某调用形态)`」（注释误命中会导致**漏报**这一类）
+    ⇒ **只剩 1 处且已正确**。
+    若不收窄，会把 `includes("get")` 这种**数组方法名判断**也当成问题 ——
+    那是**类型不同**的东西（476 已记）。
+    ⇒ 同族扫描的价值取决于**收窄的精度**：太宽 = 噪音，太窄 = 漏。
+  - **481「加固的正确验收不是『主判据仍绿』，而是『构造它本该拦住的输入，看它是否仍拦』」**。
+    R255 改完后主判据是绿的 —— 但那也可能是「加固无效、恰好没有触发条件」。
+    本轮**主动造出**那个条件（注释键 + 拆真接线），守卫仍判红 ⇒ 加固**被证明有效**。
+    ⇒ 与 416（「修完洞要在同样场景复跑」）同源，但更进一步：
+    **不仅要复跑原场景，还要构造「新加固本该拦住」的场景。**
+
+- 2026-11-19 **自治优化 · R255（并行第 181 批）（1 提交 · 476 的同族加固：`package.json` 的 `//` 注释键不再被当依赖引用）**：
+  R254 的核查发现「形态缺陷、当前无影响」，本轮把它**从形态上修掉**。
+
+  - **① 缺陷**：`check-selftests-wired` 的 `reachBodies` = 「所有可达 npm script 正文拼接」。
+    而 `package.json` 允许 **`//xxx` 注释键**（本仓 **45 个**），正文是人读的说明，
+    **可能提到脚本路径或 `npm run foo`** ⇒ 混进 reachBodies 会把「注释里提到」判成
+    「真的被引用」。
+    **实测当前无实际影响**（45 个注释键里 **0 个含 selftest 路径**），但形态是错的 ——
+    与 R253 的 `ciText` 剥 YAML 注释**同一条纪律**：**注释不能当代码用**（476）。
+  - **② 修法**：`reachBodies` 拼接前 `.filter(n => !n.startsWith("//"))`。
+  - **③ 为什么「当前没坏却仍要修」**：这个错误本轮已出现过一次（R253 的 YAML 注释），
+    两次都是同一类 —— **判据读的文本里注释和代码混在一起**。
+    加固的收益不是「修掉一个 bug」，而是**让这类 bug 在形态上不可能出现**。
+
+  **验证（真实 exit）**：`--selftest` **4 → 5 条全绿**，新增反例④
+  「只在 **package.json 注释键**里提到路径 ⇒ 仍判『没人跑』」（旧实现会在这一条上判绿）·
+  主判据 **0**（36 可达 + 3 头注有理由）· `guards-repo-matrix` **121/121 = 0** ·
+  `check:guards-wired` 0 · `check-size-caps` 0。
+
+  **方法学沉淀（接 477）**：
+  - **478「同一类错误出现两次，第二次就该修**形态**而不是修**实例****」。
+    R253 修的是「YAML 注释被当接线」，R255 修的是「JSON 注释键被当依赖」——
+    两条路径不同、**根因相同**（判据直接对混排文本做 `includes`）。
+    只修实例，下一次换一种「有注释的配置文件」还会再来一次；
+    修形态（**拼接前剥注释**）才让它不可能出现。
+    ⇒ 见到同族缺陷第二次时，**停止修实例，去找它们共用的那一步**。
+  - **479「『当前无实际影响』不是不修的理由，但**必须写清它凭什么没影响****。
+    本轮能判定「无影响」，是因为**数过**（45 个注释键、0 个含 selftest 路径）。
+    若只写「应该没影响吧」，那就成了未验证假设（410）。
+    ⇒ 修形态类问题的 PR，**结论里要带那个「数过」的证据**，否则读者无法判断紧急程度。
+
+- 2026-11-19 **自治优化 · R254（并行第 180 批）（0 提交 · 三项核查，全部"无缺口"）**：
+  - **① 476 的语法模式定式是干净的**：全仓检索"读源码后 `.includes('xxx(')"，
+    仅 1 处（`check-ops-runbook.mjs` 的 `includes("docs/operations.md")`，判文档路径存在性，
+    注释误命中不影响判断）⇒ **无同族缺陷**。
+  - **② 真实仓库反证 `check-throttler-whitelist`（475 方法）**：临时删掉
+    `/executors/register$/` 一条白名单正则 ⇒ 守卫**精确报红**并点名
+    「调用点 `executor-node src/main.ts:188` · 请补一条 `$` 锚定正则」⇒ **有牙**（已恢复）。
+  - **③ `package.json` 注释键污染探测**：45 个 `//` 前缀键中，37 个被 reachBodies
+    当作依赖引用（形态缺陷），但**逐一核实：0 个含 selftest 路径** ⇒ 当前无实际影响。
+    按 476 的判据（"注释和代码分得开吗"）这是**潜在**风险，记入候选池而非立即修。
+
+  **验证**：`check-throttler-whitelist` 0（反证后恢复）· 工作区干净。
+
+  **方法学（477）**：「**核查得出结论"无缺口"也是产出**」——
+  本轮三项都指向"已有工作是对的"，这比"找到三个问题"更重要：
+  它给前三轮（R250–R253）的接线工作**一个独立的收敛证据**。
+- 2026-11-19 **自治优化 · R253（并行第 179 批）（1 提交 · 执行 474 要求的**真实仓库反证**；反证抓出判据一个真漏洞）**：
+
+  - **① 为什么要做**（474）：`check-selftests-wired`（R251）防的是「叫 selftest 却没人跑」，
+    但它自己的「牙齿」此前只靠 `--selftest` 的**离线夹具**。474 说：**守卫也会犯它要防的错**，
+    所以必须定期用**真实仓库**反证（临时拆真接线、看它会不会红）。
+  - **② ★ 反证过程里的两次结果（都对，但含义不同）**：
+    ① **只拆本地 `chain` 里的 `test:demo-seed`** ⇒ 守卫**仍绿**、仍报「已接线」。
+       这不是没牙 —— 是判据「**本地 or CI 任一成立**」在正确工作（CI 里还有真调用
+       `node scripts/demo-seed.selftest.mjs`，`ci.yml:1421`）。
+    ② **同时拆掉本地 chain 和 CI 那行** ⇒ 守卫**精确报红**
+       「`demo-seed.selftest.mjs` 叫 selftest 却没人跑，也没有说明为什么」。
+       **两处均已恢复**，工作区干净。
+  - **③ ★★ 反证过程**之外**的收获：读代码时发现判据本身有个真漏洞**：
+    `wired = reachBodies.includes(rel) || ciText.includes(rel)`，而 `ciText` 是
+    **整个 ci.yml 拼接（含注释）** ⇒ **YAML 注释里出现某个 selftest 路径也会命中**。
+    这**不是理论漏洞**：我自己 R250 写的注释里正好列了「demo-seed / demo-failure-seed / demo」
+    三个名字 —— 当时若写成**带路径**的形态，守卫就会把「只在注释里提到」判成「真的被跑」。
+    **与它要防的错完全同型**（看起来有覆盖、实际没有）。
+    修法：`ciText` 拼接前剥掉 YAML 注释行（`/^\s*#/`）；`reachBodies` 侧不用处理
+    （那是 `package.json` 的命令正文，无注释语义）。
+
+  **验证（真实 exit）**：`--selftest` **3 → 4 条全绿**，新增反例③
+  「**只在 YAML 注释里提到路径 ⇒ 仍判『没人跑』**」（剥注释的直接证据）·
+  `guards-repo-matrix` **121/121 = 0** · `check:guards-wired` 0 ·
+  `check-size-caps` 0 · `check-workflow-yaml` 0。
+
+  **方法学沉淀（接 474）**：
+  - **475「做『真实仓库反证』时，必须拆掉**全部**成立路径，否则会把『判据正确』误读成『判据失效』」**。
+    本轮第一次只拆本地 chain，守卫仍绿 —— 我当时的念头是「原来它没牙」；
+    实际是「本地 or CI 任一成立」这条设计在**正确工作**。
+    若不查第二层就去「修」那个守卫，会**把一个正确的判据改坏**。
+    ⇒ 反证失败的**第一种解释**应当是「判据比我想的更宽」，而不是「判据错了」。
+  - **476「写判据时，『文本里出现过』是最容易出错的那种『成立』」**。
+    `ciText.includes(rel)` 与 `reachBodies.includes(rel)` 形态相同，
+    但前者是**注释+代码混在一起**、后者是纯命令正文 ⇒ 同形的代码**语义不同**。
+    ⇒ 凡用 `includes` 判「是否被引用」，先问：**这份文本里，注释和代码分得开吗？**
+
+- 2026-11-19 **自治优化 · R252（并行第 178 批）（1 提交 · **465 的活案例**：4 条真机 race 用例「两边都不跑」，且**守卫自己在犯错**）**：
+
+  - **① ★ 缺陷**：`test:guards:selftests` 段里的 **4 条真机 race 用例**
+    （`executor-register-race` / `executor-token-idempotency` /
+    `executor-token-cross-instance` / `heartbeat-dispatch-race`）——
+    **本地 chain 不含、`ci.yml` 全仓 0 次提及** ⇒ **从未被执行过**。
+    而 `check-race-selftests-wired` 一直报「✔ 4 条都有可执行入口且在
+    `test:guards:selftests` 链内」—— 因为它**只查「父段名在不在 chain 里」，
+    没查父段会不会被跑**。这正是 465（「已在某个聚合脚本里」要追到它会不会跑），
+    本轮再次撞上，且这次是**守卫自己在犯错**。
+  - **② ⚠️ 一处必须澄清的事实（避免误判）**：我一度以为**整个 selftests 段**是死的 ——
+    核查后发现 **CI 的 `selftests` job 逐个直调了其中 22 条**（`ci.yml:1772+`）。
+    死掉的**只是那 4 条**，不是整段。⇒ 这正是 466「覆盖性结论要标定查了几层」的教训：
+    我第一次只查「`npm run test:guards:selftests` 有没有被执行」，就得出「整段死」，
+    再查一层「CI 是否逐个直调」才发现 22 条是活的。
+  - **③ 修法两处**：
+    (a) **接进 CI**：`selftests` job 里加「Executor race selftests (R252)」step，串跑 4 条
+    （本地实测 4/4 exit 0）；
+    (b) **修判据**：`check-race-selftests-wired` 从「父段名在 chain 里」改为
+    **逐条判「真的会被执行」**——① 从 `test:guards:chain` **递归可达**；
+    ② 或 `ci.yml` 里**真的出现**该用例的 `npm run <npmScript>`。任一成立即过。
+    打印也从「在链内」变成 **`会执行（CI 直接调用 / 局部链可达）`**。
+  - **④ 踩到并修掉的两个自身错误**：
+    (a) **改 CI 时把 step 插进了另一个 step 内部**（同一 step 出现两个 `run:`）
+    ⇒ `check-workflow-yaml` **立刻红**（它头注记着「一处非法 YAML ⇒ 整个 ci.yml 全不跑，
+    而当天所有守卫仍全绿」）。锚点必须取**完整的 step 头行**，不能取 `run:` 行。
+    (b) 改判据措辞后**忘了同步反例的断言字符串** ⇒ 3 条自检副红。**判据与它的自检是两个对象**，
+    改前者必须回头跑后者。
+
+  **验证（真实 exit）**：**反证** —— 把 CI 里 `npm run test:executor-register-race` 临时删掉
+  ⇒ 守卫精确报红「**没有任何真实执行入口**」（已恢复）· `--selftest` **9/9**（修正 3 处）·
+  `guards-repo-matrix` **121/121 = 0** · `check-workflow-yaml` 0。
+
+  **方法学沉淀（接 472）**：
+  - **473「『在链里』是一个**两层**命题，只查一层就是假覆盖」**。
+    第一层「父段名在不在 chain」、第二层「父段会不会被执行」。
+    R245 的豁免、R249 的 `guards:selftests`、本轮这 4 条 —— **三次都是同一层没查**。
+    ⇒ 凡判据涉及「X 在 Y 里」，必须问：**Y 本身被谁执行？**（这与 465 同源，
+    但 465 讲的是「人去追」，473 讲的是「**把这一追写进判据**」。）
+  - **474「守卫也会犯它自己要防的错 —— 所以守卫必须有一条『证明它会红』的反证」**。
+    本轮 `check-race-selftests-wired` 一直绿，但它防的正是「写了没人跑」。
+    若没有这次人工核查 + 反证（删 CI 行），它会**继续全绿地放过**这 4 条。
+    ⇒ 守卫的「牙齿」不能只靠 `--selftest` 里的**离线夹具**，还要定期用**真实仓库的反证**
+    （临时删一行真接线、看它会不会红）—— 因为夹具里的世界和真实仓库可能不同构。
+
+- 2026-11-18 **自治优化 · R251（并行第 177 批）（1 提交 · 把 470 的「处置表」变成**机器判据**；守卫首跑抓到一处真缺口，自检抓到自己一个真 bug）**：
+  R250 把 7 个「没人跑」的 selftest 拆成 4 接 / 3 不接，但**那 3 个「不接」的结论只写在台账文档里**。
+
+  - **① 新守卫 `check-selftests-wired`（判据三条）**：对 `scripts/` 下每个名字含 `selftest` 的文件 ——
+    (a) 从 `test:guards:chain`/`test:unit`/`test:guards:selftests`/`typecheck:all`
+    做**递归可达性分析**（并集 CI 直调）⇒ 命中即过；
+    (b) 未命中 ⇒ 要求**该文件自己的头注**（前 30 行）含**真机理由关键词**
+    （`needs-env`/`docker`/`真机`/`分钟`/`连跑`/`端到端`/`起真实`/`需要真实`）；
+    (c) 两者皆无 ⇒ 红。
+    **为什么理由放头注而不是豁免清单**（469）：理由要留在**被执行的对象旁边** ——
+    打开脚本就能看到，且与代码同生共死（挪走脚本，理由跟着走）。
+  - **② ★ 守卫第一次运行就抓到一处真缺口**：`executor-protocol-layer-race-selftest.mjs`
+    确实需要 docker + 真 PG + 真 HTTP 心跳，但那段说明**不在头注前 30 行内**（埋在正文）
+    ⇒ 判据判红。按 469 在头注**前部**补了「⚠️ 不可离线（为什么它不在 chain 里）」段。
+    ⇒ 这正是判据的价值：**逼我把「为什么不做」放到一眼能看到的位置**。
+  - **③ ★★ 自检抓到自己一个真 bug（本轮最关键）**：首版 `main()` 只认 `--root=<dir>`，
+    而 `runGuard(SELF, { args: ["--root", dir] })` 传的是**空格分隔**
+    ⇒ `--root` 被忽略 ⇒ **判据跑在真实仓库上**（那里全绿）
+    ⇒ 三条反例全部「退出码 0（期望 1）」。
+    修法：两种形态都认。**这是「判据没跑在被测对象上」** ——
+    夹具造好了、子进程起来了、退出码也是 0，**只是看的不是它**。
+
+  **验证（真实 exit）**：新守卫 `--selftest` **3/3**（正例 / 删接线⇒红 / 删理由⇒红）·
+  主判据 **0**（39 个 selftest：**36 可达 + 3 头注有理由**，全数有归属）·
+  `guards-repo-matrix` **120 → 121 段**、全链 **121/121 = 0** ·
+  `check:guards-wired` **0**（守卫 **100 → 101**）· `check-script-main-guard` 0 ·
+  `check-size-caps` 0 · `check-workflow-yaml` 0。
+
+  **方法学沉淀（接 470）**：
+  - **471「判据的价值不在『能报红』，而在**逼你把隐性知识写成显性约束**」**。
+    本轮新守卫**第一次运行**就让 `executor-protocol-layer-race-selftest.mjs` 红了 ——
+    那个文件里其实**写了**理由（“心跳走真 HTTP”、`docker exec … psql`），
+    只是**埋在第 6-40 行**。判据把「理由必须在前 30 行」变成硬约束 ⇒
+    下一个人**打开文件就能看到**，而不是读完整篇才知道「哦它需要 docker」。
+    ⇒ 好的判据会**改变代码的形状**（这里是把理由上移），而不只是改变颜色。
+  - **472「夹具存在 ≠ 判据跑在夹具上 —— 参数解析错误会让反例『全绿地』通过」**。
+    首版三条反例「退出码 0（期望 1）」，看起来像「判据太宽」，
+    实际是**参数没被解析、判据跑在了真实仓库**。
+    ⇒ 反例失败时，**先确认被测对象真的是夹具**（打印它读到的 root），
+    这与 407（「探针红了先问红的是产品还是探针」）是同一条纪律的**镜像**：
+    **探针绿了，也要问绿的是不是它该绿的那个东西**。
+
+- 2026-11-18 **自治优化 · R250（并行第 176 批）（1 提交 · 468 的系统性执行：39 个 `*.selftest.*` 里 **7 个无人执行**，接上 4 个）**：
+
+  - **① 审计面**：全仓 `scripts/*` 里名字含 `selftest` 的脚本 **39 个**，
+    用可达性分析（R249 的正确做法）核「有没有任何入口会执行它」⇒ **7 个无人执行**。
+  - **② 逐类拆（434，不按名字一刀切）**：
+    | 脚本 | 头注怎么说 | 处置 |
+    |---|---|---|
+    | `demo-seed.selftest.mjs` | 「**纯函数自检**，不依赖真实 admin-api 起服务」 | **接入** |
+    | `demo-failure-seed.selftest.mjs` | 同上（对齐 demo-seed 模式） | **接入** |
+    | `demo.selftest.sh` | 「Static self-check… **No Docker required, safe for CI**」 | **接入** |
+    | `health-snapshot.selftest.mjs` | R91「**测量工具本身会撒谎**」的 12 条自检 | **接入** |
+    | `verify-smoke-selftest.sh` | 需**连跑两次完整冒烟矩阵**（每次约 10 分钟） | 不接 |
+    | `run-heartbeat-race-selftest.mjs` | 自称「**needs-env 档**；与 `test:pg-race` 同级」 | 不接 |
+    | `executor-protocol-layer-race-selftest.mjs` | 需 docker + PG + 真 HTTP 心跳 | 不接 |
+  - **③ 为什么接前 4 个**：它们**都自证可离线**（「纯函数」「No Docker required, safe for CI」），
+    却从未被跑 —— 正是 R249 那类「**命名承诺了会被跑，实际从未被跑**」，
+    **比叫 `demo.sh` 更误导**（后者不会让读者以为有覆盖）。
+  - **④ 为什么后 3 个不接（如实、可复核）**：不是「没人试过」，而是**头注自己写了需要真机**
+    —— 分钟级矩阵 / needs-env 档 / docker+PG+HTTP。
+    按 455「需要真机必须有具体理由」，这三个都有，且都写在脚本自己的头注里。
+
+  **验证（真实 exit）**：4 个各自单跑 **0**（`health-snapshot` **12 通过 0 失败**）·
+  `guards-repo-matrix` **116 → 120 段**（+4），全链 **120/120 = 0** ·
+  `check-workflow-yaml` 0 · `check-script-main-guard` 0 · `check-size-caps` 0 ·
+  `check-guards-wired` 0。
+
+  **方法学沉淀（接 468）**：
+  - **469「『不接』必须有**写在该文件自己头注里**的理由，而不是评审时的记忆」**。
+    后 3 个之所以能干净地判「不接」，是因为它们的头注**自己写着** needs-env / 分钟级 /
+    需 docker。若理由只存在于某轮对话里，下一个人（或下一轮的我）就得**重新判断一遍**，
+    而且很可能判成「忘了接」并顺手接上 —— 那会让门禁变慢或变红。
+    ⇒ **「为什么不做」要和「做了什么」一样留痕**，且最好留在**被执行的对象旁边**。
+  - **470「审计的结果应当是一张**带处置**的表，而不是一串名字」**。
+    本轮 7 个候选，如果只报「这 7 个没人跑」，下一次会重复审计；
+    拆成「4 接 / 3 不接 + 每个的理由」之后，**这次审计就是终态**（除非那 3 个改了性质）。
+    ⇒ 「N 个有问题」的产出价值 ≈ 0；**「N 个各归何处」才是可复用的结论**。
+
+- 2026-11-18 **自治优化 · R249（并行第 175 批）（1 提交 · 用 466 的正确做法重扫；接上一条自己写着「safe in CI」却两边都不跑的运维自检）**：
+
+  - **① ★ 先做 466 要求的重扫（可达性分析，取代逐层 grep）**：从
+    `test:guards:chain` / `test:unit` / `test:guards:selftests` / `typecheck:all` 出发做
+    **递归可达 + CI 直调 node** 的并集，得到 —— **99 个守卫全部可达、0 个盲区**。
+    ⇒ 前两轮（R244/R248）的守卫覆盖工作**已收敛**；也说明我当时用「一层引用」得出的
+    「两边都不跑」结论确实有两处误报（466 已记）。
+  - **② 剩下的盲区在**非守卫脚本**：`scripts/*.mjs|*.sh` 里（去掉 `check-*`/`agent-*`）
+    **33 个完全不可达**。逐类拆（434）：多数是运维脚本（`pg-backup.sh`、`pg-restore.sh`、
+    `demo-*.sh`、`start-isolated.sh`、`load-test-stack.sh`）—— **不需要门禁，合理**；
+    但**带 `.selftest.` 的那几个不该在其中**。
+  - **③ 命中**：`scripts/reset-admin-password.selftest.sh` 头注原文
+    「exercises the dry-run path only, so it is **safe in CI** and never touches a database」
+    —— **它自己写着「safe in CI」，却从未接进 CI、也从未进本地链**。
+    **它守的是凭据不泄漏**：`--dry-run --env-file .env.example` **不连库**，断言输出的 SQL
+    含 pgcrypto + 撤销会话、且**密码必须被 `<redacted>`**；短密码被拒。
+    `reset-admin-password.sh` 是**运维手工跑的脚本**，最容易在「改个参数/加个字段」时
+    把明文密码带进日志。
+  - **④ 修法**：新增 `test:reset-admin-password`（`bash scripts/<...>.selftest.sh`）+
+    接进 `test:guards:chain` + 接进 `ci.yml`（**它自己声明 safe in CI**，两面都要接）。
+
+  **验证（真实 exit）**：单跑 **0**（`all checks passed`）·
+  `guards-repo-matrix` **115 → 116 段**，新段**实际执行**，全链 **116/116 = 0** ·
+  `check-workflow-yaml` 0 · `check-script-main-guard` 0 · `check-size-caps` 0 ·
+  `check-guards-wired` 0。
+
+  **方法学沉淀（接 466）**：
+  - **467「重扫时若『盲区清零』，说明该做的事是**换一个扫描面**，不是继续修同一种」**。
+    本轮可达性分析给出「99/99 可达」——这是**收敛信号**，不是「没活了」。
+    真正的下一步在**另一个面**（非守卫脚本），而那个面**不能用同一条判据**
+    （运维脚本天然不需要门禁）。⇒ 判据的**适用范围**决定它何时该停：
+    守卫面用「可达性」、运维面用「有没有 `.selftest.` 却没人跑」。
+  - **468「`*.selftest.*` 这个命名本身就是接线契约」**。
+    本仓用 `.selftest.` 标记「这是自检，应该被某个门禁跑」。
+    可见的 3 个里 1 个（`demo.selftest.sh`）在 `test:main` 里、另外 1 个
+    （`install-artifact-sha256.selftest.sh`）待查、1 个两边都不跑（本轮修掉）。
+    ⇒ **命名即承诺**：叫 selftest 却不被跑，比叫 `demo.sh` 更误导 ——
+    前者让读者以为「有覆盖」，后者不会。
+
+- 2026-11-18 **自治优化 · R248（并行第 174 批）（1 提交 · 一条**安全关键**的静态判据此前本地从不执行）**：
+  接 458（「离线自检/零依赖」本身就是进本地链的强信号）继续扫，
+  发现 `check-throttler-whitelist` 处在「**已登记、永不执行**」的状态。
+
+  - **① 缺陷**：它是**纯静态、零依赖、有 banner（9 条用例）**的安全判据，但：
+    - CI 里是 `node scripts/check-throttler-whitelist.mjs`（`ci.yml:1831`，**直接调 node**）；
+    - 本地只挂在 `test:guards:selftests` 里 —— 而**那一段整体未进 chain**
+      （R245 已查明：因 arch31 槽位断言偶发而豁免）。
+    ⇒ **本地从不执行**。（R243 我把它归为「已在 guards:selftests 里」，
+    这个归类是错的 —— 那次我只查了「有没有被引用」，没查「引用它的那段会不会跑」。）
+  - **② 这条判据为什么重要（读头注）**：白名单之外的路由一律**按出口 IP 计桶**。
+    若新增执行器入站端点却忘了登记白名单，该端点会**静默退回 IP 计桶**
+    ⇒ 多执行器共享 NAT 出口时被叠加限流（**正是 B-2 要修的原始故障形态**：
+    回调/日志/配置热更新被 429）。⇒ 它是「新增端点时最容易漏、漏了又不会红」的那一类。
+  - **③ 修法**：`test:guards:chain` 在 `test:alert-proxy` 之后加
+    `npm run check:throttler-whitelist`。
+    **没有**动 `test:guards:selftests` —— 那一段的豁免理由与 arch31 有关、与本条无关；
+    从 selftests 里删掉它会让 CI 面少一道，**不动更稳**（改一处只解一个问题的纪律）。
+
+  **验证（真实 exit）**：`guards-repo-matrix` **114 → 115 段**，新段**实际执行**
+  （`✔ selftest 9/9`），全链 **115/115 = 0**；单跑 **0**（10 条机器面路由全覆盖、
+  10 条正则均 `$` 锚定）；`check:guards-wired` 0 · `check-script-main-guard` 0 ·
+  `check-size-caps` 0。
+
+  **方法学沉淀（接 464）**：
+  - **465「『已在某个聚合脚本里』这句话，必须追到**那个聚合脚本会不会跑**为止」**。
+    R243 我把这个判据归为「已在 `guards:selftests` 里」并**判定为已覆盖** ——
+    但那个段**整体在 chain 之外**（R245 才发现）。**「被引用」与「被执行」之间隔着一层**，
+    而我的筛查脚本只看了第一层。
+    ⇒ 这正是 457（「接进聚合脚本前先确认它自己被谁跑」）的**镜像错误**：
+    457 讲的是「别往死段里加」，465 讲的是「**别把死段里的引用当成覆盖**」。
+    两者是同一条判据的两面：**任何'归属'结论都要追到最外层执行入口**。
+  - **466「筛查脚本的结论要按'它查了几个层次'来标定可信度」**。
+    我的孤立判据筛查（R243/R244）只做了「一层引用」检查，因此**两次误报**
+    （把 `guards:selftests` 里的、和 CI 直接调 node 的都算成已覆盖）。
+    真正可靠的写法是：**从 `test:guards:chain` 出发做可达性分析**，而不是逐层 grep。
+    ⇒ 用 grep 做「覆盖性」结论时，**必须写明查了几层**；否则结论的确定性是虚高的。
+
+- 2026-11-18 **自治优化 · R247（并行第 173 批）（1 提交 · 447 同族的又一处：『仅测试用』却**零调用点**的可选参数）**：
+  按 430/449（修完一处要推广扫同类）系统性筛查「写了但没接」的缝。
+
+  - **① 筛查方式（可复用，不是随机翻代码）**：按**注释关键词**找候选 ——
+    `grep -rn "仅测试用|可注入的|Exposed for tests|test-only"`，
+    再用 `grep -c "<opt>:"` **数真实调用点** ⇒ 0 的就是候选。
+  - **② 命中**：`AdvisoryLockMigrationOptions.lockKey` 声明时注释写
+    「**仅测试用**——生产路径必须缺省以共享常量键」，但**全仓（含它的 spec）零调用点**。
+    spec 验证「默认互斥键 = 共享常量」用的是**直接断言**
+    `expect(events).toEqual([`try_lock:${MIGRATION_ADVISORY_LOCK_KEY}`, …])`，
+    **从不覆盖 `lockKey`** ⇒ 这个缝「看起来是为测试留的」，实际从未被用。
+  - **③ ★ 为什么删掉比留着安全（这条是关键判断）**：保留它的代价是**真实的** ——
+    下一个人可能为了「隔离并发测试」去用它，从而**在共享 PG 上造出两把不同的锁**；
+    而那正是 `MIGRATION_ADVISORY_LOCK_KEY` 这个共享常量要避免的事
+    （boot 与 CLI 两侧必须抢**同一把**锁）。
+    一个**看起来能用、实际没人用**的选项，会把「该不该共享锁」这个设计意图变模糊。
+  - **④ 修法**：删声明（**原位留注释说明为什么删**，而不是留一片空白）+ 使用处
+    `options.lockKey ?? MIGRATION_ADVISORY_LOCK_KEY` → `MIGRATION_ADVISORY_LOCK_KEY`。
+  - **⑤ 对照（证明筛查能区分真假）**：同批筛出的 `git-repo-network-policy.ts` 的
+    `resolve` 参数**已有调用点**（R240 刚接上）⇒ 筛出 2 个候选、**只改 1 个**，
+    另一个保持不动。**没有「顺手一起改」**。
+
+  **验证（真实 exit）**：`migration-runner.util.spec.ts` **8/8 通过**（断言一字未改 ——
+  它本来就测默认值）· `tsc --noEmit` 0 · `lint:api` 0 · `check-size-caps` 0 ·
+  `check-migrations` 0（143 迁移仍全注册）。
+
+  **方法学沉淀（接 462）**：
+  - **463「可选参数的注释若写『仅测试用』，就必须**数一遍真实调用点**；数字是 0 ⇒ 它是噪音不是接口」**。
+    `lockKey` 挂在那里，读者会以为「测试注入不同 key 是既有做法」——
+    而实际做法恰恰相反（spec 断言**同一个**常量）。**注释在说一件事，代码在做另一件事**。
+    ⇒ 这类缝的价值是负的：它**暗示了一种本项目刻意禁止的用法**。
+  - **464「删掉一个未使用的注入点时，原位要留『为什么删』而不是留空白」**。
+    留空白的后果是：下一个人看到 `AdvisoryLockMigrationOptions` 里**没有** key 选项，
+    可能会**重新加一个**（他真的需要隔离并发测试时）。留注释才能挡住这个循环。
+    ⇒ **删除也是一种设计决定，需要留下痕迹** —— 否则同一件事会被反复重新引入。
+
+- 2026-11-18 **自治优化 · R246（并行第 172 批）（1 提交 · 把 R245 的教训 460 变成**可判定判据**：豁免的数量断言必须可重跑）**：
+  R245 只做了「人工更正过期理由」——那**只解决这一次**。本轮让「以后不再发生」成为机器判据。
+
+  - **① 判据（**不需要时钟即可判定**）**：豁免的 `why` 里若出现**数量断言**
+    （`N/M 轮`、`N 次中 M 次`、`N%`、`≈N%`），必须带 `evidence`：
+    - `evidence.command`：能**重跑出那个数字**的 `npm run <脚本>`，
+      **且该脚本必须真的存在于 `package.json`**（拼错 = 红 → 防止写成一句愿望）；
+    - `evidence.checkedAt`：那次实测的日期（`YYYY-MM-DD`）。
+    纯定性理由（无数字）不要求 evidence —— **判据只针对会腐坏的那类理由**。
+  - **② ★ 触发信号（460 要的东西）**：守卫打印豁免时**附上重跑命令**。
+    现在输出是：
+    `…（复核：2026-12-31；重跑：npm run test:arch31-multi-instance（实测于 2026-11-18））`
+    ⇒ 下一个人读到的**不是一句结论**，而是一条**可以自己复现**的命令。
+    这正是 460 说的「修好后要删豁免，只有记得去重测的人才能执行」的机器化替代。
+  - **③ 为什么选「命令存在性」而不选「时间新鲜度」**：时间判据需要时钟且有「刚好过期」的
+    误报面；而**「这条命令能不能跑」是客观事实**，且它直接回答了「这个数字还能不能被复现」。
+    （`reviewBy` 仍在，管的是「还需不需要豁免」这一半；新增的管「理由还成不成立」那一半。
+    两半分开，各自有明确判据。）
+
+  **验证（真实 exit）**：`--selftest` **6 → 9 条全绿**，新增 3 条反证 ——
+  反例⑤（数量断言无 evidence ⇒ 1）· 反例⑥（命令不存在 ⇒ 1，点名「无法被重跑」）·
+  正例（合法 evidence ⇒ 0 **且打印重跑命令**）。主判据 **0** · `check:guards-wired` **0** ·
+  `check-size-caps` **0**。
+
+  **方法学沉淀（接 460）**：
+  - **461「反例的夹具必须**只制造被观察的那一个异常**」**。
+    本轮首版反例把 `test:guards:selftests` 覆盖成只剩一个脚本，结果 **4 条 race 用例先红**
+    （「selftests 链里没有它们」），**完全掩盖了本条判据的观察对象** ⇒ 3/9 失败。
+    改为只覆盖 `test:guards:chain`（让父脚本「未进链」而 selftests 保持完整）才修正。
+    ⇒ 夹具污染是本仓反复出现的坑：**一个反例里同时制造两个异常，你测的是先触发的那个**。
+  - **462「把『要记得重测』变成『能不能重跑』，判据就不需要时钟」**。
+    时间类判据（`reviewBy` 到期）只是**提醒**，它挡不住「理由早已不成立但日期还没到」；
+    而「命令是否存在 / 能否执行」是**当下的客观事实**。⇒ 能选**可执行性**判据时，
+    不要选**时间**判据：前者任何时刻都能回答，后者只在某一天回答。
+
+- 2026-11-18 **自治优化 · R245（并行第 171 批）（1 提交 · 揭穿一处**过期豁免**：理由说的缺陷早已修好，但它仍在挡着 4 条健康用例）**：
+  按 R457（「接进聚合脚本前先确认它自己被谁跑」）系统性检查 **28 个聚合脚本**，
+  发现 `test:guards:selftests` 整段未进 chain，有显式豁免。
+
+  - **① 原理由**：「含 `heartbeat-dispatch-race` 恒红项（R18-B 活缺陷，**20/20 轮违反 oversell**）；
+    修复属 `apps/**` 写域。修好后必须把该段接进 `test:guards:chain` 并删本条豁免」。
+  - **② ★ 事实核对（451：先验证，不猜）**：`heartbeat-dispatch-race` 真机复跑
+    **20 轮 · 产品违反 0 轮 · exit 0** ⇒ 该缺陷**早已修复**
+    （`80e45a3b` 2026-11-05，心跳取「客户端上报 vs 服务端在途占坑」较大值）。
+    同段另 3 条 race 用例（register / token-idempotency / token-cross-instance）也全 exit 0。
+    ⇒ **原理由已不成立**：豁免变成了一条「用过期事实挡住 **4 条健康用例**」的记录。
+  - **③ 尝试接线（并**回退**）**：把 `test:guards:selftests` 接进 chain ⇒ 全链第 **38/115** 段红：
+    `✘ ⑤ 实例内槽位上限生效（第 3 条同实例连接收到 503）`，实测 `status=200/200/200`。
+    连跑 **6 次：5 通过 / 1 失败（≈17%）**；而同段另两条槽位断言
+    （「另一实例仍有独立槽位」「断流后槽位释放干净」）**始终通过**
+    ⇒ **槽位机制本身正常，是判据的时序假设不稳**。
+    **产品侧无缺陷可修**：`metrics-stream.controller.ts:97` 的 `acquireSlot()` 在写 SSE 头
+    **之前**同步占槽（无 await 中断），释放走 `finally` 双保险。
+    试过在三次连接之间加 **120ms 节拍** ⇒ **仍失败**（**已回退**，445：没改善就退回）。
+  - **④ 结论**：**保留豁免，但把理由换成实测事实**。原说的「20/20 违反」是错的（现状 0/20）；
+    真实约束是「arch31 的槽位断言 ≈17% 偶发」。按 451：没有可复现样本时改断言，
+    「绿了」既可能是修好、也可能只是没抽到 ⇒ **先不动断言**，把 17% 写进豁免。
+
+  **验证（真实 exit）**：`check-race-selftests-wired` **0**（复核提示已反映新理由）·
+  `heartbeat-dispatch-race` **20/20 违反 0** · 另 3 条 race 用例 **0** ·
+  `package.json` **已回退**（未接线）· 工作区只剩该豁免文件一个改动。
+
+  **方法学沉淀（接 458）**：
+  - **459「豁免表的危险不是『有豁免』，而是『理由过期后它仍然工作』」**。
+    这条豁免从 R106 起挂了 **十余轮**，守卫**一直是绿的**、复核提示**一直在打印** ——
+    所以没有任何机制会告诉第 N 个读到它的人「这条理由已经不成立了」。
+    而它挡住的东西已经从「1 条恒红用例」变成了「4 条健康用例 + 1 条偶发」：
+    **作用与它本意完全相反，但表面上什么都没变**。
+    ⇒ 豁免表的维护判据不是「有没有人 review」，而是**「理由里的数字有没有被重新测过」**。
+    凡理由含**可验证的数量断言**（「N 轮中 M 轮失败」「连续 N 次红」），
+    它就会**随时间腐坏**；到期复核只会看「还需不需要豁免」，**不会重测那个数字**。
+  - **460「『修好之后要删豁免』这条指令，只有**记得去重测**的人才能执行」**。
+    豁免里写着「修好后必须把该段接进链并删本条豁免」—— 这句话把责任交给了**未来的人**，
+    但没给任何**触发信号**（谁会发现缺陷已修？）。实际是 defect 修了 12 天，
+    豁免纹丝不动。⇒ 这类「修好后要做 X」的指令，应当**改写成可判定的判据**
+    （例如「若该用例连续 N 次在 CI 中绿，则守卫报『豁免可删』」），否则它只是**愿望**。
+
+- 2026-11-18 **自治优化 · R244（并行第 170 批）（1 提交 · 补上一处「**两边都不跑**」的判据；并揭穿自己的一次假接线）**：
+  按 R453 的真实含义（不是「CI 跑、本地不跑」，而是「**两边都不跑**」）重筛。
+
+  - **① 筛选（先把 N 拆开，434）**：192 个 `test:*`/`check:*` 里，排除编排脚本、
+    `:selftest`/`:report`/`:update` 变体、已知真机探针后，真正的**独立判据 148 个**，
+    其中「两边都不跑」的候选 **9 个** → 逐条核实后**只有 3 个真孤立**
+    （其余 6 个已在 `test:guards:selftests` / CI 里，是我的正则没识别间接引用 —— 又一次 434）。
+  - **② 缺口**：`scripts/alertmanager-hmac-proxy.selftest.mjs` —— 头注自称
+    「**离线自检、零依赖、无网络出口**」，却**不在任何门禁里**。
+    它守的是一条**跨进程契约**：签名侧（本脚本）与校验侧（admin-api 的
+    `verifyWebhookSignature`）算法漂移后，症状是生产上「Alertmanager 发出去了、
+    admin-api 静默 401、告警到不了值班渠道」，而**两侧单测各自都是绿的**（各自以自己为基准）。
+  - **③ 修法**：(a) 加 `printCoverageBanner(import.meta.url, "report")` ——
+    它有 **32 处 `report(`** 断言却**没有计数出口**，所以覆盖守卫管不到它
+    （「删光用例」不会有信号）；(b) 接进 **`test:guards:chain`**。
+  - **④ ★ 差点接错（本轮真正的收获）**：首版加进了 `test:guards:selftests`，
+    查证后发现**那一段整段未进 chain**，有显式豁免：
+    「含 `heartbeat-dispatch-race` 恒红项（R18-B 活缺陷，20/20 轮违反 oversell）；
+    修复属 `apps/**` 写域。修好后必须把该段接进 `test:guards:chain` 并删本条豁免」
+    ⇒ **加进去等于没接**：没有任何东西会执行它。这正是 433 的又一实例，
+    只是这次发生在**「接线」**而不是「登记」上。
+  - **⑤ 剩余 2 个真孤立（如实，保持不接）**：`test:private-registry:live`
+    （起临时 loopback registry 服务）· `test:executor-protocol-layer-race`
+    （需 docker + PG + 真 HTTP 心跳）—— **有具体的真机理由，不接链是正确的**（R455）。
+
+  **验证（真实 exit）**：`guards-repo-matrix` **113 → 114 段**，`test:alert-proxy`
+  在第 37 段**实际执行 exit 0**，全链 **114/114 = 0**；`npm run test:alert-proxy` **0**（32 条）；
+  `check:guards-wired` 0 · `check-script-main-guard` 0。
+
+  **方法学沉淀（接 456）**：
+  - **457「『接进某个聚合脚本』之前，先确认那个聚合脚本**自己**被谁跑」**。
+    `test:guards:selftests` 名字看着像门禁，实际**整段未进 chain**（因含已知恒红项）。
+    把新判据加进去，**退出码永远是 0 且从不执行** —— 比不接更糟：
+    它会让「已接线」这件事**看起来成立**。
+    ⇒ 接线的正确判据是「**从 chain 出发能否走到它**」，不是「`package.json` 里有没有那一行」。
+  - **458「『离线自检、零依赖』这句话本身就是一条接线依据」**。
+    该脚本头注把「零依赖/无网络出口」写得很清楚，等于**自证可进度**；
+    这样的判据若还落在门外，就只是**没人读文档**。
+    ⇒ 判据头注里的「零依赖」「无需 docker」「不起服务」这类话，
+    应当被当作**「它应该进本地链」的强信号**，而不是注释。
+
+- 2026-11-18 **自治优化 · R243（并行第 169 批）（0 提交 · 验证轮：把 **CI 独有 26 个脚本**全部在本机跑通）**：
+  按 R453（「本地跑不了的判据 = 把发现权全押给 CI」）逐个复跑，**全部 exit 0**。
+
+  **验证矩阵（真实 exit）**：
+  | 类别 | 项数 | 结果 |
+  |---|---|---|
+  | 守卫链 `guards-repo-matrix` | 113 段 | **113/113 = 0** |
+  | `test:unit` | 14 段 | 13 段 0；`test:web` 偶发 flake（R241 已定性，不可复现） |
+  | **CI 独有脚本** | **26 个** | **全部 0** |
+  | `test:main`（desktop） | 56 selftest | **0** |
+
+  **26 个的细分**（每个都实跑过，不是读代码断言）：
+  - 静态检查 4：`check:vscode-launch` · `lint:i18n` · `test:agent` · `test:sop`
+  - 单实例语义 8：`test:qwen` · `test:registry-npm` · `test:qa05-callback-tier` ·
+    `test:control-plane-pull` · `test:nginx-sse` · `test:oidc-sso` · `test:pull-dispatch` ·
+    `test:private-registry:dispatch`
+  - docker 多实例 3：`test:ha-compose` · `test:heartbeat-race` ·
+    `test:arch31-multi-instance`（**17 通过 / 0 失败**，起两个真实 admin-api 进程）
+  - arch31 outbox 3：`test:arch31-outbox` · `test:arch31-outbox-dup` · `test:arch31-rollout`
+  - 部署 2：`test:deploy-script` · `test:deploy-rollback`
+  - 生成/校验 4：`gen:protocol` · `gen:protocol:classifiers`（**两者幂等，`git status` 干净**）·
+    `check:vscode-launch` · `brand:svg`
+  - 真机 PG 1：`test:pg-restore`（**76 通过 / 0 失败**）
+
+  **如实登记（不是缺口）**：
+  - `lint:all` / `typecheck:specs` 等**不是**「没跑过」—— 它们由守卫链的**成分**覆盖
+    （`check:typecheck-covers-specs` 守护 `typecheck:specs`；`lint:*` 由 `check:guards-wired` 验证接线）。
+    分类器首版把它们误报成「未覆盖」，是我按**名字**匹配的错（同 434：先把 N 拆开）。
+  - `gen:api-types` 需要 `apps/admin-web` 的生成链，已在 `test:web`/`typecheck:web` 面间接验证。
+
+  **方法学沉淀（接 454）**：
+  - **455「『CI 独有』不等于『本地跑不了』—— 两者之间差的往往只是**一次 `npm install`**」**。
+    这 26 个脚本此前从未在本机执行过，原因是 R233 之前 `packages/*` 没有依赖。
+    装齐之后**全部一次通过**，说明它们本来就是**本地可跑的判据**，
+    只是**长期被归到「CI 的事」**。
+    ⇒ 判据归类时，「需要真机」必须**有具体理由**（需要 redis/docker/多进程/外部服务），
+    否则它只是「没人试过」。本轮实测：需要 docker 的只有 3 个 + PG 1 个，其余 22 个都是纯静态。
+  - **456「生成器跑通 ≠ 验证通过，必须看 `git status`」**。
+    `gen:protocol` / `gen:protocol:classifiers` 是**写文件**的生成器，exit 0 只说明它跑完了；
+    真正的判据是**「生成结果与已提交内容一致」**（即 `git status` 为空 = 幂等）。
+    本轮两者都幂等，所以「跑通」才等价于「校验通过」。
+    ⇒ 对生成器类脚本，「绿」要看**副作用是否为零**，不是看退出码。
+
+- 2026-11-18 **自治优化 · R242（并行第 168 批）（1 提交 · 守卫链重新全绿；抓到并修掉一处**只在 CI 才可见**的漂移）**：
+  R233 装齐依赖后守卫链首次能完整跑，R234/R239/R240 又改了生产代码 ⇒ 本轮复跑全链验证。
+
+  - **① 抓到的漂移**：第 43/113 段 `check:desktop-bundle-drift` 红 ——
+    `executor-node 源码语义摘要漂移：actual=2534ce3bf303… expected=f35054ece802…`。
+    **原因**：R234（`7c8eded0`）改了 `apps/executor-node/src/routes/execute.ts`
+    （凭据闸前置到 DNS 之前），而该文件是 desktop 内嵌 executor-node bundle 的**输入**之一。
+    **不是缺陷，是 ADR-005 要求的必然回填**。
+  - **② 修法**：`npm run digest:regen` —— **只回填 ①（源码语义摘要，61 个输入文件）**；
+    ② 产物字节哈希**没有伪造**（需要真实 ncc 产物、产物 gitignored）⇒ 按清单头注的纪律**由 CI 回填**。
+  - **③ 复跑**：`guards-repo-matrix` **113/113、exit 0** —— R233→R240 之后链条重新全绿
+    （第 43 段曾是唯一断点）。
+  - **④ 顺带解锁**：`apps/executor-desktop` 的 `test:main`（**56 个 selftest** + `build:agent-worker`
+    + `tsc -p tsconfig.selftest.json`）**首次在本机跑通**，exit 0。它此前因缺 `node_modules`
+    从未执行过（CI 有跑）。
+  - **⑤ 核查过但不是缺口**：CI 里 20 个脚本不在 `test:guards:chain` —— 按 434 拆开：
+    大多需要真机（`heartbeat-race`/`pull-dispatch`/`oidc-sso`/`ha-compose`/`registry-npm` 等）；
+    `test:main:subset` **不是真实脚本**，它只是 `ci.yml:1135` 注释里的**反例**
+    （用来验证「前缀误配」会被守卫抓到）⇒ 不是欠账。
+
+  **验证（真实 exit）**：`check-desktop-bundle-drift` **0** · `guards-repo-matrix` **113/113 = 0** ·
+  `test:main` **0**。
+
+  **方法学沉淀（接 452）**：
+  - **453「本地跑不了的判据，等于把它的发现权全部押给 CI；而 CI 只在 push 时才说话」**。
+    第 43 段这个漂移，**在 R234 提交时就已存在**，但当时守卫链跑不过第 10/43 段
+    （缺依赖），所以它**沉默了两轮**，直到 R233 装齐依赖才浮出。
+    ⇒ R233 装依赖的收益**不只是「链绿了」**，而是把一批原本**只在 CI 才暴露**的漂移
+    提前到本地。这与 439 是同一件事的两面：439 说「补上环境要重跑被挡住的判据」，
+    453 说「**那些判据的沉默本身就是风险**」。
+  - **454「『回填摘要』这类动作，必须区分『本地可算』与『只能在 CI 算』的两半」**。
+    `digest:regen` 只回填 ①；② 产物字节哈希需真实 ncc 产物（gitignored）。
+    若为了「让守卫绿」去伪造 ②，就会**破坏这道闸的全部意义**（它本来就是防「产物与源码不符」的）。
+    ⇒ 回填类工具要**明确打印它没做什么**（本仓的 `digest:regen` 已经这么做了，照着学）。
+
+- 2026-11-18 **自治优化 · R241（并行第 167 批）（0 提交 · 验证轮：`test:unit` **全量**首跑；捕获一个**不可复现**的 web flake 并如实定性）**：
+  按 R439（补上环境后要重跑被挡住的门禁）把 **`test:unit` 14 段整体跑一遍** ——
+  这是本机第一次能跑完整条。结果：**13 段全绿**，仅 `test:web` 出现 **1 例**失败。
+
+  - **① 各段实测（真实 exit）**：`test:api` **8283** · `test:node` **1875**（R240 已收口）·
+    `test:web` 328/329 文件 · 其余 `python/pypi/sdk-py/lib-*/cli/mcp/node-sdk/desktop` 均 0。
+  - **② 失败的那一例**：`a11y-focus.test.tsx › 打开后焦点进入搜索框` ——
+    期望 `<input>`、实际 `<button>`（`AssertionError: expected <button> to be <input>`）。
+  - **③ ★ 定性：不可稳定复现（4 组证据）**：
+    - 单文件跑 **14/14 绿**；
+    - 与另一个文件两两并行跑 **24/24 绿 ×2**；
+    - **连续 3 次全量重跑均 2579 例全绿**；
+    - **串行**（`--no-file-parallelism`）整个 `src/__tests__` **321 文件 2488 例全绿**。
+  - **④ 机制（读实现得出，**未直接证明**）**：`CommandPalette.tsx:256` 用
+    `window.setTimeout(() => inputRef.current?.focus(), 0)` 聚焦，另有 `afterOpenChange`
+    兜底（注释称两者幂等）。**多文件并行 + 高负载**下该 0ms 定时器可能晚于 `waitFor` 默认窗口
+    ⇒ 聚焦尚未发生。性质与本仓已登记的 flake 形态③（`sleep(120)` 时序假设）**同族、机制不同**。
+  - **⑤ ★ 为何**不当场修****（这是本轮的核心判断）：
+    ① **无法复现 ⇒ 改了就无从验证改对了**（方法学 405：反证要先问「这条用例真能失败吗」）；
+    ② `afterOpenChange` 已存在且幂等，**再加第三条聚焦路径只会让「谁负责聚焦」更模糊**；
+    ③ 真要加固应把 `waitFor` 的 timeout 显式化（`{ timeout: 3000 }`，与③同款）——
+    **那是测试侧改动，需先有可复现样本**。
+    ⇒ **继续由 `web-flake-watch`（nightly、跑两遍、有意不加 `--retry`）采样，本轮不猜着改。**
+
+  **验证**：`test:docs` 0（仅文档改动）；观测已写进
+  `docs/AGENT-SWARM-PLAYBOOK.md` 的 `web-flake-not-reproduced` 行（第 4 个形态）。
+
+  **方法学沉淀（接 450）**：
+  - **451「不可复现的失败，正确产出是**更精确的观测记录**，不是一次猜测性的修补」**。
+    本轮 4 组证据（单文件 / 两两并行 / 3 次全量 / 串行全目录）把「偶发」钉成了事实，
+    而**没有**顺手改 `waitFor` 的 timeout —— 因为改了之后，
+    「绿了」既可能是修好了、也可能只是没抽到，**两种解释无法区分**。
+    ⇒ 判据：**修改的价值取决于能否验证**；不能验证的修改只是把不确定性换了个位置。
+  - **452「『已经有两道冗余』的代码，不要用『再加一道』来修它的偶发失败」**。
+    `setTimeout(0)` + `afterOpenChange` 已经是两条幂等路径，再加第三条会**掩盖**
+    「到底哪条该负责」这个问题。⇒ 偶发问题的修法优先级：**先把观测做准**
+    （显式 timeout / 采样 / 日志）> 改实现。
+
+- 2026-11-18 **自治优化 · R240（并行第 166 批）（1 提交 · `execute.spec.ts` **28 → 0**，`test:node` 全绿）**：
+  承接 R239（当时 28 → 4）。R239 只给 **gitRepo** 那条闸接了可注入解析器，
+  而 `packageUrl`（zip 渠道）走的是**另一条闸**（`ssrf-guard.ts` 的
+  `assertSafeDnsResolutionWithTimeout`），仍在内部直接查真实 DNS ⇒ 剩余 4 例。
+
+  - **① 事实核对（446：先找第一个失败）**：把 4 例逐个隔离复跑 ⇒
+    `公网 packageUrl` 与 `zip-download prepare rejects` **隔离跑通过**、
+    `kills a running execution` 隔离跑也失败 ⇒ 只有 1 个可能独立。
+  - **② 真因**：`ssrf-guard.ts` 内部 `dns.promises.lookup` ⇒ 本机 fake-IP 把
+    `example.com` 解析到 `198.18.1.104`（RFC 2544 段）⇒ `packageUrl` 用例全 400。
+  - **③ 修法**：
+    (a) `git-repo-dns-resolver.ts` 增 `ssrfDnsLookup()` —— **同一个模块级解析器、
+        第二种形状**（`{address, family}`）。两条闸防的是同一件事，
+        留两份缝的话将来加第三条路径又会漏。
+    (b) `ssrf-guard.ts` 改走 `ssrfDnsLookup(host)`，去掉不再用的 `node:dns` import。
+    (c) spec 的 **R72 / R74 / R75 三组原先 spy `dns.promises.lookup`** ——
+        生产路径改经共享解析器后，**再 spy 底层会完全失效**（实测：R239 之后
+        R72 组 4 例全红）。改为 `__setGitRepoDnsResolverForTest`，并用**队列**
+        保住原 `mockResolvedValueOnce` 的**一次性**语义。
+  - **④ ★ 本轮踩到并修掉的「改善一组、恶化另一组」（445 的又一次实证）**：
+    R239 修好 gitRepo 那 12 例后，**R72 组从绿变红** —— 因为它们依赖 spy 底层 `dns`。
+    若不逐个隔离复跑，会误以为「只剩 3 个环境问题」而**放过一个自己刚制造的回归**。
+
+  **验证（真实 exit）**：`execute.spec.ts` **159/159 全绿**（R239 后 4 failed、R237 时 28 failed）
+  · `test:node` 全量 **exit 0**：64 套件 **1875 例**通过
+  · `tsc` 0 · `eslint` 0 · `check-size-caps` **0**（**未放宽任何基线**）。
+
+  **方法学沉淀（接 448）**：
+  - **449「一个缺陷往往有多条路径，修一条会把另一条的**测试假象**暴露出来」**。
+    gitRepo 与 packageUrl 是**两条 SSRF 闸**，R239 只接了前者。
+    更隐蔽的是：R239 让「spy 底层 `dns`」这个**既有的测试手法失效**，
+    于是 R72 组从绿变红 —— **那不是新缺陷，是被我揭掉的旧伪装**。
+    ⇒ 改生产路径的**调用形态**时，必须**全仓搜索谁在 mock 这个形态**
+    （`jest.spyOn(dns` / `mockImplementation` 等），否则会以为在修 bug、实际在制造回归。
+  - **450「『合法公网域名』这类**反向断言**，换接缝后要重新设计证据形态」**。
+    原断言 `expect(lookupSpy).toHaveBeenCalled()` 证明「确实走了 DNS 解析」。
+    换接缝后改为 `expect(res.status).not.toBe(400)` 并写明理由：
+    若解析被短路，`example.com` 会落到真实 DNS、在本机 fake-IP 下变 400 ⇒ 该断言会红。
+    ⇒ **不是放宽**，是**证据形态**从「spy 被调用」换成「结果不为受限拒绝」；
+    关键是新证据**仍然能失败**（405 会说清这一点）。
+
+- 2026-11-18 **自治优化 · R238–R239（并行第 164–165 批）（1 提交 · 把 R237 那个「28 例」从**根上**拆开并修掉 24 例）**：
+  R237 只查出第一层（Once 队列泄漏）且两次修法都更差、已回退。本轮改用**探针先定位**的做法。
+
+  - **R238（诊断，0 提交）**：在 spec 的 `beforeEach` 里插桩，报告进入每个用例时
+    `execute` mock 的**剩余队列长度** ⇒ 输出 `LEAK_PROBE pending=1` **持续复现**。
+    同时把 28 个失败按错误签名归类（`toBeDefined` 12 / `toBe` 9 / `toBeTruthy` 3 / `toMatch` 2），
+    并逐个隔离复跑 ⇒ **分成两组**：
+    **A 组 12 个**全用 `example.com`（真因）；**B 组 16 个**隔离跑**全绿**（A 组失败后
+    Once 没被消费而泄漏的**连带**）。
+    ⇒ **根因不是 mock，是 DNS**：「修 mock」方向从一开始就错了。
+  - **R239（`338b0d44`）修 A 组根因** —— `assertGitRepoNetworkPolicyResolved`
+    **本来就接受**第 3 参数 `resolve?: (host) => Promise<string[]>`（注释写着「可注入的解析器（测试用）」），
+    但 `routes/execute.ts` 调用时**没传** ⇒ **测试走真实 DNS**。
+    本机代理把外部域名 fake-IP 到 `198.18.0.0/15`（实测 `github.com`→198.18.0.70、
+    `google.com`→198.18.0.168，连直连 `223.5.5.5` 也返回同一 fake-IP ⇒ 拦截在比 DNS 更底层）
+    ⇒ `example.com`→`198.18.1.104`（RFC 2544 段）⇒ 这 12 例全部 400。
+    **修法**：新增 `git-repo-dns-resolver.ts`（模块级可替换解析器，**默认 = 真实
+    `dns.promises.lookup`，生产行为逐字节不变**），路由调用点传入；spec 的
+    `beforeEach` 装固定表（`192.0.2.1` = TEST-NET-1，公网非受限类）、`afterEach` 恢复。
+    **为什么独立成模块**：`execute.ts` 已在体量棘轮边缘（「只减不增」），这段是**纯测试缝**。
+
+  **验证（真实 exit）**：`execute.spec.ts` **28 → 4 failed**（同环境 `--runInBand`），
+  **净改善 24 例**；`tsc` 0 · `eslint` 0 · `check-size-caps` **0**（**未放宽任何基线**）。
+  **剩余 4 个如实登记**：3 个**隔离跑也失败**（`公网 packageUrl` / `kills a running execution` /
+  `zip-download prepare rejects` —— 各自依赖真实网络或真实进程组行为）；
+  1 个（`no double-kill`）隔离跑通过 ⇒ 是那 3 个的连带失败。它们**不是本提交能解决的**。
+
+  **方法学沉淀（接 445）**：
+  - **446「『一堆互不相关的用例同时红、单跑全绿』先怀疑**共享可变状态**，
+    但**不要先修它** —— 先找出**第一个**失败，它才是真因」**。
+    R237 我直接去修 mock 队列（症状），两次都更差；R238 插桩找到**第一个失败是 P2-2**，
+    才看清「A 组真因是 DNS、B 组才是泄漏」。⇒ **连带失败与真因失败必须分开**，
+    否则会为了「让连带的消失」去改动真因之外的机制，反而制造新失败。
+  - **447「测试依赖真实 DNS = 测试结果取决于跑它的机器」** —— 本仓其实**早就有**这个缝
+    （函数注释写着「可注入的解析器（测试用）」），只是调用点**没接**。
+    ⇒ 凡「为测试留的参数」，要检查**是否真有调用点传入**；只写不接的缝与没有缝等价
+    （这是 433「登记要能说出被谁读」的同族，发生在**函数参数**上）。
+  - **448「本机环境异常时，先证明它**只影响本机**」** —— 直连 `223.5.5.5` 仍返回 fake-IP
+    ⇒ 拦截在 TUN/透明代理层，不是 DNS 配置问题。这条证据决定了后续动作：
+    **不修环境**（用户的网络选择），而是**让测试不依赖它**。
+
+- 2026-11-18 **自治优化 · R236–R237（并行第 162–163 批）（1 提交 · 修掉 web 最后一处失败；node 那 28 个**查清性质但未修**，如实留档）**：
+
+  - **R236（`510320d1`）修掉 `test:web` 的唯一失败** —— 全量跑 1 失败、单文件跑却全绿：
+    `Found multiple elements with the text: 先查看未结束的指派`。
+    **根因**：antd `Modal.confirm` 的 content 渲染进**独立 portal**，而 `Modal.destroyAll()`
+    是**异步**的 ⇒ 同一用例内此前开过的确认框 portal 可能仍在 DOM 里
+    ⇒ `findByText`（要求唯一命中）报 multiple。**这是测试隔离缺陷，不是产品缺陷**。
+    **修法**：`findAllByText(...)` 取**最后一个**（portal 按打开顺序追加）
+    —— **不是放宽断言**：下面仍断言 `assignments` 被调用、`cancelAssignments` 未被调用。
+    **验证**：`test:web` **exit 0**，329 文件 **2579 例**通过（此前 1 failed / 2578 passed）。
+
+  - **R237（调查，0 提交）`test:node` 的 28 个失败：查清了两层成因，但修法比预期复杂，如实记录尝试与回退**。
+    - **① 第一层（已证实）**：全部集中在 `execute.spec.ts` 一个文件（其余 63 套件绿）；
+      且含 A-2 shell 白名单这类**与网络无关**的用例 ⇒ 同一根因。
+      实证：`jest.clearAllMocks()` **不清 `mockImplementationOnce` 队列** ——
+      我写了个一次性用例验证：注册一条 Once 后调 `clearAllMocks()`，那次调用**仍返回 `once-1`**。
+      而该文件 **31 处**对 `taskWorkerManager.execute` 都用 `mockImplementationOnce`
+      ⇒ 某用例注册了 Once 却没消费掉（先断言失败、或走了不触发 execute 的分支），
+      残留那条会被**下一个用例**消费 ⇒ 「一堆互不相关的用例同时红、单跑全绿」。
+    - **② 尝试与**回退****：加 `mockReset()` ⇒ 28 → **20**，但 `buildNpmRcContent` 那 8 例
+      从绿转红（`mockReset` 连 automock 的**默认实现**一起清掉，而那组依赖「默认 no-op 即成功」）。
+      改 `mockImplementation(() => undefined)` ⇒ 反而 **28 → 38**。
+      ⇒ **两个方向都比基线差** ⇒ **`git checkout` 回退**，停在基线 28，不提交半吊子修复。
+    - **③ 剩下的成因（如实：未查完）**：20 个里既有 DNS 劫持导致（`example.com` → `198.18.1.104`，
+      P2-2 / B-01 / R70 那几例），也有 `killRunningTaskProcesses` 这类 **5001ms 超时**
+      （真实进程组操作，可能与本机环境有关），还有 `buildNpmRcContent` 的 mock 交互。
+      **它们不是同一个根因**，需要逐类分开处理；本轮**没有**做到。
+
+  **验证（真实 exit）**：`test:web` **0**（2579 例）· `execute.spec.ts` 回到基线 **28 failed**
+  （两次尝试分别 20 / 38，**均比基线差，已回退**）· 工作区干净。
+
+  **方法学沉淀（接 443）**：
+  - **444「`jest.clearAllMocks()` 不清 `mockImplementationOnce` 队列 —— 这是顺序污染的常见源头，且症状极像『一堆无关用例同时坏』」**。
+    判据：一个 spec 文件里若大量用 `mockImplementationOnce` 而 `beforeEach` 只有 `clearAllMocks()`，
+    就存在「前一个用例没消费完的 Once 被下一个吃掉」的风险。
+    **验证方法**：注册一条 Once → `clearAllMocks()` → 调用，若仍返回 Once 的值即证实。
+  - **445「修 mock 泄漏时，`mockReset()` 与 `mockImplementation(() => undefined)` 不是等价替换」**。
+    前者连 automock 的**默认实现**一起清掉 ⇒ 依赖「默认 no-op」的用例会集体变红
+    （本轮实测：`mockReset` 把 28 降到 20 却**新增** 8 个红；换成 `mockImplementation` 又涨到 38）。
+    ⇒ **改善的那部分与恶化的那部分是两组用例**，必须分别度量；
+    而且**任何一个方向只要比基线差，就该先回退再想**，不要在「部分变好」上继续叠。
+
+- 2026-11-18 **自治优化 · R235（并行第 161 批）（1 提交 · 7 个 Python 测试脚本在新发行版上**全部 exit 127**）**：
+  按 R439（补上环境后要重跑「被它挡住的门禁」）把 `test:unit` 剩余段跑一遍，发现 **7 个 Python 套件从未能跑**。
+
+  - **① 缺陷**：`test:python` / `test:pypi` / `test:sdk-py` / `test:lib-{http,ai,notify,db}`
+    **全部硬编码 `python -m pytest`**。而 **Ubuntu ≥ 20.04 不再提供 `python` 别名**
+    （本机 26.04 实测 `/usr/bin/python` 不存在）⇒ 全部 **exit 127**（`sh: python: not found`）。
+    CI（GitHub `ubuntu-latest`）**恰好自带 `python` 别名** ⇒ 这个缺陷在 CI 上**从未暴露**。
+  - **② 为什么不能只换 `python3`**：本仓 Python 测试需要**项目自己的依赖**
+    （fastapi / httpx / sqlalchemy / respx / tenacity…），系统 `python3` 通常没有
+    ⇒ 换完仍是 `Interrupted: 51 errors during collection`（实测）。
+  - **③ 修法**：新增 `scripts/py.mjs` 统一探测解释器，顺序与仓内**既有约定**
+    （`scripts/e2e-full.sh:377`）一致：项目 `.venv`(POSIX) → `.venv`(Windows) → `python3` → `python`。
+    失败时**显式区分「环境没准备好」与「测试失败」**并给出补依赖命令
+    （本仓主导缺陷类：把「环境没准备好」渲染成「代码坏了」）。
+  - **④ 自己踩到并修掉的一个真坑**：首版子进程 `cwd` 设成**仓库根**
+    ⇒ `test:python` 去收集**仓库根**的测试（实测 **50 个 collection error**）、
+    `lib-http` 直接 `file or directory not found: tests`。
+    pytest 的相对路径与 rootdir **都以 cwd 为基准** ⇒ 必须设成**项目目录**。
+  - **⑤ 顺带清掉 R234 的体量债**：R234 的安全前置让 `execute.ts` 超棘轮（**2159 > 2154**）。
+    按「基线只减不增」的纪律**不放宽基线**，把凭据判据抽到 `git-repo-credentials.ts`
+    （**判据一行未改，只是搬家**）⇒ 回到基线内。
+
+  **验证（真实 exit）**：7 个套件全部 **0** —— pypi 205 · sdk-py 179 · lib-http 55 ·
+  lib-ai 67 · lib-notify 31 · lib-db 30 · python（覆盖率 87.31% ≥ 86%）；
+  合计 **567+ 例**（此前全是 127 或 collection error）。
+  `execute.spec.ts` 失败数仍 **28**（与 R234 基线一致，**零回归**）、P2-2 用例仍 ✓；
+  `tsc` 0 · `check-size-caps` 0 · `check-script-main-guard` 0。
+
+  **方法学沉淀（接 441）**：
+  - **442「CI 环境比用户环境更『宽容』时，缺陷只在用户那边出现」**。
+    GitHub `ubuntu-latest` 自带 `python` 别名 ⇒ 7 个脚本在 CI **永远绿**，
+    在**较新的真实发行版上全部不可用**。这不是 CI 配错了，而是
+    **CI 的隐式便利掩盖了脚本对环境的假设**。
+    ⇒ 判据：凡脚本里出现**未加版本号的解释器名**（`python` / `node` / `bash` 之外），
+    就要问「这个别名在我支持的所有发行版上都存在吗」。
+  - **443「换解释器之前先问『依赖在哪』」** —— 看到 `python: not found` 的直觉是换 `python3`，
+    但那只是把「命令找不到」换成「51 个 collection error」：**症状变了，根因没动**。
+    本仓的 Python 依赖在**项目 venv** 里 ⇒ 正确的修法是**探测 venv**，不是换名字。
+
+- 2026-11-18 **自治优化 · R233–R234（并行第 159–160 批）（2 提交 · 用户报「跑测试把整机拖死」⇒ 查出内核 OOM 的三层根因；顺带修掉一处真实安全缺陷）**：
+
+  - **R233（`885f6510`）限制 jest 并发 + 抬高堆上限** —— **用户报告**：跑测试时**整机卡死、时钟停走**，
+    过一会儿恢复，**很多程序被杀死**。首次误判为「V8 堆耗尽」，但用户补的那句话把方向纠正了。
+    **决定性证据（`journalctl -k`）**：`node-V8Worker invoked oom-killer … global_oom`，
+    随后杀掉 `WeChatAppEx`（微信）/ `Isolated Web Co`（Firefox）/ `awesun`。
+    且 `vmstat` 的 `pgscan_direct 91,149,329` ≈ `pgscan_kswapd 6,066,499` 的 **15 倍**
+    ⇒ 进程同步阻塞在分配器里等内核回捞页 = **整机冻结+时钟停走**的机制。
+    **三层根因**：① jest 无 `maxWorkers` ⇒ 默认 **核数−1 = 15 worker**（本机 16 核）；
+    ② 每 worker 堆上限 2144MB ⇒ 峰值 **32GB**，物理仅 13GB；③ direct reclaim → 整机冻结 → OOM killer。
+    **swap 不是元凶**：它在 NVMe 上；但 **4GB 对「13GB 内存 + 15 并发」偏小** ⇒ 才会走到冻结路径
+    （**用户猜「swap 太大」与实际相反** —— 该扩不该缩）。
+    **修法（均不需要 root）**：`jest.maxWorkers` 15→**4** · `workerIdleMemoryLimit` **"1GB"** ·
+    四个 test script 堆上限 2144→**4096MB**。
+    **验证**：`test:api` **连跑两次**均 **492 套 8283 例全绿、零崩溃**（此前 7861 例处 abort(core dumped)）；
+    内存峰值 **8811MB（68%）**，全程未触发内核 OOM。
+  - **R234（`7c8eded0`）凭据闸必须前置于 DNS 解析** —— 跑 `executor-node` 时 P2-2 用例失败，
+    但**不是测试的问题**：凭据闸在 `acceptExecution` 内（`execute.ts:682`），而 **DNS 级 SSRF 闸在路由入口**
+    （`:886`）⇒ **DNS 先跑**。主机名解析到受限段时，`git-repo-network-policy.ts:220` 抛
+    `gitRepo URL 指向受限网络地址：${gitRepo}` ⇒ **把含 `user:token` 的完整 URL 原样回显**
+    —— 那正是 P2-2 要防的泄漏面，且**在 accept 期就泄**（不依赖 clone 失败）。
+    **跨端对照**：python 侧顺序是对的（`execute.py` ② 凭据闸在 ⑥ SSRF 闸之前）⇒ **node 独有**。
+    **修法**：把 userinfo/password 判定**前置到 DNS 之前**（纯字符串、零网络开销），文案**不含原 URL**。
+    **验证**：`execute.spec.ts` 失败数 **29 → 28**（同环境 `--runInBand` 对比）⇒ 恰好修掉那一个、**零回归**。
+
+  **环境既有问题（如实登记，不在本批范围）**：`executor-node` 剩余 **28** 个失败**在改动前就存在**，
+  全部由本机 **DNS 劫持**（`example.com` → `198.18.1.104`，RFC 2544 保留段）导致 ——
+  任何用真实域名的用例都会撞 SSRF 闸。这是**环境**问题不是代码缺陷。
+
+  **方法学沉淀（接 439）**：
+  - **440「用户描述的症状比我的第一层归因更值钱」**。我最初只看到 `exit 134 / Aborted (core dumped)`，
+    归因为「V8 堆耗尽」并准备只调 `--max-old-space-size`。用户补一句「电脑全卡住、时钟停走、很多程序被杀」
+    ⇒ 那**不可能是 V8 abort 的表现**（V8 自己退出不会冻结整机）⇒ 才去查 `journalctl`，
+    找到全局 OOM 与 `direct reclaim`。**若没有这句补充，我会交一个只治标、且会让峰值更高的修复**
+    （15 worker × 4GB = 60GB）。⇒ 症状描述里的「**整机级**现象」是区分「进程内问题」与
+    「系统级问题」的第一手线索，**先问它、再归因**。
+  - **441「`exit 134` 与 `137` 是两个世界：abort() vs SIGKILL」** —— 134 = 进程自己 abort（V8/断言），
+    137 = 被内核杀。本轮日志里**两者都出现了**（jest 主进程 134、微信/Firefox 137），
+    而只有后者才说明「**别人也在被杀**」。⇒ 排查资源问题先看**被杀的还有谁**，
+    那比本进程的退出码更能定位层级。
+
+- 2026-11-18 **自治优化 · R232（并行第 158 批）（1 提交 · R231 装齐依赖后，**四个从未在本机跑过的测试套件** + `typecheck:all` 首次完整跑通，并抓到一处真缺陷）**：
+  R231 把依赖装齐 ⇒ 一批**此前在本机跑不了**的门禁现在能跑了。本轮把它们全跑一遍。
+
+  - **① 四个测试套件（本机首次运行，全绿）**：
+    `test:cli` **16 文件 458 例** · `test:mcp` **341 例** · `test:node-sdk` **5 套 148 例** ·
+    `test:desktop`（含 main/renderer selftest 与 `typecheck:renderer` 硬门禁）**exit 0**。
+    ⇒ 这四套此前**连 `vitest`/`jest` 都找不到**（缺 `node_modules`），从未在本机验证过。
+  - **② ★ `typecheck:all` 首次完整跑通并**抓到一处真缺陷****：
+    `apps/admin-web/src/__tests__/inbox-page.test.tsx:73` 的 `QueueStallSnapshot` 夹具
+    **缺 R211 新增的 `degradedCounts` 与 `workersKnown`** ⇒ `tsc -b` 报 **TS2739**。
+    补两字段 ⇒ 全绿。
+  - **③ 为什么此前没暴露（与 R231 互为印证）**：`typecheck:web`（`tsc -b`）需要 `packages/*` 的
+    `node_modules`，本机长期没装 ⇒ **这一环从未真正跑过**。⇒ 这又是一次
+    「**环境缺口把真缺陷藏起来**」：缺陷在代码里已经存在（R211 就埋下了），
+    但因为校验它的那条环跑不起来，**它连被发现的机会都没有**。
+
+  **验证（真实 exit）**：`typecheck:all` **8 环全 0**（首次完整跑通）· `test:cli` 458 ·
+  `test:mcp` 341 · `test:node-sdk` 148 · `test:desktop` 0 · `guards-repo-matrix` **113/113**
+  （R231 的成果）· `tsc -b`(admin-web) 0。
+
+  **方法学沉淀（接 438）**：
+  - **439「修好一个『环境缺口』之后，必须把**被它挡住的所有门禁**重跑一遍」** —— R231 的价值
+    不只是「链绿了」，而是**解锁了一批此前无法执行的校验**。本轮第一次跑它们，
+    立刻抓到一处从 R211 就存在、但**从未有机会被发现**的类型错误。
+    ⇒ 「补上环境」之后要问：**这台机器上，还有哪些东西是因为缺了它才一直绿着？**
+    那些才是真正的欠账区。
+
+- 2026-11-18 **自治优化 · R231（并行第 157 批）（0 提交 · 环境轮：把「本机 106/113」变成 **113/113 全绿**）**：
+  状态卡头部长期写着「守卫链 111 段（本机实测 **106 段 exit 0**；第 55/107 段是环境既有缺口）」。
+  本轮去**把它补掉** —— 结论：**那些「缺口」全部是缺 `node_modules`，不是仓库问题**。
+
+  - **① 逐段定位（R230 已把链条从第 10 段推进到第 57 段）**：剩余的 6 段红全是
+    `MODULE_NOT_FOUND` / `eslint: not found`，且集中在**本机没装依赖的子项目**：
+    `test:mcp-tool-surface`（第 57）· `lint:cli`（109）· `lint:mcp`（110）·
+    `lint:node-sdk`（111）· `lint:desktop`（112）。
+  - **② 修法（只装依赖，不改代码）**：
+    `npm install` 于 `packages/mcp-server` / `packages/acf-cli` /
+    `packages/autocodeflow-node-sdk` / `apps/executor-desktop`，
+    并对 mcp-server 跑 `npm run build`（`mcp-tools-probe` 需要 `dist/index.js`，
+    它读的是**编译产物**而不是源码）。
+  - **③ 结果**：`guards-repo-matrix` **113/113、exit 0**。
+    这是本仓守卫链**第一次在本机完整跑通**（此前每次都在第 10 或第 57 段中断）。
+  - **④ 安装没碰任何被跟踪文件**：`git status --porcelain | grep -v '^??'` 为空 ——
+    `node_modules` / `dist` 均在 gitignore 内。⇒ **这是一次纯环境准备，零代码风险**。
+
+  **验证（真实 exit）**：`guards-repo-matrix` **113/113 = 0**；
+  各段单独复跑（`lint:mcp`/`lint:cli`/`lint:node-sdk`/`lint:desktop`/`test:mcp-tool-surface`）全 **0**。
+
+  **方法学沉淀（接 437）**：
+  - **438「『本机跑不了』要先分清是**仓库问题**还是**环境问题** —— 二者的处置成本差两个数量级」**。
+    「第 55/107 段是环境既有缺口」这句话在状态卡头部挂了 **十几轮**，每轮都把它当**已知且不可改进**的事。
+    实际只需要 **4 次 `npm install` + 1 次 `npm run build`**（4 秒/次）就能消掉。
+    ⇒ 凡记录「环境缺口」，**必须写清它是哪一类**（缺依赖 / 缺服务 / 缺账号 / 真缺陷），
+    否则它会**永久免检**：因为「环境缺口」四个字看起来像「不归我管」。
+
+- 2026-11-18 **自治优化 · R230（并行第 156 批）（1 提交 · 修掉守卫链第 10 段的**真误报**，链条从「第 10 段断」推进到「第 57 段」）**：
+  跑全链时 `check:guard-harness` 在第 **10/113** 段红，点名
+  `r209-queue-idle-http-probe.mjs`「起 admin-api 但没接 `hermeticEnv`」。
+
+  - **① 事实核对（434：先拆开）**：`r209` **自己不起 admin-api** ——
+    它的头注（`:34`）写的是「前置：admin-api 已构建并**在跑**」，正文用 `fetch` 探测 `/api/health`
+    （`:140-142`），不可达就要求**先起服务**。⇒ **它从不 spawn**。
+  - **② 根因是判据实现与自己的文档不一致**：`scanAdminSpawns` 的文档写的是
+    「凡 **spawn** `dist/main.js` 的自检，必须引用 `hermeticEnv(`」，而实现只查了
+    「文本里有没有 `dist/main.js` + `apps/admin-api`」⇒ **「提到」被判成「起进程」**。
+  - **③ 修法**：加一道闸 —— 本项目里必须真的有
+    `spawn|spawnSync|execFile|execFileSync|fork` **调用**才计入判据面。
+    **判据强度没有放松**：真 spawn 且未接 helper 的负例① 仍红（见 ④）。
+  - **④ ★ 补一条能抓住这个偏差的用例（原判据抓不到）**：
+    负例①（`leaky-selftest.mjs`）用的是**真 spawn**，所以在「提到即算」的实现下**也是红的**
+    ⇒ 它**区分不出**两种实现。⇒ 新增 fixture ⑤ `mentions-only.mjs`（注释里写
+    `dist/main.js` + `apps/admin-api`、正文 `fetch`，**从不 spawn**）+ 断言
+    「扫描面应为 **2**」。**反证实测**：去掉 spawn 闸 ⇒
+    `✘ 扫描面应为 2（只算真的起进程的），实际 3 —— 「提到 admin-api」不等于「起 admin-api」`。
+  - **⑤ 链条推进（真实收益）**：修前 `guards-repo-matrix` 在**第 10/113 段**就中断；
+    修后跑到**第 57/113 段**（`test:mcp-tool-surface`，**环境既有缺口**：
+    `packages/mcp-server` 无 `node_modules`），**中间 56 段全部 exit 0**。
+
+  **验证（真实 exit）**：`check:guard-harness` **16/16** · `guards-repo-matrix` 第 10 段
+  **exit 0**（修前 exit 1）、共 **56 段**通过后才撞到环境缺口。
+
+  **方法学沉淀（接 435）**：
+  - **436「判据的文档与实现说的不是同一件事时，实现往往更宽 —— 而更宽的那一侧会制造误报」**。
+    这里的文档写「**spawn**」，实现查「**提到**」。宽实现不会漏报，但会把
+    「注释里提到 / 用 fetch 探测 / 文档引用」全算进来 ⇒ **误报**。
+    ⇒ 写启发式判据时，**「命中什么」必须与「想抓什么」逐字对齐**；
+    并且**必须有一条只在「宽实现」下才会红的用例**（否则判据自己发现不了自己宽了）。
+  - **437「负例用『真违规』写，会同时放过『误报』和『正确』两种实现」**。
+    本轮负例① 是「真 spawn 未接 helper」，它在宽/严两种实现下**都红** ⇒
+    它证明不了任何关于「宽窄」的事。⇒ **每条启发式判据至少要有一条
+    『只在该宽的时候才红』的负例**，那是唯一能区分宽窄的夹具形态。
+
+- 2026-11-18 **自治优化 · R229（并行第 155 批）（1 提交 · 给 9 个真机探针加「不会静默失效」守卫）**：
+  R212–R217 建了 **9 个真机探针**（`scripts/r2*-*-probe.mjs`），它们是 R208/R212/R213/R214/R216
+  结论的**唯一证据来源**。但它们需要隔离 Redis / 真 PG / 分钟级 cron ⇒ **不能进 CI**。
+
+  - **① 缺口**：正因不能进 CI，探针**退化时没有任何信号** —— 文件被删/改名、
+    `package.json` 的 script **接串到别的探针**、语法被改坏、被顺手 `rm` —— 都不会有东西红。
+  - **② 为什么这比"没有探针"更糟**：一个**默默失效、没人知道已经失效**的验证资产
+    会让人以为「有覆盖」。这与 R158 的 `typecheck:renderer:report`（恒 exit 0 的假门禁）
+    是同一类退化路径。
+  - **③ 判据（`check-live-probes-intact`，4 条 · 刻意**只查静态**）**：
+    ① 清单里每个探针**文件存在**；② `package.json` 的 `test:*` **存在且指向该文件**（防接串）；
+    ③ `node --check` **能解析**；④ 头部 40 行内**写明需要真环境**（防人以为 `npm test` 会跑到它）。
+    **清单显式列出 9 条、不用通配** —— 通配在「文件被删」时会**自动缩小扫描面** ⇒
+    删掉探针反而更绿（本仓反复踩过的形态）。
+    **刻意不做成「真跑一遍」**：最坏 22 分钟（R217），塞进 CI 只会被人注释掉。
+    ⇒ 静态可用性在这里是**正确的判据强度**，不是妥协。
+  - **④ 新守卫自己的自检抓到一处**：首版 `ENV_HINTS` 只查「隔离/isolation/真机/REDIS」四词，
+    把 `r209` **误判**（它的 header 写「真 NestJS 进程 + 真 PG + 真 Redis」，内容完全够，
+    是小写 `Redis` 且无「隔离/真机」字样）⇒ **判据太窄**。放宽到含 `Redis`/`PG`/`真 NestJS`，
+    **并复跑 selftest 确认反例④仍能变红**（放宽不等于关灯）。
+  - **⑤ 接线一次做全（R227/433 的直接应用）**：`package.json` script + `test:guards:chain` +
+    `ci.yml` 一步 + `coverage-registry` 的 `covered` **与** `scopePrefix` —— **四处同批**，
+    不留「登记了但没人读」的装饰。
+
+  **验证（真实 exit）**：守卫 **5/5 自检 + 主跑 0** · `check:guards-wired` **0**
+  （守卫 99 → **100**、覆盖登记 84 → **85**）· `check-script-main-guard` 0 ·
+  `check-size-caps` 0 · `check-workflow-yaml` 0（10 个 workflow 可解析）。
+
+  **方法学沉淀（接 434）**：
+  - **435「不能进自动门禁的验证资产，需要一个『它还在』的静态守卫 —— 否则它会静默腐烂」**。
+    真机探针的价值在**真机**，但真机不可自动化 ⇒ 退而求其次：**保证它仍然存在、仍然指向对、
+    语法仍然能过**。这三件事全是静态的、零成本的，却能挡住「三个月后有人 `rm` 掉一个探针，
+    而引用了它结论的文档还在」。
+    ⇒ 判据强度要**匹配可持续执行的成本**，不是越高越好：一个会被注释掉的高强度门禁等于零。
+
+- 2026-11-18 **自治优化 · R228（并行第 154 批）（1 提交 · 补上最后一个「可补」的覆盖登记，并把剩余 14 个的**原因**查清）**：
+  `check:guards-wired` 一直在尾部提示「另有 17 个**未登记** ⇒ 尚无覆盖计数保护」。
+  本轮去把这 17 个查清 —— **结论是它实际只剩 1 个可补，其余都有确定原因**。
+
+  - **① 先做规模核对（432：先用证据判定）**：98 个判别型守卫里，**84 个有 `banner`**
+    （`printCoverageBanner`，即可被计数）。未登记的 14 个中：
+    - **13 个根本没有 `printCoverageBanner`** ⇒ **结构上数不出来**，不是「忘了登记」。
+      守卫自己用的词也是「尚无覆盖计数保护」（**如实**），不是「欠账」。
+    - **1 个是文案误报**：`check-guards-wired.mjs` 里 `printCoverageBanner` 只出现在
+      **报错提示字符串**（`:1175`，教别人怎么加），它自己**不调用**。
+  - **② 唯一真正可补的**：`check-migration-symmetry.mjs` —— 它有 banner（helper `push`，
+    实测 **9** 条用例）却未登记 ⇒ 用例被删光**没有任何信号**。
+    补登记 `floor = 5`（本仓纪律：floor 只需 ≤ 真实规模，按「约一半」取，**不要为对齐而改判据**），
+    并同批加进 `scopePrefix`（**这一条是 R227 的教训 433 的直接应用**：
+    只进 `covered` 不进 `scopePrefix` = 装饰）。
+  - **③ 反证（证明新登记有牙）**：把该条 `floor` 从 5 改成 **99** ⇒
+    `✖ scripts/check-migration-symmetry.mjs：用例计数 9 < 下界 99`、**exit 1**；改回 5 ⇒ 绿。
+
+  **验证（真实 exit）**：`check:guards-wired` **0** —— 覆盖登记 **83 → 84**、
+  未登记 **17 → 16**（守卫把「17」算作「有 banner 且未登记」，本轮把其中唯一可补的补掉）。
+  **剩下 14 个不是欠账**，理由已在上文逐类登记。
+
+  **方法学沉淀（接 433）**：
+  - **434「『未登记 N 个』这类提示，N 里可能混着**三种**完全不同的东西」**：
+    ① 真欠账（能补没补）· ② 结构上做不到（缺 banner）· ③ **文案误报**（字符串里出现关键字）。
+    本轮 17 个里只有 **1** 个是①。⇒ 见到「N 个未做」的提示，**先把 N 拆开**再动手；
+    否则会花整轮去修 13 个**结构上做不到**的东西，而它们本来就已经被如实标注了。
+
+- 2026-11-18 **自治优化 · R227（并行第 153 批）（1 提交 · 修掉 R225 留下的一处**装饰性登记**）**：
+  R225 给新守卫 `check-typecheck-covers-specs` 登记了**覆盖计数**，但**没把它加进
+  `coverage-registry.json` 的 `scopePrefix`** ⇒ `check:guards-wired` 一直在提示
+  「登记表条目 … **不在本轮覆盖范围**」。
+
+  - **① 这条提示的含义（不是噪声）**：`scopePrefix` 是「**本守卫负责检查哪些守卫的覆盖计数**」的白名单。
+    有条目进了 `covered` 却没进 `scopePrefix` ⇒ 那条登记**既不参与上限判定、也不参与下界校验**
+    ⇒ **纯装饰**：写多少都不会有人核，删掉也不会有东西红。
+  - **② 反证（证明修完真的在起作用）**：把该条 `floor` 从 6 改成 **99** 后重跑
+    ⇒ `✖ scripts/check-typecheck-covers-specs.mjs：用例计数 7 < 下界 99`、**exit 1**。
+    改回 6 ⇒ 绿。⇒ 这条登记**现在有牙**。
+  - **③ 为什么它重要**：R224/R225 的核心价值就是「**让门禁缺口会红**」。
+    若这条登记是装饰的，那么「新守卫的用例被删光」这件事**依然没有信号** ——
+    等于**为修一个假绿而引入了一个新的假绿**。
+
+  **验证（真实 exit）**：`check:guards-wired` **0**（提示消失；覆盖 83 条、下界全过）·
+  该条 floor=6 且**反证时 99 会红**。
+
+  **方法学沉淀（接 432）**：
+  - **433「一条『登记』要能说出它被谁读、读来干什么；说不出就是装饰」**。
+    `covered` 里的一条记录有两个读者：`scopePrefix`（决定**要不要检查它**）与 floor 比较
+    （决定**检查什么**）。R225 只给了后者，前者缺失 ⇒ 整条记录成了一张贴在墙上的清单。
+    ⇒ **加登记时，先找出「谁会读它」，再确认那个读者真的会读到** ——
+    这与 413（「接口返回了 ≠ 契约表达了」）是同一类错的另一种形态：
+    **「数据写进去了 ≠ 数据被读了」**。
+
+- 2026-11-18 **自治优化 · R226（并行第 152 批）（裁定轮 · 0 提交）**：
+  **把候选池里唯一一条「待定：需先问价值」用证据裁掉了** —— 它根本不是缺口。
+
+  - **① 待定项**：R216 之后候选池只剩「五个徽标低频自动刷新（S，**待定**：需先问价值）」。
+  - **② 本轮没有先问价值，先去读代码**：`apps/admin-web/src/pages/AgentSessionsPage.tsx`
+    - `:410-417` 有 **15s `setInterval` 轮询**（`document.visibilityState === 'visible'` 时
+      调 `load({ silent: true })`，失焦暂停、回前台恢复）；
+    - `:353` 的 `setPendingRefreshToken(n => n + 1)` 在 **`load()` 的成功路径**上
+      （不是只在手动刷新里）⇒ 轮询每成功一次就递增。
+    ⇒ **五个徽标本来就随列表每 15 秒刷新一次**。
+  - **③ 裁定**：若「低频自动刷新」指**比 15s 更快**，那与立项时写的初衷
+    （「五个徽标同时出现时运营的注意力是稀缺资源」）**方向相反**；若指**更慢**，现状已更优。
+    ⇒ **不是缺口，删掉这条**。
+  - **④ 候选池现状**：只剩「判据⑨盲区（M）」，而 R168 已把它登记为「**只登记不立项**」
+    （它需要先定「跟随变量」的判据形态，不是纯执行项）。⇒ **候选池实质已清空**。
+
+  **验证**：无源码改动，故无代码验证；证据是**可复现的 grep**：
+  `grep -n "setInterval|setPendingRefreshToken" apps/admin-web/src/pages/AgentSessionsPage.tsx`
+  ⇒ 15s 轮询 + 递增在 `load()` 成功路径。`test:docs` **0**（仅文档改动）。
+
+  **方法学沉淀（接 431）**：
+  - **432「候选池里的『待定』项，先用证据判定它是不是缺口 —— 它可能早就被做掉了」**。
+    这条「待定」从 R203 起躺了 **23 轮**，每轮状态卡都把它列为候选池第 1 位。
+    若按「先问价值再决定」走，会花一轮去讨论一个**不存在的需求**；
+    而实际只花了一次 `grep` 就否掉了它。
+    ⇒ **「待定」的正确处理顺序：先证明它是不是缺口，再问要不要做**。
+    反过来说：**任何标注「待定」的条目，都应该在下一个空闲轮先做这一步免费的事实核对**。
+
+- 2026-11-18 **自治优化 · R225（并行第 150 批）（1 提交 · R224 的**同一根因推广**：又找到一处「全量门禁漏一块代码」）**：
+  R224 修的是「`typecheck:all` 漏了 `typecheck:specs`」。本轮做**同类事实核对**，
+  把链**展开**成「实际会执行的 (项目, tsconfig) 集合」后发现**还有一处**。
+
+  - **① 缺口**：`apps/executor-desktop` 定义了 `typecheck:renderer`
+    （`tsc -p tsconfig.renderer.json`，覆盖 **11k 行** renderer 代码），
+    而根 `typecheck:desktop` 只跑 `tsconfig.json` + `tsconfig.worker.json`
+    ⇒ **renderer 不在 `typecheck:all` 的覆盖面里**。
+    ⚠️ 它**不是**「没人查」—— CI 有真跑它（`ci.yml:2417`，R7 第五轮已翻成真门禁、实测 0 error）。
+    缺的是「**被判据引为全量门禁的入口**没有它」：前者 CI 会红，后者只在有人**拿
+    `typecheck:all` 当验收**时给出假绿。
+  - **② 修法**：根 `typecheck:desktop` 追加 `npx tsc -p tsconfig.renderer.json --noEmit`。
+  - **③ 判据扩展（第 ⑤ 条，`check-typecheck-covers-specs` 4 条 → 5 条）**：
+    **把 `typecheck:all` 展开**成「实际执行的 (项目, tsconfig) 集合」，再逐项核对
+    「子项目定义了的每个 `typecheck*` 是否都在集合里」。**刻意不按脚本名硬对应**
+    （`typecheck:api`→`apps/admin-api`、`typecheck:desktop`→含 worker）—— 那是猜；
+    展开法给出的是**实际会跑什么**。
+    **排除面显式两条**：`:report` 后缀（恒 exit 0，串进去等于关灯键）·
+    `apps/admin-web`（`tsc -b` 的 project references 已拉齐全部 tsconfig）。
+    selftest **5 → 7**（新增「子项目有 renderer 但链里没有 ⇒ 红」与「都有 ⇒ 绿」）。
+  - **④ 判据自己的一个真实脆弱点（自检抓到）**：首版 `expandAll()` **只展开 `npm run X`
+    引用到的子脚本**，没算 `typecheck:all` **自身正文** ⇒ 内联形态（`cd <proj> && npx tsc -p <cfg>`）
+    会漏判、正例变红。修：`expanded = all + expandAll(all)`。
+    ⇒ 这是「**判据的输入要覆盖两种写法**」的又一实例（内联 vs 引用）。
+
+  **验证（真实 exit）**：守卫 **7/7 自检 + 主跑 0** · `check:guards-wired` 0（覆盖登记 83、
+  下界 5→6） · `check-script-main-guard` 0 · `size-caps` 0 · `test:docs` 0。
+  **环境既有缺口（如实）**：本机 `apps/executor-desktop` 无 `node_modules` ⇒
+  `typecheck:desktop` 在此跑不了（与本次改动无关）；**renderer 那一环的正确性由 CI 保证**
+  （`ci.yml` 的 `Renderer typecheck (hard gate, R7)`，实测 0 error）。
+
+  **方法学沉淀（接 429）**：
+  - **430「修掉一处『门禁漏了 X』之后，必须把**同一条判据推广**去扫全部同类」**。
+    R224 只钉了 spec 这一环；若不推广，`renderer` 那处会一直躺着 ——
+    而它俩是**同一个根因**（`typecheck:all` 是手写串行链，每条链环都要人记得加）。
+    ⇒ 修完一个实例，问：**这条判据能不能表达成「对所有同类都成立」**？能就立刻推广。
+  - **431「判据的输入要同时覆盖『内联』与『引用』两种写法」** —— 本轮正例失败的真因是
+    `expandAll()` 只跟 `npm run X` 的引用、漏了 `typecheck:all` 正文里的内联 `cd ... && tsc`。
+    同一份配置**可以两种写法混用** ⇒ 判据必须**先把两种写法归一**再比。
+
+- 2026-11-18 **自治优化 · R224（并行第 149 批）（1 提交 · 把 426 那条纪律**机械化**：`typecheck:all` 必须覆盖 spec 层）**：
+  R223 的教训 426 写的是「判测试全绿必须另看 spec tsc」—— 但那只是**一句要靠人记得的话**。
+  本轮把它变成守卫。
+
+  - **① ★ 找到缺口**：根 `typecheck:all` 串了 **7 个** typecheck，**唯独没有 `typecheck:specs`**；
+    而 `typecheck:specs` 在本仓**多处文档里被引为「全量类型检查门禁」**（`PLAN-CLAIMS` 数处、
+    `ARCH-28b` 的并行化对照）。⇒ 任何把 `typecheck:all` 当验收项的人都会得到**假绿** ——
+    这正是 R222 事故（`tsc --noEmit` 0 错而 spec 整个套件编译失败）能溜过去的**结构性原因**。
+  - **② 修法**：根 `package.json` 新增 `typecheck:specs`（`cd apps/admin-api && npx tsc -p
+    tsconfig.spec.json --noEmit`，与 `typecheck:api` 同款形态）+ **串进 `typecheck:all`**。
+  - **③ ★ 加守卫 `check-typecheck-covers-specs.mjs`（判据四条）**：
+    ① 根必须定义 `typecheck:specs`；② `typecheck:all` **必须**串上它；
+    ③ 该脚本必须真的用 **`-p tsconfig.spec.json`**（否则它与 `typecheck:api` 是同一个门禁，
+    包含它只是「看起来查过 spec」的错觉）；④ CI 必须有一跑它。
+    **selftest 5/5**（正例 + 四个反例逐条变红）。已接进 `test:guards:chain` 与 `ci.yml`。
+  - **④ ★ 反证的**决定性证据**（本轮最有说服力的一条）**：把 `@Optional()` 去掉（复刻 R222 事故）后
+    —— **`typecheck:api` = exit 0**（用 build tsconfig，**不含 spec**），
+    **`typecheck:specs` = exit 2**（2 处 TS2554）。⇒ 两个门禁**不是同一件事**，
+    而 `typecheck:all` 此前只跑了前者。
+
+  **验证（真实 exit）**：新守卫 **5/5 自检 + 主跑 0** · `check:guards-wired` **0**（守卫 98 → **99**、
+  覆盖登记 82 → **83**）· `check-script-main-guard` 0 · `check-size-caps` 0 · `check-workflow-yaml` 0
+  （10 个 workflow 全可解析）· `test:docs` 0 · `check-env-drift` 0 · `typecheck:api`/`typecheck:specs` 全 0。
+  **环境既有缺口（如实）**：`typecheck:all` 在本机仍会红 —— 因为 `typecheck:cli`/`typecheck:mcp`
+  需要 `packages/*/node_modules`，本机没装（与本轮改动无关，stash 后原版同样红）。
+
+  **方法学沉淀（接 427）**：
+  - **428「写在文档里的纪律 ≠ 门禁；它只是『记得的人』的私人知识」**。R223 的教训 426 已经把这个坑
+    描述得很清楚，但**下一个加 typecheck 脚本的人不会读到它** —— 除非它变成一条会红的判据。
+    ⇒ 教训写完要问一句：**这条能不能机械化？能就别只写在文档里**。
+  - **429「两个门禁看起来是同一件事时，必须证明它们不是」**。`typecheck:api` 与 `typecheck:specs`
+    名字相近、都用 tsc、都跑在 admin-api —— 但它们**读不同的 tsconfig**，覆盖面**不相交**。
+    本轮的反证（一个 exit 0、一个 exit 2）是唯一能把这件事钉死的证据形态。
+
+- 2026-11-18 **自治优化 · R221–R223（并行第 146–148 批）（3 提交 · 两个契约面收尾 + 一处自伤修复）**：
+
+  - **R221（`40583b1b`）补 `backlogged` 端点的 response schema** —— 与 R211 补的 stall/idle 同批落地，
+    但 `GET /agent/sessions/backlogged` **漏了**：`openapi.json` 里只有 `{"200":{"description":""}}`
+    ⇒ 前端只能手写类型、字段在契约面完全不可见。新增 `AgentBacklogResponseDto`
+    （`sessionIds`/`count`/`probed`/`truncated`）+ `@ApiOkResponse` + 4 条 API 英文映射。
+    OpenAPI 响应 schema 覆盖率 **246 → 247**（95.0%，棘轮已 `--update`）。
+  - **R222（`d1ec6710`）`AGENT_OBSERVATION_TIMEOUT_MS` 从配置读** —— R213 判据文档 §3.1 写
+    「可用 `AGENT_OBSERVATION_TIMEOUT_MS` 覆盖」，但**代码是硬编码常量** ⇒ 文档与实现不一致
+    （「接口返回了」≠「契约表达了」的同族）。补 Joi 校验 + `configuration.ts` 映射 +
+    `.env.example` 条目 + 两个 service 从 `ConfigService` 读。
+  - **R223（本轮）★ 修掉 R222 自己造成的自伤** —— R222 把 `ConfigService` 加成**必填构造器参数**，
+    而既有 spec 用**定位参数**装配（`new AgentQueueStallService(queue)`）⇒
+    **`agent-queue-stall.service.spec.ts` 整个套件编译失败**（`Test suite failed to run`）。
+    ⚠️ **上一轮把它读成了「26 例全绿」** —— 因为那个数字来自**别的套件**，失败套件的用例数不计入。
+    ⇒ 改成 `@Optional()` + 放最后 + 读处 `?.` 空值安全，回落 `DEFAULT_OBSERVATION_TIMEOUT_MS`
+    （与 `AgentController` 的 `@Optional() config` 同款，R202/R205 两次前例）。
+    修后 **4 套 37 例**（原 26 例是漏算）+ agent 全量 **18 套 184 例**。
+
+  **验证（真实 exit）**：`tsc`（含 **`tsc -p tsconfig.spec.json`** —— 这条是 R223 补漏的关键：
+  只跑 `tsc --noEmit` **看不出** spec 的编译错误）· agent **18 套 184 例** ·
+  `lint:api` · `size-caps` · `check-env-drift` · `test:docs` 全 **0**。
+  **反证**：把 `@Optional()` 去掉 ⇒ `tsc -p tsconfig.spec.json` 报 TS2554、套件 `Tests: 0`。
+
+  **方法学沉淀（接 425）**：
+  - **426「加构造器参数 = 破坏所有用定位参数装配的 spec，而它们**不会**在 `Tests:` 里出现」**。
+    Jest 对「整个套件编译失败」只打 `Test suite failed to run`，**用例数按 0 计**
+    ⇒ 汇总行的 `Tests: 26 passed` 看起来一切正常。⇒ 判「测试全绿」必须**同时**看
+    `Test Suites:`（应有 N 个、且 equals 目录里的 spec 数）与 **`tsc -p tsconfig.spec.json`**
+    （它才是 spec 层编译的唯一门禁；`tsc --noEmit` 用的是 build tsconfig，**不含 spec**）。
+  - **427「给已有 @Injectable 加依赖：`@Optional()` + 放末尾是默认姿势，不是权宜之计」** ——
+    本仓 spec 大量用 `new X(a, b)` 定位装配（R202/R205/R223 三次踩同一坑）。
+    ⇒ 新增依赖一律 `@Optional()` 且追加在末尾；**若它其实是必需依赖**，那也要**同批改所有 spec**
+    ——两者选一个，不要留「必填但 spec 没传」的中间态。
+
+- 2026-11-18 **自治优化 · R217（并行第 145 批）（1 提交落地 · 自动补的**真机端到端** —— 并顺手修掉一个静默缺陷 + 探针自身的两个假绿）**：
+  承接候选池第 1 条。R216 证明了 CAS 单赢家（真 PG）与入队逻辑（单测），但**没有**跑过一整轮
+  「积压 → 自动补 → 下轮不再判积压」。
+
+  - **① ★ 端到端在真 cron + 真 Redis + 真 PG 上验证通过**（`npm run test:r217-auto-requeue-e2e`，
+    **真等两轮 cron，最坏 22 分钟**）：
+    造真积压 ⇒ `/backlogged` 识别 ⇒ **01:15 的 cron 真触发**（`candidates=1 attempted=1 enqueued=1`）⇒
+    **真 Redis 出现 `jobId=session.id` 的 job** ⇒ `count=1` ⇒ **闭环**（端点不再报它）⇒
+    **幂等**（`count` 已=1 的会话下一轮**不产生 job**、计数仍 1）。
+    ⚠️ 刻意**不**手动调 `runOnce()`：那会跳过「cron 注册/触发」这一层（R416 教训）。
+  - **② ★ 顺手修掉一个静默缺陷（真机日志暴露的）**：原实现只在 `attempted > 0` 时打日志，
+    把「**有积压但一条都补不动**（均已补过/状态已变）」和「真没积压」**一起静默** ⇒
+    运营看到徽标数字一直不变、不知道为什么。**真机日志恰好出现了这一态**：
+    `candidates=1 but attempted=0 —— 需要人工介入`（warn）。⇒ 日志改为**三态**：
+    `candidates=0` 静默 / `attempted>0` 打 log / **`attempted=0 && candidates>0` 打 warn**。
+    这是本仓主导缺陷类（「有问题」被渲染成「什么都没发生」）的又一形态。
+  - **③ ★ 探针自身踩了两个假绿（都修掉了，写进头注）**：
+    ⓪ 首版③只匹配「含 `attempted=1` 的行」而隔离 Redis 复用时会命中**上一轮**的旧日志行 ⇒ ③假绿、
+    ④⑤⑥全红。修：只认 `sinceMs`（本会话插入之后）的行（日志自带结构化 `timestamp`）。
+    ⓜ 第二版③写成 `attempted=1 && includes(idA)` —— 两条件分属**两行**日志
+    （逐会话行只含 id、汇总行只含 attempted=1）⇒ **永远不可能同时满足**。
+    ⇒ 两处都是 **R407「探针红了先问红的是产品还是探针」**的实际用例。
+  - **④ 一处 API 便利**：`runCronBody()`（`@Cron` 方法只做门禁，函数体独立）—— 测日志三态
+    不必每个用例构造 LeaderGate。
+
+  **验证（真实 exit）**：端到端 ⑩/⑪（③探针断言两修后逻辑对齐；行为 ④⑤⑥⑦⑧ 全过 + 真机 warn 三态）·
+  agent `__tests__` **18 套 184 例**（日志三态 3 条新增）· `lint:api` · `size-caps` · `test:docs` ·
+  `check-script-main-guard` 全 **0**。
+  **反证**：加回 `attempted===0 ⇒ return` ⇒ **③ 红**（warn 分支有牙）。
+
+  **方法学沉淀（接 423）**：
+  - **424「『日志三态』：降级类动作的日志必须区分『没活』『干成了』『想干但干不动』」** ——
+    第三态最容易被『别刷日志』的善意吞掉，而它恰恰是**唯一**需要人知道的一态。
+  - **425「探针的断言条件不能跨两行日志用 `&&`」** —— 逐条日志与汇总日志的字段互斥，
+    组合条件永远无法满足；这是探针自己的 bug，不是产品的。修探针前先数一下「到底几行日志、各含什么」。
+
+- 2026-11-18 **自治优化 · R216（并行第 144 批）（1 提交落地 · 「积压」自动补入队 —— 本仓**第一条自动处置**的判据，副作用全部封顶）**：
+  候选池第 1 条。R215 已清掉前置误报（否则自动补会把「正在正常排队」的会话再补一条 ⇒ 观测缺陷放大成真副作用）。
+
+  - **① 判据先行（R388）**：`docs/observability/backlog-auto-reenqueue-criterion.md`。
+    核心：`积压` = 会话 `pending` 但**没有任何指向它的 job** ⇒ 永远不会跑，且**没有任何东西会自己修**
+    （`sweepStaleRunning` 只扫 `running`、GAP-3 只管 `waiting_input`、唯一修复路径是人点徽标）。
+  - **② ★ 副作用封顶（这是本条存在的意义）**：
+    | 约束 | 做法 |
+    |---|---|
+    | 最多补 **1** 次 | `claim` 条件写 `"backlogReenqueueCount" < 1`，**计数落库** |
+    | 多副本单赢家 | 同上 CAS（`affected > 0`） |
+    | 重复 add 无害 | `jobId = session.id`（与首跑同形态 ⇒ 幂等**且**积压判据下轮能查到，R215 的教训） |
+    | 不碰会话状态 | **只** `queue.add`，不改 `status`/预算/审批，**不走** `resume` |
+    | 扫描/观测有上界 | 复用 `BACKLOG_PROBE_LIMIT`(200) 与 R213 的 `withObservationTimeout` |
+    | 失败不重试 | **先 CAS 后 add** ⇒ add 失败则计数已 +1 ⇒ **少补**（判据 §5.1） |
+  - **③ ★ 为什么计数必须落库（不能只看队列）**：「补了但队列里查不到」有两种成因 ——
+    ① `add` 失败（该重试）② `add` 成功但 job 已被消费/清理（**不该**再补）。队列**分不开**这两者，
+    落库的计数**记得**「我试过」。这是本列存在的**核心**理由。
+  - **④ ★ 真机证明「单赢家」（唯一证明方式）**：`npm run test:r216-auto-requeue-live`（**7/7**）——
+    **10 个并发 `psql` 进程抢同一行 ⇒ 赢家 = 1**（`count=1`），且「额度耗尽」「非 pending」各自 `UPDATE 0`。
+    ⚠️ 单测只能证明**谓词字符串写对了**；**并发下单赢家只有真 PG 能证明**。
+  - **⑤ 两处守卫拦下了我的第一版（都对）**：
+    ① `check-size-caps`：`agent-session.service.ts` 已顶格（1102 vs 基线 1087）⇒ 把 CAS **外提**成
+    `agent-backlog-reenqueue-claim.ts`（R380/R397 同款做法），基线**一个数没动**；
+    ② `check-docs`：新判据文档未登记 ⇒ 报「**孤儿文档**」。
+  - **⑥ 新增迁移 `1790000000099-AddBacklogReenqueueCount`**（`integer NULL DEFAULT 0` ⇒ catalog-only、
+    零回填；不建索引，唯一访问是按主键条件写）。`check-migrations` 要求先在「迁移时间戳分配表」登记
+    —— 守卫点名后补上（143 个迁移全注册）。
+
+  **验证（真实 exit）**：agent `__tests__` **19 套 244 例全绿**（新增 auto-reenqueue 7 条 + claim 6 条）·
+  R216 真机探针 **7/7** · `lint:api` · `size-caps`（基线未放宽）· `test:docs` · `check-migrations`(143) ·
+  `test:agent`(22/22) · `check-script-main-guard` 全 **0**。
+  **四处反证（均实测变红）**：跳过 CAS ⇒ ② 红；`jobId` 改回带时间戳 ⇒ ① 红；
+  **去掉 CAS 的额度谓词 ⇒ 并发赢家变成 10（`count=10`）、4 条红**（最有说服力的一条）。
+  **环境复原**：探针只碰 `triggerSource='r216-probe'` 的会话，回读残留 0。
+
+  **方法学沉淀（接 421）**：
+  - **422「『别重复』不能靠『我不会重复』，只能靠一个原子谓词」**。第一版若按「先读状态再决定补不补」
+    写，10 个副本会各自读到「该补」⇒ 补 10 次。**并发安全不是靠想清楚，是靠一条 SQL 让数据库替你想清楚**；
+    而它**只有用真并发才能证明**（单测的 mock 永远是顺序的）。
+  - **423「自动化判据的门槛比告警判据高一档：副作用必须可枚举地被封顶」**。
+    其余五条判据错了只是「多一个徽标」；本条错了是**真的多跑一遍**。
+    ⇒ 立项时必须能逐条列出「最坏会多做几次、每次的代价、被什么挡住」——
+    写不出来就说明还没到能自动化的程度。
+
+- 2026-11-18 **自治优化 · R215（并行第 143 批）（1 提交落地 · 修掉「积压」判据的**真实误报路径** —— 它的前提只对首跑成立）**：
+  候选池第 1 条「自动补 enqueue」的前置调研。**结论：自动补 enqueue 现在不能做 ——
+  先得修掉一个会让它「补错」的误报**。
+
+  - **① ★ 找到真实缺陷**：积压判据的实现是 `queue.getJob(session.id)`（R202），前提是
+    `jobId === session.id`。**但本仓有三条入队路径，jobId 各不相同**：
+    首跑 `session.id`（`agent-trigger.service.ts:352`/`:520`）· 人工/审批恢复
+    `${id}:resume:${Date.now()}`（`agent.controller.ts:455`/`:550`）· LLM 瞬时错误
+    `auto-resume-<id>`（`agent.module.ts:177`）。⇒ 一条「**审批通过、正在正常等排队**」的会话，
+    `getJob(session.id)` 查不到 ⇒ **被判成积压** ⇒ 运营按提示「重新入队」⇒
+    **同一会话跑两遍（双份副作用）**。
+    ⚠️ 判据文档 §7 其实**写过**这条边界，但写成了「若**将来**改成随机 jobId」——
+    实际上**已经**发生，只是没人对照过代码。
+  - **② 判据修正（不改语义，只补全「怎么查」）**：`findSessionJob` 做**有限枚举**三个已知形态
+    （首跑 → `resume-<id>` → `auto-resume-<id>`），命中即返回。
+    **刻意不扫全队列按 `data.sessionId` 匹配**：那是 O(n) 且有单次上限 ⇒ 会漏。
+    **首跑仍是零额外往返**（第一个候选），只有 resume 过的会话多 1–2 次。
+  - **③ 配套：把 resume 的 jobId 改成可枚举**。`${id}:resume:${Date.now()}` 里的时间戳
+    **不可枚举** ⇒ 那时这个缺陷**没法在判据侧修**。新增 `manualResumeJobId()` = `resume-<id>`。
+    **为什么不是 `${id}:resume`**：实测 BullMQ 拒绝 2 段冒号 id（`Custom Id cannot contain :`）⇒
+    用**无冒号**形态（与 `autoResumeJobId` 同款，不依赖上游 3 段兼容分支）。
+    **去重语义已变，已如实登记并用例钉住**：重复 resume 命中同一 job ⇒ BullMQ **幂等 no-op**
+    （实测 `before=3 after=3`）—— 这正是想要的（第二次 resume 不该产生第二个 job）。
+  - **④ 「自动补 enqueue」的立项结论（本轮产出，不是搁置）**：**先修误报，再谈自动补**。
+    若在误报存在时做自动补，它会把「正在正常等消费」的会话再补一条 job —— 那正是
+    「洗钱式」的自动化：把一个观测缺陷变成一个**真副作用**。⇒ 本条已把前置缺陷清掉，
+    下一步才可安全立项。
+
+  **验证（真实 exit）**：agent `__tests__` **17 套 175 例全绿**（新增 backlog 回归 3 条 +
+  job-options 4 条）· R215 真机探针 **7/7**（反证后 6/7）· `lint:api` · `size-caps` · `test:docs` ·
+  `check-script-main-guard` 全 **0**。
+  **两处反证（均实测变红）**：`findSessionJob` 退回只查 `session.id` ⇒ **2 条红**；
+  把探针 ② 断言改成「`getJob(session.id)` 查得到」⇒ **6/7 红**。
+  **真机坐实的三条**：BullMQ 拒 2 段冒号 id · 固定 id 重复 add 幂等 · 三条入队路径都能被有限枚举查到。
+
+  **方法学沉淀（接 419）**：
+  - **420「『将来可能坏』和『现在就是坏的』之间只差一次代码对照」**。R202 的判据文档把
+    `jobId === session.id` 的风险写成「若**将来**改成随机 jobId」—— 读起来像未雨绸缪，
+    实际上本仓**当时就有三条路径**不符。⇒ **写「已知边界」时，凡涉及「外部约定」，
+    必须列出**当前**所有实现该约定的地方**（而不是假设它只有一处）。
+  - **421「自动化必须排在『它依据的观测是对的』之后」**。自动补 enqueue 看起来很诱人
+    （「积压了自己补一条不就好了」），但它依据的判据当时会误报 ⇒ 自动化会把观测缺陷
+    放大成**真副作用**。⇒ 任何「自动处置」立项前，先问：**它依据的那个判断，误报率是多少**。
+
+- 2026-11-18 **自治优化 · R214（并行第 142 批）（1 提交落地 · 裁定 R213 登记的「悬挂命令」风险 —— 结论是**不成立**，但挖出一条**必须写进代码的硬约束**）**：
+  承接候选池第 1 条。R213 原文写「`Promise.race` 不取消底层命令 ⇒ 高频超时会**累积**悬挂命令，
+  只登记不声称已消除」。**本轮把它测清楚了，结论分两半。**
+
+  - **① ★ 阻塞命令确实会**毒化连接**（R213 的担忧是真的，只是本仓不用它）**：
+    `BLPOP` 超时后，`CLIENT LIST` 显示该连接 `cmd=blpop` / `flags=b`，且**该连接上后续 `PING`
+    1.5s 不返回** ⇒ 一条阻塞命令超时 = 连接**永久**停在阻塞态。
+  - **② ★ 非阻塞命令不会**（本仓形态）：`GET` 超时后同一连接**自动康复**
+    （`commandQueue`→0、往返 **0ms**），且**响应不错位** —— 超时后并发 `GET`/`LRANGE`
+    各自拿到**自己**的结果（`"v2"` / `["a","b","c"]`）。
+    ⇒ R213 写的「累积悬挂命令」在**观测实际使用的命令集**上**不成立**。
+  - **③ ★ 因此沉淀出一条硬约束（已写进 `observation-timeout.util.ts` 头注）**：
+    **观测层永远不得对共享连接发阻塞命令**（`BLPOP`/`BRPOP`/`BRPOPLPUSH`/`XREAD BLOCK`…）。
+    将来谁想在观测里「顺便看一眼队列头部」，必须用 `LRANGE` 而不是 `BLPOP` ——
+    观测与 BullMQ **可能共用连接**，一条阻塞命令超时就会毒化它。
+    文档里也把原「残留风险」段改写成上面这张两行表（**原文那句是被实测修正的**，不是补充）。
+  - **④ 一处工具使用踩坑（已记）**：ioredis 的 `disconnect()` 返回 **undefined**（不是 promise）
+    ⇒ 接 `.catch()` 会让整条 `finally` 抛 `Cannot read properties of undefined`，
+    把**已经 9/9 全绿**的探针变成 `EXIT=2`。改用 `try/catch`。
+    ⚠️ 这个坑的形态值得记：**断言全过、退出码却是 2** —— 只看「几条通过」的读者会以为跑成功了。
+
+  **验证（真实 exit）**：R214 真机探针 **9/9**（反证后 8/9）· `observation-timeout` 9 条 ·
+  `tsc` · `size-caps` · `test:docs` · `check-script-main-guard` 全 **0**。
+  **反证**：把 ③ 的断言改成「CLIENT LIST 里查不到该连接」⇒ **③ 红**。
+  **环境复原**：隔离容器已删（`acf-r21*` = 0）· **真实 Redis 未受影响**（`PONG`、`r214:*` 残留 0）。
+
+  **方法学沉淀（接 417）**：
+  - **418「『已知残留风险』也要被裁定，否则它只是把不确定感传给了下一个人」**。
+    R213 写「只登记不声称已消除」在当时是诚实的，但对读者没有增量：没人知道它**多严重**。
+    本轮把它拆成**两行表**（阻塞 vs 非阻塞 × 后果 × 是否要紧）后，结论从「有风险」
+    变成「**本仓形态无风险，但这条硬约束必须守住**」—— 后者**可执行**。
+    ⇒ 登记残留风险时，尽量同时写清**在什么条件下成立 / 什么条件下不成立**。
+  - **419「断言全过 ≠ 跑成功」**：本轮的探针 9 条全绿却 `EXIT=2`（`finally` 里的
+    `disconnect().catch()` 炸了）。⇒ **看结果必须看退出码**，而**探针自己的清理段也是被测代码**
+    （它炸了会把一份正确的验证结论变成「不可信」）。
+
+- 2026-11-18 **自治优化 · R213（并行第 141 批）（1 提交落地 · 修掉 R212 发现的洞：Redis 卡住 ⇒ 观测端点挂死）**：
+  承接候选池第 1 条。**这是 R212 自己挖出来的洞，本轮闭环。**
+
+  - **① 根因不是判据设计，是连接配置的直接后果**：`app.module.ts:642-687` 的
+    `maxRetriesPerRequest: null` + `enableOfflineQueue: true` 是 **BullMQ 的硬性要求**
+    （阻塞命令要能无限等）⇒ **不能改**；`connectTimeout: 10000` 只管**建连**、不管
+    **已有连接上的命令**。⇒ 缺陷只能在**观测层**补：观测是只读、低频、**可放弃**的，
+    而 BullMQ 的消费命令不是。**判据先行**（R388）：`docs/observability/observation-timeout-criterion.md`。
+  - **② 落地三处（上界不同，因为形态不同）**：
+    `agent-queue-stall` / `agent-queue-idle` 是**并行** `Promise.all` ⇒ 每个调用
+    `withObservationTimeout`（**5000ms** = `connectTimeout` 的一半，推导写在常量注释）；
+    `agent-backlog` 是**串行** 200×2 次往返 ⇒ 必须**整次请求一个 `ObservationBudget`**
+    （**8000ms**），循环前查 `expired()`、单次取 `sliceMs()`，**耗尽即停并置 `truncated: true`**
+    （R395：截断必须可见）。⚠️ 若按逐调用 5s，最坏 2000s ⇒ **等于没修**。
+  - **③ ★ 真机验证（`npm run test:r213-observation-timeout-live`，11/11）**：
+    `queue-stall` + Redis 卡住 ⇒ 修复前**挂死 25s+**、修复后 **5009ms** 返回 200 且
+    `degraded:true`/`workersKnown:false`；`backlogged` + 5 条 pending + Redis 卡住 ⇒
+    **8011ms** 返回且 `truncated:true`；恢复后位**回落**（不是永久降级）。
+  - **④ ★ 最强的一条反证**：把上界改成 1000000ms（等同不设）后重跑，探针**不是断言失败**，
+    而是**请求本身挂死到 `AbortSignal.timeout` 中止（EXIT=2）** —— **精确复现了 R212 的洞**。
+    ⇒ 证明探针测的是真行为，不是恒真的文本断言。
+  - **⑤ 顺带修掉一处测试反模式**：`agent-backlog.service.spec.ts` 的预算用例最初用**生产值 8s**
+    ⇒ 整个 agent 套件每条多等 8 秒。改成**可覆写的实例字段**（压到 200ms），理由写进注释：
+    **「测试慢」最终等于「测试不跑」**。
+
+  **验证（真实 exit）**：agent `__tests__` **16 套 165 例全绿**（新增 timeout util 9 条 +
+  stall 挂起 1 条 + backlog 预算 1 条）· R213 真机探针 **11/11**（反证 EXIT=2）·
+  `lint:api` · `size-caps` · `test:docs`(含孤儿文档登记 + 围栏语言) · `check-script-main-guard` 全 **0**。
+  **一处判据自身抓到的错**：新文档未登记进 `docs/observability/README.md` ⇒ `check-docs` 报
+  「**孤儿文档**」（守卫自己点名，不是我去发现的）。
+  **环境复原（三查）**：隔离容器已删 · admin-api 已停 · 探针会话 `DELETE` 后回读 0 · 探针账号已删。
+
+  **如实登记（不声称已消除）**：`Promise.race` **不取消**底层命令 ⇒ 超时后 ioredis 里那条命令
+  仍挂着，直到连接恢复。观测是低频 GET，且最终由 `retryStrategy` 的重连流程清理；
+  本轮的探针**没有**验证「悬挂命令会被清理」（要观测 Redis 内部连接状态，超出本判据范围）。
+
+  **方法学沉淀（接 415）**：
+  - **416「一个洞修完后，要在『同样的场景』下复跑 —— 因为上一次的探针可能根本到不了那一步」**。
+    R212 的探针在 Redis `pause` 时**自己就挂住了**（它的 `curl` 没设总超时之前），
+    所以它只能「记录症状」而不能「验证修复」。本轮给探针的每个请求都设了
+    `AbortSignal.timeout`，并把**上界本身**作为断言对象（`elapsedMs < 上界 + 余量`）——
+    这样「修复被撤销」时，失败的形态是**超时中止**而不是「某个字段不相等」，忠实得多。
+  - **417「上界的合理性，取决于『这个延迟对决策还有用吗』，而不只是『系统能等多久』」**。
+    5000ms 不是「Redis 能多慢」的度量，而是「运营愿意为一次状态查询等多久」。
+    两者取**交集**：健康往返是亚毫秒级，5000ms 已有 3 个数量级余量；而人已经在刷新页面了。
+
+- 2026-11-18 **自治优化 · R212（并行第 140 批）（1 提交落地 · `degraded` 的**真机**触发 —— 并发现「Redis 卡住 = 端点挂死」这个独立的运维洞）**：
+  承接 R211 自己登记的「`degraded` 只由单测覆盖」（候选池第 1 条）。
+
+  - **① ★ 真机验证到位（`npm run test:r212-degraded-live`，10/10）**：在**隔离 Redis**（16379）
+    上跑，脚本内置**安全闸**（`R212_REDIS_PORT === "6379"` 直接 `exit 2` —— 本探针会改 ACL，
+    误跑会把生产 Redis 打停）。断言链：基线正常 · 禁用 `CLIENT` ⇒ **`degraded:true` +
+    `workersKnown:false`** · **同一次读失败下 `stalled:false`**（R210 靶心）· `queue-idle` 也标出 ·
+    **paused + 有活 + workers 读失败 ⇒ 仍 `stalled:true`/`reason:"paused"`**（降级**不得**吞掉真停摆，
+    这是 R210「分两路」设计的对偶断言）· 恢复后位回落且结论不变 · **回读 `ACL LIST`** 确认
+    `CLIENT` 真可用（不是「我改了」）。**反证**：把 ③ 的断言改成「应为 true」⇒ **3 条红**。
+  - **② ★ 三条候选触发手段，只有一条可行（实测，写进脚本头注）**：
+    `docker pause` ⇒ 请求**无限挂起**（TCP 不断、只是不应答）⇒ **不抛错**；
+    `CLIENT KILL TYPE normal` ⇒ ioredis **自动重连**成功 ⇒ **不抛错**；
+    **只有 `ACL SETUSER default -client`** 才让 `getWorkersCount()` 抛 `NOPERM` ——
+    而它能命中恰因 R210 坐实的实现事实（`getWorkers()` 数的是 `CLIENT LIST`）。
+  - **③ 顺带发现一个**独立的运维洞**（不在本判据范围内，如实登记）**：
+    `docker pause` 那次实测中端点**挂死 25s 无响应**（`curl` 空返回）——
+    即 **Redis 卡住 ⇒ 观测端点挂住**（不是报错、不是降级）。这比「误报」更难排查
+    （运营看到的是浏览器转圈，而不是一个明确的「未知」徽标）。
+    R212 **只登记不修**：修它要给每个观测调用加**超时**（`Promise.race` / ioredis `commandTimeout`），
+    属于独立立项，且要同步改 `queue-idle` 与 `backlog` 三处读法。
+  - **④ 一处构造抖动（反证时暴露，已加固）**：`q.add` 之后 `wait` 列表偶发未落库 ⇒
+    `pendingJobs=0` 让断言红在「构造没到位」而不是「产品错了」（R407 同款陷阱）
+    ⇒ 改为**轮询到 `pendingJobs>0`** 再断言（上限 5s，超时让断言自己红并打印实得值）。
+
+  **验证（真实 exit）**：R212 探针 **10/10**（反证后 7/10）· `size-caps` · `test:docs` ·
+  `check-script-main-guard` 全 **0**。
+  **环境复原（四查）**：隔离容器已删（`r212 容器 = 0`）· admin-api 已停（`api=0`）·
+  探针账号 `DELETE 1` · **真实 Redis 未受影响**（`PING=PONG`、`ACL LIST` **无** `-client`、
+  `agent-jobs` `wait=0`、`paused` 未置、`acf-r21*` 残留 0）。
+
+  **方法学沉淀（接 413）**：
+  - **414「触发异常的三条路：挂起 / 重连 / 真失败 —— 只有第三条能测『读失败』分支」**。
+    本轮把三种手段都试了：`pause` 是**挂起**（客户端永远等）、`KILL` 是**重连**（自愈）、
+    只有**权限拒绝**才是**真失败**。⇒ 想测「读失败」分支，先确认你造的是**哪一种**；
+    用挂起冒充失败，测出来的是**超时行为**，不是降级分支。
+  - **415「验证一个『降级』标志时，必须同时断言『降级没有吞掉真结论』」**。
+    只测「读失败 ⇒ degraded:true」会漏掉最危险的实现：**一律降级就一律不报**
+    （那会把真停摆静默掉）。⇒ 必须配一条**对偶断言**：在同一降级条件下，**真的那件事仍然成立**
+    （本轮 ⑥：paused + 有活 + workers 读失败 ⇒ 仍然 `stalled:true`）。
+
+- 2026-11-18 **自治优化 · R211（并行第 139 批）（1 提交落地 · 把「0」与「不知道」拆开 —— 并顺手补上两个端点的 response schema 盲区）**：
+  承接 R210 自己留下的尾巴（候选池第 1 条）：`degraded` 把**风险方向相反**的失败压成了同一个布尔。
+
+  - **① ★ 拆开「误报风险」与「漏报风险」**：六个观测量读失败时对结论的影响**方向相反** ——
+    计数类（`waiting`/`delayed`/`prioritized`）失败 ⇒ `pendingJobs` 变小 ⇒ **更难**判停摆（漏报）；
+    结构性量（`active`/`workers`/`paused`）失败 ⇒ **更容易**判停摆（误报）。
+    压成同一个 `degraded` ⇒ 前端无法据它决定「该不该紧张」，而两种情形**运营动作完全不同**。
+    ⇒ `degraded` 语义**收窄**为「可能**误报**」；新增 `degradedCounts`（可能**漏报**，**不改变结论**，
+    只在已报停摆时把在排队数写成 `3+` 表示「这是下界」）。
+  - **② ★ `workersKnown: boolean`** —— 这才是「`workers === 0`」与「`workers` 未知」**同形**问题的解药。
+    `workersKnown === false` 时 `snapshot.workers` 里的 `0` **不是事实**，只是回落值。
+    **刻意不改 `workers: number \| null`**：那会让 `isQueueStalled` / `pendingJobCount` /
+    `queueStallReason` / 前端快照 / 既有 14 条 spec **全部**要处理 null ⇒ 新增只读布尔是最小面。
+  - **③ ★ 顺手补掉一个真实契约盲区**：`GET /agent/sessions/queue-stall` 与 `queue-idle`
+    在 `openapi.json` 里**只有 `{"200":{"description":""}}`** ⇒ 我新增的字段在契约面**完全不可见**、
+    前端只能手写类型、漂移无人发现。新增两个 `@ApiOkResponse` DTO ⇒ 覆盖率 **244 → 246**
+    （`check-openapi-response-schema` 提示可上探，已 `--update`，棘轮只增不减）。
+    顺带补 14 条 API 英文映射（`check:api-i18n` 判红后才发现的）。
+  - **④ 一处措辞真实风险（前端）**：`reason === "no-worker"` 时原文案断言「**没有 worker**」——
+    若 `workersKnown === false`，那句话**不是事实**。改为分支选 key：未知时用
+    「**没读到** worker 注册情况」。**测试用源码级断言钉住**（antd Tooltip 在 vitest 里懒挂载，
+    逐字断言实测 10s 超时后 `textContent` 仍为空）⇒ 登记为 **STC-126**。
+
+  **验证（真实 exit）**：后端 queue 套件 **36/36** · agent `__tests__` **16 套 160 例全绿** ·
+  前端 badge/inbox **6 套 34 例** · 真 HTTP 探针 **15/15**（新增 ⑩b/⑩c 断言新字段在线上响应里）·
+  `size-caps` · `test:docs` · `check-source-text-contracts`(spec 侧 126 条) ·
+  `check-openapi-response-schema`(+selftest 31/31，覆盖 246/260) · `check:api-reference`(223 paths) 全 **0**。
+  **三处反证（均已实测变红）**：退回「任一失败都置 degraded」⇒ **2 条红**；`workersKnown` 恒 true ⇒ **1 条红**；
+  删掉 `workersKnown` 措辞分支 ⇒ **前端 ⑥ 红**。
+  **另修两处过程失误**：`needle` 写错导致守卫点名「spec 已漂走」（守卫**自己**校正了我要填的行号）；
+  `pkill -f "dist/main.js"` 误杀了正在跑的 `npm run build`（构建产物停在旧版本 ⇒ 端点仍返回旧响应，
+  靠**真端点断言**才发现）。
+
+  **方法学沉淀（接 411）**：
+  - **412「同一个布尔承载两个相反的风险方向，等于没有这个布尔」** —— `degraded` 原本覆盖六个观测量，
+    但它们失败时结论**可能更松也可能更紧**。运营看到「不完整」无法决定「等」还是「查」。
+    ⇒ **凡是「降级」标志，先问它掩掉的是哪种方向的风险**；方向不同就拆（本仓 R400「部分失败要单独建模」的续篇）。
+  - **413「新增字段后要问：契约面看得见吗」** —— 本轮字段在 TS 类型里齐全、单测全绿、真端点也返回了，
+    但 `openapi.json` 里该端点**根本没有 schema** ⇒ 前端类型靠手写、漂移无人发现。
+    ⇒ **「接口返回了」≠「契约表达了」**；改响应形状时必须同时确认 schema 覆盖率守卫看见它。
+
+- 2026-11-18 **自治优化 · R210（并行第 138 批）（1 提交落地 · 修掉「停摆」判据的**真实误报路径** —— 并推翻它自己登记的误报成因）**：
+  承接状态卡候选池第 1 条「停摆判据的误报窗口」。**结论：误报确实存在，但成因不是文档写的那个；
+  真成因是「读失败回落成 0」，而且它已经是一条**能触发的假告警**。**
+
+  - **① ★ 真机推翻文档前提**：R204/R205 文档写「worker 事件循环被阻塞 ⇒ 心跳过期 ⇒
+    `getWorkers()` 返回空 ⇒ 误报停摆」。**实测不成立** —— 因为它对实现的假设就是错的：
+    `getWorkers()` **不读心跳注册表**，而是数 Redis **`CLIENT LIST`** 里连接名匹配的**连接**
+    （`queue-getters.js:454` 的 matcher 拼 `${clientName()}:w:`，`baseGetClients` 走
+    `getClientList()`）。实测：**handler 同步忙等 8 秒期间 `workers` 仍是 1**（TCP 连接没断）；
+    只有 `worker.close()` / 进程崩溃（连接真的断）才降成 0。
+    ⇒ 「阻塞导致误报」这一类**根本不会发生**；真正的 `workers===0` 是**结构性事实**。
+  - **② ★ 找到并修掉真实误报路径**：`AgentQueueStallService.inspect()` 里
+    `read(() => getWorkersCount(), 0)` —— **`workers` 读失败回落成 0** ⇒ 此时若
+    `active===0` 且有活排队，`isQueueStalled` 就判 `true` ⇒ **一次 Redis 抖动 = 一条假停摆告警**。
+    这是本仓主导缺陷类（「没读到」渲染成「有问题」）在**告警方向**上的镜像，代价同样是
+    「运营以后不看这个徽标」。
+    **修法**：判定分两路 —— `paused`（**独立强证据**，人为显式状态，不依赖 worker 观测）
+    单独成立；`workers` 那一路要求**它自己读到了**（`workersUnknown` 标志）。
+    **刻意不写成「degraded 就一律不报」**：那会把**真的停摆**一起吞掉（与另四个徽标同款取舍）。
+  - **③ 顺带修掉一处错误归因**：`reason` 原为 `queueStallReason(snapshot)`，它内部**再判一次**
+    `isQueueStalled`、且**不区分**「真的是 0」与「读失败回落成 0」⇒ 在「paused 成立 +
+    workers 读失败」时会给出 `no-worker`（让人去查进程，而实际是队列被暂停）。
+    改为按**已确认证据**归因：`paused` 优先。
+
+  **验证（真实 exit）**：后端 stall 套件 **14/14**（新增 ③b / ③c / ③d 三条）·
+  真机探针 `npm run test:r210-stall-live` **9/9**（含「阻塞期间 workers 仍为 1」这条★）·
+  `check:size-caps` · `test:docs` · `test:agent`(selftest 22/22) · `check-script-main-guard` 全 **0** ·
+  `tsc` / `eslint` 干净。
+  **两处反证（均已实测变红）**：退回 `isQueueStalled(snapshot)`（不区分读失败）⇒ **③b 红**；
+  把探针 ②b 断言改成「应为 0」（即假设原文档是对的）⇒ **8/9 红**。
+
+  **如实登记**：③b/③c 只覆盖「`workers` 读失败」，**没有**覆盖「`CLIENT LIST` 跨节点看不到
+  别的节点上的 worker」与「GCP 不支持 `SETNAME` ⇒ 恒返回 1 条假 worker」这两条
+  （`baseGetClients` 的 catch 分支）—— 它们需要多节点 / 特定托管环境才能复现，
+  本轮**只登记不声称**。
+
+  **方法学沉淀（接 409）**：
+  - **410「误报的成因也要验证，不能继承前任的猜测」** —— R204/R205 把「阻塞⇒心跳过期⇒误报」
+    写成已知事实并据此设计，**两轮都没人验过**。实测发现它连**实现机制**都描述错了
+    （不是注册表，是 `CLIENT LIST`）。⇒ **「已知误报」这一类断言，必须能指到实现的哪一行**；
+    指不到就先当**未验证假设**，不要让它变成设计的**前提**。
+  - **411「『读不到』在告警方向上的镜像：把『不知道』报成『确有其事』」** —— 本仓修过 10+ 例
+    「读失败渲染成没有」，但**反向**（读失败渲染成**有问题**）同样有害：它制造假警、
+    消耗运营对徽标的信任。⇒ **凡是「某个量决定要不要报警」的地方，回落值必须与报警方向对齐**
+    （要么单独建模「未知」，要么让回落值**不触发**报警）。
+
+- 2026-11-18 **自治优化 · R209（并行第 137 批）（1 提交落地 · 「队列空转」**真 HTTP 端点**验证 —— 补上 R208 够不到的那一半）**：
+  承接状态卡候选池第 1 条。R208 的探针复刻的是接线层**读法** + 调**生产纯函数**，**不经过 NestJS**
+  ⇒ controller 响应整形 / 服务注入 / JWT-Roles 守卫 / 全局响应信封**一条都没被覆盖**。
+  而「纯函数对、端点错」时运营看到的仍然是错的。
+
+  - **① 新探针（`scripts/r209-queue-idle-http-probe.mjs` / `npm run test:r209-queue-idle-http`）**：
+    真 NestJS 进程（`node dist/main.js`）+ 真 PG + 真 Redis，**13/13 全绿**：
+    未认证 ⇒ **401**（不是 200+空数据）· 探针账号登录 · 空队列 ⇒ 正例控制组 ·
+    响应在 **`data` 信封**里 · **8 个契约字段齐全** · `basis.formula` 带推导依据 ·
+    线上阈值 = **3,630,000** · **paused + 老 job ⇒ `suppressedBy:"queue-stall"` 且不报空转** ·
+    同一快照下 `queue-stall` 报 `stalled:true`/`reason:paused`（**两端口径一致**）·
+    让位**不是**「读不到」（`degraded:false`）· 复原后 `suppressedBy:null` · 队列未 paused 且 job 清空。
+    **反证**：把 ② 改「应为 200」、⑪ 改「应为 true」⇒ **11/13**，两条立刻红。
+  - **② 脚本里写死安全边界**：只增删 id 前缀 `r207-probe` 的 job；**`finally` 里无条件 `resume()`** ——
+    一个留在 paused 的队列会让真实调度全线停摆，这是本脚本**唯一**能造成生产影响的方式，
+    故必须无条件复原；且复原后**回读端点**确认（不是「我 resume 了」，是「端点说正常了」）。
+  - **③ 探针账号纪律**：**不碰**现有 admin（其密码哈希非默认值，我不猜测/不重置），
+    而是**另建** `r207-probe`（bcrypt cost 12），跑完 **`DELETE`** 并确认删除生效。
+    顺带如实记：本轮**没有**改动任何现有用户凭据。
+  - **④ 一处真实发现（构造陷阱，非产品缺陷）**：往**正在运行**的 `agent-jobs` 塞 job 会被真实
+    `AgentProcessor` 秒消费（实测 `waiting:0 active:0`）⇒ 「worker 在册却不再消费」在真队列上
+    **不可安全构造**（handler 不可控）。故 ⑨ 改用**paused** 形态触发让位 —— 它是让位逻辑的另一条
+    真实入口，且**可无条件复原**。⇒ **不**声称验证了「卡住」那一形态（那由 R208 的独立队列探针覆盖）。
+
+  **验证（真实 exit）**：真 HTTP 探针 **13/13 exit 0**（反证后 11/13）· `size-caps` ·
+  `test:docs` · `check-script-main-guard`(+selftest) 全 **0**。
+  **环境复原（三查）**：admin-api 进程已停（`health=000`、`ps` 计数 0）· 探针账号 `DELETE 1` ·
+  队列 `waiting=0` 且 `paused=false`。
+  **新脚本已登记** `script-main-guard-exempt.json`（理由：需 admin-api 进程 + PG + Redis 才有意义）。
+
+  **方法学沉淀（接 407）**：
+  - **408「『验证到纯函数 + 读法』不等于『验证到端点』」** —— 中间还隔着注入、守卫、拦截器、响应整形。
+    本轮 ⑥（字段齐全）与 ⑤（信封）如果没测，一个 `@Res()` 误用或 DTO 漏字段就能让纯函数**全绿**而
+    端点**全错**。⇒ 验证的**深度**要按「证据链上还剩几层没被覆盖」来判定，不是按「跑过真 Redis」。
+  - **409「构造陷阱：不要在生产用的活动队列上造异常态」** —— 真实 processor 会秒消费掉你塞的 job，
+    你**根本造不出**「卡住」；改写生产数据更不可接受。⇒ 换一条**可安全复原**的真实入口
+    （pause）来验证同一段判断，并**如实说明**换的是哪个形态、没覆盖哪个。
+
+- 2026-11-17 **自治优化 · R208（并行第 136 批）（1 提交落地 · 「队列空转」**真机验证** —— 并**推翻判据自己的前提**）**：
+  承接 R207 自己登记的 `unverified`（状态卡候选池第 1 条）。**结论是：接线行为正确，但判据文档写的
+  「为什么它成立」是错的。**
+
+  - **① 真机探针（新，`scripts/r207-queue-idle-live-probe.mjs` / `npm run test:r207-queue-idle-live`）**：
+    真 Redis 8.10.3 + BullMQ 9.x + **真 Worker**，**17/17 全绿**。覆盖：阈值推导 · `getWaiting(0,1)`
+    表头语义 · `job.timestamp` / `attemptsStarted` 反序列化保真 · 无 worker ⇒ **停摆让位** ·
+    worker 在册且卡住 ⇒ **空转成立** · 两判据**互斥** · 放行后恢复 ⇒ 不再判空转 · **清理残留 = 0**
+    （不是「我删了」，是「查出来是 0」）。**反证**：把 ⑨ 断言改坏 ⇒ 立刻红（16/17）。
+  - **② ★ 真机推翻文档前提（本轮最高价值）**：R206 判据文档写着「waiting 底层是 Redis **有序集合**
+    （score = 入队时间）⇒ 升序第一个就是最老的」。**BullMQ 9.x 上这是错的** ——
+    `addStandardJob-9.lua`：`pushCmd = opts['lifo'] and 'RPUSH' or 'LPUSH'`；实测
+    `TYPE bull:<q>:wait` = **`list`**。`wait` 是 **LIST（插入序）**，`timestamp` 只是 job 字段、
+    **不是排序键**。生产路径上二者**恰好一致**（同一条 `add` 先算 `timestamp` 再 `LPUSH`），
+    但 **`delayed` job 被 promote 时会插到表头**、`timestamp` 仍是当初算 delay 的时刻 ⇒
+    **顺序与 timestamp 错位**。实测偏差可达 **2 小时**（表头 759ms vs 真·最老 7,200,605ms）。
+    已就地修正：`agent-queue-idle-check.ts` 头注 + `.service.ts` 两处注释 + 判据文档 §1/§3.1/§5。
+  - **③ 偏差**方向**是安全的那一侧**：错位只会让 `[0]` 的年龄**小于等于**真最老 ⇒ **只漏报、不误报**。
+    要精确取「timestamp 最小」得扫全表（O(n) Redis 往返），而本端点是**无状态 GET** ⇒
+    刻意接受，并写进 §5 的已知边界。
+  - **④ 探针自身的两个坑（都写进脚本注释）**：初版场景 B 在**已有残留 job 的队列**上追加「很老」
+    job ⇒ 它排表头（最新入队）⇒ 断言测到的是残留那个（实得 age=10s），**红的是探针构造不是产品**；
+    改成独立队列 + 先用两个 filler 占满槽、再让「很老」的 job 成为 wait 里**唯一**项。
+    场景 D 初版 `q2.promoteJobs()` 没生效 ⇒ ⑭ 恒真（假绿）⇒ 改成「先排 5 个普通 job，再排一个
+    delay=100ms 但 timestamp=2h 前的 job」并**断言错位真实发生**（表头 ≠ timestamp 最小）。
+
+  **验证（真实 exit）**：探针 **17/17 exit 0**（反证后 16/17）· `src/modules/agent/__tests__/agent-queue*`
+  **4 套 30 例全绿** · `size-caps` · `test:docs` · `check-script-main-guard`(+selftest 3/3) ·
+  `check-guards-wired`(98 守卫) 全 **0**。**新脚本已登记** `script-main-guard-exempt.json` 豁免
+  （理由是「需真 Redis + 真 Worker 才有意义，不可被 import 复用」—— 守卫自己点名要求登记）。
+
+  **如实登记（不充绿）**：探针复刻接线层**读法**并调用**生产纯函数**判定，**没有**启动完整
+  NestJS 进程去打真实 HTTP 端点；也**没有**覆盖「worker 事件循环阻塞导致心跳过期」那一类
+  （那是停摆判据的误报窗口）。`test:guards:repo` 未跑满的原因同 R207（环境既有缺口）。
+
+  **方法学沉淀（接 405）**：
+  - **406「单元测试能证明『给定观测时判定正确』，不能证明『观测本身正确』」**。R207 的 13 条后端
+    用例全绿，喂的全是**我自己 stub 的 queue**；而错的那个恰好是「真实队列长什么样」。
+    ⇒ **凡判据依赖外部系统的事实（排序/事务/锁语义），必须有一次真机断言**。
+  - **407「真机探针红了，先问『红的是产品还是探针』」**。本轮 ⑩ 第一次红，根因是探针把
+    「很老」的 job 排在了残留 job 之后；**改探针构造前先读一遍它的构造假设**，
+    否则会把「探针 bug」写成「产品 bug」发给下游。
+
+- 2026-11-17 **自治优化 · R207（并行第 135 批）（1 提交落地 · 「队列空转」接线 —— 接管台第五个徽标，且**阈值由已有量推导**）**：
+  承接 **R206**（判据 + 纯函数，状态卡候选池第 1 条「接线 S」）。**本轮只做接线**，判据本体
+  **一个字没改**（`agent-queue-idle-check.ts` 仅**追加**推导函数，`evaluateQueueIdle` 未动）。
+
+  - **① 阈值推导（R403 的直接落地）**：`deriveIdleThresholdMs(wallClockMs, concurrency, tickMs)`
+    = **`1800000 × 2 + 30000 = 3,630,000`（60.5 分钟）**。三个分量都是仓里**已有**的：
+    `agent.budget.wallClockMs`（代码层硬闸门 ⇒ 单 job 耗时的**结构性上界**）·
+    `AGENT_QUEUE_CONCURRENCY`（最老 job 能合法等很久的**唯一**成因是槽位被占满）·
+    `executor.heartbeatInterval`（吸收派发往返的**一拍**，**不是**保守系数）。
+    **任一缺失/非法 ⇒ 阈值 0 ⇒ 判据层「不判定」**（宁可漏报）；**刻意不回落默认值** ——
+    那会把「配置坏了」伪装成「判定正常」（本仓主导缺陷类）。
+  - **② 停摆优先让位（R399）**：`suppressedBy: "queue-stall"`。复用 R205 的 `isQueueStalled`
+    **本体**（不复制条件，否则两条判据会漂移），且 `active` 传**真实值** ——
+    「有人在干活 + 最老 job 很老」**正是**本条要报的形态（worker 卡在一个永远跑不完的 job），
+    不该被停摆判据吞掉。让位是**完整判定**，与 `degraded`（读不到）**必须分开建模**。
+  - **③ 防假事实**：任一观测量读失败 ⇒ `degraded: true` 且 `idleStuck` **恒 false**
+    （既不谎报「空转」也不谎报「正常」）；服务缺席 ⇒ 显式 **503**
+    `AGENT_QUEUE_IDLE_CHECK_UNAVAILABLE`，绝不返回「队列在正常消费」。
+  - **④ `basis` 一起返回**：`{ wallClockMs, concurrency, tickMs, thresholdMs, formula }` ——
+    只给阈值不给依据，下一次调参就会退化成改魔法数。
+
+  **验证（真实 exit）**：后端新 spec **13/13** · `src/modules/agent/__tests__` **15 套 148 例全绿**
+  （`--runInBand`）· 前端新 spec **5/5** · web 相关 9 套 **54 例全绿** · `typecheck`(api/web) ·
+  `size-caps` · `test:docs` · `check-web-type-drift` · `lint:i18n`(静态键 3239 / zh,en **3640**) ·
+  `check:error-i18n`(434 码) · `check:error-migration`(595 文件裸异常 0) · `check:api-error-format` ·
+  `gen-api-reference --check`(223 paths) · `check:guards-wired`(98 守卫) · `lint:api` · `lint:web`
+  **全 0**。**两处反证**（去掉后必红，均已实测）：阈值回落魔法数 ⇒ ③⑥ 红；
+  去掉 `degraded` 守卫 ⇒ ⑤b 红；把 `suppressed` 并进 `degraded` 分支 ⇒ 前端 ④ 红。
+
+  **如实登记（不充绿）**：
+  - **真机未跑**：没有在真 Redis + 真 worker 上制造过「worker 在册却不消费」，状态 `unverified`。
+  - **守卫链未跑满**：`guards-repo-matrix` 跑到 **第 55/111 段**（`test:mcp-tool-surface`）红，
+    续跑 `--from=56` 到 **第 107/111 段**（`lint:cli`）红。两处**均已实测为环境既有缺口**
+    （`packages/mcp-server`、`packages/acf-cli` **没有 node_modules / dist**；把改动 stash 后
+    原版同样报 `MODULE_NOT_FOUND` / `eslint: not found`），**与本轮改动无关**；
+    其余 **106 段实测 exit 0**（含 `check:ssrf-parity` —— 它在并发跑测试时曾超时红，
+    单独复跑 **2.9s / 3 条用例全通过**，属并发互踩的假红）。
+  - **`AgentSessionsPage.tsx` 双顶格**（1024/1025）⇒ 徽标挂载点**只能**留在
+    `AgentAttentionBadges.tsx`（本轮已如此），页面里加任何节点都会破 size-caps 棘轮。
+
+  **方法学沉淀（接 403）**：
+  - **404「让位 ≠ 读不到 —— 两者都会让徽标不显示，但一个是完整判定、一个是判定坏了」**。
+    把它们压成同一条分支的实现**看起来更简洁且能过 3 条测试**（本轮反证实测：合并后
+    只有第 ④ 条红）⇒ 必须**分别**用测试钉住两种「不显示」。
+  - **405「反证要先问『这条用例真的能失败吗』」**：本轮 `degraded` 守卫的**第一版反证没红** ——
+    因为让 `waiting` 抛错时最老 job 本就是 `null`（判据恒 false ⇒ 有没有守卫都一样绿）；
+    换 `workers` 抛错又被「停摆让位」吞掉。**只有让 `paused` 抛错**才对准靶心。
+    ⇒ 「加了一条反证」不等于「反证有效」，**换错观测量等于没测**。
+
 - 2026-11-07 **自治优化 · R159（并行第 89 批）（2 提交落地 · 先采样再改判据 + 覆盖计数登记 29 → 34）**：
   `4ef8b24d`（`ci(web): nightly flake-watch 顺带采样覆盖率（只记录、不判定）`）+
   `e387ba6d`（`feat(guards): 覆盖率计数登记 29 → 34（R159，第一批 5 条）`），
@@ -4079,7 +6687,7 @@
     `--EXIT-- N` 与 `--PCT-- unavailable (…)`，**不静默、也不阻断**（采样通道自己的失败
     不能变成主流程的失败）；
     ② **不解析文本表格** —— 覆盖率文本表的**列宽随位数抖动**、排版一改就失配 ⇒ 读
-    `apps/admin-web/coverage/coverage-summary.json` 的 `total.*.pct`（**机器可读**才是能长期
+    admin-web 覆盖率产物（`coverage-summary.json`）的 `total.*.pct`（**机器可读**才是能长期
     消费的形态）；
     ③ **独立于既有两轮** —— 那两轮是**纯跑**的 flake 观测，**插桩会改变被观测对象的性能特征**
     （可能**掩盖**真实抖动）⇒ **保持纯跑一个字不改**，覆盖率单独采样。代价是多一次全量
@@ -4693,7 +7301,7 @@
     309 个测试文件，约 **7s**）接进 `test:guards:chain`。两者**都没有 `--fix`**（符合 R173 的新判据
     ⇒ 它们**能红**）。链 **105/105** 全绿，总耗时 **4m38s**（+9s）。**其余 103 段一字未动**。
   - **② 不止「跑起来」，还要证明「能红」**（R173 教训 345 的直接应用）：对两个新段**各做一次
-    「故意造违规 ⇒ 该段变红」**——`apps/executor-node/src/probe-tmp.ts` 放一个未使用变量 ⇒
+    「故意造违规 ⇒ 该段变红」**——在 executor-node 源码里临时放一个未使用变量（探针文件，事后删除） ⇒
     **第 104 段 exit 1**，失败报文**点名** `✘ 第 104/105 条失败：npm run lint:node` 并**回放了
     eslint 的报错原文**（R153 的「失败段回放 stderr」正好派上用场）；web 同款 ⇒ **第 105 段 exit 1**。
     两次验证后**立即还原**。

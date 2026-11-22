@@ -2,7 +2,9 @@
 
 > R206 立项。**先定判据，再写代码**（R388）。按 R393 的纪律：**先列「候选信号 × 它会被什么打穿」**。
 >
-> 状态：**判据已定 + 纯函数已实现并测**（`agent-queue-idle-check.ts`）；**接线待下一轮**。
+> 状态：**判据已定 + 纯函数已实现并测**（`agent-queue-idle-check.ts`）+ **接线已落地并测**
+> （R207：`agent-queue-idle.service.ts` / `GET /agent/sessions/queue-idle` / `QueueIdleBadge`，
+> 见 §6）。
 
 ## 1. 要解决的缺陷（**第四个的补充，不是第五个**）
 
@@ -16,9 +18,18 @@ R205 已落地「队列停摆」（有活排队但**没有 worker**）。但它*
 
 ⇒ 表现是：**有 job 一直排着，没人动**；而 `active` 可能偶尔 > 0（卡住的那一个还在跑，只是永远跑不完）。
 
-⚠️ R204/R205 曾记录「这类情形**报不出来**（需要跨采样状态）」——**本轮把这个结论推翻了**：
-BullMQ 的 job 有 **`timestamp`（入队时间）**，且 waiting 列表底层是 Redis **有序集合**（score = 入队时间）
-⇒ **「最老 waiting job 的年龄」可以在单次请求内算出**，**不需要跨采样**。见 §3。
+⚠️ R204/R205 曾记录「这类情形**报不出来**（需要跨采样状态）」——**R206 把这个结论推翻了**：
+BullMQ 的 job 有 **`timestamp`（入队时间）** ⇒ **「最老 waiting job 的年龄」可以在单次请求内算出**，
+**不需要跨采样**。见 §3。
+
+⚠️⚠️ **R207 真机修正（重要，原文写错过）**：本文档 §2/§3.1 原先断言「waiting 底层是 Redis 有序集合
+（score = 入队时间）」。**在 BullMQ 9.x 上这是错的** —— 真机实测（`addStandardJob-9.lua` 的
+`pushCmd = opts['lifo'] and 'RPUSH' or 'LPUSH'`；`TYPE bull:<q>:wait` → **`list`**）：
+`wait` 是 **LIST**，按**插入顺序**排列；`timestamp` 只是 job 自己的一个字段，**不是排序键**。
+生产路径上二者**恰好一致**（同一条 `add` 里先算 `timestamp` 再 `LPUSH`）⇒ 取表头**通常**就是最老；
+但 `delayed` job 被 promote 进 `wait` 时（本仓 GAP-3 自动续跑 + 普通 job 混合的场景），
+它会插到**表头**而 `timestamp` 仍是「当初算 delay 的时刻」⇒ **顺序与 timestamp 错位**。
+实测偏差是**把年龄算小**（`[0]` 更年轻）⇒ **偏向漏报，不会误报**（详见 §5）。
 
 ## 2. 候选信号 × 它会被什么打穿（R393 的强制步骤）
 
@@ -38,13 +49,17 @@ BullMQ 的 job 有 **`timestamp`（入队时间）**，且 waiting 列表底层�
 ### 3.1 「最老 waiting job 的年龄」怎么算（**单次请求，无状态**）
 
 ```ts
-const [oldest] = await queue.getWaiting(0, 1);   // BullMQ: asc=true ⇒ 最老
+const [oldest] = await queue.getWaiting(0, 1);   // 表头 = **最早入队**（LIST，非 ZSET）
 const ageMs = Date.now() - oldest.timestamp;      // timestamp = 入队时间
 ```
-- `getWaiting(start, end)` 内部走 Redis **`ZRANGE`**（有序集合，score = 入队时间）
-  ⇒ **升序取第一个就是最老的** ⇒ **不需要扫全表**，也不需要跨请求状态。
-- ⚠️ `getWaiting(0, 1)` 的 `end` 是**闭区间** ⇒ 会取 **2 个** job（`0` 和 `1`），
-  多取一个无害（我们只要最老那个），但**别写成 `getWaiting(0, 0)`**（那不是「只取 1 个」）。
+- ⚠️ **`getWaiting(0, 1)` 的 `end` 是闭区间** ⇒ 会取 **2 个** job（下标 `0` 和 `1`）；
+  无妨（我们只要第一个），但**别以为 `getWaiting(0, 0)` 是「只取 1 个」** —— 在
+  `asc=true` 的路径上 `start===0 && end===0` 取的仍是表头那一个，语义容易读错。
+- ⚠️ **「第一个 = 最老的」只在「所有 job 都经同一条路径入队」时成立**（R207 真机实测）：
+  `wait` 是 **LIST**（插入顺序），不是按 `timestamp` 排序的 ZSET。
+  ⇒ 本判据取的是「**最早入队的那个**」的年龄，**不是**「`timestamp` 最小的那个」的年龄。
+  两者在有 delayed promote 时会错位；错位方向是**年龄算小 ⇒ 漏报**（§5），可接受但要如实登记。
+- **不需要扫全表**（只读 2 个元素），也不需要跨请求状态。
 
 ### 3.2 为什么**不能**只用一个固定阈值（**合法积压会打穿**）
 
@@ -74,7 +89,12 @@ const ageMs = Date.now() - oldest.timestamp;      // timestamp = 入队时间
 | 积压（R201/R203） | `pending` 且**队列里没有 job** | — |
 | 队列停摆（R204/R205） | 有活 + **没有 worker**（或队列被暂停） | 本条覆盖的是「**worker 在、却不再消费**」 |
 
-⇒ 四者互补：本条补的是「**有人但不干活**」。
+⇒ 五者互补：本条补的是「**有人但不干活**」。
+
+⚠️ **判定顺序：停摆优先**（R207 落地）。若已停摆，本条**让位**
+（API 返回 `suppressedBy: "queue-stall"`、徽标**静默**）—— 否则同一现象会同时点亮
+两个徽标，而运营的注意力是稀缺资源。让位是**完整判定**，**不等于**「读不到」
+（后者走 `degraded`）：把两者压成同一条分支的实现会被 `queue-idle-badge.test.tsx` ④ 抓红。
 
 ## 4. 动作：**只告警**（与其它三条一致）
 
@@ -84,7 +104,78 @@ const ageMs = Date.now() - oldest.timestamp;      // timestamp = 入队时间
 ## 5. 已知边界（**如实登记**）
 
 - **阈值依赖「墙钟预算」这个外部量** ⇒ 本仓的墙钟预算改了，本阈值要跟着改
-  ⇒ 接线层应当**从配置读**预算并推导阈值，**不要**在这里写死魔法数。
+  ⇒ 接线层**从配置读**预算并推导阈值（§6），**不要**在这里写死魔法数。
 - **`getWaiting` 只覆盖 `waiting`**（不含 `delayed` / `prioritized`）。
   `delayed` job 的「年龄」语义不同（它是**故意**延迟的）⇒ 本条**刻意不覆盖** `delayed`。
-- **未实现的部分**：接口/徽标接线（本轮只做判据 + 纯函数，见文首状态）。
+- **误报窗口**：墙钟判定发生在**每轮开头**，真实结束时刻会略晚于 `wallClockMs`，
+  且一次 LLM 调用的超时没有上界 ⇒ 阈值只加了「一拍」（心跳间隔），**不是**按最坏
+  LLM 超时放大。⇒ 文案说「**可能**空转」；**只告警不处置**。
+- **顺序偏差 ⇒ 只漏报、不误报**（R207 真机实测，见 §1 的修正框）：`delayed` job 被 promote 时
+  会插到 `wait` **表头**，而它的 `timestamp` 是「当初算 delay 的时刻」⇒ 取 `[0]` 得到的年龄
+  **≤** 真实最老年龄。实测两例：偏差 217ms（小规模）与 6.2s（40 个 job 压着）。
+  ⇒ 判据可能**晚一点**才响，但不会把正常队列报成空转。这是刻意接受的取舍：
+  要精确取「`timestamp` 最小」就得扫全表（O(n) Redis 往返），而本端点是无状态 GET。
+- **真机验证已做（R207 补充）**：`npm run test:r207-queue-idle-live`
+  （`scripts/r207-queue-idle-live-probe.mjs`）在**真 Redis 8.10.3 + BullMQ 9.x + 真 Worker**
+  上跑 **17 条断言**并全部通过（exit 0）：
+  ① 阈值推导 = 3,630,000；② `getWaitingCount`；③ `getWaiting(0,1)` 表头 = **最早入队**；
+  ④ `job.timestamp` 反序列化保真；⑤ `attemptsStarted` 可读；⑥ 无 worker ⇒ **停摆成立（本条让位）**；
+  ⑦ 判据本体确实会判空转（年龄 4,000,000 > 阈值）⇒ 让位是**必要**的；⑧ 真 worker 占满 2 槽；
+  ⑨ worker 在册 ⇒ 停摆**不**成立；⑩ worker 卡住 + 最老 job 超阈值 ⇒ **空转成立**；
+  ⑪ 两个判据在真队列上**互斥**；⑫ 放行后恢复消费 ⇒ 不再判空转（正向控制组）；
+  ⑭⑮ **顺序偏差真实存在且方向是「年龄算小 ⇒ 只漏报」**（实测表头 759ms vs 真·最老 2h，
+  偏差 2 小时）；⑬⑫b⑯ **清理残留 = 0**（不是「我删了」，是「查出来是 0」）。
+  **反证**：把 ⑨ 的断言改坏 ⇒ 该条立刻红（16/17），证明它不是恒真。
+  ⚠️ 该探针复刻接线层的**读法**并调用**生产纯函数**判定，**不**经过 NestJS。
+
+- **真 HTTP 端点验证（R209）**：`npm run test:r209-queue-idle-http`
+  （`scripts/r209-queue-idle-http-probe.mjs`）在**真 NestJS 进程 + 真 PG + 真 Redis**上跑
+  **13 条断言**并全部通过。它覆盖 R208 探针**碰不到**的那一半（controller 响应整形 / 服务注入 /
+  JWT-Roles 守卫 / 全局响应信封）：
+  ① `/api/health` 可达；② **未认证 ⇒ 401**（「没权限」与「队列正常」必须可区分）；
+  ③ 探针账号登录；④ 空队列 ⇒ `idleStuck:false` / `oldestAgeMs:0` / `degraded:false`（正例控制组）；
+  ⑤ 响应在 **`data` 信封**里（拦截器没被绕过）；⑥ 8 个契约字段齐全；
+  ⑦ `basis.formula` 带推导依据；⑧ 线上阈值 = **3,630,000**；
+  ⑨ **paused + 老 job ⇒ `suppressedBy:"queue-stall"` 且不报空转**（真端点上的 R399 语义）；
+  ⑩ 同一快照下 `queue-stall` 报 `stalled:true` / `reason:paused`（**两端口径一致**）；
+  ⑪ 让位**不是**「读不到」：`degraded:false`；
+  ⑫ 复原后 ⇒ `suppressedBy:null`（不是「我 resume 了」，是**端点说**正常了）；⑬ 队列未 paused 且 job 清空。
+  **反证**：把 ② 改成「应为 200」、⑪ 改成「应为 true」⇒ 两条立刻红（11/13）。
+  **安全边界（脚本里写死）**：只增删 id 前缀 `r207-probe` 的 job；**`finally` 里无条件 `resume()`**
+  （一个留在 paused 的队列会让真实调度全线停摆，这是本脚本**唯一**能造成生产影响的方式）。
+
+- **仍然未覆盖（如实登记）**：「worker 事件循环阻塞 ⇒ 心跳过期 ⇒ `workers=0`」那一类
+  （那是**停摆**判据的误报窗口，不是本条）；以及 `degraded` 的**真机**触发
+  （要让真实 BullMQ 调用抛错得先切断 Redis，代价大于收益 ⇒ 仅由单测覆盖）。
+
+## 6. R207 接线（阈值推导与两个新字段）
+
+### 6.1 阈值怎么来的（R403：不允许魔法数）
+
+```text
+thresholdMs = wallClockMs × AGENT_QUEUE_CONCURRENCY + tickMs
+            = 1800000     × 2                     + 30000  = 3,630,000（60.5 分钟）
+```
+
+每一环都是本仓**已有**的量，不是系数：
+
+| 分量 | 来源 | 为什么它是「正确的那一个」 |
+|---|---|---|
+| `wallClockMs` | `agent.budget.wallClockMs`（配置面） | 它是**代码层硬闸门**：超时即 `budget_exceeded` ⇒ 单 job 耗时**结构上**不会超过它 |
+| `concurrency` | `AGENT_QUEUE_CONCURRENCY`（`agent.processor.ts:34`） | 最老 job 能合法等很久的**唯一**成因是「前面的 job 占满并发槽」⇒ 峰值合法等待 = 槽位 × 上界 |
+| `tickMs` | `executor.heartbeatInterval`（默认 30000） | 吸收派发往返 + 「墙钟判定在轮轮开头」的微小超时；**加一拍，不是乘系数** |
+
+⚠️ **任一分量缺失/非法 ⇒ 阈值 0 ⇒ 判据层「不判定」**（宁可漏报）。
+**不**回落到默认值：那会把「配置坏了」伪装成「判定正常」，正是本仓主导缺陷类。
+
+### 6.2 API 契约（`GET /agent/sessions/queue-idle`）
+
+`{ idleStuck, oldestAgeMs, thresholdMs, waitingCount, retried, suppressedBy, degraded, basis }`
+
+- `degraded`：任一个观测量读失败 ⇒ **`idleStuck` 恒 false 且标 degraded**（前端显示「未知」）。
+- `suppressedBy`：`"queue-stall"` ⇒ 本条让位（§3.4）；`null` ⇒ 本判据是这一格的最终结论。
+- `basis`：`{ wallClockMs, concurrency, tickMs, thresholdMs, formula }` —— 把**依据**一起交出去，
+  否则下一次调参就会退化成改魔法数。
+- 服务缺席（只可能发生在测试装配里）⇒ **显式 503** `AGENT_QUEUE_IDLE_CHECK_UNAVAILABLE`，
+  绝不返回「队列在正常消费」。
+

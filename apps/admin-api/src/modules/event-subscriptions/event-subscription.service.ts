@@ -369,10 +369,6 @@ export class EventSubscriptionService {
     }
   }
 
-  async saveDeadLetter(row: EventSubscriptionDeadLetter): Promise<void> {
-    await this.deadLetterRepo.save(row);
-  }
-
   async recordDeliveryFailure(
     sub: EventSubscription,
     error: string,

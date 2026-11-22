@@ -1585,14 +1585,15 @@
         "apps/admin-web/src/pages/task-detail/ExecutionsTab.tsx",
         "apps/admin-web/src/pages/ExecutionsPage.tsx",
         "apps/admin-web/src/pages/AgentSessionsPage.tsx",
-        "apps/admin-web/src/pages/SopsPage.tsx"
+        "apps/admin-web/src/pages/SopsPage.tsx",
+        "apps/admin-web/src/pages/sops/AssignmentClarificationsList.tsx"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。 **R157 更新 reads**：`TaskDetailPage` 的「执行记录」Tab 在 R151 外提到 `pages/task-detail/ExecutionsTab.tsx` ⇒ 该 spec 的读取面同步扩到 4 个文件（否则登记表与事实不符，而这类「按文件路径读源码」的断言**不会**因为外提而自动跟随）。"
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。 **R157 更新 reads**：`TaskDetailPage` 的「执行记录」Tab 在 R151 外提到 `pages/task-detail/ExecutionsTab.tsx` ⇒ 该 spec 的读取面同步扩到 4 个文件（否则登记表与事实不符，而这类「按文件路径读源码」的断言**不会**因为外提而自动跟随）。 **R298 更新 reads**：`sopClarResolutionLabel`/`sopMediaKindLabel` 的渲染在 SOP 子详情页外提到 `pages/sops/AssignmentClarificationsList.tsx` ⇒ 该 spec 读取面扩到含该文件（与 R157 同款同步，否则登记表低估读取面）。"
     },
     {
       "id": "STC-092",
@@ -2069,7 +2070,7 @@
       "id": "STC-120",
       "tier": "P0",
       "spec": "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts",
-      "specLine": 2404,
+      "specLine": 2443,
       "needle": "const src = [\"task.service.ts\", \"execution-read.collaborator.ts\"]",
       "reads": [
         "apps/admin-api/src/modules/task/task.service.ts",
@@ -2163,6 +2164,22 @@
       "dispositionNote": "R194 新增。⚠️ 该断言**依赖源码文本形态**（参数名 `expectedStatus`、默认值 `DeploymentStatus.PENDING`、两条路径的显式传参）⇒ **改这些调用点时必须同步改这条**。⚠️ 为什么用**源码文本判据**而不是驱动真实的 `pushDeployToExecutor`：实测它内部会调 `failDeploymentIfInFlight` / `persistDeployProgress` / `saveVersionSnapshot` 等**一串协作者方法**，缺一个就抛 TypeError 并被 push 的 `catch` 吞掉 ⇒ **失败会伪装成「CAS 没命中」**（实测踩了三轮）。⇒ 这里要防的恰恰是「某个调用点的那个参数写错了」，**源码文本面正是它的稳定断言面**。",
       "owner": "arch-core",
       "reviewBy": "2026-12-31"
+    },
+    {
+      "id": "STC-126",
+      "tier": "P2",
+      "spec": "apps/admin-web/src/__tests__/queue-stall-badge.test.tsx",
+      "specLine": 113,
+      "needle": "join(__dirname, '..', 'components', 'QueueStallBadge.tsx')",
+      "reads": [
+        "apps/admin-web/src/components/QueueStallBadge.tsx"
+      ],
+      "asserts": "R211：断言徽标**按 `workersKnown` 分支选 tooltip key** —— 未知时必须用 `agents.queueStall.workerUnknownHint`，已知时必须用 `agents.queueStall.noWorkerHint`。**为什么用源码断言**：antd Tooltip 的内容在 vitest 里**懒挂载**（hover 时序 + portal），逐字断言不稳定（实测 10s 超时后 `textContent` 仍为空）；而「措辞」在测试里唯一稳定可观察的形态就是**请求了哪个 key**。判据同时要求**两条 key 都出现**且**以 `state.workersKnown` 为条件**（防「两条并列写死」的假绿）。",
+      "disposition": "keep-and-accept",
+      "owner": "agent-runtime",
+      "reviewBy": "2027-02-28",
+      "triageStatus": "triaged",
+      "dispositionNote": "**已知脆弱面**：它锚定的是 `QueueStallBadge.tsx` 里的分支形态 ⇒ 若把 tooltip 文案改成组件外传入（props / context），本条会红并**要求重新评估措辞判据该放哪里**（那正是应该被注意到的事）。**为什么接受这个脆弱性**：措辞差异承载的是「『workers===0』是不是事实」这一语义区别（R210/R211 的核心），比「测试稳定」更重要；而它的失效方式是**红**（不是静默），符合本仓对源码断言的纪律（R157/R310：失效必须可见）。"
     }
   ],
   "discipline": [

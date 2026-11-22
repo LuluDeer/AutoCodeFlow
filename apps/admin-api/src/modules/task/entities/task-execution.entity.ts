@@ -32,6 +32,46 @@ export enum ExecutionStatus {
   CANCELLED = "cancelled",
 }
 
+/**
+ * 「失败」的执行状态集合（**唯一事实源**，R280）。
+ *
+ * 为什么是这两个：告警口径（alerts.yml 的 status=~"failed|timeout"）与
+ * docs/operations.md 的失败率定义都已经是这个集合；此前各查询各写一份
+ * `status = FAILED`，导致超时风暴时「趋势曲线在涨、最近失败说没有」。
+ *
+ * ⚠️ KILLED / CANCELLED **不算失败**：那是人主动停的。
+ * ⚠️ 为什么必须含 TIMEOUT：同一个 timeout 语义会分叉落两个桶——
+ *    回调上报 ⇒ status=TIMEOUT（execution-callback.collaborator.ts:470）；
+ *    stale sweep ⇒ status=FAILED + failureReason=TIMEOUT（scheduler.service.ts:1838）。
+ *    只含 FAILED 会漏掉前者，只含 TIMEOUT 会漏掉后者。
+ *
+ * ⚠️ 其余调用点待迁移：本轮只钉 metrics 的三处（趋势已含 timeout、最近失败、
+ *    成功率卡的失败计数）；以下仍未对齐，属后续批次：
+ * ## 迁移状态（2026-11-20 复核，**这份清单曾是陷阱，已按实测重写**）
+ *
+ * ✅ **已全部迁移完毕**（此前这里列的都是「待迁移」，照它改会改错——故逐条改为完成态）：
+ *
+ *    - `modules/project/projects.service.ts` —— `failureRate` 分子已按本常量推导（R283）。
+ *    - `modules/executor/executor.service.ts` 执行器 7 日面板 —— **刻意不合并**：
+ *      同一 SQL 已并列返回 `failed`（FAILED 单桶）与 `timedOut`（TIMEOUT 桶），
+ *      前端渲染成「成功 / 失败 / 超时 / 其他」四个独立格（R285）。
+ *      ⚠️ 若把 `failed` 并入本常量 ⇒ 同一批超时行在「失败」与「超时」两格各计一次，
+ *      且「脚本失败」那格再无真值。**别照本常量去改它。**
+ *    - `modules/task/execution-read.collaborator.ts` 深链过滤 —— 已支持逗号多值（R281），
+ *      单值仍生成等值（执行页下拉里 failed / timeout 是两个独立意图）。
+ *    - `apps/admin-web/src/utils/failure-reason-aggregate.ts` —— 那是**另一个**常量
+ *      `FAILURE_REASON_BUCKET_STATUSES`（含 KILLED，按原因分桶，R284 已改名以示不同）。
+ *
+ * ⚠️ **本常量的语义边界**：它回答「哪些 status 值等于『失败』」，
+ * **不**回答「某个面板的某一格该显示什么」。面板若需要分桶明细（如失败 vs 超时），
+ * 就该用分桶字段，**不要**把本常量套上去把两格合并。
+
+ */
+export const FAILED_EXECUTION_STATUSES = [
+  ExecutionStatus.FAILED,
+  ExecutionStatus.TIMEOUT,
+] as const;
+
 export enum ExecutionFailureReason {
   PACKAGE_FETCH_FAILED = "package_fetch_failed",
   SCRIPT_ERROR = "script_error",

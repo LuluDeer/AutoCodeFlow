@@ -2,7 +2,10 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Ip,
+  Optional,
   Param,
   Patch,
   Post,
@@ -14,12 +17,14 @@ import {
 import {
   ApiTags,
   ApiBearerAuth,
+  ApiBody,
   ApiOperation,
   ApiProperty,
   ApiPropertyOptional,
   ApiOkResponse,
   ApiCreatedResponse,
   ApiExtraModels,
+  ApiQuery,
 } from "@nestjs/swagger";
 import {
   IsIn,
@@ -37,7 +42,13 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { SopService } from "./sop.service";
 import { SopMediaService } from "./sop-media.service";
+import { SopClarificationInboxService } from "./sop-clarification-inbox.service";
+// R286：滞留 blocked 工单的只读观测面（不改状态机，只补可见性）。
+import { SopAssignmentLagService } from "./sop-assignment-lag.service";
+// R289：单条指派人工处置（取消未结束指派，ADR-026 条件写）。
+import { SopAssignmentActionsService } from "./sop-assignment-actions.service";
 import { ExecutorService } from "../executor/executor.service";
+import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
 // LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
@@ -54,6 +65,15 @@ import {
   SopResponseDto,
   SopVersionDto,
 } from "./dto/sop-response.dto";
+// R280：跨 SOP 的待答复澄清聚合（升级转人工后的权威可见面）。
+import { SopPendingClarificationsResponseDto } from "./sop-clarification-inbox.dto";
+// R286：滞留 blocked 工单的响应契约（收件箱第十小节 `sopBlocked` 的数据源）。
+import { SopAssignmentLagResponseDto } from "./sop-assignment-lag.dto";
+// R289：单条取消指派的请求与响应契约。
+import {
+  CancelSopAssignmentDto,
+  SopCancelAssignmentResponseDto,
+} from "./sop-assignment-actions.dto";
 
 /**
  * R41-A1：审计行的 `userId` 列是**整数**（audit_logs.userId int），而控制器
@@ -214,13 +234,130 @@ export class SopController {
     private readonly sops: SopService,
     private readonly media: SopMediaService,
     private readonly executors: ExecutorService,
+    /**
+     * R280：跨 SOP 的待答复澄清聚合（升级转人工后的权威可见面）。
+     *
+     * ⚠️ **必须放在末位且 `@Optional`**：既有 spec 用**定位参数**装配本 controller
+     * （`new SopController(sops, media, executors)`，见 `sop.controller.spec.ts` /
+     * `sop.audit.spec.ts`）——插在中间会让它们全部错位。缺席 ⇒ 路由显式抛
+     * `DEPENDENCY_UNAVAILABLE`（503），绝不回 200 空信封。
+     */
+    @Optional()
+    private readonly clarificationsInbox?: SopClarificationInboxService | null,
+    /**
+     * R286：滞留 blocked 工单的只读观测（maxRounds 触顶路径没有服务端兜底，
+     * `blocked` 被超时扫描整体豁免 ⇒ 这些单永远停着且此前**没有任何可见面**）。
+     *
+     * 同样**末位 + `@Optional()`**：既有 spec 用定位参数装配本 controller
+     * （3 参 / 4 参两种形态），插在中间会让它们错位。缺席 ⇒ 503。
+     */
+    @Optional()
+    private readonly assignmentLag?: SopAssignmentLagService | null,
+    /**
+     * R289：单条指派取消服务（末位 + `@Optional()`，保住既有 3/4/5 参定位单测；
+     * 缺席 ⇒ 显式抛 503 `DEPENDENCY_UNAVAILABLE`）。
+     */
+    @Optional()
+    private readonly assignmentActions?: SopAssignmentActionsService | null,
   ) {}
+
+  /**
+   * R280：**待人工答复的升级澄清**（跨 SOP 聚合，ADMIN 面）。
+   *
+   * 为什么必须有这个端点（brief §一）：升级写入后 assignment 会 `blocked →
+   * in_progress` ⇒ 按 `status=blocked` **永远筛不到**；收件箱七小节不含 SOP
+   * 澄清；唯一的升级通知可被 `scope=global` 的静默规则吞掉。三通道全失效 ⇒
+   * 一个真实的移交动作**没有接收方**。
+   *
+   * 本端点读**库**、不读通知 ⇒ 不受静默规则影响，是权威可见面。
+   * 路由注册在 `:id` **之前**：否则 `clarifications` 会被当成 SOP id 匹配走。
+   */
+  @Get("clarifications/pending")
+  @ApiOperation({
+    summary: "列出跨 SOP、待人工答复的升级澄清（含总数、截断与降级标记）",
+  })
+  @ApiOkResponse({ type: SopPendingClarificationsResponseDto })
+  @ApiQuery({ name: "limit", required: false, type: String })
+  async listPendingClarifications(
+    @Query("limit") limit?: string,
+  ): Promise<SopPendingClarificationsResponseDto> {
+    if (!this.clarificationsInbox) {
+      // ⚠️ 服务缺席 ⇒ 显式报不可用。回 `{items:[], total:0}` 会让运营以为
+      // 「没有升级在等人」，而事实是「读不到」——这正是本仓要消灭的那类假事实。
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    // 非法值（NaN/±Infinity 来自 `parseInt("abc")`）在 service 内回落默认，
+    // **不 400**（本仓既有契约：非法深链安全回落）。
+    return this.clarificationsInbox.pending({
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+  }
+
+  /**
+   * R286：**滞后的 blocked 工单**（只读观测面，ADMIN）。
+   *
+   * `maxRounds` 触顶路径把 assignment 写成 `blocked`（`sop.service.ts:1015-1026`），
+   * 而超时扫描只取 `assigned`/`in_progress`（`:1544-1546`）⇒ `blocked` 被整体豁免，
+   * 这条工单**永远停在 blocked，无任何服务端兜底**。本端点只补可见性，**不改状态机**：
+   * 把 `blocked` 改回 `in_progress` 会让「等人工」这个信号消失。
+   *
+   * ⚠️ **路由必须注册在 `assignments/:assignmentId` 与 `:id` 之前**：否则
+   * `lagging` 会被当成 assignmentId（或被当成 SOP id）匹配走，本路由永远不可达。
+   *
+   * `hours` 非法（`abc` / `0` / `9999`）在 service 内钳制/回落默认，**不 400**
+   * （本仓既有契约：非法深链安全回落、绝不 400）。
+   */
+  @Get("assignments/lagging")
+  @ApiOperation({
+    summary:
+      "列出超过 N 小时未推进的 blocked 指派（含总数、截断与降级标记；不改状态机）",
+  })
+  // R287：`@Query("hours") hours?: string` 运行期可选，但 Swagger 对
+  // 「`@Query` 的提示类型是 `T | undefined`」一律推断成 `required: true`
+  // ⇒「契约说必填、实现说可选」的不实声明。这里显式标 false 修正**源码侧**。
+  //
+  // ⚠️ **这条修饰不是可选项**。曾经的过程：本注解写出前，`openapi.json` 里
+  // `hours` 是 `required: true`，`check:query-param-required` 把它登记为
+  // `class: "runtime-optional"` 的待回收欠账；重导出后已对齐为 `required: false`、
+  // 清单条目**已回收**（现总账 29 条 required:true / 27 条登记 / 陈旧 0）。
+  // ⇒ 现在源码与生成物一致。**若有人为了「让两边看起来一致」把本注解删掉**，
+  // 生成物会退回不实声明且**没有任何红灯**——`__tests__` 里那条装饰器元数据
+  // 用例就是为挡这个反向冲动而写的（删注解 ⇒ 精确 1 条红）。
+  //
+  // 同款先例：`metrics.controller.ts` / `config.controller.ts` 的
+  // `@ApiQuery({ required: false })`（见 `query-param-required-allowlist.json`
+  // 的 `$comment`）。
+  @ApiQuery({
+    name: "hours",
+    required: false,
+    type: String,
+    description:
+      "观测窗口（小时）。缺省 24；钳制 1..720；非法值安全回落默认，不 400",
+  })
+  @ApiOkResponse({ type: SopAssignmentLagResponseDto })
+  async listLaggingAssignments(
+    @Query("hours") hours?: string,
+  ): Promise<SopAssignmentLagResponseDto> {
+    if (!this.assignmentLag) {
+      // 服务缺席 ⇒ 显式报不可用。回 `{items:[], total:0}` 会让运营以为
+      // 「没有滞留工单」，而事实是「读不到」——这正是本仓要消灭的那类假事实。
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    // 与 `listPendingClarifications` 同款：`parseInt("abc")` 的 NaN 直接透传，
+    // 由 service 的 `clampLagHours` 回落默认（不在 controller 抄第二份钳制逻辑）。
+    return this.assignmentLag.lagging({
+      hours: hours ? parseInt(hours, 10) : undefined,
+    });
+  }
 
   @Get()
   @ApiOperation({ summary: "SOP 列表（可按 status 过滤）" })
   // N-12: 裸分页 {items,total}——无 page/pageSize/totalPages 元数据（与
   // tasks 的 paginate() 双键信封不同源），契约如实钉住。
   @ApiOkResponse({ type: SopListResponseDto })
+  @ApiQuery({ name: "status", required: false, type: String })
+  @ApiQuery({ name: "page", required: false, type: String })
+  @ApiQuery({ name: "pageSize", required: false, type: String })
   async list(
     @Query("status") status?: string,
     @Query("page") page?: string,
@@ -272,6 +409,42 @@ export class SopController {
   }
 
   /**
+   * R289：取消单条未结束的指派（assigned/in_progress/blocked/stalled）。
+   *
+   * 注册在 `@Get(":id")` 之前；与批量取消 `POST /:id/assignments/cancel` 分离，
+   * 避免误杀同 SOP 其它运行中的工单。终态与并发让位统一返回 400
+   * `SOP_ASSIGNMENT_TERMINAL`（复用既有错误码，不造新码）。
+   */
+  @Post("assignments/:assignmentId/cancel")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "取消单条未结束的指派（支持 assigned/in_progress/blocked/stalled）",
+  })
+  @ApiBody({ type: CancelSopAssignmentDto, required: false })
+  @ApiOkResponse({ type: SopCancelAssignmentResponseDto })
+  async cancelAssignment(
+    @Param("assignmentId", ParseUuidShapePipe) assignmentId: string,
+    @Body() dto?: CancelSopAssignmentDto,
+    @CurrentUser() user?: { id: number | string; username?: string },
+    @Ip() ip?: string,
+  ): Promise<SopCancelAssignmentResponseDto> {
+    if (!this.assignmentActions) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    return this.assignmentActions.cancelAssignment({
+      assignmentId,
+      reason: dto?.reason,
+      actor: user ? `user:${user.id}` : undefined,
+      audit: {
+        userId: auditUserId(user),
+        username: user?.username ?? null,
+        ip: ip ?? null,
+      },
+    });
+  }
+
+  /**
    * 指派可选执行器（P7c 租约投影）：只列**当前租约内**声明了 agent:sop 的
    * 机器。列表投影刻意剥离 agentCapabilities（短效租约，快照会误导），
    * 指派面因此走这台独立端点——Admin Web 的指派对话框据此渲染可选项，
@@ -306,11 +479,22 @@ export class SopController {
     @Ip() ip?: string,
   ) {
     // 确认澄清确实属于该指派（防跨工单答复）
-    const { clarifications } = await this.sops.getAssignment(assignmentId);
+    const { assignment, clarifications } =
+      await this.sops.getAssignment(assignmentId);
     if (!clarifications.some((c) => c.id === clarificationId)) {
       throw new AppError(
         ErrorCode.SOP_CLARIFICATION_NOT_IN_ASSIGNMENT_FORBIDDEN,
       );
+    }
+    // R289：已取消或已完成的工单不再接受人工答复；刻意放行 failed（保住 R280
+    // 升级后执行器报 failed 仍允许人工修订发版再重派的既有语义）。
+    if (
+      assignment?.status === "cancelled" ||
+      assignment?.status === "completed"
+    ) {
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_TERMINAL, {
+        status: assignment.status,
+      });
     }
     return this.sops.replyClarification({
       clarificationId,

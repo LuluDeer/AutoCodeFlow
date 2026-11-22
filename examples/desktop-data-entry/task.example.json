@@ -1,0 +1,17 @@
+{
+  "name": "桌面数据填报（桌面执行器 / node）",
+  "description": "桌面执行器形态的填报任务：从桌面读取填报数据文件、校验并汇总，产出填报结果文件。对应 examples/desktop-data-entry/desktop_data_entry.js",
+  "triggerType": "manual",
+  "runtime": "node",
+  "entrypoint": "examples/desktop-data-entry/desktop_data_entry.js",
+  "executorTags": ["desktop"],
+  "timeoutSeconds": 300,
+  "maxRetry": 1,
+  "params": {
+    "inputFile": "/tmp/acf-desktop-data-entry/input.csv",
+    "outputFile": "/tmp/acf-desktop-data-entry/result.json",
+    "formName": "日填报",
+    "createSampleIfMissing": true
+  },
+  "alarmEmail": "ops@example.com"
+}

@@ -258,7 +258,9 @@ REGISTRY_PASS=$(gen_hex 24)
 # plain status command does not fail on unrelated services.
 GRAFANA_ADMIN_PASSWORD=$(gen_hex 24)
 # rustfs profile（S3 兼容对象存储，替代 MinIO）的凭证：compose 侧无默认值，
-# 这里预生成一份，demo 里随时可 `--profile rustfs` 起对象存储。
+# 这里预生成一份，demo 里随时可用 --profile rustfs 起对象存储。
+# 注意：本 heredoc 是未加引号的 <<EOF，注释里禁止出现反引号——反引号会触发
+# 命令替换（曾把 "--profile rustfs" 当命令执行，报 --profile: command not found）。
 RUSTFS_ACCESS_KEY=autoflow
 RUSTFS_SECRET_KEY=$(gen_hex 24)
 INITIAL_ADMIN_PASSWORD=$admin_pw

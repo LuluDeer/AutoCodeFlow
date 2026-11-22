@@ -1,12 +1,14 @@
 /**
- * P1-4 收件箱聚合层纯函数回归：
+ * P1-4 收件箱聚合层回归：
  * - 计数汇总的诚实口径：任一源读不到（null）⇒ 总数 null，不用局部和谎报；
  *   最近失败是只读参考项，不计入总数；
  * - 等待时长排序：有时间的在前（越久越靠前），无时间信息的排末尾；
  * - 第二人规则：提交者本人不能审批自己的部署请求。
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { client } from '../api/client';
 import {
+  loadInboxCounts,
   summarizeInboxCounts,
   sortInboxItemsByWaitingSince,
   isSelfDeployment,
@@ -16,19 +18,58 @@ import {
 
 const emptyCounts = (): InboxCountMap => ({
   deployments: 0,
-  agentApprovals: 0,
+  agentApprovals: null,
   agentWaiting: 0,
+  agentFailures: 0,
+  sopClarifications: 0,
+  sopBlocked: 0,
   stalled: 0,
   backlogged: 0,
   queueStall: 0,
   recentFailures: 0,
 });
 
+afterEach(() => vi.restoreAllMocks());
+
 describe('summarizeInboxCounts 总数口径', () => {
+  it('R278/U1：一次 inbox/counts 拿全；审批单数与会话数各自成值，但只有会话进入求和', async () => {
+    const get = vi.spyOn(client, 'get').mockImplementation(async (url) => {
+      if (url === '/agent/inbox/counts') {
+        return {
+          pendingApprovals: 4, // 审批单数：独立显示，**不参与**会话求和
+          waitingSessions: 3,
+          stalled: 1,
+          backlogged: 0,
+          backlogTruncated: false,
+          deployments: 2,
+          queueStall: 0,
+          degraded: false,
+        };
+      }
+      // R280：待答复澄清的计数来自**它自己的**读面（后端没有把它塞进 inbox/counts）。
+      if (url === '/sop/clarifications/pending') {
+        return { items: [], total: 0, returned: 0, truncated: false, degraded: false };
+      }
+      // R286：阻塞工单同理，额度是独立的 `getCount()`。
+      if (url === '/sop/assignments/lagging') {
+        return { items: [], total: 0, returned: 0, truncated: false, degraded: false };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const counts = await loadInboxCounts();
+    expect(counts.agentApprovals).toBe(4);
+    expect(counts.agentWaiting).toBe(3);
+    // 2（部署）+ 3（等待会话）+ 1（卡住）+ 0（积压）+ 0（停摆）= 6；审批单 4 不重复计入；
+    // R280 的待答复澄清（0）同样是独立显示项，不进求和。
+    expect(summarizeInboxCounts(counts)).toBe(6);
+    // R286：三路独立读面（主聚合 + 澄清 + 阻塞工单），各一次，没有 N+1。
+    expect(get).toHaveBeenCalledTimes(3);
+  });
+
   it('全部读到：汇总可处置待办（不含最近失败）', () => {
     const counts = emptyCounts();
     counts.deployments = 2;
-    counts.agentApprovals = 1;
+    counts.agentWaiting = 1;
     counts.stalled = 3;
     counts.recentFailures = 99; // 只读参考，不计入
     expect(summarizeInboxCounts(counts)).toBe(6);

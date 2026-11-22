@@ -227,7 +227,12 @@ describe('UX-06 AgentSessionsPage：会话/工具/步骤枚举收敛到 utils/ag
 });
 
 describe('UX-06 SopsPage：SOP 域枚举收敛到 utils/sop-label', () => {
-  const SOPS = stripComments(read('pages/SopsPage.tsx'));
+  // UX-06 落地后澄清处置/附件类型已外提到独立子组件 AssignmentClarificationsList，
+  // 按旧路径只读 SopsPage.tsx 会读不到那些调用（R151 同类坑：测试路径过期，功能并未回退）。
+  // 读两个文件拼接，断言一字不改。
+  const SOPS = stripComments(
+    read('pages/SopsPage.tsx') + '\n' + read('pages/sops/AssignmentClarificationsList.tsx'),
+  );
 
   it('三个已知 SOP 状态都映射到 i18n key（sop.entity.ts SOP_STATUSES）', () => {
     for (const v of ['draft', 'published', 'deprecated']) {

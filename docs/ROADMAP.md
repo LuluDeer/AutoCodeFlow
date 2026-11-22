@@ -1,6 +1,6 @@
 # AutoCodeFlow Roadmap
 
-> 面向开发者的开源路线图。最后更新：2026-11-02（当前发布 **v2.0.0**，2026-10-30）。
+> 面向开发者的开源路线图。最后更新：2026-11-21（当前发布 **v2.2.0**，与 `version.txt` 一致）。
 > 目标不是「功能更多」，而是「**开发者 10 分钟内跑出第一个结果，并且愿意把第二件事交给它**」。
 
 ## 定位
@@ -15,6 +15,8 @@
 **不是**：托管 SaaS、Spark/Flink 级大数据引擎、纯 RPA 商业套件。
 
 ## 当前阶段：2.0 已发布，2.x 稳定化（2026-11）
+
+> 截至 2026-11-22，2.x 稳定化已推进到 **v2.2.0**：P1 的 TTFV 首次成功漏斗与北极星可运营体系（埋点 / 判据 / 数据 API / 看板 / 生产启用 / 四级验收 / CI 防复发）均已交付，完整证据见 [PROJECT-STATUS.md](PROJECT-STATUS.md)。
 
 **v2.0.0（2026-10-30）交付了第一批「平台级」能力**：
 
@@ -62,7 +64,7 @@
 |---|---|---|
 | **bwrap 文档口径收窄（✅ done，2026-10）** | 原「overlay 的文档前置条件目前是乐观口径」已不成立：`docs/deployment.md:45-55` 已改成 opt-in（`docker-compose.secure.yml` 才置 `TASK_SANDBOX=bwrap`）+ 明确前置（宿主内核允许非特权 user namespaces，先跑 `bwrap-ok` 探针）+ 失败 fail-closed（`failureReason=sandbox_unavailable`，绝不静默降级） | 文档口径与 `docker-compose.secure.yml` 的 opt-in 现状一致（本轮已逐行核对 `deployment.md:45-55`） |
 | **宿主 `bwrap-ok` 探针（⏳ 阻塞：需一台允许容器内 userns/mount 的宿主）** | 本机只验证了 fail-closed 一侧；且实测**放 seccomp:unconfined 不够**——默认、`+apparmor:unconfined`、`--privileged` 全都失败（`Failed to make / slave` / `setting up uid map`） | 找一台允许容器内 userns/mount 的宿主跑通 `bwrap-ok` 探针 + 一条 Python 任务成功 |
-| **桌面 Agent 中台闭环** | 真实 provider 的 plan→GUI→trial→acceptance 已跑通；**中台 SOP 指派与 Agent 审批闭环均已落地**（指派：`apps/admin-api/src/modules/sop/sop.controller.ts:423` `@Post(":id/assign")` + `:280` `assignable-executors` + `SopsPage` 指派 Tab；审批：`OPEN-DECISIONS.md` 已结案首条，6 个提交）；**剩余**只有 Windows 真机〔2026-10-31 事实核查更正：原写「还缺中台 SOP 指派/审批」与代码相反〕 | 平台侧指派 → 澄清 → 审批 → 执行 → 验收全链已可用；待补 Windows 真机逐项验证；无 provider 时 mock-plan demo 仍可回归 |
+| **桌面 Agent 中台闭环（✅ 平台闭环已完成，剩 Windows 真机）** | 真实 provider 的 plan→GUI→trial→acceptance 已跑通；**中台 SOP 指派与 Agent 审批闭环均已落地**（指派：`apps/admin-api/src/modules/sop/sop.controller.ts:423` `@Post(":id/assign")` + `:280` `assignable-executors` + `SopsPage` 指派 Tab；审批：`OPEN-DECISIONS.md` 已结案首条，6 个提交）；**剩余**只有 Windows 真机〔2026-10-31 事实核查更正：原写「还缺中台 SOP 指派/审批」与代码相反；2026-11-22 复核：平台侧闭环已完成，无新增缺口〕 | 平台侧指派 → 澄清 → 审批 → 执行 → 验收全链已可用；待补 Windows 真机逐项验证；无 provider 时 mock-plan demo 仍可回归 |
 | **Windows GUI 真机清单** | Windows 是桌面主战场；当前为 beta | focus/click/type/screenshot + 应用白名单在真实交互桌面逐项通过；锁屏/RDP 断开的边界写清楚 |
 
 ### 对照调研批次（2026-10-31 起 · 10 个开源项目）
@@ -101,11 +103,11 @@ N5 实测本机 139 行 `tokensIn` 全为 0，零样本上建「模型→窗口�
 
 ## P1（可运营 / 可分发）
 
-- **首次成功漏斗**：记录 opt-in 的 TTFV（安装 → 首个成功执行），目标中位数 ≤10 分钟；demo 完成率。
-- **3 个真实场景示例**：每日报表导出、内网巡检、桌面数据填报；每个含代码、依赖、凭据占位、告警。
-- **CLI / MCP 一行接入**：`acf` 与 MCP 配置的复制即用片段；MCP 工具收敛到高频集合，减少 LLM 选择成本。
-- **异常接管台**：stalled / escalated 统一队列，运营视角一键接管，而不是只看 Agent 会话日志。
-- **安装包瘦身**：桌面安装包按需下载 runtime；首装体积目标 ≤100MB。
+- [x] ✅ **首次成功漏斗（已交付）**：记录 opt-in 的 TTFV（安装 → 首个成功执行），目标中位数 ≤10 分钟；demo 完成率。已落地迁移 0101/0102、opt-in 双闸 + HMAC 匿名 ID、三类 listener、真实口径脚本、北极星判据、数据 API、双口径看板、生产启用 runbook、四级验收（真浏览器 + 真后端）与 CI 防复发；证据见 [TTFV 埋点方案](plan/ttfv-funnel-instrumentation.md)、[北极星判据](plan/north-star-business-confirmed.md)、[生产启用 runbook](plan/north-star-enablement.md)、[PROJECT-STATUS.md](PROJECT-STATUS.md)。
+- [x] ✅ **3 个真实场景示例（已交付）**：每日报表导出、内网巡检、桌面数据填报；每个含代码、依赖、凭据占位、告警。已落地 [daily-report](../examples/daily-report/README.md)、[intranet-inspection](../examples/intranet-inspection/README.md)、[desktop-data-entry](../examples/desktop-data-entry/README.md)（各含代码 / `task.example.json` / README），有 `check:task-examples` 守卫 + 真跑验收。
+- [x] ✅ **CLI / MCP 一行接入（已交付）**：`acf` 与 MCP 配置的复制即用片段；MCP 工具收敛到高频集合，减少 LLM 选择成本。已落地 [quickstart「一行接入」](quickstart.md) + [sdk-guide](sdk-guide.md) 对齐 + `mcpServers.autocodeflow` JSON 片段 + MCP 收敛到 6 工具 + `test:mcp-tool-surface` 守卫。
+- [x] ✅ **异常接管台（已落地）**：stalled / escalated 统一队列，运营视角一键接管，而不是只看 Agent 会话日志。已落地 [AgentSessionsPage](../apps/admin-web/src/pages/AgentSessionsPage.tsx) / [InboxPage](../apps/admin-web/src/pages/InboxPage.tsx) 的 stalled / escalated 徽标 + 判据。
+- [ ] **安装包瘦身（未做）**：桌面安装包按需下载 runtime；首装体积目标 ≤100MB。仓库内暂无相关实现，保持未完成。
 
 ## P2（按需求触发）
 
@@ -123,7 +125,7 @@ N5 实测本机 139 行 `tokensIn` 全为 0，零样本上建「模型→窗口�
 
 ## 指标
 
-**北极星**：每周产生「业务结果」的自动化运行数（有产物 / 有证据 / 被业务确认），按活跃实例统计。
+**北极星**：每周产生「业务结果」的自动化运行数（有产物 / 有证据 / 被业务确认），按活跃实例统计。（判据与 TTFV 漏斗已落地，口径定义不变，见 [北极星判据](plan/north-star-business-confirmed.md) 与 [TTFV 埋点方案](plan/ttfv-funnel-instrumentation.md)。）
 
 **先行指标**：
 

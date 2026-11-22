@@ -59,7 +59,10 @@ trigger/
 | GET | `/sessions` | 会话列表（分页，可按 kind/status 过滤） |
 | GET | `/sessions/:id` | 会话详情（含 steps / toolCalls / 子会话） |
 | POST | `/sessions` | 创建会话并入队执行 |
-| POST | `/sessions/:id/resume` | 恢复挂起/失败的会话（终态会话拒绝） |
+| POST | `/sessions/:id/resume` | 人工恢复等待、待调度或可重开的失败会话；运行中或尚有待审批单返回 409，已成功、中止或预算耗尽不重新入队 |
+| GET | `/sessions/:id/approvals` | 查看本会话的审批单及参数预览 |
+| POST | `/sessions/:id/approvals/:approvalKey/grant` 或 `deny` | 按会话和审批键处置；批准与实际执行是两个阶段，`resumed` 表示是否已请求续跑 |
+| GET | `/sessions/:id/export` | 导出含步骤、工具调用和审批单的会话转录 |
 | GET | `/budget` | 当前生效预算（运维核对用） |
 
 权限全部 ADMIN-only，理由与 [ai](ai.md) 的 N11/R11 一致：Agent 能改系统状态

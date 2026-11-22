@@ -36,6 +36,7 @@ import KpiSparkline, { buildSparklineData, recentDateKeys, SPARKLINE_HEIGHT } fr
 import FailureTopList from '../components/dashboard/FailureTopList';
 import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
+import NorthStarCard from '../components/dashboard/NorthStarCard';
 import DashboardEmptyGuide from '../components/dashboard/DashboardEmptyGuide';
 import { useMetricsStream, useMetricsStreamDegraded, type MetricsStreamStatus } from '../hooks/useMetricsStream';
 import { useProjectFilter } from '../hooks/useProjectFilter';
@@ -166,6 +167,57 @@ export function buildTrendData(
   });
 }
 
+/**
+ * R281-DEEPLINK-01 · 本文件的失败深链：**一处改多值、一处刻意保持不带 status**。
+ *
+ * ## 调用点清单（改之前先读这张表）
+ *
+ * | 位置 | 卡片 | 传参 | 为什么 |
+ * |---|---|---|---|
+ * | 失败 Top 卡片「全部失败」 | 榜单（Top N 任务的失败次数） | `executionsHref('failed,timeout')` | ✅ 已改多值，见下 |
+ * | 最近失败卡片「全部记录」 | 最近失败明细（最多 8 条） | `executionsHref()`（**不带** status） | ❌ **刻意不改**，见下 |
+ *
+ * ## 为什么「全部失败」必须是多值
+ *
+ * 「失败」的唯一事实源是后端的
+ * `FAILED_EXECUTION_STATUSES = [ExecutionStatus.FAILED, ExecutionStatus.TIMEOUT]`
+ * （`apps/admin-api/src/modules/task/entities/task-execution.entity.ts:61`，
+ *  R280 立的唯一口径；本文件两张卡的数据源 `/metrics/failures` 与趋势曲线的失败
+ *  也已并入 timeout）。而 `/executions` 的 status 过滤是**等值/IN** 过滤：
+ *  单值 `?status=failed` 只返回 failed。
+ * ⇒ 超时风暴（10 条 timeout、0 条 failed）下「本卡有内容、点进去 0 条」，
+ *    用户刚看到 10 条失败却被告知没有匹配——比数字不对更伤信任。
+ *
+ * ## 为什么「全部记录」**刻意**不带 status（别为了「保持一致」改掉它）
+ *
+ * 「全部记录」承诺的是**全部**执行记录——用户点它是想看「最近失败那一片之外的上下文」，
+ * 它此前（不带 status）就能看到那 10 条 timeout，不存在「漏筛选」缺陷。
+ * 若改成 `failed,timeout`，按钮就变成「只能看失败」，「全部」二字成了**新的谎报**
+ * （把一个问题换成另一个更坏的问题）。**两处文案都是「全部」但不是同一个承诺**：
+ * 一个是「全部失败」，一个是「全部记录」。
+ *
+ * ## 为什么不能在别处看到 `'failed'` 就顺手统一过来
+ *
+ * 执行页状态下拉（`ExecutionsPage.tsx:903-904`）的 `failed` / `timeout` 是两个**独立
+ * 单值选项**，代表「我主动只想看失败」/「只想看超时」两个筛选意图；深链则是
+ * 「从汇总点进来」的快捷路径。**主动筛选**与**从汇总进来**是两个意图，不共用同一个词。
+ *
+ * ## 深链落到执行页后的下拉表现（实测，非推断）
+ *
+ * 下拉是受控组件 `value={statusFilter}`，选项只认单值 ⇒ `failed,timeout` 匹配不到任何
+ * 选项，**显示为未选中**（antd 把该串放进 `.ant-select-content` 的 title 上），
+ * 不报错、不崩、不影响请求（`status: 'failed,timeout'` 原样交给后端）。**属预期**：
+ * 深链是汇总入口，用户可在下拉里重新选单值。
+ *
+ * ## 注意别认错常量
+ *
+ * `src/utils/failure-reason-aggregate.ts` 里的 `FAILURE_REASON_BUCKET_STATUSES`
+ * （R284 从 `FAILED_EXECUTION_STATUSES` 改名而来）内容含 `killed`，
+ * 是「当前页失败原因分布」的口径，**不是**本深链要的那个集合——两者**刻意不同名**
+ * （同名不同值最容易让人以为「该对齐」而改错）。
+ * 本文件按契约传字面量（不新增 import/常量：size-caps 对本文件的 nonCommentLines 与
+ * 最长函数体都是**零余量**棘轮，函数体内加一行即红——故注释全部落在模块级）。
+ */
 export default function DashboardPage() {
   const nav = useNavigate();
   const { t } = useTranslation();
@@ -527,7 +579,7 @@ export default function DashboardPage() {
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.failureTop')} <ScopeBadge scope="project" /></Text>}
             style={{ height: '100%' }}
-            extra={<Link to={executionsHref('failed')} style={{ fontSize: 12 }}>{t('dashboard.failureTop.all')}</Link>}
+            extra={<Link to={executionsHref('failed,timeout') /* R281-DEEPLINK-01：多值 FAILED∪TIMEOUT，**不要**「统一」回 'failed'——理由见模块级注释块 */} style={{ fontSize: 12 }}>{t('dashboard.failureTop.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
             {failLoading && !failures ? (
@@ -542,7 +594,7 @@ export default function DashboardPage() {
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.recentFailures')} <ScopeBadge scope="project" /></Text>}
             style={{ height: '100%' }}
-            extra={<Link to={executionsHref()} style={{ fontSize: 12 }}>{t('dashboard.recentFailures.all')}</Link>}
+            extra={<Link to={executionsHref() /* R281-DEEPLINK-01：此处**刻意**不带 status——「全部记录」承诺的是全部，改成 failed,timeout 会把「全部」变成「全部失败」，属另一个（更坏的）谎报。详见模块级注释 */} style={{ fontSize: 12 }}>{t('dashboard.recentFailures.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
             {failLoading && !failures ? (
@@ -667,6 +719,10 @@ export default function DashboardPage() {
           </Card>
         </Col>
       </Row>
+
+      {/* R328：北极星双口径看板 —— 周级全局指标（请求不带 projectId，切项目不变），
+          放在全局口径分组内；严格值主 / 近似值参考并列，warnings 常驻。 */}
+      <NorthStarCard />
     </div>
   );
 }

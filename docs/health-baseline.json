@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-07",
+  "generatedAt": "2026-11-21",
   "steps": [
     {
       "label": "admin-api 全量（默认环境，`npx jest --coverage`；完整 args 见 `scripts/coverage-snapshot.mjs` 的 `ENDS[\"admin-api\"]`）",
@@ -12,10 +12,10 @@
         "testsFailed": 0,
         "testsSkipped": 0,
         "testsTotal": 8077,
-        "coveragePct": 92.77
+        "coveragePct": 92.89
       },
       "secs": 164,
-      "measuredAt": "2026-11-07T08:22:40Z"
+      "measuredAt": "2026-11-21T08:53:14Z"
     },
     {
       "label": "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）",
@@ -40,10 +40,10 @@
         "failed": 0,
         "skipped": 1,
         "total": 2395,
-        "coveragePct": 86.3
+        "coveragePct": 84.87
       },
       "secs": 774,
-      "measuredAt": "2026-11-07T12:11:31Z"
+      "measuredAt": "2026-11-21T09:10:16Z"
     },
     {
       "label": "executor-node 全量（`npm test -- --coverage`）",
@@ -56,25 +56,25 @@
         "testsFailed": 0,
         "testsSkipped": 13,
         "testsTotal": 1879,
-        "coveragePct": 88.88
+        "coveragePct": 88.83
       },
       "secs": 18,
-      "measuredAt": "2026-11-07T08:25:33Z"
+      "measuredAt": "2026-11-21T09:06:09Z"
     },
     {
       "label": "executor-python 全量（`python3 -m pytest`）",
       "code": 0,
       "signal": null,
       "summary": {
-        "passed": 1981,
+        "passed": 1988,
         "failed": 0,
         "errors": 0,
-        "skipped": 1,
-        "total": 1982,
-        "coveragePct": 87.45
+        "skipped": 3,
+        "total": 1991,
+        "coveragePct": 87.31
       },
-      "secs": 204,
-      "measuredAt": "2026-11-07T08:24:38Z"
+      "secs": 251,
+      "measuredAt": "2026-11-21T09:47:04Z"
     },
     {
       "label": "全链 `npm run test:guards:repo`",
@@ -89,10 +89,10 @@
     }
   ],
   "metrics": {
-    "segments": 102,
+    "segments": 123,
     "gaps": 0,
     "blocked": 0,
     "sizeEntries": 98,
-    "migrations": 142
+    "migrations": 146
   }
 }

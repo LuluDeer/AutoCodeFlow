@@ -18,13 +18,20 @@ import ExecutorDetailPage from '../pages/ExecutorDetailPage';
 import { executorsApi } from '../api/executors';
 import { useAuthStore } from '../store/auth';
 
-vi.mock('../api/executors', () => ({
-  executorsApi: {
-    get: vi.fn(),
-    getMetrics: vi.fn(),
-    getExecutions: vi.fn(),
-  },
-}));
+// R279：mock 必须保留契约层的**真实纯函数**（resolveEffectiveOfflineAfterMs /
+// describeOfflineWindow）。整模块替换会把它抹成 undefined，页面直接崩在「No export」，
+// 那是 mock 失真而不是实现坏了；这里只替 executorsApi，纯函数走真实现。
+vi.mock('../api/executors', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/executors')>();
+  return {
+    ...actual,
+    executorsApi: {
+      get: vi.fn(),
+      getMetrics: vi.fn(),
+      getExecutions: vi.fn(),
+    },
+  };
+});
 const mockedApi = vi.mocked(executorsApi, true);
 
 // recharts 的 ResponsiveContainer 依赖 ResizeObserver 布局测量，jsdom 下

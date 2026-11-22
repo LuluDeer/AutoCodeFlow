@@ -250,6 +250,9 @@ const RULE_LITERALS = [
   "[0-9a-fA-F]{32,}",
   "[A-Za-z0-9+/]{40,}={0,2}",
   "sk-[A-Za-z0-9_-]{8,}",
+  "-----BEGIN [A-Z0-9 ]*PRIVATE KEY",
+  "github_pat_[A-Za-z0-9_]{20,}",
+  "(?:AKIA|ASIA)[0-9A-Z]{16}",
 ];
 
 /**
@@ -288,6 +291,12 @@ const FIXTURES = [
     markers: ["[REDACTED]"],
   },
   {
+    id: "basic-auth",
+    input: "Authorization: Basic dXNlcjpzZWNyZXRwYXNz",
+    secret: "dXNlcjpzZWNyZXRwYXNz",
+    markers: ["[REDACTED]"],
+  },
+  {
     id: "hex-32",
     input: "key=deadbeefcafebabe0123456789abcdef",
     secret: "deadbeefcafebabe0123456789abcdef",
@@ -313,6 +322,60 @@ const FIXTURES = [
     markers: ["[REDACTED]"],
   },
   {
+    id: "pem-private-key",
+    input: "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA1234\n-----END RSA PRIVATE KEY-----\nfor staging",
+    secret: "MIIEpAIBAAKCAQEA1234",
+    markers: ["[REDACTED_PEM]", "for staging"],
+  },
+  {
+    id: "pem-escaped-newline",
+    input: "-----BEGIN OPENSSH PRIVATE KEY-----\\nb3BlbnNzaC1rZXktdjE=",
+    secret: "b3BlbnNzaC1rZXktdjE=",
+    markers: ["[REDACTED_PEM]"],
+  },
+  {
+    id: "bare-jwt",
+    input: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+    secret: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+    markers: ["[REDACTED_JWT]"],
+  },
+  {
+    id: "github-pat-prefix",
+    input: "leaked github_pat_11ABCDEFG0123456789_abcdefghijklmnop123456 end",
+    secret: "github_pat_11ABCDEFG0123456789_abcdefghijklmnop123456",
+    markers: ["[REDACTED]"],
+  },
+  {
+    id: "aws-akia-prefix",
+    input: "leaked AKIAIOSFODNN7EXAMPLE end",
+    secret: "AKIAIOSFODNN7EXAMPLE",
+    markers: ["[REDACTED]"],
+  },
+  {
+    id: "slack-xoxb-prefix",
+    input: "leaked xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx end",
+    secret: "xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx",
+    markers: ["[REDACTED]"],
+  },
+  {
+    id: "url-empty-user",
+    input: "redis://:myRedisPass@cache.internal:6379/0",
+    secret: "myRedisPass",
+    markers: ["redis://:[REDACTED]@cache.internal:6379/0"],
+  },
+  {
+    id: "high-entropy-b64url",
+    input: "note k8J2mP9qR4sT6vW1xY3zA5bC7dE9fG2h end",
+    secret: "k8J2mP9qR4sT6vW1xY3zA5bC7dE9fG2h",
+    markers: ["[REDACTED_HIGH_ENTROPY]"],
+  },
+  {
+    id: "high-entropy-aws-secret",
+    input: "val wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY end",
+    secret: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    markers: ["[REDACTED_HIGH_ENTROPY]"],
+  },
+  {
     id: "plain-english",
     input: "script_error: Traceback\ndivide by zero",
     exact: true,
@@ -325,6 +388,21 @@ const FIXTURES = [
   {
     id: "plain-params",
     input: "retries=3 timeout=30 path=/srv/app",
+    exact: true,
+  },
+  {
+    id: "plain-uuid-path-url",
+    input: "deploy 550e8400-e29b-41d4-a716-446655440000 at 2026-11-20T15:34:02.123Z /srv/app/run.py https://example.com/v1/health",
+    exact: true,
+  },
+  {
+    id: "plain-public-cert",
+    input: "-----BEGIN CERTIFICATE-----\nMIIBIjANBgkq\n-----END CERTIFICATE-----",
+    exact: true,
+  },
+  {
+    id: "plain-basic-english",
+    input: "Basic configuration for service",
     exact: true,
   },
 ];
@@ -586,6 +664,35 @@ async function selftest() {
     expect("反证一：共享实现被改弱（丢小写凭据规则）⇒ 红", false, "变异副本 import 失败");
   }
 
+  // ②b 反证一b（R289-C1）：把 CONN_USERINFO_RE 改回旧的 `[^:/@\s]+:`（漏空用户名 redis://:pass@host）⇒ 红
+  const weakenedConn = sharedSrc.replace(
+    ":\\/\\/[^:/@\\s]*:",
+    ":\\/\\/[^:/@\\s]+:",
+  );
+  expect(
+    "反证准备：CONN_USERINFO_RE 确实退回旧 `+:` 形态",
+    weakenedConn !== sharedSrc,
+    "替换点没命中（CONN_USERINFO_RE 结构变了，请更新 selftest）",
+  );
+  const weakenedConnFn = await withTempModule(
+    weakenedConn,
+    "parity-conn-",
+    (m) => m.sanitizeSecrets,
+  );
+  if (typeof weakenedConnFn === "function") {
+    const connIssues = checkFixtures(
+      [{ id: "mutant/conn-no-empty-user", fn: weakenedConnFn }],
+      FIXTURES,
+    );
+    expect(
+      "反证一b：CONN_USERINFO_RE 漏空用户名 ⇒ 红",
+      connIssues.some((i) => i.includes("url-empty-user")),
+      "退回旧规则后 url-empty-user 居然没红",
+    );
+  } else {
+    expect("反证一b：CONN_USERINFO_RE 漏空用户名 ⇒ 红", false, "变异副本 import 失败");
+  }
+
   // ③ 反证二：把通知入口改回「历史漂移形态」（旧的四条规则）⇒ 与共享实现不一致
   const oldNotificationChain = `export function sanitizeNotificationText(input: string): string {
   if (!input) return input;
@@ -737,7 +844,7 @@ async function selftest() {
       contains: [
         "check-sanitize-parity 全绿",
         "3 个运行时入口 + 3 个服务面入口",
-        "12 条夹具一致",
+        `${FIXTURES.length} 条夹具一致`,
       ],
       absent: ["脱敏一致性守卫失败"],
     });
@@ -847,7 +954,7 @@ async function main() {
   }
   console.log(
     selftestMode
-      ? "\n✔ check-sanitize-parity selftest 全绿：13 条用例（8 既有 + 5 黑盒 CLI 夹具，含 4 条反证）"
+      ? `\n✔ check-sanitize-parity selftest 全绿：${notes.length} 条用例（含 5 条反证 + 5 条黑盒 CLI 夹具）`
       : `\n✔ check-sanitize-parity 全绿：${RUNTIME_ENTRIES.length} 个运行时入口 + ${DELEGATED_ENTRIES.length} 个服务面入口，${FIXTURES.length} 条夹具一致`,
   );
 }

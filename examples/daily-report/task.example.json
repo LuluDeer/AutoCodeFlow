@@ -1,0 +1,21 @@
+{
+  "name": "每日报表导出（cron + 文件产物）",
+  "description": "每天凌晨导出业务报表为 CSV 文件产物，落盘到共享目录并打点告警占位；对应 examples/daily-report/daily_report.js",
+  "triggerType": "cron",
+  "runtime": "node",
+  "entrypoint": "examples/daily-report/daily_report.js",
+  "cronExpression": "0 3 * * *",
+  "timezone": "Asia/Shanghai",
+  "timeoutSeconds": 300,
+  "maxRetry": 2,
+  "retryDelay": 30,
+  "params": {
+    "reportDate": "auto",
+    "rowCount": 5,
+    "outputDir": "/tmp/acf-daily-report"
+  },
+  "alarmEmail": "ops@example.com",
+  "secrets": {
+    "REPORT_EXPORT_TOKEN": "<在此填报表系统导出令牌，或用 acf task update 注入；示例值为占位符>"
+  }
+}

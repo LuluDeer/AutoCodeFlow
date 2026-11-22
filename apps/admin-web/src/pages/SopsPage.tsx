@@ -1,3 +1,4 @@
+import type { HTMLAttributes } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -18,6 +19,7 @@ import {
   Tag,
   Tooltip,
   Typography,
+  theme,
 } from 'antd';
 // TOAST-01：与全站一致走 utils/toast 出口（App 实例优先，暗色主题下样式正确；
 // 此前直接用 antd message 是本文件的历史偏离）。
@@ -33,13 +35,8 @@ import PageHeader from '../components/PageHeader';
 // UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
-// UX-06 第二扫：SOP 域裸枚举收敛到唯一事实源（状态/工单状态/澄清处置/附件类型）
-import {
-  sopAssignmentStatusLabel,
-  sopClarResolutionLabel,
-  sopMediaKindLabel,
-  sopStatusLabel,
-} from '../utils/sop-label';
+// UX-06 第二扫：SOP 域裸枚举收敛到唯一事实源（状态/工单状态）
+import { sopAssignmentStatusLabel, sopStatusLabel } from '../utils/sop-label';
 // P3 审计：SOP 状态/工单状态 → Tag color 映射收敛到 utils/status-color 单一事实源
 import { SOP_ASSIGNMENT_STATUS_COLOR, SOP_STATUS_COLOR } from '../utils/status-color';
 // UI-09 第三轮：≤768px 表格 → 卡片列表的结构级降级（对齐 TaskListPage/
@@ -49,11 +46,22 @@ import { useIsMobile } from '../hooks/useIsMobile';
 import { useDrawerA11y } from '../hooks/useDrawerA11y';
 // UIUX-F-3：列表 load 序号守卫（与 AgentSessionsPage 共用同一实现）
 import { useRaceGuard } from '../utils/raceGuard';
+import { scrollToSectionWhenReady } from '../utils/scroll-when-ready';
 import { sopsApi } from '../api/sops';
-// P3-1：可接指派执行器的三态取数 + 状态渲染外提（页面体量棘轮顶格，只留调用）
+// P3-1 / R289：弹窗、指派操作单元格与澄清列表外提至 pages/sops/（守页面体量棘轮）
 import { useAssignableExecutors } from './sops/useAssignableExecutors';
 import AssignSopModal from './sops/AssignSopModal';
+import AssignmentActionCell from './sops/AssignmentActionCell';
+import AssignmentClarificationsList from './sops/AssignmentClarificationsList';
+import CancelAssignmentModal from './sops/CancelAssignmentModal';
+import { useCancelAssignment } from './sops/useCancelAssignment';
 import { ASSIGN_SOP_FIELD_ID } from './sops/assign-field-ids';
+import {
+  REASSIGNABLE_ASSIGNMENT_STATUSES,
+  assignmentRowDomId,
+  dispatchInboxRefresh,
+  resolveSopDeepLink,
+} from './sops/sop-deeplink';
 // SOPS-TIME-01：时间列统一走 formatDateTime（locale 感知 + 空值回退 '—'）
 import { formatDateTime } from '../utils/timeFormat';
 import type {
@@ -88,9 +96,6 @@ function assignmentStatusTag(status: SopAssignment['status'], t: (key: string) =
   // UX-06 第二扫：不再裸渲染 {status}（7 值工单状态机 → sops.assignmentStatus.*）
   return <Tag color={SOP_ASSIGNMENT_STATUS_COLOR[status] ?? 'default'}>{sopAssignmentStatusLabel(status, t)}</Tag>;
 }
-
-/** 终态工单：可重派（换机重发），也不会再消费任何澄清答复。 */
-const TERMINAL_ASSIGNMENT_STATUSES: SopAssignment['status'][] = ['failed', 'stalled', 'cancelled'];
 
 /**
  * A11Y-SOPS-01（2026-10-29 第 4 轮 INDEX §3-4）：四个弹窗的字段 id。
@@ -132,6 +137,7 @@ const FIELD_ITEM_STYLE = { marginBottom: 0 } as const;
 
 export default function SopsPage() {
   const { t } = useTranslation();
+  const { token } = theme.useToken();
   const navigate = useNavigate();
   // UI-09 第三轮：≤768px 结构级降级开关（表格→卡片、抽屉满宽）
   const isMobile = useIsMobile();
@@ -191,6 +197,8 @@ export default function SopsPage() {
   const [publishing, setPublishing] = useState(false);
   // 指派媒体（截图/录屏——执行器回传的证据，此前在 UI 不可见）
   const [media, setMedia] = useState<Record<string, SopMedia[]>>({});
+  // R289：深链高亮指派
+  const [highlightedAssignmentId, setHighlightedAssignmentId] = useState<string | null>(null);
 
   // B-14：silent 轮询不闪 loading（定时器每 15s 触发，spinner 抖动是纯噪音）
   // UX-05（对齐 ExecutorPackagesPage/TaskTemplatesPage 先例）：首次/手动加载失败
@@ -244,35 +252,34 @@ export default function SopsPage() {
   // 自增 fetchSeq，仅最后一次请求允许 setState（与 AppDeploymentPage 同款）。
   const detailSeq = useRef(0);
 
-  const openDetail = useCallback(async (sop: Sop, tab = 'contract') => {
-    // tab 默认回到首个 Tab；归档 409 的「查看指派」传 'assignments'。
-    // 用参数而不是「先 openDetail 再 setDetailTab」：后者依赖 React 批处理
-    // 与 effect 顺序，改动一处 state 初始化就可能翻转，参数化不依赖时序。
+  const openDetail = useCallback(async (sop: Sop, tab = 'contract', targetAssignmentId?: string | null) => {
     setDetailTab(tab);
     const seq = ++detailSeq.current;
     setDetail(sop);
-    // 第 6 轮审计 P2：切换条目时**先清场**再取数——否则新抽屉在响应返回前
-    // 渲染的是上一个 SOP 的版本/指派/澄清（合规面会把 A 的澄清误读成 B 的），
-    // 且新请求失败时旧数据会永久留在屏幕上。与 AgentSessionsPage.openDetail
-    // 的清场纪律一致。
     setVersions([]);
     setAssignments([]);
     setClarifications({});
     setMedia({});
+    setHighlightedAssignmentId(null);
     setDetailLoading(true);
     setDetailError(null);
     try {
       const [vs, asg] = await Promise.all([sopsApi.versions(sop.id), sopsApi.assignments(sop.id)]);
-      if (seq !== detailSeq.current) return; // 已有更新的请求/关闭，丢弃过期响应
+      if (seq !== detailSeq.current) return;
       setVersions(vs);
       setAssignments(asg);
+      if (targetAssignmentId && asg.some((a) => a.id === targetAssignmentId)) {
+        setHighlightedAssignmentId(targetAssignmentId);
+        scrollToSectionWhenReady(assignmentRowDomId(targetAssignmentId));
+      } else {
+        setHighlightedAssignmentId(null);
+      }
       const clars: Record<string, SopClarification[]> = {};
       const med: Record<string, SopMedia[]> = {};
       await Promise.all(
         asg.map(async (a) => {
           const d = await sopsApi.assignment(a.id);
           clars[a.id] = d.clarifications;
-          // 媒体清单失败不阻断详情（单指派 best-effort）
           try {
             med[a.id] = await sopsApi.assignmentMedia(a.id);
           } catch {
@@ -280,55 +287,42 @@ export default function SopsPage() {
           }
         }),
       );
-      if (seq !== detailSeq.current) return; // 已有更新的请求/关闭，丢弃过期响应
+      if (seq !== detailSeq.current) return;
       setClarifications(clars);
       setMedia(med);
     } catch (err: unknown) {
       if (seq !== detailSeq.current) return;
-      // R149-F4：文案此前误用 sops.loadFailed（「SOP **列表**加载失败」）——本次失败的
-      // 是**详情**（versions/assignments），列表刷新是另一条链路。错误同时落进
-      // detailError：抽屉里常驻错误块 + 重试，不再只靠一条会消失的 toast。
       setDetailError(err);
       message.error(t('sops.detailLoadFailed'));
     } finally {
-      // 只有最新一次请求能收起 loading（旧请求的 finally 不得盖掉新请求的 spinner）
       if (seq === detailSeq.current) setDetailLoading(false);
     }
   }, [t]);
 
-  // R65：审计深链 —— /sops?sop=<id> 打开对应详情抽屉。
-//
-// 背景：审计页此前对 sop.* 动作只显示一个 id（能查到、点不进去）。SOP 没有独立详情路由，
-// 只有这一页 + 详情抽屉，所以用查询参数当深链入口。
-// 两个细节：
-//  · **不在当前页也要能打开** —— 审计行指向的 SOP 大概率不在第一页，故走 sopsApi.get(id)
-//    单取，而不是只在 items 里找（否则深链有一半时候静默失效，比没有深链更糟）。
-//  · `deepLinkApplied` 记住已处理过的 id：轮询每 15s 刷新 items 会重跑本 effect，
-//    没有它就会反复重开抽屉、打断用户正在看的详情。
-const [searchParams] = useSearchParams();
-const deepLinkId = searchParams.get('sop');
-const deepLinkApplied = useRef<string | null>(null);
-useEffect(() => {
-  if (!deepLinkId) return;
-  if (deepLinkApplied.current === deepLinkId) return;
-  if (detail?.id === deepLinkId) {
-    deepLinkApplied.current = deepLinkId;
-    return;
-  }
-  deepLinkApplied.current = deepLinkId;
-  const fromList = items.find((it) => it.id === deepLinkId);
-  if (fromList) {
-    void openDetail(fromList);
-    return;
-  }
-  void sopsApi
-    .get(deepLinkId)
-    .then((sop) => openDetail(sop))
-    .catch(() => {
-      // 拿不到（已删/无权限）：回到列表，不弹错——用户只是点了一个失效链接
-      deepLinkApplied.current = null;
-    });
-}, [deepLinkId, items, detail, openDetail]);
+  // R65 / R289：深链 /sops?sop=<id>[&assignment=<aid>]，携带 assignment 自动切指派 Tab 并高亮定位。
+  const [searchParams] = useSearchParams();
+  const deepLink = resolveSopDeepLink(searchParams);
+  const deepLinkApplied = useRef<string | null>(null);
+  useEffect(() => {
+    if (!deepLink.sopId || !deepLink.key) return;
+    if (deepLinkApplied.current === deepLink.key) return;
+    deepLinkApplied.current = deepLink.key;
+    if (detail?.id === deepLink.sopId) {
+      void openDetail(detail, deepLink.initialTab, deepLink.assignmentId);
+      return;
+    }
+    const fromList = items.find((it) => it.id === deepLink.sopId);
+    if (fromList) {
+      void openDetail(fromList, deepLink.initialTab, deepLink.assignmentId);
+      return;
+    }
+    void sopsApi
+      .get(deepLink.sopId)
+      .then((sop) => openDetail(sop, deepLink.initialTab, deepLink.assignmentId))
+      .catch(() => {
+        deepLinkApplied.current = null;
+      });
+  }, [deepLink.sopId, deepLink.assignmentId, deepLink.key, deepLink.initialTab, items, detail, openDetail]);
   // 打开指派对话框：拉当前租约内可接单的执行器。
   // P3-1：取数段外提成 useAssignableExecutors（reloadAssignable）——三态
   // （loading / ready / error）由 hook 持有，取数失败**不再**用一条会消失的
@@ -415,18 +409,30 @@ useEffect(() => {
       // 接管未送达（9.13 残差）：执行器已按升级收尾的指派不再消费答复——
       // 接管只更新澄清行，恢复路径是重派。不提示会让运维误以为已送达。
       const target = assignments.find((x) => x.id === replyTarget.assignmentId);
-      if (target && TERMINAL_ASSIGNMENT_STATUSES.includes(target.status)) {
+      if (target && REASSIGNABLE_ASSIGNMENT_STATUSES.includes(target.status)) {
         message.warning(t('sops.replyNotDelivered'), 6);
       }
       setReplyTarget(null);
-      if (detail) await openDetail(detail);
+      dispatchInboxRefresh();
+      if (detail) await openDetail(detail, 'assignments', highlightedAssignmentId);
       void load();
     } catch {
       message.error(t('sops.replyFailed'));
     } finally {
       setReplying(false);
     }
-  }, [reply, replyTarget, assignments, detail, openDetail, load, t]);
+  }, [reply, replyTarget, assignments, detail, highlightedAssignmentId, openDetail, load, t]);
+
+  // R289：单条取消指派状态机外提至 CancelAssignmentModal.tsx
+  const cancelFlow = useCancelAssignment({
+    onOptimisticUpdate: useCallback((updated: SopAssignment) => {
+      setAssignments((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+    }, []),
+    onRefreshDetail: useCallback(async () => {
+      if (detail) await openDetail(detail, 'assignments', highlightedAssignmentId);
+    }, [detail, highlightedAssignmentId, openDetail]),
+    onRefreshList: useCallback(() => { void load({ silent: true }); }, [load]),
+  });
 
   /** 该指派是否存在仍挂着升级（escalated_to_human）的澄清——升级终态时接管答复不投递。 */
   const hasEscalatedClarification = useCallback(
@@ -539,6 +545,7 @@ useEffect(() => {
                 message.success(
                   t('sops.archive.cancelAssignmentsDone', { count: r.cancelled }),
                 );
+                dispatchInboxRefresh();
                 // 取消后立即重试归档（用户上一步的意图不该丢）
                 await sopsApi.deprecate(record.id);
                 message.success(t('sops.archive.ok', { slug: record.slug }));
@@ -637,31 +644,37 @@ useEffect(() => {
   ];
 
   const assignmentColumns: ColumnsType<SopAssignment> = [
-    { title: t('sops.col.id'), dataIndex: 'id', width: 300, render: (v: string) => <Text copyable={{ text: v }}>{v.slice(0, 8)}…</Text> },
+    {
+      title: t('sops.col.id'),
+      dataIndex: 'id',
+      width: 170,
+      render: (v: string) => (
+        <Space size={4}>
+          <Text copyable={{ text: v }}>{v.slice(0, 8)}…</Text>
+          {highlightedAssignmentId === v && <Tag color="processing">{t('sops.assignmentCancel.targetTag')}</Tag>}
+        </Space>
+      ),
+    },
     { title: t('sops.col.version'), dataIndex: 'sopVersion', width: 90 },
     { title: t('sops.col.status'), dataIndex: 'status', width: 120, render: (s: SopAssignment['status']) => assignmentStatusTag(s, t) },
     {
       title: t('sops.col.clarifications'),
-      width: 120,
+      width: 100,
       render: (_, a) => `${a.clarificationRound}/${a.maxRounds}`,
     },
-    { title: t('sops.col.updatedAt'), dataIndex: 'updatedAt', width: 170, render: (v: string) => formatDateTime(v) },
+    { title: t('sops.col.updatedAt'), dataIndex: 'updatedAt', width: 165, render: (v: string) => formatDateTime(v) },
     {
       title: t('sops.col.actions'),
-      width: 90,
-      // 重派：失败/停滞/取消的工单一键换机重发（预填原版本）——运维此前
-      // 只能 curl assign 端点。升级终态的行带「答复不投递」提示（9.13 残差）。
+      width: 155,
       render: (_, a) => {
-        if (!detail || !TERMINAL_ASSIGNMENT_STATUSES.includes(a.status)) return null;
-        const button = (
-          <Button size="small" onClick={() => openAssign(detail, a.sopVersion)}>
-            {t('sops.reassign')}
-          </Button>
-        );
-        return hasEscalatedClarification(a.id) ? (
-          <Tooltip title={t('sops.reassignEscalatedHint')}>{button}</Tooltip>
-        ) : (
-          button
+        if (!detail) return null;
+        return (
+          <AssignmentActionCell
+            assignment={a}
+            hasEscalatedClarification={hasEscalatedClarification(a.id)}
+            onCancel={cancelFlow.open}
+            onReassign={(target) => openAssign(detail, target.sopVersion)}
+          />
         );
       },
     },
@@ -797,7 +810,7 @@ useEffect(() => {
         // 窄屏 '100%' 满宽，桌面 860px 固定宽
         size={isMobile ? '100%' : 860}
         open={detail !== null}
-        onClose={() => setDetail(null)}
+        onClose={() => { setDetail(null); setHighlightedAssignmentId(null); }}
         afterOpenChange={drawerA11y.afterOpenChange}
         destroyOnHidden
       >
@@ -865,91 +878,34 @@ useEffect(() => {
                       </Button>
                       <Text type="secondary">{t('sops.assignHint')}</Text>
                     </Space>
-                    <Table<SopAssignment> rowKey="id" columns={assignmentColumns} dataSource={assignments} pagination={false} size="small"
-                      loading={detailLoading} locale={{ emptyText: detailError ? null : undefined }} />
-                    {assignments.some((a) => (media[a.id]?.length ?? 0) > 0) && (
-                      <div style={{ marginTop: 16 }}>
-                        <Text strong>{t('sops.mediaTitle')}</Text>
-                        {assignments
-                          .filter((a) => (media[a.id]?.length ?? 0) > 0)
-                          .flatMap((a) =>
-                            (media[a.id] ?? []).map((m) => (
-                              <div key={m.id} style={{ marginTop: 4 }}>
-                                <Button size="small" onClick={() => void sopsApi.viewMedia(m.id).catch(() => message.error(t('sops.mediaViewFailed')))}>
-                                  {t('sops.mediaView')}
-                                </Button>
-                                <Text style={{ marginLeft: 8 }}>
-                                  {m.name} · {Math.round(m.sizeBytes / 1024)}KB · {formatDateTime(m.createdAt)}
-                                </Text>
-                              </div>
-                            )),
-                          )}
-                      </div>
-                    )}
-                    {assignments.some((a) => (clarifications[a.id]?.length ?? 0) > 0) && (
-                      <div style={{ marginTop: 16 }}>
-                        {assignments
-                          .filter((a) => (clarifications[a.id]?.length ?? 0) > 0)
-                          .flatMap((a) =>
-                            (clarifications[a.id] ?? []).map((c) => (
-                              <div key={c.id} style={{ marginBottom: 12 }}>
-                                <Text strong>
-                                  #{c.round} · {c.resolution ? sopClarResolutionLabel(c.resolution, t) : t('sops.clarResolution.pending')}
-                                </Text>
-                                {c.newSopVersion && <Tag style={{ marginLeft: 8 }}>→ {c.newSopVersion}</Tag>}
-                                {/* P7d 双端 ACK：回复经 poll 投递、执行器消费后确认；
-                                    游标（lastReplyDeliveredAt）推进过该行才算确认——
-                                    未确认的回复会随执行器每次 poll 重发 */}
-                                {c.resolution !== null && (
-                                  a.lastReplyDeliveredAt !== null &&
-                                  new Date(a.lastReplyDeliveredAt).getTime() >= new Date(c.updatedAt).getTime()
-                                    ? <Tag style={{ marginLeft: 8 }} color="green">{t('sops.replyAcked')}</Tag>
-                                    : <Tag style={{ marginLeft: 8 }} color="orange">{t('sops.replyAwaitingAck')}</Tag>
-                                )}
-                                {/* P6 升级环收口：escalated/pending 的澄清可由人答复——
-                                    与中台 Agent 共用同一道服务层 replyClarification 闸门 */}
-                                {(c.resolution === null || c.resolution === 'escalated_to_human') && (
-                                  <Button
-                                    size="small"
-                                    style={{ marginLeft: 8 }}
-                                    onClick={() => { setReplyTarget({ assignmentId: a.id, clarificationId: c.id }); setReply({ resolution: 'answered', answer: '', amendedYaml: '', amendedBody: '' }); }}
-                                  >
-                                    {t('sops.reply')}
-                                  </Button>
-                                )}
-                                {/* 升级终态：接管答复不投递（执行器已按升级收尾），重派即恢复路径 */}
-                                {c.resolution === 'escalated_to_human' && TERMINAL_ASSIGNMENT_STATUSES.includes(a.status) && (
-                                  <Tooltip title={t('sops.reassignEscalatedHint')}>
-                                    <Text type="warning" style={{ marginLeft: 8 }}>{t('sops.escalatedNotDelivered')}</Text>
-                                  </Tooltip>
-                                )}
-                                <Paragraph style={{ marginBottom: 4 }}>{c.question}</Paragraph>
-                                {/* 澄清附件（截图/录屏）——此前在 UI 不可见，复核全凭文字 */}
-                                {(c.mediaRefsJson?.length ?? 0) > 0 && (
-                                  <Paragraph style={{ marginBottom: 4 }}>
-                                    <Text type="secondary">{t('sops.mediaRefsLabel')}</Text>
-                                    {(c.mediaRefsJson ?? []).map((ref) => (
-                                      <Button
-                                        key={ref.url}
-                                        size="small"
-                                        style={{ marginRight: 8 }}
-                                        onClick={() => void viewClarificationMedia(ref.url)}
-                                      >
-                                        {t('sops.mediaView')} · {sopMediaKindLabel(ref.kind, t)}
-                                      </Button>
-                                    ))}
-                                  </Paragraph>
-                                )}
-                                {c.answer && (
-                                  <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                                    {c.answer}
-                                  </Paragraph>
-                                )}
-                              </div>
-                            )),
-                          )}
-                      </div>
-                    )}
+                    <Table<SopAssignment>
+                      rowKey="id"
+                      columns={assignmentColumns}
+                      dataSource={assignments}
+                      pagination={false}
+                      size="small"
+                      loading={detailLoading}
+                      locale={{ emptyText: detailError ? null : undefined }}
+                      onRow={(record) => {
+                        const isHighlighted = highlightedAssignmentId === record.id;
+                        return {
+                          id: assignmentRowDomId(record.id),
+                          'data-highlighted': isHighlighted ? 'true' : undefined,
+                          style: isHighlighted ? { backgroundColor: token.colorPrimaryBg } : undefined,
+                        } as HTMLAttributes<HTMLElement>;
+                      }}
+                    />
+                    <AssignmentClarificationsList
+                      assignments={assignments}
+                      clarifications={clarifications}
+                      media={media}
+                      highlightedAssignmentId={highlightedAssignmentId}
+                      onReply={(assignmentId, clarificationId) => {
+                        setReplyTarget({ assignmentId, clarificationId });
+                        setReply({ resolution: 'answered', answer: '', amendedYaml: '', amendedBody: '' });
+                      }}
+                      onViewMedia={(platformPath) => void viewClarificationMedia(platformPath)}
+                    />
                   </>
                 ),
               },
@@ -1120,6 +1076,14 @@ useEffect(() => {
         submitting={assigning}
         onSubmit={() => void submitAssign()}
         onCancel={() => setAssignTarget(null)}
+      />
+      <CancelAssignmentModal
+        target={cancelFlow.target}
+        reason={cancelFlow.reason}
+        onReasonChange={cancelFlow.setReason}
+        submitting={cancelFlow.submitting}
+        onSubmit={() => void cancelFlow.submit()}
+        onCancel={cancelFlow.close}
       />
       {/* SOP-PUBLISH-UI-01：发布确认弹窗——弹窗即确认（选定版本档位 + 点
           「确认发布」才发请求），changelog 选填、≤2000 字对齐 PublishSopDto。 */}

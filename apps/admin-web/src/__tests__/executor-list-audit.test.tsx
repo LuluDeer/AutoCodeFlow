@@ -72,6 +72,9 @@ const runtimeCfg = {
   heartbeatIntervalMs: 30000,
   heartbeatTimeoutMultiplier: 3,
   heartbeatTimeoutMs: 90000,
+  // R279：真机 runtime-config 实测值（90s 墙钟 × 2 轮确认 = 180s 判死窗口）
+  staleOfflineConfirmations: 2,
+  effectiveOfflineAfterMs: 180000,
   listLimit: 500,
   executorTotal: 2,
 };

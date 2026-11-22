@@ -12,6 +12,8 @@ import { AppError } from "../../common/errors/app-error";
 import { ExecutionStatus } from "./entities/task-execution.entity";
 import { levelOfLine } from "./log-level.util";
 import { UserRole } from "../users/entities/user.entity";
+// R284-LOGPURGE-01：运行期保留期配置键（与 LogRetentionCleanupService 同一事实源）
+import { LOG_RETENTION_CONFIG_KEY } from "./log-retention/log-retention-cleanup.service";
 
 /**
  * T2-B4 收尾刀：**执行日志读面**（分页 / SSE 流 / AI 分析）。
@@ -44,7 +46,24 @@ import { UserRole } from "../users/entities/user.entity";
  * | `acquireSseSlot` | 触碰 **SSE 并发闸**的运行态（`sseStreamsPerExecution` / `sseStreamsGlobal` / `sseMaxPerExecution`）⇒ 属 SSE 域 | 本类的 `streamExecutionLogs` |
  * | `maybeNotifyTimeoutWarning` | 超时预警**副作用**（发通知 + 埋点）⇒ 属通知域 | 本类的 `streamExecutionLogs` |
  * | `assertCanWriteExecution` | **AUTH 守卫**职责 | 本类的 `analyzeExecution` |
+ * | `resolveLogRetentionDays` | 读 `configService`（Facade 已注入），且必须与 `LogRetentionCleanupService.resolveRetentionDays` 同源 | R284 的 `logsPurged` 判定 |
  */
+
+/**
+ * R284-LOGPURGE-01：日志读面的「已按保留期清理」三态。
+ *
+ * `known:false` = **未知**（保留期不可知 / 无基准时刻）——前端必须与
+ * 「已清理」「真没输出」用**不同**文案，不可互相替代（R278 的 `null≠0` 纪律：
+ * 「未知」不是「空」）。
+ */
+export interface LogsPurgedState {
+  /** 判定是否**可下结论**（false ⇒ 另两个字段无意义，前端走"未知/读取失败"）。 */
+  known: boolean;
+  /** 日志确已被保留期清理（仅 `known:true` 时有意义）。 */
+  purged: boolean;
+  /** 清理截止时刻（`now − logRetention.days`）；仅 `purged:true` 时非 null。 */
+  at: Date | null;
+}
 
 /** 注入回调面（**窄签名**）。 */
 export interface ExecutionLogReadDeps {
@@ -79,6 +98,20 @@ export interface ExecutionLogReadDeps {
     execution: { taskId?: string | null },
     user: { id: number; role: UserRole } | null | undefined,
   ) => Promise<void>;
+  /**
+   * R284-LOGPURGE-01：日志保留期解析所需的两个只读依赖（**解析逻辑在本类**）。
+   *
+   * 为什么要它们而不是一个 `() => Promise<number>` 回调：回调会把「怎么读配置」
+   * 留在 Facade，而 Facade 每加一个方法就要动 `task.service.ts`（已顶格文件，
+   * 净增必红）。这里只注入**读配置的能力**，回落链写在本类内——它与
+   * `LogRetentionCleanupService.resolveRetentionDays` 逐字同序（system_configs
+   * 运行期键 → configService → null，**不猜默认值**）。
+   */
+  configService: { get: <T>(key: string) => T | undefined };
+  /** 运行期配置（中台「系统配置」可改）。null = 未装配（单测/旧装配）⇒ go env。 */
+  systemConfig: {
+    findOne: (key: string) => Promise<{ value: string } | null>;
+  } | null;
 }
 
 export class ExecutionLogRead {
@@ -86,6 +119,114 @@ export class ExecutionLogRead {
 
   constructor(deps: ExecutionLogReadDeps) {
     this.deps = deps;
+  }
+
+  /**
+   * R284-LOGPURGE-01：日志保留期天数（与 `LogRetentionCleanupService`
+   * **同一条回落链**，否则读面用一套天数判"已清理"、清理 job 用另一套天数真删
+   * ——两份事实源必然漂移出「说没清理但行已被删」）。
+   *
+   * 回落顺序与清理 job 逐字一致：运行期配置 `logRetention.days`（中台可改、
+   * 即时生效）→ `configService.get("logRetention.days")`（env/Joi 默认）→
+   * **null**。返回 null 表示**读不到/非法**，此时判定给未知态——**不猜 30**：
+   * 猜出来的数字会变成一条可能错误的断言，而这条断言正是用户复盘引用的证据。
+   */
+  private async resolveLogRetentionDays(): Promise<number | null> {
+    const runtime = this.deps.systemConfig;
+    if (runtime) {
+      try {
+        const row = await runtime.findOne(LOG_RETENTION_CONFIG_KEY);
+        const parsed = Number.parseInt(row?.value ?? "", 10);
+        if (Number.isFinite(parsed) && parsed > 0) return parsed;
+      } catch {
+        // 键不存在 / 配置服务短暂不可用 ⇒ 继续回落（与清理 job 同姿态）。
+      }
+    }
+    const configured = this.deps.configService.get<number>("logRetention.days");
+    if (
+      typeof configured === "number" &&
+      Number.isFinite(configured) &&
+      configured > 0
+    ) {
+      return configured;
+    }
+    return null;
+  }
+
+  /**
+   * R284-LOGPURGE-01：**「日志已被保留期清理」的读面推导**（三态，绝不猜）。
+   *
+   * ## 为什么需要它（真事故形态）
+   *
+   * 日志行留 30 天（`LogRetentionCleanupService` / `logRetention.days`），
+   * 而执行行留 90 天。⇒ 翻 31~90 天前的执行详情，日志区是一个**空 `<pre>`**，
+   * 而唯一空态文案说的是「切日志级别」——用户读成「这次执行没输出 / 采集坏了」，
+   * 复盘里写「没有证据」。**真相是证据已按策略删除**，这不是同一个事实。
+   *
+   * ## 三态（与前端三态文案一一对应）
+   *
+   * | 判据 | 返回 | 含义 |
+   * |---|---|---|
+   * | 保留期不可知 | `{known:false}` | **未知**——既不能说已清理，也不能说没输出 |
+   * | 日志非空 | `{known:true, purged:false, at:null}` | 有日志，不需要解释空态 |
+   * | 日志为空 且 基准时刻早于 `now − days` | `{known:true, purged:true, at:<截止时刻>}` | 已按策略清理 |
+   * | 日志为空 且 基准时刻在窗口内 | `{known:true, purged:false, at:null}` | **真没输出** |
+   *
+   * ## ⚠️ 为什么不能只按时间推
+   *
+   * 「30 天前 ⇒ 已清理」是错的：30 天前也可能**本来就一个字都没输出**（任务
+   * 秒失败、被 kill 在派发前、合成行从未运行）。仅按时间判会把「真没输出」
+   * 谎报成「已清理」，那只是把一种误导换成另一种。故判据是**两条同时成立**：
+   * ① 该执行窗口的日志行数为 0；② 基准时刻早于清理截止。
+   * 任意一条不成立 ⇒ 都不是 purged。这也自动覆盖「清理 job 停摆」：窗口外
+   * 但行还在 ⇒ 不判 purged（走「有日志」，本来也不显示空态）。
+   *
+   * ## 不新增迁移
+   *
+   * 只靠 `createdAt`/`startTime` + 保留期配置 + 「日志为空」三条**读面推导**，
+   * 不落任何新列（落列会变成第二份可能与清理 job 漂移的事实源）。
+   *
+   * ## 「日志为空」的口径
+   *
+   * 按**日志行表**计数（与 `getExecutionLogs` 的分页读面同一事实源），不是按
+   * `task_executions.logs` 文本列——后者可能留着回调快照而日志行早已被清理，
+   * 用它会得出「有日志」却读不出任何行的自相矛盾。计数范围与 `getExecutionLogs`
+   * 的分区窗口一致。
+   */
+  private async deriveLogsPurged(
+    exec: Pick<
+      TaskExecution,
+      "id" | "startTime" | "createdAt" | "endTime" | "logStorage"
+    >,
+    now: Date,
+  ): Promise<LogsPurgedState> {
+    const days = await this.resolveLogRetentionDays();
+    if (days === null) {
+      // 保留期读不到 ⇒ 不可知。**不回落默认 30**：猜一个数字就把"未知"变成
+      // 一个可能错的断言，而这个断言正是用户复盘时要引用的证据。
+      return { known: false, purged: false, at: null };
+    }
+    const window = this.logPartitionWindow(exec);
+    const lineCount = await this.deps.logLineRepo.count({
+      where: {
+        executionId: exec.id,
+        createdAt: Between(window.since, window.until),
+      },
+    });
+    if (lineCount > 0) {
+      return { known: true, purged: false, at: null };
+    }
+    const cutoff = new Date(now.getTime() - days * 86_400_000);
+    const base = exec.startTime ?? exec.createdAt ?? null;
+    const baseAt = base ? new Date(base) : null;
+    if (baseAt === null || !Number.isFinite(baseAt.getTime())) {
+      // 没有可比对的时刻（理论不可达：createdAt 恒非空）⇒ 仍不可知。
+      return { known: false, purged: false, at: null };
+    }
+    if (baseAt.getTime() < cutoff.getTime()) {
+      return { known: true, purged: true, at: cutoff };
+    }
+    return { known: true, purged: false, at: null };
   }
 
   /**
@@ -137,7 +278,12 @@ export class ExecutionLogRead {
           const result = await paginateLogStream(stream, fromLine, safeLimit, {
             level: level ?? null,
           });
-          return result;
+          // R284：S3 内容为空同样要能说清"为什么空"（对象被 S3LogObjectRetention
+          // 回收 ⇒ 指针被清空后根本进不了本分支；能进来但内容为空 ⇒ 真没输出）。
+          return {
+            ...result,
+            ...(await this.purgedFields(exec, result.lines)),
+          };
         }
       } catch (err: unknown) {
         this.deps.logger.warn(
@@ -190,11 +336,40 @@ export class ExecutionLogRead {
             },
           }),
     ]);
-    return {
+    const page = {
       lines: lines.map((r) => r.content),
       // CODE-01: true total count, not (currentBatch + offset)
       totalLines,
       hasMore: fromLine + lines.length < totalLines,
+    };
+    // R284-LOGPURGE-01：日志区为空时必须能说清是「已按保留期清理」还是
+    // 「真没输出」——而不只是返回空数组（空数组是一个没有宾语的事实）。
+    return { ...page, ...(await this.purgedFields(exec, page.lines)) };
+  }
+
+  /**
+   * R284：把 `LogsPurgedState` 摊平成响应字段（`logsPurged` / `logsPurgedAt`）。
+   *
+   * **只在整页为空时**判定：非空页永远不是「用户看到空日志区」的场景，
+   * 而每次分页都多打一次 count 是无谓的成本。第一页（`fromLine=0`）为空
+   * 即等于「这条执行没有可读日志行」。
+   */
+  private async purgedFields(
+    exec: Pick<
+      TaskExecution,
+      "id" | "startTime" | "createdAt" | "endTime" | "logStorage"
+    >,
+    lines: string[],
+  ): Promise<{ logsPurged: boolean | null; logsPurgedAt: string | null }> {
+    // 有行 ⇒ 明确不是 purged（known 恒 true，不需要再查保留期）。
+    if (lines.length > 0) return { logsPurged: false, logsPurgedAt: null };
+    const state = await this.deriveLogsPurged(exec, new Date());
+    // known:false ⇒ **null**（未知），绝不写成 false —— "没判定出来" 与
+    // "判定为没清理过" 是两个事实（R278 null≠0 纪律）。
+    if (!state.known) return { logsPurged: null, logsPurgedAt: null };
+    return {
+      logsPurged: state.purged,
+      logsPurgedAt: state.at ? state.at.toISOString() : null,
     };
   }
   /**

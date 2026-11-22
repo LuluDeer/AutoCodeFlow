@@ -93,7 +93,77 @@ describe("R205 · 队列停摆观测（接线层）", () => {
     expect(r.stalled).toBe(false);
   });
 
-  it("④ 六个全读失败 ⇒ `degraded: true` 且**不**谎报「正常」也不谎报「停摆」", async () => {
+  it("③b **`workers` 读失败 + `active === 0` + 有待办 ⇒ 不得报停摆**（R210 的真误报路径）", async () => {
+    // ⚠️ 这条是 ③ **没覆盖**的那一格：③ 里 `active: 2` 会让 `isQueueStalled` 的
+    // `requireIdleWorker` 分支直接返回 false ⇒ **有没有修复都一样绿**。
+    // 真实路径是：Redis 抖动 ⇒ `getWorkersCount()` 抛错 ⇒ 回落 0 ⇒ 若照此判定
+    // 就会把「不知道」报成「停摆」。修复前实测 `stalled === true`。
+    const { svc } = makeService({
+      waiting: 5,
+      active: 0,
+      failFor: ["workers"],
+    });
+    const r = await svc.inspect();
+    expect(r.degraded).toBe(true);
+    // 「读不到」≠「确有其事」：宁可漏报，也不制造一条假告警。
+    expect(r.stalled).toBe(false);
+    expect(r.reason).toBeNull();
+  });
+
+  it("③c **`paused` 是独立强证据**：`workers` 读失败也不影响「暂停」那一路", async () => {
+    // 判据有两路：`paused` 单独成立 / `workers` 那一路。前者是**人为显式状态**，
+    // 不依赖 worker 观测 ⇒ `workers` 读失败**不该**把这条真实停摆也压掉。
+    const { svc } = makeService({
+      waiting: 3,
+      active: 0,
+      paused: true,
+      failFor: ["workers"],
+    });
+    const r = await svc.inspect();
+    expect(r.degraded).toBe(true);
+    expect(r.stalled).toBe(true);
+    // 归因必须是 `paused`（去 resume），**不是** `no-worker`（去查进程）。
+    expect(r.reason).toBe("paused");
+  });
+
+  it("③d `workers` 读**成功**且为 0 ⇒ 仍然报停摆（正例控制组，防 ③b 改过头）", async () => {
+    // ⚠️ ③b 的修复很容易写成「degraded 就一律不报」—— 那会把**真的停摆**也吞掉。
+    // 本条是它的对立面：`workers` 正常读到 0、`active === 0`、有待办 ⇒ **必须**报。
+    const { svc } = makeService({ waiting: 5, active: 0, workers: 0 });
+    const r = await svc.inspect();
+    expect(r.degraded).toBe(false);
+    expect(r.stalled).toBe(true);
+    expect(r.reason).toBe("no-worker");
+  });
+
+  it("③e **R213：观测调用挂住（不是抛错）⇒ 必须在超时后走「读失败」路径**", async () => {
+    // ⚠️ 这正是 R212 真机实测踩到的形态：Redis 卡住时 `getWorkersCount()` **不抛错、只挂住**
+    //   ⇒ 修复前端点会**挂死**（25s+ 无响应），既不报错也不降级。
+    //   本条用「永不 resolve 的 promise」复刻它，断言：超时后 `degraded` 被置起、
+    //   且**不**据此判停摆（与真正抛错的路径**完全一致**）。
+    const never = () => new Promise<never>(() => {});
+    const queue = {
+      getWaitingCount: jest.fn(async () => 5),
+      getDelayedCount: jest.fn(async () => 0),
+      getPrioritizedCount: jest.fn(async () => 0),
+      getActiveCount: jest.fn(async () => 0),
+      // ← 挂住，永不返回（模拟 Redis 不应答）
+      getWorkersCount: jest.fn(never),
+      isPaused: jest.fn(async () => false),
+    };
+    const svc = new AgentQueueStallService(queue as never);
+    // 把上界压到测试可接受的量级（生产是 5000ms）
+    (svc as unknown as { observationTimeoutMs: number }).observationTimeoutMs =
+      50;
+
+    const r = await svc.inspect();
+    expect(r.degraded).toBe(true);
+    expect(r.workersKnown).toBe(false);
+    // 不得谎报停摆（与「workers 抛错」同一结论）
+    expect(r.stalled).toBe(false);
+  });
+
+  it("④ 六个全读失败 ⇒ `degraded` **与** `degradedCounts` **都**为 true，且不谎报「停摆」", async () => {
     const { svc } = makeService({
       failFor: [
         "waiting",
@@ -105,9 +175,61 @@ describe("R205 · 队列停摆观测（接线层）", () => {
       ],
     });
     const r = await svc.inspect();
+    // R211：两个位都要亮 —— 结构性的（可能误报）与计数类的（可能漏报）**分开记**。
     expect(r.degraded).toBe(true);
+    expect(r.degradedCounts).toBe(true);
     // 计数全按 0 处理 ⇒ 没有活 ⇒ 不是停摆（**不是**「队列停摆」）
     expect(r.stalled).toBe(false);
     expect(r.pendingJobs).toBe(0);
+  });
+
+  it("④b **R211 方向拆分**：只有计数类读失败 ⇒ `degradedCounts` 亮、`degraded` **不**亮", async () => {
+    // 计数类读失败只会让 `pendingJobs` 变小（更难判停摆）⇒ 那是**漏报**风险，
+    // **不是**「结论可能错报」⇒ 不得让前端显示「未知」（那会把一条真实停摆也说成不确定）。
+    const { svc } = makeService({
+      waiting: 5,
+      active: 0,
+      workers: 0,
+      failFor: ["delayed", "prioritized"],
+    });
+    const r = await svc.inspect();
+    expect(r.degraded).toBe(false);
+    expect(r.degradedCounts).toBe(true);
+    // 判定**不受影响**：workers 真的读到 0、有待办 ⇒ 该报就报。
+    expect(r.stalled).toBe(true);
+    expect(r.reason).toBe("no-worker");
+  });
+
+  it("④c **R211 方向拆分**：只有结构性量读失败 ⇒ `degraded` 亮、`degradedCounts` **不**亮", async () => {
+    const { svc } = makeService({
+      waiting: 5,
+      active: 0,
+      failFor: ["active"],
+    });
+    const r = await svc.inspect();
+    expect(r.degraded).toBe(true);
+    expect(r.degradedCounts).toBe(false);
+    // `active` 读失败 ⇒ 不知道有没有人在干活 ⇒ 不得断言停摆（可能误报）。
+    expect(r.stalled).toBe(false);
+  });
+
+  it("④d `workersKnown`：workers 读到 0 ⇒ true；读失败 ⇒ **false**（「0」与「未知」不再同形）", async () => {
+    const ok = await makeService({
+      waiting: 5,
+      active: 0,
+      workers: 0,
+    }).svc.inspect();
+    expect(ok.workersKnown).toBe(true);
+    expect(ok.snapshot.workers).toBe(0);
+
+    const bad = await makeService({
+      waiting: 5,
+      active: 0,
+      failFor: ["workers"],
+    }).svc.inspect();
+    expect(bad.workersKnown).toBe(false);
+    // ⚠️ 回落值仍是 0，但调用方**不得**把它当事实 —— 这正是 `workersKnown` 存在的理由。
+    expect(bad.snapshot.workers).toBe(0);
+    expect(bad.stalled).toBe(false);
   });
 });

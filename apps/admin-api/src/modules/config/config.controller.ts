@@ -22,6 +22,7 @@ import {
 import {
   ApiTags,
   ApiOperation,
+  ApiQuery,
   ApiBearerAuth,
   ApiResponse,
   getSchemaPath,
@@ -80,6 +81,10 @@ export class ConfigController {
       "按 key 排序的配置行（可选按前缀/标签过滤）。敏感行的值替换为掩码 '***'。",
     type: [SystemConfigResponseDto],
   })
+  // R287：两个过滤器运行期都可选（皆缺省 ⇒ findAll()）；不写装饰器时 Swagger
+  // 把具名 `@Query` 一律推断成 required: true。
+  @ApiQuery({ name: "prefix", required: false, type: String })
+  @ApiQuery({ name: "tag", required: false, type: String })
   async findAll(@Query("prefix") prefix?: string, @Query("tag") tag?: string) {
     let configs: import("./entities/system-config.entity").SystemConfig[];
     if (prefix) {

@@ -57,6 +57,7 @@ CLI 的非零退出码按失败类别区分，脚本/CI 可以只按码分支处
 | 一次性密钥轮换（旧值立即失效） | `executor rotate` / `task webhook enable` / `task webhook rotate` / `task webhook disable` |
 | 强制终止（KILLED 是终态，无法恢复） | `task kill` |
 | 全量滚动升级（`--strategy canary` 不加门） | `app upgrade-all` |
+| 停止运行中部署（中断执行器上在跑服务） | `deploy stop` |
 | 撤销凭据（影响仍在用它的外部系统） | `apikey revoke` |
 
 ```bash

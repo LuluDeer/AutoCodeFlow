@@ -1,6 +1,40 @@
 {
   "components": {
     "schemas": {
+      "AgentBacklogResponseDto": {
+        "properties": {
+          "count": {
+            "description": "积压条数（= sessionIds.length）",
+            "type": "number",
+            "x-i18n-en": "Backlog count (= sessionIds.length)"
+          },
+          "probed": {
+            "description": "本次实际对账了多少条 pending 会话（诊断用：为 0 说明没有 pending）",
+            "type": "number",
+            "x-i18n-en": "How many pending sessions were actually probed (0 means no pending sessions)"
+          },
+          "sessionIds": {
+            "description": "判定为「积压」的会话 id（pending 但队列里没有任何指向它的 job）",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Session IDs identified as backlogged (pending but with no corresponding job in the queue)"
+          },
+          "truncated": {
+            "description": "是否因上限截断（pending 会话数 > BACKLOG_PROBE_LIMIT 或预算耗尽）。⚠️ 截断时数字带「下界」语义：实际可能更多",
+            "type": "boolean",
+            "x-i18n-en": "Whether the result was truncated (pending count > BACKLOG_PROBE_LIMIT or budget exhausted). When truncated, the count is a lower bound — the real backlog may be larger"
+          }
+        },
+        "required": [
+          "sessionIds",
+          "count",
+          "probed",
+          "truncated"
+        ],
+        "type": "object"
+      },
       "AgentBudgetResponseDto": {
         "properties": {
           "maxSteps": {
@@ -179,6 +213,80 @@
         ],
         "type": "object"
       },
+      "AgentInboxCountsResponseDto": {
+        "properties": {
+          "backlogTruncated": {
+            "description": "积压对账是否被探测上限截断（`true` ⇒ `backlogged` 是**下界**，前端按 `N+` 渲染）",
+            "type": "boolean",
+            "x-i18n-en": "Whether the backlog reconciliation was cut off by the probe limit (`true` => `backlogged` is a **lower bound**, rendered as `N+`)"
+          },
+          "backlogged": {
+            "description": "调度积压会话数（判据见 `docs/observability/agent-backlog-criterion.md`）。读不到 ⇒ null",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Number of backlogged sessions (criterion in `docs/observability/agent-backlog-criterion.md`). null when it cannot be read"
+          },
+          "degraded": {
+            "description": "是否有任一计数读不到（此时对应字段为 null）。**HTTP 仍是 200**；全部读不到才算整体不可用（503）",
+            "type": "boolean",
+            "x-i18n-en": "Whether any counter could not be read (the corresponding field is then null). **HTTP stays 200**; only a total failure of every counter means the whole endpoint is unavailable (503)"
+          },
+          "deployments": {
+            "description": "待审批的部署数。读不到 ⇒ null",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Number of deployments pending approval. null when it cannot be read"
+          },
+          "failedSessions": {
+            "description": "窗口内失败的 Agent 会话数（`failed` + `budget_exceeded`，**不含 `aborted`** ——那是人主动停的，不是待办）。**独立显示项**，不参与任何会话求和。读不到 ⇒ null，**绝不 0**",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Number of Agent sessions that failed inside the window (`failed` + `budget_exceeded`; **`aborted` is excluded** - that was stopped deliberately and is not a to-do). **Shown independently**; not summed into any session total. null when unreadable - **never 0**"
+          },
+          "failedWindowHours": {
+            "description": "失败统计窗口（小时），供前端渲染「近 N 小时」。**配置而非事实** ⇒ 读不到时回默认值 24 而不是 null",
+            "type": "number",
+            "x-i18n-en": "Failure-counting window in hours, used by the UI to render \"last N hours\". **Configuration, not a fact** => falls back to the default 24 rather than null"
+          },
+          "pendingApprovals": {
+            "description": "待审批单数（口径 = 审批单，与列表行数一致；会话数见 waitingSessions）。读不到 ⇒ null",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Number of pending approvals (counted in approvals, matching the list rows; see waitingSessions for the session count). null when it cannot be read"
+          },
+          "queueStall": {
+            "description": "队列是否停摆：1 = 停摆、0 = 未停摆、null = 判定不可用（**不代表队列正常**）",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Whether the queue is stalled: 1 = stalled, 0 = not stalled, null = the check is unavailable (**this does not mean the queue is healthy**)"
+          },
+          "stalled": {
+            "description": "「卡住」会话数（判据见 `docs/observability/agent-stalled-criterion.md`）。读不到 ⇒ null",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Number of stalled sessions (criterion in `docs/observability/agent-stalled-criterion.md`). null when it cannot be read"
+          },
+          "waitingSessions": {
+            "description": "`waiting_input` 会话数。读不到 ⇒ null",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Number of `waiting_input` sessions. null when it cannot be read"
+          }
+        },
+        "required": [
+          "pendingApprovals",
+          "waitingSessions",
+          "stalled",
+          "backlogged",
+          "backlogTruncated",
+          "deployments",
+          "queueStall",
+          "failedSessions",
+          "failedWindowHours",
+          "degraded"
+        ],
+        "type": "object"
+      },
       "AgentMediaDto": {
         "properties": {
           "assignmentId": {
@@ -217,6 +325,448 @@
           "sizeBytes",
           "uploadedBy",
           "createdAt"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarConfirmedDto": {
+        "properties": {
+          "totals": {
+            "$ref": "#/components/schemas/AgentNorthStarConfirmedTotalsDto"
+          },
+          "weeks": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNorthStarConfirmedWeekDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "weeks",
+          "totals"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarConfirmedTotalsDto": {
+        "properties": {
+          "active_install_weeks": {
+            "description": "各周 active_installs 之和（周-实例对，非全局去重实例数）",
+            "type": "number",
+            "x-i18n-en": "Sum of active_installs across weeks (week-install pairs, not globally deduplicated installs)"
+          },
+          "confirmed_events": {
+            "description": "各周 confirmed_events 之和",
+            "type": "number",
+            "x-i18n-en": "Sum of confirmed_events across weeks"
+          }
+        },
+        "required": [
+          "active_install_weeks",
+          "confirmed_events"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarConfirmedWeekDto": {
+        "properties": {
+          "active_installs": {
+            "description": "该周去重活跃实例数",
+            "type": "number",
+            "x-i18n-en": "Distinct active installs for the week"
+          },
+          "confirmed_events": {
+            "description": "该周去重确认事件数（每次执行最多一次）",
+            "type": "number",
+            "x-i18n-en": "Distinct confirmed events for the week (at most one per execution)"
+          },
+          "week_start": {
+            "description": "UTC 周一 00:00:00.000Z",
+            "type": "string",
+            "x-i18n-en": "UTC Monday 00:00:00.000Z"
+          }
+        },
+        "required": [
+          "week_start",
+          "active_installs",
+          "confirmed_events"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarPromotionDto": {
+        "properties": {
+          "activeInstallWeeks": {
+            "description": "活跃 install 周合计",
+            "type": "number",
+            "x-i18n-en": "Active-install weeks total"
+          },
+          "eligible": {
+            "description": "两数值阈值是否均满足（不含运营前置 coverage=full）",
+            "type": "boolean",
+            "x-i18n-en": "Whether both numeric thresholds are met (excludes ops prerequisite coverage=full)"
+          },
+          "reasons": {
+            "description": "未达标逐条说明 + 运营前置提示（脚本不验证 coverage）",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Per-threshold unmet reasons + ops prerequisite note (coverage not verified by script)"
+          },
+          "thresholds": {
+            "$ref": "#/components/schemas/AgentNorthStarPromotionThresholdsDto"
+          },
+          "weeks": {
+            "description": "严格值周数",
+            "type": "number",
+            "x-i18n-en": "Number of strict-caliber weeks"
+          }
+        },
+        "required": [
+          "eligible",
+          "reasons",
+          "weeks",
+          "activeInstallWeeks",
+          "thresholds"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarPromotionThresholdsDto": {
+        "properties": {
+          "minActiveInstallWeeks": {
+            "description": "活跃 install 周合计下限",
+            "type": "number",
+            "x-i18n-en": "Lower bound of active-install weeks total"
+          },
+          "minWeeks": {
+            "description": "最小样本期周数",
+            "type": "number",
+            "x-i18n-en": "Minimum observation window in weeks"
+          }
+        },
+        "required": [
+          "minWeeks",
+          "minActiveInstallWeeks"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarProxyDto": {
+        "properties": {
+          "totals": {
+            "$ref": "#/components/schemas/AgentNorthStarProxyTotalsDto"
+          },
+          "weeks": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNorthStarProxyWeekDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "weeks",
+          "totals"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarProxyTotalsDto": {
+        "properties": {
+          "executions": {
+            "description": "各周 executions 之和",
+            "type": "number",
+            "x-i18n-en": "Sum of executions across weeks"
+          }
+        },
+        "required": [
+          "executions"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarProxyWeekDto": {
+        "properties": {
+          "executions": {
+            "description": "该周 SUCCESS 且 artifacts 非空、非 synthetic 的执行数",
+            "type": "number",
+            "x-i18n-en": "Executions for the week with SUCCESS status, non-empty artifacts, and non-synthetic"
+          },
+          "week_start": {
+            "description": "UTC 周一 00:00:00.000Z",
+            "type": "string",
+            "x-i18n-en": "UTC Monday 00:00:00.000Z"
+          }
+        },
+        "required": [
+          "week_start",
+          "executions"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarResponseDto": {
+        "properties": {
+          "as_of": {
+            "description": "观测截止时间（ISO-8601），与脚本 buildPayload 同口径",
+            "type": "string",
+            "x-i18n-en": "Observation cutoff time (ISO-8601), consistent with the buildPayload script"
+          },
+          "business_confirmed": {
+            "$ref": "#/components/schemas/AgentNorthStarConfirmedDto"
+          },
+          "business_results_proxy": {
+            "$ref": "#/components/schemas/AgentNorthStarProxyDto"
+          },
+          "promotionEligibility": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AgentNorthStarPromotionDto"
+              }
+            ],
+            "description": "R448 升主判据（eligible 仅判数值阈值，运营前置 coverage=full 见 reasons）",
+            "x-i18n-en": "R448 primary-metric promotion eligibility (eligible covers numeric thresholds only; ops prerequisite coverage=full in reasons)"
+          },
+          "warnings": {
+            "description": "强制口径护栏（不可省略）：严格口径说明 + 「有产物/有证据 ≠ 被业务确认，代理值勿当严格值」强警告",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Mandatory metric guardrail (must not be omitted): strict metric definition + strong warning that \"has artifacts/evidence ≠ business-confirmed; do not treat proxy values as strict values\""
+          }
+        },
+        "required": [
+          "as_of",
+          "business_confirmed",
+          "business_results_proxy",
+          "promotionEligibility",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "AgentPendingApprovalItemDto": {
+        "properties": {
+          "approvalKey": {
+            "description": "审批幂等键（= `agent_tool_calls.approvalId`，`apr-<sessionId>-<指纹>`）；处置端点用它定位",
+            "type": "string",
+            "x-i18n-en": "Approval idempotency key (= `agent_tool_calls.approvalId`, `apr-<sessionId>-<fingerprint>`); the decision endpoints use it to locate the record"
+          },
+          "argsDigest": {
+            "description": "被批参数的完整摘要 `sha256(canonicalJson(args))`（64 位 hex）；null = 本列上线前的旧单",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Full digest of the approved arguments, `sha256(canonicalJson(args))` (64 hex chars); null = legacy row from before this column existed"
+          },
+          "createdAt": {
+            "description": "申请时刻（ISO）",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "Time of request (ISO)"
+          },
+          "preview": {
+            "description": "人类可读的参数预览（**写入侧已脱敏 + 已截断**，本端点只透出，不新增序列化面）；null = 旧单无预览或本次调用无参数",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Human-readable argument preview (**redacted and truncated at write time**; this endpoint only exposes it and adds no new serialization surface); null = legacy row without a preview, or this call had no arguments"
+          },
+          "reason": {
+            "description": "闸门给出的审批理由（原样透传）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Approval reason supplied by the gate (passed through verbatim)"
+          },
+          "sessionId": {
+            "description": "所属会话 id",
+            "format": "uuid",
+            "type": "string",
+            "x-i18n-en": "Owning session id"
+          },
+          "sessionTitle": {
+            "description": "会话标题；**会话没有标题或标题读不到时一律 null**，绝不退回 uuid（uuid 不是给人看的标题）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Session title; **null when the session has no title or the title cannot be read** - never falls back to the uuid (a uuid is not a human-readable title)"
+          },
+          "toolName": {
+            "description": "触发闸门的工具名",
+            "type": "string",
+            "x-i18n-en": "Name of the tool that triggered the gate"
+          }
+        },
+        "required": [
+          "approvalKey",
+          "sessionId",
+          "sessionTitle",
+          "toolName",
+          "reason",
+          "createdAt",
+          "preview",
+          "argsDigest"
+        ],
+        "type": "object"
+      },
+      "AgentPendingApprovalsResponseDto": {
+        "properties": {
+          "degraded": {
+            "description": "是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败",
+            "type": "boolean",
+            "x-i18n-en": "Whether any sub-query failed to read (the corresponding field is then null). **HTTP stays 200**: partially usable is not the same as a broken page"
+          },
+          "items": {
+            "description": "按申请时刻升序（最久等待的在前）",
+            "items": {
+              "$ref": "#/components/schemas/AgentPendingApprovalItemDto"
+            },
+            "type": "array",
+            "x-i18n-en": "Ascending by request time (longest-waiting first)"
+          },
+          "returned": {
+            "description": "本次实际返回的行数（= items.length）",
+            "type": "number",
+            "x-i18n-en": "Number of rows actually returned (= items.length)"
+          },
+          "sessionTotal": {
+            "description": "这些待审批单涉及的**会话数**（`COUNT(DISTINCT sessionId)`）；读不到 ⇒ null",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Number of **sessions** these pending approvals belong to (`COUNT(DISTINCT sessionId)`); null when it cannot be read"
+          },
+          "total": {
+            "description": "待审批单**总数**（独立 `count()`，不是 `items.length` 的别名）；读不到 ⇒ null，**绝不 0**",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "**Total** number of pending approvals (an independent `count()`, not an alias for `items.length`); null when it cannot be read - **never 0**"
+          },
+          "truncated": {
+            "description": "是否截断（`returned < total`）。`total` 未知时为 false —— 此时「是否截断」本身也不可知，由 `degraded` 表达",
+            "type": "boolean",
+            "x-i18n-en": "Whether the result is truncated (`returned < total`). When `total` is unknown this is false - in that case truncation itself is unknowable, and `degraded` says so"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "sessionTotal",
+          "returned",
+          "truncated",
+          "degraded"
+        ],
+        "type": "object"
+      },
+      "AgentQueueIdleResponseDto": {
+        "properties": {
+          "basis": {
+            "description": "阈值推导依据（运营问「这个数哪来的」时的答案）",
+            "properties": {
+              "concurrency": {
+                "type": "number"
+              },
+              "formula": {
+                "type": "string"
+              },
+              "thresholdMs": {
+                "type": "number"
+              },
+              "tickMs": {
+                "type": "number"
+              },
+              "wallClockMs": {
+                "type": "number"
+              }
+            },
+            "type": "object",
+            "x-i18n-en": "Threshold derivation basis (the answer when ops asks where the number came from)"
+          },
+          "degraded": {
+            "description": "是否读不到观测量——此时 idleStuck 恒 false（**不完整的判定**）",
+            "type": "boolean",
+            "x-i18n-en": "Whether the observations could not be read — idleStuck is always false then (an INCOMPLETE verdict)"
+          },
+          "idleStuck": {
+            "description": "是否空转（worker 在册却不再消费新 job）",
+            "type": "boolean",
+            "x-i18n-en": "Whether the queue is idle-stuck (workers are registered but no longer consuming new jobs)"
+          },
+          "oldestAgeMs": {
+            "description": "最老 waiting job 的年龄（毫秒）；无 job 或读失败时为 0",
+            "type": "number",
+            "x-i18n-en": "Age in milliseconds of the oldest waiting job; 0 when there is no job or the read failed"
+          },
+          "retried": {
+            "description": "最老 job 是否「曾开始过又回到 waiting」",
+            "type": "boolean",
+            "x-i18n-en": "Whether the oldest job started before and returned to waiting"
+          },
+          "suppressedBy": {
+            "description": "本条判据让位给别的判据时说明成因；null = 本判据是这一格的最终结论",
+            "enum": [
+              "queue-stall"
+            ],
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Why this criterion deferred to another one; null means this criterion is the final word for its slot"
+          },
+          "thresholdMs": {
+            "description": "判定用的阈值（毫秒）—— 由墙钟预算 × 并发槽位数 + 一拍推导",
+            "type": "number",
+            "x-i18n-en": "Threshold used for the verdict (ms) — derived from the wall-clock budget x concurrency slots + one tick"
+          },
+          "waitingCount": {
+            "description": "当前 waiting 计数（读失败时为 0 且 degraded 为 true）",
+            "type": "number",
+            "x-i18n-en": "Current waiting count (0 with degraded=true when the read failed)"
+          }
+        },
+        "required": [
+          "idleStuck",
+          "oldestAgeMs",
+          "thresholdMs",
+          "waitingCount",
+          "retried",
+          "suppressedBy",
+          "degraded",
+          "basis"
+        ],
+        "type": "object"
+      },
+      "AgentQueueStallResponseDto": {
+        "properties": {
+          "degraded": {
+            "description": "是否有**可能导致误报**的观测失败（active/workers/paused 读失败）——前端据此显示「未知」，既不敢报也不敢说正常",
+            "type": "boolean",
+            "x-i18n-en": "Whether an observation failure could cause a FALSE POSITIVE (active/workers/paused unreadable) — the UI shows UNKNOWN rather than reporting or clearing"
+          },
+          "degradedCounts": {
+            "description": "是否有**可能导致漏报**的计数类观测失败（waiting/delayed/prioritized）——**不改变结论**，只在已报停摆时说明「在排队数可能更大」",
+            "type": "boolean",
+            "x-i18n-en": "Whether a count observation failure could cause a FALSE NEGATIVE (waiting/delayed/prioritized) — it does NOT change the verdict; when stalled it only notes that the queued count may be larger"
+          },
+          "pendingJobs": {
+            "description": "在排队等消费的 job 数（waiting + delayed + prioritized，不含 active）",
+            "type": "number",
+            "x-i18n-en": "Jobs queued for consumption (waiting + delayed + prioritized; excludes active)"
+          },
+          "reason": {
+            "description": "成因；不停摆时为 null。两者的处置不同（前者 resume，后者查进程）",
+            "enum": [
+              "paused",
+              "no-worker"
+            ],
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Cause; null when not stalled. The two differ in remediation (resume vs. check the process)"
+          },
+          "stalled": {
+            "description": "是否停摆（有活排队但结构上没人能消费）",
+            "type": "boolean",
+            "x-i18n-en": "Whether the queue has stalled (work is queued, but structurally nobody can consume it)"
+          },
+          "workersKnown": {
+            "description": "workers 是否读到了。false 时 snapshot 里的 workers=0 **不是事实**，只是回落值",
+            "type": "boolean",
+            "x-i18n-en": "Whether workers was actually read. When false, workers=0 in the snapshot is NOT a fact — only a fallback value"
+          }
+        },
+        "required": [
+          "stalled",
+          "reason",
+          "pendingJobs",
+          "degraded",
+          "degradedCounts",
+          "workersKnown"
         ],
         "type": "object"
       },
@@ -570,14 +1120,138 @@
         ],
         "type": "object"
       },
+      "AgentTelemetryConsentDto": {
+        "properties": {
+          "deviceFingerprint": {
+            "description": "原始设备指纹；派生为匿名安装标识",
+            "type": "string",
+            "x-i18n-en": "Raw device fingerprint; derived into an anonymous install id"
+          },
+          "installId": {
+            "description": "不透明的安装标识；优先于设备指纹",
+            "type": "string",
+            "x-i18n-en": "Opaque install id; takes precedence over the device fingerprint"
+          },
+          "optIn": {
+            "description": "是否启用 TTFV 采集",
+            "type": "boolean",
+            "x-i18n-en": "Whether TTFV collection is enabled"
+          },
+          "source": {
+            "description": "本次授权动作的来源标记",
+            "enum": [
+              "admin-ui",
+              "api"
+            ],
+            "type": "string",
+            "x-i18n-en": "Provenance label of this consent action"
+          }
+        },
+        "required": [
+          "optIn"
+        ],
+        "type": "object"
+      },
+      "AgentTelemetryConsentResultDto": {
+        "properties": {
+          "count": {
+            "description": "本次涉及的安装数量",
+            "type": "number",
+            "x-i18n-en": "Number of installs touched by this action"
+          },
+          "installIds": {
+            "description": "本次涉及的安装标识（匿名）",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Anonymous install ids touched by this action"
+          },
+          "optedIn": {
+            "description": "是否已授权采集",
+            "type": "boolean",
+            "x-i18n-en": "Whether collection is consented to"
+          },
+          "source": {
+            "description": "实际落库的来源标记",
+            "type": "string",
+            "x-i18n-en": "Provenance label actually persisted"
+          },
+          "systemEnabled": {
+            "description": "本次操作后的系统总闸状态",
+            "type": "boolean",
+            "x-i18n-en": "System gate state after this action"
+          }
+        },
+        "required": [
+          "systemEnabled",
+          "optedIn",
+          "installIds",
+          "count",
+          "source"
+        ],
+        "type": "object"
+      },
+      "AgentTelemetryStatusDto": {
+        "properties": {
+          "count": {
+            "description": "当前已授权采集的安装数",
+            "type": "number",
+            "x-i18n-en": "Number of installs currently consenting to collection"
+          },
+          "coverage": {
+            "description": "授权覆盖率状态：gate_off=总闸未开；no_executors=总闸开但无已知执行器（先开闸后装执行器陷阱）；partial=部分执行器已授权；full=全部已授权",
+            "enum": [
+              "no_executors",
+              "partial",
+              "full",
+              "gate_off"
+            ],
+            "type": "string",
+            "x-i18n-en": "Authorization coverage: gate_off=system gate off; no_executors=gate on but no known executor (install-executor-first trap); partial=some executors authorized; full=all authorized"
+          },
+          "installs": {
+            "description": "按安装维度的授权概览",
+            "items": {
+              "$ref": "#/components/schemas/TelemetryOptinInstallViewDto"
+            },
+            "type": "array",
+            "x-i18n-en": "Consent overview by install"
+          },
+          "knownExecutorCount": {
+            "description": "已知 executor 数（去重 deviceFingerprint 后）",
+            "type": "number",
+            "x-i18n-en": "Known executor count (distinct deviceFingerprint)"
+          },
+          "latestOptedAt": {
+            "description": "各安装中最近的授权时间（ISO-8601；可为空）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Latest consent time across installs (ISO-8601; nullable)"
+          },
+          "systemEnabled": {
+            "description": "系统总闸状态",
+            "type": "boolean",
+            "x-i18n-en": "System gate state"
+          }
+        },
+        "required": [
+          "systemEnabled",
+          "count",
+          "installs",
+          "knownExecutorCount",
+          "coverage"
+        ],
+        "type": "object"
+      },
       "AgentToolCallDto": {
         "properties": {
           "approvalId": {
-            "description": "awaiting_approval / granted 流程的审批记录",
-            "format": "uuid",
+            "description": "关联的审批业务键；历史 UUID 原样保留",
+            "maxLength": 128,
             "nullable": true,
             "type": "string",
-            "x-i18n-en": "Approval records for the awaiting_approval / granted flow"
+            "x-i18n-en": "Approval business key; legacy UUID values are preserved unchanged"
           },
           "argsJson": {
             "additionalProperties": true,
@@ -2464,6 +3138,17 @@
           "executionId",
           "success"
         ],
+        "type": "object"
+      },
+      "CancelSopAssignmentDto": {
+        "properties": {
+          "reason": {
+            "description": "取消原因（可选，最多 500 字符；经脱敏后写入审计日志，不覆盖执行结果）",
+            "maxLength": 500,
+            "type": "string",
+            "x-i18n-en": "Cancellation reason (optional, up to 500 characters; sanitized before being written to the audit log without overwriting execution results)"
+          }
+        },
         "type": "object"
       },
       "ChannelTestResponseDto": {
@@ -4533,6 +5218,19 @@
             "type": "array",
             "x-i18n-en": "Raw log lines starting at fromLine (effective when a level filter is given)"
           },
+          "logsPurged": {
+            "description": "日志是否已被保留期清理（日志行保留期短于执行行）。true=已按策略清理；false=日志为空但不是清理造成的；null=未知（保留期配置不可读）。仅当本次读取的日志为空时有判定意义。",
+            "nullable": true,
+            "type": "boolean",
+            "x-i18n-en": "Whether the logs were removed by retention (log rows are kept shorter than execution rows). true = purged by policy; false = logs are empty but not because of purging; null = unknown (the retention setting cannot be read). Only meaningful when the logs read this time are empty."
+          },
+          "logsPurgedAt": {
+            "description": "清理截止时刻（当前时间减去日志保留期天数）；仅 logsPurged 为 true 时非 null。",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Purge cutoff (now minus the log retention days); non-null only when logsPurged is true."
+          },
           "totalLines": {
             "description": "（过滤后）行集合的真实总数",
             "type": "number",
@@ -5451,10 +6149,17 @@
           "sevenDayStats": {
             "properties": {
               "failed": {
-                "type": "number"
+                "description": "status=FAILED 单桶计数（不含 timeout）",
+                "type": "number",
+                "x-i18n-en": "Count of the status=FAILED bucket only (excludes timeout)"
               },
               "successful": {
                 "type": "number"
+              },
+              "timedOut": {
+                "description": "status=timeout 计数；与 failed 互斥不重叠。旧后端可能缺该键（前端按 typeof === 'number' 判定）",
+                "type": "number",
+                "x-i18n-en": "Count of status=timeout; mutually exclusive with failed, never overlapping. An older backend may omit this key (the UI checks typeof === 'number')."
               },
               "totalExecutions": {
                 "type": "number"
@@ -5463,7 +6168,8 @@
             "required": [
               "totalExecutions",
               "successful",
-              "failed"
+              "failed",
+              "timedOut"
             ],
             "type": "object"
           }
@@ -8188,15 +8894,15 @@
             "x-i18n-en": "Executions in the last 7 days (counted via taskId joined to tasks.projectId)"
           },
           "failedExecutionsLast7d": {
-            "description": "近 7 天失败执行数（status=failed）",
+            "description": "近 7 天失败执行数（status=failed，分桶明细，不含 timeout）",
             "type": "number",
-            "x-i18n-en": "Failed executions in the last 7 days (status=failed)"
+            "x-i18n-en": "Failed executions in the last 7 days (status=failed; a per-bucket breakdown that excludes timeout)"
           },
           "failureRate": {
-            "description": "近 7 天失败率（failed / 执行总数，百分比保留两位）；窗口内无执行为 null，前端显示暂无数据",
+            "description": "近 7 天失败率 =（failed + timeout）/ 执行总数，百分比保留两位；分子按已宣示口径「失败 = 失败 + 超时」合并，故**不等于** failedExecutionsLast7d / executionsLast7d（那两个字段是分桶明细）；窗口内无执行为 null，前端显示暂无数据",
             "nullable": true,
             "type": "number",
-            "x-i18n-en": "Failure rate in the last 7 days (failed / total executions, percentage rounded to two decimals); null when there are no executions in the window, and the frontend shows no-data"
+            "x-i18n-en": "Failure rate over the last 7 days = (failed + timeout) / total executions, as a percentage with two decimals. The numerator follows the declared caliber \"failed = failed + timeout\", so it is **not** equal to failedExecutionsLast7d / executionsLast7d (those two fields are per-bucket breakdowns). null when there were no executions in the window; the UI shows \"no data\""
           },
           "memberCount": {
             "description": "项目成员关系行数",
@@ -8235,9 +8941,9 @@
             "x-i18n-en": "Number of tasks that are not soft-deleted (excludes status=deleted; the default project includes unassigned NULL rows)"
           },
           "timeoutExecutionsLast7d": {
-            "description": "近 7 天超时执行数（status=timeout）",
+            "description": "近 7 天超时执行数（status=timeout，分桶明细，不含 failed）",
             "type": "number",
-            "x-i18n-en": "Timed-out executions in the last 7 days (status=timeout)"
+            "x-i18n-en": "Timed-out executions in the last 7 days (status=timeout; a per-bucket breakdown that excludes failed)"
           }
         },
         "required": [
@@ -9014,6 +9720,135 @@
         ],
         "type": "object"
       },
+      "SopAssignmentLagItemDto": {
+        "properties": {
+          "assignmentId": {
+            "description": "滞留的指派 id",
+            "format": "uuid",
+            "type": "string",
+            "x-i18n-en": "ID of the stuck assignment"
+          },
+          "blockedSince": {
+            "description": "进入当前状态的时刻（ISO，= 指派行 `updatedAt`）。**非 null**：谓词本身就是`updatedAt <= now - hours`，时间戳缺失的行在构造上不可能被选中；前端「已阻塞 X 小时」由它与当前时间算出——**不要拿查询窗口 `hours` 顶替**",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "The moment the assignment entered its current state (ISO, = the assignment row's `updatedAt`). **Never null**: the predicate itself is `updatedAt <= now - hours`, so a row with a missing timestamp can never be selected; the UI computes \"blocked for X hours\" from this value and the current time - **do not substitute the query window `hours` for it**"
+          },
+          "round": {
+            "description": "上述澄清的轮次（`sop_clarifications.round`，1 起）。**null = 未知或无**（没有 escalated 澄清，或该子查询读失败），不是「第 0 轮」——前端渲染「第 — 轮」，不要编造数字",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Which round the above clarification belongs to (`sop_clarifications.round`, 1-based). **null = unknown or none** (no escalated clarification, or that sub-query failed) and NOT \"round 0\" - the UI renders \"round -\"; do not fabricate a number"
+          },
+          "sopId": {
+            "description": "所属 SOP id（深链锚点）",
+            "format": "uuid",
+            "type": "string",
+            "x-i18n-en": "Owning SOP id (deep-link anchor)"
+          },
+          "sopName": {
+            "description": "SOP 标题；**读不到或为空时一律 null**，绝不退回 uuid（uuid 不是给人看的标题）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "SOP title; **null when unreadable or empty** - never falls back to the uuid (a uuid is not a human-readable title)"
+          },
+          "staleClarificationId": {
+            "description": "该滞留工单最近一条 `escalated_to_human` 澄清（maxRounds 触顶路径必有一条）；无澄清或澄清子查询读失败时为 null——后者伴随 `degraded: true`",
+            "format": "uuid",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "The most recent `escalated_to_human` clarification of this stuck assignment (the maxRounds-exhausted path always has one); null when there is no clarification or when the clarification sub-query failed - the latter comes with `degraded: true`"
+          },
+          "status": {
+            "description": "指派状态，本端点目前恒为 `blocked`（谓词是字面量，不混入其它值）",
+            "type": "string",
+            "x-i18n-en": "Assignment status; this endpoint currently always returns `blocked` (the predicate is a literal and no other value is mixed in)"
+          }
+        },
+        "required": [
+          "assignmentId",
+          "sopId",
+          "sopName",
+          "status",
+          "blockedSince",
+          "staleClarificationId",
+          "round"
+        ],
+        "type": "object"
+      },
+      "SopAssignmentLagResponseDto": {
+        "properties": {
+          "degraded": {
+            "description": "是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败；但装配缺失（服务未注入）是 503，不是空信封",
+            "type": "boolean",
+            "x-i18n-en": "Whether any sub-query failed to read (the corresponding field is then null). **HTTP stays 200**: partially usable is not a broken page; but a missing wiring (service not injected) is 503, not an empty envelope"
+          },
+          "items": {
+            "description": "按进入 blocked 的时刻升序（卡得最久的在最前——那正是最该被看见的）",
+            "items": {
+              "$ref": "#/components/schemas/SopAssignmentLagItemDto"
+            },
+            "type": "array",
+            "x-i18n-en": "Ascending by the moment the assignment entered blocked (stuck longest first - exactly what most needs to be seen)"
+          },
+          "returned": {
+            "description": "本次实际返回的行数（= items.length）",
+            "type": "number",
+            "x-i18n-en": "Number of rows actually returned (= items.length)"
+          },
+          "total": {
+            "description": "滞留 blocked 工单**总数**（独立 `getCount()`，不是 `items.length` 的别名）；读不到 ⇒ null，**绝不 0**",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "**Total** number of stuck blocked assignments (an independent `getCount()`, not an alias for `items.length`); null when it cannot be read - **never 0**"
+          },
+          "truncated": {
+            "description": "是否截断（`returned < total`）。`total` 未知时为 false——此时「是否截断」本身也不可知，由 `degraded` 表达",
+            "type": "boolean",
+            "x-i18n-en": "Whether the result is truncated (`returned < total`). False when `total` is unknown - in that case truncation itself is unknowable, and `degraded` says so"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "returned",
+          "truncated",
+          "degraded"
+        ],
+        "type": "object"
+      },
+      "SopCancelAssignmentResponseDto": {
+        "properties": {
+          "assignment": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SopAssignmentDto"
+              }
+            ],
+            "description": "取消后的指派最新快照（status 恒为 cancelled）",
+            "x-i18n-en": "Latest snapshot of the assignment after cancellation (status is always cancelled)"
+          },
+          "previousStatus": {
+            "description": "取消前的指派状态（assigned | in_progress | blocked | stalled）",
+            "enum": [
+              "assigned",
+              "in_progress",
+              "blocked",
+              "completed",
+              "failed",
+              "cancelled",
+              "stalled"
+            ],
+            "type": "string",
+            "x-i18n-en": "Assignment status prior to cancellation (assigned | in_progress | blocked | stalled)"
+          }
+        },
+        "required": [
+          "assignment",
+          "previousStatus"
+        ],
+        "type": "object"
+      },
       "SopCancelAssignmentsResponseDto": {
         "properties": {
           "cancelled": {
@@ -9188,6 +10023,115 @@
         "required": [
           "items",
           "total"
+        ],
+        "type": "object"
+      },
+      "SopPendingClarificationItemDto": {
+        "properties": {
+          "askedAt": {
+            "description": "提问时刻（ISO，= 澄清行 createdAt）",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "Time the question was asked (ISO, = the clarification row's createdAt)"
+          },
+          "assignmentId": {
+            "description": "所属指派 id",
+            "format": "uuid",
+            "type": "string",
+            "x-i18n-en": "Owning assignment id"
+          },
+          "assignmentStatus": {
+            "description": "所属指派**当前**状态，如实回。升级后通常是 `in_progress`（不是 `blocked`）——「升级后按 blocked 筛不到」正是本端点存在的理由之一",
+            "type": "string",
+            "x-i18n-en": "The assignment's **current** status, reported verbatim. After escalation it is usually `in_progress` (not `blocked`) - \"an escalated assignment cannot be found by filtering on blocked\" is one of the reasons this endpoint exists"
+          },
+          "clarificationId": {
+            "description": "澄清行 id（答复端点用它定位）",
+            "format": "uuid",
+            "type": "string",
+            "x-i18n-en": "Clarification row id (the reply endpoint uses it to locate the row)"
+          },
+          "question": {
+            "description": "执行器 Agent 的原始疑问（**服务端不截断**，截断由前端做——服务端截断会让「点开看全文」永远拿不到全文）",
+            "type": "string",
+            "x-i18n-en": "The executor agent's original question (**the server does not truncate**; truncation is a rendering decision - truncating here would make \"open to read the full text\" impossible)"
+          },
+          "reviewSessionId": {
+            "description": "处理本次澄清的 `sop_review` 会话（因果链；无会话时为 null）",
+            "format": "uuid",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "The `sop_review` session that handled this clarification (causal chain; null when there is none)"
+          },
+          "round": {
+            "description": "澄清轮次（1 起）",
+            "type": "number",
+            "x-i18n-en": "Clarification round (1-based)"
+          },
+          "sopId": {
+            "description": "所属 SOP id（深链锚点）",
+            "format": "uuid",
+            "type": "string",
+            "x-i18n-en": "Owning SOP id (deep-link anchor)"
+          },
+          "sopName": {
+            "description": "SOP 标题；**读不到或为空时一律 null**，绝不退回 uuid（uuid 不是给人看的标题）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "SOP title; **null when unreadable or empty** - never falls back to the uuid (a uuid is not a human-readable title)"
+          }
+        },
+        "required": [
+          "clarificationId",
+          "assignmentId",
+          "sopId",
+          "sopName",
+          "round",
+          "question",
+          "askedAt",
+          "assignmentStatus",
+          "reviewSessionId"
+        ],
+        "type": "object"
+      },
+      "SopPendingClarificationsResponseDto": {
+        "properties": {
+          "degraded": {
+            "description": "是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败",
+            "type": "boolean",
+            "x-i18n-en": "Whether any sub-query failed to read (the corresponding field is then null). **HTTP stays 200**: partially usable is not the same as a broken page"
+          },
+          "items": {
+            "description": "按提问时刻升序（最久没人管的在前——「上周升级还没人管」正是最该被看见的）",
+            "items": {
+              "$ref": "#/components/schemas/SopPendingClarificationItemDto"
+            },
+            "type": "array",
+            "x-i18n-en": "Ascending by ask time (longest-ignored first - \"escalated last week, still nobody handled it\" is exactly what most needs to be seen)"
+          },
+          "returned": {
+            "description": "本次实际返回的行数（= items.length）",
+            "type": "number",
+            "x-i18n-en": "Number of rows actually returned (= items.length)"
+          },
+          "total": {
+            "description": "待人工答复的升级澄清**总数**（独立 `getCount()`，不是 `items.length` 的别名）；读不到 ⇒ null，**绝不 0**",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "**Total** number of escalated clarifications awaiting a human reply (an independent `getCount()`, not an alias for `items.length`); null when it cannot be read - **never 0**"
+          },
+          "truncated": {
+            "description": "是否截断（`returned < total`）。`total` 未知时为 false——此时「是否截断」本身也不可知，由 `degraded` 表达",
+            "type": "boolean",
+            "x-i18n-en": "Whether the result is truncated (`returned < total`). False when `total` is unknown - in that case truncation itself is unknowable, and `degraded` says so"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "returned",
+          "truncated",
+          "degraded"
         ],
         "type": "object"
       },
@@ -10753,6 +11697,43 @@
         "required": [
           "executionId",
           "execution"
+        ],
+        "type": "object"
+      },
+      "TelemetryOptinInstallViewDto": {
+        "properties": {
+          "installId": {
+            "description": "匿名安装标识",
+            "type": "string",
+            "x-i18n-en": "Anonymous install id"
+          },
+          "optIn": {
+            "description": "当前安装的授权状态",
+            "type": "boolean",
+            "x-i18n-en": "Current consent state of the install"
+          },
+          "optedAt": {
+            "description": "最近一次授权变更时间（ISO-8601；可为空）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Time of the latest consent change (ISO-8601; nullable)"
+          },
+          "source": {
+            "description": "最近一次变更的来源标记",
+            "type": "string",
+            "x-i18n-en": "Provenance label of the latest change"
+          },
+          "userIdHash": {
+            "description": "HMAC 派生的用户标识，绝不是用户名原文",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "HMAC-derived user id, never the raw username"
+          }
+        },
+        "required": [
+          "installId",
+          "optIn",
+          "source"
         ],
         "type": "object"
       },
@@ -12341,6 +13322,45 @@
         ]
       }
     },
+    "/agent/approvals/pending": {
+      "get": {
+        "operationId": "AgentController_listPendingApprovals",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentPendingApprovalsResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "列出跨会话的待审批单（含总数、截断与降级标记）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "List pending approvals across sessions (with the total, truncation and degradation markers)"
+        }
+      }
+    },
     "/agent/budget": {
       "get": {
         "operationId": "AgentController_budgetInfo",
@@ -12371,6 +13391,110 @@
         }
       }
     },
+    "/agent/executions/{execId}/confirm": {
+      "post": {
+        "operationId": "AgentController_confirmExecution",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "确认成功（幂等，重复确认同样返回成功并 emit execution.confirmed）",
+            "x-i18n-en": "Confirmation succeeded (idempotent; repeated confirmation also succeeds and emits execution.confirmed)"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "显式确认执行已被业务确认（北极星 business_confirmed 事件源）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "An execution explicitly confirmed as business-confirmed (NorthStar business_confirmed event source)"
+        }
+      }
+    },
+    "/agent/inbox/counts": {
+      "get": {
+        "operationId": "AgentController_inboxCounts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentInboxCountsResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "收件箱各项计数（读不到时为 null，绝不伪装成 0）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Inbox counters (null when unreadable; never disguised as 0)"
+        }
+      }
+    },
+    "/agent/north-star/metrics": {
+      "get": {
+        "operationId": "AgentController_northStarReport",
+        "parameters": [
+          {
+            "description": "观测截止 ISO-8601；缺省 now",
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Observation cutoff in ISO-8601; defaults to now"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentNorthStarResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "北极星双口径周报（严格 business_confirmed + 代理值，绝不混用）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "NorthStar dual-metric weekly report (strict business_confirmed + proxy values, never mixed)"
+        }
+      }
+    },
     "/agent/sessions": {
       "get": {
         "operationId": "AgentController_list",
@@ -12378,7 +13502,7 @@
           {
             "in": "query",
             "name": "kind",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -12386,7 +13510,7 @@
           {
             "in": "query",
             "name": "status",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -12394,7 +13518,7 @@
           {
             "in": "query",
             "name": "page",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -12402,7 +13526,7 @@
           {
             "in": "query",
             "name": "stalled",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -12410,7 +13534,7 @@
           {
             "in": "query",
             "name": "stalledMinutes",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -12418,7 +13542,15 @@
           {
             "in": "query",
             "name": "pageSize",
-            "required": true,
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -12494,6 +13626,13 @@
         "parameters": [],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentBacklogResponseDto"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -12511,12 +13650,49 @@
         }
       }
     },
+    "/agent/sessions/queue-idle": {
+      "get": {
+        "operationId": "AgentController_inspectQueueIdle",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentQueueIdleResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "队列是否空转（worker 在册却不再消费新 job）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Whether the queue is idle-stuck (workers are registered but no longer consuming new jobs)"
+        }
+      }
+    },
     "/agent/sessions/queue-stall": {
       "get": {
         "operationId": "AgentController_inspectQueueStall",
         "parameters": [],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentQueueStallResponseDto"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -12814,6 +13990,76 @@
         ],
         "x-i18n-en": {
           "summary": "Resume suspended/failed Agent sessions"
+        }
+      }
+    },
+    "/agent/telemetry/consent": {
+      "post": {
+        "operationId": "AgentController_setTelemetryConsent",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentTelemetryConsentDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentTelemetryConsentResultDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "设置 TTFV 授权状态与系统总闸",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Set TTFV consent state and the system gate"
+        }
+      }
+    },
+    "/agent/telemetry/status": {
+      "get": {
+        "operationId": "AgentController_telemetryStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentTelemetryStatusDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "读取 TTFV 授权状态供管理端展示",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Read TTFV consent status for the admin UI"
         }
       }
     },
@@ -13118,7 +14364,7 @@
           {
             "in": "query",
             "name": "page",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -13126,7 +14372,7 @@
           {
             "in": "query",
             "name": "pageSize",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -14306,7 +15552,7 @@
           {
             "in": "query",
             "name": "projectId",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -15726,7 +16972,7 @@
           {
             "in": "query",
             "name": "error",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -16204,7 +17450,7 @@
           {
             "in": "query",
             "name": "prefix",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -16212,7 +17458,7 @@
           {
             "in": "query",
             "name": "tag",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -18108,7 +19354,7 @@
           {
             "in": "query",
             "name": "deviceFingerprint",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -18116,7 +19362,7 @@
           {
             "in": "query",
             "name": "executorId",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -18656,7 +19902,7 @@
           {
             "in": "query",
             "name": "deviceFingerprint",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -18664,7 +19910,7 @@
           {
             "in": "query",
             "name": "executorId",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -19474,7 +20720,7 @@
           {
             "in": "query",
             "name": "projectId",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -19571,7 +20817,7 @@
           {
             "in": "query",
             "name": "projectId",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -19606,7 +20852,7 @@
           {
             "in": "query",
             "name": "days",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -19614,7 +20860,7 @@
           {
             "in": "query",
             "name": "projectId",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20149,7 +21395,7 @@
           {
             "in": "query",
             "name": "page",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20157,7 +21403,7 @@
           {
             "in": "query",
             "name": "pageSize",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20165,7 +21411,7 @@
           {
             "in": "query",
             "name": "q",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20667,7 +21913,7 @@
           {
             "in": "query",
             "name": "status",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20675,7 +21921,7 @@
           {
             "in": "query",
             "name": "page",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20683,7 +21929,7 @@
           {
             "in": "query",
             "name": "pageSize",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -20787,6 +22033,47 @@
         }
       }
     },
+    "/sop/assignments/lagging": {
+      "get": {
+        "operationId": "SopController_listLaggingAssignments",
+        "parameters": [
+          {
+            "description": "观测窗口（小时）。缺省 24；钳制 1..720；非法值安全回落默认，不 400",
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Observation window in hours. Defaults to 24; clamped to 1..720; illegal values fall back to the default safely instead of returning 400"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopAssignmentLagResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "列出超过 N 小时未推进的 blocked 指派（含总数、截断与降级标记；不改状态机）",
+        "tags": [
+          "sop"
+        ],
+        "x-i18n-en": {
+          "summary": "List blocked assignments that have not progressed for more than N hours (with the total, truncation and degradation markers; the state machine is not changed)"
+        }
+      }
+    },
     "/sop/assignments/{assignmentId}": {
       "get": {
         "operationId": "SopController_assignment",
@@ -20823,6 +22110,55 @@
         ],
         "x-i18n-en": {
           "summary": "Assignment details (including the full clarification conversation)"
+        }
+      }
+    },
+    "/sop/assignments/{assignmentId}/cancel": {
+      "post": {
+        "operationId": "SopController_cancelAssignment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assignmentId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelSopAssignmentDto"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopCancelAssignmentResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "取消单条未结束的指派（支持 assigned/in_progress/blocked/stalled）",
+        "tags": [
+          "sop"
+        ],
+        "x-i18n-en": {
+          "summary": "Cancel a single unfinished assignment (supports assigned/in_progress/blocked/stalled)"
         }
       }
     },
@@ -20922,6 +22258,45 @@
         ],
         "x-i18n-en": {
           "summary": "List of assigned media"
+        }
+      }
+    },
+    "/sop/clarifications/pending": {
+      "get": {
+        "operationId": "SopController_listPendingClarifications",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopPendingClarificationsResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "列出跨 SOP、待人工答复的升级澄清（含总数、截断与降级标记）",
+        "tags": [
+          "sop"
+        ],
+        "x-i18n-en": {
+          "summary": "List escalated clarifications awaiting a human reply across SOPs (with the total, truncation and degradation markers)"
         }
       }
     },
@@ -23235,14 +24610,6 @@
               "type": "string"
             },
             "x-i18n-en": "Opaque keyset cursor (the data.nextCursor from the previous page). When omitted, behaviour is exactly as before this parameter existed."
-          },
-          {
-            "description": "每页条数",
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {},
-            "x-i18n-en": "Items per page"
           }
         ],
         "responses": {

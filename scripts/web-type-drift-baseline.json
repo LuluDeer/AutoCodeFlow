@@ -522,11 +522,6 @@
       "review_by": "2026-12-15"
     },
     {
-      "key": "apps/admin-web/src/api/tasks.ts\tExecutionLogsPage",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
       "key": "apps/admin-web/src/api/tasks.ts\tMaintenanceWindow",
       "owner": "arch-core",
       "review_by": "2026-12-15"
@@ -639,13 +634,6 @@
       "file": "apps/admin-web/src/api/inbox.ts",
       "name": "QueueStallSnapshot",
       "reason": "队列停摆观测快照；后端 inspect-queue-stall 200 响应 content 无 schema，前端自行建模。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
-      "file": "apps/admin-web/src/api/inbox.ts",
-      "name": "AgentWaitingResult",
-      "reason": "内部判别联合 {approvals,sessions} | {error}，非 API 响应体，无后端 schema。",
       "owner": "arch-core",
       "review_by": "2026-12-15"
     },

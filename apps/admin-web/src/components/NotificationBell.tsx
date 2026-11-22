@@ -11,8 +11,8 @@
  * - 未读红点 = createdAt 晚于「上次查看」时刻的失败数（无后端已读模型，
  *   本地记忆即可满足"有没有新失败"的诉求；lastSeen 读进 state——markSeen
  *   后同帧归零，不再等下一次数据刷新才重渲染）；
- * - 打开面板即记为已读；面板底部提供「全部失败」深链（/executions?status=failed，
- *   URL-SYNC-01 已让该深链生效）与「通知设置」入口。
+ * - 打开面板即记为已读；面板底部提供「全部失败」深链（/executions?status=failed,timeout，
+ *   URL-SYNC-01 已让该深链生效；多值口径见按钮处的 R281-DEEPLINK-01 注释）与「通知设置」入口。
  */
 import { useMemo, useState } from 'react';
 import { Badge, Button, Popover, Typography, Empty } from 'antd';
@@ -113,7 +113,16 @@ export default function NotificationBell() {
         </div>
       )}
       <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between' }}>
-        <Button type="link" size="small" onClick={() => nav('/executions?status=failed')}>
+        {/* R281-DEEPLINK-01：多值 `failed,timeout` 是**故意**的，不要「统一」回单值 `failed`。
+            本面板的数据源是 /metrics/failures，口径为后端的 FAILED_EXECUTION_STATUSES
+            （apps/admin-api/src/modules/task/entities/task-execution.entity.ts:61 = FAILED ∪ TIMEOUT）。
+            后端 status 过滤做等值/IN：单值 'failed' 在超时风暴（10 条 timeout、0 条 failed）下
+            会让「面板里明明有 10 条，点查看失败却是 0 条」。
+            执行页的状态下拉只认 failed / timeout 两个独立单值选项（主动筛选意图不变），
+            多值 URL 在那里匹配不到任何选项 ⇒ 下拉显示为空，属预期。
+            ⚠️ src/utils/failure-reason-aggregate.ts 的 FAILURE_REASON_BUCKET_STATUSES 含 killed，不是这个集合
+            （R284 改名：刻意与后端常量不同名，避免「同名不同值」被误对齐）。 */}
+        <Button type="link" size="small" onClick={() => nav('/executions?status=failed,timeout')}>
           {t('nav.notify.viewAll')}
         </Button>
         <Button type="link" size="small" onClick={() => nav('/notifications')}>

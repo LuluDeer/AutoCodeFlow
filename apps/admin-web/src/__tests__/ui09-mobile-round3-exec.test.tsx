@@ -38,24 +38,31 @@ import {
 import { useAuthStore } from '../store/auth';
 import type { ExecutorPackage } from '../api/executor-packages';
 
-vi.mock('../api/executors', () => ({
-  executorsApi: {
-    // ExecutorDetailPage 读侧（queries.ts hooks）+ 写侧（页面直调）
-    get: vi.fn(),
-    getMetrics: vi.fn(),
-    getExecutions: vi.fn(),
-    getRuntimeConfig: vi.fn(),
-    update: vi.fn(),
-    reloadConfig: vi.fn(),
-    rotateToken: vi.fn(),
-    remove: vi.fn(),
-    setOffline: vi.fn(),
-    removalImpact: vi.fn(),
-    // AppDeploymentPage（部署下拉候选）/ ExecutorPackagesPage（机队版本摘要）
-    picker: vi.fn(),
-    list: vi.fn(),
-  },
-}));
+// R279：mock 必须保留契约层的**真实纯函数**（resolveEffectiveOfflineAfterMs /
+// describeOfflineWindow）。整模块替换会把它抹成 undefined，页面直接崩在「No export」，
+// 那是 mock 失真而不是实现坏了；这里只替 executorsApi，纯函数走真实现。
+vi.mock('../api/executors', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/executors')>();
+  return {
+    ...actual,
+    executorsApi: {
+      // ExecutorDetailPage 读侧（queries.ts hooks）+ 写侧（页面直调）
+      get: vi.fn(),
+      getMetrics: vi.fn(),
+      getExecutions: vi.fn(),
+      getRuntimeConfig: vi.fn(),
+      update: vi.fn(),
+      reloadConfig: vi.fn(),
+      rotateToken: vi.fn(),
+      remove: vi.fn(),
+      setOffline: vi.fn(),
+      removalImpact: vi.fn(),
+      // AppDeploymentPage（部署下拉候选）/ ExecutorPackagesPage（机队版本摘要）
+      picker: vi.fn(),
+      list: vi.fn(),
+    },
+  };
+});
 const mockedExecutors = vi.mocked(executorsApi, true);
 
 vi.mock('../api/applications', () => ({

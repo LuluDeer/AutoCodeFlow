@@ -2,6 +2,13 @@
 /**
  * R18-B（2026-11-05）：**协议层**全栈并发 —— 真 HTTP 心跳 × 真调度占坑。
  *
+ * ⚠️ **不可离线（为什么它不在 test:guards:chain 里）** —— R251 由
+ * `check-selftests-wired` 判据要求「理由必须写在自己头注里」（方法学 469）：
+ * 它需要 **docker + 真 PG**（`docker exec … psql` 建表）**+ 真 HTTP 心跳**
+ * （起真实 admin-api 进程、走鉴权/DTO/service 全链路）⇒ **分钟级、依赖外部服务**，
+ * 与 `test:pg-race` 同档。**接入链会让整条离线守卫链变慢且在有 docker 的机器上才绿。**
+ * 处置：保持不接链，由 CI 的真机 job / 手动 `npm run test:executor-protocol-layer-race` 执行。
+ *
  * ## 与 R16 的区别（这是本轮立项的原因）
  *
  * R16 压的是 **SQL 层**写冲突（两条 psql 连接跑生产语句）；R17 是静态守卫。

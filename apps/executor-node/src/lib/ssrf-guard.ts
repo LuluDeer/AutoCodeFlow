@@ -1,3 +1,4 @@
+import { ssrfDnsLookup } from '../git-repo-dns-resolver';
 /**
  * E-04（DEEP_REVIEW 0ef3bbe）：SSRF 防护闸——deploy/update-package/download
  * 三条下载链统一调用。execute.ts 原有的内联 privateIpPattern 仅覆盖 RFC1918
@@ -12,7 +13,6 @@
  */
 
 import { config } from '../config';
-import * as dns from 'node:dns';
 // R08（2026-11-05，ADR-029）：元数据地址恒拒 —— 地址表来自契约生成物，三端同读。
 import { METADATA_ADDRESSES } from '../generated/protocol-metadata-addresses';
 // R90（ADR-034 步骤 2）：类别表与「开关可解锁集合」来自**契约生成物**（不再硬编码）。
@@ -166,13 +166,17 @@ export async function assertSafeDnsResolution(
 
   let addresses: Array<{ address: string; family: number }>;
   try {
-    // dns.promises.lookup 的 all:true 重载返回 LookupAddress[]、all:false 返回
-    // LookupAddress——union 在 Array.isArray 收窄时会被推成 never，这里显式
-    // 声明并收窄到稳定的「{address,family}」形状。
-    const result: unknown = await dns.promises.lookup(host, { all: true, verbatim: true });
-    addresses = Array.isArray(result)
-      ? (result as Array<{ address: string; family: number }>)
-      : [{ address: (result as { address: string; family: number }).address, family: (result as { address: string; family: number }).family }];
+    // R240：改走**可注入的共享解析器**（`git-repo-dns-resolver.ts`）。
+    //
+    // 改前直接 `dns.promises.lookup` ⇒ **测试也查真实 DNS**。本机代理把外部域名
+    // fake-IP 到 `198.18.0.0/15` 时，`example.com` 被解析到 RFC 2544 保留段
+    // ⇒ 凡用真实域名的 packageUrl 用例全部 400（实测 R239 之后仍有 3 例）。
+    // 与 gitRepo 面**共用同一个模块级解析器**：两条闸防的是同一件事，
+    // 留两份缝的话，将来加第三条路径又会漏。
+    //
+    // 形状保持 `{address, family}` 不变（`ssrfDnsLookup` 内部已做适配，
+    // family 由地址形态推断，与真实 lookup 同语义）。
+    addresses = await ssrfDnsLookup(host);
   } catch {
     // 解析失败 = 无法证明安全：fail-closed，绝不带病连接。
     throw new Error(

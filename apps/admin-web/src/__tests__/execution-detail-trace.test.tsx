@@ -19,6 +19,10 @@ vi.mock('../api/tasks', () => ({
     analyzeExecution: vi.fn(),
     get: vi.fn(),
     executions: vi.fn(),
+    // R284 起：日志空态三态判定（`useEmptyLogsVerdict`）会探一次日志存在性。
+    // 缺这个 mock 会让渲染期抛 `executionLogs is not a function` ⇒ 整屏空白 ⇒
+    // 所有断言都变成「找不到页面上的文字」（本用例此前 4 例全红正是这个原因）。
+    executionLogs: vi.fn().mockResolvedValue({ lines: [], logsPurged: false }),
   },
 }));
 vi.mock('../api/execution-reports', () => ({

@@ -26,6 +26,7 @@ import {
   ApiResponse,
   ApiOkResponse,
   ApiCreatedResponse,
+  ApiQuery,
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
@@ -221,6 +222,9 @@ export class ApplicationController {
     description: "应用列表（env 已掩码，webhookSecret 从不查询）",
     type: [ApplicationResponseDto],
   })
+  // R292：projectId 运行期可选（缺省⇒不过滤）；不写装饰器时 Swagger 把具名
+  // @Query 一律推断成 required: true。
+  @ApiQuery({ name: "projectId", required: false, type: String })
   // AUTH-01: 可选 projectId 过滤（"default" = 默认项目视图，含未分配行）。
   findAll(@Query("projectId") projectId?: string) {
     return this.svc.findAll(projectId);

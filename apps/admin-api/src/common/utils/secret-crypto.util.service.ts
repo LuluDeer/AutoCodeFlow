@@ -1,3 +1,4 @@
+import { createHmac } from "crypto";
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -127,5 +128,33 @@ export class SecretsCryptoService {
 
   decryptValue(envelope: string): string {
     return decryptSecretValue(envelope, this.key);
+  }
+
+  /**
+   * 从任意输入派生稳定匿名 ID，用于 TTFV 埋点（install_id / task_id_hash /
+   * execution_id_hash），复用本服务的 `secrets.key` 作为 HMAC 密钥，不向调用方
+   * 暴露原始 key（符合方案 §3.2 "复用 SecretsCryptoService 信封体系"的意图）。
+   *
+   * `purpose` 做域分离：`ttfv-install` / `ttfv-task` / `ttfv-execution`
+   * 保证同一个设备指纹或 UUID 在不同用途下生成不同 ID，防止跨语境关联
+   * （否则一个 install_id 会与 task_id_hash 相等，形成可追踪的统一标识）。
+   *
+   * 无 key（degraded 模式）时返回 null 而不是臆造 ID —— 隐私姿态是
+   * "无密钥不采集"：没有稳定的派生密钥时，任何"匿名 ID"都不具备稳定性与
+   * 不可预测性，宁可缺失也不能写入伪匿名标识。
+   *
+   * 取 HMAC 前 16 字节（32 hex chars）：在碰撞概率（2^128 空间，远低于
+   * 实际事件量级）与存储成本之间取得平衡；截断后的输出不含 input 子串。
+   *
+   * 拼接格式 `${purpose}:${input}` 的取值域假设：purpose 为固定枚举
+   * （ttfv-install / ttfv-task / ttfv-execution），input 为设备指纹或 UUID
+   * （hex / 固定格式，不含冒号），故无冒号歧义碰撞风险。
+   */
+  deriveAnonymousId(input: string, purpose: string): string | null {
+    if (this.key === null) return null;
+    return createHmac("sha256", this.key)
+      .update(`${purpose}:${input}`)
+      .digest("hex")
+      .slice(0, 32);
   }
 }

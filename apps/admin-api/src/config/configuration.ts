@@ -310,6 +310,22 @@ export default () => ({
         10,
       ),
     },
+    // R213：观测调用的超时上界（判据文档 §3.1）。
+    // 默认 5000ms = connectTimeout 的一半；0 ⇒ 不设超时（不推荐）。
+    observationTimeoutMs: parseInt(
+      process.env.AGENT_OBSERVATION_TIMEOUT_MS || "5000",
+      10,
+    ),
+    // R279：收件箱「Agent 会话失败」小节的统计窗口（小时，默认 24）。
+    // 为什么必须有窗口：收件箱是「今天要处理的」，不是全 history；无窗口时徽标
+    // 会随部署时长无限增大 ⇒ 运营学会忽略它（判据见
+    // docs/observability/agent-failed-session-criterion.md §2.2）。
+    // 非法值/缺失 ⇒ 消费侧回落默认（resolveFailedWindowHours），不在本层校验：
+    // 本层只做 env → 配置映射（与 mediaRetentionDays 同款形态）。
+    failedSessionWindowHours: parseInt(
+      process.env.AGENT_FAILED_SESSION_WINDOW_HOURS || "24",
+      10,
+    ),
     // 推理质量轮：上下文窗口（设计文档 02 §4.3 滑动窗口）。
     // 与预算**不同语义**：预算是会话快照（审计要回答"当时允许多少"），
     // 窗口每轮实时解析——换模型/调小窗口即刻生效，不追溯影响在跑的会话。

@@ -1,3 +1,4 @@
+import type { components } from '../types/generated/api-types';
 import { client } from './client';
 
 /**
@@ -185,6 +186,31 @@ export const agentApi = {
       stalled: boolean;
       reason: string | null;
       pendingJobs: number;
+      /** ⚠️ R211：**可能误报**（结构性量读失败）⇒ 前端显示「未知」，既不敢报也不敢说正常。 */
+      degraded: boolean;
+      /** ⚠️ R211：**可能漏报**（计数类读失败）⇒ 不改变结论，只在已报停摆时补一句。 */
+      degradedCounts: boolean;
+      /** ⚠️ R211：`workers === 0` 是否**是事实**（false ⇒ 那只是回落值）。 */
+      workersKnown: boolean;
+    }>,
+  /**
+   * R207：**队列是否空转**（worker 在册却不再消费新 job）。
+   *
+   * 判据见 `docs/observability/agent-queue-idle-criterion.md`；后端端点 R207 落地。
+   * ⚠️ 与 `queueStall` **互补**（不是重复）：停摆问「有没有人能消费」，空转问
+   * 「有人、却不再消费」。判定顺序上停摆优先 ⇒ `suppressedBy === 'queue-stall'`
+   * 时本徽标**必须不显示**（否则同一现象会点亮两个徽标，运营的注意力是稀缺资源）。
+   * ⚠️ `degraded` 必须一起拿：读失败时后端返回 `idleStuck: false`，但那是
+   * **不完整的判定** ⇒ 前端要显示「未知」而不是「正常」。
+   */
+  queueIdle: () =>
+    client.get('/agent/sessions/queue-idle') as Promise<{
+      idleStuck: boolean;
+      oldestAgeMs: number;
+      thresholdMs: number;
+      waitingCount: number;
+      retried: boolean;
+      suppressedBy: 'queue-stall' | null;
       degraded: boolean;
     }>,
   backloggedCount: () =>
@@ -246,4 +272,102 @@ export const agentApi = {
   denyApproval: (id: string, approvalKey: string) =>
     client.post(`/agent/sessions/${id}/approvals/${approvalKey}/deny`) as Promise<AgentApprovalDecision>,
   budget: () => client.get('/agent/budget') as Promise<AgentBudget>,
+  /**
+   * R278/U1：**全库待审批单**（一次请求，取代「先拉 50 个会话再逐个 listApprovals」）。
+   *
+   * ⚠️ 与 `stalledCount` / `pendingTakeoverCount` / `backloggedCount` 同款理由：
+   * **独立方法**，不混进 `list` / `listApprovals` 的调用计数——既有测试断言那两个
+   * 方法被调了几次，复用会让断言被一个用途完全不同的请求打乱。
+   *
+   * ⚠️ 契约（admin-api `agent-inbox.service`，brief §四）：
+   * - `total` / `sessionTotal` 为 `null` = **读不到（未知）**，绝不等于 0；
+   * - `truncated` = `returned < total`；**`total` 未知时为 `false`**——「是否截断」
+   *   本身不可知，那件事由 `degraded` 表达（两者各自只说自己的事，不互相顶替）；
+   * - `degraded` = 任一子查询失败（HTTP 仍 200）；整体不可用时后端给 503。
+   */
+  listPendingApprovals: (limit?: number) =>
+    client.get('/agent/approvals/pending', { params: limit ? { limit } : undefined }) as Promise<AgentPendingApprovalsResponse>,
+  /**
+   * R278/U1：**收件箱计数一次拿全**（取代 5 个分散请求：deployments / waiting /
+   * stalled / backlogged / queue-stall 各发一次）。
+   *
+   * ⚠️ 失败语义：单字段 `null` = 该计数读不到（未知），**不是 0**；
+   * `degraded: true` = 至少一个子查询失败。整体不可用时后端给 503，前端走 catch ⇒
+   * 该小节计数为 `null`，仍不伪装成 0。
+   */
+  inboxCounts: (signal?: AbortSignal) =>
+    client.get('/agent/inbox/counts', signal ? { signal } : undefined) as Promise<AgentInboxCountsResponse>,
+  /**
+   * R279：**窗口内的失败会话行**（收件箱「Agent 会话失败」小节的数据源）。
+   *
+   * ⚠️ `status=failed` **刻意只取 `failed`**：`budget_exceeded` 的处置路径不同
+   * （要改预算/换模型再重跑，不是「看看错在哪」），所以不进本小节的**行**；
+   * 但它**计入** `inbox/counts.failedSessions`（运营先要知道「有几条要处理」）。
+   * 两侧口径的这个差异是设计决定，不是遗漏 —— 改单边会让「计数 5、列表 3」
+   * 变成两个都不解释的数字。把对齐冲动写在这里，比写在提交信息里活得久。
+   *
+   * ⚠️ 与 `stalledCount` / `pendingTakeoverCount` / `backloggedCount` 同款理由：
+   * **独立方法**，不混进 `list` 的调用计数（既有测试断言那个方法被调了几次）。
+   *
+   * ⚠️ `since` 是后端新增的**可选** query：缺省 = 不筛（旧行为不变）；本模块总是显式传，
+   * 因为收件箱只关心「今天要处理的」窗口，窗口外的东西在会话列表里查得到。
+   */
+  listFailedSessions: (params?: { since?: string; page?: number; pageSize?: number }) =>
+    client.get('/agent/sessions', {
+      params: { status: 'failed', ...(params ?? {}) },
+    }) as Promise<{ items: AgentSession[]; total: number }>,
+  /**
+   * R311：TTFV 授权写入（POST /agent/telemetry/consent）。
+   *
+   * source 固定传 'admin-ui'：后端把它与 API 调用区分开，界面操作必须可追溯。
+   * 这里刻意用**内联类型**而不是新增顶格 interface —— 仓库的
+   * `check:web-type-drift` 棘轮冻结 `src/api/*.ts` 的顶层手写声明，
+   * 新增具名类型必须走生成合同或基线登记（两者都不在本次写域）。
+   * 字段与 admin-api `AgentTelemetryConsentResultDto` 逐字对齐；
+   * 组件侧的同形 local interface 在 TelemetrySettings.tsx 内定义。
+   */
+  telemetryConsent: (body: { optIn: boolean; source?: 'admin-ui' }) =>
+    client.post('/agent/telemetry/consent', body) as Promise<{
+      systemEnabled: boolean;
+      optedIn: boolean;
+      installIds: string[];
+      count: number;
+      source: string;
+    }>,
+  /** R311：TTFV 授权状态（GET /agent/telemetry/status）。 */
+  telemetryStatus: () =>
+    client.get('/agent/telemetry/status') as Promise<{
+      systemEnabled: boolean;
+      count: number;
+      /** R329：已知执行器总数（切片①契约），用于授权覆盖率展示。 */
+      knownExecutorCount: number;
+      /** R329：覆盖状态（切片①契约）。 */
+      coverage: 'no_executors' | 'partial' | 'full' | 'gate_off';
+      latestOptedAt: string | null;
+      installs: Array<{
+        installId: string;
+        optIn: boolean;
+        optedAt: string | null;
+        userIdHash: string | null;
+        source: string;
+      }>;
+    }>,
 };
+
+/**
+ * R278 收件箱聚合的两个**合同派生**类型。
+ *
+ * 为什么不再手写：`scripts/check-web-type-drift.mjs` 是「手写 API 类型只减不增」
+ * 的棘轮——手写副本与生成物同名同义却互不约束，后端改字段名时 tsc 照样绿、
+ * 前端静默读到 `undefined`。这三个 DTO 已由 admin-api 的 `@ApiOkResponse` 导出进
+ * `openapi.json` ⇒ 一律 `components['schemas'][…]` 派生（按定义不算手写）。
+ *
+ * 字段语义以**生成物**为准（与 `agent-inbox.dto.ts` 逐字一致）：
+ * - `total` / `sessionTotal` = `number | null`，`null` 是**读不到**，绝不等于 0；
+ * - `truncated = returned < total`；**`total === null` 时为 `false`**——
+ *   「是否截断」本身不可知，那件事由 `degraded` 表达（brief §四 裁决）；
+ * - `degraded` = 任一子查询失败，HTTP 仍 200。
+ */
+export type AgentPendingApprovalRow = components['schemas']['AgentPendingApprovalItemDto'];
+export type AgentPendingApprovalsResponse = components['schemas']['AgentPendingApprovalsResponseDto'];
+export type AgentInboxCountsResponse = components['schemas']['AgentInboxCountsResponseDto'];

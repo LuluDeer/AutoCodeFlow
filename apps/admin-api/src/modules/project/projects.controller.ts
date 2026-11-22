@@ -18,7 +18,12 @@ import { AppError } from "../../common/errors/app-error";
 // ARCH-23 / N-12：响应体类型标注。此前本控制器**零 swagger 装饰器**，
 // openapi.json 里 10 个 2xx 全部只有 description 没有 schema，前端无从生成类型。
 // 用专用响应 DTO（实体无 @ApiProperty 会 emit 空壳 schema → PK-15 闸红）。
-import { ApiOperation, ApiResponse, ApiOkResponse } from "@nestjs/swagger";
+import {
+  ApiOperation,
+  ApiResponse,
+  ApiOkResponse,
+  ApiQuery,
+} from "@nestjs/swagger";
 import {
   ProjectEntityDto,
   ProjectMemberViewDto,
@@ -143,6 +148,11 @@ export class ProjectsController {
       "不带 page/pageSize 查询参数时返回完整的 ProjectViewRow 数组（旧形态）；带任一参数时返回分页信封（list/items/total/page/pageSize/totalPages），范围为调用者可见的项目；q 对名称/描述做字面量模糊匹配",
     type: ProjectListPageDto,
   })
+  // R292：三个 query 参数运行期都可选（缺省⇒全量数组/不过滤）；不写装饰器
+  // 时 Swagger 把具名 @Query 一律推断成 required: true。
+  @ApiQuery({ name: "page", required: false, type: String })
+  @ApiQuery({ name: "pageSize", required: false, type: String })
+  @ApiQuery({ name: "q", required: false, type: String })
   async findAll(
     @CurrentUser() user: { id: number; role: UserRole } | undefined,
     @Query("page") page?: string,

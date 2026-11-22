@@ -16,6 +16,7 @@ import {
 } from "../entities/agent-session.entity";
 import { AgentStep, type AgentStepRole } from "../entities/agent-step.entity";
 import { buildStalledPredicate } from "./agent-stalled-thresholds";
+import type { RunOptions } from "./agent-job-options";
 import { clampPagination } from "./agent-pagination";
 import {
   AgentToolCall,
@@ -42,6 +43,7 @@ import {
   AGENT_APPROVAL_TTL_MS,
   AgentApprovalsService,
 } from "./agent-approvals.service";
+import { WAITING_FOR_APPROVAL_PREFIX } from "./agent-approval-waiting";
 import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 import { LeaderGateService } from "../../../common/leader-gate/leader-gate.service";
 // R9：23505 按约束名归因（四态语义见 util 头注）。
@@ -410,7 +412,9 @@ export function redactContextForStorage(
  * 混为一谈；「正文太大被截」另有 `truncated`。
  */
 export function buildEventBody(value: unknown): AgentEventBody | null {
-  if (value === null || value === undefined) return null;
+  // `== null` 同时覆盖 null 与 undefined —— 与本文件 `redactNullableText` /
+  // `redactContextForStorage` 的同款写法一致（一处判据，不写两遍等价比较）。
+  if (value == null) return null;
 
   if (typeof value === "string") {
     if (value.length === 0) return null;
@@ -486,6 +490,16 @@ export type AppendedStep = AgentStep & {
 @Injectable()
 export class AgentSessionService {
   private readonly logger = new Logger(AgentSessionService.name);
+
+  /**
+   * R296 尾钩端口：markWaiting 命中后补偿「granted 未消费」的入队。
+   * 由 AgentModule.onModuleInit 反向注册（本服务不注入 wakeup，避免 DI 成环）。
+   */
+  approvalWakeupProbe: ((sessionId: string) => Promise<void>) | null = null;
+
+  attachApprovalWakeupProbe(probe: (sessionId: string) => Promise<void>): void {
+    this.approvalWakeupProbe = probe;
+  }
 
   constructor(
     @InjectRepository(AgentSession)
@@ -612,10 +626,7 @@ export class AgentSessionService {
 
   async requireById(id: string): Promise<AgentSession> {
     const s = await this.findById(id);
-    if (!s)
-      throw new AppError("AGENT_SESSION_NOT_FOUND", {
-        sessionId: id,
-      });
+    if (!s) throw new AppError("AGENT_SESSION_NOT_FOUND", { sessionId: id });
     return s;
   }
 
@@ -629,6 +640,18 @@ export class AgentSessionService {
      */
     /** 卡住筛选：传 `{ minutes }` 即启用（阈值分钟数，省略 ⇒ 后端默认 15）。 */
     stalled?: { minutes?: number };
+    /**
+     * R279：只列 `createdAt >= since` 的会话。
+     *
+     * ⚠️ **可选，缺省 = 不筛 = 旧行为一字不变**：收件箱的「Agent 会话失败」小节
+     * 用它取窗口内的行数据（`?status=failed&since=<ISO>`），而列表页/SOP 兜底等
+     * 既有调用方都不传它 ⇒ 谓词一条不多。
+     *
+     * 为什么用 `createdAt` 而不是 `updatedAt`：判据问「这段时间里**创建**的会话里
+     * 有几个是失败的」（与 `countFailedSessions` 同口径）；`updatedAt` 会被重跑 /
+     * resume 刷新 ⇒ 旧会话会凭空落进当期窗口。
+     */
+    since?: Date;
     page?: number;
     pageSize?: number;
   }): Promise<{ items: AgentSession[]; total: number }> {
@@ -652,6 +675,9 @@ export class AgentSessionService {
       qb.andWhere("s.status = :status", { status: options.status });
     if (options.stalled)
       qb.andWhere(...buildStalledPredicate(options.stalled.minutes));
+    // R279：可选时间下界（缺省 ⇒ 不加谓词，旧行为不变）。
+    if (options.since)
+      qb.andWhere("s.createdAt >= :since", { since: options.since });
     qb.orderBy("s.createdAt", "DESC")
       .skip((page - 1) * pageSize)
       .take(pageSize);
@@ -684,10 +710,7 @@ export class AgentSessionService {
   }
 
   async listSteps(sessionId: string): Promise<AgentStep[]> {
-    return this.steps.find({
-      where: { sessionId },
-      order: { seq: "ASC" },
-    });
+    return this.steps.find({ where: { sessionId }, order: { seq: "ASC" } });
   }
 
   /**
@@ -775,7 +798,8 @@ export class AgentSessionService {
    * 扫描撞上在跑会话）或已收敛终态——输家不得进入推理循环（GAP-1：此前
    * affected 被丢弃，输家照跑，B-8 声称的双跑守卫实际不成立）。
    */
-  async markRunning(id: string, expectWaitingFor?: string): Promise<boolean> {
+  async markRunning(id: string, wake: RunOptions = {}): Promise<boolean> {
+    const { expectWaitingFor: expect, expectTotalSteps: steps } = wake;
     // B-8：CAS 双保险——只有「非 running 且未终态」的会话能被置 running。
     // ① 双 worker 领到同一会话（重复入队的残余窗口）时只有一方真正置态；
     // ② 防住把终态会话拉回 running 的状态机倒退。
@@ -802,11 +826,10 @@ export class AgentSessionService {
           terminal: AGENT_TERMINAL_STATUSES,
         },
       );
-    if (expectWaitingFor !== undefined) {
-      qb.andWhere('"waitingFor" IS NOT DISTINCT FROM :expect', {
-        expect: expectWaitingFor,
-      });
+    if (expect !== undefined) {
+      qb.andWhere('"waitingFor" IS NOT DISTINCT FROM :expect', { expect });
     }
+    if (steps !== undefined) qb.andWhere('"totalSteps" = :steps', { steps });
     const res = await qb.execute();
     return (res.affected ?? 0) > 0;
   }
@@ -831,8 +854,7 @@ export class AgentSessionService {
       where: { id },
       select: { id: true, startedAt: true, status: true },
     });
-    if (!s?.startedAt) return true;
-    return s.status === "waiting_input";
+    return !s?.startedAt || s.status === "waiting_input";
   }
 
   /**
@@ -1037,6 +1059,16 @@ export class AgentSessionService {
       this.logger.debug(
         `markWaiting(${id}) skipped — the session is already terminal`,
       );
+    } else {
+      // R296：必须在 UPDATE 命中之后——提前 probe 会回读到 running，补偿失效。
+      // 旁路 fail-closed：只 warn 不 throw，绝不影响审批申请主链。
+      try {
+        await this.approvalWakeupProbe?.(id);
+      } catch (err) {
+        this.logger.warn(
+          `markWaiting(${id}) approval wakeup probe failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 
@@ -2087,8 +2119,9 @@ export class AgentSessionService {
    * PK-19 续：等待人工输入的会话超时收口（30 天）。
    *
    * 审批面由 `sweepStaleApprovals`（7 天）处理；这里兜住「等待澄清」等其它
-   * waiting_input 场景——它们没有 TTL 时同样永久挂起。仍挂在**未过期**审批上的
-   * 会话跳过（交给审批 TTL 流程，避免两套规则互相抢）。
+   * waiting_input 场景——它们没有 TTL 时同样永久挂起。仍挂着 pending 审批的
+   * 会话跳过（交给审批 TTL 流程）；R296 竞态下 granted 未 consume 的单也跳过
+   * （否则用户已批准的会话会被误判 abandoned → 收敛 failed）。
    */
   async sweepAbandonedWaitingInput(now: Date = new Date()): Promise<number> {
     const cutoff = new Date(now.getTime() - STALE_WAITING_INPUT_TIMEOUT_MS);
@@ -2099,9 +2132,9 @@ export class AgentSessionService {
     let converged = 0;
     for (const row of rows) {
       if (
-        row.waitingFor?.startsWith("等待审批") &&
+        row.waitingFor?.startsWith(WAITING_FOR_APPROVAL_PREFIX) &&
         this.approvals &&
-        (await this.approvals.hasPendingForSession(row.id))
+        (await this.approvals.hasPendingOrGrantedForSession(row.id))
       ) {
         continue;
       }
@@ -2144,7 +2177,8 @@ export class AgentSessionService {
         select: { id: true, status: true, waitingFor: true },
       });
       if (!session || session.status !== "waiting_input") continue;
-      if (!session.waitingFor?.startsWith("等待审批")) continue;
+      if (!session.waitingFor?.startsWith(WAITING_FOR_APPROVAL_PREFIX))
+        continue;
       if (await this.approvals.hasPendingForSession(sessionId)) continue;
       await this.finish(sessionId, "failed", {
         errorMessage:

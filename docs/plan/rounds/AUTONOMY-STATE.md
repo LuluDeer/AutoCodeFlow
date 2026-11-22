@@ -1,44 +1,38 @@
-# AUTONOMY-STATE — 状态卡（R192 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R289 收尾交接版 · ≤50 行）
 
-**基线**：`1d07d43b`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
-**会话**：第 161 轮 · 并行第 90–91 批 · **三条线并行**（覆盖登记 / agent 自检 / protocol 评估→抽取）
+**基线**：`bda8c9ce`～`bbd3e0ae` · 本轮 **4 个提交**（R289）· **守卫链 123 段，123/123 = exit 0**
+**轮次特征**：PM 编排 4 Agent（`be-sop` / `fe-sop` / `sec-cli` / `qa-auditor`）四阶段看板流水线，跨角色拦截 5 处高危缺陷并达 **级别 4b 真机浏览器终验**。
 
-## 本轮落地（3 项 · 已复核 · 链 102/102）
-**① 修掉一个「CI 一直红着」的既存缺陷（本轮最高价值）** —— `node scripts/agent-boundary-check.mjs` 在 HEAD 上**退出 1**（`denied 落库` / `awaiting_approval 落库`）。**根因**：**R99（`61e9c0fa`，ADR-031 步骤 4）** 把台账行构造块搬进 `apps/admin-api/src/modules/agent/tools/tool-call-row.util.ts` 的 `deniedRow()` / `awaitingRow()`，而断言仍**只读** `tool-executor.service.ts` 的源码文本 ⇒ 字面量不在了 ⇒ **判据失真，却没有任何东西发现它**（它不在 jest 里、主跑只打印「✘」不阻断 PR、没人跑）。**修法**（判据强度不变、覆盖面扩大，照 R157 对 web 源码断言的同类处理）：**两处一起读** —— 既要求构造器里写着这两个 `status`（**定义处**），也要求执行体**真的调用了**这两个构造器（否则「定义了但没人用」也会绿）⇒ exit 0，**CI 的 admin-api job 恢复绿**。（→ 310）
-**② 4 个 `agent-*` 守卫补 `--selftest`（`0df0d731`）** —— **两个前提被实测推翻**：(a) `check-guards-wired.mjs` 的 `scanGuards()` **只收 `/^check-.*\.mjs$/`** ⇒ `agent-*` **从不在判据③ 扫描面**（文件头 :861 自己写了）⇒ 登记 `SELFTEST_ALLOWLIST` 会立刻报「陈旧自检豁免」⇒ **`covered-elsewhere` / `one-side` 不可执行**，豁免表**一个字节没动**；(b) 四守卫的判据本体**未被 jest spec 完全覆盖**（trigger 13 / boundary 约 20 / runtime 6 / sop 约 30 组断言零覆盖）⇒ 不能豁免 ⇒ 全走 **B**：把**纯源码文本断言**抽成 `checkSourceTextGroups(rootDir)`，**主跑与自检共用同一个函数**（结构上排除「自检抄一份判据」），`--selftest` 自建夹具 + 跑**真子进程** + 断言退出码与报错文本 + 每条反例配**正例控制组**，**入口分派放在 `require("typescript")` 之前** ⇒ 自检零依赖能进本地门禁；`test:agent` / `test:sop` 改成 `--selftest && 主跑`（**两面只接同一个入口**）。**边界如实写进头注**：转译+运行层夹具跑不了 ⇒ 自检只覆盖**纯文本层**（= jest **不**覆盖的那一半）。顺带修 1 条 trigger 判据失真（`scope: {}` 命中的其实是 **cron 路径**）⇒ 计数 79 → 80。
-**③ 覆盖率登记 34 → 54（三批 24 条）+ `protocol-three-way` 判据层抽取（`6631eb89`）** —— 登记侧**一处真实踩坑**：初版按「我以为的注册函数名」写 helper ⇒ 哨兵立刻结构红并点名「**守卫打印 17，源码里实际数出 10**」⇒ **helper 名字是判据的一部分**（→ 311）；并修 **HEAD 的一处坏状态**（并发写者提交了登记却没提交对应文件 ⇒ **中间提交是红的** ⇒ 登记表与它引用的守卫**必须同一个提交**，→ 312）。抽取侧：R160 只读评估证实**接线层完全裸奔**（9 条变异现有 25 条自检**一条都抓不到**）；结论「值得拆、**不需要 ADR**」；本步**只搬代码**（新增 `scripts/lib/protocol-three-way-judge.mjs` 非注释 536，抽出期望推导 10 函数 + 比对 6 函数 + 8 常量 + **新增导出 `judgeAll`**；主脚本 1699 → **1061**，**探针执行留在主脚本**）⇒ **买到「可测试性」不是「保护」**（→ 313）。
+## 已交付（用户可见面，R289）
 
-## 验证 / 红演示（真实 exit，HEAD `6631eb89` 实测）
-- **验证**：`test:guards:repo` **0（102/102，段数未变）** · `check:guards-wired` **0**（自检面 **91/90 不变**、豁免 **0 新增**、**54 已登记 / 44 未登记**，扫描面 **98**）· 4 个 `agent-*` 的 `--selftest` **全 0**（9/7/8/8）· 4 个主跑 **全 0** · `test:agent` **0** · `test:sop` **0** · `size-caps` **0** · `check-script-main-guard` **0** · `check:atlas-counts` **0** · `test:docs` **0**。
-- **红演示**：floor 临时改 **99**（> 实测 11）⇒ 判据④**红**并点名「**用例计数 11 < 下界 99**」；还原 ⇒ 0。另：初版 helper 名写错时哨兵**主动结构红并点名两个数字** ⇒ **判据自己抓到了判据的错**。
+| 项 | 一句话 |
+|---|---|
+| `blocked` 工单单条可处置 | 新增 `POST /api/sop/assignments/:assignmentId/cancel`（可选 `reason<=500`）+ `/inbox` 阻塞/澄清深链直达 `/sops?sop=<id>&assignment=<aid>` 高亮目标行与澄清 → 二次确认单条取消 → 衔接重派（**不误杀同 SOP 兄弟工单**） |
+| 取消后防复活 CAS + 拒答 | 内联修 `sop.service.ts:714`（`pollPending`）与 `:1046`（`ingestClarification`）缺 `status` 谓词的并发复活漏洞；`humanReply` 拦 `cancelled\|completed`、放行 `failed` |
+| 审批预览值级脱敏（C1） | `sanitize-secrets.util.ts` 单点补 PEM（多行/转义 `\n`/未闭合保尾）、裸 JWT、供应商前缀、`redis://:pass@host` 空用户名、`Authorization: Basic` 先行序与词元级高熵通道 A/B（扫 168 份 spec 零误伤） |
+| CLI `deploy stop` 确认门（A3） | `acf deploy stop` 补 `-y/--yes` + `confirmDestructive`（非 TTY 缺 `--yes` 返码 2 且 0 请求），收口 `OPEN-DECISIONS.md` A3 |
+| 529 弱等待清扫（#2） | `settings.ai-providers-load-error.test.tsx` 改等终态文案 `findByText('按用途选用模型')` + deferred Promise 钉死在途骨架帧，连跑 5 轮 20/20 零偶发 |
 
-## 教训（310–313）
-- **310「判据自己会腐烂，且比产品代码更难发现」** —— `agent-boundary-check` 的两条断言在 R99 重构后**已失真**，却①不在 jest 里、②主跑只打印不阻断 PR、③没人跑 ⇒ **CI 一直红着**。纪律：**源码文本断言必须绑定「它读的那个文件 / 那段代码的所有者」**；被搬迁的代码要在**同一提交**里更新所有「按路径读它」的断言（承 250/303）。
-- **311「helper 名字是判据的一部分」** —— 登记表 `helper` 与守卫 `printCoverageBanner` 第二参**必须逐字相同**；猜一个「语义上应该对」的名字会让哨兵结构红。**判据的输入不是「意思对」而是「字面对」**。
-- **312「登记表与它引用的文件必须同一个提交」** —— 分开提交会留下一个**中间提交是红的**，而 CI 只看 HEAD ⇒「我先提登记表、文件稍后补」这个习惯会把主干钉红。
-- **313「抽取买到可测试性，不是保护」** —— 把判据从 I/O 里拔出来、纯函数化、搬进 lib，只让它**能被测**；**没有夹具就仍然裸奔**（本轮反证：删一整支 `hardFailures` 后自检仍 25/25 全绿）。⇒ 拆分类重构的**验收必须包含「装夹具之后才敢说保护」**。
+## 验证（真实 exit · 按 AGENTS.md §4.4 定级）
 
-## 剩余 backlog（`§7.0` 主表 **3** 条）
-`ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（**partially-resolved**：3 个形态中 2 真缺陷 + 1 时序假设已修；`coverage:web` 连续 exit 0；**不声称根除**；nightly 采样通道已上线但**尚无样本** ⇒ `unverified@4ef8b24d`）· `release-notice-ops`（需运维窗口）。
+- **级别 4b（真浏览器+真后端+真 PG/Redis）**：`level4b-sop-cancel-e2e.mjs` **7/7 Steps = 0**（A 取消、兄弟单 B 保持 `blocked`、`audit_logs` 三类凭据全脱敏、`/inbox` 双节 `2→1`）。
+- **级别 3（真 PG/Redis+真 Nest）**：`sop-assignment-cancel.integration.spec.ts` **4/4 = 0**（含 `Promise.all` 行锁并发双取消 1 胜 200 / 1 败 400）。
+- **级别 2 & 守卫**：SOP 后端 **24 套 415 例** · C1 **51/51** · CLI **16 套 466 例** · 前端相关 **13 套 149 例** · `openapi-response-schema` 上探 **251→252** · 守卫链 **123/123 = 0** · 11 组反证 `matched/total = 1.0` 且 `check:mutation-residue = 0`。
 
-## 候选池（已排序）
-1. **「队列空转」接线**（S）—— R206 只做了判据 + 纯函数（6/6）。接线要：
-   `getWaiting(0, 1)` 取最老 job（**注意 `end` 是闭区间**，会取 2 个）+ `Date.now() - timestamp`
-   · 阈值**从墙钟预算推导**（R403，**不要写死魔法数**）· **只告警不处置**。
-2. **自动补 enqueue**（M）—— 要定「谁补 / 补几次 / 怎么防反复补」⇒ **独立立项**。
-3. **五个徽标加低频自动刷新**（S）—— 现状都只随主列表刷新；五个徽标**同时**出现时
-   运营的注意力是稀缺资源 ⇒ 可考虑「只轮询最严重的那一个」（**待定**，需先问价值）。
-4. **`saveDeadLetter` 死代码**（S）· **判据⑨「跟随变量」盲区**（M，R168 已登记「只登记不立项」）。
-5. **`§7.0` 主表 3 条**（**外部阻塞**）：`ci-pg-race-unverified` · `web-flake-not-reproduced` ·
-   `release-notice-ops`。
+## 未结项（如实，勿当缺陷）
 
-**已完成里程碑**：**前端 P3 九条全部修完**（R188–R195）· **R169 审计 17 条全闭环** ·
-**`no-explicit-any` 三段全开、73 → 0**（R196）· **「读失败渲染成没有」在 admin-web 已清零**（R197）·
-**「异常接管台」四个徽标齐了**（R198/R199/R203/R205）· **五个判据严格互补**
-（待接管 · 卡住 · 积压 · 停摆 · **空转**）· **两级阈值不变式**（R200）。
+- **23 条 `runtime-optional` query 欠账**（`scripts/query-param-required-allowlist.json`，跨 7 个 controller，`reviewBy 2027-03-31`）：本轮为保写域聚焦未并入。
+- `apps/admin-web/e2e/agent-session-journey.spec.ts:145` 离线夹具未登记 R278/R280/R286 新增的 4 条顶栏/收件箱轮询路由（存量夹具漂移，非本轮引入）。
+- 在途 `sop_review` Agent 直调 `SopService.replyClarification` 与取消含 `resolution IS NULL` 澄清单的 `sweepStuckClarifications` 通知属已知残余（不动 `sop.service.ts` 1708 顶格逻辑）。
 
-## 方法学（累积，末条 = 403）
-403 阈值不该是魔法数，应**由某个已有量推导**（本仓的墙钟预算就是「单 job 合理耗时上界」）·
-402 说「做不到」必须写出**查了哪些 API/源码**，**能指到行号**才算查过（否则它变成永久路障）·
-401 注册表类观测用**计数接口** · 400 「读不到」有两种形态 ⇒ **部分失败要单独建模** ·
-399 加新判据先列「已有判据各覆盖哪一格」
+## 下轮第一步（按价值排序，取 1 条）
+
+1. **批量收口 23 条 `runtime-optional` query 欠账**（7 个 controller 补 `@ApiQuery({required:false})` + OpenAPI 五步重导出 + 回收 allowlist）。
+2. 补齐 `apps/admin-web/e2e/agent-session-journey.spec.ts` 离线夹具的 4 条收件箱/顶栏 mock 路由，恢复 `test:e2e:agent` 4/4 全绿。
+3. 推进 `AGENT_HANDOFF.md:460` 直接 API 客户端在 Agent 会话 `running` 态处理新审批单的竞态验证。
+
+## 方法学（本轮 534–536，承 533）
+
+- **534** 前端分支禁止硬编码猜测的 HTTP 状态码（如误猜 409），必须查后端错误目录或按 `errorCode` 判定（`SOP_ASSIGNMENT_TERMINAL` 实为 400）。
+- **535** 新增「取消/终态」写路径时，必须反向审计同表所有非终态 CAS `UPDATE` 是否带了 `status NOT IN (terminal)`，否则在途 `poll`/`ingest` 会把已取消行原地复活。
+- **536** 正则字符类 `[...]` 内的 `-` 必须置尾或转义为 `\-`；中置 `=-\\` 会静默变成 ASCII 区间 `61..92`（吞入 `> ? @ [`），只能靠边界字符对抗探针抓出。

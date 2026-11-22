@@ -412,7 +412,15 @@ describe('SopsPage UX 边界（首载失败态 / 草稿标题必填）', () => {
       });
 
       // 二段确认里出现「先查看未结束的指派」
-      const viewBtn = await screen.findByText('先查看未结束的指派');
+      //
+      // ⚠️ 用 `getAllByText(...)[last]` 而不是 `findByText`：antd `Modal.confirm` 的
+      // 内容是渲染进**独立 portal** 的，而 `Modal.destroyAll()` 是**异步**的（等动画）——
+      // 同一用例内若之前已开过一次确认框，上一份 portal 可能仍在 DOM 里
+      // ⇒ `findByText`（要求唯一命中）会报 `Found multiple elements`。
+      // 取**最后一个**是安全的：portal 按打开顺序追加，最后那个必然是本次打开的。
+      // 这不是放宽断言——下面仍断言了 assignments 被调用、cancelAssignments 未被调用。
+      const viewBtns = await screen.findAllByText('先查看未结束的指派');
+      const viewBtn = viewBtns[viewBtns.length - 1];
       await act(async () => {
         fireEvent.click(viewBtn);
       });

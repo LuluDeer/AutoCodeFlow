@@ -98,8 +98,25 @@ function selectByLabel(label: string) {
 }
 
 async function pickTag(label: string, tag: string) {
+  // R447（全量 350 文件并发 run3 实测本文件 :203 用例 15s 超时、单跑 12/12 绿）：
+  // 标签选项不是 react-query 缓存数据，而是 useTaskFormReferenceData 的
+  // useEffect 异步 setAllTags（useTaskFormReferenceData.ts:102-119/199）。
+  // 共享 QueryClient 让 findBy* 秒回，却证明不了选项已进 DOM：探针实测
+  // mousedown 时下拉已带 ant-select-open、但 .ant-select-item-option 数为 0，
+  // 全量并发下该窗口从单跑 ~0.3s 放大到 2.5~3s。首拍 mousedown 若落在
+  // 「Select 挂载了、选项还没到」的窗口里，随后的 waitFor(getAllByText) 就
+  // 会空等——waitFor 的 10s 预算与用例 15s 预算在并发下竞速，外面看到的是
+  // Test timed out in 15000ms。
+  // 修法（R445“补点自愈”同款）：每一拍检查下拉是否仍 open，未开则补一次
+  // mousedown，直到目标选项文本真正出现。不加大 timeout、不放宽断言。
   selectByLabel(label);
-  await waitFor(() => expect(screen.getAllByText(tag).length).toBeGreaterThan(0));
+  await waitFor(() => {
+    const selector = fieldSelect(label);
+    if (!selector.classList.contains('ant-select-open')) {
+      fireEvent.mouseDown(selector);
+    }
+    expect(screen.getAllByText(tag).length).toBeGreaterThan(0);
+  });
   const matches = screen.getAllByText(tag);
   fireEvent.click(matches[matches.length - 1]);
 }
@@ -202,15 +219,26 @@ describe('TaskFormPage NF-04 form wiring', () => {
 
   it('switching to broadcast keeps constraints and switching to pinned disables controls without dropping them', async () => {
     renderPage();
+    // R447：交互前先等主表单挂载的直接 DOM 信号（R445 python-wiring 同款）。
+    // 共享 QueryClient 下 getByRole 可能命中上一帧的 Radio，但亲和选项与
+    // 模式切换告警走的是 useEffect/setState，两者不同拍；并发把窗口放大。
+    await screen.findByPlaceholderText('daily-report');
     const broadcast = screen.getByRole('radio', { name: /广播/ });
     fireEvent.click(broadcast);
+    // 等 broadcast 状态真正落地（专属告警挂载）再点亲和下拉，避免交互
+    // 落在旧渲染节点上；断言本身（亲和仍可用）原样保留。
+    await waitFor(() => expect(screen.getByTestId('broadcast-pin-cleared')).toBeTruthy());
     expect(fieldSelect('亲和标签').classList.contains('ant-select-disabled')).toBe(false);
     await pickTag('亲和标签', 'edge');
 
     const pinned = screen.getByRole('radio', { name: /指定执行器/ });
     fireEvent.click(pinned);
-    expect(screen.getByTestId('pinned-affinity-disabled')).toBeTruthy();
-    expect(fieldSelect('亲和标签').classList.contains('ant-select-disabled')).toBe(true);
+    // pinned 的告警与 disabled class 是同一状态的两个 DOM 信号；waitFor
+    // 只等状态落地，两条业务断言内容不变（真没禁用仍会转红）。
+    await waitFor(() => {
+      expect(screen.getByTestId('pinned-affinity-disabled')).toBeTruthy();
+      expect(fieldSelect('亲和标签').classList.contains('ant-select-disabled')).toBe(true);
+    });
     fireEvent.change(await screen.findByPlaceholderText('daily-report'), { target: { value: 'mode-job' } });
     fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), { target: { value: 'main.py' } });
     // Pinned requires an executor; use the pure helper assertion for payload retention

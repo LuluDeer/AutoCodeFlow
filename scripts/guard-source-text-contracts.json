@@ -395,273 +395,459 @@
       "dispositionNote": "R6 新增登记。路由下界 20 远低于实际，故必须有计数自检兜底。",
       "reviewBy": "2026-12-15",
       "owner": "arch-core"
-    }
-  ],
-  "coverageBacklog": [
-    {
-      "id": "GSTC-B01",
-      "spec": "scripts/check-agent-event-limits.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/agent/entities/agent-event.entity.ts",
-        "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts"
-      ]
     },
     {
-      "id": "GSTC-B02",
-      "spec": "scripts/check-agent-stub-fidelity.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "id": "GSTC-019",
+      "tier": "P0",
+      "spec": "scripts/check-throttler-whitelist.mjs",
+      "specLine": 308,
+      "needle": "readFileSync(abs, \"utf8\") 后 includes(...) 断言常量与消费函数存在",
+      "reads": [
+        "apps/admin-api/src/common/guards/executor-aware-throttler.guard.ts"
+      ],
+      "asserts": "读实现源码 + 断言 `EXECUTOR_MACHINE_PATH_PATTERNS` 常量存在、`isExecutorMachinePath` 被消费 ⇒ 属于「重构即红」的 P0 类",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的**全部价值**就是「白名单与真实机器面路由同源」：它必须读 guard 源码才能核对常量与消费点。若改成不读源码的形态，它就只能核对一份手抄清单 —— 那正是它要防的漂移。故接受它对源码结构的依赖，代价是 guard 重命名/搬家时必须同步更新本脚本（脚本已用「事实源缺失 ⇒ 结构红」兜住这条，不会静默变永真）。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-020",
+      "tier": "P0",
+      "spec": "scripts/check-agent-event-limits.mjs",
+      "specLine": 147,
+      "needle": "parseConstNumber：match(/export const X = (...)/) 后 **求值** 成数字再比上下界",
+      "reads": [
+        "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts",
+        "apps/admin-api/src/modules/agent/entities/agent-event.entity.ts"
+      ],
+      "asserts": "读实现源码后把 `AGENT_EVENT_BATCH_MAX` / `_BYTES` 等常量 **求值成数值**，断言其与 jsonb 最坏转义倍数（6）的乘积不超过上限 ⇒ 断的是**数值关系**，不是文本形态",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值是「批量上限与最坏转义膨胀的**数值**关系」：它必须读源码常量并求值，否则只能比对手抄的数字，而手抄数字正是它会漂移的东西。故接受源码依赖；代价（常量改名/搬家）已由 `parseConstNumber` 的显式错误（`找不到 export const X` / `不是纯算术字面量`）兜住，不会静默变永真。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-021",
+      "tier": "P2",
+      "spec": "scripts/check-migrations.mjs",
+      "specLine": 220,
+      "needle": "stripComments(readFileSync(迁移文件)) 后测 SQL 文本里的 `CONCURRENTLY` / `SET statement_timeout = 0` / `RESET` / `transaction = false`",
+      "reads": [
+        "apps/admin-api/src/migrations"
+      ],
+      "asserts": "断的是**迁移 SQL 文本形态**：含 `CREATE/DROP INDEX CONCURRENTLY` 就必须同时出现那三条语句级豁免。判据对象**就是** SQL 的文本形态（注释已由 `stripComments` 剥掉）⇒ 按 tierDefinitions 属 P2「保留，非债」",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据不可能脱离 SQL 文本：PostgreSQL 是否允许在事务块内跑 CONCURRENTLY、连接池超时会不会取消建索引，**全都体现在那几句 SQL 里**。改成「不读 SQL」就只能靠人工 checklist，而那正是它会漏的地方。⇒ P2：判据对象即文本形态，保留且非债。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-022",
+      "tier": "P1",
+      "spec": "scripts/check-compose-service-env.mjs",
+      "specLine": 411,
+      "needle": "parseControllerConfigKeys(readFileSync(registry.controller.ts)) 与 parseComposeServices(readFileSync(docker-compose.yml)) **两侧键集合对账**",
+      "reads": [
+        "docker-compose.yml",
+        "apps/admin-api/src/modules/registry/registry.controller.ts"
+      ],
+      "asserts": "**跨格式读取**：从 YAML 的 `services.admin-api.environment` 抽出注入键，从 TS 的 `config.get('X')` 抽出读取键，断言「读了的都必须注入，且注入值非空」。两侧都先剥注释（YAML `#` / TS 行注释），并各有下界（`MIN_ADMIN_ENV_KEYS=15` / `MIN_CONTROLLER_KEYS`）防扫描器失效退化永真",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值就是**跨两种格式对账**：YAML 里注入了什么、TS 里读了什么，只有同时读两边才能发现「读了但没注入」（容器起得来但运行时 500）。按 tierDefinitions 属 P1「跨语言/跨仓读 ⇒ 最脆」—— 它天然依赖两个文件的**路径与书写形态**，改任一侧的写法就可能让扫描器失明；这一点已由两处下界断言 + 「事实源缺失 ⇒ 结构红」作为补偿控制，故接受。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-023",
+      "tier": "P0",
+      "spec": "scripts/check-password-policy-sync.mjs",
+      "specLine": 332,
+      "needle": "extractBackendPolicy / extractFrontendPolicy 抽出 minLength 与三条正则，再 `charSet(compile(re))` **展开成字符集逐字符比对**",
+      "reads": [
+        "apps/admin-api/src/modules/users/users.service.ts",
+        "apps/admin-web/src/utils/passwordPolicy.ts"
+      ],
+      "asserts": "比的是**语义层的值**：`PASSWORD_MIN_LENGTH` 数值相等，且三条规则（uppercase/digit/special）**正则展开后的字符集**两侧一致。不是比正则字面量的文本形态 —— 两侧写 `/[A-Z]/` 与 `/[A-Za-z]/` 会被如实判成「后端独有」。抽取失败（找不到函数/正则）**分流到结构错**（判据不可信），不会静默放行",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值是「前后端密码策略**真的等价**」—— 用户在后端能设的密码，前端不能拒；反之亦然。要做到这点**只能**从两侧源码抽出数值与正则并**编译比对**（比文本会漏掉 `/[A-Z]/` vs `/[a-z]/` 之外更隐蔽的写法差异，比手抄清单则会漂移）。⇒ 接受源码依赖；代价（函数名/常量名改动）已由抽取失败 ⇒ **结构错**兜住，不会静默变永真。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-024",
+      "tier": "P0",
+      "spec": "scripts/check-cli-doc.mjs",
+      "specLine": 115,
+      "needle": "match(/\\.command\\(/g).length 数源码里的命令注册次数，再与文档标题 `### …（N）` 的数字逐节比对",
+      "reads": [
+        "packages/acf-cli/src/commands",
+        "docs/atlas/05-interfaces/cli.md"
+      ],
+      "asserts": "断的是**代码结构的计数**：每个命令文件里 `.command(` 的出现次数（+ `new Command(` 的根命令数）必须等于文档该节标题里写的数字。文档那侧是**手写**的 ⇒ 代码加了命令而文档没跟，立刻红",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「文档里的命令数不是手抄的、而是与代码同步的」。只有数源码才能发现「加了 .command( 但忘了改文档」——那正是它会漂的地方（本仓有过 CLI 计数漂移史）。⚠️ **已知形态风险**：计数直接对 `readText` 的原文跑 `match`，**未剥注释** ⇒ 源码注释里若出现 `.command(` 会被多算。当前 `packages/acf-cli` 里 0 处（已核）；若将来出现，症状是「文档数字对不上但代码没改」，可自愈（补注释说明即可），不会掩盖真缺陷。故接受现状，风险已记录在此。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-025",
+      "tier": "P0",
+      "spec": "scripts/check-alerts-rules.mjs",
+      "specLine": 1371,
+      "needle": "parseYamlSubset(alerts.yml) → validateAlertsDocument(doc, {metricNames, runbookAnchors, gauges}) 做**语义级对账**（alert/expr/for/severity 四元组 + 指标名 ∈ 代码清单）",
+      "reads": [
+        "config/monitoring/alerts.yml",
+        "docs/observability/grafana-dashboard.json",
+        "docs/observability/alerting-rules.yml",
+        "docs/observability/README.md",
+        "docs/operations.md"
+      ],
+      "asserts": "把 `alerts.yml` **解析成结构树**后断的是**语义**：每条规则的 alert 名合法且唯一、expr 引用的指标名必须存在于「代码指标清单」、runbook_url 的锚点必须在文档标题里真实存在（含探针防「锚点面为空 ⇒ 死链判据空转」）。不是比文本 —— 一个空格缩进错误会被解析器如实报红",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值是「告警规则**接线了**且**引用的指标真的存在**」——只读文本无法判断 `expr` 里的指标名是否在代码里注册过，也无法判断 runbook 锚点是否真实存在。它自带一个 YAML 子集解析器（不支持锚点等高级语法，遇到即报错），**解析失败会显式红**而非静默跳过 ⇒ 不会退化成永真。按 P0：断的是结构化的语义值。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-026",
+      "tier": "P0",
+      "spec": "scripts/check-desktop-update-chain.mjs",
+      "specLine": 231,
+      "needle": "parseYamlSubset(electron-builder.yml) 得结构树 + placeholdersOf(matchAll(/\\$\\{([^}]*)\\}/g)) 抽占位符名，与 updater.ts 的替换点对账",
+      "reads": [
+        "apps/executor-desktop/electron-builder.yml",
+        "apps/executor-desktop/src/main/updater.ts"
+      ],
+      "asserts": "把 `electron-builder.yml` **解析成结构树**（非按行匹配），再核对：linux 段必须有 artifactName、模板里的 `${...}` 占位符必须与 `updater.ts` 的替换点**逐名对应**（多一个/少一个都红）。书写的缩进变化由解析器消化",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「自动更新的文件名模板与 updater 的替换逻辑**逐字对应**」——名字对不上会导致 updater 找不到文件（静默更新失败）。只有**解析 YAML 结构**才能稳定抽出 artifactName；按行正则会随缩进/引号写法失明。解析失败与「段缺失」都**显式红**（不做 silent skip），故接受。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-027",
+      "tier": "P1",
+      "spec": "scripts/check-windows-gui-script.mjs",
+      "specLine": 412,
+      "needle": "items.filter((item) => !item.re.test(text)) —— 逐条 regex.test 整个 PS1 脚本文本",
+      "reads": [
+        "apps/executor-desktop/src/main/agent/gui-windows.ts",
+        "apps/executor-desktop/src/main/agent/gui-windows.selftest.ts"
+      ],
+      "asserts": "断言 PowerShell 脚本里**必须出现**若干形态：`ConvertTo-Json`、`$ErrorActionPreference = 'Stop'`、失败路径必须落到 `catch` 里的 `Reply`、不得 `exit` 非零。**全部是按正则对整个文本做 `.test()`**，脚本里多写/重排/换引号都可能让正则失配 ⇒ 判据**依赖书写形态**（tierDefinitions 的 P1 语义在此体现为「依赖被扫文本的书写形态」）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的对象**就是**那段 PS1 脚本的文本形态：它检查的是「脚本里有没有那几条语句/结构」。PS1 没有可用的解析器进仓（引入 PSScriptAnalyzer 是一次重依赖决策），所以只能正则。**已有一处补偿**：`catchIndex >= 0` 之外还要求 `Reply` 出现在 catch **之后**的文本里，避免「关键词在文件别处出现」的假绿。⇒ 接受其对书写形态的依赖，改动 PS1 结构时须同步更新这里的正则（该文件是本仓唯一由 node 生成的 PS1，改动点集中）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-028",
+      "tier": "P0",
+      "spec": "scripts/check-agent-write-sanitize.mjs",
+      "specLine": 485,
+      "needle": "抽出写入点调用参数（含模板字面量）后 `SANITIZER_RE.test(prop.value)` 判定是否已过脱敏，并对「扫描面/脱敏函数定义」设下界",
+      "reads": [
+        "apps/admin-api/src/modules/agent/dto/agent-response.dto.ts",
+        "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts",
+        "apps/admin-api/src/modules/agent/tools/agent-sanitize.util.ts"
+      ],
+      "asserts": "断的是**值级事实**：每个能写入 `agent_events` 等列的调用点，其参数**必须已被 sanitize*/redact* 包裹**；同时用两条**结构红**（`scannedFiles < MIN_SCANNED_FILES`、`sanitizerDefinitions === 0`）防止「规则被搬走/改名 ⇒ 判据失明」。不是比文本形态，而是从写入点的**参数表达式**判断是否被脱敏函数包裹",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值是「任何写入点都不许把未脱敏的原文落库」。它必须读实现源码才能找到**调用点的实参表达式**并判断是否被 sanitizer 包裹。**两条结构红 + 每个列的下界**是它的补偿控制：一旦「找不到写入点」，它报 structural 而不是静默通过。⇒ 接受源码依赖。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-029",
+      "tier": "P0",
+      "spec": "scripts/check-cron-guard.mjs",
+      "specLine": 109,
+      "needle": "定位每个 @Cron 方法体（`body.slice(close+1, …)` 括号配平后判 `/^\\s*catch\\b/` 或 `guardedCron(`）",
+      "reads": [
+        "apps/admin-api/src",
+        "apps/admin-api/src/modules/agent",
+        "apps/admin-api/src/modules/scheduler/scheduler.service.ts"
+      ],
+      "asserts": "断的是**代码结构事实**：每个 `@Cron` 装饰的方法体必须有**顶层异常闸**（`try/catch` 紧接方法体开头，或整段被 `guardedCron(` 包裹）。用括号配平定位方法体边界、再判开头 64 字符 ⇒ **结构判定**，不是全文正则命中",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「以后新增 cron 不许裸奔」——`@nestjs/schedule` **不 await** 回调的 Promise，裸奔方法体的异常会变成未处理拒绝（进程可能退出）。只有读源码并**定位方法体边界**才能判断「闸是否在**方法体开头**」而不是「文件里某处有 try/catch」。⇒ 接受源码依赖；代价（装饰器写法变化）会表现为「解析不到方法体」⇒ 该守卫有结构红兜底，不静默放行。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-030",
+      "tier": "P0",
+      "spec": "scripts/check-enum-drift.mjs",
+      "specLine": 316,
+      "needle": "masked 文本 + `matchBracket()` 括号配平定位枚举字面量，再 `.test(tail)` / `.test(m[2])` 判成员值",
+      "reads": [
+        "apps/admin-api/src",
+        "apps/admin-api/src/migrations",
+        "apps/admin-web/src/pages/ExecutorListPage.tsx"
+      ],
+      "asserts": "断的是**跨端枚举值集合一致**：后端 entity 枚举、迁移 DDL 的 CHECK/ENUM、前端字面量三侧成员必须相同。用**括号配平**定位字面量边界（不是全文正则），且对**掩码后的文本**做成员匹配 ⇒ 结构判定",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「三端枚举不许各写各的」——迁移里少一个值会让 PG 拒写、前端少一个值会让 UI 显示空白。只有**定位每个枚举字面量的边界**再比成员集合才能做到；全文正则会串到相邻声明。⇒ 接受源码依赖；括号配平在这类字面量上是稳定形态（`matchBracket` 有 selftest 覆盖）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-031",
+      "tier": "P1",
+      "spec": "scripts/check-ssrf-deny-parity.mjs",
+      "specLine": 24,
+      "needle": "三处测试文本**先剥注释**再 `includes(entry)` / `matchAll(/\\baddr:\\s*\"[^\"]*\"/g)` 对账条目集合",
+      "reads": [
+        "apps/admin-api/src/common/utils/__tests__/ssrf-deny-matrix.spec.ts",
+        "apps/executor-node/src/lib/ssrf-deny-parity.spec.ts",
+        "apps/executor-python/tests/test_ssrf_guard.py"
+      ],
+      "asserts": "断的是**三处测试文件里 addr: 条目集合**互相覆盖（node 侧矩阵 / node parity / python）。但它读的是**三种语言的测试源码文本**，靠 `addr:\\s*\"…\"` 正则抽条目 ⇒ **依赖三处书写形态**（换成单引号、改写成变量、重构用例都会失配）。已有补偿：三处**先剥注释**（R 前身曾因注释命中假绿）+ **各条目数下界**（低于实测即红）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的对象**就是**三个测试文件里的文本条目：它要保证「node/python 两侧的 deny 矩阵用同一组地址」。而三侧是**不同语言**（.ts / .py），引入跨语言 AST 解析的代价远高于收益。⇒ 归 P1（依赖书写形态）。补偿控制：**剥注释 + 条目数下界**（下界低于实测即红，防「正则失配 ⇒ 集合变空 ⇒ 恒绿」）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-032",
+      "tier": "P0",
+      "spec": "scripts/check-template-manifest.mjs",
+      "specLine": 353,
+      "needle": "解析 manifest.json 后做**封闭键集合**断言（`ALLOWED_MANIFEST_KEYS`）+ 字段值语义校验（name==目录名、entrypoints、capabilities）",
+      "reads": [
+        "docs/skills/manifest.json",
+        "apps/admin-api/src/modules/sop/sop-frontmatter.ts",
+        "apps/admin-api/src/modules/task-template/task-template.constants.ts"
+      ],
+      "asserts": "把 JSON 清单**解析成对象**后断：① 顶层键必须 ∈ 封闭集合（未知键即失败，明确拒绝 `hook`/`command`/`script` 这类可执行片段）；② `name` 必须等于目录名；③ entrypoints / capabilities 与实际能力表一致。⇒ 断**结构化语义值**，不是文本匹配",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「清单是**机器契约**：不接受自由字段，也不接受可执行片段」。只有解析 JSON 成对象才能判断「未知键」与「字段值一致」；文本匹配无法区分「键在注释里」与「真在结构里」。JSON.parse 失败/顶层非对象都会**显式 fail**，不会静默放行。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-033",
+      "tier": "P0",
+      "spec": "scripts/check-web-type-drift.mjs",
+      "specLine": 374,
+      "needle": "scanApiDeclarations 抽出顶层类型声明后按 `CONTRACT_RE.test(hay)` / `MIRROR_RE.test(decl.rhs)` 分类，再与 `parseGeneratedSchemas(api-types.ts)` 的 schema 集合对账",
+      "reads": [
+        "apps/admin-web/src/api",
+        "apps/admin-web/src/types/generated/api-types.ts",
+        "scripts/web-type-drift-baseline.json"
+      ],
+      "asserts": "断的是**两端类型声明的集合关系**：前端 `src/api/**` 里的类型声明必须能在**生成物** `api-types.ts` 的 `components.schemas` 里找到对应，且分类（contract / mirror）正确。**五处下界**（`MIN_API_FILES` / `MIN_DECLARATIONS` / `MIN_GENERATED_SCHEMAS` 等）防「扫描面塌方 ⇒ 恒绿」——注释明确写着「扫到 0 处不是『没有漂移』，是『一处都没看』」",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值是「**手写的 API 类型** 与 **OpenAPI 生成的类型**不许漂移」——前端手抄一份就必然漂。只有解析两侧结构（TypeScript 顶层声明 + JSON schema 表）才能做集合对账；比文本会把等价写法判成漂移。⇒ 接受源码依赖；五处下界是它的补偿控制（拦的是**全失明**：0 处即红）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-034",
+      "tier": "P0",
+      "spec": "scripts/check-web-type-field-drift.mjs",
+      "specLine": 289,
+      "needle": "对每个接口体做 `bodyTxt.startsWith(\"{\")` 判形态、再 `.has(f)` 做**字段集合交集/差集**，与生成物字段对账",
+      "reads": [
+        "apps/admin-web/src/api",
+        "apps/admin-web/src/types/generated/api-types.ts",
+        "scripts/web-type-field-drift-baseline.json"
+      ],
+      "asserts": "断的是**字段级集合关系**：手写接口的字段集合 vs 生成物 schema 的字段集合，差集必须为空（或落在基线里）。用 `\\s` 跳白与 `{`/`|&` 形态判定来切出字段列表 ⇒ 断**结构化字段集合**，且基线把「已知的合法差异」显式登记（只许缩小）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "B29 是「类型声明是否存在」，这条是「**字段是否逐个对上**」——更细，且必然需要解析接口体结构。基线文件让「已知差异」不重复报警（棘轮只许缩小），避免了「一律放宽」的退化。⇒ 接受源码依赖。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-035",
+      "tier": "P0",
+      "spec": "scripts/check-desktop-rollback-path.mjs",
+      "specLine": 154,
+      "needle": "按标题层级定位文档节（`headingRe` + `headings[k].level <= headings[h].level`）后断该节内的回滚路径描述与 builder/updater/config-store 事实一致",
+      "reads": [
+        "apps/executor-desktop/electron-builder.yml",
+        "apps/executor-desktop/package.json",
+        "apps/executor-desktop/src/main/config-store.ts",
+        "apps/executor-desktop/src/main/updater.ts"
+      ],
+      "asserts": "断的是**结构化的文档节归属 + 代码事实对照**：先剥 `#` 注释与空行，再按标题层级把行归到所属节，然后要求「回滚路径」那一节里描述的步骤能在 builder/updater/config-store 里找到对应实现。⇒ 断的是节内语义与代码事实的一致，不是全文关键词命中（否则把关键词写在别的节也会假绿）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「文档里写的回滚路径**真的被实现**」——只做全文关键词匹配会让「关键词写在无关章节」通过；按标题层级切节才能把断言限定在正确位置。⇒ 接受源码+文档结构依赖；标题层级变化会表现为「节找不到」⇒ 显式红，不静默放行。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-036",
+      "tier": "P0",
+      "spec": "scripts/check-index-drift.mjs",
+      "specLine": 141,
+      "needle": "`matchAll(/CREATE\\s+(UNIQUE\\s+)?INDEX\\s+… \"name\"\\s+ON\\s+\"table\"\\s*\\(cols\\)/gis)` 建 DDL 侧 Map，与实体的具名 `@Index(\"name\", [cols])` 声明做**集合对账**",
+      "reads": [
+        "apps/admin-api/src",
+        "apps/admin-api/src/migrations",
+        "apps/admin-api/src/migrations/1790000000000-fx.ts",
+        "apps/admin-api/src/modules/fx/fx.entity.ts"
+      ],
+      "asserts": "断的是**两侧集合相等**：实体上每个**显式命名**的 `@Index(\"name\", [cols])` 必须在迁移 DDL 里有同名 `CREATE INDEX`（且列集合一致），反之 DDL 里的具名索引也不许无声明。R263 已把它的 `stripComments` 换成共用件（修掉「行尾注释误命中」）⇒ 现在抽的是**真实声明的集合**",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「`@Index` 不许是**死声明**」——本仓有过「声明的索引数十个迁移周期从未落库」的真实事故。只有从两侧抽集合做对账才能发现；比文本无法判断「同名但列不同」。R263 用共用 `stripComments` 修掉了唯一的形态漏洞（行尾注释），⇒ 现在它读的是真实代码结构。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-037",
+      "tier": "P0",
+      "spec": "scripts/check-metric-docs.mjs",
+      "specLine": 482,
+      "needle": "从 runtime-metrics 注册表建 `entries.set(name, {kind, reason})`，再从文档 `matchAll(/^[ \\t]+(autoflow_[a-z0-9_]+…)/)` 抽提及，做**双向集合对账**（注册未文档 / 文档未注册 / allowlist 越界）",
+      "reads": [
+        "apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts",
+        "apps/admin-api/src/modules/metrics/runtime-metrics.ts",
+        "scripts/metric-docs-allowlist.json",
+        "scripts/metric-docs-baseline.json"
+      ],
+      "asserts": "断的是**注册表与文档的双向集合关系**：每个注册的指标都必须被文档提及；文档里每个 `autoflow_*` 提及都必须对应已注册指标（或落在 allowlist）；allowlist 是**棘轮**（只许缩小，越界即红）。⇒ 断结构化集合，不是文本命中",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「文档里的指标清单**不是手抄的**」。它必须读 `runtime-metrics` 的注册表（结构化源）并与文档提及做**双向**对账 —— 单向只能发现「注册了没写」，发现不了「写了但根本不存在」。allowlist 只许缩小防「一律放宽」的退化。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-038",
+      "tier": "P0",
+      "spec": "scripts/check-migration-symmetry.mjs",
+      "specLine": 417,
+      "needle": "collectMethodText(src,\"up\"/\"down\") 抽方法体（含被调用子方法，`seen` 防环）→ sanitize → 正则识别 DDL 对象（table:x / column:x.y / index:z）→ 两侧**对象集合对称性**校验",
+      "reads": [
+        "apps/admin-api/src/migrations/1770000000007-Irreversible.ts",
+        "apps/admin-api/src/migrations/1770000000009-Fixed.ts",
+        "apps/admin-api/src/migrations/1770000000010-Known.ts",
+        "apps/admin-api/src/migrations/1770000000018-ShortReason.ts"
+      ],
+      "asserts": "断的是**对象集合的对称性**：`up` 建了什么，`down` 就必须能拆掉什么（含「索引随表/列消失也算对称」与「分区子表不属独立对象」两类精细判定）。方法体由 `collectMethodText` **跟随被调用子方法**抽取（`seen` 防环）⇒ 不是只看 `up`/`down` 字面段",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「每个迁移都**可回滚**」——不可逆迁移在生产上等于「出问题只能靠备份」。只有把 up/down 的 DDL **抽成对象集合**再比，才能正确处理「索引随表消失」「分区子表」这两种不属于字面 1:1 的情况；比文本会把它们误判成不对称。⇒ 接受源码依赖；`collectMethodText` 跟随子方法调用是必要复杂度（很多迁移把 DDL 抽到 helper 里）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-039",
+      "tier": "P0",
+      "spec": "scripts/check-agent-stub-fidelity.mjs",
+      "specLine": 55,
+      "needle": "抽出测试替身（stub/mock）的实现体后 `.has(prev.value)` 比对**替身返回面**与真实实现；并设下界防「0 个替身 = 全部保真」的假绿",
+      "reads": [
         "apps/admin-api/src/modules/agent/agent.controller.ts",
         "apps/admin-api/src/modules/agent/runtime/agent-approvals.service.ts",
         "apps/admin-api/src/modules/agent/runtime/demo-runtime.service.ts",
         "scripts/agent-demo-check.mjs",
         "scripts/agent-demo-extra.mjs"
-      ]
-    },
-    {
-      "id": "GSTC-B03",
-      "spec": "scripts/check-agent-write-sanitize.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      ],
+      "asserts": "断的是**替身与真实现的返回面集合关系**（ADR-027「替身必须保真」）。核心是「一个替身都找不到 ⇒ 不是全部保真，而是判据瞎了」——该守卫自带下界并**显式列出已知盲区**（不允许把绿当成「全部保真」）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「测试替身不能撒谎」——本仓有过「替身返回 undefined 而生产返 Promise ⇒ 调用点 .catch 抛错被外层吞掉 ⇒ 弹假错误 toast」的真实事故。只有抽出卖方（替身）与买方（真实现）的返回面才能比对；比文本无法判断「返回形状是否等价」。⇒ 接受源码依赖；**已知盲区已写在脚本头注**，不是「未知风险」。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/agent/dto/agent-response.dto.ts",
-        "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts",
-        "apps/admin-api/src/modules/agent/tools/agent-sanitize.util.ts"
-      ]
+      "reviewBy": "2027-02-01"
     },
     {
-      "id": "GSTC-B04",
-      "spec": "scripts/check-alerts-rules.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts",
-        "apps/admin-api/src/modules/metrics/runtime-metrics.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B05",
-      "spec": "scripts/check-atlas-counts.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api",
-        "apps/admin-api/src",
-        "apps/admin-api/src/migrations",
-        "apps/admin-api/src/modules",
-        "apps/admin-api/src/modules/auth/__tests__/auth.serializer.spec.ts",
-        "apps/admin-api/src/modules/auth/__tests__/auth.spec.ts",
-        "apps/admin-api/src/modules/auth/auth.policy.spec.ts",
-        "apps/admin-api/src/modules/users/__tests__/users.spec.ts",
-        "apps/admin-web/e2e/legacy/e2e-full.spec.js",
-        "apps/admin-web/e2e/legacy/e2e-python-executor.spec.js",
-        "apps/admin-web/e2e/legacy/e2e-ui09-mobile.spec.js",
-        "apps/admin-web/src/__tests__",
-        "apps/admin-web/src/__tests__/a.test.tsx",
-        "apps/admin-web/src/__tests__/b.test.ts",
-        "apps/executor-node",
-        "apps/executor-node/src",
-        "apps/executor-node/src/config.spec.ts",
-        "apps/executor-node/src/runner.spec.ts",
-        "apps/executor-python/tests",
-        "apps/executor-python/tests/__pycache__/test_a.cpython-312.pyc",
-        "apps/executor-python/tests/test_a.py",
-        "apps/executor-python/tests/test_b.py",
-        "apps/registry-pypi/tests",
-        "apps/registry-pypi/tests/__pycache__/test_registry.cpython-312.pyc",
-        "apps/registry-pypi/tests/test_registry.py",
-        "packages/acf-cli",
-        "packages/acf-cli/src/__tests__/client.test.ts",
-        "packages/acf-cli/src/__tests__/commands.test.ts",
-        "packages/autocodeflow-node-sdk",
-        "packages/autocodeflow-node-sdk/src/__tests__/contract.test.ts",
-        "packages/mcp-server",
-        "packages/mcp-server/src/__tests__/api.test.ts",
-        "packages/mcp-server/src/__tests__/cli.e2e.test.ts",
-        "packages/mcp-server/src/__tests__/tools.test.ts",
-        "scripts/a.selftest.mjs",
-        "scripts/b-selftest.mjs",
-        "scripts/c.selftest.sh",
-        "scripts/d-selftest.mjs",
-        "scripts/e.selftest.mjs",
-        "scripts/f-selftest.mjs"
-      ]
-    },
-    {
-      "id": "GSTC-B06",
-      "spec": "scripts/check-brand-drift.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-web/public/acf-fox.svg",
-        "apps/admin-web/src/components/dashboard/DashboardEmptyGuide.tsx",
-        "apps/admin-web/src/layouts/MainLayout.tsx",
-        "apps/admin-web/src/pages/LoginPage.tsx",
-        "apps/admin-web/src/pages/NotFoundPage.tsx",
-        "apps/executor-desktop/assets/icon.icns",
-        "apps/executor-desktop/assets/icon.ico",
-        "apps/executor-desktop/assets/icon.png",
-        "apps/executor-desktop/assets/tray-offline@2x.png",
-        "apps/executor-desktop/assets/tray-online@2x.png",
-        "apps/executor-desktop/assets/tray-pending@2x.png",
-        "apps/executor-desktop/src/renderer/App.tsx",
-        "apps/executor-desktop/src/renderer/assets/acf-fox.png",
-        "apps/executor-desktop/src/renderer/pages/Wizard.tsx",
-        "packages/docs-site/public/logo.svg",
-        "scripts/brand/build-brand-assets.py"
-      ]
-    },
-    {
-      "id": "GSTC-B07",
-      "spec": "scripts/check-cli-doc.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "packages/acf-cli/src/commands",
-        "packages/acf-cli/src/index.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B08",
-      "spec": "scripts/check-compose-service-env.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/registry/registry.controller.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B10",
-      "spec": "scripts/check-cron-guard.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src",
-        "apps/admin-api/src/modules/agent",
-        "apps/admin-api/src/modules/scheduler/scheduler.service.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B11",
-      "spec": "scripts/check-desktop-agent-packaging.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/executor-desktop/agent-worker-bundle.sha256",
-        "apps/executor-desktop/electron-builder.yml",
-        "apps/executor-desktop/package.json",
-        "apps/executor-desktop/resources/agent-worker",
-        "apps/executor-desktop/resources/playwright",
-        "apps/executor-desktop/scripts/bundle-agent-worker.cjs",
-        "apps/executor-desktop/src/agent-worker/electron-stub/index.cjs",
-        "apps/executor-desktop/src/main/agent-worker-paths.ts",
-        "apps/executor-desktop/tsconfig.worker.json"
-      ]
-    },
-    {
-      "id": "GSTC-B12",
-      "spec": "scripts/check-desktop-rollback-path.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/executor-desktop/electron-builder.yml",
-        "apps/executor-desktop/package.json",
-        "apps/executor-desktop/src/main/config-store.ts",
-        "apps/executor-desktop/src/main/updater.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B13",
-      "spec": "scripts/check-desktop-update-chain.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/executor-desktop/electron-builder.yml",
-        "apps/executor-desktop/src/main/updater.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B14",
-      "spec": "scripts/check-enum-consumers.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src",
-        "apps/admin-api/src/modules/notification/a.ts",
-        "apps/admin-api/src/modules/notification/b.ts",
-        "apps/admin-api/src/modules/notification/c.ts",
-        "apps/admin-api/src/modules/notification/channels.ts",
-        "apps/admin-api/src/modules/notification/d.ts",
-        "apps/admin-api/src/modules/notification/declarations.ts",
-        "apps/admin-api/src/modules/notification/filler.ts",
-        "apps/admin-api/src/modules/notification/notification.service.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B15",
-      "spec": "scripts/check-enum-drift.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src",
-        "apps/admin-api/src/migrations",
-        "apps/admin-web/src/pages/ExecutorListPage.tsx"
-      ]
-    },
-    {
-      "id": "GSTC-B16",
+      "id": "GSTC-040",
+      "tier": "P0",
       "spec": "scripts/check-error-i18n.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
+      "specLine": 115,
+      "needle": "`placeholderSet(template)` 抽 `{{name}}` 占位符集合，断 zh/en 两侧**集合相等**；错误码集合则由 `matchAll(re)` + `Map.get(code)` 双向对账",
+      "reads": [
         "apps/admin-api/src/common/errors/catalog",
         "apps/admin-web/src/locales/en.ts",
         "apps/admin-web/src/locales/generated/error-codes.en.ts",
         "apps/admin-web/src/locales/generated/error-codes.zh.ts",
         "apps/admin-web/src/locales/zh.ts"
-      ]
+      ],
+      "asserts": "断的是**两个集合关系**：① 每条错误码在 zh/en 两侧都存在（双向）；② 同一条文案的**占位符集合必须相等**（`{{id}}` 写成 `{{ID}}` 或漏写 ⇒ 英文界面渲染出未替换原文）。⇒ 断结构化集合，不是文本相似度",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「多语言文案的**占位符**不许漂」——它比「翻译是否准确」机械得多，但恰好能挡住「中文正常、英文一片空白」。只有抽占位符成**集合**才可比（文本相似度会把「顺序不同但集合相同」误判成漂移）。⇒ 接受源码依赖。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
-      "id": "GSTC-B17",
-      "spec": "scripts/check-failure-classifiers.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "id": "GSTC-041",
+      "tier": "P0",
+      "spec": "scripts/check-enum-consumers.mjs",
+      "specLine": 70,
+      "needle": "`MEMBER_RE = /=\\s*[\"']([^\"']+)[\"']/g` 抽枚举成员值，再用 `.has(e.name)` / `Map.get(name)` 与**消费清单**对账",
+      "reads": [
+        "apps/admin-api/src",
+        "apps/admin-api/src/modules/notification/channels.ts",
+        "apps/admin-api/src/modules/notification/declarations.ts",
+        "apps/admin-api/src/modules/notification/notification.service.ts"
+      ],
+      "asserts": "断的是「**枚举扩了、消费者没跟**」：新枚举成员必须出现在消费清单（或用例覆盖）里，否则某个 switch/map 会静默落到 default。⇒ 断成员值集合与消费面的对应，不是文本命中",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「加了枚举值就必须有人处理它」。只有把枚举成员抽成集合并与消费点对照才能发现「漏了一个分支」；目录改名/全排除时会显式红（不允许「0 命中 ⇒ 一致」）。⇒ 接受源码依赖。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-042",
+      "tier": "P0",
+      "spec": "scripts/check-atlas-counts.mjs",
+      "specLine": 237,
+      "needle": "readdirSync 迁/模块/应用目录得**实际数量**，与 atlas 文档里手写的数字（`（N）`/「N 个 TypeORM 迁移」）对账；事实源读不到即**结构红**",
+      "reads": [
+        "apps/admin-api",
+        "apps/admin-api/src",
+        "apps/admin-api/src/migrations",
+        "docs/atlas"
+      ],
+      "asserts": "断的是「文档里的数字 == 目录里真实的文件数」：迁移数、模块数、应用数、e2e 例数逐项核对。**解析不到就结构红**（句子被改写/代码块被删 ≠ 数字没问题），且数字前后不许是数字（防「1122 个」冒充「122 个」）、迁移名不许是前缀（防 `…InitialSchemaV2` 满足 `…InitialSchema`）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「atlas 文档里的计数不是手抄的」——本仓有过「迁移数文档写 142、实际 143」的真实漂移（R219 就是修它）。只有**数目录**才能发现；比文本无法判断「文档说的和实际一致」。⇒ 接受源码/目录依赖；四处下界 + 「事实源读不到 ⇒ 显式红」是它的补偿控制（防「目录改名 ⇒ 零命中 ⇒ 一句 ✔」）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-043",
+      "tier": "P0",
+      "spec": "scripts/check-brand-drift.mjs",
+      "specLine": 130,
+      "needle": "`Buffer.from([0x89,0x50,…])` 校验 PNG 魔数 + 逐字节比对品牌资产（源 SVG → 生成物 → 落地副本），并检查 `data:image/png;base64,` 内联",
+      "reads": [
+        "apps/admin-web/public/acf-fox.svg",
+        "apps/admin-web/src/components/dashboard/DashboardEmptyGuide.tsx",
+        "apps/admin-web/src/layouts/MainLayout.tsx",
+        "scripts/brand/build-brand-assets.py"
+      ],
+      "asserts": "断的是**字节级一致**：狐狸源 SVG → 生成物 → 各落地副本（组件内联/静态资源）必须逐字节相同；PNG 魔数必须正确。⇒ 断**二进制/字节事实**，比文本相似度严格得多（文本比对会放过空白差异与编码差异）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「品牌资产**没有漂移**」——源改了一处、落地副本没跟上，就会出现「同一只狐狸三种颜色」。只有逐字节比对才能发现编码/空白级差异；文本比对会漏。⇒ 接受文件系统依赖。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-044",
+      "tier": "P0",
+      "spec": "scripts/check-desktop-agent-packaging.mjs",
+      "specLine": 19,
+      "needle": "按文件类型**剥注释**后做锚点匹配（`#` 行 / `//` 与块注释，字符串字面量原样保留）+ 针尾标识符边界检查",
+      "reads": [
+        "apps/executor-desktop/agent-worker-bundle.sha256",
+        "apps/executor-desktop/electron-builder.yml",
+        "apps/executor-desktop/package.json"
+      ],
+      "asserts": "断的是「agent-worker 的打包接线**真的存在且未被注释掉**」。脚本头注自己记录了 T4 修掉的 4 个假绿：① 整篇 `includes` 让**注释也算接线**（现在先剥注释，且字符串字面量原样保留——锚点里一半是路径字面量）；② 针尾无边界导致**前缀误配**（`build:agent-worker` ⊂ `build:agent-worker2`）；③ 崩溃/空跑≠红灯（现在事实源文件数、锚点表各有下界**结构红**）；④ 字节行必须在行首或换行后（假红）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「把打包接线**注释掉**——最省事的临时关掉手法——在本闸下会红」。它自己已经用**剥注释 + 边界 + 下界**修掉了四类假绿，是本仓「守卫自身缺陷」修复得最完整的一份。⇒ 接受源码依赖；它的四类修复写在头注里，可直接对照。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-045",
+      "tier": "P0",
+      "spec": "scripts/check-failure-classifiers.mjs",
+      "specLine": 0,
+      "needle": "把 `packages/contract-fixtures/generated/failure-classifier.{mjs,py}` 两份生成物**真跑一遍**（node 进程 + python3 进程），对**输出**做等价性比对；另用 `matchAll(testRe)` / `.test(message)` 核对分类器规则表",
+      "reads": [
         "apps/admin-api/src/common/failure-classification/failure-patterns.ts",
         "apps/executor-node/src/consumer.ts",
         "apps/executor-node/src/generated/failure-classifier.ts",
@@ -679,16 +865,20 @@
         "packages/executor-protocol/protocol.json",
         "scripts/failure-classifier-divergence-baseline.json",
         "scripts/generate-failure-classifiers.mjs"
-      ]
+      ],
+      "asserts": "断的是**跨语言行为等价**：同一组输入消息，node 与 python 两侧分类器必须给出**相同分类**。这是**行为级**验证（跑真进程），不是文本比对 —— 因此不怕两侧写法不同，只怕行为不同",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「node 与 python 的 failureReason 分类必须一致」——不一致会让同一故障在两侧显示不同原因，运维按原因排查时会找错方向。只有**真跑两侧生成物**才能证明行为等价；比文本只能证明「源码相似」。⇒ 接受跨语言运行依赖（需要 python3 + node 可用，缺任一即**显式 skip 而非绿**）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
-      "id": "GSTC-B18",
+      "id": "GSTC-046",
+      "tier": "P0",
       "spec": "scripts/check-failure-classifiers-reverse-proof.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
+      "specLine": 0,
+      "needle": "对 B17 的等价探针做**反向实证**：构造一个「必然不等价」的变体（`.includes(\"D-13\")` / `FAIL` / `·` 等向量），断言 B17 **必须红**",
+      "reads": [
         "apps/admin-api/src/common/failure-classification/failure-patterns.ts",
         "apps/executor-node/src/generated/failure-classifier.ts",
         "apps/executor-node/src/routes/execute.ts",
@@ -705,81 +895,20 @@
         "scripts/failure-classifier-divergence-baseline.json",
         "scripts/generate-failure-classifiers.mjs",
         "scripts/protocol-breaking-acknowledgements.json"
-      ]
-    },
-    {
-      "id": "GSTC-B19",
-      "spec": "scripts/check-index-drift.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      ],
+      "asserts": "断的是「**等价探针本身有牙**」：若把两侧之一改成故意不等价，B17 必须报红。这是**元判据**（对判据的判据）——它防的是「B17 恒绿但什么也没验」",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「可重跑的证据，不是装饰」——本仓反复踩过「判据恒绿」的坑（如 8 处 `includes` 让注释也算接线）。只有**构造反例并断言它会红**才能证明 B17 真的在验。⇒ 接受源码 + 子进程依赖；它自身也带向量表下界。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src",
-        "apps/admin-api/src/migrations",
-        "apps/admin-api/src/migrations/1790000000000-fx.ts",
-        "apps/admin-api/src/modules/fx/fx.entity.ts"
-      ]
+      "reviewBy": "2027-02-01"
     },
     {
-      "id": "GSTC-B21",
-      "spec": "scripts/check-metric-docs.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts",
-        "apps/admin-api/src/modules/metrics/runtime-metrics.ts",
-        "scripts/metric-docs-allowlist.json",
-        "scripts/metric-docs-baseline.json"
-      ]
-    },
-    {
-      "id": "GSTC-B22",
-      "spec": "scripts/check-migration-symmetry.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/migrations/1770000000007-Irreversible.ts",
-        "apps/admin-api/src/migrations/1770000000009-Fixed.ts",
-        "apps/admin-api/src/migrations/1770000000010-Known.ts",
-        "apps/admin-api/src/migrations/1770000000018-ShortReason.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B23",
-      "spec": "scripts/check-migrations.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/migrations"
-      ]
-    },
-    {
-      "id": "GSTC-B24",
-      "spec": "scripts/check-password-policy-sync.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/users/users.service.ts",
-        "apps/admin-web/src/utils/passwordPolicy.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B25",
+      "id": "GSTC-047",
+      "tier": "P0",
       "spec": "scripts/check-release-config.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
+      "specLine": 192,
+      "needle": "从 `release.yml` 切出 `publish-npm:` 的 `include:` 段与 `version-guard:` 段，`matchAll` 抽矩阵条目与 `pkg_json_version(...)`/`pyproject_version(...)` 路径，再与「要发布的包集合」做**双向对账**",
+      "reads": [
         "packages/acf-cli",
         "packages/autocodeflow-node-sdk",
         "packages/autoflow-sdk",
@@ -794,84 +923,31 @@
         "packages/three",
         "packages/two",
         "packages/two/package.json"
-      ]
+      ],
+      "asserts": "断的是**四份互不校验的发布配置之间的集合一致**：publish 矩阵条目、version-guard 守卫路径、root 的 extra-files 广播路径、各包自身版本文件，四者必须互相覆盖。用**分段切片**（`indexOf` 定位 job 边界）而非全文匹配 ⇒ 避免「别的 job 里的同名键」误命中",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的价值是「任一处漏配 ⇒ 某个包**静默地永远发不出去**或**永远不 bump 版本**」。发版链跨四份配置、任何单点漏配都不会报错；只有把四份都解析出来做**集合对账**（双向）才能发现缺哪一侧。⇒ 接受 YAML 结构依赖；切段解析（`indexOf` + `matchAll`）比全文正则稳，因为「同名字符串出现在别的 job」不会被误算。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
-      "id": "GSTC-B26",
-      "spec": "scripts/check-ssrf-deny-parity.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "id": "GSTC-048",
+      "tier": "P0",
+      "spec": "scripts/check-agent-index-names.mjs",
+      "specLine": 106,
+      "needle": "`readUtilConstraintNames(readFileSync(utilPath))` 抽 `AGENT_UNIQUE_CONSTRAINTS` 的三个值 + `readMigrationIndexNames(readFileSync(迁移))` 抽 `CREATE UNIQUE INDEX` 名，两侧**集合对账**",
+      "reads": [
+        "apps/admin-api/src/modules/agent/runtime/agent-unique-violation.util.ts",
+        "apps/admin-api/src/migrations"
+      ],
+      "asserts": "断的是**两侧名字集合相等**：实体侧的 `AGENT_UNIQUE_CONSTRAINTS` 三个约束名必须与迁移 DDL 里的 `CREATE UNIQUE INDEX` 同名。这三个名字**直接决定 23505 的归因是否生效** —— 名字对不上，违反约束时归因失效（静默落到通用错误）。两处解析失败各报**结构红**（「解析器失效」「扫描面失效」），不判绿",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这条判据的全部价值是「约束名在**实体声明**与**迁移 DDL**两处一致」—— 名字对不上时，`23505` 无法按约束名归因（本仓 R 段记过「agent 域 23505 按约束名归因」这条债）。只有从两侧**抽名字集合**再比才能发现；比文本无法判断「同名但不同表」。⇒ 接受源码依赖；两处结构红是补偿控制（解析不出即红，不静默）。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/common/utils/__tests__/ssrf-deny-matrix.spec.ts",
-        "apps/executor-node/src/lib/ssrf-deny-parity.spec.ts",
-        "apps/executor-python/tests/test_ssrf_guard.py"
-      ]
-    },
-    {
-      "id": "GSTC-B27",
-      "spec": "scripts/check-template-manifest.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/modules/sop/sop-frontmatter.ts",
-        "apps/admin-api/src/modules/task-template/task-template.constants.ts",
-        "scripts/check-template-manifest.mjs"
-      ]
-    },
-    {
-      "id": "GSTC-B28",
-      "spec": "scripts/check-throttler-whitelist.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-api/src/common/guards/executor-aware-throttler.guard.ts"
-      ]
-    },
-    {
-      "id": "GSTC-B29",
-      "spec": "scripts/check-web-type-drift.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-web/src/api",
-        "apps/admin-web/src/types/generated/api-types.ts",
-        "scripts/web-type-drift-baseline.json"
-      ]
-    },
-    {
-      "id": "GSTC-B30",
-      "spec": "scripts/check-web-type-field-drift.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/admin-web/src/api",
-        "apps/admin-web/src/types/generated/api-types.ts",
-        "scripts/web-type-field-drift-baseline.json"
-      ]
-    },
-    {
-      "id": "GSTC-B31",
-      "spec": "scripts/check-windows-gui-script.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01",
-      "readSurface": [
-        "apps/executor-desktop/src/main/agent/gui-windows.selftest.ts",
-        "apps/executor-desktop/src/main/agent/gui-windows.ts"
-      ]
+      "reviewBy": "2027-02-01"
     }
   ],
+  "coverageBacklog": [],
   "coverageNote": "本轮（2026-11-04）实测口径：`scripts/` 下 **66 个 check-*.mjs**，65 个有 readFileSync/readText；其中 **41 个**读了 `apps/` 或 `packages/` 下的 `.ts/.tsx/.py` **实现源码**（排除 fixture/spec/__tests__/tests 路径）。这 41 个里 **10 个**已深审入 entries（含全部 5 条新守卫 + 最脆的跨语言几条），其余 **31 个**入 coverageBacklog 待深审。",
   "scannedTotals": {
     "checkGuardsTotal": 68,

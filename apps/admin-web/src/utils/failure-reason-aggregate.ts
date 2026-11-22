@@ -13,15 +13,24 @@
  *   列表本就是分页的，拿"这一页的分布"冒充"全量分布"会是第二个
  *   「子集说成全量」缺陷（本项目已经踩过：executor 列表截断提示 P3-9）。
  *   故调用方必须把「基于当前页」写进 UI 文案。
- * - 只统计**失败类终态**（failed / timeout / killed）。success 不参与，
+ * - 只统计**失败类终态**（failed / timeout / killed，见下方 `FAILURE_REASON_BUCKET_STATUSES`）。success 不参与，
  *   running/pending 无失败原因。
  * - `failureReason` 为空的历史行归入 **`unknown` 桶**（不是丢掉）——
  *   丢掉会让「本页 10 条失败」和「聚合条显示 7 条」对不上，那比不聚合更糟。
  * - 返回按次数降序、同次数按原因名升序（稳定排序：避免每次渲染顺序抖动）。
  */
 
-/** 失败类终态（与后端 ExecutionFailureReason 的"失败"语义对齐）。 */
-export const FAILED_EXECUTION_STATUSES = ['failed', 'timeout', 'killed'] as const;
+/**
+ * 「按失败原因分桶」时纳入的**状态集**——不是「失败状态集」。
+ *
+ * ⚠️ 含 `killed` 是**刻意的产品口径**：本函数算的是「当前页的原因分布」，页面上
+ * 看得见的 killed 行就该出现在分布里（理由见文件头「口径」段）。
+ * 而后端 `FAILED_EXECUTION_STATUSES`
+ * （`apps/admin-api/src/modules/task/entities/task-execution.entity.ts` = FAILED ∪ TIMEOUT）
+ * 是**失败计数/告警**口径。两者语义不同，故**刻意不同名**：同名不同值最容易让下一个人
+ * 以为「该对齐」而改错（R284）。**不要**把它改名回 `FAILED_EXECUTION_STATUSES`。
+ */
+export const FAILURE_REASON_BUCKET_STATUSES = ['failed', 'timeout', 'killed'] as const;
 
 /** 无 failureReason 的历史行归入此桶。 */
 export const UNKNOWN_REASON_BUCKET = 'unknown';
@@ -44,7 +53,7 @@ export function aggregateFailureReasons(
   const counts = new Map<string, number>();
   for (const row of rows) {
     const status = (row.status ?? '').toLowerCase();
-    if (!(FAILED_EXECUTION_STATUSES as readonly string[]).includes(status)) continue;
+    if (!(FAILURE_REASON_BUCKET_STATUSES as readonly string[]).includes(status)) continue;
     const raw = (row.failureReason ?? '').trim();
     const reason = raw === '' ? UNKNOWN_REASON_BUCKET : raw;
     counts.set(reason, (counts.get(reason) ?? 0) + 1);

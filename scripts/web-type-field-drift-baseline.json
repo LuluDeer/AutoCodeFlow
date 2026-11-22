@@ -224,18 +224,6 @@
       "review_by": "2026-12-15"
     },
     {
-      "key": "apps/admin-web/src/api/executors.ts\tExecutorRuntimeConfig\tmissing:effectiveOfflineAfterMs",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 effectiveOfflineAfterMs，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
-      "key": "apps/admin-web/src/api/executors.ts\tExecutorRuntimeConfig\tmissing:staleOfflineConfirmations",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 staleOfflineConfirmations，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
       "key": "apps/admin-web/src/api/sops.ts\tSopClarification\textra:id",
       "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 id，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。",
       "owner": "arch-core",
@@ -738,12 +726,6 @@
     {
       "key": "apps/admin-web/src/api/inbox.ts\tQueueStallSnapshot",
       "reason": "待处置（未配对）：QueueStallSnapshot 是队列停摆观测快照；后端 inspect-queue-stall 200 响应 content 无 schema，前端自行建模。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
-      "key": "apps/admin-web/src/api/inbox.ts\tAgentWaitingResult",
-      "reason": "待处置（未配对）：AgentWaitingResult 是内部判别联合 {approvals,sessions} | {error}，非 API 响应体，无后端 schema。",
       "owner": "arch-core",
       "review_by": "2026-12-15"
     },

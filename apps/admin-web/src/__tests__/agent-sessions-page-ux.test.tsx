@@ -17,6 +17,8 @@ import type { AgentSession } from '../api/agent';
 vi.mock('../api/agent', () => ({
   agentApi: {
     list: vi.fn(),
+    pendingTakeoverCount: vi.fn().mockResolvedValue(1),
+    stalledCount: vi.fn().mockResolvedValue(1),
     detail: vi.fn(),
     resume: vi.fn(),
     budget: vi.fn(),
@@ -199,5 +201,56 @@ describe('AgentSessionsPage 错误态与空态（UI-16）', () => {
     renderPage();
     expect(await screen.findByText('暂无 Agent 会话')).toBeTruthy();
     expect(screen.queryByText('清除筛选')).toBeNull();
+  });
+});
+
+describe('Agent 会话定位', () => {
+  it('卡住与等待输入互斥；切换徽标会重新请求第一页并保留无关参数', async () => {
+    renderPage('/agent-sessions?status=waiting_input&page=3&from=oncall');
+    fireEvent.click(await screen.findByTestId('stalled-jump'));
+    await waitFor(() => expect(agentApi.list).toHaveBeenLastCalledWith({ kind: undefined, status: undefined, page: 1, pageSize: 20, stalled: 1 }));
+    let q = new URLSearchParams(lastSearch);
+    expect([q.get('stalled'), q.get('status'), q.get('page'), q.get('from')]).toEqual(['1', null, null, 'oncall']);
+    fireEvent.click(screen.getByTestId('pending-takeover-jump'));
+    await waitFor(() => expect(agentApi.list).toHaveBeenLastCalledWith({ kind: undefined, status: 'waiting_input', page: 1, pageSize: 20 }));
+    q = new URLSearchParams(lastSearch);
+    expect([q.get('stalled'), q.get('status'), q.get('from')]).toEqual([null, 'waiting_input', 'oncall']);
+  });
+
+  it('格式错误的链接展示明确反馈，不发送详情或审批请求', async () => {
+    vi.mocked(agentApi.detail).mockReset();
+    renderPage('/agent-sessions?session=..%2Fbad');
+    expect(await screen.findByText(/会话链接的格式不正确/)).toBeTruthy();
+    expect(agentApi.detail).not.toHaveBeenCalled();
+    expect(agentApi.listApprovals).not.toHaveBeenCalled();
+  });
+
+  it('卡住会话展示真实步骤时间，不把会话最后一次更新当作进度', async () => {
+    const stepTime = '2026-01-01T10:00:00Z';
+    vi.mocked(agentApi.detail).mockResolvedValue({
+      session: { ...sessionOf('s-run', 'running'), updatedAt: '2026-01-01T10:40:00Z' },
+      steps: [{ id: 'step-2', sessionId: 's-run', seq: 2, role: 'assistant', content: 'progress', summary: null,
+        reasoning: null, toolCallsJson: null, toolCallId: null, provider: null, model: null, tokensIn: 1, tokensOut: 1, latencyMs: 1, createdAt: stepTime }],
+      toolCalls: [], children: [],
+    });
+    renderPage('/agent-sessions?session=s-run&stalled=1');
+    const label = await screen.findByText('最近记录的步骤：第 2 步');
+    expect(label.parentElement?.querySelector('time')?.dateTime).toBe(stepTime);
+    expect(screen.queryByRole('button', { name: /恢\s*复/ })).toBeNull();
+  });
+
+  it('目标不在列表：呈现读取错误，重试同一 ID 后显示完整问题和答复而非截短摘要', async () => {
+    const full = 'step '.repeat(60) + 'FINAL LINE';
+    vi.mocked(agentApi.detail).mockReset().mockRejectedValueOnce(new Error('upstream timeout')).mockResolvedValue({
+      session: { ...sessionOf('off-page', 'succeeded'), contextJson: { question: 'Why?' }, summary: 'short', resultJson: { conclusion: full } },
+      steps: [], toolCalls: [], children: [],
+    });
+    renderPage('/agent-sessions?session=off-page');
+    await screen.findByText('upstream timeout');
+    fireEvent.click(screen.getByText('重试'));
+    const answer = await screen.findByRole('region', { name: 'Agent 答复' });
+    expect(answer.textContent).toContain(full);
+    expect(screen.getByRole('region', { name: '本次问题' }).textContent).toContain('Why?');
+    expect(vi.mocked(agentApi.detail).mock.calls).toEqual([['off-page'], ['off-page']]);
   });
 });

@@ -1,4 +1,6 @@
 import { ConflictException } from "@nestjs/common";
+import { ROUTE_ARGS_METADATA } from "@nestjs/common/constants";
+import { ParseUuidShapePipe } from "../../../common/pipes/parse-uuid-shape.pipe";
 import type { Queue } from "bullmq";
 
 import { AgentController } from "../agent.controller";
@@ -47,7 +49,38 @@ const baseSession = {
   kind: "incident",
   triggerSource: "cron",
   status: "waiting_input",
+  totalSteps: 7,
 } as Partial<AgentSession>;
+
+describe("AgentController · 深链参数", () => {
+  it.each(["detail", "listApprovals"])(
+    "%s 在查库前使用 UUID 形状校验",
+    (route) => {
+      const args = Reflect.getMetadata(
+        ROUTE_ARGS_METADATA,
+        AgentController,
+        route,
+      );
+      expect(Object.values(args)).toContainEqual(
+        expect.objectContaining({ data: "id", pipes: [ParseUuidShapePipe] }),
+      );
+    },
+  );
+
+  it("confirmExecution 在查库前使用 UUID 形状校验", () => {
+    const args = Reflect.getMetadata(
+      ROUTE_ARGS_METADATA,
+      AgentController,
+      "confirmExecution",
+    );
+    expect(Object.values(args)).toContainEqual(
+      expect.objectContaining({
+        data: "execId",
+        pipes: [ParseUuidShapePipe],
+      }),
+    );
+  });
+});
 
 describe("AgentController · resume 状态防线（B-8）", () => {
   it("running 会话 → 409 Conflict，不入队", async () => {
@@ -73,8 +106,12 @@ describe("AgentController · resume 状态防线（B-8）", () => {
     await expect(h.ctl.resume("s-1")).resolves.toEqual({ ok: true });
     expect(h.queue.add).toHaveBeenCalledWith(
       "run",
-      { sessionId: "s-1", reason: "resume:manual" },
-      expect.objectContaining({ attempts: 1 }),
+      { sessionId: "s-1", reason: "resume:manual", expectTotalSteps: 7 },
+      {
+        attempts: 1,
+        removeOnComplete: true,
+        deduplication: { id: "resume-s-1-7" },
+      },
     );
   });
 
@@ -93,6 +130,15 @@ describe("AgentController · resume 状态防线（B-8）", () => {
     const h = harness({ ...baseSession, status: "failed" });
     await expect(h.ctl.resume("s-1")).resolves.toEqual({ ok: true });
     expect(h.sessions.reopenForResume).toHaveBeenCalledWith("s-1");
+    expect(h.queue.add).toHaveBeenCalledWith(
+      "run",
+      { sessionId: "s-1", reason: "resume:manual", expectTotalSteps: 7 },
+      {
+        attempts: 1,
+        removeOnComplete: true,
+        deduplication: { id: "resume-s-1-7", keepLastIfActive: true },
+      },
+    );
     expect(h.queue.add).toHaveBeenCalledTimes(1);
     expect(h.sessions.reopenForResume.mock.invocationCallOrder[0]).toBeLessThan(
       (h.queue.add as unknown as jest.Mock).mock.invocationCallOrder[0],

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRaceGuard } from '../utils/raceGuard';
 import { useTranslation } from 'react-i18next';
 import {
@@ -6,10 +6,7 @@ import {
   Card,
   Drawer,
   Empty,
-  Form,
-  Input,
   message,
-  Modal,
   Pagination,
   Select,
   Space,
@@ -40,8 +37,11 @@ import PageSkeleton from '../components/PageSkeleton';
 import { useIsMobile } from '../hooks/useIsMobile';
 // A11Y-DRAWER-01：Drawer 打开后焦点移入内容、关闭归还触发按钮
 import { useDrawerA11y } from '../hooks/useDrawerA11y';
-// A11Y-MODAL-01（WEB-6）：Modal 打开后焦点进入首个可交互控件、关闭归还触发按钮
-import { useModalA11y } from '../hooks/useModalA11y';
+import AgentSessionCreateModal from '../components/AgentSessionCreateModal';
+import AgentSessionOutcome from '../components/AgentSessionOutcome';
+import AgentStepProgress from '../components/AgentStepProgress';
+import { useAgentSessionDetail } from '../hooks/useAgentSessionDetail';
+import { isSessionPathSegment } from '../utils/agentSessionUrl';
 import { agentApi } from '../api/agent';
 // SOPS-TIME-01：startedAt 列与 SopsPage 同走 formatDateTime（locale 感知 + 空值 '—'）
 import { formatDateTime } from '../utils/timeFormat';
@@ -86,24 +86,6 @@ import type {
  */
 
 const { Text, Paragraph } = Typography;
-
-/**
- * WEB-6（2026-10-29 第三轮 UX 审计 P3）：新建会话弹窗的字段 id。
- *
- * 弹窗此前把字段名渲染成 `<Text type="secondary">`（纯视觉文本），三个控件
- * 既无 `id` 也无 `htmlFor`/`aria-label`——读屏只报「组合框 / 编辑框」，且
- * axe/lhci 扫不到未打开的 Modal，门禁因此假绿。
- *
- * 现在 `<Form.Item label htmlFor={…}>` 渲染 `<label for>`、控件吃同一个 `id`：
- * **可见标签与可访问名同源**（同一个 `t()` 词条、同一个 DOM 节点），不用
- * `aria-label`（那会让读屏与视觉用户读到两份可能漂移的文案）。
- * id 集中在此常量，改一处漏一处就会让测试的 `getByLabelText` 立刻转红。
- */
-const CREATE_FIELD_ID = {
-  kind: 'agents-create-kind',
-  title: 'agents-create-title',
-  context: 'agents-create-context',
-} as const;
 
 // UX-06：状态 Tag 走共享词表（未知值回退原始 token，保留可诊断信息）
 /** G4：把 createdBy 的机器形态翻成可读文本（用户 / 系统主体）。 */
@@ -280,52 +262,26 @@ export default function AgentSessionsPage() {
   const isMobile = useIsMobile();
   // A11Y-DRAWER-01：会话详情抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
   const drawerA11y = useDrawerA11y();
-  // URL-SYNC-01：筛选/分页以 URL 查询参数为初始源并回写；非法深链值
-  // （?page=abc、负数、浮点）回落默认值，不空屏不报错。
-  // R199：整块外提到 `useAgentListUrlState`（该页面**双顶格** ⇒ 新增功能必须外提）。
-  const { page, setPage, pageSize, setPageSize, kindFilter, setKindFilter, statusFilter, setStatusFilter } =
-    useAgentListUrlState();
+  const { page, pageSize, kindFilter, statusFilter, stalledOnly, sessionId, tab, approvalKey, paginate,
+    filterKind, filterStatus, showStalled, clearStalled, clearFilters, selectSession, selectTab } = useAgentListUrlState();
   const [items, setItems] = useState<AgentSession[]>([]);
   const [total, setTotal] = useState(0);
   const [pendingRefreshToken, setPendingRefreshToken] = useState(0); // R198：待接管徽标的刷新信号
-  // R199：「只看卡住」开关（后端 `stalled=1` 过滤，判据见 docs/observability/agent-stalled-criterion.md）。
-  const [stalledOnly, setStalledOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   // UI-16：非静默加载（首屏/手动刷新/筛选变化）失败时记录错误并原位呈现；
   // B-14 的静默轮询失败仍保持静默（列表保留旧数据，不弹错误块刷屏）。
   const [loadError, setLoadError] = useState<unknown>(null);
   const [budget, setBudget] = useState<AgentBudget | null>(null);
-  const [detail, setDetail] = useState<AgentSession | null>(null);
-  // G5：导出转录的进行态（按钮防连点）
+  const validId = sessionId !== null && isSessionPathSegment(sessionId) ? sessionId : null;
+  const { detail: payload, approvals, detailState, detailError, approvalsState, refresh: refreshDetail } = useAgentSessionDetail(validId);
+  const detail = payload?.session ?? items.find(s => s.id === validId) ?? null;
+  const steps = payload?.steps ?? [];
+  const toolCalls = payload?.toolCalls;
+  const children = payload?.children ?? [];
   const [exporting, setExporting] = useState(false);
-  const [steps, setSteps] = useState<AgentStep[]>([]);
-  const [toolCalls, setToolCalls] = useState<AgentToolCall[]>([]);
-  const [children, setChildren] = useState<AgentSession[]>([]);
-  // R171（P2-1）：详情主体（steps/toolCalls/children 同属一次 detail 请求）读取态。
-  // 失败时三者都是 []，旧实现只弹 toast ⇒ 三张表「暂无数据」+ 计数 0，读起来就是
-  // 「这个会话没有任何步骤/工具调用/子会话」。与 W1 的 approvalsState 同构。
-  const [detailState, setDetailState] = useState<'loading' | 'ready' | 'error'>('ready');
   const [resuming, setResuming] = useState(false);
-  // A1 审批闭环：详情抽屉的审批单列表 + 处置中状态（按 approvalKey 记，
-  // 允许逐单 loading，避免一张单转圈全部按钮禁用）
-  const [approvals, setApprovals] = useState<AgentApproval[]>([]);
-  // W1（审批单三态）：此前 catch 里直接 setApprovals([])，于是网络抖动/502 与
-  // 「这个会话真的没有审批单」在 UI 上完全同形——运维看到「审批单（0）·
-  // 无审批单」时，会话其实正卡在等审批。这里把「读取失败」独立成态：
-  // 页签计数显示「—」、面板给「读取失败 + 重试」，只有**真空数组**才显示空态。
-  const [approvalsState, setApprovalsState] = useState<'loading' | 'ready' | 'error'>(
-    'ready',
-  );
   const [decidingKey, setDecidingKey] = useState<string | null>(null);
-  // 观测审计 P2：设计文档承诺「人工触发 = Admin Web 对话」，但客户端一直没有
-  // create——`chat` 类型只能 curl/脚本创建、其指标恒 0。这里补最小入口。
   const [createOpen, setCreateOpen] = useState(false);
-  const [createKind, setCreateKind] = useState('chat');
-  const [createTitle, setCreateTitle] = useState('');
-  const [createContext, setCreateContext] = useState('');
-  const [creating, setCreating] = useState(false);
-  // A11Y-MODAL-01（WEB-6）：新建会话弹窗的焦点管理（开→首个控件；关→触发按钮）
-  const createModalA11y = useModalA11y(createOpen);
 
   // B-14：silent 轮询不闪 loading（对齐 SopsPage 同款处理）
   //
@@ -349,6 +305,7 @@ export default function AgentSessionsPage() {
       const res = await agentApi.list({ kind: kindFilter, status: statusFilter, ...(stalledOnly ? { stalled: 1 } : {}), page, pageSize });
       if (!raceGuard.isLatest(seq)) return; // 过期响应：丢弃（不覆盖更新的筛选结果）
       setItems(res.items);
+      setLoadError(null);
       setTotal(res.total);
       setPendingRefreshToken(n => n + 1);
     } catch (err: unknown) {
@@ -357,51 +314,9 @@ export default function AgentSessionsPage() {
       // 非 silent（首屏/手动刷新）失败改为页内错误态（UI-16），不再只弹 toast。
       if (!opts?.silent) setLoadError(err ?? new Error('load failed'));
     } finally {
-      if (raceGuard.isLatest(seq) && !opts?.silent) setLoading(false);
+      if (raceGuard.isLatest(seq)) setLoading(false);
     }
-  }, [kindFilter, statusFilter, page, pageSize, raceGuard]);
-
-  /**
-   * 提交「新建会话」。
-   *
-   * context 是自由 JSON（会话上下文会作为**数据**注入 system prompt，见
-   * runtime rebuildMessages）——前端只做「是对象」的形状校验，字段语义由
-   * 运行时各自的 kind 消费，不在这里猜。
-   */
-  const submitCreate = useCallback(async () => {
-    let context: Record<string, unknown> | undefined;
-    const raw = createContext.trim();
-    if (raw) {
-      try {
-        const parsed: unknown = JSON.parse(raw);
-        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          throw new Error('context must be an object');
-        }
-        context = parsed as Record<string, unknown>;
-      } catch {
-        message.error(t('agents.createInvalidContext'));
-        return;
-      }
-    }
-    setCreating(true);
-    try {
-      await agentApi.create({
-        kind: createKind,
-        ...(createTitle.trim() ? { title: createTitle.trim() } : {}),
-        ...(context ? { context } : {}),
-      });
-      message.success(t('agents.createOk'));
-      setCreateOpen(false);
-      setCreateTitle('');
-      setCreateContext('');
-      void load();
-    } catch {
-      message.error(t('agents.createFailed'));
-    } finally {
-      setCreating(false);
-    }
-  }, [createKind, createTitle, createContext, t, load]);
-
+  }, [kindFilter, statusFilter, stalledOnly, page, pageSize, raceGuard]);
 
   useEffect(() => {
     void load();
@@ -424,56 +339,6 @@ export default function AgentSessionsPage() {
       .catch(() => undefined); // 预算行加载失败不影响列表
   }, []);
 
-  // UIUX-F-2（审计 P2-1，同型 SOPS-RACE-01，对齐 SopsPage.detailSeq 同款修法）：
-  // openDetail 此前无「谁是最新」判据——快速先点会话 A 再点 B（或 A 响应慢于
-  // B）时，A 的旧响应晚到会把 B 抽屉的 steps/toolCalls/children 整个覆盖成
-  // A 的数据（标题是 B、内容是 A）；resume() 成功后复用 openDetail 同一路径，
-  // 也会把旧响应写回。每次调用自增序号，仅最新一发允许 setState。
-  const detailSeq = useRef(0);
-
-  const openDetail = useCallback(async (s: AgentSession) => {
-    const seq = ++detailSeq.current;
-    setDetail(s);
-    setSteps([]);
-    setToolCalls([]);
-    setChildren([]);
-    setApprovals([]); // A1 审批闭环：切会话先清旧审批单，防串页
-    // W1：切会话即进入 loading——旧审批单已清空，此刻既不是「空」也不是「失败」，
-    // 面板显示加载态，避免闪一下「无审批单」再跳成表格。
-    setApprovalsState('loading');
-    // R171（P2-1）：同理——清空 steps/toolCalls/children 之后、响应到达之前，
-    // 三个页签既不是「空」也不是「失败」，一律按「读取中」渲染。
-    setDetailState('loading');
-    try {
-      const d = await agentApi.detail(s.id);
-      if (seq !== detailSeq.current) return; // 过期响应：丢弃（新选中的行不被旧数据覆盖）
-      setDetail(d.session);
-      setSteps(d.steps);
-      setToolCalls(d.toolCalls);
-      setChildren(d.children);
-      setDetailState('ready');
-    } catch {
-      if (seq !== detailSeq.current) return; // 过期失败同样静默（错误提示只属于最新一次）
-      // R171（P2-1）：**不能只弹 toast**——toast 会消失，留在屏上的是三张空表。
-      // 记成独立的 error 态，抽屉里显示「读取失败 + 重试」。
-      message.error(t('agents.detailFailed'));
-      setDetailState('error');
-    }
-    // 审批单列表独立请求：挂了不影响 steps/toolCalls/children 的呈现
-    // （同款语义：预算行失败不影响列表）。过期响应同样丢弃。
-    try {
-      const a = await agentApi.listApprovals(s.id);
-      if (seq !== detailSeq.current) return;
-      setApprovals(a);
-      setApprovalsState('ready');
-    } catch {
-      if (seq !== detailSeq.current) return;
-      // W1：失败**不**写成空数组——保留「未知」语义（计数「—」+ 读取失败重试）。
-      setApprovals([]);
-      setApprovalsState('error');
-    }
-  }, [t]);
-
   const resume = useCallback(async () => {
     if (!detail) return;
     setResuming(true);
@@ -481,13 +346,15 @@ export default function AgentSessionsPage() {
       const r = await agentApi.resume(detail.id);
       if (r.ok) message.success(t('agents.resumeOk'));
       else message.warning(r.reason ?? t('agents.resumeFailed'));
-      await openDetail(detail);
-    } catch {
-      message.error(t('agents.resumeFailed'));
+      await refreshDetail(detail.id);
+      await load({ silent: true });
+    } catch (err) {
+      showApiError(err, t('agents.resumeFailed'));
+      await refreshDetail(detail.id);
     } finally {
       setResuming(false);
     }
-  }, [detail, openDetail, t]);
+  }, [detail, refreshDetail, load, t]);
 
   // A1 审批闭环（实施轮 #12 前端半边）：审批单处置。
   //
@@ -517,20 +384,20 @@ export default function AgentSessionsPage() {
           ? t('agents.approval.denyOk.resumed', { key: approvalKey })
           : t('agents.approval.denyOk', { key: approvalKey });
       message.success(okMessage);
-      await openDetail(detail);
+      await refreshDetail(detail.id);
       await load({ silent: true });
     } catch (err: unknown) {
       showApiError(err, t('agents.approval.decideFailed', { key: approvalKey }));
       // 409 后到者也要刷新——审批单状态已被对方翻转，本侧列表如实跟进
       const status = (err as { __status?: unknown } | null)?.__status;
       if (status === 409) {
-        await openDetail(detail);
+        await refreshDetail(detail.id);
         await load({ silent: true });
       }
     } finally {
       setDecidingKey(null);
     }
-  }, [detail, openDetail, load, t]);
+  }, [detail, refreshDetail, load, t]);
 
   /**
    * WEB-4：审批单 → 触发它的那次工具调用（决策依据的**唯一**来源）。
@@ -567,7 +434,7 @@ export default function AgentSessionsPage() {
 
   const toolCallByApprovalKey = useMemo(() => {
     const map = new Map<string, AgentToolCall>();
-    for (const c of toolCalls) {
+    for (const c of toolCalls ?? []) {
       if (c.approvalId) map.set(c.approvalId, c);
     }
     return map;
@@ -652,7 +519,7 @@ export default function AgentSessionsPage() {
       title: t('sops.col.actions'),
       width: 90,
       render: (_, s) => (
-        <Button size="small" onClick={() => void openDetail(s)}>
+        <Button size="small" onClick={() => selectSession(s.id)}>
           {t('sops.view')}
         </Button>
       ),
@@ -853,7 +720,7 @@ export default function AgentSessionsPage() {
       title: t('sops.col.actions'),
       width: 90,
       render: (_, s) => (
-        <Button size="small" onClick={() => void openDetail(s)}>
+        <Button size="small" onClick={() => selectSession(s.id)}>
           {t('sops.view')}
         </Button>
       ),
@@ -864,12 +731,12 @@ export default function AgentSessionsPage() {
   //（重复入队会产生双份推理循环副作用），前端同步隐藏入口。
   // 观测审计 P3：budget_exceeded 同样要排除——后端固定回 ok:false
   //（预算是创建时快照，步数/令牌按会话累计），按钮只会产生一条失败提示。
-  const resumable = detail !== null &&
-    ['waiting_input', 'failed', 'pending'].includes(detail.status);
+  const resumable = detailState === 'ready' && detail !== null && approvalsState === 'ready' &&
+    ['waiting_input', 'failed', 'pending'].includes(detail.status) && !approvals.some(a => a.status === 'pending');
 
-  // R171（P2-1）：详情读取失败的统一「重试」出口——复用 openDetail（同一 detailSeq
-  // 序号守卫：连点/切会话时只有最新一发落地，旧响应仍不许改写）。
-  const retryDetail = () => { if (detail) void openDetail(detail); };
+  // A link from an approval item must never substitute another request, even in the same session.
+  const visibleApprovals = approvalKey === null ? approvals : approvals.filter(a => a.approvalKey === approvalKey);
+  const retryDetail = () => { if (validId) void refreshDetail(validId); };
   // R171（P2-1）：三页签共用兜底——读取中「读取中…」，失败「读取失败 + 重试」。
   const detailTabFallback = detailState === 'loading' ? (
     <Text type="secondary">{t('agents.detailLoading')}</Text>
@@ -898,7 +765,7 @@ export default function AgentSessionsPage() {
       placeholder={t('agents.filter.kind')}
       style={{ width: isMobile ? '100%' : 160 }}
       value={kindFilter}
-      onChange={v => { setKindFilter(v); setPage(1); }}
+      onChange={filterKind}
       options={['ops_watch', 'incident', 'sop_authoring', 'sop_review', 'app_scaffold', 'chat'].map((k) => ({
         value: k,
         label: agentKindLabel(k, t),
@@ -912,7 +779,7 @@ export default function AgentSessionsPage() {
       placeholder={t('agents.filter.status')}
       style={{ width: isMobile ? '100%' : 160 }}
       value={statusFilter}
-      onChange={v => { setStatusFilter(v); setPage(1); }}
+      onChange={filterStatus}
       options={Object.keys(AGENT_SESSION_STATUS_COLOR).map((s) => ({ value: s, label: agentStatusLabel(s, t) }))}
     />
   );
@@ -924,12 +791,12 @@ export default function AgentSessionsPage() {
   );
   // 空态区分（桌面表格 locale 与移动端卡片空态同源）：筛选无匹配给
   //「清除筛选」出口；真空态如实提示。
-  const emptyNode = (kindFilter || statusFilter) ? (
+  const emptyNode = (kindFilter || statusFilter || stalledOnly) ? (
     <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('agents.empty.noMatch')}>
       <Button
         type="link"
         size="small"
-        onClick={() => { setKindFilter(undefined); setStatusFilter(undefined); setPage(1); }}
+        onClick={clearFilters}
       >
         {t('agents.clearFilters')}
       </Button>
@@ -944,7 +811,7 @@ export default function AgentSessionsPage() {
         title={t('agents.title')}
         description={t('agents.description')}
         extra={!isMobile ? (
-          <Space>
+          <Space wrap>
             <Button
               icon={<PlusOutlined />}
               type="primary"
@@ -956,9 +823,9 @@ export default function AgentSessionsPage() {
             <AgentAttentionBadges
               refreshToken={pendingRefreshToken}
               stalledOnly={stalledOnly}
-              onShowPending={() => { setStatusFilter('waiting_input'); setPage(1); }}
-              onShowStalled={() => { setStalledOnly(true); setPage(1); }}
-              onClearStalled={() => { setStalledOnly(false); setPage(1); }}
+              onShowPending={() => filterStatus('waiting_input')}
+              onShowStalled={showStalled}
+              onClearStalled={clearStalled}
             />
             {kindSelect}
             {statusSelect}
@@ -973,9 +840,9 @@ export default function AgentSessionsPage() {
           <AgentAttentionBadges
             refreshToken={pendingRefreshToken}
             stalledOnly={stalledOnly}
-            onShowPending={() => { setStatusFilter('waiting_input'); setPage(1); }}
-            onShowStalled={() => { setStalledOnly(true); setPage(1); }}
-            onClearStalled={() => { setStalledOnly(false); setPage(1); }}
+            onShowPending={() => filterStatus('waiting_input')}
+            onShowStalled={showStalled}
+            onClearStalled={clearStalled}
           />
           {kindSelect}
           {statusSelect}
@@ -993,71 +860,8 @@ export default function AgentSessionsPage() {
           </div>
         </div>
       )}
-      <Modal
-        open={createOpen}
-        title={t('agents.createDialogTitle')}
-        okText={t('agents.create')}
-        cancelText={t('agents.createCancel')}
-        confirmLoading={creating}
-        onOk={() => void submitCreate()}
-        onCancel={() => setCreateOpen(false)}
-        // antd 6：destroyOnClose 改名 destroyOnHidden（同一语义：关闭后卸载字段子树）
-        destroyOnHidden
-        // keyboard / mask.closable 均保持 antd 默认（Esc 关闭、点遮罩关闭），
-        // 未在此禁用：Esc 是本弹窗唯一的键盘退出路径，关掉等于把键盘用户锁在
-        // 弹窗里等鼠标（焦点陷阱此时反而是负担）。焦点陷阱默认开启。
-      >
-        {/* WEB-6：字段名走 Form.Item label（渲染 label[for]）+ 控件 id，可见标签与
-            可访问名同源；A11Y-MODAL-01：contentRef 收窄「首个可交互元素」的查询 */}
-        <div ref={createModalA11y.contentRef}>
-          <Form layout="vertical" component={false}>
-            <Form.Item
-              label={t('agents.createKind')}
-              htmlFor={CREATE_FIELD_ID.kind}
-              // 间距对齐改造前的 Space size="middle"（16px），只换标签语义不重排布局
-              style={{ marginBottom: 16 }}
-            >
-              <Select
-                id={CREATE_FIELD_ID.kind}
-                style={{ width: '100%' }}
-                value={createKind}
-                onChange={setCreateKind}
-                options={['chat', 'ops_watch', 'incident', 'sop_authoring', 'sop_review', 'app_scaffold'].map((k) => ({
-                  value: k,
-                  label: agentKindLabel(k, t),
-                }))}
-              />
-            </Form.Item>
-            <Form.Item
-              label={t('agents.createTitle')}
-              htmlFor={CREATE_FIELD_ID.title}
-              style={{ marginBottom: 16 }}
-            >
-              <Input
-                id={CREATE_FIELD_ID.title}
-                value={createTitle}
-                maxLength={255}
-                onChange={(e) => setCreateTitle(e.target.value)}
-                placeholder={t('agents.createTitlePlaceholder')}
-              />
-            </Form.Item>
-            {/* 末项不留尾部间距：弹窗 body 自带 padding，避免多出一段空白 */}
-            <Form.Item
-              label={t('agents.createContext')}
-              htmlFor={CREATE_FIELD_ID.context}
-              style={{ marginBottom: 0 }}
-            >
-              <Input.TextArea
-                id={CREATE_FIELD_ID.context}
-                rows={5}
-                value={createContext}
-                onChange={(e) => setCreateContext(e.target.value)}
-                placeholder={t('agents.createContextPlaceholder')}
-              />
-            </Form.Item>
-          </Form>
-        </div>
-      </Modal>
+      <AgentSessionCreateModal open={createOpen} onClose={() => setCreateOpen(false)}
+        onCreated={(id) => { selectSession(id); void load(); }} />
       {/* UI-16：非静默加载失败 → 页内原位错误块 + 重试（轮询失败仍静默，B-14 语义不变） */}
       {loadError ? (
         <StateError
@@ -1101,7 +905,7 @@ export default function AgentSessionsPage() {
                   {t('agents.col.startedAt_colon')}{formatDateTime(s.startedAt)}
                 </div>
                 <div style={{ marginTop: 8 }}>
-                  <Button size="small" onClick={() => void openDetail(s)}>
+                  <Button size="small" onClick={() => selectSession(s.id)}>
                     {t('sops.view')}
                   </Button>
                 </div>
@@ -1115,7 +919,7 @@ export default function AgentSessionsPage() {
               pageSize={pageSize}
               total={total}
               showSizeChanger={false}
-              onChange={(p, ps) => { setPage(p); setPageSize(ps); }}
+              onChange={paginate}
               style={{ alignSelf: 'flex-end' }}
             />
           )}
@@ -1133,21 +937,21 @@ export default function AgentSessionsPage() {
           scroll={{ x: 960 }}
           locale={{
             // 空态区分：筛选无匹配给「清除筛选」出口（避免用户以为会话真没了）；
-            // 真空态如实提示（会话由运行时产生，无人工入口可引导）。
+            // 真空态使用无数据提示，页头提供新建会话入口。
             emptyText: emptyNode,
           }}
-          pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, ps) => { setPage(p); setPageSize(ps); } }}
+          pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: paginate }}
           size="middle"
         />
       )}
 
       <Drawer
-        title={detail ? (detail.title ?? `${agentKindLabel(detail.kind, t)} · ${detail.id.slice(0, 8)}`) : ''}
+        title={detail ? (detail.title ?? `${agentKindLabel(detail.kind, t)} · ${detail.id.slice(0, 8)}`) : t('agents.detailHeading')}
         // antd 6：width 已并入 size（number|string|'large'|'default'）——
         // 窄屏 '100%' 满宽，桌面 920px 固定宽
         size={isMobile ? '100%' : 920}
-        open={detail !== null}
-        onClose={() => setDetail(null)}
+        open={sessionId !== null}
+        onClose={() => selectSession()}
         afterOpenChange={drawerA11y.afterOpenChange}
         destroyOnHidden
         extra={
@@ -1166,6 +970,9 @@ export default function AgentSessionsPage() {
       >
         {/* A11Y-DRAWER-01：内容包一层 ref 定位容器——焦点首站查询收窄到本抽屉 */}
         <div ref={drawerA11y.contentRef}>
+          {sessionId !== null && !detail && (validId === null ? <Text type="danger" role="alert">{t('agents.invalidSessionLink')}</Text> :
+            detailState === 'error' ? <StateError error={detailError} title={t('agents.detailFailed')} onRetry={retryDetail} /> :
+            <Text type="secondary" role="status">{t('agents.detailLoading')}</Text>)}
           {detail && (
             <>
             <Paragraph>
@@ -1181,8 +988,11 @@ export default function AgentSessionsPage() {
             {/* R171 体量压缩：单文本 Paragraph 5 行折 1 行（等价；本文件基线只减不增）。 */}
             {detail.waitingFor && <Paragraph><Text type="warning">⏳ {detail.waitingFor}</Text></Paragraph>}
             {detail.errorMessage && <Paragraph><Text type="danger">{detail.errorMessage}</Text></Paragraph>}
-            {detail.summary && <Paragraph><Text type="secondary">{detail.summary}</Text></Paragraph>}
+            <AgentSessionOutcome session={detail} />
+            {stalledOnly && detailState === 'ready' && <AgentStepProgress steps={steps} />}
             <Tabs
+              activeKey={tab}
+              onChange={selectTab}
               items={[
                 {
                   key: 'steps',
@@ -1200,7 +1010,7 @@ export default function AgentSessionsPage() {
                 },
                 {
                   key: 'tools',
-                  label: t('agents.tab.tools', { count: detailState === 'ready' ? toolCalls.length : '—' }),
+                  label: t('agents.tab.tools', { count: detailState === 'ready' ? (toolCalls?.length ?? 0) : '—' }),
                   children: detailState !== 'ready' ? detailTabFallback : (
                     <Table<AgentToolCall>
                       rowKey="id"
@@ -1218,7 +1028,7 @@ export default function AgentSessionsPage() {
                   // 「没有待审批单」，而会话可能正卡在等审批。
                   key: 'approvals',
                   label: t('agents.tab.approvals', {
-                    count: approvalsState === 'error' ? '—' : approvals.length,
+                    count: approvalsState === 'ready' ? visibleApprovals.length : '—',
                   }),
                   children:
                     approvalsState === 'error' ? (
@@ -1228,22 +1038,24 @@ export default function AgentSessionsPage() {
                         <Text type="danger">{t('agents.approvalsLoadFailed')}</Text>
                         <Button size="small" onClick={retryDetail}>{t('agents.approvalsRetry')}</Button>
                       </Space>
-                    ) : approvalsState === 'loading' && approvals.length === 0 ? (
+                    ) : approvalsState === 'loading' ? (
                       <Text type="secondary">{t('agents.approvalsLoading')}</Text>
-                    ) : approvals.length > 0 ? (
-                      <Table<AgentApproval>
+                    ) : <>
+                      {approvalKey !== null && <Paragraph>
+                        <Text>{visibleApprovals.length ? t('agents.approval.linked') : t('agents.approval.notFound')}</Text>{' '}
+                        <Button type="link" size="small" onClick={() => selectTab('approvals')}>{t('agents.approval.showAll')}</Button>
+                      </Paragraph>}
+                      {visibleApprovals.length > 0 ? <Table<AgentApproval>
                         rowKey="id"
                         columns={approvalColumns}
-                        dataSource={approvals}
+                        dataSource={visibleApprovals}
                         pagination={false}
                         size="small"
                         // WEB-4：新增「入参」列后固定列合计 ~1110，抽屉 920 会挤压
                         // 弹性列（理由）——交给横向滚动，窄屏不塌陷（对齐本页列表 scroll.x 先例）
                         scroll={{ x: 1180 }}
-                      />
-                    ) : (
-                      <Text type="secondary">{t('agents.approvalsEmpty')}</Text>
-                    ),
+                      /> : approvalKey === null && <Text type="secondary">{t('agents.approvalsEmpty')}</Text>}
+                    </>,
                 },
                 {
                   key: 'children',

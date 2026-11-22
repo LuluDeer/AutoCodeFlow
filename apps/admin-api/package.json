@@ -14,10 +14,10 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
-    "test": "npx --node-options=--experimental-vm-modules jest",
-    "test:watch": "npx --node-options=--experimental-vm-modules jest --watch",
-    "test:cov": "npx --node-options=--experimental-vm-modules jest --coverage",
-    "test:e2e": "npx --node-options=--experimental-vm-modules jest --config ./test/jest-e2e.json",
+    "test": "npx --node-options=\"--experimental-vm-modules --max-old-space-size=4096\" jest",
+    "test:watch": "npx --node-options=\"--experimental-vm-modules --max-old-space-size=4096\" jest --watch",
+    "test:cov": "npx --node-options=\"--experimental-vm-modules --max-old-space-size=4096\" jest --coverage",
+    "test:e2e": "npx --node-options=\"--experimental-vm-modules --max-old-space-size=4096\" jest --config ./test/jest-e2e.json",
     "typecheck": "tsc --noEmit",
     "check:route-authz": "node scripts/check-route-authz-matrix.mjs",
     "check:route-authz:selftest": "node scripts/check-route-authz-matrix.mjs --selftest",
@@ -145,7 +145,9 @@
     },
     "setupFiles": [
       "<rootDir>/../test/setup-env-file.ts"
-    ]
+    ],
+    "maxWorkers": 4,
+    "workerIdleMemoryLimit": "1GB"
   },
   "overrides": {
     "@nestjs/swagger": {

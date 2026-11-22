@@ -689,6 +689,20 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     level?: AlertLevel,
     applicationId?: string,
   ): boolean {
+    return this.findMatchingSilence(taskId, level, applicationId) !== null;
+  }
+
+  /**
+   * R284-A: 把「命中哪一条静默规则」从布尔判定里抽出来——`isSilenced` 的语义
+   * 与签名逐字不变（返回 `!= null`，调用点零改动），但**静默落痕需要规则本身**：
+   * 审计要写 `silence.id` / `silence.scope`，否则「谁在什么时候吞掉了什么告警」
+   * 仍然查不到。匹配判据**一字未改**（本条只做抽取，不改静默匹配规则）。
+   */
+  private findMatchingSilence(
+    taskId?: string,
+    level?: AlertLevel,
+    applicationId?: string,
+  ): AlertSilence | null {
     const now = new Date();
 
     for (const silence of this.silences.values()) {
@@ -709,11 +723,80 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         (!silence.endTime || silence.endTime >= now);
 
       if (matchesScope && matchesLevel && isActive) {
-        return true;
+        return silence;
       }
     }
 
-    return false;
+    return null;
+  }
+
+  /**
+   * R284-A（告警被静默吞掉后**零痕迹**）：静默不是「什么都没发生」，而是一次
+   * **有意的抑制**，必须在指标与审计两面留证。
+   *
+   * 为什么必须做：本文件有 7 处「被静默 ⇒ 只 `logger.debug` 就早退」，而
+   * `LOG_LEVEL` 默认 `info`（config/configuration.ts:57）⇒ **默认部署下那行
+   * debug 根本不输出**。运营用 API 建了一条没填 `durationMinutes` 的
+   * `scope=global` 静默，两周后真实失败告警被吞，全平台零痕迹——他会按
+   * 「这次没失败」写复盘。
+   *
+   * 三件事，都不改 fail-open/closed 语义、不改静默匹配规则：
+   *  ① 指标 `autoflow_notification_silenced_total{level}` +1；
+   *  ② 审计 `notification.silenced`（带 taskId/level/silence.id/silence.scope）；
+   *  ③ 保留原 debug 日志（server 侧排障习惯不变）。
+   *
+   * 审计是 **best-effort**：`@Optional` 装配下 auditService 可能不存在（存量
+   * 测试模块）、写库也可能失败。但**绝不能吞掉**——静默抑制的落痕若再静默
+   * 消失，本方法的目标就整个落空（同 sendToChannels 的 NOTIFICATION_FAILED
+   * 兜底纪律）。故失败降级为 warn（info 级下可见），不 rethrow。
+   *
+   * 指标先记、审计后写：指标是纯内存自增（不抛错），审计可能 IO。顺序颠倒
+   * 会让「审计炸了 ⇒ 连指标也没有」，而 `increase(...) > 0` 的告警恰恰只
+   * 看指标。
+   */
+  private handleSilenced(
+    taskName: string,
+    level: AlertLevel,
+    taskId: string | undefined,
+    applicationId: string | undefined,
+    silence: AlertSilence | null,
+  ): void {
+    // ① 指标：被静默的告警按 level 计数（level 是写点常量闭集，基数有界）
+    recordRuntime("autoflow_notification_silenced_total", { level });
+
+    // ② 审计：谁在什么时候吞掉了什么告警
+    const writeAudit = this.auditService?.log({
+      action: "notification.silenced",
+      resource: "notification",
+      resourceId: taskId ?? silence?.id,
+      detail: {
+        taskName,
+        taskId: taskId ?? null,
+        level,
+        applicationId: applicationId ?? null,
+        // 静默规则身份：id/scope 是「哪条规则」的最小可查集；
+        // endTime 一并记下——「这条静默什么时候会失效」是复盘必备。
+        silence: {
+          id: silence?.id ?? null,
+          scope: silence?.scope ?? null,
+          taskId: silence?.taskId ?? null,
+          applicationId: silence?.applicationId ?? null,
+          level: silence?.level ?? null,
+          endTime: silence?.endTime ? silence.endTime.toISOString() : null,
+        },
+      },
+    });
+
+    // ③ 日志：保留既有 debug（此处**不是**唯一落痕，指标与审计已各自落证）
+    this.logger.debug(`Alert silenced for task ${taskName} (level: ${level})`);
+
+    if (writeAudit) {
+      void writeAudit.catch((err: unknown) => {
+        this.logger.warn(
+          `notification.silenced 审计写入失败（告警已被静默吞掉，此为审计面唯一落痕）: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
   }
 
   addSilence(silence: Omit<AlertSilence, "id" | "createdAt">): string {
@@ -856,8 +939,12 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     applicationId?: string,
   ) {
     if (this.isSilenced(taskId, level, applicationId)) {
-      this.logger.debug(
-        `Alert silenced for task ${taskName} (level: ${level})`,
+      this.handleSilenced(
+        taskName,
+        level,
+        taskId,
+        applicationId,
+        this.findMatchingSilence(taskId, level, applicationId),
       );
       return;
     }
@@ -894,7 +981,13 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     applicationId?: string,
   ) {
     if (this.isSilenced(taskId, AlertLevel.ERROR, applicationId)) {
-      this.logger.debug(`Failure alert silenced for task ${taskName}`);
+      this.handleSilenced(
+        taskName,
+        AlertLevel.ERROR,
+        taskId,
+        applicationId,
+        this.findMatchingSilence(taskId, AlertLevel.ERROR, applicationId),
+      );
       return;
     }
 
@@ -925,7 +1018,13 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     applicationId?: string,
   ) {
     if (this.isSilenced(taskId, AlertLevel.INFO, applicationId)) {
-      this.logger.debug(`Success alert silenced for task ${taskName}`);
+      this.handleSilenced(
+        taskName,
+        AlertLevel.INFO,
+        taskId,
+        applicationId,
+        this.findMatchingSilence(taskId, AlertLevel.INFO, applicationId),
+      );
       return;
     }
 
@@ -959,7 +1058,13 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     alarmChannels?: string[],
   ) {
     if (this.isSilenced(taskId, AlertLevel.WARNING, applicationId)) {
-      this.logger.debug(`Timeout alert silenced for task ${taskName}`);
+      this.handleSilenced(
+        taskName,
+        AlertLevel.WARNING,
+        taskId,
+        applicationId,
+        this.findMatchingSilence(taskId, AlertLevel.WARNING, applicationId),
+      );
       return;
     }
 
@@ -989,7 +1094,13 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
   async notifyExecutorOffline(executorName: string, address: string) {
     if (this.isSilenced(undefined, AlertLevel.WARNING)) {
-      this.logger.debug(`Executor offline alert silenced`);
+      this.handleSilenced(
+        executorName,
+        AlertLevel.WARNING,
+        undefined,
+        undefined,
+        this.findMatchingSilence(undefined, AlertLevel.WARNING),
+      );
       return;
     }
 
@@ -1002,7 +1113,13 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
   async notifyExecutorOnline(executorName: string, address: string) {
     if (this.isSilenced(undefined, AlertLevel.INFO)) {
-      this.logger.debug(`Executor online alert silenced`);
+      this.handleSilenced(
+        executorName,
+        AlertLevel.INFO,
+        undefined,
+        undefined,
+        this.findMatchingSilence(undefined, AlertLevel.INFO),
+      );
       return;
     }
 
@@ -1037,7 +1154,13 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     // 补传 taskId：修复原先 isSilenced(undefined,...) 使任务级静默窗口对本路径
     // 失效的问题，与 notifyFailure 保持一致（taskId 缺省时行为不变）。
     if (this.isSilenced(taskId, AlertLevel.ERROR, applicationId)) {
-      this.logger.debug(`Failure alert silenced for task ${taskName}`);
+      this.handleSilenced(
+        taskName,
+        AlertLevel.ERROR,
+        taskId,
+        applicationId,
+        this.findMatchingSilence(taskId, AlertLevel.ERROR, applicationId),
+      );
       return;
     }
 

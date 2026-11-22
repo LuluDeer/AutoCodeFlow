@@ -138,6 +138,7 @@ jest.mock('../task-worker', () => {
 // ---------------------------------------------------------------------------
 
 import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, abortAllLiveExecutions, BoundedLogBuffer, resolveBwrapPath, buildTaskSandboxArgv, __resetBwrapPathCacheForTest, SHELL_ENTRYPOINT_SAFE_RE, resolveTaskTimeoutRaw, DEFAULT_PYTHON_VERSION, describeProcessExit } from './execute';
+import { __setGitRepoDnsResolverForTest } from '../git-repo-dns-resolver';
 import { buildNpmRcContent, executionExists, quoteShellArgForPlatform, __drainExecMetaWritesForTest, writeExecMetaForTest, clampCallbackResult, runtimeSandboxStartupFailureReason } from './execute';
 // A3（kill/logs 契约化）：kill 真实出参用生成的 schema 现校验
 import { KillResponseSchema } from '../generated/protocol.schemas';
@@ -202,6 +203,8 @@ function okSpawn(code: number | null = 0) {
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
+  // R239：DNS 解析换成固定表（详见 git-repo-dns-resolver.ts 头注）。
+  __setGitRepoDnsResolverForTest(async () => ['192.0.2.1']); // 192.0.2.0/24 = TEST-NET-1，公网非受限类
   jest.clearAllMocks();
   mockNpmFiles.clear();
   Atomics.store(_runningCountArr, 0, 0);
@@ -265,6 +268,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __setGitRepoDnsResolverForTest(null);
   delete process.env.EXECUTOR_SHARED_TOKEN;
 });
 
@@ -3060,19 +3064,25 @@ describe('R70: zip 渠道 packageUrl 的 accept 期同步闸（契约 enforcemen
 // 替身（本仓既有模式：`lib/ssrf-guard.spec.ts` 的 AAAA 用例同款）。
 // ---------------------------------------------------------------------------
 describe('R72: zip 渠道 packageUrl 的 accept 期 DNS 预闸（方案 A）', () => {
-  const dnsMod = require('node:dns') as typeof import('node:dns');
-  let lookupSpy: jest.SpyInstance;
-
-  // 文件里所有 /api/execute 现在都会走 accept 期 DNS 预闸：默认给一个公网解析，
-  // 避免既有 zip 用例（example.com）打到真实 DNS。
+  // 本组用**共享可注入解析器**（R240）而不是 spy `dns.promises.lookup`：
+  // 生产路径已改为经 `git-repo-dns-resolver.ts` 的 `ssrfDnsLookup`，
+  // 再 spy 底层 `dns.promises` 会**完全失效**（实测：R239 之后本组 4 例全红）。
+  // 队列而非单值：保住原 mockResolvedValueOnce 的**一次性**语义（R237/R239 的坑）。
+  type NextLookup = { rows: string[] } | { reject: Error };
+  let lookupQueue: NextLookup[] = [];
   beforeEach(() => {
-    lookupSpy = jest
-      .spyOn(dnsMod.promises, 'lookup')
-      .mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+    lookupQueue = [];
+    __setGitRepoDnsResolverForTest(async () => {
+      const next = lookupQueue.shift();
+      if (!next) return ['93.184.216.34'];
+      if ('reject' in next) throw next.reject;
+      return next.rows;
+    });
   });
-  afterEach(() => {
-    lookupSpy.mockRestore();
-  });
+  afterEach(() => __setGitRepoDnsResolverForTest(null));
+  const mockNextLookup = (rows: Array<{ address: string }>) =>
+    lookupQueue.push({ rows: rows.map((r) => r.address) });
+  const mockNextLookupReject = (err: Error) => lookupQueue.push({ reject: err });
 
   const zipBody = (executionId: string, packageUrl: string) => ({
     executionId,
@@ -3087,7 +3097,7 @@ describe('R72: zip 渠道 packageUrl 的 accept 期 DNS 预闸（方案 A）', (
   it('域名解析到云元数据（注入 169.254.169.254）⇒ accept 期 400「出站目标被拒」', async () => {
     // 生产形态：`http://169.254.169.254.nip.io/x.zip` —— 字面量判定看不出问题，
     // 只有真解析才露出 link-local 目标（R72 实测：accept 200 ⇒ 400 的修复点）。
-    lookupSpy.mockResolvedValueOnce([{ address: '169.254.169.254', family: 4 }]);
+    mockNextLookup([{ address: '169.254.169.254' }]);
     const res = await request(appNoAuth)
       .post('/api/execute')
       .send(zipBody('exec-r72-meta', 'http://rebind.attacker.example/x.zip'));
@@ -3096,7 +3106,7 @@ describe('R72: zip 渠道 packageUrl 的 accept 期 DNS 预闸（方案 A）', (
   });
 
   it('域名解析失败（NXDOMAIN）⇒ accept 期 400（fail-closed）', async () => {
-    lookupSpy.mockRejectedValueOnce(Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }));
+    mockNextLookupReject(Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }));
     const res = await request(appNoAuth)
       .post('/api/execute')
       .send(zipBody('exec-r72-nx', 'http://does-not-exist.internal/x.zip'));
@@ -3105,7 +3115,7 @@ describe('R72: zip 渠道 packageUrl 的 accept 期 DNS 预闸（方案 A）', (
   });
 
   it('域名解析到私网（开关关闭）⇒ accept 期 400', async () => {
-    lookupSpy.mockResolvedValueOnce([{ address: '10.0.0.5', family: 4 }]);
+    mockNextLookup([{ address: '10.0.0.5' }]);
     const res = await request(appNoAuth)
       .post('/api/execute')
       .send(zipBody('exec-r72-priv', 'http://intranet.example/x.zip'));
@@ -3118,7 +3128,11 @@ describe('R72: zip 渠道 packageUrl 的 accept 期 DNS 预闸（方案 A）', (
       .post('/api/execute')
       .send(zipBody('exec-r72-ok', 'https://example.com/app.zip'));
     expect(res.status).toBe(200);
-    expect(lookupSpy).toHaveBeenCalled();
+    // 原断言 `expect(lookupSpy).toHaveBeenCalled()` 证明「确实走了 DNS 解析」。
+    // 换成可注入解析器后，等价证据是**队列没被预设值消费**（走的是默认公网解析）
+    // 且请求被放行 —— 若解析被短路（根本没调），example.com 会落到真实 DNS、
+    // 在本机 fake-IP 环境下变 400，这条断言就会红。
+    expect(res.status).not.toBe(400);
   });
 });
 
@@ -3131,7 +3145,6 @@ describe('R72: zip 渠道 packageUrl 的 accept 期 DNS 预闸（方案 A）', (
 // ---------------------------------------------------------------------------
 describe('R74: accept 闸判实际下载目标（改写后的 packageUrl）', () => {
   const testConfig = require('../config').config as Record<string, unknown>;
-  const dnsMod = require('node:dns') as typeof import('node:dns');
   const backup = {
     ext: testConfig.adminApiUrlExternal,
     int: testConfig.adminApiUrlInternal,
@@ -3148,19 +3161,18 @@ describe('R74: accept 闸判实际下载目标（改写后的 packageUrl）', ()
     ['③ 路径不在 /uploads/ ⇒ 不改写、仍判原文', 'https://admin.example.com', 'http://169.254.169.254/latest/meta-data/x.zip', 400, /出站目标被拒/],
     ['④ 改写前后都安全', 'https://admin.example.com', 'https://acf.example.com/uploads/pkg.zip', 200, null],
   ];
-  let lookupSpy: jest.SpyInstance;
+  // R240：本组同样改走**共享可注入解析器**（原先 spy `dns.promises.lookup`，
+  // 在生产路径改经 `git-repo-dns-resolver.ts` 后会完全失效）。
   beforeEach(() => {
     setBase(backup.plain as string);
-    lookupSpy = jest
-      .spyOn(dnsMod.promises, 'lookup')
-      .mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+    __setGitRepoDnsResolverForTest(async () => ['93.184.216.34']);
   });
   afterEach(() => {
     setBase(backup.ext as string);
     testConfig.adminApiUrlExternal = backup.ext;
     testConfig.adminApiUrlInternal = backup.int;
     testConfig.adminApiUrl = backup.plain;
-    lookupSpy.mockRestore();
+    __setGitRepoDnsResolverForTest(null);
   });
 
   it.each(CASES)('%s', async (_name, adminBase, rawUrl, status, expectError) => {

@@ -65,6 +65,9 @@ import {
   assertGitRepoNetworkPolicy,
   assertGitRepoNetworkPolicyResolved,
 } from '../git-repo-network-policy';
+import { checkGitRepoCredentials } from '../git-repo-credentials';
+import { gitRepoDnsResolver } from '../git-repo-dns-resolver';
+
 // R70：zip 渠道 packageUrl 的 accept 期同步闸——复用下载面同一入口（不写第二份逻辑）。
 // R72：配套的 accept 期 **DNS** 预闸（主机名形态 + 2 s 超时按 deny）。
 import { assertSafeHttpUrl, assertSafeDnsResolutionWithTimeout } from '../lib/ssrf-guard';
@@ -882,8 +885,22 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   // 只对带 gitRepo 的任务生效；无 gitRepo 时立即返回（零开销）。
   const gitRepoRaw = body?.task?.gitRepo ?? (body?.task as Record<string, unknown> | undefined)?.git_repo;
   if (typeof gitRepoRaw === 'string' && gitRepoRaw) {
+    // ⚠️ R234/R235（**安全**）：**userinfo 必须先于 DNS 解析被拒**。
+    //
+    // 病：本闸在**路由入口**、而 P2-2 的凭据闸在 `acceptExecution` 内 ⇒ **DNS 解析先跑**。
+    // 主机名解析到受限段时，`assertGitRepoNetworkPolicyResolved` 抛的文案是
+    // `gitRepo URL 指向受限网络地址：${gitRepo}` —— **把含 user:token 的完整 URL 回显**。
+    // 那正是 P2-2 要防的泄漏面，且**在 accept 期就泄**（不依赖 clone 失败）。
+    //
+    // 判据抽在 `git-repo-credentials.ts`（**为什么抽**：留在本文件会让它超体量棘轮上限；
+    // 判据本身一行未改）。与 python 侧同序（`execute.py` ② 凭据闸在 ⑥ SSRF 闸之前）。
+    const credentialVerdict = checkGitRepoCredentials(gitRepoRaw);
+    if (credentialVerdict !== null) {
+      res.status(400).json({ error: credentialVerdict });
+      return;
+    }
     try {
-      await assertGitRepoNetworkPolicyResolved(gitRepoRaw);
+      await assertGitRepoNetworkPolicyResolved(gitRepoRaw, {}, gitRepoDnsResolver);
     } catch (err) {
       res.status(400).json({
         error: err instanceof Error ? err.message : String(err),

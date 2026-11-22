@@ -17,7 +17,7 @@
     "updateIdOnly": 0,
     "queryBuilderStateWrite": 0,
     "rawSqlStateWrite": 0,
-    "wholeRowSaves": 31,
+    "wholeRowSaves": 30,
     "saveReadThenWrite": 2
   },
   "known": [],

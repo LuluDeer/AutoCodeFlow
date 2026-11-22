@@ -136,4 +136,189 @@ describe("共享脱敏实现（三个入口逐字一致）", () => {
     const outputs = new Set(ENTRIES.map(([, fn]) => fn(mixed)));
     expect(outputs.size).toBe(1);
   });
+
+  // ── ④ R289-C1：值级敏感凭据防线（PEM / 裸 JWT / 供应商前缀 / 空用户名 URL / Basic / 高熵）──
+  it.each(ENTRIES)(
+    "%s 入口：PEM 私钥多形态（多行闭合 + 保尾 / JSON 转义 \\n / 未闭合截断），不误伤公钥证书",
+    (_n, fn) => {
+      // ① 完整多行块 + 尾部正常文本保留（防贪婪吞尾）
+      const multiline =
+        "prefix\n-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA1234\n-----END RSA PRIVATE KEY-----\nfor staging";
+      const outMulti = fn(multiline);
+      expect(outMulti).toBe("prefix\n[REDACTED_PEM]\nfor staging");
+
+      // ② JSON 转义单行 \\n 闭合块 + 保尾
+      const escapedClosed =
+        "-----BEGIN EC PRIVATE KEY-----\\nMHcCAQEEI1234\\n-----END EC PRIVATE KEY-----\\nfor prod";
+      expect(fn(escapedClosed)).toBe("[REDACTED_PEM]\\nfor prod");
+
+      // ③ JSON 转义单行 \\n 未闭合块
+      const escapedOpen =
+        "-----BEGIN OPENSSH PRIVATE KEY-----\\nb3BlbnNzaC1rZXktdjE=\\nMIIEpAIB";
+      const outEscapedOpen = fn(escapedOpen);
+      expect(outEscapedOpen).toBe("[REDACTED_PEM]");
+      expect(outEscapedOpen).not.toContain("b3BlbnNzaC1rZXktdjE=");
+
+      // ④ ≤200 字符截断未闭合多行块 + 空行后保尾
+      const truncated =
+        "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQE\n\nfor staging";
+      const outTrunc = fn(truncated);
+      expect(outTrunc).toBe("[REDACTED_PEM]\n\nfor staging");
+      expect(outTrunc).not.toContain("MIIEvQIBADAN");
+
+      // ⑤ 公钥证书不误打
+      const pubCert =
+        "-----BEGIN CERTIFICATE-----\nMIIBIjANBgkq\n-----END CERTIFICATE-----";
+      expect(fn(pubCert)).toBe(pubCert);
+    },
+  );
+
+  it.each(ENTRIES)(
+    "%s 入口：裸 JWT（含 eyJ 与非 eyJ 起始 JSON）均被打码",
+    (_n, fn) => {
+      const stdJwt =
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+      expect(fn(`note ${stdJwt} end`)).toBe("note [REDACTED_JWT] end");
+
+      // JSON 以空格/数字键起始时 base64url 为 eyA / eyI
+      const altJwt = "eyAiYWxnIjoiSFMyNTYifQ.eyIzIjoiMSJ9.abcdef123456_XYZ";
+      expect(fn(altJwt)).toBe("[REDACTED_JWT]");
+    },
+  );
+
+  it.each(ENTRIES)(
+    "%s 入口：主流供应商密钥前缀（github_pat_/AKIA/ASIA/xoxb-/xoxp-/glpat-/rk_live_/whsec_/AIza/npm_/hf_）打码",
+    (_n, fn) => {
+      const secrets = [
+        "github_pat_11ABCDEFG0123456789_abcdefghijklmnop123456",
+        "AKIAIOSFODNN7EXAMPLE",
+        "ASIAIOSFODNN7EXAMPLE",
+        "xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx",
+        "xoxp-123456789012-1234567890123-1234567890123-abcdef1234567890",
+        "glpat-AbCdEf1234567890xxxx",
+        "rk_live_1234567890abcdef12345678",
+        "whsec_1234567890abcdef12345678",
+        "AIzaSyD1234567890abcdefGHIJKLMNOPQRSTUV",
+        "npm_1234567890abcdef1234567890abcdef1234",
+        "hf_1234567890abcdef1234567890abcdef",
+      ];
+      for (const s of secrets) {
+        const out = fn(`val ${s} ok`);
+        expect(out).not.toContain(s);
+        expect(out).toBe("val [REDACTED] ok");
+      }
+    },
+  );
+
+  it.each(ENTRIES)(
+    "%s 入口：URL 内嵌空用户名凭据（redis://:pass@host / http://:pass@host）打码且不误伤普通 URL",
+    (_n, fn) => {
+      expect(fn("redis://:myRedisPass@cache.internal:6379/0")).toBe(
+        "redis://:[REDACTED]@cache.internal:6379/0",
+      );
+      expect(fn("http://:secretpass@internal:8080/api")).toBe(
+        "http://:[REDACTED]@internal:8080/api",
+      );
+      expect(fn("https://user@host.internal/path")).toBe(
+        "https://user@host.internal/path",
+      );
+      expect(fn("https://example.com:8080/user@example.com")).toBe(
+        "https://example.com:8080/user@example.com",
+      );
+      expect(fn("git@github.com:AutoCodeFlow/AutoCodeFlow.git")).toBe(
+        "git@github.com:AutoCodeFlow/AutoCodeFlow.git",
+      );
+    },
+  );
+
+  it.each(ENTRIES)(
+    "%s 入口：Authorization: Basic 先于凭据赋值匹配（顺序不可换），不误伤 Basic 英文短语",
+    (_n, fn) => {
+      const out = fn("Authorization: Basic dXNlcjpzZWNyZXRwYXNz");
+      expect(out).not.toContain("dXNlcjpzZWNyZXRwYXNz");
+      expect(out).toContain("[REDACTED]");
+
+      const outJson = fn('{"Authorization": "Basic dXNlcjpzZWNyZXRwYXNz"}');
+      expect(outJson).not.toContain("dXNlcjpzZWNyZXRwYXNz");
+
+      expect(fn("Basic configuration for service")).toBe(
+        "Basic configuration for service",
+      );
+    },
+  );
+
+  it.each(ENTRIES)(
+    "%s 入口：高熵词元通道 A（无斜杠 24+）与通道 B（独立含 `/` 40 位 AWS Secret）打码",
+    (_n, fn) => {
+      const tok24 = "9xK2mP7vL4qR8nW3zJ6cH5bT";
+      const tok32 = "k8J2mP9qR4sT6vW1xY3zA5bC7dE9fG2h";
+      const awsSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+      expect(fn(`note ${tok24} end`)).toBe("note [REDACTED_HIGH_ENTROPY] end");
+      expect(fn(`note ${tok32} end`)).toBe("note [REDACTED_HIGH_ENTROPY] end");
+      expect(fn(`val ${awsSecret} end`)).toBe(
+        "val [REDACTED_HIGH_ENTROPY] end",
+      );
+      expect(fn(`{"s":"${awsSecret}"}`)).toBe(
+        '{"s":"[REDACTED_HIGH_ENTROPY]"}',
+      );
+      // R289 红队回归：字符类 `-` 置于末尾，避免 `=-\\` 范围吞进 `[` / `@` / `?` 导致漏网
+      expect(fn(`[${awsSecret}]`)).toBe("[[REDACTED_HIGH_ENTROPY]]");
+      expect(fn(`user@${awsSecret}`)).toBe("user@[REDACTED_HIGH_ENTROPY]");
+      expect(fn(`q?${awsSecret}`)).toBe("q?[REDACTED_HIGH_ENTROPY]");
+    },
+  );
+
+  it("preserveDigests 双向：64 位 hex 原样保留，40 位高熵混合串仍被打码", () => {
+    const sha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const highEntropy = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+    expect(sanitizeSecrets(sha256, { preserveDigests: true })).toBe(sha256);
+    expect(sanitizeSecrets(highEntropy, { preserveDigests: true })).toBe(
+      "[REDACTED_HIGH_ENTROPY]",
+    );
+  });
+
+  it.each(ENTRIES)(
+    "%s 入口：正常标识符/路径/URL/时间/cron/预览占位符零误伤",
+    (_n, fn) => {
+      const benign = [
+        "550e8400-e29b-41d4-a716-446655440000",
+        "2026-11-20T15:34:02.123Z",
+        "*/15 0-23 * * 1-5",
+        "/data/project/AutoCodeFlow/apps/admin-api/src/modules/agent/tools/agent-sanitize.util.ts",
+        "C:\\Users\\admin\\AutoCodeFlow\\apps\\executor-desktop\\config.json",
+        "https://registry.npmjs.org/@autocodeflow/cli/-/cli-2.1.0.tgz",
+        "https://api.example.com/v1/deployments/550e8400-e29b-41d4-a716-446655440000",
+        "ghcr.io/autocodeflow/executor-node:v2.1.0-alpine3.20",
+        "1790000000096-AddConsumedFirePointAtToTasks",
+        "apr-s-1-stop_deployment-x",
+        "aprs-s-1-0123456789abcdef",
+        "Http2ClientRetryStrategyV3Handler",
+        "请确认是否暂停 nightly-etl-prod-v2 调度任务并通知值班负责人",
+        "Deployment d1 failed with ECONNREFUSED on executor-node-01:4001",
+        "[omitted string len=412 sha256=a1b2c3d4e5f67890]",
+        "[executable code len=480 lines=1 sha256=a1b2c3d4e5f67890]",
+      ];
+      for (const s of benign) {
+        expect(fn(s)).toBe(s);
+      }
+    },
+  );
+
+  it("二次脱敏 100% 幂等（所有新增 REDACTED 标记再过一遍不发生二次改写）", () => {
+    const inputs = [
+      "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA1234\n-----END RSA PRIVATE KEY-----\nfor staging",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+      "github_pat_11ABCDEFG0123456789_abcdefghijklmnop123456",
+      "redis://:myRedisPass@cache.internal:6379/0",
+      "Authorization: Basic dXNlcjpzZWNyZXRwYXNz",
+      "k8J2mP9qR4sT6vW1xY3zA5bC7dE9fG2h",
+      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    ];
+    for (const raw of inputs) {
+      const once = sanitizeSecrets(raw);
+      const twice = sanitizeSecrets(once);
+      expect(twice).toBe(once);
+    }
+  });
 });

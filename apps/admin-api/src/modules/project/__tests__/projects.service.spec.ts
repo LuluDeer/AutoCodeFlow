@@ -5,7 +5,10 @@ import { ProjectsService } from "../projects.service";
 import { Project, DEFAULT_PROJECT_ID } from "../project.entity";
 import { ProjectMember } from "../entities/project-member.entity";
 import { Task } from "../../task/entities/task.entity";
-import { TaskExecution } from "../../task/entities/task-execution.entity";
+import {
+  TaskExecution,
+  FAILED_EXECUTION_STATUSES,
+} from "../../task/entities/task-execution.entity";
 import { Application } from "../../application/entities/application.entity";
 
 /**
@@ -391,10 +394,86 @@ describe("ProjectsService（AUTH-01）", () => {
       expect(summary.executionsLast7d).toBe(9);
       expect(summary.failedExecutionsLast7d).toBe(2);
       expect(summary.timeoutExecutionsLast7d).toBe(1);
-      // 2 / 9 → 22.22%
-      expect(summary.failureRate).toBe(22.22);
+      // R283：分子改为 FAILED+TIMEOUT（原 22.22 = 2/9 只含 failed），
+      // 旧断言把错误口径钉成了期望。现 3/9 → 33.33%。
+      expect(summary.failureRate).toBe(33.33);
       expect(summary.recentFailures[0].taskName).toBe("任务甲");
       expect(summary.recentExecutions[0].taskName).toBe("任务乙");
+    });
+
+    it("同一屏一致性：2 failed + 1 timeout / 9 条 ⇒ 明细分桶、失败率合并、最近失败 3 条", async () => {
+      // 跨字段不变式（全仓此前零覆盖）：同一响应里三个数必须自洽——
+      // failedExecutionsLast7d=2（FAILED 桶）、timeoutExecutionsLast7d=1（TIMEOUT 桶）、
+      // failureRate=(2+1)/9=33.33（合并口径）、recentFailures 列出 3 条（IN(FAILED,TIMEOUT)）。
+      // 修复前这四者互相矛盾：明细说 2+1，失败率却按 2/9=22.22 算。
+      repo.findOne.mockResolvedValue(makeRow());
+      taskRepo.count.mockResolvedValue(5);
+      appRepo.count.mockResolvedValue(0);
+      memberRepo.count.mockResolvedValue(1);
+      execQb.getRawMany.mockResolvedValue([
+        { status: "success", count: "6" },
+        { status: "failed", count: "2" },
+        { status: "timeout", count: "1" },
+      ]);
+      execQb.getMany
+        .mockResolvedValueOnce([
+          {
+            id: "e1",
+            taskId: "t1",
+            taskName: "脚本挂了",
+            status: "failed",
+            failureReason: "script_error",
+            errorMessage: "boom",
+            createdAt: new Date("2026-11-15T01:00:00.000Z"),
+            duration: 1200,
+          },
+          {
+            id: "e3",
+            taskId: "t3",
+            taskName: "超时了",
+            status: "timeout",
+            failureReason: "timeout",
+            errorMessage: null,
+            createdAt: new Date("2026-11-15T00:30:00.000Z"),
+            duration: 600000,
+          },
+          {
+            id: "e4",
+            taskId: "t1",
+            taskName: "脚本挂了",
+            status: "failed",
+            failureReason: "script_error",
+            errorMessage: "boom",
+            createdAt: new Date("2026-11-15T00:00:00.000Z"),
+            duration: 800,
+          },
+        ])
+        .mockResolvedValueOnce([]);
+
+      const summary = await service.getSummary("p1");
+
+      // ① 两个明细字段保持分桶语义（不合并——合并会让 timeout 字段失去意义）
+      expect(summary.failedExecutionsLast7d).toBe(2);
+      expect(summary.timeoutExecutionsLast7d).toBe(1);
+      // ② 失败率分子是两桶之和：3/9
+      expect(summary.failureRate).toBe(33.33);
+      // ③ 因此失败率**刻意不等于** failed / total —— 这条断言就是契约本身
+      expect(summary.failureRate).not.toBe(
+        Math.round(
+          (summary.failedExecutionsLast7d / summary.executionsLast7d) * 10000,
+        ) / 100,
+      );
+      // ④ 最近失败列表含 timeout 那条，共 3 条 → 与失败率分子同一集合
+      expect(summary.recentFailures).toHaveLength(3);
+      expect(summary.recentFailures.map((r) => r.status)).toEqual([
+        "failed",
+        "timeout",
+        "failed",
+      ]);
+      // ⑤ 列表条数与失败率分子一致（不看窗口上限，本条只验证口径同源）
+      expect(
+        summary.failedExecutionsLast7d + summary.timeoutExecutionsLast7d,
+      ).toBe(summary.recentFailures.length);
     });
 
     it("窗口内无执行 → failureRate 为 null（前端显示暂无数据，不渲染 0%）", async () => {
@@ -410,6 +489,58 @@ describe("ProjectsService（AUTH-01）", () => {
       expect(summary.failureRate).toBeNull();
       expect(summary.recentFailures).toEqual([]);
       expect(summary.recentExecutions).toEqual([]);
+    });
+
+    it("只有 timeout（0 failed）→ failureRate 不为 0（修复前会是 0%）", async () => {
+      // 缺陷的正面形态：回调上报的 timeout 落 TIMEOUT 桶，只数 FAILED 时
+      // 失败率算出来是 0%——而同一屏的最近失败列表里全是超时。
+      repo.findOne.mockResolvedValue(makeRow());
+      taskRepo.count.mockResolvedValue(3);
+      appRepo.count.mockResolvedValue(0);
+      memberRepo.count.mockResolvedValue(0);
+      execQb.getRawMany.mockResolvedValue([
+        { status: "success", count: "3" },
+        { status: "timeout", count: "1" },
+      ]);
+      execQb.getMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+      const summary = await service.getSummary("p1");
+      expect(summary.failedExecutionsLast7d).toBe(0);
+      expect(summary.timeoutExecutionsLast7d).toBe(1);
+      expect(summary.executionsLast7d).toBe(4);
+      expect(summary.failureRate).not.toBe(0);
+      expect(summary.failureRate).toBe(25);
+    });
+
+    it("口径一致性：失败 = 失败 + 超时（人工终止不计入）——产品文案已宣示，后端必须同源", async () => {
+      // 这条用例把 admin-web `locales/zh.ts:1479` 的**产品文案**钉进后端测试：
+      //   'taskDetail.stats.caliberHint': '统计口径：全部历史执行（非仅最近 20 次）。
+      //    成功率 = 成功 / 全部；失败 = 失败 + 超时（人工终止不计入失败率）。…'
+      // ⇒ 「失败 = 失败 + 超时」不是本模块的局部选择，而是**已对外宣示的口径**。
+      // 若有人把 getSummary 的分子改回只算 failed，本用例会红，且红在这里能直接读到
+      // 「这与产品文案相反」——项目概览与任务详情会对同一批执行报出两个失败率。
+      // 「人工终止不计入」由 FAILED_EXECUTION_STATUSES 保证：KILLED/CANCELLED 不在其中。
+      expect([...FAILED_EXECUTION_STATUSES]).toEqual(["failed", "timeout"]);
+      expect(FAILED_EXECUTION_STATUSES).not.toContain("killed");
+      expect(FAILED_EXECUTION_STATUSES).not.toContain("cancelled");
+
+      repo.findOne.mockResolvedValue(makeRow());
+      taskRepo.count.mockResolvedValue(0);
+      appRepo.count.mockResolvedValue(0);
+      memberRepo.count.mockResolvedValue(0);
+      // 1 成功 + 2 failed + 1 timeout + 1 killed（人工终止不计入失败率）
+      execQb.getRawMany.mockResolvedValue([
+        { status: "success", count: "1" },
+        { status: "failed", count: "2" },
+        { status: "timeout", count: "1" },
+        { status: "killed", count: "1" },
+      ]);
+      execQb.getMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+      const summary = await service.getSummary("p1");
+      expect(summary.executionsLast7d).toBe(5);
+      // 分子 = 2 + 1 = 3（killed 不算），分母 = 5 —— 与产品文案逐字一致
+      expect(summary.failureRate).toBe(60);
     });
 
     it("项目不存在 → 404（不返回一堆 0 冒充成功）", async () => {

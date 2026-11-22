@@ -6,9 +6,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { TaskService } from "../task.service";
-import { ExecutionRead } from "../execution-read.collaborator";
+import {
+  ExecutionRead,
+  parseExecutionStatusFilter,
+} from "../execution-read.collaborator";
 import { Task } from "../entities/task.entity";
-import { TaskExecution } from "../entities/task-execution.entity";
+import {
+  TaskExecution,
+  ExecutionStatus,
+} from "../entities/task-execution.entity";
 import { ExecutionLogLine } from "../entities/execution-log-line.entity";
 import { TaskVersion } from "../entities/task-version.entity";
 import { ExecutionReport } from "../../metrics/entities/execution-report.entity";
@@ -249,5 +255,529 @@ describe("T2-B4 第一刀 · ExecutionRead 协作者的转发契约", () => {
     const second = (service as any).executionRead;
     expect(first).toBeInstanceOf(ExecutionRead);
     expect(second).toBe(first);
+  });
+});
+
+/**
+ * R281 · 「失败」深链的多值 status 过滤。
+ *
+ * 缺陷原形（真机可复现）：超时风暴时（10 条 timeout、0 条 failed）汇总卡片与
+ * 通知铃铛显示「10 条失败」，点进去 `/executions?status=failed` 得到 **0 条**。
+ * 根因是读面把 `status` 当**单值等值**下发，而「失败」口径早已是
+ * `FAILED_EXECUTION_STATUSES = [failed, timeout]`。
+ *
+ * 本组用例钉两件事：
+ *   ① 纯函数 `parseExecutionStatusFilter` 的解析语义（剥空白/去重/保序/白名单/
+ *      全非法回落）；
+ *   ② **SQL 形状**：单值必须仍是 `e.status = :status`（行为逐字节不变——执行页
+ *      下拉里 `failed` 与 `timeout` 是两个独立选项，不能偷偷把 `failed` 扩成
+ *      含 timeout），多值才是 `e.status IN (...)`。
+ *   ③ 非法值不 400，且全部非法 ⇒ 等同未传（不加任何 status 谓词）。
+ */
+describe("R281 · status 多值过滤（parseExecutionStatusFilter + SQL 形状）", () => {
+  let service: TaskService;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let qb: Record<string, jest.Mock>;
+
+  /** 只回 `.length` 等纯内存消费的假 QueryBuilder。 */
+  const makeQb = () => {
+    const builder: Record<string, jest.Mock> = {
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      getMany: jest.fn().mockResolvedValue([]),
+      getCount: jest.fn().mockResolvedValue(0),
+      getRawAndEntities: jest.fn().mockResolvedValue({ entities: [] }),
+    };
+    return builder;
+  };
+
+  /** 下发过的 status 谓词（只收集带 status/statuses 参数的那些）。 */
+  const statusPredicates = () =>
+    qb.andWhere.mock.calls.filter(([, params]) => {
+      if (!params) return false;
+      return Object.keys(params).some(
+        (k) => k === "status" || k === "statuses",
+      );
+    }) as Array<[string, Record<string, unknown>]>;
+
+  beforeEach(async () => {
+    execRepo = makeRepo();
+    qb = makeQb();
+    execRepo.createQueryBuilder.mockReturnValue(qb);
+    (execRepo as unknown as { metadata: { columns: unknown[] } }).metadata = {
+      columns: [{ propertyName: "id" }, { propertyName: "status" }],
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        TaskService,
+        { provide: getRepositoryToken(Task), useValue: makeRepo() },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(ExecutionLogLine), useValue: makeRepo() },
+        { provide: getRepositoryToken(TaskVersion), useValue: makeRepo() },
+        { provide: getRepositoryToken(ExecutionReport), useValue: makeRepo() },
+        { provide: getQueueToken("task-queue"), useValue: { add: jest.fn() } },
+        { provide: DataSource, useValue: { transaction: jest.fn() } },
+        {
+          provide: SchedulerService,
+          useValue: {
+            stop: jest.fn(),
+            scheduleOne: jest.fn(),
+            getStats: jest.fn(),
+          },
+        },
+        { provide: AiService, useValue: { analyzeFailure: jest.fn() } },
+        { provide: AiAnalysisService, useValue: { analyzeFailure: jest.fn() } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
+        {
+          provide: ExecutorService,
+          useValue: {
+            getExecutorUrl: jest.fn(),
+            getSharedToken: jest.fn().mockResolvedValue(""),
+            notifyExecutorKill: jest.fn(),
+            scheduleRetryAfterRecovery: jest.fn(),
+            hasRetryBudget: jest.fn().mockReturnValue(true),
+          },
+        },
+        { provide: AuditService, useValue: { log: jest.fn() } },
+        { provide: DomainEventBus, useValue: { emit: jest.fn() } },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as never),
+        },
+      ],
+    }).compile();
+
+    service = module.get(TaskService);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  describe("① 纯函数 parseExecutionStatusFilter（已导出，可直接单测）", () => {
+    it("单值 'failed' ⇒ ['failed']（执行页下拉语义的来源）", () => {
+      expect(parseExecutionStatusFilter("failed")).toEqual(["failed"]);
+    });
+
+    it("多值 'failed,timeout' ⇒ 两值且保序", () => {
+      expect(parseExecutionStatusFilter("failed,timeout")).toEqual([
+        "failed",
+        "timeout",
+      ]);
+      // 顺序按首次出现，不被枚举定义顺序重排
+      expect(parseExecutionStatusFilter("timeout,failed")).toEqual([
+        "timeout",
+        "failed",
+      ]);
+    });
+
+    it("非法值 'foo' ⇒ []（= 未传，不是 400）", () => {
+      expect(parseExecutionStatusFilter("foo")).toEqual([]);
+    });
+
+    it("混合 'failed,foo' ⇒ 只留合法项（逐条丢弃，不连坐）", () => {
+      expect(parseExecutionStatusFilter("failed,foo")).toEqual(["failed"]);
+      expect(parseExecutionStatusFilter("foo,timeout,bar")).toEqual([
+        "timeout",
+      ]);
+    });
+
+    it("'' 与 undefined ⇒ []", () => {
+      expect(parseExecutionStatusFilter("")).toEqual([]);
+      expect(parseExecutionStatusFilter(undefined)).toEqual([]);
+    });
+
+    it("重复 'failed,failed' ⇒ 去重", () => {
+      expect(parseExecutionStatusFilter("failed,failed")).toEqual(["failed"]);
+      expect(parseExecutionStatusFilter("failed,timeout,failed")).toEqual([
+        "failed",
+        "timeout",
+      ]);
+    });
+
+    it("含空白 'failed, timeout' ⇒ 剥空白", () => {
+      expect(parseExecutionStatusFilter("failed, timeout")).toEqual([
+        "failed",
+        "timeout",
+      ]);
+      expect(parseExecutionStatusFilter("  timeout  ")).toEqual(["timeout"]);
+    });
+
+    it("空片段与注入片段都被丢弃（不产生非法谓词值）", () => {
+      expect(parseExecutionStatusFilter("failed,")).toEqual(["failed"]);
+      expect(parseExecutionStatusFilter(",,")).toEqual([]);
+      expect(parseExecutionStatusFilter("' OR 1=1--")).toEqual([]);
+      // 大小写不匹配枚举值 ⇒ 丢弃（枚举值是精确小写）
+      expect(parseExecutionStatusFilter("FAILED")).toEqual([]);
+    });
+
+    it("返回值只可能落在 ExecutionStatus 枚举内（白名单闭合）", () => {
+      const all = Object.values(ExecutionStatus).join(",");
+      expect(parseExecutionStatusFilter(all)).toEqual([
+        ...new Set(Object.values(ExecutionStatus)),
+      ]);
+    });
+  });
+
+  describe("② SQL 形状：单值仍 '='，多值才是 IN", () => {
+    it("单值 status ⇒ andWhere('e.status = :status', { status })（逐字节不变）", async () => {
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 20,
+        status: "failed",
+      });
+      const preds = statusPredicates();
+      expect(preds).toHaveLength(1);
+      expect(preds[0]).toEqual(["e.status = :status", { status: "failed" }]);
+      // 断言**没有**退化成 IN 单元素
+      expect(qb.andWhere.mock.calls.map(([sql]) => sql)).not.toContain(
+        "e.status IN (:...statuses)",
+      );
+    });
+
+    it("多值 status ⇒ andWhere('e.status IN (:...statuses)', { statuses })", async () => {
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 20,
+        status: "failed,timeout",
+      });
+      const preds = statusPredicates();
+      expect(preds).toHaveLength(1);
+      expect(preds[0]).toEqual([
+        "e.status IN (:...statuses)",
+        { statuses: ["failed", "timeout"] },
+      ]);
+    });
+
+    it("含空格的多值同样生成 IN（剥空白在解析层完成）", async () => {
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 20,
+        status: "failed, timeout",
+      });
+      expect(statusPredicates()[0]).toEqual([
+        "e.status IN (:...statuses)",
+        { statuses: ["failed", "timeout"] },
+      ]);
+    });
+
+    it("全非法 status ⇒ **不下发任何** status 谓词（等同未传，不 400）", async () => {
+      await expect(
+        service.getAllExecutions({ page: 1, pageSize: 20, status: "foo" }),
+      ).resolves.toBeDefined();
+      expect(statusPredicates()).toHaveLength(0);
+      // 同时确认其它过滤器照常工作（不是整体短路）
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 20,
+        status: "foo",
+        taskId: "t-1",
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith("e.taskId = :taskId", {
+        taskId: "t-1",
+      });
+    });
+
+    it("未传 status ⇒ 同样没有 status 谓词（与全非法等价）", async () => {
+      await service.getAllExecutions({ page: 1, pageSize: 20 });
+      expect(statusPredicates()).toHaveLength(0);
+    });
+
+    it("keyset 分支（导出/翻页共用装配）也走同一形态：单值 '='", async () => {
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 20,
+        status: "failed",
+        cursor: "",
+      });
+      const preds = statusPredicates();
+      expect(preds).toHaveLength(1);
+      expect(preds[0]).toEqual(["e.status = :status", { status: "failed" }]);
+    });
+
+    it("keyset 分支多值同样生成 IN", async () => {
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 20,
+        status: "failed,timeout",
+        cursor: "",
+      });
+      expect(statusPredicates()[0]).toEqual([
+        "e.status IN (:...statuses)",
+        { statuses: ["failed", "timeout"] },
+      ]);
+    });
+  });
+});
+
+/**
+ * R281 · **四条 status 过滤路径**都必须接受多值。
+ *
+ * 缺陷面不止 `getAllExecutions` 一处：`p.status` 在本协作者里有 4 个独立的
+ * 消费点（本轮侦察 A① 逐行核实）——
+ *
+ * | 位置 | 形态 | 影响入口 |
+ * |---|---|---|
+ * | `applyAllExecutionsFilters`（被 3 条路径共用） | `andWhere('e.status = :status')` | `GET /tasks/executions/all`（OFFSET + keyset）、**CSV 导出** |
+ * | `getExecutions` OFFSET 分支 | `where['status']` 对象 | `GET /tasks/:id/executions`（默认路径） |
+ * | `getExecutionsByKeyset` 页查询 | `andWhere('e.status = :status')` | `GET /tasks/:id/executions?cursor=…` |
+ * | `getExecutionsByKeyset` 的 `count` | `where['status']` 对象 | 同上（`total`） |
+ *
+ * 只改第一处会让「导出 CSV」与「单任务历史」继续出现「点了看不到」。本组
+ * 按**入口**各钉一条，确保 4 处同口径。
+ *
+ * 单值必须仍是等值形态（不是 `IN` 单元素）——这是既有 spec 的形状钉子，也是
+ * 「执行页下拉里 failed / timeout 是独立选项」的语义保证。
+ */
+describe("R281 · 四条 status 路径的多值覆盖", () => {
+  let service: TaskService;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let qb: Record<string, jest.Mock>;
+
+  const makeQb = () => {
+    const builder: Record<string, jest.Mock> = {
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      getMany: jest.fn().mockResolvedValue([]),
+      getCount: jest.fn().mockResolvedValue(0),
+    };
+    return builder;
+  };
+
+  /** QB 上带 status/statuses 参数的谓词。 */
+  const statusPredicates = () =>
+    qb.andWhere.mock.calls.filter(([, params]) => {
+      if (!params) return false;
+      return Object.keys(params).some(
+        (k) => k === "status" || k === "statuses",
+      );
+    }) as Array<[string, Record<string, unknown>]>;
+
+  beforeEach(async () => {
+    execRepo = makeRepo();
+    qb = makeQb();
+    execRepo.createQueryBuilder.mockReturnValue(qb);
+    execRepo.findAndCount.mockResolvedValue([[], 0]);
+    (execRepo as unknown as { metadata: { columns: unknown[] } }).metadata = {
+      columns: [{ propertyName: "id" }, { propertyName: "status" }],
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        TaskService,
+        { provide: getRepositoryToken(Task), useValue: makeRepo() },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(ExecutionLogLine), useValue: makeRepo() },
+        { provide: getRepositoryToken(TaskVersion), useValue: makeRepo() },
+        { provide: getRepositoryToken(ExecutionReport), useValue: makeRepo() },
+        { provide: getQueueToken("task-queue"), useValue: { add: jest.fn() } },
+        { provide: DataSource, useValue: { transaction: jest.fn() } },
+        {
+          provide: SchedulerService,
+          useValue: {
+            stop: jest.fn(),
+            scheduleOne: jest.fn(),
+            getStats: jest.fn(),
+          },
+        },
+        { provide: AiService, useValue: { analyzeFailure: jest.fn() } },
+        { provide: AiAnalysisService, useValue: { analyzeFailure: jest.fn() } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
+        {
+          provide: ExecutorService,
+          useValue: {
+            getExecutorUrl: jest.fn(),
+            getSharedToken: jest.fn().mockResolvedValue(""),
+            notifyExecutorKill: jest.fn(),
+            scheduleRetryAfterRecovery: jest.fn(),
+            hasRetryBudget: jest.fn().mockReturnValue(true),
+          },
+        },
+        { provide: AuditService, useValue: { log: jest.fn() } },
+        { provide: DomainEventBus, useValue: { emit: jest.fn() } },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as never),
+        },
+      ],
+    }).compile();
+
+    service = module.get(TaskService);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  /** `where.status` 是 TypeORM `In(...)` 时取出它的值集合，标量则原样返回。 */
+  const statusValueOf = (where: Record<string, unknown>) => {
+    const raw = where?.status as
+      { type?: string; value?: unknown } | string | undefined;
+    if (raw && typeof raw === "object" && "type" in raw) {
+      return { op: raw.type, values: raw.value };
+    }
+    return { op: "eq", values: raw };
+  };
+
+  it("① getExecutions（单任务 OFFSET）：多值 ⇒ where.status 为 In([...])", async () => {
+    await service.getExecutions("task-1", {
+      page: 1,
+      pageSize: 20,
+      status: "failed,timeout",
+    });
+    const opts = execRepo.findAndCount.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(statusValueOf(opts.where)).toEqual({
+      op: "in",
+      values: ["failed", "timeout"],
+    });
+    // taskId 仍在（没有被 status 的展开覆盖掉）
+    expect(opts.where.taskId).toBe("task-1");
+  });
+
+  it("①b getExecutions（单任务 OFFSET）：单值仍是标量（逐字节不变）", async () => {
+    await service.getExecutions("task-1", {
+      page: 1,
+      pageSize: 20,
+      status: "failed",
+    });
+    const opts = execRepo.findAndCount.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(statusValueOf(opts.where)).toEqual({ op: "eq", values: "failed" });
+  });
+
+  it("①c getExecutions OFFSET：全非法 ⇒ where 里连 status 键都没有（= 未传）", async () => {
+    await service.getExecutions("task-1", {
+      page: 1,
+      pageSize: 20,
+      status: "foo",
+    });
+    const opts = execRepo.findAndCount.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect("status" in opts.where).toBe(false);
+    expect(opts.where).toEqual({ taskId: "task-1" });
+  });
+
+  it("② getExecutionsByKeyset 页查询：多值 ⇒ 生成 IN 谓词", async () => {
+    await service.getExecutions("task-1", {
+      page: 1,
+      pageSize: 20,
+      status: "failed,timeout",
+      cursor: "",
+    });
+    expect(statusPredicates()[0]).toEqual([
+      "e.status IN (:...statuses)",
+      { statuses: ["failed", "timeout"] },
+    ]);
+  });
+
+  it("②b getExecutionsByKeyset 页查询：单值仍生成 '='", async () => {
+    await service.getExecutions("task-1", {
+      page: 1,
+      pageSize: 20,
+      status: "timeout",
+      cursor: "",
+    });
+    expect(statusPredicates()[0]).toEqual([
+      "e.status = :status",
+      { status: "timeout" },
+    ]);
+  });
+
+  it("③ getExecutionsByKeyset 的 count：多值 ⇒ where 为 In([...])（total 与 items 同口径）", async () => {
+    await service.getExecutions("task-1", {
+      page: 1,
+      pageSize: 20,
+      status: "failed,timeout",
+      cursor: "",
+    });
+    const countOpts = execRepo.count.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    // 页查询与 count **必须同口径**：一处 IN 一处漏改会让 total 与 items 打架
+    // （本页 10 行、total 0 行），而这在响应里完全不报错。
+    expect(statusValueOf(countOpts.where)).toEqual({
+      op: "in",
+      values: ["failed", "timeout"],
+    });
+    expect(countOpts.where.taskId).toBe("task-1");
+  });
+
+  it("③b getExecutionsByKeyset 的 count：单值仍是标量", async () => {
+    await service.getExecutions("task-1", {
+      page: 1,
+      pageSize: 20,
+      status: "failed",
+      cursor: "",
+    });
+    const countOpts = execRepo.count.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(statusValueOf(countOpts.where)).toEqual({
+      op: "eq",
+      values: "failed",
+    });
+  });
+
+  it("④ CSV 导出（streamExecutionsCsv → 共用装配）：多值 ⇒ IN 谓词", async () => {
+    const chunks: string[] = [];
+    await service.streamExecutionsCsv(
+      { status: "failed,timeout" },
+      async (chunk: string) => {
+        chunks.push(chunk);
+      },
+    );
+    // 导出与 getAllExecutions 共用 applyAllExecutionsFilters ⇒ 形态必须一致；
+    // 这里**单独**钉一条，因为导出是独立入口（运维点「导出」时同样会
+    // 「点了看不到」）。
+    expect(statusPredicates()[0]).toEqual([
+      "e.status IN (:...statuses)",
+      { statuses: ["failed", "timeout"] },
+    ]);
+    // 表头照常写出（没有因为过滤条件变化而中断）
+    expect(chunks.join("")).toContain(",");
+  });
+
+  it("④b CSV 导出：单值仍生成 '='（既有形态钉子）", async () => {
+    await service.streamExecutionsCsv(
+      { status: "failed" },
+      async () => undefined,
+    );
+    expect(statusPredicates()[0]).toEqual([
+      "e.status = :status",
+      { status: "failed" },
+    ]);
+  });
+
+  it("⑤ getAllExecutions（跨任务 OFFSET，深链入口）多值 ⇒ IN", async () => {
+    await service.getAllExecutions({
+      page: 1,
+      pageSize: 20,
+      status: "failed,timeout",
+    });
+    expect(statusPredicates()[0]).toEqual([
+      "e.status IN (:...statuses)",
+      { statuses: ["failed", "timeout"] },
+    ]);
   });
 });

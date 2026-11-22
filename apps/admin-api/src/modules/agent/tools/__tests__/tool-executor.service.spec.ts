@@ -16,6 +16,7 @@ import {
   computeApprovalPolicyFingerprint,
 } from "../../runtime/agent-approvals.service";
 import type { AgentSession } from "../../entities/agent-session.entity";
+import { toolLedger } from "./tool-ledger.fixture";
 import { ALL_AGENT_TOOL_SPECS, toolsForSessionKind } from "../tool-registry";
 
 function harness(opts?: {
@@ -23,7 +24,6 @@ function harness(opts?: {
     spec: { name: string },
     args: Record<string, unknown>,
   ) => Promise<unknown>;
-  toolCalls?: Array<{ toolName: string; status: string }>;
   /** 已存在的审批单（granted/denied/consumed/pending）；默认无。 */
   existingApproval?: {
     approvalKey: string;
@@ -33,25 +33,6 @@ function harness(opts?: {
     policyFingerprint?: string | null;
     scope?: string;
   } | null;
-  /**
-   * R60：台账里**这个 toolCallId** 是否已有行（`findToolCall` 的返回值）。
-   *
-   * 默认 `null`（无历史行）。**重放场景必须显式给出一行**：真实世界里
-   * 「被重放」这个事实本身就是从台账行读出来的（`replayApprovedToolCalls`
-   * 先 `listToolCalls` 再逐行 execute），替身默认 null 会让「是重放」与
-   * 「台账里没有这行」同时成立——那是生产里不存在的状态。旧用例
-   * （`replayApproved: true` + 无行）正是靠这个假状态才一直绿的（ADR-027
-   * 替身保真：替身不保真 ⇒ 整类缺陷隐形）。
-   */
-  priorCall?: { toolCallId: string; status: string } | null;
-  /**
-   * R60：`updateToolCallByToolCallId` 的**受影响行数**语义。
-   *
-   * - `true`（默认）：命中 1 行，老用例语义不变；
-   * - `false`：命中 0 行。真实实现按 `res.affected` 返回布尔（行不存在 ⇒ false），
-   *   所以「0 行更新被静默吞掉」这条缺陷只有在替身能返回 false 时才可达。
-   */
-  updateAffects?: boolean;
   /** consume 条件写是否成功（默认 true）。 */
   consumeOk?: boolean;
   /** N3：consume 失败时的可断言理由（默认 not_granted）。 */
@@ -111,19 +92,20 @@ function harness(opts?: {
       return undefined;
     },
   } as unknown as ConfigService);
+  const ledger = toolLedger();
   const sessions = {
-    // 第 6 轮：在途台账/幂等闸的读面（默认无历史行；R60：可由 opts.priorCall 给出）
-    findToolCall: jest.fn(async () => opts?.priorCall ?? null),
-    recordToolCall: jest.fn(async (v: unknown) => v),
-    // TOOLS-02 确定性重放：就地更新原台账行（避开 GAP-5 唯一索引）
-    // R60：返回值 = 受影响行数 > 0。真实实现在行不存在时返回 false。
-    updateToolCallByToolCallId: jest.fn(
-      async () => opts?.updateAffects ?? true,
+    recordToolCall: jest.spyOn(ledger.service, "recordToolCall"),
+    updateToolCallByToolCallId: jest.spyOn(
+      ledger.service,
+      "updateToolCallByToolCallId",
     ),
-    // R60：按审批单号结清残留的 awaiting_approval 行（默认 0 行 = 无残留）
-    settleToolCallByApprovalId: jest.fn(async () => 0),
-    listToolCalls: jest.fn(async () => opts?.toolCalls ?? []),
-    markWaiting: jest.fn(async () => undefined),
+    settleToolCallByApprovalId: jest.spyOn(
+      ledger.service,
+      "settleToolCallByApprovalId",
+    ),
+    markWaiting: jest
+      .spyOn(ledger.service, "markWaiting")
+      .mockResolvedValue(undefined),
   };
   const api = {
     invoke: jest.fn(
@@ -188,7 +170,7 @@ function harness(opts?: {
   };
   const svc = new ToolExecutorService(
     boundary,
-    sessions as never,
+    ledger.service,
     api as never,
     notify as never,
     approvals as never,
@@ -199,6 +181,7 @@ function harness(opts?: {
     boundary,
     currentPolicyFingerprint,
     sessions,
+    ledger,
     api,
     notify,
     approvals,
@@ -262,7 +245,7 @@ describe("ToolExecutorService · availableTools（喂给 LLM 的白名单）", (
 
 describe("ToolExecutorService · execute（唯一入口，强制过闸）", () => {
   it("畸形 JSON 参数：落 error 并把可读原因回给模型", async () => {
-    const { svc, sessions, api } = harness();
+    const { svc, ledger, api } = harness();
     const out = await svc.execute(
       session(),
       call("get_task", "{bad json"),
@@ -272,20 +255,22 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
       content: expect.stringContaining("不是合法 JSON"),
       truncated: false,
     });
-    expect(sessions.recordToolCall).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "error", tier: "read" }),
-    );
+    expect(ledger.rows).toMatchObject([{ status: "error", tier: "read" }]);
+    expect(ledger.history()).toEqual([["tool_call_recorded", "error"]]);
+    expect(ledger.totalToolCalls).toBe(1);
     expect(api.invoke).not.toHaveBeenCalled();
   });
 
   it("闸门 DENY：denied 落库 + 不消耗速率预算（denied 不计入 priorCalls）", async () => {
-    const h = harness({
-      toolCalls: [
-        { toolName: "get_task", status: "denied" },
-        { toolName: "get_task", status: "denied" },
-        { toolName: "get_task", status: "ok" },
-      ],
-    });
+    const h = harness();
+    for (const status of ["denied", "denied", "ok"] as const) {
+      await h.ledger.service.recordToolCall({
+        sessionId: "s-1",
+        toolName: "get_task",
+        tier: "read",
+        status,
+      });
+    }
     // out_of_scope：会话 scope 不含 tasks
     const restricted = session({ scopeJson: {} } as never);
     const out = await h.svc.execute(
@@ -294,50 +279,15 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
       null,
     );
     expect(out.content).toContain("【调用被拒绝】");
-    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "denied" }),
-    );
+    expect(h.ledger.rows[3]).toMatchObject({
+      toolCallId: "call-1",
+      status: "denied",
+      resultJson: null,
+    });
+    expect(h.ledger.history()[3]).toEqual(["tool_call_recorded", "denied"]);
+    expect(h.ledger.totalToolCalls).toBe(1);
     // 3 条历史里 2 条 denied → priorCalls=1（denied 不消耗预算）
     expect(h.checkSpy.mock.calls[0][3]).toBe(1);
-  });
-
-  // APPROVAL-GAP（2026-10-27 审计轮 #11，A1）：本用例原先断言文案含
-  // 【等待人工审批】——而"等待"在实现上等于"永远等不到"（审批单不落库、
-  // 无 grant 端点、markWaiting 无生产调用方）。断言把**声明与实现不符**
-  // 固化成了预期行为。现改为断言"如实告知不可执行"，并把三条事实一起钉住。
-  it("NEED_APPROVAL：审批单落库 + 会话挂起 + 通知推送 + 告知已提交（A1 闭环）", async () => {
-    const h = harness();
-    const out = await h.svc.execute(
-      session(),
-      call("sop_publish", { sopId: "sop-1" }),
-      null,
-    );
-    // 闭环后文案不再说"不可执行"——审批单真的在等人处置，grant 后自动恢复
-    expect(out.content).toContain("【需人工审批，已提交审批单】");
-    expect(out.content).toContain("请勿重复提交");
-    // 落库三件套：agent_approvals 申请（含幂等键）、调用行 awaiting_approval、
-    // 会话 markWaiting 挂起（"生产零调用"是 A1 的原始形态之一，必须钉住）
-    expect(h.approvals.request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        approvalKey: expect.stringContaining("apr-s-1-"),
-        sessionId: "s-1",
-        toolName: "sop_publish",
-      }),
-    );
-    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: "awaiting_approval",
-        approvalId: expect.stringContaining("apr-s-1-"),
-      }),
-    );
-    expect(h.sessions.markWaiting).toHaveBeenCalledWith(
-      "s-1",
-      expect.stringContaining("等待审批"),
-    );
-    expect(h.notify.approvalRequested).toHaveBeenCalled();
-    // needsApproval 是运行时的「停轮」信号：没有它，会话会在已 waiting_input
-    // 的状态下继续下一轮推理（实施轮 #14 的并发缺陷形态）。
-    expect(out.needsApproval).toBe(true);
   });
 
   /**
@@ -570,11 +520,18 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
   // 一个会话碰几次"需审批"的工具就会把配额烧光，而它一次都没真正执行过。
   it("C4：awaiting_approval 不计入速率配额（只有真正执行过才算）", async () => {
     const h = harness();
-    h.sessions.listToolCalls.mockResolvedValue([
-      { toolName: "sop_publish", status: "awaiting_approval" },
-      { toolName: "sop_publish", status: "awaiting_approval" },
-      { toolName: "sop_publish", status: "success" },
-    ]);
+    for (const status of [
+      "awaiting_approval",
+      "awaiting_approval",
+      "ok",
+    ] as const) {
+      await h.ledger.service.recordToolCall({
+        sessionId: "s-1",
+        toolName: "sop_publish",
+        tier: "write",
+        status,
+      });
+    }
     await h.svc.execute(
       session(),
       call("sop_publish", { sopId: "sop-1" }),
@@ -593,9 +550,10 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     );
     expect(out.truncated).toBe(false);
     expect(JSON.parse(out.content)).toEqual({ ok: true });
-    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "ok", resultTruncated: false }),
-    );
+    expect(h.ledger.rows).toMatchObject([
+      { status: "ok", resultTruncated: false },
+    ]);
+    expect(h.outcomeSpy).toHaveBeenCalledWith("s-1", "get_task", true);
   });
 
   it("大结果截断：模型拿前 2000 字符 + 截断标记；完整落库为 preview+sha256", async () => {
@@ -616,23 +574,15 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     expect(out.content.startsWith("{")).toBe(true);
     expect(out.content).toContain('"items"');
     expect(out.content.trimEnd().endsWith("}")).toBe(true);
-    const recorded = h.sessions.recordToolCall.mock.calls[
-      h.sessions.recordToolCall.mock.calls.length - 1
-    ][0] as Record<string, unknown>;
-    expect(recorded.resultTruncated).toBe(true);
-    expect((recorded.result as Record<string, unknown>).preview).toHaveLength(
-      500,
-    );
+    const [{ resultJson, resultTruncated }] = h.ledger.rows;
+    expect(resultTruncated).toBe(true);
+    expect(resultJson.preview).toHaveLength(500);
     // P4：原文 ≤32KB 时一并存下（get_tool_call_result 的数据源）
-    expect(typeof (recorded.result as Record<string, unknown>).full).toBe(
-      "string",
+    expect(typeof resultJson.full).toBe("string");
+    expect((resultJson.full as string).length).toBeGreaterThan(
+      TOOL_RESULT_MAX_CHARS,
     );
-    expect(
-      ((recorded.result as Record<string, unknown>).full as string).length,
-    ).toBeGreaterThan(TOOL_RESULT_MAX_CHARS);
-    expect((recorded.result as Record<string, unknown>).sha256).toMatch(
-      /^[0-9a-f]{64}$/,
-    );
+    expect(resultJson.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("invoke 抛异常：error 落库 + 熔断记账失败", async () => {
@@ -647,9 +597,15 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
       null,
     );
     expect(out.content).toContain("【调用失败】connection refused");
-    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "error" }),
-    );
+    expect(h.ledger.rows).toMatchObject([
+      { status: "error", errorMessage: "connection refused" },
+    ]);
+    expect(h.ledger.totalToolCalls).toBe(1);
+    expect(h.ledger.history()).toEqual([
+      ["tool_call_recorded", "in_flight"],
+      ["tool_call_status_changed", "error"],
+    ]);
+    expect(h.outcomeSpy).toHaveBeenCalledWith("s-1", "get_task", false);
   });
 
   /**
@@ -678,10 +634,8 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     expect(out.content).toContain("【调用失败】");
     expect(out.content).toContain("已消耗");
     expect(out.content).toContain("重新申请审批");
-    const persisted = (h.sessions.recordToolCall as jest.Mock).mock.calls
-      .map((c: any[]) => c[0])
-      .filter((r: any) => r && r.status === "error")
-      .pop();
+    const [persisted] = h.ledger.rows;
+    expect(persisted.status).toBe("error");
     expect(String(persisted?.errorMessage ?? "")).toContain("已消耗");
     expect(String(persisted?.errorMessage ?? "")).toContain("重新申请审批");
   });
@@ -707,10 +661,8 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
       call("get_task", { taskId: "t-1" }),
       null,
     );
-    const persisted = (h.sessions.recordToolCall as jest.Mock).mock.calls
-      .map((c: any[]) => c[0])
-      .filter((r: any) => r && r.status === "error")
-      .pop();
+    const [persisted] = h.ledger.rows;
+    expect(persisted.status).toBe("error");
     const stored = String(persisted?.errorMessage ?? "");
     expect(stored).not.toContain(token);
     expect(stored).not.toContain("supersecret");
@@ -767,9 +719,7 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
       const out = await p;
       await race;
       expect(out.content).toContain("timed out");
-      expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
-        expect.objectContaining({ status: "timeout" }),
-      );
+      expect(h.ledger.rows).toMatchObject([{ status: "timeout" }]);
     } finally {
       jest.useRealTimers();
     }
@@ -789,9 +739,10 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
       null,
     );
     expect(out.content).toBe("【调用失败】尚未实现");
-    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "error", errorMessage: "尚未实现" }),
-    );
+    expect(h.ledger.rows).toMatchObject([
+      { status: "error", errorMessage: "尚未实现" },
+    ]);
+    expect(h.ledger.totalToolCalls).toBe(1);
   });
 });
 
@@ -808,17 +759,13 @@ describe("ToolExecutorService · 脱敏（凭据不落库）", () => {
       }),
       null,
     );
-    const recorded = h.sessions.recordToolCall.mock.calls[
-      h.sessions.recordToolCall.mock.calls.length - 1
-    ][0] as {
-      args: Record<string, unknown>;
-    };
-    expect(recorded.args.apiKey).toBe("[REDACTED]");
-    expect(recorded.args.password).toBe("[REDACTED]");
-    expect(recorded.args.note as string).toContain("[REDACTED]");
-    expect(recorded.args.note as string).not.toContain("hunter2");
-    expect(recorded.args.note as string).toContain("[REDACTED_HEX]");
-    expect(recorded.args.note as string).not.toContain("0123abcd0123abcd");
+    const [{ argsJson }] = h.ledger.rows;
+    expect(argsJson.apiKey).toBe("[REDACTED]");
+    expect(argsJson.password).toBe("[REDACTED]");
+    expect(argsJson.note as string).toContain("[REDACTED]");
+    expect(argsJson.note as string).not.toContain("hunter2");
+    expect(argsJson.note as string).toContain("[REDACTED_HEX]");
+    expect(argsJson.note as string).not.toContain("0123abcd0123abcd");
   });
 
   it("嵌套层的凭据同样剥离（对象/数组递归——落库前无死角）", async () => {
@@ -836,12 +783,8 @@ describe("ToolExecutorService · 脱敏（凭据不落库）", () => {
       }),
       null,
     );
-    const recorded = h.sessions.recordToolCall.mock.calls[
-      h.sessions.recordToolCall.mock.calls.length - 1
-    ][0] as {
-      args: Record<string, unknown>;
-    };
-    const params = recorded.args.params as Record<string, unknown>;
+    const [{ argsJson }] = h.ledger.rows;
+    const params = argsJson.params as Record<string, unknown>;
     const nested = params.nested as Record<string, unknown>;
     expect(nested.apiToken).toBe("[REDACTED]");
     expect(nested.password).toBe("[REDACTED]");
@@ -853,7 +796,7 @@ describe("ToolExecutorService · 脱敏（凭据不落库）", () => {
     expect(note).toContain("[REDACTED]");
     expect(note).not.toContain("nested.should.not.leak");
     // 非 凭据键/字符串 字段原样保留（回归锚：脱敏不误伤数据）
-    expect(recorded.args.taskId).toBe("t-1");
+    expect(argsJson.taskId).toBe("t-1");
   });
 });
 
@@ -885,9 +828,7 @@ describe("ToolExecutorService · 超时语义分级（写工具=结果未知 / �
       expect(out.content).toContain("不要直接重试");
 
       // 台账仍记 timeout（审计要能按「超时」筛，不与 error 混）
-      expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
-        expect.objectContaining({ status: "timeout" }),
-      );
+      expect(h.ledger.rows).toMatchObject([{ status: "timeout" }]);
 
       // 「未知」不计为失败：熔断记账一次都不该发生（尤其不能是 false）
       expect(h.outcomeSpy).not.toHaveBeenCalled();
@@ -918,9 +859,7 @@ describe("ToolExecutorService · 超时语义分级（写工具=结果未知 / �
 
       expect(out.content).toContain("调用失败");
       expect(out.content).not.toContain("结果未知");
-      expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
-        expect.objectContaining({ status: "timeout" }),
-      );
+      expect(h.ledger.rows).toMatchObject([{ status: "timeout" }]);
       expect(h.outcomeSpy).toHaveBeenCalledWith("s-1", "get_task", false);
     } finally {
       jest.useRealTimers();
@@ -946,18 +885,14 @@ describe("ToolExecutorService · 结果脱敏（落库副本脱敏，模型侧�
       call("get_execution_logs", { executionId: "e-1" }),
       null,
     );
-    const recorded = h.sessions.recordToolCall.mock.calls[
-      h.sessions.recordToolCall.mock.calls.length - 1
-    ][0] as {
-      result: Record<string, unknown>;
-    };
+    const [{ resultJson }] = h.ledger.rows;
     // 键名剥除
-    expect(recorded.result.token).toBe("[REDACTED]");
+    expect(resultJson.token).toBe("[REDACTED]");
     // 值形态剥除（日志行里的 VAR=）
-    expect((recorded.result.logs as string[])[0]).toContain("[REDACTED]");
-    expect((recorded.result.logs as string[])[0]).not.toContain("secret123");
+    expect((resultJson.logs as string[])[0]).toContain("[REDACTED]");
+    expect((resultJson.logs as string[])[0]).not.toContain("secret123");
     // digest 保留（对账需要，不能被 32+ hex 规则误伤）
-    expect(recorded.result.sha).toBe(sha);
+    expect(resultJson.sha).toBe(sha);
     // 模型侧：事实原样（含凭据原文与 digest）
     expect(out.content).toContain("secret123");
     expect(out.content).toContain(sha);
@@ -981,17 +916,13 @@ describe("ToolExecutorService · 结果脱敏（落库副本脱敏，模型侧�
     );
     expect(out.truncated).toBe(true);
 
-    const recorded = h.sessions.recordToolCall.mock.calls[
-      h.sessions.recordToolCall.mock.calls.length - 1
-    ][0] as {
-      result: Record<string, unknown>;
-    };
-    const preview = recorded.result.preview as string;
+    const [{ resultJson }] = h.ledger.rows;
+    const preview = resultJson.preview as string;
     expect(preview).toHaveLength(500);
     expect(preview).not.toContain("live-secret-123");
     expect(preview).not.toContain("leak.me.now");
     // sha256 与**原文**对账：算脱敏后的串就失去意义
-    expect(recorded.result.sha256).toBe(
+    expect(resultJson.sha256).toBe(
       createHash("sha256")
         .update(JSON.stringify(data, null, 2))
         .digest("hex"),
@@ -1167,177 +1098,203 @@ describe("ToolExecutorService · sop_reply_clarification 归属校验（B-3）",
   });
 });
 
+describe("ToolExecutorService · 待审批恢复锚点", () => {
+  // APPROVAL-GAP（2026-10-27 审计轮 #11，A1）：本用例原先断言文案含
+  // 【等待人工审批】——而"等待"在实现上等于"永远等不到"（审批单不落库、
+  // 无 grant 端点、markWaiting 无生产调用方）。断言把**声明与实现不符**
+  // 固化成了预期行为。现改为断言"如实告知不可执行"，并把三条事实一起钉住。
+  it("NEED_APPROVAL：可重放的原行先落库，再暴露 waiting_input 和通知", async () => {
+    const h = harness();
+    const args = { sopId: "sop-1" };
+    const key = h.approvals.buildKey("s-1", "sop_publish", args);
+    h.sessions.markWaiting.mockImplementationOnce(async (sessionId, reason) => {
+      expect(reason).toContain(key);
+      expect(await h.ledger.service.listToolCalls(sessionId)).toMatchObject([
+        {
+          status: "awaiting_approval",
+          approvalId: key,
+          toolCallId: "call-1",
+          argsJson: args,
+        },
+      ]);
+      expect(h.notify.approvalRequested).not.toHaveBeenCalled();
+    });
+    const out = await h.svc.execute(session(), call("sop_publish", args), null);
+    // 闭环后文案不再说"不可执行"——审批单真的在等人处置，grant 后自动恢复
+    expect(out.content).toContain("【需人工审批，已提交审批单】");
+    expect(out.content).toContain("请勿重复提交");
+    // 落库三件套：agent_approvals 申请（含幂等键）、调用行 awaiting_approval、
+    // 会话 markWaiting 挂起（"生产零调用"是 A1 的原始形态之一，必须钉住）
+    expect(h.approvals.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalKey: expect.stringContaining("apr-s-1-"),
+        sessionId: "s-1",
+        toolName: "sop_publish",
+      }),
+    );
+    expect(h.ledger.history()).toEqual([
+      ["tool_call_recorded", "awaiting_approval"],
+    ]);
+    expect(h.ledger.totalToolCalls).toBe(1);
+    expect(h.sessions.markWaiting).toHaveBeenCalledTimes(1);
+    expect(h.notify.approvalRequested).toHaveBeenCalled();
+    // needsApproval 是运行时的「停轮」信号：没有它，会话会在已 waiting_input
+    // 的状态下继续下一轮推理（实施轮 #14 的并发缺陷形态）。
+    expect(out.needsApproval).toBe(true);
+  });
+
+  it("等待审批的台账写失败时不挂起、不推送、不执行", async () => {
+    const h = harness();
+    h.sessions.recordToolCall.mockRejectedValueOnce(
+      new Error("ledger write failed"),
+    );
+    await expect(
+      h.svc.execute(session(), call("sop_publish", { sopId: "sop-1" }), null),
+    ).rejects.toThrow("ledger write failed");
+    expect(h.approvals.request).toHaveBeenCalledTimes(1);
+    expect(h.sessions.markWaiting).not.toHaveBeenCalled();
+    expect(h.notify.approvalRequested).not.toHaveBeenCalled();
+    expect(h.api.invoke).not.toHaveBeenCalled();
+    expect(h.ledger.rows).toHaveLength(0);
+  });
+});
+
 /**
  * TOOLS-02 确定性重放：台账里已有同 toolCallId 的 awaiting_approval 行。
  * GAP-5 的 (sessionId, toolCallId) 唯一索引禁止再插一行，且「一次调用一行
  * 台账」是审计语义——重放必须就地更新。
  */
 describe("ToolExecutorService · 已批准调用的就地更新（TOOLS-02）", () => {
-  it("replayApproved：更新原台账行而不是新增（避开唯一索引）", async () => {
-    const h = harness({
-      existingApproval: { approvalKey: "apr-any", status: "granted" },
-      // R60：重放的**现实前提**——台账里确实有这一行（候选就是从
-      // `listToolCalls` 里筛出来的）。此前这里没有它，于是「是重放」与
-      // 「台账里没有这行」同时成立（生产里不存在），用例靠这个假状态一直绿着。
-      priorCall: { toolCallId: "call-1", status: "awaiting_approval" },
-    });
-    const call = {
-      id: "call-1",
-      function: { name: "get_task", arguments: '{"taskId":"t-1"}' },
-    };
+  it.each([false, true])(
+    "已有行就地重放（replayDeclared=%s），不新计预算",
+    async (replayDeclared) => {
+      const h = harness();
+      const args = { taskId: "t-1", patch: {} };
+      const request = call("update_task", args);
+      const key = h.approvals.buildKey("s-1", "update_task", args);
+      expect(
+        (await h.svc.execute(session(), request, "step-1")).needsApproval,
+      ).toBe(true);
+      const id = h.ledger.rows[0].id;
+      h.approvals.findByKey.mockResolvedValueOnce({
+        approvalKey: key,
+        status: "granted",
+        scope: "once",
+        policyFingerprint: h.currentPolicyFingerprint,
+      });
+      await h.svc.execute(session(), request, null, { replayDeclared });
+      expect(h.api.invoke).toHaveBeenCalledTimes(1);
+      expect(h.approvals.consume).toHaveBeenCalledWith(
+        key,
+        h.currentPolicyFingerprint,
+      );
+      expect(h.sessions.settleToolCallByApprovalId).not.toHaveBeenCalled();
+      expect(h.ledger.rows).toMatchObject([
+        {
+          id,
+          stepId: "step-1",
+          toolCallId: request.id,
+          approvalId: key,
+          status: "ok",
+        },
+      ]);
+      expect(h.ledger.totalToolCalls).toBe(1);
+      expect(h.ledger.history()).toEqual([
+        ["tool_call_recorded", "awaiting_approval"],
+        ["tool_call_status_changed", "in_flight"],
+        ["tool_call_status_changed", "ok"],
+      ]);
+    },
+  );
 
-    const out = await h.svc.execute(
-      {
-        id: "s-1",
-        kind: "chat",
-        scopeJson: { unrestricted: true },
-      } as never,
-      call,
-      null,
-      { replayDeclared: true },
-    );
-
-    expect(out.content).toBeTruthy();
-    expect(h.sessions.updateToolCallByToolCallId).toHaveBeenCalledWith(
-      "s-1",
-      "call-1",
-      expect.objectContaining({ toolName: "get_task", status: "ok" }),
-    );
-    expect(h.sessions.recordToolCall).not.toHaveBeenCalled();
-  });
-
-  it("非重放路径仍走 insert（既有行为不变）", async () => {
+  it("scoped get_task：in_flight → ok 更新同一行，预算只计一次", async () => {
     const h = harness();
-    await h.svc.execute(
+    let inFlightId: string;
+    h.api.invoke.mockImplementationOnce(async () => {
+      expect(h.ledger.rows).toHaveLength(1);
+      expect(h.ledger.rows[0].status).toBe("in_flight");
+      inFlightId = h.ledger.rows[0].id;
+      return { data: { taskId: "t-1" }, isError: false };
+    });
+    const scoped = session({
+      kind: "ops_watch",
+      scopeJson: { tasks: ["t-1"] },
+    });
+    const request = call("get_task", { taskId: "t-1" });
+    const out = await h.svc.execute(scoped, request, "step-1");
+    // C2：窗口开启与关闭的时间由执行器显式提交，而非依赖仓储默认 now()。
+    expect(
+      h.sessions.recordToolCall.mock.calls[0][0].stateChangedAt,
+    ).toBeInstanceOf(Date);
+    expect(
+      h.sessions.updateToolCallByToolCallId.mock.calls[0][2].stateChangedAt,
+    ).toBeInstanceOf(Date);
+    expect(JSON.parse(out.content)).toEqual({ taskId: "t-1" });
+    expect(h.ledger.rows).toMatchObject([
       {
-        id: "s-1",
-        kind: "chat",
-        scopeJson: { unrestricted: true },
-      } as never,
-      {
-        id: "call-2",
-        function: { name: "get_task", arguments: '{"taskId":"t-1"}' },
+        id: inFlightId,
+        stepId: "step-1",
+        toolCallId: "call-1",
+        status: "ok",
+        resultJson: { taskId: "t-1" },
       },
-      null,
-    );
-    expect(h.sessions.updateToolCallByToolCallId).not.toHaveBeenCalled();
-    expect(h.sessions.recordToolCall).toHaveBeenCalled();
+    ]);
+    expect(h.ledger.totalToolCalls).toBe(1);
+    expect(h.ledger.history()).toEqual([
+      ["tool_call_recorded", "in_flight"],
+      ["tool_call_status_changed", "ok"],
+    ]);
+    // 已有 ok 行不是缓存：同 id 的普通读调用仍执行，但仍是同一行、同一份预算。
+    await h.svc.execute(scoped, request, "step-2");
+    expect(h.api.invoke).toHaveBeenCalledTimes(2);
+    expect(h.ledger.rows).toMatchObject([
+      { id: inFlightId, status: "ok", resultJson: { ok: true } },
+    ]);
+    expect(h.ledger.totalToolCalls).toBe(1);
+    expect(h.ledger.history().slice(2)).toEqual([
+      ["tool_call_status_changed", "in_flight"],
+      ["tool_call_status_changed", "ok"],
+    ]);
   });
 });
 
-/**
- * R60（ADR-031 §1.3 的缺陷，characterization test）：**已批准调用被重提**。
- *
- * 真实形态：审批通过后，模型不服从「请勿重复提交同一工具调用」的提示，用
- * **新的** `toolCallId` 重提同一调用。`approvalKey` 只由
- * `(sessionId, toolName, 规范化 args)` 决定（`agent-approvals.service.ts:284`）
- * ⇒ 仍然命中那条 `granted` 的审批单；而台账里那行 `awaiting_approval` 属于
- * **旧** id。于是「闸门拿着票放行」与「台账里没有这个 id 的行」同时成立 ——
- * 这正是旧实现两套判据分叉的地方：
- *
- *   · `in_flight` 写入按 `verdict.approvedApprovalKey` 判「在重放」
- *     ⇒ 用**新 id** 去 `updateToolCallByToolCallId` ⇒ 命中 0 行；
- *   · 该返回值**没人检查** ⇒ 这次执行完全没有 `in_flight` 行；
- *   · 终局 `persist` 走插入（`replayApproved=false`）⇒ 旧行永久停在
- *     `awaiting_approval`（其审批单已被 consume，重放候选的 `granted` 过滤
- *     会排除它 ⇒ 永远没人再管它，审计面一直显示「等待审批」）。
- *
- * 断言全部落在**可观测副作用**上（替身调用 + 参数 + 返回值语义），
- * 不断言源码文本。
- */
-describe("ToolExecutorService · 已批准调用被重提（R60 台账写入自洽）", () => {
-  const callNew = {
-    id: "call-new",
-    function: {
-      name: "update_task",
-      arguments: '{"taskId":"t-1","patch":{}}',
-    },
-  };
-
-  /** 重提场景：票在（granted）、台账里没有 call-new 这一行（它属于旧 id）。 */
-  const resubmitHarness = () =>
-    harness({
-      existingApproval: { approvalKey: "apr-any", status: "granted" },
-      priorCall: null,
-      // 真实实现：行不存在 ⇒ update 命中 0 行 ⇒ false。
-      updateAffects: false,
+// R60：审批键相同但 toolCallId 不同。旧行不会再执行；新调用须先有在途行。
+describe("ToolExecutorService · 已批准调用被重提（R60）", () => {
+  it("同一票用新 id 重提：结清原行，新行只从在途更新到 ok", async () => {
+    const h = harness();
+    const args = { taskId: "t-1", patch: {} };
+    const request = call("update_task", args);
+    const key = h.approvals.buildKey("s-1", "update_task", args);
+    await h.svc.execute(session(), request, "original-step");
+    h.approvals.findByKey.mockResolvedValueOnce({
+      approvalKey: key,
+      status: "granted",
+      scope: "once",
+      policyFingerprint: h.currentPolicyFingerprint,
     });
-
-  it("重提的新调用必须留下 in_flight 行（不能因为 0 行更新而静默丢失）", async () => {
-    const h = resubmitHarness();
-
-    await h.svc.execute(session(), callNew, null);
-
-    const inFlightWrites = h.sessions.recordToolCall.mock.calls.filter(
-      ([v]) => (v as { status?: string }).status === "in_flight",
-    );
-    expect(inFlightWrites).toHaveLength(1);
-    expect(inFlightWrites[0][0]).toMatchObject({
-      sessionId: "s-1",
-      toolCallId: "call-new",
-      status: "in_flight",
-    });
-  });
-
-  it("台账里没有这个 toolCallId 时不得发起就地更新（0 行更新 = 静默丢失）", async () => {
-    const h = resubmitHarness();
-
-    await h.svc.execute(session(), callNew, null);
-
-    // 「更新一个不存在的行」不仅必然 0 行，还会让补偿逻辑无法判断该不该插入。
-    // 判据：写入目标由「台账里有没有这行」决定，不由「有没有票」决定。
+    await h.svc.execute(session(), { ...request, id: "call-new" }, "new-step");
+    expect(h.ledger.rows).toMatchObject([
+      {
+        toolCallId: request.id,
+        approvalId: key,
+        status: "denied",
+        errorMessage: expect.stringContaining("另一次提交"),
+      },
+      { toolCallId: "call-new", stepId: "new-step", status: "ok" },
+    ]);
+    expect(h.ledger.rows[0].errorMessage).toContain(key);
     expect(h.sessions.updateToolCallByToolCallId).not.toHaveBeenCalledWith(
       "s-1",
       "call-new",
       expect.objectContaining({ status: "in_flight" }),
     );
-  });
-
-  it("原 awaiting_approval 行必须被结清（不得永久残留等待审批）", async () => {
-    const h = resubmitHarness();
-
-    await h.svc.execute(session(), callNew, null);
-
-    // 结清的键是**本次调用算出来的** approvalKey（不是替身里那个假 key）：
-    // 审批键的确定性由 agent-approvals.spec.ts 钉，这里只断言「用同一个键
-    // 结清、且结清理由是 denied + 可读文案」。
-    expect(h.sessions.settleToolCallByApprovalId).toHaveBeenCalledTimes(1);
-    const [settledKey, settledStatus, settledMsg] = h.sessions
-      .settleToolCallByApprovalId.mock.calls[0] as unknown as [
-      string,
-      string,
-      string,
-    ];
-    expect(settledKey).toMatch(/^apr-s-1-update_task-/);
-    // 沿用 `:502`（「一张单只放行一次」）的语义口径：未执行 ⇒ denied。
-    expect(settledStatus).toBe("denied");
-    expect(settledMsg).toContain(settledKey);
-    expect(settledMsg).toContain("另一次提交");
-  });
-
-  it("真重放（台账里有该行）仍就地更新，且**不**结清（回归护栏）", async () => {
-    const h = harness({
-      existingApproval: { approvalKey: "apr-any", status: "granted" },
-      // 重放的现实前提：台账里确实有这一行
-      priorCall: { toolCallId: "call-1", status: "awaiting_approval" },
-      updateAffects: true,
-    });
-
-    await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null, {
-      replayDeclared: true,
-    });
-
-    expect(h.sessions.updateToolCallByToolCallId).toHaveBeenCalledWith(
-      "s-1",
-      "call-1",
-      expect.objectContaining({ status: "ok" }),
-    );
-    expect(h.sessions.settleToolCallByApprovalId).not.toHaveBeenCalled();
-    // 就地更新路径不应再多插一行（GAP-5「一次调用一行台账」）
-    const okInserts = h.sessions.recordToolCall.mock.calls.filter(
-      ([v]) => (v as { status?: string }).status === "ok",
-    );
-    expect(okInserts).toHaveLength(0);
+    expect(h.ledger.history()).toEqual([
+      ["tool_call_recorded", "awaiting_approval"],
+      ["tool_call_recorded", "in_flight"],
+      ["tool_call_status_changed", "ok"],
+    ]);
+    expect(h.ledger.totalToolCalls).toBe(2); // 原挂起已计，另一个调用 ID 再计一次
+    expect(h.api.invoke).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1370,8 +1327,6 @@ describe("ToolExecutorService · per-call 上下文（R63 ADR-031 步骤2）", (
     try {
       const h = harness({
         existingApproval: { approvalKey: "apr-any", status: "granted" },
-        priorCall: null,
-        updateAffects: false,
       });
       await h.svc.execute(session(), callNew, null, { replayDeclared });
       return warn.mock.calls
@@ -1505,10 +1460,7 @@ describe("execute 接线：畸形参数经保守修复后照常执行", () => {
     };
     const h = harness({ invoke: async () => ({ data: big, isError: false }) });
     await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
-    const recorded = h.sessions.recordToolCall.mock.calls[
-      h.sessions.recordToolCall.mock.calls.length - 1
-    ][0] as Record<string, unknown>;
-    const stored = recorded.result as Record<string, unknown>;
+    const [{ resultJson: stored }] = h.ledger.rows;
     expect(stored.truncated).toBe(true);
     expect(stored.full).toBeUndefined();
     expect(stored.preview).toBeTruthy();
@@ -1524,7 +1476,11 @@ describe("execute 接线：畸形参数经保守修复后照常执行", () => {
 describe("ToolExecutorService · in_flight 在途台账（第 6 轮审计 P1）", () => {
   it("发现同 id 的 in_flight 行 → 不执行、回「结果未知，先核实」", async () => {
     const h = harness();
-    (h.sessions.findToolCall as jest.Mock).mockResolvedValueOnce({
+    await h.ledger.service.recordToolCall({
+      sessionId: "s-1",
+      toolCallId: "call-1",
+      toolName: "get_task",
+      tier: "read",
       status: "in_flight",
     });
     const out = await h.svc.execute(
@@ -1535,34 +1491,9 @@ describe("ToolExecutorService · in_flight 在途台账（第 6 轮审计 P1）"
     expect(out.content).toContain("结果未知");
     expect(out.content).toContain("不要直接重提");
     expect(h.api.invoke).not.toHaveBeenCalled();
-  });
-
-  it("正常路径：副作用之前先落 in_flight（顺序早于 invoke）", async () => {
-    const h = harness();
-    await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
-    const inFlight = h.sessions.recordToolCall.mock.calls.find(
-      (c: unknown[]) => (c[0] as { status?: string }).status === "in_flight",
-    );
-    expect(inFlight).toBeTruthy();
-    // C2：in_flight 行必须带**状态迁移时间戳**（副作用窗口开启时刻）——
-    // 没有它，崩溃恢复只能拿 createdAt 猜「窗口从何时开始未知」。
-    expect(
-      (inFlight?.[0] as { stateChangedAt?: unknown }).stateChangedAt,
-    ).toBeInstanceOf(Date);
-    const order = (fn: { mock: { invocationCallOrder: number[] } }) =>
-      fn.mock.invocationCallOrder[0];
-    expect(order(h.sessions.recordToolCall)).toBeLessThan(order(h.api.invoke));
-  });
-
-  it("C2：终局（ok/error）落行同样带状态迁移时间戳（窗口关闭时刻）", async () => {
-    const h = harness();
-    await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
-    const terminal = h.sessions.recordToolCall.mock.calls.find(
-      (c: unknown[]) => (c[0] as { status?: string }).status === "ok",
-    );
-    expect(
-      (terminal?.[0] as { stateChangedAt?: unknown }).stateChangedAt,
-    ).toBeInstanceOf(Date);
+    expect(h.ledger.rows).toMatchObject([{ status: "in_flight" }]);
+    expect(h.ledger.totalToolCalls).toBe(1);
+    expect(h.ledger.history()).toEqual([["tool_call_recorded", "in_flight"]]);
   });
 });
 
@@ -2005,10 +1936,8 @@ describe("R102 · approvalId 透传到落库行（denied 分支的集成断言�
       null,
     );
 
-    const deniedRow = h.sessions.recordToolCall.mock.calls
-      .map(([v]) => v as Record<string, unknown>)
-      .find((v) => v.status === "denied");
-    expect(deniedRow).toBeDefined();
-    expect(deniedRow).not.toHaveProperty("approvalId");
+    expect(h.ledger.rows).toMatchObject([
+      { status: "denied", approvalId: null },
+    ]);
   });
 });

@@ -137,7 +137,10 @@ export const EXAMPLES: Record<string, string[]> = {
   ],
   'executor offline': ['acf executor offline executor-node'],
   'deploy upgrade': ['acf deploy upgrade <deploymentId>'],
-  'deploy stop': ['acf deploy stop <deploymentId>'],
+  'deploy stop': [
+    'acf deploy stop <deploymentId>',
+    'acf deploy stop <deploymentId> -y   # skip confirmation prompt (required in non-interactive / CI use)',
+  ],
   'deploy list': [
     'acf deploy list   # same data as: acf app deployments (deployments live under app in the command tree)',
     'acf deploy list <appId> -n 50 --json',

@@ -100,6 +100,23 @@ export const DOMAIN_EVENTS = {
    * 只在**真实跃迁**（漂移被采纳）时发：心跳 30s 一台，无脑 emit 会打爆 outbox。
    */
   EXECUTOR_ADDRESS_DRIFTED: "executor.address.drifted",
+  /**
+   * R309（TTFV §7.6）：执行器**首次注册**落库后发布，install_completed 的分母锚点。
+   * 只在 register 的 isFirstTime 分支 emit（重注册不 emit）；载荷只带服务端派生的
+   * 匿名 installId，绝不携带 deviceFingerprint。事件不进 relay 白名单，纯本地。
+   */
+  EXECUTOR_REGISTERED: "executor.registered",
+  /**
+   * R325（北极星「被业务确认」判据，§6 步骤 1-2）：显式确认端点
+   * `POST /agent/executions/:execId/confirm` 被调用后发布。
+   *
+   * 每次调用都 emit（端点幂等由下游 listener 的
+   * `dedupeKey = confirmed:<execution_id_hash>` 保证，不在业务侧去重）。
+   * 载荷只带 executionId / taskId / confirmedAt（确认发生的真实时间 ISO），
+   * **不带指纹、不带用户名**——写入漏斗的匿名 HMAC 派生与 opt-in 闸门全部
+   * 收口在 listener（§7 隐私与业务可用性解耦）。
+   */
+  EXECUTION_CONFIRMED: "execution.confirmed",
 } as const;
 
 export type DomainEventName =
@@ -120,6 +137,32 @@ export interface ExecutorOfflineEventPayload {
  * 便于订阅方用同一套解析逻辑处理两个方向。
  */
 export type ExecutorOnlineEventPayload = ExecutorOfflineEventPayload;
+
+/**
+ * R309: executor.registered 载荷。installId 由 SecretsCryptoService 从设备指纹
+ * HMAC 派生（`ttfv-install`），原始指纹绝不进事件面；observedAt 用落库 createdAt，
+ * 不用当前时间伪造分母时刻。
+ */
+export interface ExecutorRegisteredEventPayload {
+  installId: string;
+  appName: string;
+  executorType?: string;
+  observedAt: string;
+}
+
+/**
+ * R325: execution.confirmed 载荷（全原始类型，common 层不 import 实体）。
+ *
+ * `confirmedAt` 是确认动作发生的真实时间（端点内 `new Date().toISOString()`），
+ * 下游 listener 直接用作漏斗 `ts`，不得以入库 createdAt / 当前时间伪造（§5）。
+ * `taskId` 可能为 null（任务级联清理后，与实体列一致），listener 据此决定是否
+ * 派生 task_id_hash；载荷刻意不携带指纹与用户名（§7）。
+ */
+export interface ExecutionConfirmedEventPayload {
+  executionId: string;
+  taskId: string | null;
+  confirmedAt: string;
+}
 
 /**
  * FEAT-07: deployment.completed 载荷（全原始类型，common 层不 import 实体）。

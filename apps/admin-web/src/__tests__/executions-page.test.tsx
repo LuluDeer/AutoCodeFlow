@@ -498,6 +498,11 @@ describe('ExecutionsPage 时间快捷区间（2026-10-25 时刻粒度 presets）
   }
 
   it('点「最近 24 小时」：请求带 startTime/endTime（时刻粒度 toISOString）并回到第 1 页', async () => {
+    // R445：全量并发下断言侧再取一次 dayjs() 会与组件 onOpenChange 里的锚点
+    // 采样构成两次独立 now；两次采样间被 OS 抢占就假红（实测 2215ms 越过旧
+    // 2s 漂移窗）。这里只在用例入口采样一次固定时刻作为时间窗下界参考，
+    // 后续断言不再读取「断言执行时刻的 now」。
+    const testStartedAt = Date.now();
     mockedTasks.allExecutions.mockResolvedValue(pageFixture([]));
     renderPage();
     await screen.findByText('暂无执行记录');
@@ -517,15 +522,32 @@ describe('ExecutionsPage 时间快捷区间（2026-10-25 时刻粒度 presets）
       endTime?: string;
       page?: number;
     };
-    // 预设锚定「现在」，期望值同源 dayjs 现算（时区无关，避免 CI/本地时区红）。
-    // 时刻粒度：不做 startOf 归一，直接 toISOString（与手选时刻同一出口）。
-    // 预设值在渲染时求值、断言在其后运行，毫秒会自然漂移——绝对相等改用
-    // 「差值 ≤2s」窗口断言，跨度仍精确钉死 24h（预设两端同一时刻求值，
-    // 漂移互相抵消，diff 不受影响）。
-    const startDrift = Math.abs(dayjs().subtract(24, 'hour').diff(dayjs(lastCall?.startTime), 'millisecond'));
-    expect(startDrift).toBeLessThanOrEqual(2000);
+    // R445：判据只依赖请求参数自身 + 入口固定的 testStartedAt，不依赖断言
+    // 执行时刻的独立 now（旧写法的 startDrift 在 forks 池 350 文件全并发下
+    // 两次 now 采样间被抢占 215ms→2215ms 假红；旧 2s 漂移判据整条删除，
+    // 不放宽、不复用，用例不 skip）。
+    // 预设两端同源同一次求值（presetAnchor.subtract(24,'hour') / presetAnchor），
+    // 分三段验证，任一段失守都转红：
+    //   ① 两端是毫秒精度 ISO 8601（页面出口就是 toISOString，无中间换算）；
+    //   ② endTime - startTime 精确 24h（毫秒级），且 startTime 早于 endTime；
+    //   ③ endTime 落在「用例入口时刻」附近的宽窗：锚点在展开面板时采样，
+    //      必然不早于入口；±60s 只容忍组件渲染/面板展开与时钟抖动，窗口
+    //      起点固定，故不再随断言何时执行而漂移。
+    const isoMs = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+    expect(typeof lastCall?.startTime).toBe('string');
+    expect(isoMs.test(lastCall?.startTime ?? '')).toBe(true);
+    expect(dayjs(lastCall?.startTime).isValid()).toBe(true);
     expect(lastCall?.endTime).toBeTruthy();
+    expect(isoMs.test(lastCall?.endTime ?? '')).toBe(true);
+    expect(dayjs(lastCall?.endTime).isValid()).toBe(true);
+    const startMs = dayjs(lastCall?.startTime).valueOf();
+    const endMs = dayjs(lastCall?.endTime).valueOf();
+    expect(endMs - startMs).toBe(24 * 60 * 60 * 1000);
+    expect(startMs).toBeLessThan(endMs);
+    expect(endMs).toBeGreaterThanOrEqual(testStartedAt - 60_000);
+    expect(endMs).toBeLessThanOrEqual(testStartedAt + 60_000);
     expect(dayjs(lastCall?.endTime).diff(dayjs(lastCall?.startTime), 'hour')).toBe(24);
+    expect(lastCall?.page).toBe(1); // 预设 onChange 走 setPage(1)，回到第 1 页
   });
 });
 

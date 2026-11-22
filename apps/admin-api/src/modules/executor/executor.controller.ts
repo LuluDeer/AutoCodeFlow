@@ -858,6 +858,8 @@ export class ExecutorController {
   })
   @ApiResponse({ status: 401, description: "执行器令牌无效" })
   @ApiOkResponse({ type: ExecutorConfigPayloadResponseDto })
+  @ApiQuery({ name: "deviceFingerprint", required: false, type: String })
+  @ApiQuery({ name: "executorId", required: false, type: String })
   async pullExecutorConfig(
     @Query("address") address: string,
     @Headers("authorization") auth: string,
@@ -921,6 +923,8 @@ export class ExecutorController {
     type: TerminalStatesResponseDto,
   })
   @ApiResponse({ status: 401, description: "执行器令牌无效" })
+  @ApiQuery({ name: "deviceFingerprint", required: false, type: String })
+  @ApiQuery({ name: "executorId", required: false, type: String })
   async getTerminalStates(
     @Param("address") address: string,
     @Query("since") since?: string,

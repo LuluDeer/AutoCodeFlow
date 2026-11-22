@@ -252,6 +252,27 @@ export class AgentSession {
   autoResumeCount: number;
 
   /**
+   * R216：**自动补入队**次数（「积压」会话的自动修复）。
+   *
+   * 判据见 `docs/observability/backlog-auto-reenqueue-criterion.md`。
+   *
+   * 为什么与 `autoResumeCount` **分列**而不是复用：两者语义完全不同 ——
+   * 前者是「会话 `pending` 但队列里没有 job」（永远不会跑），后者是
+   * 「LLM 瞬时错误导致 `waiting_input`」（会跑，只是要等一会）。共用一个计数会让
+   * 「自动续跑用掉了额度」把「自动补」也一起禁掉（或反之）。
+   *
+   * 为什么落库：与 `autoResumeCount` 同款理由 —— 多副本 + 重启下，
+   * 进程内计数 = N 次补 / 重启后无限补。条件写 `backlogReenqueueCount < 1`
+   * 让「每会话最多自动补一次」在多实例下也成立。
+   *
+   * ⚠️ **为什么必须有这个计数**（而不只看队列）：「补了但队列里查不到」有两种成因 ——
+   * ① add 失败（该重试）；② add 成功但 job 已被消费/清理（**不该**再补）。
+   * 队列本身**分不开**这两者，落库的计数**记得**「我试过」。
+   */
+  @Column({ type: "int", default: 0 })
+  backlogReenqueueCount: number;
+
+  /**
    * S2-A2：连续「折了但不收敛」的轮数（0 = 无历史）。
    *
    * 判据口径见 `isContextFoldNonConverging` / `nextContextFoldStreak`

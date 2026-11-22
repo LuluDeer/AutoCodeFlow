@@ -38,7 +38,9 @@ import { Link } from 'react-router-dom';
 import type { Task } from '../api/tasks';
 import { priorityTag } from '../utils/priority';
 import { runtimeLabel } from '../utils/runtime-label';
-import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
+import {
+  nextRunOutcome, formatFireTime, formatWindowEdge, previewNeedsTimezoneWarning,
+} from '../utils/trigger-preview';
 import { formatDateTime, formatRelativeTime, formatDuration } from '../utils/timeFormat';
 import { describeCron } from '../utils/cron-desc';
 
@@ -110,6 +112,81 @@ export type TaskListColumnsDeps = {
   /** 删除任务。 */
   onDelete: (id: string) => Promise<void>;
 };
+
+/**
+ * 列的取词函数类型（从列定义依赖里取，不新造一个 i18n 形状——两处若分叉，
+ * 带插值对象的取词调用会在两个文件里给出不同重载结论）。
+ */
+type TFunc = TaskListColumnsDeps['t'];
+
+/**
+ * R282：「下次执行」列的渲染体（从列定义里提出来的纯函数）。
+ *
+ * 提出去不是为了好看：`buildTaskListColumns` 的函数体在体量棘轮上只剩十几行余量
+ * （scripts/source-size-baseline.json），而本轮的窗口分支需要展开 4 个 kind。
+ * 与 R6 外提 columns 同一个理由——**判断逻辑要有名字和独立位置**，列定义只留声明。
+ *
+ * 判据：`nextRunOutcome`（utils/trigger-preview）已经算完所有语义，这里只做映射：
+ *   · at                ⇒ 既有文案（**零视觉变化**）
+ *   · skipped-by-window ⇒ 「跳过（维护窗口 HH:MM–HH:MM）」+ 原计划时刻进 tooltip
+ *   · unknown-window    ⇒ 「窗口内？时区未知」（不猜，D3）
+ *   · none              ⇒ 既有占位（无法预估 / 手动触发）
+ */
+function renderNextRun(t: TFunc, r: Task) {
+  // P1-1（UX-AUDIT-2026-09-21）：本列此前只渲染静态徽章（「Cron 计划中」/「定时
+  // 运行中」），而列题是「下次执行」、tooltip 写着「下次 Cron 触发时间」——承诺了
+  // 时刻却从不给出时刻。现按真实表达式算出最近一次触发时刻（复用详情页同一套纯函数）。
+  // R282：此前只调 nextRunAt（入参连 maintenanceWindows 都没有），于是任务落在维护
+  // 窗口内时与正常任务渲染逐字相同——承诺了一次不会发生的执行。现走判别式
+  // nextRunOutcome：时刻仍保留（用户需要知道"本来几点会跑"），但文案换成显式状态
+  // 并点出原因；kind='at' 的分支与改动前逐字一致。
+  if (r.status !== 'active') {
+    return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.none')}</Text>;
+  }
+  const outcome = nextRunOutcome(r);
+  if (outcome.kind === 'skipped-by-window' || outcome.kind === 'unknown-window') {
+    const skipped = outcome.kind === 'skipped-by-window';
+    return (
+      <Tooltip
+        title={skipped
+          ? t('taskList.nextRun.skippedTooltip', { time: formatFireTime(outcome.at, r.timezone) })
+          : t('taskList.nextRun.unknownWindowTooltip')}
+      >
+        <Text type="warning" style={{ fontSize: 12 }}>
+          {skipped
+            ? t('taskList.nextRun.skippedByWindow', {
+              start: formatWindowEdge(outcome.window.start),
+              end: formatWindowEdge(outcome.window.end),
+            })
+            : t('taskList.nextRun.unknownWindow')}
+        </Text>
+      </Tooltip>
+    );
+  }
+  if (outcome.kind === 'at') {
+    // 遗留 P1-3：tz 为空/非法时浏览器本地推算 ≠ 服务端进程时区，
+    // tooltip 追加服务端时区注记（沿用 trigger-preview 警示文案）。
+    const tzUnresolved = previewNeedsTimezoneWarning(r.timezone);
+    return (
+      <Tooltip
+        title={tzUnresolved
+          ? t('taskList.nextRun.cronTooltip') + '\n' + t('triggerPreview.tzUnresolved')
+          : t('taskList.nextRun.cronTooltip')}
+      >
+        <Text style={{ fontSize: 12 }}>{formatFireTime(outcome.at, r.timezone)}</Text>
+      </Tooltip>
+    );
+  }
+  // 表达式存在但算不出（非法/超子集）——如实说"无法预估"，不编假时刻
+  if (r.triggerType === 'cron' || r.triggerType === 'fixed_rate') {
+    return (
+      <Tooltip title={t('taskList.nextRun.unpredictableTooltip')}>
+        <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.unpredictable')}</Text>
+      </Tooltip>
+    );
+  }
+  return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.manual')}</Text>;
+}
 
 /**
  * 构造任务列表的列数组。
@@ -243,38 +320,7 @@ export function buildTaskListColumns(deps: TaskListColumnsDeps) {
       width: 140,
       ...hideOnMobile,
       render: (_: unknown, r: Task) => {
-        // P1-1（UX-AUDIT-2026-09-21）：本列此前只渲染静态徽章（「Cron 计划中」
-        // /「定时运行中」），而列题是「下次执行」、tooltip 写着「下次 Cron 触发
-        // 时间」——承诺了时刻却从不给出时刻。用户因此无法回答"这任务下次什么
-        // 时候跑、它到底还在不在跑"，静默不执行在上百个任务里根本发现不了。
-        // 现按真实表达式算出最近一次触发时刻（复用详情页同一套纯函数）。
-        if (r.status !== 'active') {
-          return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.none')}</Text>;
-        }
-        const next = nextRunAt(r);
-        if (next) {
-          // 遗留 P1-3：tz 为空/非法时浏览器本地推算 ≠ 服务端进程时区，
-          // tooltip 追加服务端时区注记（沿用 trigger-preview 警示文案）。
-          const tzUnresolved = previewNeedsTimezoneWarning(r.timezone);
-          return (
-            <Tooltip
-              title={tzUnresolved
-                ? t('taskList.nextRun.cronTooltip') + '\n' + t('triggerPreview.tzUnresolved')
-                : t('taskList.nextRun.cronTooltip')}
-            >
-              <Text style={{ fontSize: 12 }}>{formatFireTime(next, r.timezone)}</Text>
-            </Tooltip>
-          );
-        }
-        // 表达式存在但算不出（非法/超子集）——如实说"无法预估"，不编假时刻
-        if (r.triggerType === 'cron' || r.triggerType === 'fixed_rate') {
-          return (
-            <Tooltip title={t('taskList.nextRun.unpredictableTooltip')}>
-              <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.unpredictable')}</Text>
-            </Tooltip>
-          );
-        }
-        return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.manual')}</Text>;
+        return renderNextRun(t, r);
       },
     },
     {

@@ -977,7 +977,7 @@ describe('acf deploy upgrade', () => {
 describe('acf deploy stop', () => {
   it('POSTs to /app-deployments/:id/stop', async () => {
     mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'STOPPED' });
-    await run(deployCommand(), 'deploy stop d1');
+    await run(deployCommand(), 'deploy stop d1 --yes');
     expect(mockedPost).toHaveBeenCalledWith('/app-deployments/d1/stop');
   });
 });

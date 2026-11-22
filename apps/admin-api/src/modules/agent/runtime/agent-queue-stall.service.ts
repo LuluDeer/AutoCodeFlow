@@ -28,7 +28,8 @@
  * 「**workers that are available to process jobs**」—— 语义上与我们要问的
  * 「有没有人在这场子里干活」**一致**，但计数接口更省。
  */
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
 
@@ -36,10 +37,13 @@ import { AGENT_QUEUE_NAME } from "./agent.processor";
 import {
   isQueueStalled,
   pendingJobCount,
-  queueStallReason,
   type QueueStallReason,
   type QueueStallSnapshot,
 } from "./agent-queue-stall-check";
+import {
+  DEFAULT_OBSERVATION_TIMEOUT_MS,
+  withObservationTimeout,
+} from "./observation-timeout.util";
 
 export interface QueueStallReport {
   /** 是否停摆。 */
@@ -51,13 +55,31 @@ export interface QueueStallReport {
   /** 观测量快照（供前端展示/诊断；字段与判据文档 §3 一致）。 */
   snapshot: QueueStallSnapshot;
   /**
-   * 是否**读不到观测量**（某个 BullMQ 调用抛错）。
+   * 是否有**可能导致误报**的观测失败（`active` / `workers` / `paused` 之一读失败）。
    *
-   * ⚠️ 这个字段是**防假事实**的：若某个计数读失败而我们仍返回 `stalled: false`，
-   * 运营会以为「队列正常」⇒ **静默的谎报**。⇒ 读失败时必须**显式**标出来，
-   * 由调用方（前端）显示「未知」而不是「正常」。
+   * ⚠️ R211 语义**收窄**（原先「任一个观测量读失败」都置 true）：六个观测量对结论的影响
+   * **方向相反** —— 计数类（`waiting`/`delayed`/`prioritized`）读失败只会让
+   * `pendingJobs` 变小（**更难**判停摆 ⇒ 漏报）；而 `active`/`workers`/`paused` 读失败
+   * 会让判定**更容易**成立（误报）。混在同一个布尔里，前端没法据它决定「该不该紧张」。
+   * ⇒ 本字段只表示「**结论可能错报**」⇒ 前端显示「未知」，既不敢报也**不敢说正常**。
+   * 可能导致**漏报**的失败请看 `degradedCounts`。
    */
   degraded: boolean;
+  /**
+   * 是否有**可能导致漏报**的计数类观测失败（`waiting` / `delayed` / `prioritized`）。
+   *
+   * ⚠️ 它**不改变结论**（宁可漏报，不制造假警）：只在**已报停摆**时用来补一句
+   * 「在排队数可能不止这些」。
+   */
+  degradedCounts: boolean;
+  /**
+   * `workers` 是否**读到了**（R211）。
+   *
+   * ⚠️ 这就是「`workers === 0`」与「`workers` 未知」**同形**问题的解药：
+   * `workersKnown === false` 时，`snapshot.workers` 里的 `0` **不是事实**，只是回落值
+   * ⇒ 调用方**不得**据此认为「没有 worker」。
+   */
+  workersKnown: boolean;
 }
 
 @Injectable()
@@ -67,6 +89,17 @@ export class AgentQueueStallService {
   constructor(
     @InjectQueue(AGENT_QUEUE_NAME)
     private readonly queue: Queue,
+    /**
+     * R222：配置（读 `agent.observationTimeoutMs`）。
+     *
+     * ⚠️ **`@Optional()` + 放最后**：既有 spec 用**定位参数**装配
+     * （`new AgentQueueStallService(queue)`），加必填参数会让它们整片编译失败
+     * （实测：`agent-queue-stall.service.spec.ts` 直接 `Test suite failed to run`）。
+     * 缺席时回落 `DEFAULT_OBSERVATION_TIMEOUT_MS` —— 与 `AgentController` 里
+     * `@Optional() config` 同款做法（R202/R205 两次教训）。
+     */
+    @Optional()
+    private readonly config?: ConfigService | null,
   ) {}
 
   /**
@@ -76,15 +109,55 @@ export class AgentQueueStallService {
    * **不**把整个判定当作「没停摆」——理由同上（`degraded` 会让前端显示「未知」）。
    * 但**不**因为一个计数读失败就断言「停摆」（那会是**误报**，代价更大）。
    */
+  /**
+   * R213：观测调用上界（判据文档 §3.1）。默认值的推导见
+   * `DEFAULT_OBSERVATION_TIMEOUT_MS` 的注释（connectTimeout 的一半）。
+   */
+  private readonly observationTimeoutMs =
+    Number(this.config?.get("agent.observationTimeoutMs")) ||
+    DEFAULT_OBSERVATION_TIMEOUT_MS;
+
   async inspect(): Promise<QueueStallReport> {
+    /**
+     * 两个**方向相反**的失败位（R211）：
+     * · `degraded`      —— 可能**误报**（`active` / `workers` / `paused` 读失败）；
+     * · `degradedCounts` —— 可能**漏报**（计数类读失败）。
+     * 分开的理由见 `QueueStallReport.degraded` 的注释与判据文档 §3.5。
+     */
     let degraded = false;
-    const read = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
+    let degradedCounts = false;
+    /** `workers` 这个观测量是否读失败（决定能不能用它判停摆，见下面的注释）。 */
+    let workersUnknown = false;
+    const read = async <T>(
+      /** 诊断标签（进日志；**不要**含凭据）。 */
+      label: string,
+      fn: () => Promise<T>,
+      fallback: T,
+      /**
+       * 该观测量读失败时记到哪个方向：
+       * · `"verdict"` ⇒ 可能**误报**（参与判定的结构性量）；
+       * · `"counts"`  ⇒ 可能**漏报**（只影响 `pendingJobs` 大小）。
+       */
+      direction: "verdict" | "counts" = "verdict",
+      /** 该观测量读失败时是否要额外标记（目前只有 `workers` 用）。 */
+      markUnknown?: () => void,
+    ): Promise<T> => {
       try {
-        return await fn();
+        // R213：**超时与读失败走完全相同的路径**（判据 §3.2）——
+        //   观测端点必须在有限时间内给出答案，哪怕答案是「不知道」。
+        return await withObservationTimeout(
+          `queue-stall.${label}`,
+          fn,
+          this.observationTimeoutMs,
+        );
       } catch (err: unknown) {
-        degraded = true;
+        if (direction === "counts") degradedCounts = true;
+        else degraded = true;
+        markUnknown?.();
         this.logger.warn(
-          `Queue observation failed: ${err instanceof Error ? err.message : String(err)}`,
+          `Queue observation failed (${direction}): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
         );
         return fallback;
       }
@@ -92,12 +165,27 @@ export class AgentQueueStallService {
 
     const [waiting, delayed, prioritized, active, workers, paused] =
       await Promise.all([
-        read(() => this.queue.getWaitingCount(), 0),
-        read(() => this.queue.getDelayedCount(), 0),
-        read(() => this.queue.getPrioritizedCount(), 0),
-        read(() => this.queue.getActiveCount(), 0),
-        read(() => this.queue.getWorkersCount(), 0),
-        read(() => this.queue.isPaused(), false),
+        // 计数类：读失败只会让 `pendingJobs` 变小 ⇒ 可能**漏报**（不影响「误报」位）。
+        read("waiting", () => this.queue.getWaitingCount(), 0, "counts"),
+        read("delayed", () => this.queue.getDelayedCount(), 0, "counts"),
+        read(
+          "prioritized",
+          () => this.queue.getPrioritizedCount(),
+          0,
+          "counts",
+        ),
+        // 结构性量：参与判定 ⇒ 读失败可能**误报**。
+        read("active", () => this.queue.getActiveCount(), 0, "verdict"),
+        read(
+          "workers",
+          () => this.queue.getWorkersCount(),
+          0,
+          "verdict",
+          () => {
+            workersUnknown = true;
+          },
+        ),
+        read("paused", () => this.queue.isPaused(), false, "verdict"),
       ]);
 
     const snapshot: QueueStallSnapshot = {
@@ -108,13 +196,44 @@ export class AgentQueueStallService {
       workers,
       paused,
     };
-    const stalled = isQueueStalled(snapshot);
+    /**
+     * R210：**「读不到」不得被当成「确有其事」**。
+     *
+     * `workers` 是 `stall` 的**结构性判据**（§3.2）；它读失败时会回落成 `0`
+     * ⇒ 若照此判定，一次 Redis 抖动就能把「不知道」报成「**停摆**」。
+     * 这是本仓主导缺陷类（「没读到」被渲染成「有问题」）在**告警方向**上的镜像 ——
+     * 代价同样大：误报会让运营不再看这个徽标。
+     *
+     * ⚠️ 但**不能**简单地「degraded 就一律不报」：`paused` 是**独立的强证据**
+     * （人为显式状态，不依赖 worker 观测）⇒ 只要 `paused` 读到了且为 `true`、
+     * 且有活排队，停摆就**成立**，与 `workers` 读没读到无关。
+     * ⇒ 判定分两路：`paused` 单独成立；`workers` 那一路要求**它自己读到了**。
+     */
+    const workersKnown = !workersUnknown;
+    const stalled =
+      (paused && pendingJobCount(snapshot) > 0) ||
+      (workersKnown && isQueueStalled(snapshot));
+    /**
+     * ⚠️ `reason` **不能**复用 `queueStallReason(snapshot)`：它内部会再调一次
+     * `isQueueStalled`，而后者对 `workers === 0` 的判定**不区分**「真的是 0」与
+     * 「读失败回落成 0」⇒ 在 `paused` 那一路成立、`workers` 读失败时，
+     * 它会因为 `workersUnknown` 之外的形态差异给出 `no-worker`（**错误归因**：
+     * 明明是「暂停」，却让人去查进程）。
+     * ⇒ 这里按**已确认的证据**归因：`paused` 优先（它是显式状态），否则才是 `no-worker`。
+     */
+    const reason: QueueStallReason | null = !stalled
+      ? null
+      : paused
+        ? "paused"
+        : "no-worker";
     return {
       stalled,
-      reason: stalled ? queueStallReason(snapshot) : null,
+      reason,
       pendingJobs: pendingJobCount(snapshot),
       snapshot,
       degraded,
+      degradedCounts,
+      workersKnown: !workersUnknown,
     };
   }
 }

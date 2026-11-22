@@ -116,6 +116,15 @@ export function scanAdminSpawns(scriptsDir) {
     // （它自己的 apps/executor-node/.env，R03 实验证明与本缺陷无关），不在此判据面内。
     if (!/dist\/main\.js/.test(text)) continue;
     if (!/API_DIR|apps\/admin-api/.test(text)) continue;
+    // ⚠️ R230：**必须真的"起进程"**，不是"提到了 admin-api"。
+    //    原实现只查上面两个字面量 ⇒ 把 `r209-queue-idle-http-probe.mjs` **误判**：
+    //    它的头注写着「前置：admin-api 已构建并**在跑**（`node dist/main.js`）」、
+    //    正文用 `fetch` 探测 `/api/health`，**从不 spawn** —— 却因为它**提到**了
+    //    `dist/main.js` 与 `apps/admin-api` 而被要求接 `hermeticEnv`。
+    //    ⇒ 加一道「本项目里真的有 spawn/exec/fork 调用」的闸（与本函数文档一致：
+    //    「凡 **spawn** `dist/main.js` 的自检」）。
+    //    判据强度**没有放松**：`spawn(...)` 且提到 admin-api 仍必须接 helper（负例③ 仍红）。
+    if (!/\b(?:spawn|spawnSync|execFile|execFileSync|fork)\s*\(/.test(text)) continue;
     scanned++;
     if (/hermeticEnv\s*\(/.test(text)) wired.push(name);
     else offenders.push(name);

@@ -74,12 +74,19 @@ export function exitCodeFor(e: unknown): number {
  *
  * 只列**长**选项与单字母短选项；`--flag=value` 由调用方按 `=` 跳过（见下）。
  * 新增取值型选项时同步补这里（漏补只会回到旧行为，不会破坏既有调用）。
+ *
+ * D1（R278 拍板）：`--json` 也在这张表里。它在**大多数**命令里是布尔「输出 JSON」
+ * 开关，但在 `acf app create|patch --json <body>`（`apps.ts:211`/`:312`，已挂
+ * DEPRECATED，下一 major 收敛为布尔）里是**载荷**别名 —— 旧行为会把
+ * `--json '{"name":"x"}'` 当成「要 JSON 输出模式」，整条 CLI 的错误面翻成 JSON。
+ * 因为同一个 token 有两种语义，这里配一条**反向判据**（见 `looksLikeJsonPayload`）：
+ * 只有后继 token 确实是 JSON 载荷时才把它当取值跳过，否则仍按开关处理。
  */
 const VALUE_TAKING_OPTIONS: ReadonlySet<string> = new Set([
   '-a', '-e', '-f', '-k', '-m', '-n', '-o', '-p', '-s',
   '--action', '--api-url', '--application', '--body', '--code',
   '--description', '--end-time', '--env', '--executor', '--executors',
-  '--file', '--from-line', '--ids', '--kind', '--keyword', '--language',
+  '--file', '--from-line', '--ids', '--json', '--kind', '--keyword', '--language',
   '--limit', '--name', '--note', '--output', '--page', '--page-size',
   '--params', '--password', '--reason', '--resource', '--runtime', '--scope',
   '--search', '--start-command', '--start-time', '--status', '--strategy',
@@ -97,6 +104,13 @@ const VALUE_TAKING_OPTIONS: ReadonlySet<string> = new Set([
  * P3（本轮）：只认**独立选项 token**——① `--opt=value` 是单 token 形态（值不
  * 会独立成 token，`--json=false` 也因此保持既有「非 JSON 模式」语义）；② 取
  * 值型选项后面的那个 token 是值，跳过。
+ *
+ * D1（R278）：`--json` 是**唯一双义**的取值型选项 —— 它既是「输出 JSON」的布尔
+ * 开关，又是 `acf app create|patch --json <body>` 的载荷别名（DEPRECATED）。
+ * 故此处对它多判一步：后继 token **不是** JSON 载荷形态（`{…}` / `[…]`）时按开关
+ * 处理（返回 true），是载荷形态时按取值处理（跳过、不算 JSON 输出模式）。
+ * 反证：去掉这条分支（对 `--json` 无条件跳过）= 回到「`acf task list --json` 也
+ * 判成非 JSON 模式」的旧 bug；改成无条件当开关 = D1 要修的那种环境污染。
  */
 export function isJsonInvocation(
   argv: readonly string[] = process.argv,
@@ -106,12 +120,31 @@ export function isJsonInvocation(
     const token = args[i];
     if (token.includes('=')) continue;
     if (VALUE_TAKING_OPTIONS.has(token)) {
+      // `--json` 后跟 JSON 载荷 ⇒ 这是取值；否则它是布尔开关（见函数头注）。
+      if (token === '--json' && !looksLikeJsonPayload(args[i + 1])) return true;
       i += 1; // 跳过该选项的值（即便它字面量是 "--json"）
       continue;
     }
     if (token === '--json') return true;
   }
   return false;
+}
+
+/**
+ * `--json` 的后继 token 是不是一段**字面量 JSON 载荷**（`{…}` / `[…]`）。
+ *
+ * 判据刻意取「首尾括号成对」而不是 `JSON.parse`：这是**探针**，不是校验器——
+ * 载荷非法时命令自己会以用法错误（码 2）退出，此处只需区分「这段是值」与
+ * 「这段是下一个选项/位置参数」。用 JSON.parse 会让 `--json '{坏}'` 落回
+ * 「输出 JSON 模式」，恰好是 D1 要消灭的那种误判。
+ */
+function looksLikeJsonPayload(token: string | undefined): boolean {
+  if (token === undefined) return false;
+  const t = token.trim();
+  return (
+    (t.startsWith('{') && t.endsWith('}')) ||
+    (t.startsWith('[') && t.endsWith(']'))
+  );
 }
 
 /**

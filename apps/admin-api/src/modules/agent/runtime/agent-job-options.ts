@@ -21,6 +21,81 @@ export function autoResumeJobId(sessionId: string): string {
   return `auto-resume-${sessionId}`;
 }
 
+/**
+ * R215 固定 jobId：只供对账识别升级前的 job。retained 终态无需删除。
+ * 旧在途 job 没有步数凭据，升级时应先排空旧 worker/在途工作，再开放新恢复请求。
+ */
+export function manualResumeJobId(sessionId: string): string {
+  return `resume-${sessionId}`;
+}
+
+/** 审批前的 assistant step 已落库；人工与审批按同一份持久进度合并，不按入口合并。 */
+export function manualResumeDeduplicationId(
+  sessionId: string,
+  totalSteps: number,
+): string {
+  return `resume-${sessionId}-${totalSteps}`;
+}
+
+export function manualResumeJobOptions(
+  sessionId: string,
+  totalSteps: number,
+  reopenedFailure = false,
+): JobsOptions {
+  return {
+    // 不指定 jobId：旧 retained job 不会挡新工作；BullMQ 原子地在终结时释放去重键。
+    attempts: 1,
+    removeOnComplete: true,
+    deduplication: {
+      id: manualResumeDeduplicationId(sessionId, totalSteps),
+      // 仅 failed → pending 的 CAS 赢家能证明这是一次新的显式重试：上次可能在
+      // 写 step 前失败、job 仍 active。普通重复点击绝不在 active 后面再排一份。
+      ...(reopenedFailure ? { keepLastIfActive: true } : {}),
+    },
+  };
+}
+
+/**
+ * R323 审批补偿 job 的独立 dedup 命名空间。
+ *
+ * R322 真 e2e 实证：补偿 job（reason=resume:approval）active 期间，真实手动
+ * resume 若撞同一 dedup id，会被 BullMQ 吞掉（端点回 201 但 manual job 数=0）。
+ * 补偿换到独立前缀后，两来源天然并存；两个命名空间的 job 若同时存活，由
+ * `markRunning` 的条件写 CAS 保证只有一个进循环（plan §3.2/§3.3），不靠 dedup
+ * 吞并。无冒号，不依赖 BullMQ 的 3 段兼容分支。
+ */
+export function approvalWakeupDeduplicationId(
+  sessionId: string,
+  totalSteps: number,
+): string {
+  return `resume-wakeup-${sessionId}-${totalSteps}`;
+}
+
+/**
+ * R323 审批补偿 job 选项。
+ *
+ * 刻意**不带** `keepLastIfActive`：补偿与手动 resume 在不同命名空间，不存在
+ * 「撞上一个注定 skip 的 active job 而反向吞并」的场景；双跑交给 CAS 兜底。
+ */
+export function approvalWakeupJobOptions(
+  sessionId: string,
+  totalSteps: number,
+): JobsOptions {
+  return {
+    attempts: 1,
+    removeOnComplete: true,
+    deduplication: {
+      id: approvalWakeupDeduplicationId(sessionId, totalSteps),
+    },
+  };
+}
+
+/** 队列到 markRunning CAS 的唤醒凭据；无凭据的旧 job 保持原判定。 */
+export interface RunOptions {
+  expectWaitingFor?: string;
+  expectTotalSteps?: number;
+}
+
 export interface AutoResumeJobData {
   sessionId: string;
   reason: string;

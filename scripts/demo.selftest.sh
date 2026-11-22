@@ -141,6 +141,17 @@ while read -r v; do
 done <<<"$REQUIRED_VARS"
 pass "demo .env.demo covers every required compose variable"
 
+# ── R458：未加引号 heredoc 的注释里禁止反引号 ──────────────────────────
+# demo.sh 的 .env.demo 用未加引号的 <<EOF 生成（需要 $var 展开生成密钥）。
+# 未加引号的 heredoc 里反引号会触发命令替换——曾有一条注释写
+#   `--profile rustfs`，shell 尝试执行 "profile rustfs"，报 --profile: 未找到命令。
+# 注释不该有副作用；这条守卫提取 <<EOF 区段的注释行，禁止出现反引号。
+HEREDOC_COMMENTS="$(sed -n '/<<EOF$/,/^EOF$/p' scripts/demo.sh | grep '^\s*#' || true)"
+if grep -q '`' <<<"$HEREDOC_COMMENTS"; then
+  fail "demo.sh 的 <<EOF heredoc 注释含反引号——会触发命令替换（见 R458）"
+fi
+pass "demo .env.demo heredoc comments contain no backticks (no command substitution)"
+
 bash scripts/reset-admin-password.selftest.sh
 
 echo "demo selftest: all checks passed"

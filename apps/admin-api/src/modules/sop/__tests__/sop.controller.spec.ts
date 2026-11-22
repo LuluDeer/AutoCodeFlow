@@ -197,6 +197,102 @@ describe("SopController —— 人工答复的跨工单防线", () => {
       changelog: "补一步",
     });
   });
+
+  it.each(["cancelled", "completed"] as const)(
+    "R289：指派已为 %s → 拒答并抛 400 SOP_ASSIGNMENT_TERMINAL（不调 replyClarification）",
+    async (status) => {
+      const h = harness();
+      h.sops.getAssignment.mockResolvedValueOnce({
+        assignment: { id: "a-1", targetExecutorId: "exec-1", status },
+        clarifications: [{ id: "c-1" }],
+      } as never);
+      await expect(
+        h.controller.humanReply(
+          "a-1",
+          "c-1",
+          { resolution: "answered", answer: "late reply" } as never,
+          user,
+        ),
+      ).rejects.toMatchObject({
+        errorCode: "SOP_ASSIGNMENT_TERMINAL",
+        params: { status },
+      });
+      expect(h.sops.replyClarification).not.toHaveBeenCalled();
+    },
+  );
+
+  it("R289：指派为 failed → 刻意放行人工答复（保住 R280 升级后修订重派语义）", async () => {
+    const h = harness();
+    h.sops.getAssignment.mockResolvedValueOnce({
+      assignment: { id: "a-1", targetExecutorId: "exec-1", status: "failed" },
+      clarifications: [{ id: "c-1" }],
+    } as never);
+    await h.controller.humanReply(
+      "a-1",
+      "c-1",
+      { resolution: "answered", answer: "revised" } as never,
+      user,
+    );
+    expect(h.sops.replyClarification).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("SopController —— 单条取消指派（R289）", () => {
+  it("assignmentActions 未装配（既有 3 参定位构造）→ 显式抛 503 DEPENDENCY_UNAVAILABLE", async () => {
+    const h = harness();
+    await expect(
+      h.controller.cancelAssignment(
+        "11111111-1111-4111-8111-111111111111",
+        undefined,
+        { id: 9, username: "admin" },
+        "127.0.0.1",
+      ),
+    ).rejects.toMatchObject({ errorCode: "DEPENDENCY_UNAVAILABLE" });
+  });
+
+  it("透传 assignmentId / 可选 reason（含空 body undefined）与审计上下文", async () => {
+    const h = harness();
+    const assignmentActions = {
+      cancelAssignment: jest.fn(async (input: Any) => ({
+        assignment: { id: input.assignmentId, status: "cancelled" },
+        previousStatus: "blocked",
+      })),
+    };
+    const controller = new SopController(
+      h.sops as never,
+      h.media as never,
+      h.executors as never,
+      null,
+      null,
+      assignmentActions as never,
+    );
+
+    const r1 = await controller.cancelAssignment(
+      "11111111-1111-4111-8111-111111111111",
+      undefined,
+      { id: 12, username: "ops" },
+      "10.0.0.5",
+    );
+    expect(r1.assignment.status).toBe("cancelled");
+    expect(assignmentActions.cancelAssignment).toHaveBeenLastCalledWith({
+      assignmentId: "11111111-1111-4111-8111-111111111111",
+      reason: undefined,
+      actor: "user:12",
+      audit: { userId: 12, username: "ops", ip: "10.0.0.5" },
+    });
+
+    await controller.cancelAssignment(
+      "11111111-1111-4111-8111-111111111111",
+      { reason: "人工取消" },
+      { id: "not-a-number", username: "svc" },
+    );
+    expect(assignmentActions.cancelAssignment).toHaveBeenLastCalledWith({
+      assignmentId: "11111111-1111-4111-8111-111111111111",
+      reason: "人工取消",
+      actor: "user:not-a-number",
+      audit: { userId: null, username: "svc", ip: null },
+    });
+  });
 });
 
 describe("SopController —— 指派目标解析", () => {

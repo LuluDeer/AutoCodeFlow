@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
   aggregateFailureReasons,
   UNKNOWN_REASON_BUCKET,
-  FAILED_EXECUTION_STATUSES,
+  FAILURE_REASON_BUCKET_STATUSES,
 } from '../failure-reason-aggregate';
 
 describe('aggregateFailureReasons', () => {
@@ -78,7 +78,10 @@ describe('aggregateFailureReasons', () => {
     expect(aggregateFailureReasons([])).toEqual([]);
   });
 
-  it('导出常量与口径一致', () => {
-    expect(FAILED_EXECUTION_STATUSES).toEqual(['failed', 'timeout', 'killed']);
+  it('导出常量与口径一致（含 killed 是刻意口径，非后端失败集合）', () => {
+    expect(FAILURE_REASON_BUCKET_STATUSES).toEqual(['failed', 'timeout', 'killed']);
+    // R284：刻意与后端 FAILED_EXECUTION_STATUSES（FAILED ∪ TIMEOUT）**不同名不同值**——
+    // 本集合是「按原因分桶」用的状态集（当前页原因分布），不是失败计数口径。
+    expect(FAILURE_REASON_BUCKET_STATUSES).toContain('killed');
   });
 });

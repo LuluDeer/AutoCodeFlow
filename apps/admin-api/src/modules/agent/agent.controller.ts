@@ -21,12 +21,15 @@ import {
   ApiBearerAuth,
   ApiProperty,
   ApiPropertyOptional,
+  ApiQuery,
   ApiOkResponse,
   ApiCreatedResponse,
 } from "@nestjs/swagger";
 import { InjectQueue } from "@nestjs/bullmq";
+import { InjectRepository } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import type { Queue } from "bullmq";
+import type { Repository } from "typeorm";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
@@ -36,13 +39,16 @@ import {
 } from "./runtime/agent-session.service";
 import { AgentBacklogService } from "./runtime/agent-backlog.service";
 import { AgentQueueStallService } from "./runtime/agent-queue-stall.service";
+import { AgentQueueIdleService } from "./runtime/agent-queue-idle.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
 import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import type { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { AGENT_QUEUE_NAME, type AgentJobData } from "./runtime/agent.processor";
+import { manualResumeJobOptions } from "./runtime/agent-job-options";
 import {
   AGENT_SESSION_KINDS,
+  type AgentSession,
   type AgentSessionKind,
 } from "./entities/agent-session.entity";
 import {
@@ -54,12 +60,59 @@ import {
 } from "class-validator";
 // ARCH-23 / N-12: Agent HTTP 面响应契约。
 import {
+  AgentBacklogResponseDto,
   AgentBudgetResponseDto,
+  AgentQueueIdleResponseDto,
+  AgentQueueStallResponseDto,
   AgentSessionCreateResponseDto,
   AgentSessionDetailResponseDto,
   AgentSessionListResponseDto,
   AgentSessionResumeResponseDto,
 } from "./dto/agent-response.dto";
+// R278：待办收件箱的服务端聚合（S1）。新 provider，controller 只加两条薄路由。
+import { AgentInboxService } from "./runtime/agent-inbox.service";
+import {
+  AgentInboxCountsResponseDto,
+  AgentPendingApprovalsResponseDto,
+} from "./dto/agent-inbox.dto";
+// R308：TTFV opt-in 授权闭环。依赖全部走模块已有 provider，不新增 module 接线。
+import { SystemConfigService } from "../config/config.service";
+import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
+import {
+  TelemetryOptinService,
+  TTFV_SYSTEM_GATE_KEY,
+} from "./runtime/telemetry-optin.service";
+import { Executor } from "../executor/entities/executor.entity";
+import { TelemetryOptin } from "./entities/telemetry-optin.entity";
+import {
+  AgentTelemetryConsentDto,
+  AgentTelemetryConsentResultDto,
+  AgentTelemetryStatusDto,
+} from "./dto/agent-telemetry.dto";
+// R325（北极星 business_confirmed）：显式确认端点只加一条薄路由，业务/emit
+// 逻辑全在独立 service；此处仅做依赖缺席 503 与 404 映射。
+import { AgentExecutionConfirmationService } from "./runtime/agent-execution-confirmation.service";
+// R327（北极星双口径看板）：只读读面 service + 响应契约。与 telemetry/status
+// 同面（class 级 JwtAuthGuard + ADMIN），不进 metrics 的 @Public 抓取面。
+import { NorthStarMetricsService } from "./runtime/north-star-metrics.service";
+import { AgentNorthStarResponseDto } from "./dto/agent-north-star.dto";
+
+/**
+ * R279：把 `since` query（ISO-8601）解析成 `Date`；**解析不出 ⇒ `undefined`（不筛）**。
+ *
+ * 为什么非法值回落「不筛」而不是 400：与 `clampPagination` / `stalled` 的既有口径
+ * 一致 —— 非法深链必须安全回落，一个坏 query 不该让整页 500。「不筛」是**旧行为**，
+ * 也就是最保守的那个分支（多给行，不少给行）。
+ *
+ * 为什么在这里解析而不是在 service：`sessions.list` 的入参已是 `Date`，类型收窄的
+ * 责任留在 HTTP 边界；service 不掺进字符串解析（它也被 SOP 兜底等内部调用方复用）。
+ */
+function parseSinceParam(raw?: string): Date | undefined {
+  if (!raw) return undefined;
+  const d = new Date(raw);
+  // `NaN` 的 Date 直接进 SQL 会把整条查询打成语法错 ⇒ 必须在这里拦掉。
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
 
 export class CreateAgentSessionDto {
   @ApiProperty({ enum: AGENT_SESSION_KINDS as unknown as string[] })
@@ -130,12 +183,76 @@ export class AgentController {
      */
     @Optional()
     private readonly queueStall?: AgentQueueStallService | null,
+    /**
+     * R207：队列空转观测服务。
+     *
+     * ⚠️ **同样放在最后且 `@Optional`**：既有测试文件用**定位参数**装配本 controller
+     * （R202/R205 两次教训：插在中间会让既有文件全部错位）。
+     */
+    @Optional()
+    private readonly queueIdle?: AgentQueueIdleService | null,
+    /**
+     * R278：待办收件箱的服务端聚合。
+     *
+     * ⚠️ **同样放在最后且 `@Optional`**（R202/R205/R207 三次教训）：既有 spec 用
+     * 定位参数装配本 controller，插在中间会让它们全部错位。缺席 ⇒ 路由显式抛
+     * `DEPENDENCY_UNAVAILABLE`（503），绝不回 200 空信封。
+     */
+    @Optional()
+    private readonly inbox?: AgentInboxService | null,
+    /**
+     * R308：以下依赖必须继续追加在末尾且 `@Optional`。
+     * R202/R205/R207/R278 已有 5 次教训：既有 spec 用定位参数装配本 controller，
+     * 插在中间会让它们整体错位。生产装配里这些 provider 均存在（AgentModule 已
+     * 引入 SystemConfigModule / TaskModule / forFeature(Executor, TelemetryOptin)）；
+     * 缺席时相关端点显式 503，绝不回 200 空状态。
+     */
+    @Optional()
+    private readonly systemConfig?: SystemConfigService | null,
+    @Optional()
+    private readonly telemetryOptin?: TelemetryOptinService | null,
+    @Optional()
+    private readonly secretsCrypto?: SecretsCryptoService | null,
+    @Optional()
+    @InjectRepository(Executor)
+    private readonly executors?: Repository<Executor> | null,
+    @Optional()
+    @InjectRepository(TelemetryOptin)
+    private readonly optinRows?: Repository<TelemetryOptin> | null,
+    /**
+     * R325：北极星「被业务确认」显式确认 service。
+     *
+     * ⚠️ **同样追加在末尾且 `@Optional`**（R202/R205/R207/R278 + R308 教训）：
+     * 既有 spec 用定位参数装配本 controller，插在中间会让它们整体错位。
+     * 生产装配里 provider 由主 agent 在 AgentModule 统一接线；缺席时端点
+     * 显式抛 `DEPENDENCY_UNAVAILABLE`（503），绝不回 200 空信封。
+     */
+    @Optional()
+    private readonly confirmation?: AgentExecutionConfirmationService | null,
+    /**
+     * R327：北极星双口径周报读面。
+     *
+     * ⚠️ **同样追加在末尾且 `@Optional`**（R202/R205/R207/R278/R308/R325
+     * 教训）：既有 spec 用定位参数装配本 controller，插在中间会让它们整体错位。
+     * 生产装配里 provider 由 AgentModule 注册；缺席时端点显式 503，绝不回
+     * 200 空信封（「读不到」不能伪装成「没有数据」）。
+     */
+    @Optional()
+    private readonly northStarMetrics?: NorthStarMetricsService | null,
   ) {}
 
   @Get("sessions")
   @ApiOperation({ summary: "列出 Agent 会话（最新在前）" })
   // N-12: 裸分页 {items,total}（与 /sop 同形态，无页元数据）。
   @ApiOkResponse({ type: AgentSessionListResponseDto })
+  // R292：具名 @Query 运行期全可选；Swagger 默认推断 required:true，逐个显式标注。
+  @ApiQuery({ name: "kind", required: false, type: String })
+  @ApiQuery({ name: "status", required: false, type: String })
+  @ApiQuery({ name: "page", required: false, type: String })
+  @ApiQuery({ name: "stalled", required: false, type: String })
+  @ApiQuery({ name: "stalledMinutes", required: false, type: String })
+  @ApiQuery({ name: "pageSize", required: false, type: String })
+  @ApiQuery({ name: "since", required: false, type: String })
   async list(
     @Query("kind") kind?: AgentSessionKind,
     @Query("status") status?: string,
@@ -143,6 +260,15 @@ export class AgentController {
     @Query("stalled") stalled?: string,
     @Query("stalledMinutes") stalledMinutes?: string,
     @Query("pageSize") pageSize?: string,
+    /**
+     * R279：只列 `createdAt >= since` 的会话（ISO-8601），供收件箱的
+     * 「Agent 会话失败」小节取窗口内的行数据（`?status=failed&since=<ISO>`）。
+     *
+     * ⚠️ **缺省 = 不筛 = 旧行为完全不变**：既有调用方（列表页、深链、SOP 兜底）
+     * 都不传它，谓词一条不多。非法值/无法解析 ⇒ 同样**不筛**（与 `clampPagination`
+     * 的「非法深链安全回落、绝不 400」同一契约），绝不因一个坏 query 让整页 500。
+     */
+    @Query("since") since?: string,
   ) {
     const result = await this.sessions.list({
       kind,
@@ -158,6 +284,7 @@ export class AgentController {
           : undefined,
       page: page ? parseInt(page, 10) : undefined,
       pageSize: pageSize ? parseInt(pageSize, 10) : undefined,
+      since: parseSinceParam(since),
     });
     return result;
   }
@@ -180,6 +307,8 @@ export class AgentController {
   @ApiOperation({
     summary: "列出「调度积压」的会话（pending 但队列里没有对应 job）",
   })
+  // R221：补 response schema（此前只有 {"200":{"description":""}}）。
+  @ApiOkResponse({ type: AgentBacklogResponseDto })
   async backlogged(): Promise<{
     sessionIds: string[];
     count: number;
@@ -199,17 +328,28 @@ export class AgentController {
    *
    * 判据见 `docs/observability/agent-queue-stall-criterion.md`。
    *
-   * ⚠️ **`degraded` 字段是防假事实的**：某个观测量读失败时我们会返回 `stalled: false`
-   * （不因一个计数读失败就断言停摆 —— **误报**代价更大），但**必须**用 `degraded: true`
-   * 告诉调用方「这个判定**不完整**」⇒ 前端据此显示「**未知**」而不是「正常」。
+   * ⚠️ **`degraded` 字段是防假事实的**：结构性观测量（`active`/`workers`/`paused`）读失败时
+   * 我们会返回 `stalled: false`（不因一个计数读失败就断言停摆 —— **误报**代价更大），
+   * 但**必须**用 `degraded: true` 告诉调用方「这个判定**不完整**」⇒ 前端据此显示「**未知**」。
+   *
+   * ⚠️ R211：`degraded` 的语义**收窄**为「可能**误报**」。计数类（`waiting`/`delayed`/
+   * `prioritized`）读失败只会让 `pendingJobs` 变小（**更难**判停摆 ⇒ 漏报），记在
+   * `degradedCounts` —— 它**不改变结论**，只在已报停摆时补「在排队数可能不止这些」。
+   * `workersKnown: false` 表示 `workers === 0` **不是事实**（只是回落值）。
+   * 三者的方向差异见判据文档 §3.5。
    */
   @Get("sessions/queue-stall")
   @ApiOperation({ summary: "队列是否停摆（有活排队但结构上没人能消费）" })
+  // R211：补 response schema —— 此前该端点只有 `{"200":{"description":""}}`，
+  // 新增字段在契约面**完全不可见**（前端只能手写类型，且漂移无人发现）。
+  @ApiOkResponse({ type: AgentQueueStallResponseDto })
   async inspectQueueStall(): Promise<{
     stalled: boolean;
     reason: string | null;
     pendingJobs: number;
     degraded: boolean;
+    degradedCounts: boolean;
+    workersKnown: boolean;
   }> {
     if (!this.queueStall) {
       // ⚠️ 服务缺席 ⇒ **显式报不可用**，绝不谎报「队列正常」。
@@ -220,14 +360,58 @@ export class AgentController {
       stalled: r.stalled,
       reason: r.reason,
       pendingJobs: r.pendingJobs,
+      // R211：三个位**都要透出**，少一个前端就没法区分「可能误报」/「可能漏报」/「workers 未知」。
       degraded: r.degraded,
+      degradedCounts: r.degradedCounts,
+      workersKnown: r.workersKnown,
     };
+  }
+
+  /**
+   * R207：**队列空转**观测（worker 在册却不再消费新 job）。
+   *
+   * 判据见 `docs/observability/agent-queue-idle-criterion.md`。
+   *
+   * ⚠️ 与 `sessions/queue-stall` **互补**（不是重复）：停摆问「**有没有人**能消费」，
+   * 空转问「**有人、却不再消费**」。⇒ 判定顺序上停摆优先，本端点用
+   * `suppressedBy: "queue-stall"` 显式声明让位，避免同一现象点亮两个徽标。
+   *
+   * ⚠️ **`degraded` + `thresholdMs` + `basis` 都是契约的一部分**：
+   * ① 读失败时返回 `idleStuck: false` 是**不完整的判定**，不标出来就等于谎报「正常」；
+   * ② 只给阈值不给推导依据，下一次调参就会变成改魔法数（R403）。
+   */
+  @Get("sessions/queue-idle")
+  @ApiOperation({
+    summary: "队列是否空转（worker 在册却不再消费新 job）",
+  })
+  @ApiOkResponse({ type: AgentQueueIdleResponseDto })
+  async inspectQueueIdle(): Promise<{
+    idleStuck: boolean;
+    oldestAgeMs: number;
+    thresholdMs: number;
+    waitingCount: number;
+    retried: boolean;
+    suppressedBy: "queue-stall" | null;
+    degraded: boolean;
+    basis: {
+      wallClockMs: number;
+      concurrency: number;
+      tickMs: number;
+      thresholdMs: number;
+      formula: string;
+    };
+  }> {
+    if (!this.queueIdle) {
+      // ⚠️ 服务缺席 ⇒ **显式报不可用**，绝不谎报「队列在正常消费」。
+      throw new AppError(ErrorCode.AGENT_QUEUE_IDLE_CHECK_UNAVAILABLE, {});
+    }
+    return this.queueIdle.inspect();
   }
 
   @Get("sessions/:id")
   @ApiOperation({ summary: "获取某个 Agent 会话及其步骤" })
   @ApiOkResponse({ type: AgentSessionDetailResponseDto })
-  async detail(@Param("id") id: string) {
+  async detail(@Param("id", ParseUuidShapePipe) id: string) {
     const session = await this.sessions.requireById(id);
     const [steps, toolCalls, children] = await Promise.all([
       this.sessions.listSteps(id),
@@ -332,9 +516,7 @@ export class AgentController {
       };
     }
 
-    // B-8：running 会话拒绝再入队——下面的 jobId 带 Date.now() 会绕过
-    // BullMQ 去重，双 worker 同时跑同一会话 = 双 LLM 循环、副作用双份。
-    // 409 让前端如实提示（resumable 列表同步排除 running）。
+    // 已有 worker 持有执行权；409 让前端如实提示（resumable 列表同步排除 running）。
     if (session.status === "running") {
       throw new AppError("AGENT_SESSION_ALREADY_RUNNING");
     }
@@ -384,12 +566,24 @@ export class AgentController {
       }
     }
 
-    await this.queue.add(
-      "run",
-      { sessionId: id, reason: "resume:manual" },
-      { jobId: `${id}:resume:${Date.now()}`, attempts: 1 },
-    );
+    await this.enqueueResume(session, "resume:manual");
     return { ok: true };
+  }
+
+  private enqueueResume(
+    session: AgentSession,
+    reason: "resume:manual" | "resume:approval",
+  ) {
+    const { id: sessionId, totalSteps } = session;
+    return this.queue.add(
+      "run",
+      { sessionId, reason, expectTotalSteps: totalSteps },
+      manualResumeJobOptions(
+        sessionId,
+        totalSteps,
+        session.status === "failed",
+      ),
+    );
   }
 
   /** 当前生效的预算（供设置页展示与运维核对）。 */
@@ -479,11 +673,7 @@ export class AgentController {
       session.status === "waiting_input" &&
       !(await this.approvals.hasPendingForSession(sessionId))
     ) {
-      await this.queue.add(
-        "run",
-        { sessionId, reason: "resume:approval" },
-        { jobId: `${sessionId}:resume:${Date.now()}`, attempts: 1 },
-      );
+      await this.enqueueResume(session, "resume:approval");
       resumed = true;
     }
     return {
@@ -657,8 +847,347 @@ export class AgentController {
       items: { type: "object", additionalProperties: true },
     },
   })
-  async listApprovals(@Param("id") id: string) {
+  async listApprovals(@Param("id", ParseUuidShapePipe) id: string) {
     await this.sessions.requireById(id);
     return this.approvals.listForSession(id);
+  }
+
+  /**
+   * R278：**跨会话**的待审批单聚合（收件箱「审批单」小节的唯一数据源）。
+   *
+   * ## 为什么是新端点，而不是给 `sessions/:id/approvals` 加跨会话参数
+   *
+   * 那条端点的返回是 `AgentApproval[]` 裸数组（既有前端与 3 个用例依赖这个形状）。
+   * 收件箱要的是**信封**：`total`（独立计数）/ `truncated` / `degraded` ——
+   * 裸数组装不下这三个字段，而缺了它们就是本条产品问题的原始形态
+   * （「少报且不说明少报」）。⇒ 新增端点，旧端点一字不改。
+   *
+   * ## 为什么 `limit` 由这里钳
+   *
+   * 钳制逻辑是**纯函数**（`clampPendingApprovalLimit`）并且被测过（1..200，默认
+   * 100）。controller 只做 `parseInt` 与转发——非法值安全回落，**不 400**
+   * （保持「非法深链安全回落」的既有契约）。
+   */
+  @Get("approvals/pending")
+  @ApiOperation({
+    summary: "列出跨会话的待审批单（含总数、截断与降级标记）",
+  })
+  @ApiOkResponse({ type: AgentPendingApprovalsResponseDto })
+  @ApiQuery({ name: "limit", required: false, type: String })
+  async listPendingApprovals(
+    @Query("limit") limit?: string,
+  ): Promise<AgentPendingApprovalsResponseDto> {
+    if (!this.inbox) {
+      // ⚠️ 服务缺席 ⇒ 显式报不可用。回 `{items:[], total:0}` 会让运营以为
+      // 「没有待办」，而事实是「读不到」——这正是本仓要消灭的那类假事实。
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    return this.inbox.pending({
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+  }
+
+  /**
+   * R278：收件箱**计数**的唯一服务端口径（顶栏徽标用）。
+   *
+   * 一次请求换掉前端的 5 次请求（`/app-deployments/approvals/pending`、
+   * `/agent/sessions?status=waiting_input`、`?stalled=1`、`/sessions/backlogged`、
+   * `/sessions/queue-stall`）—— 那 5 次共用一个 60/min 的限流桶，是「转圈很久 /
+   * 偶发读取失败」的成因。
+   *
+   * 口径分工（brief §二 D1）：`pendingApprovals` 是**审批单**数，
+   * `waitingSessions` 是**会话**数；两者**不可相加**（会话已含审批单）。
+   */
+  @Get("inbox/counts")
+  @ApiOperation({ summary: "收件箱各项计数（读不到时为 null，绝不伪装成 0）" })
+  @ApiOkResponse({ type: AgentInboxCountsResponseDto })
+  async inboxCounts(): Promise<AgentInboxCountsResponseDto> {
+    if (!this.inbox) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    return this.inbox.counts();
+  }
+
+  // ── R308: TTFV opt-in 授权闭环 ────────────────────────────────
+  // 只改授权状态与系统总闸，绝不直接写 funnel_events：埋点写入仍由
+  // TelemetryOptinService.isOptedIn 的双闸决定，避免绕过闸门造数据。
+
+  /** 总闸读失败 / 缺键一律 false（与 TelemetryOptinService 同口径）。 */
+  private async telemetryGateState(): Promise<boolean> {
+    try {
+      const row = await this.systemConfig!.findOne(TTFV_SYSTEM_GATE_KEY);
+      return row?.value === "true" || row?.value === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 目标 install 解析：显式 installId > 设备指纹派生 > 全部已知 executor 指纹。
+   *
+   * `includeStoredOptIns` 只用于撤销的无参分支：已下线执行器不在 executor 表里，
+   * 但授权行仍在，必须一并撤销，否则「关总闸」只是暂时遮住残留授权。
+   */
+  private async resolveTelemetryInstallIds(
+    dto: AgentTelemetryConsentDto,
+    includeStoredOptIns: boolean,
+  ): Promise<string[]> {
+    const ids = new Set<string>();
+    if (dto.installId) {
+      ids.add(dto.installId);
+      return [...ids];
+    }
+
+    const fingerprints: string[] = [];
+    if (dto.deviceFingerprint) {
+      fingerprints.push(dto.deviceFingerprint);
+    } else if (this.executors) {
+      const rows = await this.executors.find({
+        select: { deviceFingerprint: true },
+      });
+      for (const row of rows) {
+        if (row.deviceFingerprint) fingerprints.push(row.deviceFingerprint);
+      }
+    }
+
+    for (const fingerprint of fingerprints) {
+      const derived = this.secretsCrypto!.deriveAnonymousId(
+        fingerprint,
+        "ttfv-install",
+      );
+      // 无 SEC_SECRETS_KEY ⇒ 派生不出稳定匿名 id。此时授权毫无意义，
+      // 直接 fail-closed，绝不把原始指纹当 installId 落库。
+      if (!derived) throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+      ids.add(derived);
+    }
+
+    if (includeStoredOptIns) {
+      const stored = await this.optinRows!.find({
+        where: { optIn: true },
+        select: { installId: true },
+      });
+      for (const row of stored) ids.add(row.installId);
+    }
+    return [...ids];
+  }
+
+  @Post("telemetry/consent")
+  @ApiOperation({ summary: "设置 TTFV 授权状态与系统总闸" })
+  @ApiCreatedResponse({ type: AgentTelemetryConsentResultDto })
+  async setTelemetryConsent(
+    @Body() dto: AgentTelemetryConsentDto,
+    @CurrentUser() user: AuthUser,
+  ): Promise<AgentTelemetryConsentResultDto> {
+    if (
+      !this.systemConfig ||
+      !this.telemetryOptin ||
+      !this.secretsCrypto ||
+      !this.executors ||
+      !this.optinRows
+    ) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+
+    // 用户维度只落 HMAC 哈希；原始 username 既不进 telemetry_optin，也不进
+    // config_history（HistoryOptions 刻意只带数字 userId）。
+    const userIdHash = this.secretsCrypto.deriveAnonymousId(
+      user.username,
+      "ttfv-user",
+    );
+    if (!userIdHash) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+
+    const installIds = await this.resolveTelemetryInstallIds(
+      dto,
+      !dto.optIn && !dto.installId && !dto.deviceFingerprint,
+    );
+    const source = dto.source ?? "admin-ui";
+    const gateValue = dto.optIn ? "true" : "false";
+
+    if (dto.optIn) {
+      // 先授权再开闸：避免「总闸已开、install 尚未授权」的采集窗口。
+      for (const installId of installIds) {
+        await this.telemetryOptin.grant(installId, userIdHash, source);
+      }
+      await this.systemConfig.upsert(
+        {
+          key: TTFV_SYSTEM_GATE_KEY,
+          value: gateValue,
+          valueType: "boolean",
+          description: "TTFV opt-in system gate",
+        },
+        { userId: user.id },
+      );
+    } else {
+      // 反向同理：先关闸再撤销，撤销失败也不会留下一个开着的采集口。
+      await this.systemConfig.upsert(
+        {
+          key: TTFV_SYSTEM_GATE_KEY,
+          value: gateValue,
+          valueType: "boolean",
+          description: "TTFV opt-in system gate",
+        },
+        { userId: user.id },
+      );
+      for (const installId of installIds) {
+        await this.telemetryOptin.revoke(installId);
+      }
+    }
+
+    return {
+      systemEnabled: dto.optIn,
+      optedIn: dto.optIn,
+      installIds,
+      count: installIds.length,
+      source,
+    };
+  }
+
+  @Get("telemetry/status")
+  @ApiOperation({ summary: "读取 TTFV 授权状态供管理端展示" })
+  @ApiOkResponse({ type: AgentTelemetryStatusDto })
+  async telemetryStatus(): Promise<AgentTelemetryStatusDto> {
+    if (!this.systemConfig || !this.optinRows) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    const systemEnabled = await this.telemetryGateState();
+    const rows = await this.optinRows.find({ order: { optedAt: "DESC" } });
+    const optedIn = rows.filter((row) => row.optIn);
+    // 已授权 installId 集合：只取 opt_in=true 的行；撤销行（opt_in=false）
+    // 不是授权，不能拿它把覆盖率凑成 full。
+    const authorizedIds = new Set(optedIn.map((row) => row.installId));
+    const iso = (value: Date | null | undefined): string | null =>
+      value ? new Date(value).toISOString() : null;
+
+    // ── R329：授权覆盖率可观测性（纯只读，绝不授权、绝不改任何状态）──
+    // knownExecutorCount 与 consent 全量路径（resolveTelemetryInstallIds）
+    // 取数口径一致：executors 表 select deviceFingerprint 后去重计数。
+    // executors 依赖缺席 ⇒ 0，coverage 按下方规则降级（不伪造 full）。
+    const fingerprints = new Set<string>();
+    if (this.executors) {
+      const execRows = await this.executors.find({
+        select: { deviceFingerprint: true },
+      });
+      for (const row of execRows) {
+        if (row.deviceFingerprint) fingerprints.add(row.deviceFingerprint);
+      }
+    }
+    const knownExecutorCount = fingerprints.size;
+
+    let coverage: AgentTelemetryStatusDto["coverage"];
+    if (!systemEnabled) {
+      coverage = "gate_off";
+    } else if (knownExecutorCount === 0) {
+      // 审计 B2 核心见证：总闸已开但无已知执行器 ⇒ 静默零采集陷阱。
+      coverage = "no_executors";
+    } else if (!this.secretsCrypto) {
+      // 派生依赖缺席：无法比对，fail-closed 降级 partial，绝不报 full。
+      this.logger.warn(
+        "[R329] telemetry status: secretsCrypto absent, coverage degraded to partial",
+      );
+      coverage = "partial";
+    } else {
+      // 与 consent 全量路径同样用 deriveAnonymousId(fp,"ttfv-install") 派生，
+      // 只比较 HMAC 匿名 id，绝不把原始指纹/用户名带进响应。
+      const derivedIds = new Set<string>();
+      let derivationFailed = false;
+      for (const fingerprint of fingerprints) {
+        const derived = this.secretsCrypto.deriveAnonymousId(
+          fingerprint,
+          "ttfv-install",
+        );
+        if (!derived) {
+          derivationFailed = true;
+          break;
+        }
+        derivedIds.add(derived);
+      }
+      if (derivationFailed) {
+        // 无 SEC_SECRETS_KEY ⇒ 派生失败：记 warn、降级 partial，不伪造 full。
+        this.logger.warn(
+          "[R329] telemetry status: installId derivation failed, coverage degraded to partial",
+        );
+        coverage = "partial";
+      } else {
+        const allCovered = [...derivedIds].every((id) => authorizedIds.has(id));
+        coverage = allCovered ? "full" : "partial";
+      }
+    }
+
+    return {
+      systemEnabled,
+      count: optedIn.length,
+      latestOptedAt: optedIn.length > 0 ? iso(optedIn[0].optedAt) : null,
+      installs: rows.map((row) => ({
+        installId: row.installId,
+        optIn: row.optIn,
+        optedAt: iso(row.optedAt),
+        userIdHash: row.userIdHash ?? null,
+        source: row.source,
+      })),
+      knownExecutorCount,
+      coverage,
+    };
+  }
+
+  /**
+   * R325（北极星 §6 步骤 1-2）：显式确认某次执行「已被业务确认」。
+   *
+   * - 幂等：重复调用一律 ok:true 且 emit；去重由下游 listener 的
+   *   dedupeKey = confirmed:<execution_id_hash> 保证，业务侧不去重。
+   * - 鉴权沿用 controller 级 JwtAuthGuard + ADMIN（不自定义角色）。
+   * - 与 telemetry 解耦（§7）：本端点不查 opt-in，未授权也照常确认成功。
+   */
+  @Post("executions/:execId/confirm")
+  @ApiOperation({
+    summary: "显式确认执行已被业务确认（北极星 business_confirmed 事件源）",
+  })
+  @ApiOkResponse({
+    description:
+      "确认成功（幂等，重复确认同样返回成功并 emit execution.confirmed）",
+  })
+  async confirmExecution(
+    @Param("execId", ParseUuidShapePipe) execId: string,
+  ): Promise<{ ok: true; confirmedAt: string }> {
+    if (!this.confirmation) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    const result = await this.confirmation.confirm(execId);
+    if (!result.ok) {
+      throw new AppError(ErrorCode.TASK_EXECUTION_NOT_FOUND, {
+        executionId: execId,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * R327（北极星 §6 步骤 5 的后端一半）：双口径周报读面，供管理端看板消费。
+   *
+   * - `?as_of=`（ISO-8601，缺省 now）：观测截止参数；非法值由 service 抛 400。
+   * - 鉴权沿用 controller 级 JwtAuthGuard + ADMIN，与 telemetry/status 同面；
+   *   刻意不落 metrics 模块（那是 @Public + scraper guard 的 Prometheus 抓取面）。
+   * - service 缺席 ⇒ 显式 503（不回 200 空信封）；空数据由 service 返回
+   *   weeks=[]/totals=0/warnings 仍在，与脚本 buildPayload 逐字对齐。
+   */
+  @Get("north-star/metrics")
+  @ApiOperation({
+    summary: "北极星双口径周报（严格 business_confirmed + 代理值，绝不混用）",
+  })
+  @ApiQuery({
+    name: "as_of",
+    required: false,
+    type: String,
+    description: "观测截止 ISO-8601；缺省 now",
+  })
+  @ApiOkResponse({ type: AgentNorthStarResponseDto })
+  async northStarReport(
+    @Query("as_of") asOf?: string,
+  ): Promise<AgentNorthStarResponseDto> {
+    if (!this.northStarMetrics) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    return this.northStarMetrics.report(asOf);
   }
 }

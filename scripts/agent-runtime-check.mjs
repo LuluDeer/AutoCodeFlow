@@ -539,6 +539,10 @@ function makeSessionService() {
 
     async create(input) {
       const id = `sess-${sessions.size + 1}`;
+      // R278：`createdAt` / `updatedAt` 是生产实体的 `@CreateDateColumn` /
+      // `@UpdateDateColumn`，`list` 的 `ORDER BY createdAt DESC` 就建在它上面
+      // ⇒ 替身实体必须带这个字段，否则排序只能拿 0 兜底（假序）。
+      const now = new Date();
       const s = {
         id,
         kind: input.kind,
@@ -550,6 +554,7 @@ function makeSessionService() {
         scopeJson: input.scope ?? {},
         budgetJson: input.budget ?? DEFAULT_BUDGET,
         totalSteps: 0, totalTokensIn: 0, totalTokensOut: 0, totalToolCalls: 0,
+        createdAt: now, updatedAt: now,
         startedAt: null, finishedAt: null, summary: null, errorMessage: null,
         resultJson: null, waitingFor: null,
       };
@@ -558,6 +563,73 @@ function makeSessionService() {
       return s;
     },
     async findById(id) { return sessions.get(id) ?? null; },
+    /**
+     * R278：会话列表（`agent-inbox.service.ts:285` 的计数用途）。
+     *
+     * 保真依据 — 生产 `AgentSessionService.list`（`agent-session.service.ts:623-662`）：
+     *   · 签名 `list(options: { kind?; status?; stalled?; page?; pageSize? })`
+     *     ⇒ 返回 `{ items: AgentSession[]; total: number }`（`:635`）；
+     *   · 过滤：`kind` 等值、`status` 等值（`:651-653`）；
+     *   · `stalled` 判据（`:654-655` → `agent-stalled-thresholds.ts:48-71`）：
+     *     **不是** `updatedAt`，而是「`status = 'running'` 且不存在晚于
+     *     `now - minutes` 的 step」。阈值钳制 `[1, 1440]`，非有限数回落 15；
+     *   · 分页：`clampPagination`（`agent-pagination.ts:24-45`）——
+     *     `page` 钳到 `[1, 10000]`、`pageSize` 钳到 `[1, 100]`，
+     *     非有限数（NaN/±Infinity）**视同未传**回落 `1 / 20`（不是 400）；
+     *   · 排序 `createdAt DESC`（`:656`）；`total` 是**过滤后**的总数、
+     *     与 `skip/take` 无关（`getManyAndCount` 的语义，`:660-661`）。
+     *
+     * 为什么必须真实现而不是 `{ items: [], total: 0 }`：调用方
+     * （`agent-inbox.service.ts` 的 `sessionsTotal`）只用 `total` 做对账，
+     * 恒 0 会让「会话计数」类断言永远成立 ⇒ 测试假绿、守卫也只是被糊弄过去。
+     */
+    async list(options = {}) {
+      // NaN 守卫（生产 `agent-pagination.ts:28-43`）：非有限数视同未传。
+      const clamp = (raw, lo, hi, fallback) =>
+        Math.min(hi, Math.max(lo, typeof raw === "number" && Number.isFinite(raw) ? raw : fallback));
+      const page = clamp(options.page, 1, 10000, 1);
+      const pageSize = clamp(options.pageSize, 1, 100, 20);
+
+      let rows = [...sessions.values()];
+      if (options.kind) rows = rows.filter((s) => s.kind === options.kind);
+      if (options.status) rows = rows.filter((s) => s.status === options.status);
+      if (options.stalled) {
+        // 阈值钳制：`agent-stalled-thresholds.ts:51-59`（[1, 1440]，默认 15）。
+        const rawMinutes = options.stalled.minutes;
+        const minutes = Math.min(
+          1440,
+          Math.max(1, Number.isFinite(rawMinutes) ? Number(rawMinutes) : 15),
+        );
+        const since = Date.now() - minutes * 60_000;
+        // 谓词：`status = 'running' AND NOT EXISTS(step.createdAt > since)`
+        // （`agent-stalled-thresholds.ts:61-66`）—— 看 step，不看 updatedAt。
+        rows = rows.filter((s) => {
+          if (s.status !== "running") return false;
+          const arr = steps.get(s.id) ?? [];
+          const recent = arr.some((st) => st.createdAt && st.createdAt.getTime() > since);
+          return !recent;
+        });
+      }
+
+      // `ORDER BY s.createdAt DESC`（`agent-session.service.ts:656`）。
+      // 同毫秒兜底：生产里 `createdAt` 是 `@CreateDateColumn`（微秒精度）+ DB 决定
+      // 同值时的行序；替身只有 `Date.now()` 的毫秒 ⇒ 三次 create 常落同一毫秒。
+      // ⇒ 兜底**必须同向**（更新的在前）：否则 `pageSize: 1` 的 `items[0]` 会拿到
+      //   最老的会话，与生产 `createdAt DESC` 的语义**相反**（本文件 R278 自测探针
+      //   实测踩到过：`items[0] === c.id` 判 false）。`sess-10` 与 `sess-9` 的
+      //   字典序与创建序相反 ⇒ 按 id 数值后缀比较。
+      const idSeq = (id) => Number(String(id).replace(/^sess-/, "")) || 0;
+      rows.sort((a, b) => {
+        const ta = a.createdAt ? a.createdAt.getTime() : 0;
+        const tb = b.createdAt ? b.createdAt.getTime() : 0;
+        return tb - ta || idSeq(b.id) - idSeq(a.id);
+      });
+
+      // `getManyAndCount`（`:660-661`）：total 是过滤后总数，items 是当页切片。
+      const total = rows.length;
+      const items = rows.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize);
+      return { items, total };
+    },
     async requireById(id) {
       const s = sessions.get(id);
       if (!s) throw new Error(`not found: ${id}`);
@@ -607,6 +679,10 @@ function makeSessionService() {
       const step = {
         id: `step-${arr.length + 1}`,
         sessionId, seq: arr.length + 1, ...input,
+        // R278：`AgentStep.createdAt` 是实体列 —— `list({ stalled })` 的判据
+        // （`agent-stalled-thresholds.ts:61-66`）就看它，缺了这个时间戳，
+        // 「running 但最近一步超过 N 分钟」永远判不出来。
+        createdAt: input.createdAt ?? new Date(),
         tokensIn: input.tokensIn ?? 0, tokensOut: input.tokensOut ?? 0,
       };
       arr.push(step);

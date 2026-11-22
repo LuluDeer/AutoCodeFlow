@@ -192,13 +192,12 @@ describe('观测审计 P2：人工会话入口（新建会话）', () => {
     });
     fireEvent.click(within(modal).getByRole('button', { name: '新建会话' }));
 
-    await waitFor(() =>
-      expect(agentApi.create).toHaveBeenCalledWith({ kind: 'chat', title: '排查一下' }),
-    );
+    // 仅填标题也保留原操作路径，但模型只读 context；用用户原文作为问题。
+    await waitFor(() => expect(agentApi.create).toHaveBeenCalledWith({
+      kind: 'chat', title: '排查一下', context: { question: '排查一下' },
+    }));
     // 创建后刷新列表（load 的第二次调用）
     await waitFor(() => expect(agentApi.list).toHaveBeenCalledTimes(2));
-    // 上下文留空时不应臆造 context 字段
-    expect(vi.mocked(agentApi.create).mock.calls[0][0]).not.toHaveProperty('context');
   });
 
   it('上下文不是 JSON 对象 → 前端拒绝提交（不把脏数据发给后端）', async () => {

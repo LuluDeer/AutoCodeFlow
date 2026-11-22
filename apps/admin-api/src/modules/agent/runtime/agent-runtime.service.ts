@@ -6,6 +6,8 @@ import {
   type ToolCall,
 } from "../../ai/ai.service";
 import { AgentSessionService, redactForStorage } from "./agent-session.service";
+import type { RunOptions } from "./agent-job-options";
+export type { RunOptions } from "./agent-job-options";
 import { AgentBudgetService, DEFAULT_BUDGET } from "./agent-budget.service";
 // S7-G1：prompt 指纹复用**同一份** `canonicalJson`（审批键/args 摘要也在用它）——
 // 第二份规范化会让「重算对不上」，而在这套判据里「对不上」= 输入变了（假归因）。
@@ -375,17 +377,6 @@ export interface RunOutcome {
   reason?: string;
 }
 
-/**
- * 一次 run 的唤醒凭据。
- *
- * `expectWaitingFor` 只由自动续跑 job 携带（见 agent-job-options.ts）：
- * delayed job 是「对未来某个状态的承诺」，60s 里会话可能已被人工 resume
- * 并转去等审批——此时必须让位，而不是无条件接管。
- */
-export interface RunOptions {
-  expectWaitingFor?: string;
-}
-
 /** 提供给循环的工具（P3 接入真实实现）。 */
 export interface AgentToolDefinition {
   name: string;
@@ -535,10 +526,7 @@ export class AgentRuntimeService {
     // RT-3：自动续跑的唤醒必须带「我在等什么」，由 CAS 一并校验。裸
     // sessionId 唤醒会在 60s 窗口内接管已转到「等人工审批」的会话，把
     // waiting_input 翻成 running——审批门在模型眼里退化成一次拒绝。
-    const claimed = await this.sessionService.markRunning(
-      sessionId,
-      options.expectWaitingFor,
-    );
+    const claimed = await this.sessionService.markRunning(sessionId, options);
     if (!claimed) {
       this.logger.warn(
         `run(${sessionId}) lost the markRunning race — another worker owns it`,

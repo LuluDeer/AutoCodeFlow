@@ -1444,7 +1444,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 259 个操作，覆盖 222 个路径。
+共 269 个操作，覆盖 232 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1457,7 +1457,11 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/agent-collab/clarifications` | - |
 | POST | `/agent-collab/llm` | - |
 | POST | `/agent-collab/poll` | - |
+| GET | `/agent/approvals/pending` | 列出跨会话的待审批单（含总数、截断与降级标记） |
 | GET | `/agent/budget` | 获取生效的 Agent 预算设置 |
+| POST | `/agent/executions/{execId}/confirm` | 显式确认执行已被业务确认（北极星 business_confirmed 事件源） |
+| GET | `/agent/inbox/counts` | 收件箱各项计数（读不到时为 null，绝不伪装成 0） |
+| GET | `/agent/north-star/metrics` | 北极星双口径周报（严格 business_confirmed + 代理值，绝不混用） |
 | GET | `/agent/sessions` | 列出 Agent 会话（最新在前） |
 | POST | `/agent/sessions` | 创建一个 Agent 会话并入队执行 |
 | GET | `/agent/sessions/{id}` | 获取某个 Agent 会话及其步骤 |
@@ -1467,7 +1471,10 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/agent/sessions/{id}/export` | 导出 Agent 会话完整转录（JSON） |
 | POST | `/agent/sessions/{id}/resume` | 恢复挂起/失败的 Agent 会话 |
 | GET | `/agent/sessions/backlogged` | 列出「调度积压」的会话（pending 但队列里没有对应 job） |
+| GET | `/agent/sessions/queue-idle` | 队列是否空转（worker 在册却不再消费新 job） |
 | GET | `/agent/sessions/queue-stall` | 队列是否停摆（有活排队但结构上没人能消费） |
+| POST | `/agent/telemetry/consent` | 设置 TTFV 授权状态与系统总闸 |
+| GET | `/agent/telemetry/status` | 读取 TTFV 授权状态供管理端展示 |
 | GET | `/ai/config` | 获取当前 AI 配置 |
 | POST | `/ai/config` | 将 AI 配置保存到系统配置存储 |
 | POST | `/ai/media` | 上传视频（视频转 SOP 的输入；ADMIN） |
@@ -1648,8 +1655,11 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/sop/{id}/versions` | 版本历史（不可变快照列表） |
 | GET | `/sop/assignable-executors` | 当前租约内可接 SOP 指派的执行器（agent:sop） |
 | GET | `/sop/assignments/{assignmentId}` | 指派详情（含澄清对话全量） |
+| POST | `/sop/assignments/{assignmentId}/cancel` | 取消单条未结束的指派（支持 assigned/in_progress/blocked/stalled） |
 | POST | `/sop/assignments/{assignmentId}/clarifications/{clarificationId}/reply` | 人工回复一条澄清（升级转人工后的答复入口） |
 | GET | `/sop/assignments/{assignmentId}/media` | 指派的媒体清单 |
+| GET | `/sop/assignments/lagging` | 列出超过 N 小时未推进的 blocked 指派（含总数、截断与降级标记；不改状态机） |
+| GET | `/sop/clarifications/pending` | 列出跨 SOP、待人工答复的升级澄清（含总数、截断与降级标记） |
 | GET | `/sop/media/{mediaId}` | 下载执行器回传的媒体（截图/录屏） |
 | GET | `/task-templates` | 列出任务模板（官方 + 自定义） |
 | POST | `/task-templates` | 创建自定义任务模板 |

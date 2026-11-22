@@ -22,10 +22,13 @@ SSE 两个 runtime gauge 的声明在同目录 `runtime-metrics.ts`（RUNTIME_GA
 
 | 文档 | 内容 |
 |---|---|
-| [agent-queue-idle-criterion.md](./agent-queue-idle-criterion.md) | **「队列空转」（queue idle-stuck）判定判据** —— **worker 还在、却不再消费新 job**（R205「停摆」的补充格）。信号 = **最老 waiting job 的年龄**（BullMQ `job.timestamp` + Redis ZSET ⇒ **单次请求内**可算，**不需要跨采样状态**）。**为什么不用固定阈值**：`AGENT_QUEUE_CONCURRENCY=2` ⇒ 批量触发时最后一个**合法地**等 45 分钟 ⇒ 阈值必须由「单 job 合理耗时上界」（本仓的**墙钟预算**）推导。 |
+| [backlog-auto-reenqueue-criterion.md](./backlog-auto-reenqueue-criterion.md) | **「自动补入队」判据** —— 本仓**唯一**一条「自动处置」的判据（其余五条都只告警），因为「积压」意味着会话**永远不会被执行**且**没有任何东西会自己修复它**。副作用封顶：CAS 单赢家（多副本只有 1 个补）+ 计数落库（上限 1）+ `jobId = session.id`（幂等且判据能查到）。**为什么计数必须落库**：「补了但队列里查不到」有「add 失败」与「add 成功但 job 已被消费」两种成因，队列**分不开**。R216 真机 7/7（10 并发 ⇒ 赢家=1）。 |
+| [observation-timeout-criterion.md](./observation-timeout-criterion.md) | **「观测调用超时」判据** —— **观测端点自己坏了，不能让观测面看起来像没数据**。R212 真机实测：Redis **卡住**（TCP 在、不应答）⇒ `queue-stall`/`queue-idle` **挂死 25s+ 无响应**（不报错、不降级）。根因是 BullMQ 要求的 `maxRetriesPerRequest:null` + `enableOfflineQueue:true`（**不能改**）⇒ 只能在**观测层**加超时（`withObservationTimeout` / `ObservationBudget`），且超时**必须**走与「读失败」完全相同的降级路径。R213 已落地 + 真机 11/11。 |
+| [agent-queue-idle-criterion.md](./agent-queue-idle-criterion.md) | **「队列空转」（queue idle-stuck）判定判据** —— **worker 还在、却不再消费新 job**（R205「停摆」的补充格）。信号 = **最老 waiting job 的年龄**（BullMQ `job.timestamp` + Redis ZSET ⇒ **单次请求内**可算，**不需要跨采样状态**）。**为什么不用固定阈值**：`AGENT_QUEUE_CONCURRENCY=2` ⇒ 批量触发时最后一个**合法地**等 45 分钟 ⇒ 阈值由「单 job 合理耗时上界」推导：**`wallClockMs × concurrency + heartbeat tick`**（R207 接线，见该文档 §6）。 |
 | [agent-queue-stall-criterion.md](./agent-queue-stall-criterion.md) | **「队列停摆」（queue stall）判定判据** —— **有 job 在排队但结构上没人能消费**（`workers === 0` 或队列被暂停）。这是「异常接管台」的**第四个**缺陷，与另三个**刻意不重叠**：待接管看会话状态 · 卡住看最近 step · 积压看 job 存在性 · **本条看队列的 worker 注册面**。**为什么不用时间阈值**：`waiting` 多、`active===0`、最老 job 年龄**全都会被「合法积压」打穿**（并发仅 2）⇒ 只有**结构性**信号不受影响。 |
 | [agent-backlog-criterion.md](./agent-backlog-criterion.md) | **「调度积压」（backlogged）判定判据** —— `pending` 却**查不到队列 job**（`queue.add` 失败 / job 已终结）⇒ 永远不会跑。**为什么不用时间阈值**：`createdAt` 被 resume 打穿、纯时间阈值被「合法排队」（并发仅 2）打穿 ⇒ **只能查队列**（`jobId === session.id`）。 |
 | [agent-stalled-criterion.md](./agent-stalled-criterion.md) | **「卡住」（stalled）判定判据** —— 运营视角「异常接管台」的另一半（Roadmap P1）。要点：`running` 且「最近一步 `AgentStep` 的 `createdAt`」超过 N 分钟（默认 15）；**不用** `agent_sessions.updatedAt`（它会被裸 `update()` 绕过而失真）。 |
+| [agent-failed-session-criterion.md](./agent-failed-session-criterion.md) | **「Agent 会话失败」判定判据** —— 六个既有判据**全看非终态**（`pending`/`running`/`waiting_input`），唯一的「失败」小节 `recentFailures` 查的是 `task_executions` 而**不是** `agent_sessions` ⇒ 一条失败会话在任何观测面上都不出现（R279 真机实测：3 条 failed 会话、收件箱七项计数全 0）。要点：状态 ∈ {`failed`,`budget_exceeded`}（**`aborted` 不计** —— 那是人主动停的），窗口默认 24h；**计数含两者、列出只列 `failed`** 的不对称是刻意的。**为什么它不是「谎报」而是「缺席」**：这些计数确实为 0，数字是对的 —— 真实的 0 掩盖了「有 N 条等你处理」。 |
 
 ---
 
@@ -888,6 +891,7 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 | `autoflow_execution_result_total` | counter | `status=success\|failed\|timeout\|killed\|cancelled` | 回调终态唯一赢家 UPDATE 命中后的执行结果分类。**取值是小写枚举**（`ExecutionStatus`，登记在 `RUNTIME_EXECUTION_RESULT_LABELS`）：看板/告警的 label filter 必须逐字小写，写 `status="SUCCESS"` 会匹配空集（OBS3-01） |
 | `autoflow_sse_streams_rejected_total` | counter | — | SSE 日志流因 per-execution / global 并发上限被拒次数（TASK-008） |
 | `autoflow_notification_delivery_total` | counter | `channel=email\|slack\|dingtalk\|wecom\|webhook` × `result=success\|failure\|blocked\|skipped` | 通知扇出投递结果（R33-A1 起四值：`success` = 真的投出；`failure` = 传输/API 故障，含渠道自报 `failed` 与 promise rejected；`blocked` = 被 SSRF 策略拦截；`skipped` = 渠道未配置、零次尝试。四值均在 `RUNTIME_NOTIFICATION_RESULTS` 登记并铺 0 值基线，否则新值在首次命中前是「无数据」而非 0，告警会漏） |
+| `autoflow_notification_silenced_total` | counter | `level=error\|warning\|info` | 告警**被静默规则吞掉**的次数（R284）。⚠️ 这是**扇出之前**的事件：零渠道、零次尝试 ⇒ 不能并入 `delivery_total` 的 `skipped`（渠道未配置）或 `failure`（传输故障），否则会伪造事实。该计数器**刻意不登记 `critical`**——7 个静默写点都没有以 CRITICAL 调用，登记它只会造出一条永远为 0 的假序列。配套审计 `notification.silenced` 记录命中的规则（含 `endTime:null` = 无 `durationMinutes`、永久生效）。 |
 | `autoflow_callback_business_total` | counter | `result=accepted\|duplicate\|not_found\|address_mismatch\|address_mismatch_missing_address\|error` | 回调业务结果分类（终态重复/地址不符等） |
 | `autoflow_scheduler_trigger_latency_ms_bucket` | counter/hist | `le=10\|50\|100\|250\|500\|1000\|2500\|5000\|+Inf` | CORE-06：定时触发（fixed_rate/cron）fire→入队延迟累计桶（毫秒）；与 scheduler-metrics.service.ts 的 TRIGGER_LATENCY_BUCKETS_MS 逐字对齐 |
 | `autoflow_scheduler_trigger_latency_ms_sum` / `_count` | counter | — | 延迟累计和 / 样本数（avg = sum/count） |

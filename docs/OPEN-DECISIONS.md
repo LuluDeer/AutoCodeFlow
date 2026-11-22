@@ -1,6 +1,6 @@
 # 待决策清单（OPEN DECISIONS）
 
-> **受众**：需要拍板的产品/技术负责人 · **状态**：内部 · **最后核对**：2026-11-03
+> **受众**：需要拍板的产品/技术负责人 · **状态**：内部 · **最后核对**：2026-11-21
 > 本文件只放**需要人拍板**的事，不放已完成的工作（那些在 `PLAN-CLAIMS.md` 的按轮记录里）。
 > 每条都带**证据出处**与**两个选项的代价** —— 目的是让决策可以在 5 分钟内做完，而不需要重读整本板子。
 >
@@ -19,6 +19,7 @@
 - **代价**：A6 让「停机期间手工跑过」的任务**会被补跑一次**（= 严格 cron 语义，产品已接受）；A6b 多一列（迁移 `1790000000096`）与一条登记/清除路径。
 
 ### A2. 四个 Python 库（`autocodeflow-{ai,http,notify,db}`）接发布线还是删除
+- **本轮处置（2026-11-19，R278）：不做。** 理由：四个包里三个（ai/http/notify）在仓内都有等价实现，对外分发等于承诺长期维护三条冗余线，而**没有任何外部需求证据**；删掉又会丢 `R134-A1` 那批 20 条回归用例与 4 包真实 tag 史。等出现真实外部需求或 `check-publishable-wiring` 的 `review_by`（2026-12-15）到期再拍（届时选「③ 冻结 + README 标注不对外发布」的成本最低）。
 - **现象**：有源码 + 测试 + pyproject + CHANGELOG，但**不在** version-guard、**不在** publish 矩阵；版本停在 `0.3.2`（四个 pyproject 第 7 行）；**仓内零消费者**（面向仓外用户的库，这是**设计意图**）。
   〔**2026-11-03 事实核查更正**：本行此前写「版本停在 0.3.2，而平台主线已是 2.0.0 ⇒ **落后一整条 major**」——**这个框架是错的**。四包有**自己独立的 semver 线**：`release-please-config.json` 把它们放进 `linked-versions` 组 `autocodeflow-py-libs`，并逐包打开 `include-component-in-tag: true`（tag 形态 `autocodeflow-http-vX.Y.Z`，**刻意**避开 `v*` 命名空间以免误触发 `release.yml`，理由见 `release-please.yml:33-38`）；`git tag` 里 `autocodeflow-{ai,db,http,notify}-v0.3.2` 四包**同日真实存在**（2026-10-26），`ci.yml:1625` 还有四包矩阵测试。⇒ `0.3.2` 是**它们自己的当前版次**，与 `version.txt`（现 **2.1.0**）**不共线**，「落后」无从谈起。**真缺口只有一条：打了 tag，但没有任何 job 把 wheel 上传到 PyPI**（`release.yml` 的 `publish-pypi` 只 `working-directory: packages/autoflow-sdk`，且 `needs: version-guard` 只在 `v*` tag 触发，而四包的 tag 不以 `v` 开头）。〕
 - **证据**：R135（现状表）、R136（守卫）、R134-A1（已修 6 处缺陷 + 20 条用例）。
@@ -26,7 +27,8 @@
 - **代价**：① 一条发布流水线 + 版本线决策（实测只差一个 publish job，见上「现象」）；② 丢掉 `R134-A1` 那批已写好的回归用例，且已打过 8 个 tag；③ 需要一次人去拍板 + 一次 README 标注，但对外承诺维持「不发布」的现状。
 - **守卫**：`check-publishable-wiring.mjs` 已把这条**钉成红灯风险**（新增第五个这样的包会立刻红）。
 
-### A3. `acf-cli` 破坏性命令的确认门：已收口 4 类 / 仍无门 3 条
+### A3. `acf-cli` 破坏性命令的确认门：已收口 5 类 / 维持不加门 2 条 — **已结案（2026-11-21，R289）**
+- **本轮收口（2026-11-21，R289，`1fb7d6f9`）**：`acf deploy stop <deploymentId>` 已补 `-y, --yes` + `confirmDestructive`（`packages/acf-cli/src/commands/deploy.ts`，位于 `ora().start()` 与 `post()` 之前）：非 TTY 且缺 `--yes` ⇒ 退出码 2（`EXIT_CODES.USAGE`）且 0 HTTP 请求；TTY 输 `n`/空回车 ⇒ `Aborted.` + 退出码 0 + 0 请求；与同文件 `remove` 及 `executor rotate` 完全对称。其余两条（`executor offline` 30s 心跳自愈、`task rollback` 落版本快照可再回滚）维持不加门，整条结案。
 - **已收口（R192-A1，均已加 `-y/--yes`）**：`task kill`（`packages/acf-cli/src/commands/tasks.ts:870`）、`task webhook enable·rotate·disable`（同文件 `:905` 选项，`:917-925` 只对非 `status` 动作询问）、`apikey revoke`（`packages/acf-cli/src/commands/apikeys.ts:115`）。语义统一：非 TTY 且缺 `--yes` ⇒ 退出码 2（`EXIT_CODES.USAGE`，见 `packages/acf-cli/src/ui.ts:29`/`:176-187`）且请求不发出。
 - **仍无门的 3 条（按后果分别判定，分级而非一刀切）**：
   - `task rollback`（`tasks.ts:510-522`）：每次写入都落版本快照、可再回滚（R192-A1 已判定不加门）。
@@ -35,17 +37,19 @@
 - **真实缺口 → 已被本文件 D7-2 自我否决（不要按缺口处理）**：此处原写「CLI 没有 `executor online` 逆操作，运维只能等心跳——缺的是一条逆操作」。D7-2 已实测：心跳与注册**无条件**把执行器置回 `ONLINE`（`apps/admin-api/src/modules/executor/executor.service.ts:2694-2701`），该缺口不成立。保留本条只为说明判定链路，**不再列为待办**（2026-10-31 事实核查）。
 - **证据**：R193（`apikey revoke` 自述 cannot be undone 却零确认）、R195（文件级计数太粗，按命令枚举才发现 7 处）、R198（退出码/确认门设计本身是好的，应复用）。
 
-### A4. 容器路径的任务内存上限：2048 → 768MB（**可一行回退**）
+### A4. 容器路径的任务内存上限：2048 → 768MB（**可一行回退**）— **已定（2026-11-19，R278）：维持 768/512**
+- **结论**：容器路径维持 **768MB（基线）/ 512MB（staging）**，裸机/桌面维持 **2048**（那里无容器 cap，不变量真空成立，压低它属无谓退化）。本条**不再列为待选**。
+- **证据（守卫真跑）**：`node scripts/check-sandbox-limit-order.mjs` → **exit 0**，输出 `COVERAGE_CASES: 16` + `✔ 沙箱内存上限次序守卫通过：4 组「任务上限 < 容器上限」成立（9 个 compose 文件 / 21 个服务已扫描）`。回归护栏即此脚本：任何人把 compose 的顺序反转或把上限插值化都会红。
 - **现象**：`docker-compose.yml` 的两个 executor 容器 `mem_limit=1G`，而两侧执行器的任务内存上限**代码默认是 2048MB**（`apps/executor-python/config.py` / `apps/executor-node/src/config.ts`），compose 又没注入 `TASK_MEMORY_LIMIT_MB` ⇒ **次序反转**：任务级上限永远不会先触发，达到容器 cap 时由内核 cgroup OOM killer 挑受害者——同容器邻任务陪葬 + 归因丢失（任务被报成「被杀」而不是「超内存」）。这正是 `scripts/check-sandbox-limit-order.mjs`（2026-10-31 新增守卫）首跑抓到的 4 处反转之一（staging overlay 另有 2 处：容器减半到 768m 而任务上限仍 2048）。
-- **已做的选择（本轮）**：compose 里显式注入**字面量** `TASK_MEMORY_LIMIT_MB: 768`（基线与 staging 为 512），与 staging 既有的「容器减半 → `NODE_OPTIONS` 堆同步下调」同构；裸机/桌面形态**不动**（那里无容器 cap，不变量真空成立，仍是 2048）。
-- **代价（如实）**：容器路径的**名义**任务上限从 2048 降到 768。实际容量变化很小——原来超过约 1G 总量就会被 cgroup 杀掉，而执行器自身也要占内存；换来的是**任务级干净失败**（`failureReason` 可归因）而不是内核杀 + 邻居陪葬。
-- **选项**：① 保持现状（768/512，footprint 不变）；② 保 2048 容量：把 `mem_limit` 抬到 ≥2560m（每执行器多占内存，demo 机器可能吃紧）；③ 只改代码默认值（会同时影响裸机/桌面形态，不推荐）。
-- **回退方式**：改 `docker-compose.yml` 两处 `TASK_MEMORY_LIMIT_MB` 的值即可（同时必须满足守卫的次序不变量：任务上限 < 容器上限）。
-- **证据**：`scripts/check-sandbox-limit-order.mjs` 的 16 条自检 + 主跑输出；提交 `db125558`。
+- **已做的选择（`db125558`）**：compose 里显式注入**字面量** `TASK_MEMORY_LIMIT_MB: 768`（基线与 staging 为 512），与 staging 既有的「容器减半 → `NODE_OPTIONS` 堆同步下调」同构。
+- **代价（如实）**：容器路径的**名义**任务上限从 2048 降到 768。实际容量变化很小——原来超过约 1G 总量就会被 cgroup 杀掉，而执行器自身也要占内存；换来的是**任务级干净失败**（`failureReason` 可归因）而不是内核杀 + 邻居陪葬。大内存任务请走裸机/桌面形态。
+- **被否的两个选项**：保 2048 需把 `mem_limit` 抬到 ≥2560m（每执行器 +1.5G ×2，demo 机器实打实吃紧）；只改代码默认值会把容器修复外溢成裸机退化。
+- **回退方式**：改 `docker-compose.yml` 两处 `TASK_MEMORY_LIMIT_MB` 的值即可（同时必须满足守卫的次序不变量：任务上限 < 容器上限）。落地提交 `db125558`；守卫自检 16 条。
 
 ## B. 跨语言/跨包语义不一致（两边都自洽，合起来不齐）
 
 ### B1. 两个发布 SDK 的重试语义不同（真实差异只剩「HttpClient 有无重试」）
+- **本轮处置（2026-11-19，R278）：不做，已结案。** 理由：两侧**已互认**（`R182`/`R183`，README 互相指认），且 `packages/autoflow-sdk/autoflow_sdk/http.py` 的 docstring **明写「刻意薄：无重试无熔断」**——给 python 加重试会把一个已定性的刻意设计改成与 python 生态习惯相反的形态，并改变存量任务的失败时机。文档层面该做的已经做完。
 - **真实差异**：node 的 `HttpClient` 默认对幂等方法重试（指数退避 + `Retry-After`）；python 侧的**普通出站 HTTP 客户端**（`packages/autoflow-sdk/autoflow_sdk/http.py:154-166`，类 docstring 自述「No automatic retry…无重试无熔断」）确实不重试。
 - **回调通道两侧都有有界重试，差异只在预算**：node 执行器 `apps/executor-node/src/callback.ts`——实时发送 5 次（`MAX_RETRIES = 5`，`:849`；base `CALLBACK_LIVE_BASE_DELAY_MS = 1_000`，`:191`）+ 落盘重发 150 轮、base 5s/cap 600s（`CALLBACK_REPLAY_BACKOFF_BASE_MS`，`:180-181`）；python 执行器 `apps/executor-python/routers/execute.py`——实时 3 次（`CALLBACK_RETRY_ATTEMPTS = 3`，`:841`；base 1s，`:842`）+ 落盘重发 150 轮、base 1s/cap 600s（`:2649-2659`）。SDK 层同样有界：`packages/autoflow-sdk/autoflow_sdk/callback.py:68` `CALLBACK_MAX_ATTEMPTS = 3` + 指数退避 + 抖动 + `Retry-After`（`:393-422`）；node `http-client.ts` 默认 `maxRetries=3`（合计 4 次尝试，`:195-199`），回调通道单次等待封顶 5s（`CALLBACK_MAX_WAIT_MS`，`:135`）。
 - **为什么不算缺陷**：重复投递由 admin 侧终态迁移的 `status IN (open gate)` 条件 UPDATE 兜住——重复终态回调命中 0 行（见 `callback.py` 顶部 NETOPT-10-1 注释，`:60-68`）。因此「多试一次/少试一次」只影响延迟与带宽，不改变最终状态。
@@ -54,23 +58,28 @@
 - **选项**：① 保持（各语言按各自习惯）；② python 加重试（= 改变既有任务失败时机）。
 
 ### B2. 配置错语义两包相反：`from_env()` 不抛 / `fromEnv()` 抛
+- **本轮处置（2026-11-19，R278）：不做（本轮），走 deprecation warn → 下一 major 抛。** 理由：统一是**破坏性变更**——存量 python 任务若真缺变量会从「能跑」变「跑不起来」，直接抛会让升级即挂。正确路径是分两批：先在 `context.py` 缺失时 `warnings.warn("… will raise in the next major")` 并保持 `unknown` 兜底，下一 major 再改成抛。**不选「Node 退化为不抛」**：那是把安全侧往危险侧对齐。
 - **现象**：python 侧 `execution_id` 默认 `unknown` 且继续跑，回调可能带着 `unknown` 发出去；node 侧直接抛。
 - **证据**：R177-A1 遗留 1。
 - **代价**：统一 = **破坏性变更**，需要 deprecation 周期。
 
 ### B3. 熔断：node 的 breaker 是**跨端点单实例共享**（唯一真实的差异）
+- **本轮处置（2026-11-19，R278）：不做，已结案。** 理由：**成本 > 收益**。两端形态（node 一客户端一熔断器 / python 一客户端实例一熔断器）在单客户端场景下**等价**，且 `http-client.ts` 自认与 python 的 `_CircuitBreaker` 同构；改成按端点多桶要引入端点 Map + 淘汰 + half-open 语义逐条复核，换来的只是「少一次误快速失败」——而误快速失败本身正是熔断器的设计目的（保护实例不被拖垮）。
 - **现象**：node `packages/autocodeflow-node-sdk/src/http-client.ts:497` 只有一个 `private readonly breaker: CircuitBreaker`，`send` 内统一取用（`:752-797`）——**同一实例服务所有端点**，回调连续失败会连带阻断无关的 GET（快速失败抛 `CircuitBreakerOpenError`）。
 - **python 侧不是「没有熔断」**：`packages/autocodeflow-http/autocodeflow_http/client.py:157` 有 `CircuitBreakerOpenError`，`:282` 有 `CircuitBreaker`（含 half-open 单探测上限，PK-09），形态是**按客户端实例**（`:364` `self._breaker = circuit_breaker or CircuitBreaker()`）；node 侧注释亦自认「与 python 的 `_CircuitBreaker` 同构」（`http-client.ts:63`）。
 - **证据**：R177-A1 遗留 5。
 
-### B4. 协议声明了 `adminApiUrls`，python 侧不实现且**不报错**（2026-10-27 审计新增）
-- **现象**：`packages/executor-protocol/protocol.json` 的 `ConfigReloadRequest` 含 `adminApiUrls`（node 应用并按新拓扑重建客户端）；python 只把它列进 `ignored_fields` 仍回 `success: true`（`apps/executor-python/routers/config.py` 的 `_KNOWN_CONFIG_FIELDS` 注释自述「只在 node 侧支持」）。协议文件本身**没有登记**这条差异。
+### B4. 协议声明了 `adminApiUrls`，python 侧不实现且**不报错**（2026-10-27 审计新增）— **已定（2026-11-19，R278）：选①，协议加注**
+- **落地形态**：`packages/executor-protocol/protocol.json` 的 `schemas.ConfigReloadRequest.properties.adminApiUrls` 加 `$comment`，逐字写明「executor-python 未实现：收进 `ignored_fields` 且仍回 `success`（node-only 语义）／第三方不得以 `success` 判生效／admin-api 从不发送该键」。生成物按 `npm run gen:protocol` 重生成，`check:protocol-sync`（gen + `git diff --exit-code`）**exit 0** 幂等。落地提交占位 `R278-DEC-01`（待主会话统一提交后回填 SHA）。
+- **不选②（python 补实现）**：admin-api 今天不发这个键，补实现是在给一个**无消费者的能力**付跨语言对齐成本；而①直接消灭「协议说支持、实现不说、回执说成功」这个三方矛盾。
+- **现象**：`packages/executor-protocol/protocol.json` 的 `ConfigReloadRequest` 含 `adminApiUrls`（node 应用并按新拓扑重建客户端）；python 只把它列进 `ignored_fields` 仍回 `success: true`（`apps/executor-python/routers/config.py` 的 `_KNOWN_CONFIG_FIELDS` 注释自述「只在 node 侧支持」）。协议文件本身**没有登记**这条差异。（本轮已登记，见上「落地形态」。）
 - **影响面（如实）**：admin-api 目前**不发**这个键（`grep -rn adminApiUrls apps/admin-api/src` → 0 命中），所以今天踩不到；踩到的是「按协议实现第三方调用方」——它会拿到成功回执却没换拓扑。
-- **选项**：① 协议里给该键加 `$comment` 标注「python 未实现，收进 ignored_fields」；② python 补实现（多 base URL 轮换，工作量在 HTTP 客户端层）。
 - **代价**：① 一段注释；② 一个跨语言的连接拓扑特性，需与 node 的轮换语义逐条对齐。
 
-### B5. python 报 `protocolVersion=8` 却永远不发 `deployedApps`/`installedPackages`/`registrationConflict`（2026-10-27 审计新增）
-- **现象**：v7/v8 的字段 `executorImplementedBy` 列了 executor-python，而 python 心跳**恒不发**这三个键（`apps/executor-python/scheduler.py:462-473`）。v8 这个版本号的目的恰是「让中台能区分『应报未报』与『无冲突』」，python 报 8 却永不发该键 ⇒ 该判据在 python 上失效。
+### B5. python 报 `protocolVersion=9` 却永远不发 `deployedApps`/`installedPackages`/`registrationConflict`（2026-10-27 审计新增）— **已定（2026-11-19，R278）：选①，兼容矩阵加注**
+- **落地形态**：`packages/executor-protocol/protocol.json` 的 `versioning.compatibilityMatrix` 在 **v7 与 v8 两条**的 `$comment` 末尾追加 B5 段，逐字写明「executor-python 属**部分实现**：两键/该键恒缺席、零发送点；缺席即协议合法，但消费方**不得**以『报了 v7/v8+』推定这些键必到（面板须显示『未上报』而非『无应用/无冲突』）」。`executorImplementedBy` **不改**（它声明的是「讲该版本语言」，不要求上报全部可选键——与 v2 的 python 只实现两个路由仍列实现方同口径）。生成物重生成 + `check:protocol-sync` exit 0；`check:protocol-breaking` **exit 0**（`$comment` 变更被判 `compatible`，不红）；`check:protocol-three-way` **exit 0**。落地提交占位 `R278-DEC-01`。
+- **不选②（python 补三键）**：前提不存在——`protocol.json` 的 `executorNodeOnly.endpoints` 明确把 `POST /api/deploy` 与 `POST /api/update-package` 登记为 node 独有，python 从不创建这些事实，补实现等于先在 python 造整个部署面。
+- **现象**：v7/v8 的字段 `executorImplementedBy` 列了 executor-python，而 python 心跳**恒不发**这三个键（`apps/executor-python/scheduler.py:462-473`）。v8 这个版本号的目的恰是「让中台能区分『应报未报』与『无冲突』」，python 报 9 却永不发该键 ⇒ 该判据在 python 上失效。
 - **现状豁免条件**：v8 注释允许「缺席即合法」，所以不是错误；但它让**版本号失去判据意义**。
 - **选项**：① 在协议里显式声明 python 为「部分实现」并列出缺席键；② python 补实现（桌面端能力，python 执行器是否需要待产品判断）。
 - **代价**：① 文档/协议一段；② 需要 python 侧真的能枚举已部署应用。
@@ -86,7 +95,9 @@
 | Slack / Feishu **path 型凭据**日志不掩（掩 path 会破坏「掩码回传保存」） | 有意保留 | R150-A1 |
 | node `isNetworkLevelError` 白名单可能漏 `EPIPE` 类 | **未实测**（需真 socket 半关） | R177-A1 遗留 4 |
 
-### C1. 审批单 `preview` 的两条残余（S1-C3 落地时由实施方自析，2026-11-01）
+### C1. 审批单 `preview` 的两条残余（S1-C3 落地时由实施方自析，2026-11-01）— **残余①已由值级脱敏防线收口（2026-11-21，R289，`1fb7d6f9`）**
+
+**本轮收口（2026-11-21，R289，`1fb7d6f9`）**：重开条件①（「值级熵检测与格式特征的低成本单点方案」）已落地 `apps/admin-api/src/common/utils/sanitize-secrets.util.ts`（并同步 `scripts/check-sanitize-parity.mjs` 25 夹具 / 15 自检）：封堵无害键名（`note`/`url`/`body` ≤200 字及 `executableSourceFields` 480 字代码头）下的 ① PEM 私钥（多行 / JSON 转义 `\n` / 未闭合截断保尾，不误伤 `BEGIN CERTIFICATE`）、② 裸 JWT（`ey[A-Za-z0-9_-]{4,}\.ey...`）、③ 缺口供应商前缀（`github_pat_`/`AKIA`/`ASIA`/`xox*`/`glpat-`/Stripe/`AIza`/`npm_`/`hf_`）、④ 空用户名 URL 凭据（`redis://:pass@host`）、⑤ `Authorization: Basic` 先行序、⑥ 词元级 Shannon 高熵通道 A/B（`preserveDigests` 短路居首，扫 168 份 `.spec.ts` 零误伤，二次幂等）。残余②（≥180 天留存期长于 `tool_calls`）在 ADMIN 读面 + 值级脱敏双重保护下维持已接受状态。
 
 **背景**：S1-C3 给 `agent_approvals` 加了 `preview`（脱敏后的调用参数预览，≤2KB，带 `truncated`/`omittedBytes`），
 目的是让审批人不再「盲批」。但 preview 是一次**新的持久化留存**，实施方自析出两条残余：
@@ -108,17 +119,17 @@
 
 ## D. 小决策（一句话可拍）
 
-- **D1**：`acf app create --json <body>` 这个 **DEPRECATED 旗标**要不要删？它污染了 `isJsonInvocation` 的探针判断（R196）。删 = 兼容性变更，收益是「按名字做的判断不再误命中」。
-- **D2**：`acf task kill` / `rollback` 要不要补 `--json`？它们现在只能人读，而 `task list` 可以机器读（R197）。`approval approve/reject` 不用补（输出就是一句确认）。
-- **D6**：任务列表「按名称排序」与游标分页**互斥**，要哪一个？（2026-10-27 审计新增，来自一个真实的前端假交互）
+- **D1** · **已定（2026-11-19，R278）：不删旗标，改探针** —— `acf app create --json <body>` 这个 **DEPRECATED 旗标**保留（删它属兼容性变更，且它已挂弃用，下个 major 与「`--json` 收敛为布尔」一并收）。落地：`packages/acf-cli/src/ui.ts` 的 `VALUE_TAKING_OPTIONS` 加入 `'--json'`，并配一条反向判据 `looksLikeJsonPayload`——后继 token 是 JSON 载荷（`{…}`/`[…]`）时按取值跳过，否则仍当布尔开关（否则 `acf task list --json` 会被反向弄坏）。用例两条（`packages/acf-cli/src/__tests__/error-code.test.ts`）：`isJsonInvocation：app create --json <body> 不被判成 JSON 输出模式（D1）` + `commander 解析：--json <body> 进 options.json（字符串），且同一次调用 jsonOutput 为 false（D1）`（后者同时钉「值原样落进 `options.json`」与「同一次调用探针判非 JSON 输出模式」两件事；探针函数在本仓的真名是 `isJsonInvocation`）。反证已做：把 `VALUE_TAKING_OPTIONS` 里的 `'--json'` 删掉 ⇒ **两条同时转红**（2 failed / 48 passed），加回即绿。落地提交占位 `R278-DEC-01`（待主会话统一提交后回填 SHA）。
+- **D2** · **本轮不做** —— `acf task kill` / `rollback` 补 `--json`：理由：`kill`/`rollback` 的**退出码已能表达成败**（0/1/3/4 分类，见 `packages/acf-cli/src/ui.ts` 的 `EXIT_CODES`），补机器读出口的边际收益低于多维护一条 JSON 契约面；且本轮 CLI 写域只做 D1 的探针修复。`approval approve/reject` 不用补（输出就是一句确认）。
+- **D6** · **已定（2026-11-19，R278）：维持现状（选③，不提供排序）** —— 任务列表「按名称排序」与游标分页**互斥**（2026-10-27 审计新增，来自一个真实的前端假交互）。理由：硬接会引入**翻页重复/跳行**（OFFSET 固有）或重演已被真 PG 证伪的「毫秒区间」有序游标实现；而「按名称找任务」的主诉求已由搜索框解决。重开条件：出现「用户抱怨无法排序」的真实反馈。
   - **现状**：列头的 `sorter` 是**纯客户端**排序（只排当前页），而表格是服务端 + 游标（keyset）分页 ⇒ 用户以为按名称全局排序、翻页即失效。已于 2026-10-27 删除该 sorter 并留注释（`apps/admin-web/src/pages/TaskListPage.tsx`）。
   - **为什么不能直接接服务端排序**：后端**支持** `sortBy`/`sortOrder`（`list-tasks-query.dto.ts` + `TASK_SORT_WHITELIST`），但 `task.service` 的 `assertCursorCompatibleWithQuery` 对 **cursor+sortBy 直接 400**。
   - **选项**：① 排序时退回 offset 分页（要接受翻页期间的重复/跳行）；② 后端支持 cursor+sortBy（有序游标，工作量在 SQL 与游标编码）；③ 维持现状（不提供排序）。
   - **代价**：①② 都是后端/分页契约变更；③ 零成本，但「按名称找任务」只能靠搜索框。
-- **D3**：`process.exit(0)` 要不要统一成 `process.exitCode`？—— **未能复现截断**（R202）：8 MB 单次 `console.log` 后立即 `process.exit(0)`，无论重定向到文件还是走真实管道，字节数都与期望完全一致。**不建议基于这个理由改动**；只剩「多写交错 + 中途 exit」这一未测形态。
+- **D3** · **本轮不做（无夹具不改）** —— `process.exit(0)` → `process.exitCode`：理由：R202 已实测**不截断**（8 MB 单次 `console.log` 后立即 `exit(0)`，重定向与真实管道字节数完全一致），错误出口本来就走 `writeStderrSyncLine` 的同步写；唯一未测形态是「多写交错 + 中途 exit」，**在没有复现夹具之前改动属无据改动**，且统一成 `exitCode` 有「该立刻退出却挂住」的风险。要动先造夹具。
 - **D8**：Agent 的**审批闭环**要不要做？—— **已闭环，整条移入「已结案」**（2026-10-31 事实核查：原「现状」与代码相反）。见本文末「已结案」第一条。
-- **D4**：73 个未分类错误码要不要加第 7 类，或改成域级提示（R108）。〔2026-10-31 事实核查：原写「66 个」，实测 `packages/acf-cli/src/__tests__/error-code-coverage.test.ts:35` 的 `UNCLASSIFIED_BASELINE` 为 **73** 条；该集合是只减不增棘轮，数字会随清偿变化，引用时应跑 `node -e` 数它而不是抄本行〕
-- **D7**：执行结果回调面的限流桶要不要改**双层**（per-executor 60/min + per-IP 硬顶）？（2026-10-27 审计轮 #7 安全轴新增）
+- **D4** · **已定（2026-11-19，R278）：不加第 7 类（棘轮只减不增）** —— `UNCLASSIFIED_BASELINE` 的设计意图是「这些码不归类比归错类更诚实」（该文件注释逐字），加第 7 类等于把「诚实的不归」降级成一个笼统的域，而真正需要的是**逐码**改提示；域级提示会让全部未分类码退化成同一句，比现在更差。**同时修正文档数字：73 → 实测 76。**〔2026-10-31 事实核查：原写「66 个」，后实测 `packages/acf-cli/src/__tests__/error-code-coverage.test.ts` 的 `UNCLASSIFIED_BASELINE` 为 73 条；**2026-11-19 R278 复测为 76 条**——该集合是只减不增棘轮，数字会随清偿变化，引用时跑 `node -e` 数它而不是抄本行。核对命令：`node -e 'const s=require("fs").readFileSync("packages/acf-cli/src/__tests__/error-code-coverage.test.ts","utf8");const a=s.indexOf("const UNCLASSIFIED_BASELINE = new Set<string>([");const b=s.indexOf("]);",a);console.log([...s.slice(a,b).matchAll(/^\s*.([A-Z][A-Z0-9_]*).,?\s*$/gm)].length)'` → 2026-11-19 实测 **76**〕
+- **D7** · **本轮不做（不改双层分桶）** —— 执行结果回调面的限流桶要不要改**双层**（per-executor 60/min + per-IP 硬顶）？理由：per-IP **名额表**已经把「换头即换桶」这个真放大器封住了（`executor-aware-throttler.guard.ts` 的 `claimMachineAddressSlot`，提交 `b683ae3a`），剩下的只是「12000/min 这个数字是否合适」——那是**测量问题**（真机压测，需真实 execution token/UUID），用改分桶语义 + 全机器面回归去回答一个测量问题，成本方向错了。压测未跑，如实标注。（2026-10-27 审计轮 #7 安全轴新增）
   - **现状**：`ExecutorAwareThrottlerGuard.getTracker` 对执行器机器面路由返回 `executor:{x-executor-address}`（`apps/admin-api/src/common/guards/executor-aware-throttler.guard.ts:136-139`）。该头**客户端可设**，而回调路径是**全仓唯一的 55MB 预认证 body 解析**（`main.ts:208-216`，token 在 handler 才校验）⇒ 每次换一个头值就得到一个全新的 60/min 桶，聚合速率无上限（未认证 DoS 放大面）。`@nestjs/throttler` 6 的 `getTracker` 单返回值语义下无法同时计两个桶。
   - **〔2026-10-31 事实核查：上面这段「现状」已过期，留档是因为它记录了问题是什么〕** 桶键已不再由客户端头无限扩展：`executor-aware-throttler.guard.ts:240-252` 引入 per-IP **名额表**——`claimMachineAddressSlot(ipKey, address)` 命中才用 `executor:{address}` 桶，头缺失/形态非法/**该 IP 名额已满**一律回落到 IP 键（有界）。提交 `b683ae3a`（2026-10-30，`fix(guards): 机器面限流桶键不再由客户端头无限扩展 + 唤醒表回收补回归`）。因此本条的**残留**只有「12000/min 是推算值，需一次真机压测确认」。
   - **为什么没直接改**：需要先定 per-IP 硬顶的数值口径——定低了会误杀「大量执行器共享一个 NAT 出口」的既有场景（B-2 当年要修的正是它），定高了缓解有限。属**产品/容量拍板**，不是纯技术选择。
@@ -138,7 +149,7 @@
   - **A3 的原判断**：「CLI 没有 `executor online` 逆操作，运维只能等心跳」被列为真实缺口。
   - **实测更正**：心跳与注册都会**无条件**把该行置回 `ONLINE` 并清 `offlineReason`（`apps/admin-api/src/modules/executor/executor.service.ts:2694-2701`，注释「遗留 P1-24：恢复在线即清除离线原因」）⇒ `POST /executors/:id/set-offline` 是**自愈的**，最迟一个心跳周期（默认 30s）后恢复。
   - **结论**：**不需要新增命令**。该命令唯一收益是省掉 ≤30s 等待，代价是一条新写端点 + 权限面 + 文档。若将来确有「必须立即恢复」的运维场景，先问「为什么不能等一个心跳」。
-- **D5**：桌面客户端「配置读取失败」时 UI 语言的兜底默认值应是 zh 还是 en？（UIUX 审计 F-36）
+- **D5** · **已定（2026-11-19，R278）：维持 en（选①）** —— 桌面客户端「配置读取失败」时 UI 语言的兜底默认值保持 `en`。理由：这是**默认语言的产品口径**问题，不是「中文用户更该被照顾」；`ui-language.ts` 与 `tray-texts.selftest.ts` 两处注释都写明「产品要求默认英文」，且该口径是产品**后来反向拍板**的结果——再反转需产品重新发话。正常路径 `auto` 已跟随系统语言，改 zh 的真实收益只覆盖「config.json 损坏的那一瞬间」，还会让 en/fr 用户在同一瞬间看到中文。**不再重开。**（UIUX 审计 F-36）
   - **现状**：`UI_LANGUAGE_DEFAULT = 'en'`（`apps/executor-desktop/src/main/ui-language.ts:50`），配置读取失败时整窗按英文渲染（renderer `main.tsx` 启动兜底）；正常路径的默认是 `uiLanguage: 'auto'`（跟随系统语言，zh* → 中文），本常量**只在** config.json 损坏 / IPC 异常 / 旧 preload 缺 getConfig 时生效。
   - **历史纠葛**：语言判定层首版方向是「非 en 即中文」（当时注释与产品早期口径都写「默认中文」），后按产品要求「默认英文、但优先跟随系统语言」反转，代码随之改为 en 兜底，但 `main.tsx` 的注释没跟上（F-36 已把注释改到与实现一致，**行为未动**）。
   - **选项**：① 维持 en（与现实现、渲染层/主进程两侧既有行为一致）；② 改 zh（中文系统上配置损坏瞬间界面不突变，代价是英文/其他语言系统用户在故障瞬间看到中文）。
@@ -153,3 +164,22 @@
 - **6 字段 cron 的「静默降级」**：已证明**不可达** —— 四条写入口全部收口在 `normalizeTaskDto`，非 5 字段在落库前就被拒（R131）。
 - **四个库是否导出异常类型**：已修，且 `R134-A1` 是错误面修复，不是设计问题。
 - **DST 语义**：`R126-A1` 的实测声明**未被独立复核**（我试了三次未能复现），但仍记在账上，不下结论。
+
+## 附. 本轮收口（R278 · 2026-11-19）
+
+产品已拍板 4 条「零成本」项并**已落地**；其余 11 条**本轮明确不做**，各带一句处置理由（理由就地写在条目首行，便于下次直接读结论）。
+
+| 编号 | 处置 | 落地形态 |
+|---|---|---|
+| **D1** | 已定 | `VALUE_TAKING_OPTIONS` 加 `'--json'` + `looksLikeJsonPayload` 反向判据（`packages/acf-cli/src/ui.ts`），用例在 `packages/acf-cli/src/__tests__/error-code.test.ts` |
+| **B4** | 已定 | `protocol.json` 的 `ConfigReloadRequest.adminApiUrls` 加 `$comment`（python 未实现 / 收进 `ignored_fields`），生成物重生成 |
+| **B5** | 已定 | `protocol.json` 的 `compatibilityMatrix` v7/v8 `$comment` 追加「executor-python 部分实现」 |
+| **A4** | 已定 | 容器路径维持 768/512、裸机 2048（本条原地改「已定」） |
+| **H1** | 已兑现（销账） | 权限默认已是 `owner`；仅文档滞后，已改 `docs/atlas/01-apps/admin-api/modules/task.md` 的过期转述 |
+| D4 | 已定（只修数字） | 不加第 7 类；文档里 73 → **实测 76** |
+| D5 / D6 / B1 / B3 | 已结案 | 维持现状，理由就地写在条目首行 |
+| A2 / A3 / B2 / C1 / D2 / D3 / D7 | 本轮不做 | 理由就地写在条目首行 |
+
+**验收口径（本轮真跑，非静态推断）**：`node scripts/docs/check-docs.mjs` **exit 0**（7/7 项）· `node scripts/docs/check-doc-style.mjs` **exit 0** · `node scripts/check-atlas-counts.mjs` **exit 0** · `node scripts/check-sandbox-limit-order.mjs` **exit 0**（`COVERAGE_CASES: 16`，A4 的证据）· `npm run check:protocol-sync` **exit 0**（生成物幂等）· `node scripts/check-protocol-breaking.mjs` **exit 0** · `node scripts/check-protocol-three-way.mjs` **exit 0** · `cd packages/acf-cli && npx tsc --noEmit` **exit 0** · `npx vitest run src/__tests__/error-code.test.ts` **50/50 绿**（含 D1 两条新用例，反证已做：移除 `'--json'` ⇒ 2 failed / 48 passed，加回即绿）。
+
+

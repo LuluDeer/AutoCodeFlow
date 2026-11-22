@@ -14,6 +14,7 @@ import { Task } from "../task/entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
+  FAILED_EXECUTION_STATUSES,
 } from "../task/entities/task-execution.entity";
 import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
 import { ExecutionReport } from "./entities/execution-report.entity";
@@ -136,7 +137,15 @@ export class MetricsService {
 
     const total = Object.values(statMap).reduce((a, b) => a + b, 0);
     const success = statMap[ExecutionStatus.SUCCESS] ?? 0;
-    const failed = statMap[ExecutionStatus.FAILED] ?? 0;
+    // R280（失败口径统一）：failed = FAILED 桶 + TIMEOUT 桶。
+    // 不能只数 FAILED——同一个 timeout 语义分叉落两个桶：回调上报落 TIMEOUT、
+    // stale sweep 定案落 FAILED+failureReason=TIMEOUT（见
+    // FAILED_EXECUTION_STATUSES 的注释）。两桶相加才是告警口径
+    // （alerts.yml status=~"failed|timeout"）下的完整失败数。
+    // `timeout` 键由上面的 groupBy("e.status") 天然产出，无需额外查询。
+    const failed =
+      (statMap[ExecutionStatus.FAILED] ?? 0) +
+      (statMap[ExecutionStatus.TIMEOUT] ?? 0);
     const running = statMap[ExecutionStatus.RUNNING] ?? 0;
 
     const avgQb = this.execRepo
@@ -241,7 +250,9 @@ export class MetricsService {
     // 无项目上下文：保持原 repo.find 路径（查询形状与既有 spec 逐字一致）。
     if (!projectId) {
       return this.execRepo.find({
-        where: { status: ExecutionStatus.FAILED },
+        // R280：失败 = FAILED ∪ TIMEOUT（唯一事实源见实体常量）。此前只查
+        // FAILED，超时风暴时趋势曲线在涨而「最近失败」说没有，同屏自相矛盾。
+        where: { status: In([...FAILED_EXECUTION_STATUSES]) },
         order: { createdAt: "DESC" },
         take: 10,
         select: {
@@ -271,7 +282,10 @@ export class MetricsService {
         "e.duration",
       ])
       .leftJoin("tasks", "t", "t.id = e.taskId")
-      .where("e.status = :status", { status: ExecutionStatus.FAILED });
+      // R280：同上——两条分支必须同口径，否则带 projectId 的页面继续漏超时。
+      .where("e.status IN (:...failedStatuses)", {
+        failedStatuses: [...FAILED_EXECUTION_STATUSES],
+      });
     this.applyProjectFilter(qb, projectId);
     return qb.orderBy("e.createdAt", "DESC").take(10).getMany();
   }

@@ -312,6 +312,113 @@ describe('R192-A1 轴2：kill / webhook / apikey revoke 的确认门', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// R289-A3：acf deploy stop 破坏性命令确认门（OPEN-DECISIONS.md A3）
+// ---------------------------------------------------------------------------
+describe('R289-A3：deploy stop 破坏性命令确认门', () => {
+  it('非交互 + 无 --yes → 码 2，ora 未启动、POST 不发出，stderr 含 --yes 与 --help', async () => {
+    const restore = forceStdin(false);
+    const err = captureStderr();
+    try {
+      await expect(run(deployCommand(), 'deploy stop d1')).rejects.toThrow(/process\.exit\(2\)/);
+      expect(oraInstances).toHaveLength(0);
+      expect(mockedPost).not.toHaveBeenCalled();
+      expect(err.join('\n')).toContain('--yes');
+      expect(err.join('\n')).toContain("'--help'");
+    } finally {
+      restore();
+    }
+  });
+
+  it('非交互 + --yes → 直通 POST /app-deployments/:id/stop', async () => {
+    const restore = forceStdin(false);
+    captureStdout();
+    mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'stopped', statusMessage: 'Stopped' });
+    try {
+      await run(deployCommand(), 'deploy stop d1 --yes');
+      expect(mockedPost).toHaveBeenCalledWith('/app-deployments/d1/stop');
+    } finally {
+      restore();
+    }
+  });
+
+  it('非交互 + -y → 直通 POST /app-deployments/:id/stop', async () => {
+    const restore = forceStdin(false);
+    captureStdout();
+    mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'stopped', statusMessage: 'Stopped' });
+    try {
+      await run(deployCommand(), 'deploy stop d1 -y');
+      expect(mockedPost).toHaveBeenCalledWith('/app-deployments/d1/stop');
+    } finally {
+      restore();
+    }
+  });
+
+  it('TTY 回答 n → Aborted.、码 0、ora 未启动、POST 不发出', async () => {
+    const restore = forceStdin(true);
+    vi.doMock('readline/promises', () => ({
+      createInterface: () => ({
+        on: () => undefined,
+        question: async () => 'n',
+        close: () => undefined,
+      }),
+    }));
+    const logs = captureStdout();
+    try {
+      await run(deployCommand(), 'deploy stop d1');
+      expect(oraInstances).toHaveLength(0);
+      expect(mockedPost).not.toHaveBeenCalled();
+      expect(logs.join('\n')).toContain('Aborted.');
+      expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
+    } finally {
+      vi.doUnmock('readline/promises');
+      restore();
+    }
+  });
+
+  it('TTY 空回车（默认取消）→ Aborted.、码 0、ora 未启动、POST 不发出', async () => {
+    const restore = forceStdin(true);
+    vi.doMock('readline/promises', () => ({
+      createInterface: () => ({
+        on: () => undefined,
+        question: async () => '',
+        close: () => undefined,
+      }),
+    }));
+    const logs = captureStdout();
+    try {
+      await run(deployCommand(), 'deploy stop d1');
+      expect(oraInstances).toHaveLength(0);
+      expect(mockedPost).not.toHaveBeenCalled();
+      expect(logs.join('\n')).toContain('Aborted.');
+      expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
+    } finally {
+      vi.doUnmock('readline/promises');
+      restore();
+    }
+  });
+
+  it('TTY 回答 y → 正常发 POST /app-deployments/:id/stop', async () => {
+    const restore = forceStdin(true);
+    vi.doMock('readline/promises', () => ({
+      createInterface: () => ({
+        on: () => undefined,
+        question: async () => 'y',
+        close: () => undefined,
+      }),
+    }));
+    captureStdout();
+    mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'stopped', statusMessage: 'Stopped' });
+    try {
+      await run(deployCommand(), 'deploy stop d1');
+      expect(mockedPost).toHaveBeenCalledWith('/app-deployments/d1/stop');
+    } finally {
+      vi.doUnmock('readline/promises');
+      restore();
+    }
+  });
+});
+
 describe('R192-A1 轴2：删除不存在的东西必须是失败（幂等语义）', () => {
   it('app delete --yes 打 404 → 退出码 1（不静默成功）', async () => {
     const restore = forceStdin(false);

@@ -24,6 +24,11 @@ import { AppError } from "../../common/errors/app-error";
 // 两个 ILIKE 必须走它，否则 `_`/`%` 被当通配符、搜索结果静默变宽）。
 import { escapeLikePattern } from "../audit/audit.service";
 
+/** `ExecutionStatus` 的运行时取值集合（模块加载时构造一次，避免每请求重建）。 */
+const EXECUTION_STATUS_SET: ReadonlySet<string> = new Set(
+  Object.values(ExecutionStatus),
+);
+
 /**
  * 导出行的硬上限。
  *
@@ -36,6 +41,91 @@ import { escapeLikePattern } from "../audit/audit.service";
  * 同名常量，保持既有 import 面不变。）
  */
 export const EXECUTION_EXPORT_ROW_CAP = 50_000;
+
+/**
+ * R281：「失败」深链的 `status` 多值解析（**纯函数**，导出以便单测）。
+ *
+ * ## 为什么需要它
+ *
+ * 「失败」的口径在 R280 已统一为 `FAILED_EXECUTION_STATUSES = [failed, timeout]`
+ * （metrics 的成功率卡与最近失败列表都用它），而前端两个深链入口
+ * （Dashboard 失败 Top、通知铃铛）传给本读面的却是**单值** `failed`。
+ * 单值等值过滤 ⇒ 超时风暴时（10 条 timeout、0 条 failed）页面显示 10 条失败、
+ * 点进去 0 条——「刚看到的东西点开就没有了」。
+ *
+ * ## 契约（与 S2 前端切片共用，不得各自发挥）
+ *
+ * · 逗号分隔；**剥空白**（`failed, timeout` 与 `failed,timeout` 等价）；
+ * · **去重保序**（`failed,failed` ⇒ `['failed']`，顺序按首次出现）；
+ * · **白名单**：只接受 `ExecutionStatus` 枚举内的值，其余**逐条丢弃**
+ *   （`foo` / 注入片段 / 空片段都被忽略，**不 400**）——沿用本仓
+ *   「非法深链安全回落」契约；
+ * · `undefined` / `''` / 全部非法 ⇒ `[]`，语义等于**未传**（返回全量）。
+ *
+ * 为什么非法值**丢弃**而不是报错：这个参数是汇总卡片生成的深链，用户点的是
+ * 产品自己给出的链接；把拼错的链接变成一屏 400 只会让他认定「产品坏了」。
+ * 丢弃后最坏结果是「筛选没生效、看到全量」——可见且可自行再筛。
+ *
+ * 为什么**不**在这里把 `failed` 展开成 `failed,timeout`：执行页下拉里
+ * `failed` 与 `timeout` 是两个独立选项，**主动筛选**与**从汇总点进来**是两个
+ * 意图，共用同一个词会让「只看 timeout」这个意图消失。口径由调用方（前端
+ * 深链）显式写成多值。
+ */
+export function parseExecutionStatusFilter(raw?: string): ExecutionStatus[] {
+  if (!raw) return [];
+  const out: ExecutionStatus[] = [];
+  const seen = new Set<string>();
+  for (const part of raw.split(",")) {
+    const value = part.trim();
+    // 空片段（`failed,` / `,`）与枚举外的值一样，逐条丢弃。
+    if (!value || seen.has(value)) continue;
+    if (!EXECUTION_STATUS_SET.has(value)) continue;
+    seen.add(value);
+    out.push(value as ExecutionStatus);
+  }
+  return out;
+}
+
+/**
+ * R281：把已解析的 status 多值落到 `where` **对象**形态（`find`/`count` 用）。
+ *
+ * 单值仍是裸标量（`{ status: 'failed' }`）——逐字节等价于改动前；
+ * 多值用 TypeORM 的 `In([...])`。空数组（= 未传/全非法）⇒ 空对象，
+ * `where` 里连 `status` 键都不出现，与改动前 `if (p.status)` 的缺省一致。
+ *
+ * 为什么单独一个函数：`getExecutions` 的 OFFSET 分支与
+ * `getExecutionsByKeyset` 的 `count` 都用对象形态，两处必须同口径——
+ * keyset 的 `total` 与 `items` 若口径不一，会出现"本页有行、total 为 0"。
+ */
+function executionStatusWhere(raw?: string): {
+  status?: ExecutionStatus | ReturnType<typeof In>;
+} {
+  const statuses = parseExecutionStatusFilter(raw);
+  if (statuses.length === 0) return {};
+  if (statuses.length === 1) return { status: statuses[0] };
+  return { status: In(statuses) };
+}
+
+/**
+ * R281：把已解析的 status 多值落到 **QueryBuilder** 形态（`andWhere`）。
+ *
+ * **单值必须仍生成 `e.status = :status`**（不是 `IN` 单元素）——这是「执行页
+ * 下拉里 failed 与 timeout 是两个独立选项」的语义保证，也是既有 spec 的形状
+ * 钉子（`all-executions-keyset-pagination.spec.ts` / `executions-export.spec.ts`
+ * 都按 `e.status = :status` 逐字断言）。多值才生成 `IN (:...statuses)`。
+ *
+ * 空数组 ⇒ **一个谓词都不加**（等同未传，返回全量），不 400。
+ */
+function applyExecutionStatusToQueryBuilder(
+  qb: SelectQueryBuilder<TaskExecution>,
+  raw?: string,
+): void {
+  const statuses = parseExecutionStatusFilter(raw);
+  if (statuses.length === 1)
+    qb.andWhere("e.status = :status", { status: statuses[0] });
+  else if (statuses.length > 1)
+    qb.andWhere("e.status IN (:...statuses)", { statuses });
+}
 
 /**
  * 导出时的单次 DB 取数页大小。
@@ -145,8 +235,10 @@ export class ExecutionRead {
       return this.getExecutionsByKeyset(taskId, p, p.cursor);
     }
 
-    const where: Record<string, unknown> = { taskId };
-    if (p.status) where["status"] = p.status;
+    const where: Record<string, unknown> = {
+      taskId,
+      ...executionStatusWhere(p.status),
+    };
 
     const [list, total] = await this.deps.execRepo.findAndCount({
       where,
@@ -283,8 +375,10 @@ export class ExecutionRead {
     // 是合法游标，否则 400。
     const cursor = rawCursor === "" ? null : decodeExecutionCursor(rawCursor);
 
-    const where: Record<string, unknown> = { taskId };
-    if (p.status) where["status"] = p.status;
+    const where: Record<string, unknown> = {
+      taskId,
+      ...executionStatusWhere(p.status),
+    };
 
     const qb = this.deps.execRepo
       .createQueryBuilder("e")
@@ -332,7 +426,7 @@ export class ExecutionRead {
     // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
     qb.take(p.pageSize + 1);
 
-    if (p.status) qb.andWhere("e.status = :status", { status: p.status });
+    applyExecutionStatusToQueryBuilder(qb, p.status);
 
     const [rows, total] = await Promise.all([
       qb.getMany(),
@@ -548,7 +642,10 @@ export class ExecutionRead {
       triggerType?: string;
     },
   ): void {
-    if (p.status) qb.andWhere("e.status = :status", { status: p.status });
+    // R281：status 接受逗号分隔多值（见 applyExecutionStatusToQueryBuilder）。
+    // 本处是 `getAllExecutions`/`getAllExecutionsByKeyset`/`streamExecutionsCsv`
+    // **三条路径共用**的唯一装配，改这里即三入口同时生效。
+    applyExecutionStatusToQueryBuilder(qb, p.status);
     if (p.taskId) qb.andWhere("e.taskId = :taskId", { taskId: p.taskId });
     // P2-2：triggerType 是执行域列（task_executions.triggerType），直接挂 e。
     if (p.triggerType)

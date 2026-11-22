@@ -20,21 +20,28 @@ import ExecutorDetailPage from '../pages/ExecutorDetailPage';
 import { executorsApi } from '../api/executors';
 import { useAuthStore } from '../store/auth';
 
-vi.mock('../api/executors', () => ({
-  executorsApi: {
-    get: vi.fn(),
-    getMetrics: vi.fn(),
-    getExecutions: vi.fn(),
-    rotateToken: vi.fn(),
-    remove: vi.fn(),
-    // DEEP-AUDIT B·1.1：详情页删除入口打开时会拉取影响面预览。本 spec 契约
-    // 钉住的是**回退文案**（impactValue：「执行器记录删除，需重新注册…」），
-    // 故缺省让该请求失败走 catch → removeImpact=null → 回退渲染（见
-    // ExecutorDetailPage 删除 Modal 的 removeImpact 三分支）；成功加载影响面
-    // 的渲染（impactDetail/impactBoundTitle）由后续 spec 补钉。
-    removalImpact: vi.fn(),
-  },
-}));
+// R279：mock 必须保留契约层的**真实纯函数**（resolveEffectiveOfflineAfterMs /
+// describeOfflineWindow）。整模块替换会把它抹成 undefined，页面直接崩在「No export」，
+// 那是 mock 失真而不是实现坏了；这里只替 executorsApi，纯函数走真实现。
+vi.mock('../api/executors', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/executors')>();
+  return {
+    ...actual,
+    executorsApi: {
+      get: vi.fn(),
+      getMetrics: vi.fn(),
+      getExecutions: vi.fn(),
+      rotateToken: vi.fn(),
+      remove: vi.fn(),
+      // DEEP-AUDIT B·1.1：详情页删除入口打开时会拉取影响面预览。本 spec 契约
+      // 钉住的是**回退文案**（impactValue：「执行器记录删除，需重新注册…」），
+      // 故缺省让该请求失败走 catch → removeImpact=null → 回退渲染（见
+      // ExecutorDetailPage 删除 Modal 的 removeImpact 三分支）；成功加载影响面
+      // 的渲染（impactDetail/impactBoundTitle）由后续 spec 补钉。
+      removalImpact: vi.fn(),
+    },
+  };
+});
 const mockedApi = vi.mocked(executorsApi, true);
 
 // jsdom 缺失 antd 依赖的浏览器 API（既有先例 shim）

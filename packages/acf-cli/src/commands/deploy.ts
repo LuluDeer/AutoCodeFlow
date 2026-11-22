@@ -131,7 +131,18 @@ export function deployCommand(): Command {
   // acf deploy stop <deploymentId>
   cmd.command('stop <deploymentId>')
     .description('Stop a running deployment')
-    .action(async (deploymentId) => {
+    .option('-y, --yes', 'Skip confirmation prompt', false)
+    .action(async (deploymentId, opts: { yes?: boolean }) => {
+      // R289-A3：停机会立即中断执行器上正在跑的部署进程，与同文件 deploy remove 及
+      // executor rotate / task kill 统一走确认门（非 TTY 缺 --yes → 码 2 且请求不发出）。
+      if (
+        !(await confirmDestructive(
+          `Stop running deployment ${deploymentId}? The running process on the executor will be halted until redeployed/upgraded.`,
+          { yes: opts.yes },
+        ))
+      ) {
+        return;
+      }
       const spinner = ora('Stopping deployment…').start();
       try {
         // POST /app-deployments/:id/stop — AppDeploymentController.stop

@@ -1150,7 +1150,11 @@ export class TaskController {
   })
   @ApiParam({ name: "id", description: "任务 ID" })
   @ApiQuery({ name: "page", required: false, description: "页码" })
-  @ApiQuery({ name: "limit", required: false, description: "每页条数" })
+  // DOC-GHOST-LIMIT：此端点的 DTO（TaskExecutionsQueryDto）只有 page/pageSize/
+  // status/cursor，全局管道 forbidNonWhitelisted ⇒ `?limit=20` **必然 400**。
+  // 此前这里挂着 `@ApiQuery limit`（"每页条数"），契约公示了一个必然失败的参数；
+  // 每页条数的语义已由 DTO 基类 PaginationDto#pageSize 承担，故删除该行，
+  // 让文档与现实一致（不改分页语义）。下方 logs 端点的 limit 是**按行分页**，与此无关。
   @ApiQuery({
     name: "status",
     required: false,

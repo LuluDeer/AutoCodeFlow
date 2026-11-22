@@ -439,22 +439,43 @@ export function collectMockVars(lines) {
  * 按本仓纪律「首跑红灯只落基线、不改别人代码迁就守卫」处理 —— `apps/**` 不在我的
  * 写入范围，修它们（把负向断言改成正向 / 断真实可观测量）是 spec owner 的活。
  */
+/**
+ * R1 基线的**稳定 key**（R276：行号不再是 key 的一部分）。
+ *
+ * ## 病（R276 实测的真实事故）
+ *
+ * 原 key 是 `file:member:assignLine`。并发改动在 `agent-runtime.service.spec.ts` 的
+ * **第 1590 行之前插入了一行** ⇒ 三处 `enqueueLlmResume` 的 assignLine 全部 **+1**
+ * （1590/1605/1629 → 1591/1606/1630）⇒ **三条基线同时「腐烂」**，
+ * 而代码一行没动。守卫报的是「已修好，删掉登记」—— **完全误导**。
+ *
+ * ## 新 key：`file:member:序号`
+ *
+ * 同一 `file:member` 的命中按 `assignLine` 升序取第 N 个（0-based）。
+ * 只要**命中数量与顺序不变**，key 就稳定 —— 插入/删除无关行不再误报。
+ * 代价：若有人**交换**两处同名的相对顺序，会误配到另一条基线；
+ * 但那两处本来就是同一条债的不同实例（`why` 也常相同），影响可忽略。
+ */
+export function r1BaselineKey(v, ordinal) {
+  return `${v.file}:${v.member}:${ordinal}`;
+}
+
 const R1_BASELINE = new Map([
   [
-    "apps/admin-api/src/modules/task/__tests__/execution-attempt-seq.spec.ts:storeLogLines:576",
+    "apps/admin-api/src/modules/task/__tests__/execution-attempt-seq.spec.ts:storeLogLines:0",
     "C5：覆写在 makeService 工厂 :576、负向断言在 it :602。真实意图是「迟到回合的日志不许写进新回合」，" +
       "改法是断落库值/出参，而不是断「替身没被调用」。owner 待派（task 模块）。",
   ],
   [
-    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts:enqueueLlmResume:1590",
+    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts:enqueueLlmResume:0",
     "覆写 L1590 + 负向断言 L1595（确定性失败 ⇒ 不排 job）。owner 待派（agent 模块）。",
   ],
   [
-    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts:enqueueLlmResume:1605",
+    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts:enqueueLlmResume:1",
     "覆写 L1605 + 负向断言 L1610（额度已用掉 ⇒ 不排 job）。owner 待派（agent 模块）。",
   ],
   [
-    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts:enqueueLlmResume:1629",
+    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts:enqueueLlmResume:2",
     "覆写 L1629 + 负向断言 L1634（墙钟剩余不足 ⇒ 不排 job）。owner 待派（agent 模块）。",
   ],
 ]);
@@ -699,8 +720,14 @@ export function check(options = {}) {
     );
   }
   const seen = new Set();
-  for (const v of r1Violations) {
-    const key = `${v.file}:${v.member}:${v.assignLine}`;
+  // 同一 file:member 的序号（按 assignLine 升序；见 r1BaselineKey 头注）
+  const ordinals = new Map();
+  const sortedR1 = [...r1Violations].sort((a, b) => a.assignLine - b.assignLine);
+  for (const v of sortedR1) {
+    const base = `${v.file}:${v.member}`;
+    const ordinal = ordinals.get(base) ?? 0;
+    ordinals.set(base, ordinal + 1);
+    const key = r1BaselineKey(v, ordinal);
     if (baselineApplies && R1_BASELINE.has(key)) {
       seen.add(key);
       r1Baselined.push({ ...v, key, why: R1_BASELINE.get(key) });
@@ -1150,8 +1177,19 @@ function selftest() {
   ok("真实仓库：R1 全部命中项要么在基线内、要么已报红（不允许有第三个桶）", () => {
     const r = check({ root: REPO_ROOT });
     const total = (r.r1Violations ?? []).length;
-    const bucketed = (r.r1Baselined ?? []).length + (r.r1Failures ?? []).length;
-    assert(total === bucketed, `命中 ${total} 处，但分桶后 ${bucketed} 处（有遗漏）`);
+    // ⚠️ R275：`r1Failures` 里混了**两类**东西 —— 原断言把它们一起当「命中」算，
+    // 于是只要存在「基线腐烂项」（已登记的 key 不再命中的提醒），
+    // `total === bucketed` 必然不成立 ⇒ **假红**，且与并发改动无关。
+    //   ① 真实命中但未进基线：有 `assignLine`/`assertLine`（来自 violations）；
+    //   ② 基线腐烂项：**只有 `key`**，没有 `assignLine`（来自「登记了却不再命中」那条）。
+    // ⇒ 只把 ① 计入分桶；② 单独计数（它对「腐烂」有价值，但不是「命中」）。
+    const rotten = (r.r1Failures ?? []).filter((f) => f.assignLine === undefined).length;
+    const hitFailures = (r.r1Failures ?? []).length - rotten;
+    const bucketed = (r.r1Baselined ?? []).length + hitFailures;
+    assert(
+      total === bucketed,
+      `命中 ${total} 处，但分桶后 ${bucketed} 处（有遗漏）；另有基线腐烂 ${rotten} 条（不计入命中）`,
+    );
   });
 
   // ── --out（拆分批次留档，Lead 2026-11-04 要求）─────────────────────────

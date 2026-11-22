@@ -140,6 +140,10 @@ const UNCLASSIFIED_BASELINE = new Set<string>([
   // ⇒ 归入基线（用户拿到的是「未知码」而不是一条错误的动作建议）。
   'AGENT_BACKLOG_CHECK_UNAVAILABLE',
   'AGENT_QUEUE_STALL_CHECK_UNAVAILABLE',
+  // R207 同域第三个：`AGENT_QUEUE_IDLE_CHECK_UNAVAILABLE`（503）——「队列空转观测
+  // 不可用」。与上两条**逐字同因**（装配缺失、不代表队列在正常消费），故同入基线；
+  // 不单独归类是为了不让这三个码在 CLI 侧出现「同一个病、三种说法」的漂移。
+  'AGENT_QUEUE_IDLE_CHECK_UNAVAILABLE',
 ]);
 
 function loadCatalogCodes(): string[] {

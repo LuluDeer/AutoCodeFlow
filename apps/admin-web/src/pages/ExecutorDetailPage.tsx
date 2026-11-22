@@ -10,7 +10,7 @@ import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, Dele
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { executorsApi, type ExecutorExecution, type ExecutorRemovalImpact } from '../api/executors';
+import { describeOfflineWindow, executorsApi, type ExecutorExecution, type ExecutorMetrics, type ExecutorRemovalImpact } from '../api/executors';
 import { projectsApi } from '../api/projects';
 // D-24 hotfix：queryKey 必须走工厂，不得内联裸写（否则失效方与读取方各自手拼后缀，
 // 前缀相同但第二段不同 ⇒ 失效静默打不中）。
@@ -89,6 +89,43 @@ function trendTooltipLabel(iso: string): string {
   return sameDay
     ? d.toLocaleTimeString(currentLocale(), { hour12: false })
     : formatDateTime(d);
+}
+
+/**
+ * R285：「成功 / 失败 / 超时 / 其他」计数行。
+ *
+ * 缺陷（本函数的存在理由）：后端 7 日统计只数 `FAILED` 桶，10 条 timeout 时面板
+ * 显示「成功 0 / 失败 0 / **其他 10**」——「其他」把「全是超时」这个事实藏了起来，
+ * 用户只能猜是 killed/cancelled 还是数据异常。现在超时单独成桶（与 `failed`
+ * 互斥：回调上报落 `TIMEOUT`，stale sweep 判死落 `FAILED`）。
+ *
+ * **缺失语义（关键，同 R278 的 `null ≠ 0` 纪律）**：`timedOut` 不是 number
+ * （旧后端 / 部署未升级的接口缓存里无此键）⇒ **退回旧文案**，绝不渲染
+ * 「超时 0」——那是凭空断言出来的事实。`0` 本身是合法真值，所以判据必须是
+ * `typeof === 'number'`，不能写 `if (!timedOut)` / `?? 0`。
+ *
+ * 「其他」= total − succ − failed (− timedOut)，clamp ≥ 0：`totalExecutions`
+ * 不过滤状态、含未终态行，非原子快照下差额可为负。
+ */
+function statsCountsLine(
+  s: ExecutorMetrics['sevenDayStats'],
+  t: import('i18next').TFunction,
+): string {
+  const timedOut = s.timedOut;
+  const counted = s.totalExecutions - s.successful - s.failed;
+  if (typeof timedOut !== 'number') {
+    return t('executorDetail.stats.succFail', {
+      succ: s.successful,
+      fail: s.failed,
+      other: Math.max(counted, 0),
+    });
+  }
+  return t('executorDetail.stats.succFailTimeout', {
+    succ: s.successful,
+    fail: s.failed,
+    timeout: timedOut,
+    other: Math.max(counted - timedOut, 0),
+  });
 }
 
 export default function ExecutorDetailPage() {
@@ -172,9 +209,14 @@ export default function ExecutorDetailPage() {
     pageSize: 20,
   });
 
-  // P2-5：判死阈值以后端有效配置为准（默认 90s）；端点失败回退默认值。
+  // P2-5 / R279：两个**不同**的数，不得混用——
+  //   · heartbeatTimeoutMs：单次墙钟（interval × multiplier，默认 90s），用于心跳
+  //     「新鲜度着色」（心跳过期 ≠ 已被判死）；
+  //   · offlineWindow：真实判死窗口（墙钟 × 迟滞确认轮数，默认 180s），用于渲染
+  //     「多久判离线」。此前 UI 拿墙钟当判死窗口，把 180s 报成 90s（偏小一半）。
   const { data: runtimeConfig } = useExecutorRuntimeConfig();
   const heartbeatTimeoutMs = runtimeConfig?.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT_FALLBACK_MS;
+  const offlineWindow = describeOfflineWindow(runtimeConfig);
 
   // 写后失效：原 useRequest refresh → invalidateExecutorData（执行器面 +
   // 指标面；NETOPT-D P3-4 起不再联动任务面——删执行器不改任务定义，tasks.all
@@ -355,6 +397,13 @@ export default function ExecutorDetailPage() {
   const reportedIds = executor.runningExecutionIds;
   const reportedCount = reportedIds?.length;
 
+  // 遗留 P1-24：离线原因三态（manual / stale_timeout / 未知）。键必须保持**字面量**
+  // ——查表式 `t(变量)` 会命中 i18n 动态键守卫（静态不可判）；未知值仍落到
+  // reasonUnknown（未知态不能被压成「超时判死」，否则旧执行器会被误读成故障）。
+  const offlineReason = (executor as { offlineReason?: string | null }).offlineReason;
+  const offlineReasonText = offlineReason === 'manual' ? t('executorDetail.offline.reasonManual')
+    : offlineReason === 'stale_timeout' ? t('executorDetail.offline.reasonStale')
+      : t('executorDetail.offline.reasonUnknown');
   const heartbeatStale = executor.lastHeartbeat
     ? isHeartbeatStale(new Date(executor.lastHeartbeat).getTime(), Date.now(), heartbeatTimeoutMs)
     : false;
@@ -725,10 +774,12 @@ export default function ExecutorDetailPage() {
       </Card>
 
       {/* P1-24（UX-AUDIT-2026-09-21）：「为什么离线」必须可回答。
-          旧实现只渲染一句通用文案（executorDetail.offline.alert），判死阈值
-          heartbeatTimeoutMs 取到手后只用于染色、数值从不渲染，用户无法判断
-          「手动下线还是超时判死？静默多久了？91s 抖动还是 3 天故障？」。
-          现 Alert 带上：①判死阈值（秒）②最后心跳绝对时刻 ③已静默时长（相对）。
+          旧实现只渲染一句通用文案（executorDetail.offline.alert），阈值取到手后
+          只用于染色、数值从不渲染，用户无法判断「手动下线还是超时判死？静默多久
+          了？91s 抖动还是 3 天故障？」。
+          现 Alert 带上：①**真实判死窗口**（秒，R279：effectiveOfflineAfterMs，
+          不是单次墙钟 90s）+ 迟滞成因（连续 N 次未确认）②最后心跳绝对时刻
+          ③已静默时长（相对）。成因写在页面上，省得运维去读源码问「为什么 180」。
           注：后端区分优雅 markOffline 与 stale sweep 两条路径，但 GET /executors/:id
           响应里**没有**区分字段——不编造字段，只呈现确实可得的三个事实，由用户推断；
           后端缺口见交付报告。 */}
@@ -741,18 +792,10 @@ export default function ExecutorDetailPage() {
             <Space orientation="vertical" size={2} style={{ fontSize: 12 }}>
               {/* 遗留 P1-24：消费后端 offlineReason（manual/stale_timeout），区分
                   优雅下线与心跳超时判死——此前 GET /:id 无此字段，只能笼统说离线。 */}
-              <div>
-                {(executor as { offlineReason?: string | null }).offlineReason === 'manual'
-                  ? t('executorDetail.offline.reasonManual')
-                  : (executor as { offlineReason?: string | null }).offlineReason === 'stale_timeout'
-                    ? t('executorDetail.offline.reasonStale')
-                    : t('executorDetail.offline.reasonUnknown')}
-              </div>
-              <div>
-                {t('executorDetail.offline.threshold', {
-                  seconds: Math.round(heartbeatTimeoutMs / 1000),
-                })}
-              </div>
+              <div>{offlineReasonText}</div>
+              <div>{t('executorDetail.offline.threshold', { seconds: offlineWindow.windowSeconds })}</div>
+              {/* R279：把判死窗口的成因摆在页面上（180 而不是 90 只会逼人去读源码）。 */}
+              <div>{t('executorDetail.offline.hysteresis', { seconds: offlineWindow.windowSeconds, single: offlineWindow.singleTimeoutSeconds, confirmations: offlineWindow.confirmations })}</div>
               {executor.lastHeartbeat && (
                 <div>
                   {t('executorDetail.offline.lastSeen', {
@@ -807,19 +850,9 @@ export default function ExecutorDetailPage() {
                 <Col span={8}>
                   <Statistic title={t('executorDetail.stats.successRate')} value={metrics.sevenDayStats.successRate} suffix="%" styles={{ content: { color: token.colorSuccess } }} precision={1} />
                   {/* METRIC-01：分母含超时/已终止等非成功/失败终态，计数行补「其他」，
-                      避免 85.7% 与「成功 6 / 失败 0」对不上 */}
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {t('executorDetail.stats.succFail', {
-                      succ: metrics.sevenDayStats.successful,
-                      fail: metrics.sevenDayStats.failed,
-                      other: Math.max(
-                        metrics.sevenDayStats.totalExecutions -
-                          metrics.sevenDayStats.successful -
-                          metrics.sevenDayStats.failed,
-                        0,
-                      ),
-                    })}
-                  </Text>
+                      避免 85.7% 与「成功 6 / 失败 0」对不上。
+                      R285：超时单独成桶（缺失时退回旧文案），见 statsCountsLine */}
+                  <Text type="secondary" style={{ fontSize: 12 }}>{statsCountsLine(metrics.sevenDayStats, t)}</Text>
                 </Col>
                 {/* EXEC-DETAIL-01：337,261ms 这类裸毫秒不可读，与全站统一走
                     formatDuration 人性化（5分37秒/1小时2分） */}

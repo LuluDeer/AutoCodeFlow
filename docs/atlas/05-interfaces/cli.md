@@ -30,16 +30,15 @@
 | `acf config set-url <url>` | 设置 API 基地址 | — |
 | `acf config set-token <token>` | 直接写入 token（提示优先 login/ACF_TOKEN） | — |
 
-> **无人值守语义（2026-10-08 建立，2026-10-27 校正清单）**：以下命令的**破坏性动作**都有确认门 ——
+> **无人值守语义（2026-10-08 建立，2026-10-27 校正清单，2026-11-20 R289 补齐 `deploy stop`）**：以下命令的**破坏性动作**都有确认门 ——
 > `app delete` / `app upgrade-all`(all) / `task delete` / `task batch delete` /
 > `task kill` / `task webhook enable·rotate·disable` / `apikey revoke` /
-> `deploy remove` / `executor rotate`；**stdin 非 TTY 时缺 `-y/--yes` 以退出码 2 拒绝**
+> `deploy stop` / `deploy remove` / `executor rotate`；**stdin 非 TTY 时缺 `-y/--yes` 以退出码 2 拒绝**
 > （既不静默放行也不静默取消）。
 >
 > 按后果分类、**刻意不加门**的（避免把自动化拖笨）：`task rollback`（每次写入都落版本
-> 快照、可再回滚）、`deploy stop`（可 redeploy/upgrade 恢复，不销毁数据）、
-> `executor offline`（不打断在跑任务，执行器下次心跳即自愈）、`task webhook status`
-> 与 `app upgrade-all --strategy canary`（只读 / 小步放量）。
+> 快照、可再回滚）、`executor offline`（不打断在跑任务，执行器下次心跳即自愈）、
+> `task webhook status` 与 `app upgrade-all --strategy canary`（只读 / 小步放量）。
 >
 > `login` 在非交互下不会对地址/用户名/密码发问，缺 `--user` 或 `ACF_PASSWORD` 时
 > 同样以 2 报可操作错误。
@@ -103,7 +102,7 @@
 |---|---|
 | `deploy list [appId]` | 部署列表（与 `acf app deployments` 同源同契约；部署列表挂 app 组下，此处补可发现入口） |
 | `deploy upgrade <deploymentId>` | overlay 升级拉最新应用版本 |
-| `deploy stop <deploymentId>` | 停止运行中的部署 |
+| `deploy stop <deploymentId> -y` | 停止运行中的部署（非交互必传 `-y/--yes`，否则退出码 2） |
 | `deploy remove <deploymentId> -y` | 删除**已终结**的部署记录（failed/stopped；在途/运行/待审批 409——先 stop，或走 approval reject/cancel）；非交互必传 `-y` |
 
 ### approval（4）— commands/approval.ts

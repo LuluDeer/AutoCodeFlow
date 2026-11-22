@@ -20,6 +20,7 @@ import { Task, TaskStatus } from "../task/entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
+  FAILED_EXECUTION_STATUSES,
 } from "../task/entities/task-execution.entity";
 import { Application } from "../application/entities/application.entity";
 import { ProjectMember } from "./entities/project-member.entity";
@@ -330,9 +331,32 @@ export class ProjectsService {
       this.countMembers(id),
       this.executionSummary(id),
     ]);
+    // R283：分子 = FAILED + TIMEOUT —— 这不是本方法的局部选择，而是**已宣示的产品口径**：
+    // admin-web `locales/zh.ts:1479` 的任务详情口径提示逐字写着「失败 = 失败 + 超时
+    // （人工终止不计入失败率）」。项目概览此前用 `failed` 单桶，与本仓别处的口径不一致。
+    //
+    // 机制上也必须如此：同一个 timeout 语义会**分叉落两个桶**——
+    //   回调上报 ⇒ status=TIMEOUT（execution-callback.collaborator.ts:470）；
+    //   stale sweep 定案 ⇒ status=FAILED + failureReason=TIMEOUT（scheduler.service.ts:1838）。
+    // 只数 FAILED 会漏掉前者，于是超时风暴时「失败率 0%、最近失败列表里却全是超时」。
+    //
+    // ⚠️ 因此 `failureRate ≠ failedExecutionsLast7d / executionsLast7d` —— 后者是**分桶明细**
+    // （用户要分别看脚本失败与超时各多少），本字段是**失败率**（按已宣示口径合并）。
+    // 想让两者相等是错的，别「修正」回去。契约逐字写在
+    // ProjectSummaryResponseDto.failureRate 的注释里。
+    //
+    // 分子按唯一事实源 FAILED_EXECUTION_STATUSES 推导（不手写相加——常量加成员时自动跟上）。
+    const failuresByStatus: Record<string, number> = {
+      [ExecutionStatus.FAILED]: exec.failed,
+      [ExecutionStatus.TIMEOUT]: exec.timeout,
+    };
+    const failedTotal = FAILED_EXECUTION_STATUSES.reduce(
+      (n, status) => n + (failuresByStatus[status] ?? 0),
+      0,
+    );
     const failureRate =
       exec.total > 0
-        ? Math.round((exec.failed / exec.total) * 10000) / 100
+        ? Math.round((failedTotal / exec.total) * 10000) / 100
         : null;
     return {
       projectId: project.id,

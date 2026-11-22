@@ -87,6 +87,15 @@ describe("TaskExecutionsQueryDto (GET /tasks/:id/executions)", () => {
   });
 
   it("rejects the legacy CLI `limit` param (removed on the CLI side)", async () => {
+    // ⚠️ 口径说明（DOC-GHOST-LIMIT）：本用例钉的是**全局管道
+    // `forbidNonWhitelisted` 的行为**——`TaskExecutionsQueryDto` 不声明 `limit`，
+    // 所以它必然 400；这**不是**"limit 可用"的证据，也不是说它应该被支持。
+    //
+    // 此前 task.controller.ts 的 `GET :id/executions` 上挂着一行
+    // `@ApiQuery({ name: "limit" })`（"每页条数"），于是 OpenAPI 公示了一个
+    // **传了就必然 400** 的幽灵参数（文档承诺可用、实现必然失败）。该行已删除；
+    // "每页条数"的语义由 DTO 基类 `PaginationDto#pageSize` 承担。
+    // 删 `@ApiQuery` 不改变白名单行为，故本用例照旧通过。
     await expect(validate({ limit: "10" })).rejects.toThrow(
       BadRequestException,
     );

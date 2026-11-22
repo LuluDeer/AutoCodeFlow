@@ -148,6 +148,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/approvals/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出跨会话的待审批单（含总数、截断与降级标记） */
+        get: operations["AgentController_listPendingApprovals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/budget": {
         parameters: {
             query?: never;
@@ -157,6 +174,57 @@ export interface paths {
         };
         /** 获取生效的 Agent 预算设置 */
         get: operations["AgentController_budgetInfo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/executions/{execId}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 显式确认执行已被业务确认（北极星 business_confirmed 事件源） */
+        post: operations["AgentController_confirmExecution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/inbox/counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 收件箱各项计数（读不到时为 null，绝不伪装成 0） */
+        get: operations["AgentController_inboxCounts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/north-star/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 北极星双口径周报（严格 business_confirmed + 代理值，绝不混用） */
+        get: operations["AgentController_northStarReport"];
         put?: never;
         post?: never;
         delete?: never;
@@ -192,6 +260,23 @@ export interface paths {
         };
         /** 列出「调度积压」的会话（pending 但队列里没有对应 job） */
         get: operations["AgentController_backlogged"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/sessions/queue-idle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 队列是否空转（worker 在册却不再消费新 job） */
+        get: operations["AgentController_inspectQueueIdle"];
         put?: never;
         post?: never;
         delete?: never;
@@ -313,6 +398,40 @@ export interface paths {
         put?: never;
         /** 恢复挂起/失败的 Agent 会话 */
         post: operations["AgentController_resume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/telemetry/consent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 设置 TTFV 授权状态与系统总闸 */
+        post: operations["AgentController_setTelemetryConsent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/telemetry/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 读取 TTFV 授权状态供管理端展示 */
+        get: operations["AgentController_telemetryStatus"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2997,6 +3116,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sop/assignments/lagging": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出超过 N 小时未推进的 blocked 指派（含总数、截断与降级标记；不改状态机） */
+        get: operations["SopController_listLaggingAssignments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sop/assignments/{assignmentId}": {
         parameters: {
             query?: never;
@@ -3008,6 +3144,23 @@ export interface paths {
         get: operations["SopController_assignment"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/assignments/{assignmentId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 取消单条未结束的指派（支持 assigned/in_progress/blocked/stalled） */
+        post: operations["SopController_cancelAssignment"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3040,6 +3193,23 @@ export interface paths {
         };
         /** 指派的媒体清单 */
         get: operations["SopController_mediaList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/clarifications/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出跨 SOP、待人工答复的升级澄清（含总数、截断与降级标记） */
+        get: operations["SopController_listPendingClarifications"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4168,6 +4338,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AgentBacklogResponseDto: {
+            /** @description 积压条数（= sessionIds.length） */
+            count: number;
+            /** @description 本次实际对账了多少条 pending 会话（诊断用：为 0 说明没有 pending） */
+            probed: number;
+            /** @description 判定为「积压」的会话 id（pending 但队列里没有任何指向它的 job） */
+            sessionIds: string[];
+            /** @description 是否因上限截断（pending 会话数 > BACKLOG_PROBE_LIMIT 或预算耗尽）。⚠️ 截断时数字带「下界」语义：实际可能更多 */
+            truncated: boolean;
+        };
         AgentBudgetResponseDto: {
             maxSteps: number;
             maxTokens: number;
@@ -4222,6 +4402,28 @@ export interface components {
             };
             targetAgentSessionId?: string;
         };
+        AgentInboxCountsResponseDto: {
+            /** @description 积压对账是否被探测上限截断（`true` ⇒ `backlogged` 是**下界**，前端按 `N+` 渲染） */
+            backlogTruncated: boolean;
+            /** @description 调度积压会话数（判据见 `docs/observability/agent-backlog-criterion.md`）。读不到 ⇒ null */
+            backlogged: number | null;
+            /** @description 是否有任一计数读不到（此时对应字段为 null）。**HTTP 仍是 200**；全部读不到才算整体不可用（503） */
+            degraded: boolean;
+            /** @description 待审批的部署数。读不到 ⇒ null */
+            deployments: number | null;
+            /** @description 窗口内失败的 Agent 会话数（`failed` + `budget_exceeded`，**不含 `aborted`** ——那是人主动停的，不是待办）。**独立显示项**，不参与任何会话求和。读不到 ⇒ null，**绝不 0** */
+            failedSessions: number | null;
+            /** @description 失败统计窗口（小时），供前端渲染「近 N 小时」。**配置而非事实** ⇒ 读不到时回默认值 24 而不是 null */
+            failedWindowHours: number;
+            /** @description 待审批单数（口径 = 审批单，与列表行数一致；会话数见 waitingSessions）。读不到 ⇒ null */
+            pendingApprovals: number | null;
+            /** @description 队列是否停摆：1 = 停摆、0 = 未停摆、null = 判定不可用（**不代表队列正常**） */
+            queueStall: number | null;
+            /** @description 「卡住」会话数（判据见 `docs/observability/agent-stalled-criterion.md`）。读不到 ⇒ null */
+            stalled: number | null;
+            /** @description `waiting_input` 会话数。读不到 ⇒ null */
+            waitingSessions: number | null;
+        };
         AgentMediaDto: {
             /** Format: uuid */
             assignmentId: string;
@@ -4234,6 +4436,147 @@ export interface components {
             sizeBytes: number;
             /** @description 'executor:<id>' 或 'user:<id>' */
             uploadedBy: string;
+        };
+        AgentNorthStarConfirmedDto: {
+            totals: components["schemas"]["AgentNorthStarConfirmedTotalsDto"];
+            weeks: components["schemas"]["AgentNorthStarConfirmedWeekDto"][];
+        };
+        AgentNorthStarConfirmedTotalsDto: {
+            /** @description 各周 active_installs 之和（周-实例对，非全局去重实例数） */
+            active_install_weeks: number;
+            /** @description 各周 confirmed_events 之和 */
+            confirmed_events: number;
+        };
+        AgentNorthStarConfirmedWeekDto: {
+            /** @description 该周去重活跃实例数 */
+            active_installs: number;
+            /** @description 该周去重确认事件数（每次执行最多一次） */
+            confirmed_events: number;
+            /** @description UTC 周一 00:00:00.000Z */
+            week_start: string;
+        };
+        AgentNorthStarPromotionDto: {
+            /** @description 活跃 install 周合计 */
+            activeInstallWeeks: number;
+            /** @description 两数值阈值是否均满足（不含运营前置 coverage=full） */
+            eligible: boolean;
+            /** @description 未达标逐条说明 + 运营前置提示（脚本不验证 coverage） */
+            reasons: string[];
+            thresholds: components["schemas"]["AgentNorthStarPromotionThresholdsDto"];
+            /** @description 严格值周数 */
+            weeks: number;
+        };
+        AgentNorthStarPromotionThresholdsDto: {
+            /** @description 活跃 install 周合计下限 */
+            minActiveInstallWeeks: number;
+            /** @description 最小样本期周数 */
+            minWeeks: number;
+        };
+        AgentNorthStarProxyDto: {
+            totals: components["schemas"]["AgentNorthStarProxyTotalsDto"];
+            weeks: components["schemas"]["AgentNorthStarProxyWeekDto"][];
+        };
+        AgentNorthStarProxyTotalsDto: {
+            /** @description 各周 executions 之和 */
+            executions: number;
+        };
+        AgentNorthStarProxyWeekDto: {
+            /** @description 该周 SUCCESS 且 artifacts 非空、非 synthetic 的执行数 */
+            executions: number;
+            /** @description UTC 周一 00:00:00.000Z */
+            week_start: string;
+        };
+        AgentNorthStarResponseDto: {
+            /** @description 观测截止时间（ISO-8601），与脚本 buildPayload 同口径 */
+            as_of: string;
+            business_confirmed: components["schemas"]["AgentNorthStarConfirmedDto"];
+            business_results_proxy: components["schemas"]["AgentNorthStarProxyDto"];
+            /** @description R448 升主判据（eligible 仅判数值阈值，运营前置 coverage=full 见 reasons） */
+            promotionEligibility: components["schemas"]["AgentNorthStarPromotionDto"];
+            /** @description 强制口径护栏（不可省略）：严格口径说明 + 「有产物/有证据 ≠ 被业务确认，代理值勿当严格值」强警告 */
+            warnings: string[];
+        };
+        AgentPendingApprovalItemDto: {
+            /** @description 审批幂等键（= `agent_tool_calls.approvalId`，`apr-<sessionId>-<指纹>`）；处置端点用它定位 */
+            approvalKey: string;
+            /** @description 被批参数的完整摘要 `sha256(canonicalJson(args))`（64 位 hex）；null = 本列上线前的旧单 */
+            argsDigest: string | null;
+            /**
+             * Format: date-time
+             * @description 申请时刻（ISO）
+             */
+            createdAt: string;
+            /** @description 人类可读的参数预览（**写入侧已脱敏 + 已截断**，本端点只透出，不新增序列化面）；null = 旧单无预览或本次调用无参数 */
+            preview: string | null;
+            /** @description 闸门给出的审批理由（原样透传） */
+            reason: string | null;
+            /**
+             * Format: uuid
+             * @description 所属会话 id
+             */
+            sessionId: string;
+            /** @description 会话标题；**会话没有标题或标题读不到时一律 null**，绝不退回 uuid（uuid 不是给人看的标题） */
+            sessionTitle: string | null;
+            /** @description 触发闸门的工具名 */
+            toolName: string;
+        };
+        AgentPendingApprovalsResponseDto: {
+            /** @description 是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败 */
+            degraded: boolean;
+            /** @description 按申请时刻升序（最久等待的在前） */
+            items: components["schemas"]["AgentPendingApprovalItemDto"][];
+            /** @description 本次实际返回的行数（= items.length） */
+            returned: number;
+            /** @description 这些待审批单涉及的**会话数**（`COUNT(DISTINCT sessionId)`）；读不到 ⇒ null */
+            sessionTotal: number | null;
+            /** @description 待审批单**总数**（独立 `count()`，不是 `items.length` 的别名）；读不到 ⇒ null，**绝不 0** */
+            total: number | null;
+            /** @description 是否截断（`returned < total`）。`total` 未知时为 false —— 此时「是否截断」本身也不可知，由 `degraded` 表达 */
+            truncated: boolean;
+        };
+        AgentQueueIdleResponseDto: {
+            /** @description 阈值推导依据（运营问「这个数哪来的」时的答案） */
+            basis: {
+                concurrency?: number;
+                formula?: string;
+                thresholdMs?: number;
+                tickMs?: number;
+                wallClockMs?: number;
+            };
+            /** @description 是否读不到观测量——此时 idleStuck 恒 false（**不完整的判定**） */
+            degraded: boolean;
+            /** @description 是否空转（worker 在册却不再消费新 job） */
+            idleStuck: boolean;
+            /** @description 最老 waiting job 的年龄（毫秒）；无 job 或读失败时为 0 */
+            oldestAgeMs: number;
+            /** @description 最老 job 是否「曾开始过又回到 waiting」 */
+            retried: boolean;
+            /**
+             * @description 本条判据让位给别的判据时说明成因；null = 本判据是这一格的最终结论
+             * @enum {string|null}
+             */
+            suppressedBy: "queue-stall" | null;
+            /** @description 判定用的阈值（毫秒）—— 由墙钟预算 × 并发槽位数 + 一拍推导 */
+            thresholdMs: number;
+            /** @description 当前 waiting 计数（读失败时为 0 且 degraded 为 true） */
+            waitingCount: number;
+        };
+        AgentQueueStallResponseDto: {
+            /** @description 是否有**可能导致误报**的观测失败（active/workers/paused 读失败）——前端据此显示「未知」，既不敢报也不敢说正常 */
+            degraded: boolean;
+            /** @description 是否有**可能导致漏报**的计数类观测失败（waiting/delayed/prioritized）——**不改变结论**，只在已报停摆时说明「在排队数可能更大」 */
+            degradedCounts: boolean;
+            /** @description 在排队等消费的 job 数（waiting + delayed + prioritized，不含 active） */
+            pendingJobs: number;
+            /**
+             * @description 成因；不停摆时为 null。两者的处置不同（前者 resume，后者查进程）
+             * @enum {string|null}
+             */
+            reason: "paused" | "no-worker" | null;
+            /** @description 是否停摆（有活排队但结构上没人能消费） */
+            stalled: boolean;
+            /** @description workers 是否读到了。false 时 snapshot 里的 workers=0 **不是事实**，只是回落值 */
+            workersKnown: boolean;
         };
         AgentSessionCreateResponseDto: {
             /** Format: uuid */
@@ -4340,11 +4683,50 @@ export interface components {
                 [key: string]: unknown;
             }[] | null;
         };
-        AgentToolCallDto: {
+        AgentTelemetryConsentDto: {
+            /** @description 原始设备指纹；派生为匿名安装标识 */
+            deviceFingerprint?: string;
+            /** @description 不透明的安装标识；优先于设备指纹 */
+            installId?: string;
+            /** @description 是否启用 TTFV 采集 */
+            optIn: boolean;
             /**
-             * Format: uuid
-             * @description awaiting_approval / granted 流程的审批记录
+             * @description 本次授权动作的来源标记
+             * @enum {string}
              */
+            source?: "admin-ui" | "api";
+        };
+        AgentTelemetryConsentResultDto: {
+            /** @description 本次涉及的安装数量 */
+            count: number;
+            /** @description 本次涉及的安装标识（匿名） */
+            installIds: string[];
+            /** @description 是否已授权采集 */
+            optedIn: boolean;
+            /** @description 实际落库的来源标记 */
+            source: string;
+            /** @description 本次操作后的系统总闸状态 */
+            systemEnabled: boolean;
+        };
+        AgentTelemetryStatusDto: {
+            /** @description 当前已授权采集的安装数 */
+            count: number;
+            /**
+             * @description 授权覆盖率状态：gate_off=总闸未开；no_executors=总闸开但无已知执行器（先开闸后装执行器陷阱）；partial=部分执行器已授权；full=全部已授权
+             * @enum {string}
+             */
+            coverage: "no_executors" | "partial" | "full" | "gate_off";
+            /** @description 按安装维度的授权概览 */
+            installs: components["schemas"]["TelemetryOptinInstallViewDto"][];
+            /** @description 已知 executor 数（去重 deviceFingerprint 后） */
+            knownExecutorCount: number;
+            /** @description 各安装中最近的授权时间（ISO-8601；可为空） */
+            latestOptedAt?: string | null;
+            /** @description 系统总闸状态 */
+            systemEnabled: boolean;
+        };
+        AgentToolCallDto: {
+            /** @description 关联的审批业务键；历史 UUID 原样保留 */
             approvalId: string | null;
             argsJson: {
                 [key: string]: unknown;
@@ -5035,6 +5417,10 @@ export interface components {
             executionId: string;
             /** @description false = 该项未受理（执行不存在/未派发/地址不符/内部异常），error 说明原因 */
             success: boolean;
+        };
+        CancelSopAssignmentDto: {
+            /** @description 取消原因（可选，最多 500 字符；经脱敏后写入审计日志，不覆盖执行结果） */
+            reason?: string;
         };
         ChannelTestResponseDto: {
             message: string;
@@ -5827,6 +6213,13 @@ export interface components {
             hasMore: boolean;
             /** @description 从 fromLine 起的原始日志行（给定级别过滤时生效） */
             lines: string[];
+            /** @description 日志是否已被保留期清理（日志行保留期短于执行行）。true=已按策略清理；false=日志为空但不是清理造成的；null=未知（保留期配置不可读）。仅当本次读取的日志为空时有判定意义。 */
+            logsPurged?: boolean | null;
+            /**
+             * Format: date-time
+             * @description 清理截止时刻（当前时间减去日志保留期天数）；仅 logsPurged 为 true 时非 null。
+             */
+            logsPurgedAt?: string | null;
             /** @description （过滤后）行集合的真实总数 */
             totalLines: number;
         };
@@ -6182,8 +6575,11 @@ export interface components {
                 timestamp: string;
             }[];
             sevenDayStats?: {
+                /** @description status=FAILED 单桶计数（不含 timeout） */
                 failed: number;
                 successful: number;
+                /** @description status=timeout 计数；与 failed 互斥不重叠。旧后端可能缺该键（前端按 typeof === 'number' 判定） */
+                timedOut: number;
                 totalExecutions: number;
             };
         };
@@ -7176,9 +7572,9 @@ export interface components {
             applicationCount: number;
             /** @description 近 7 天执行数（经 taskId 关联 tasks.projectId 统计） */
             executionsLast7d: number;
-            /** @description 近 7 天失败执行数（status=failed） */
+            /** @description 近 7 天失败执行数（status=failed，分桶明细，不含 timeout） */
             failedExecutionsLast7d: number;
-            /** @description 近 7 天失败率（failed / 执行总数，百分比保留两位）；窗口内无执行为 null，前端显示暂无数据 */
+            /** @description 近 7 天失败率 =（failed + timeout）/ 执行总数，百分比保留两位；分子按已宣示口径「失败 = 失败 + 超时」合并，故**不等于** failedExecutionsLast7d / executionsLast7d（那两个字段是分桶明细）；窗口内无执行为 null，前端显示暂无数据 */
             failureRate?: number | null;
             /** @description 项目成员关系行数 */
             memberCount: number;
@@ -7192,7 +7588,7 @@ export interface components {
             recentFailures: components["schemas"]["ProjectSummaryRecentFailureDto"][];
             /** @description 未软删除的任务数（排除 status=deleted；默认项目含未分配 NULL 行） */
             taskCount: number;
-            /** @description 近 7 天超时执行数（status=timeout） */
+            /** @description 近 7 天超时执行数（status=timeout，分桶明细，不含 failed） */
             timeoutExecutionsLast7d: number;
         };
         ProjectViewDto: {
@@ -7475,6 +7871,55 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
         };
+        SopAssignmentLagItemDto: {
+            /**
+             * Format: uuid
+             * @description 滞留的指派 id
+             */
+            assignmentId: string;
+            /**
+             * Format: date-time
+             * @description 进入当前状态的时刻（ISO，= 指派行 `updatedAt`）。**非 null**：谓词本身就是`updatedAt <= now - hours`，时间戳缺失的行在构造上不可能被选中；前端「已阻塞 X 小时」由它与当前时间算出——**不要拿查询窗口 `hours` 顶替**
+             */
+            blockedSince: string;
+            /** @description 上述澄清的轮次（`sop_clarifications.round`，1 起）。**null = 未知或无**（没有 escalated 澄清，或该子查询读失败），不是「第 0 轮」——前端渲染「第 — 轮」，不要编造数字 */
+            round: number | null;
+            /**
+             * Format: uuid
+             * @description 所属 SOP id（深链锚点）
+             */
+            sopId: string;
+            /** @description SOP 标题；**读不到或为空时一律 null**，绝不退回 uuid（uuid 不是给人看的标题） */
+            sopName: string | null;
+            /**
+             * Format: uuid
+             * @description 该滞留工单最近一条 `escalated_to_human` 澄清（maxRounds 触顶路径必有一条）；无澄清或澄清子查询读失败时为 null——后者伴随 `degraded: true`
+             */
+            staleClarificationId: string | null;
+            /** @description 指派状态，本端点目前恒为 `blocked`（谓词是字面量，不混入其它值） */
+            status: string;
+        };
+        SopAssignmentLagResponseDto: {
+            /** @description 是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败；但装配缺失（服务未注入）是 503，不是空信封 */
+            degraded: boolean;
+            /** @description 按进入 blocked 的时刻升序（卡得最久的在最前——那正是最该被看见的） */
+            items: components["schemas"]["SopAssignmentLagItemDto"][];
+            /** @description 本次实际返回的行数（= items.length） */
+            returned: number;
+            /** @description 滞留 blocked 工单**总数**（独立 `getCount()`，不是 `items.length` 的别名）；读不到 ⇒ null，**绝不 0** */
+            total: number | null;
+            /** @description 是否截断（`returned < total`）。`total` 未知时为 false——此时「是否截断」本身也不可知，由 `degraded` 表达 */
+            truncated: boolean;
+        };
+        SopCancelAssignmentResponseDto: {
+            /** @description 取消后的指派最新快照（status 恒为 cancelled） */
+            assignment: components["schemas"]["SopAssignmentDto"];
+            /**
+             * @description 取消前的指派状态（assigned | in_progress | blocked | stalled）
+             * @enum {string}
+             */
+            previousStatus: "assigned" | "in_progress" | "blocked" | "completed" | "failed" | "cancelled" | "stalled";
+        };
         SopCancelAssignmentsResponseDto: {
             /**
              * @description 实际取消的条数（0 = 本来就没有未结束指派）
@@ -7532,6 +7977,53 @@ export interface components {
         SopListResponseDto: {
             items: components["schemas"]["SopResponseDto"][];
             total: number;
+        };
+        SopPendingClarificationItemDto: {
+            /**
+             * Format: date-time
+             * @description 提问时刻（ISO，= 澄清行 createdAt）
+             */
+            askedAt: string;
+            /**
+             * Format: uuid
+             * @description 所属指派 id
+             */
+            assignmentId: string;
+            /** @description 所属指派**当前**状态，如实回。升级后通常是 `in_progress`（不是 `blocked`）——「升级后按 blocked 筛不到」正是本端点存在的理由之一 */
+            assignmentStatus: string;
+            /**
+             * Format: uuid
+             * @description 澄清行 id（答复端点用它定位）
+             */
+            clarificationId: string;
+            /** @description 执行器 Agent 的原始疑问（**服务端不截断**，截断由前端做——服务端截断会让「点开看全文」永远拿不到全文） */
+            question: string;
+            /**
+             * Format: uuid
+             * @description 处理本次澄清的 `sop_review` 会话（因果链；无会话时为 null）
+             */
+            reviewSessionId: string | null;
+            /** @description 澄清轮次（1 起） */
+            round: number;
+            /**
+             * Format: uuid
+             * @description 所属 SOP id（深链锚点）
+             */
+            sopId: string;
+            /** @description SOP 标题；**读不到或为空时一律 null**，绝不退回 uuid（uuid 不是给人看的标题） */
+            sopName: string | null;
+        };
+        SopPendingClarificationsResponseDto: {
+            /** @description 是否有子查询读失败（此时对应字段为 null）。**HTTP 仍是 200**：部分可用不等于整页失败 */
+            degraded: boolean;
+            /** @description 按提问时刻升序（最久没人管的在前——「上周升级还没人管」正是最该被看见的） */
+            items: components["schemas"]["SopPendingClarificationItemDto"][];
+            /** @description 本次实际返回的行数（= items.length） */
+            returned: number;
+            /** @description 待人工答复的升级澄清**总数**（独立 `getCount()`，不是 `items.length` 的别名）；读不到 ⇒ null，**绝不 0** */
+            total: number | null;
+            /** @description 是否截断（`returned < total`）。`total` 未知时为 false——此时「是否截断」本身也不可知，由 `degraded` 表达 */
+            truncated: boolean;
         };
         SopPublishResponseDto: {
             sop: components["schemas"]["SopResponseDto"];
@@ -8119,6 +8611,18 @@ export interface components {
              * @description 本次触发创建的执行行 id
              */
             executionId: string;
+        };
+        TelemetryOptinInstallViewDto: {
+            /** @description 匿名安装标识 */
+            installId: string;
+            /** @description 当前安装的授权状态 */
+            optIn: boolean;
+            /** @description 最近一次授权变更时间（ISO-8601；可为空） */
+            optedAt?: string | null;
+            /** @description 最近一次变更的来源标记 */
+            source: string;
+            /** @description HMAC 派生的用户标识，绝不是用户名原文 */
+            userIdHash?: string | null;
         };
         TerminalStateItemDto: {
             /**
@@ -8823,6 +9327,27 @@ export interface operations {
             };
         };
     };
+    AgentController_listPendingApprovals: {
+        parameters: {
+            query?: {
+                limit?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentPendingApprovalsResponseDto"];
+                };
+            };
+        };
+    };
     AgentController_budgetInfo: {
         parameters: {
             query?: never;
@@ -8842,15 +9367,77 @@ export interface operations {
             };
         };
     };
+    AgentController_confirmExecution: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                execId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 确认成功（幂等，重复确认同样返回成功并 emit execution.confirmed） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AgentController_inboxCounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentInboxCountsResponseDto"];
+                };
+            };
+        };
+    };
+    AgentController_northStarReport: {
+        parameters: {
+            query?: {
+                /** @description 观测截止 ISO-8601；缺省 now */
+                as_of?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentNorthStarResponseDto"];
+                };
+            };
+        };
+    };
     AgentController_list: {
         parameters: {
-            query: {
-                kind: string;
-                status: string;
-                page: string;
-                stalled: string;
-                stalledMinutes: string;
-                pageSize: string;
+            query?: {
+                kind?: string;
+                status?: string;
+                page?: string;
+                stalled?: string;
+                stalledMinutes?: string;
+                pageSize?: string;
+                since?: string;
             };
             header?: never;
             path?: never;
@@ -8904,7 +9491,28 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AgentBacklogResponseDto"];
+                };
+            };
+        };
+    };
+    AgentController_inspectQueueIdle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentQueueIdleResponseDto"];
+                };
             };
         };
     };
@@ -8921,7 +9529,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AgentQueueStallResponseDto"];
+                };
             };
         };
     };
@@ -9062,6 +9672,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentSessionResumeResponseDto"];
+                };
+            };
+        };
+    };
+    AgentController_setTelemetryConsent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentTelemetryConsentDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentTelemetryConsentResultDto"];
+                };
+            };
+        };
+    };
+    AgentController_telemetryStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentTelemetryStatusDto"];
                 };
             };
         };
@@ -9249,9 +9901,9 @@ export interface operations {
     };
     AiSopSessionController_list: {
         parameters: {
-            query: {
-                page: string;
-                pageSize: string;
+            query?: {
+                page?: string;
+                pageSize?: string;
             };
             header?: never;
             path?: never;
@@ -9841,8 +10493,8 @@ export interface operations {
     };
     ApplicationController_findAll: {
         parameters: {
-            query: {
-                projectId: string;
+            query?: {
+                projectId?: string;
             };
             header?: never;
             path?: never;
@@ -10441,7 +11093,7 @@ export interface operations {
             query: {
                 code: string;
                 state: string;
-                error: string;
+                error?: string;
             };
             header?: never;
             path?: never;
@@ -10775,9 +11427,9 @@ export interface operations {
     };
     ConfigController_findAll: {
         parameters: {
-            query: {
-                prefix: string;
-                tag: string;
+            query?: {
+                prefix?: string;
+                tag?: string;
             };
             header?: never;
             path?: never;
@@ -11842,8 +12494,8 @@ export interface operations {
         parameters: {
             query: {
                 address: string;
-                deviceFingerprint: string;
-                executorId: string;
+                deviceFingerprint?: string;
+                executorId?: string;
             };
             header: {
                 authorization: string;
@@ -12161,13 +12813,13 @@ export interface operations {
     };
     ExecutorController_getTerminalStates: {
         parameters: {
-            query: {
+            query?: {
                 /** @description ISO-8601 水位线；仅返回终态时间（COALESCE(endTime, createdAt)）>= since 的执行记录。默认最近 24 小时；最多钳制到 30 天。 */
                 since?: string;
                 /** @description 每页条数（1..2000，默认 500）。hasMore=true 表示还有更多数据。 */
                 limit?: string;
-                deviceFingerprint: string;
-                executorId: string;
+                deviceFingerprint?: string;
+                executorId?: string;
             };
             header: {
                 authorization: string;
@@ -12661,8 +13313,8 @@ export interface operations {
     };
     MetricsController_getRecentFailures: {
         parameters: {
-            query: {
-                projectId: string;
+            query?: {
+                projectId?: string;
             };
             header?: never;
             path?: never;
@@ -12721,8 +13373,8 @@ export interface operations {
     };
     MetricsController_getSummary: {
         parameters: {
-            query: {
-                projectId: string;
+            query?: {
+                projectId?: string;
             };
             header?: never;
             path?: never;
@@ -12742,9 +13394,9 @@ export interface operations {
     };
     MetricsController_getDailyTrend: {
         parameters: {
-            query: {
-                days: string;
-                projectId: string;
+            query?: {
+                days?: string;
+                projectId?: string;
             };
             header?: never;
             path?: never;
@@ -13038,10 +13690,10 @@ export interface operations {
     };
     ProjectsController_findAll: {
         parameters: {
-            query: {
-                page: string;
-                pageSize: string;
-                q: string;
+            query?: {
+                page?: string;
+                pageSize?: string;
+                q?: string;
             };
             header?: never;
             path?: never;
@@ -13371,10 +14023,10 @@ export interface operations {
     };
     SopController_list: {
         parameters: {
-            query: {
-                status: string;
-                page: string;
-                pageSize: string;
+            query?: {
+                status?: string;
+                page?: string;
+                pageSize?: string;
             };
             header?: never;
             path?: never;
@@ -13435,6 +14087,28 @@ export interface operations {
             };
         };
     };
+    SopController_listLaggingAssignments: {
+        parameters: {
+            query?: {
+                /** @description 观测窗口（小时）。缺省 24；钳制 1..720；非法值安全回落默认，不 400 */
+                hours?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopAssignmentLagResponseDto"];
+                };
+            };
+        };
+    };
     SopController_assignment: {
         parameters: {
             query?: never;
@@ -13452,6 +14126,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SopAssignmentDetailResponseDto"];
+                };
+            };
+        };
+    };
+    SopController_cancelAssignment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assignmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CancelSopAssignmentDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopCancelAssignmentResponseDto"];
                 };
             };
         };
@@ -13499,6 +14198,27 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentMediaDto"][];
+                };
+            };
+        };
+    };
+    SopController_listPendingClarifications: {
+        parameters: {
+            query?: {
+                limit?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopPendingClarificationsResponseDto"];
                 };
             };
         };
@@ -14646,8 +15366,6 @@ export interface operations {
                 runtime?: string;
                 /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时行为与引入该参数前完全一致。 */
                 cursor?: string;
-                /** @description 每页条数 */
-                limit?: unknown;
             };
             header?: never;
             path: {

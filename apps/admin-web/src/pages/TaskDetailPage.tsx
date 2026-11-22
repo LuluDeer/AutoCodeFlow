@@ -58,7 +58,7 @@ import { runtimeLabel } from '../utils/runtime-label';
 import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 // 2026-10-23：任务详情状态行改为**任务级**调度信息（此前误用全平台计数，
 // 见下方渲染处的注释）。复用列表页同一套纯函数，保证两处口径一致。
-import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
+import { nextRunOutcome, formatFireTime, formatWindowEdge, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
 // CRON-DESC-01：Cron 表达式的人类可读描述（utils/cron-desc.ts）
 import { describeCron } from '../utils/cron-desc';
 // P2-06：维护窗口 Cron → 人性化区间（原文留 tooltip）
@@ -108,6 +108,7 @@ import { buildVersionColumns, buildDiffRows } from './task-detail/version-view-m
 // 只剩 2 行余量 ⇒ 错误分支无处可放）。整块逐字搬移 + **新增错误态**（读取失败 ⇒
 // 错误块 + 重试，绝不说「暂无执行记录」）；props 全显式，本模块不持有 state、不发请求。
 import ExecutionsTab from './task-detail/ExecutionsTab';
+import TaskAgentDiagnosis from './task-detail/TaskAgentDiagnosis';
 import '../i18n';
 // PERF（第四轮审计）：GlueEditor 拖带 monaco（约 2.5MB raw 的 lazy chunk）。
 // 此前静态 import 让详情页 route chunk 与 GlueEditor chunk 产生**静态边**——
@@ -182,11 +183,32 @@ const TASK_STATUS_LABEL = (t: (k: string) => string): Record<string, string> => 
  */
 function TaskScheduleTags({ task, isActive }: { task: Task; isActive: boolean }) {
   const { t } = useTranslation();
-  const next = isActive ? nextRunAt(task) : null;
+  // R282：此前只调 nextRunAt（不传窗口）⇒ 窗口内任务的 Tag 是 processing 蓝，
+  // 比列表更像"确定会执行"。现走判别式：窗口内转 warning 橙并说出原因，
+  // 时区未知时不判定（D3）；kind='at' 的渲染与改动前逐字一致（零视觉变化）。
+  const outcome = isActive ? nextRunOutcome(task) : { kind: 'none' as const };
   const tzUnresolved = previewNeedsTimezoneWarning(task.timezone);
   return (
     <>
-      {next ? (
+      {outcome.kind === 'skipped-by-window' || outcome.kind === 'unknown-window' ? (
+        <Tooltip
+          title={outcome.kind === 'skipped-by-window'
+            ? t('taskDetail.stat.nextRunSkippedTooltip')
+            : t('taskList.nextRun.unknownWindowTooltip')}
+        >
+          <Tag color="warning" style={{ fontSize: 11 }}>
+            {outcome.kind === 'skipped-by-window'
+              ? t('taskDetail.stat.nextRunSkipped', {
+                start: formatWindowEdge(outcome.window.start),
+                end: formatWindowEdge(outcome.window.end),
+                time: formatFireTime(outcome.at, task.timezone),
+              })
+              : t('taskDetail.stat.nextRunUnknownWindow', {
+                time: formatFireTime(outcome.at, task.timezone),
+              })}
+          </Tag>
+        </Tooltip>
+      ) : outcome.kind === 'at' ? (
         <Tooltip
           title={
             tzUnresolved
@@ -195,7 +217,7 @@ function TaskScheduleTags({ task, isActive }: { task: Task; isActive: boolean })
           }
         >
           <Tag color="processing" style={{ fontSize: 11 }}>
-            {t('taskDetail.stat.nextRun', { time: formatFireTime(next, task.timezone) })}
+            {t('taskDetail.stat.nextRun', { time: formatFireTime(outcome.at, task.timezone) })}
           </Tag>
         </Tooltip>
       ) : (
@@ -529,6 +551,7 @@ export default function TaskDetailPage() {
             <Button icon={<FolderOpenOutlined />} onClick={() => nav(`/artifacts?taskId=${task.id}`)}>
               {t('taskDetail.viewAllArtifacts')}
             </Button>
+            {isAdmin && <TaskAgentDiagnosis key={task.id} taskId={task.id} taskName={task.name} />}
             <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
               <Button icon={<ThunderboltOutlined />} type="primary" disabled={!isAdmin} onClick={handleTrigger}>{t('taskDetail.triggerNow')}</Button>
             </Tooltip>

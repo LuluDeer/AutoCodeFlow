@@ -589,6 +589,17 @@ export const EXECUTOR_CODES = {
     zh: "积压对账服务不可用（装配缺失）——**这不代表没有积压**",
     en: "Backlog reconciliation is unavailable (wiring missing) — this does NOT mean there is no backlog",
   },
+  /**
+   * R207：**队列空转观测不可用**（装配缺失 —— 只可能发生在测试装配里）。
+   *
+   * 与上两条同款理由：它**不代表队列在正常消费**。区别在于这句文案必须
+   * 特别说清「不是『没有空转』」—— 「空转」这个词本身就容易被读成「没在读」。
+   */
+  AGENT_QUEUE_IDLE_CHECK_UNAVAILABLE: {
+    status: 503,
+    zh: "队列空转观测服务不可用（装配缺失）——**这不代表队列在正常消费**",
+    en: "Queue idle observation is unavailable (wiring missing) — this does NOT mean the queue is consuming normally",
+  },
   AGENT_SESSION_NOT_FOUND: {
     status: 404,
     zh: "Agent 会话 {{sessionId}} 不存在",

@@ -74,5 +74,15 @@ t("接线：health-snapshot.mjs 的 TODAY 必须来自 localDateString（不是 
   assert.doesNotMatch(src, /const TODAY = new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/, "TODAY 仍是 UTC 取法");
 });
 
+// R317：**python 步的解释器接线** —— 必须走 detectPython（项目 venv 优先），不能退回硬编码 python3。
+// 源码文本断言的弱点与 R130 相同（断接线形状，不断运行结果）；运行结果由 --only=executor-python 真跑覆盖。
+t("接线：runPython 必须用 detectPython 探测解释器（venv 优先，不硬编码 python3）", () => {
+  const src = readFileSync(new URL("./health-snapshot.mjs", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("function runPython()"), src.indexOf("function runChain()"));
+  assert.match(body, /const py = detectPython\("apps\/executor-python"\)/, "python 步未接入统一探测");
+  assert.doesNotMatch(body, /run\("executor-python 全量", "python3"/, "解释器仍硬编码 python3");
+  assert.match(body, /run\("executor-python 全量", py\.python/, "探测结果未传给 run()");
+});
+
 console.log(`\n自检结果：${passed} 通过，${failures.length} 失败`);
 if (failures.length) process.exit(1);

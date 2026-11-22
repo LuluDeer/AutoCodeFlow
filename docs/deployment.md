@@ -212,7 +212,7 @@ docker compose -f docker-compose.yml -f docker-compose.secure.yml up -d
 | `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | `autoflow` / - | RustFS 凭证（`--profile rustfs`）。**secret 无默认值**，缺失则容器启动失败；`LOG_STORAGE_*` 未显式配置时按此派生 |
 | `LOG_RETENTION_DAYS` | `7` | 执行器工作目录/日志 TTL 回收天数（下限 1） |
 | `TASK_EXECUTION_RETENTION_DAYS` | `90` | **`task_executions` 执行记录保留天数**（Q7 每日 02:00 cron，仅 cron Leader 执行）。⚠️ **硬删除且不可逆**：到期行连同其执行日志与 S3 日志对象一并回收，**没有归档表**——需要留存的历史必须在到期前自行导出。缺省 90 与硬编码时期行为一致；非法/零/负数一律回落 90（绝不让配错把 cutoff 推到未来而删空表）。调小=更早丢历史，调大=占更多磁盘 |
-| `SEC_SECRETS_KEY` | - | 任务级 secrets（tasks.secrets）落库加密密钥，32 字节 hex（`openssl rand -hex 32`）或 base64。留空 = 明文存储（启动 warn 一次，零破坏升级路径）；配置后写路径全加密（AES-256-GCM，`enc:v1:` 信封格式，明文/密文行可共存——存量行首次 update 自然转密文）。**生产环境必须配置并纳入密钥备份**：密钥丢失则密文 secrets 无法解密（任务派发报错，不静默裸跑）；轮换 = 更换 key 后对任务执行一次任意 update |
+| `SEC_SECRETS_KEY` | - | 任务级 secrets（tasks.secrets）落库加密密钥，32 字节 hex（`openssl rand -hex 32`）或 base64。留空 = 明文存储（启动 warn 一次，零破坏升级路径）；配置后写路径全加密（AES-256-GCM，`enc:v1:` 信封格式，明文/密文行可共存——存量行首次 update 自然转密文）。**生产环境必须配置并纳入密钥备份**：密钥丢失则密文 secrets 无法解密（任务派发报错，不静默裸跑）；轮换 = 更换 key 后对任务执行一次任意 update。**它同时是 TTFV 匿名 install_id 的 HMAC 派生密钥**：留空会让授权端点 503、漏斗 listener 静默跳过，北极星启用前必须配置；换 key 使历史 install_id 失效，见 [北极星/TTFV 生产启用 runbook](plan/north-star-enablement.md) §1.2/§5.2 |
 | `ZIP_MAX_RATIO` | `100` | SEC-05 上传面 zip bomb 防护——解压比上限（中央目录声明的 uncompressed 总量 / compressed 总量），超出拒绝上传（400） |
 | `ZIP_MAX_ENTRIES` | `10000` | SEC-05——zip 条目数上限，超出拒绝上传（400） |
 | `ZIP_MAX_FILE_BYTES` | `536870912` | SEC-05——单文件解压后大小上限（字节，默认 512 MiB；2026-09-23 OOM 事故后由 1 GiB 下调），超出拒绝上传（400） |

@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from "@nestjs/bullmq";
 import { Logger } from "@nestjs/common";
 import type { Job } from "bullmq";
 import { AgentRuntimeService } from "./agent-runtime.service";
+import type { RunOptions } from "./agent-job-options";
 
 /**
  * P2：Agent 队列名。
@@ -32,15 +33,10 @@ export const AGENT_QUEUE_CONCURRENCY = 2;
  * run() 每次从 DB 重建上下文（可重入），resume 与 start 在语义上没有区别，
  * 分开实现只会产生两条行为可能漂移的路径。
  */
-export interface AgentJobData {
+export interface AgentJobData extends RunOptions {
   sessionId: string;
   /** 仅用于日志/可观测（如 "resume:approval" / "trigger:cron"）。 */
   reason?: string;
-  /**
-   * RT-3：唤醒凭据——自动续跑 job 声明「我只应该唤醒仍在 auto_resume 的
-   * 会话」。由 markRunning 的 CAS 一并校验，不匹配就让位（不改状态、不推理）。
-   */
-  expectWaitingFor?: string;
 }
 
 @Processor(AGENT_QUEUE_NAME, { concurrency: AGENT_QUEUE_CONCURRENCY })
@@ -52,16 +48,20 @@ export class AgentProcessor extends WorkerHost {
   }
 
   async process(job: Job<AgentJobData>): Promise<void> {
-    const { sessionId, reason, expectWaitingFor } = job.data;
+    const { sessionId, reason, expectWaitingFor, expectTotalSteps } = job.data;
     this.logger.log(
       `Agent job start: session=${sessionId}${reason ? ` reason=${reason}` : ""}`,
     );
 
     try {
       // 无唤醒凭据的既有路径保持单参调用（参数面不因新特性变形）。
-      const outcome = expectWaitingFor
-        ? await this.runtime.run(sessionId, { expectWaitingFor })
-        : await this.runtime.run(sessionId);
+      const outcome =
+        expectWaitingFor !== undefined || expectTotalSteps !== undefined
+          ? await this.runtime.run(sessionId, {
+              expectWaitingFor,
+              expectTotalSteps,
+            })
+          : await this.runtime.run(sessionId);
       this.logger.log(
         `Agent job done: session=${sessionId} status=${outcome.status} steps=${outcome.steps}`,
       );

@@ -19,7 +19,7 @@
  */
 import { useMutation, useQuery, useQueryClient, type UseMutationResult, type UseQueryResult, type QueryClient } from '@tanstack/react-query';
 import { getSSEStatus, SSE_STATUS_KEYS } from './sse-client';
-import { metricsApi, type MetricsSummary, type DailyTrend } from './metrics';
+import { metricsApi, type MetricsSummary, type DailyTrend, type NorthStarReport } from './metrics';
 import { tasksApi, type Task, type TaskExecution, type TaskStats, type PageResult } from './tasks';
 import { executorsApi, type Executor, type ExecutorExecution, type ExecutorMetrics, type ExecutorRuntimeConfig } from './executors';
 import { artifactsApi, type ExecutionArtifact, type ArtifactRow, type ArtifactIndexQuery } from './artifacts';
@@ -45,6 +45,13 @@ export const queryKeys = {
     recentFailures: (projectId?: string) =>
       projectId ? ['metrics', 'failures', projectId] : ['metrics', 'failures'],
     scheduler: ['metrics', 'scheduler'] as const,
+  },
+  /**
+   * R328：北极星双口径周报 —— 全局口径（不带 projectId），周级指标。
+   * 刻意用独立裸键，切项目不失效、不与 projectId 维度缓存共享。
+   */
+  northStar: {
+    report: ['north-star-report'] as const,
   },
   executions: {
     all: ['executions'] as const,
@@ -263,6 +270,22 @@ export function useSchedulerStats() {
         uptime: number;
       }>,
     refetchInterval: 30_000,
+  });
+}
+
+/**
+ * R328：GET /agent/north-star/metrics —— 北极星双口径周报。
+ *
+ * 全局口径：queryKey 不带 projectId，切项目不重取、数值不变；周级指标无需
+ * 跟随 Dashboard 其它 30s 轮询，5 分钟兜底刷新（默认 staleTime 30s 继承
+ * 全局 QueryClient）。signal 透传给 apiClient，卸载时取消 in-flight 请求。
+ */
+export function useNorthStarReport(): UseQueryResult<NorthStarReport> {
+  return useQuery({
+    queryKey: queryKeys.northStar.report,
+    queryFn: ({ signal }) => metricsApi.getNorthStar(undefined, signal),
+    refetchInterval: 5 * 60_000,
+    gcTime: 10 * 60_000,
   });
 }
 

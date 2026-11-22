@@ -65,8 +65,12 @@ TaskService.handleCallback：地址比对 → winner 条件 UPDATE（open 状态
 - **SSE 并发闸门**：`acquireSseSlot` 两级上限（`SSE_MAX_STREAMS_PER_EXECUTION` 默认 4、`SSE_MAX_STREAMS_GLOBAL` 默认 64），超限 503；SSE 路由 `@SkipThrottle()` + `@SkipTimeout()`。
 - **任务级 secrets**：`SEC_SECRETS_KEY` 配置后 AES-256-GCM 加密落库（`enc:v1:...`），API 脱敏回传，派发时解密注入执行器 env（`AUTOFLOW_<KEY>`），明文不二次入库（SEC-02）。
 - **执行类写面归属口径（TASK-SCOPE-01）**：`POST /tasks/:id/{trigger,pause,resume}` 由
-  `TASK_OPERATE_SCOPE` 控制 —— `any`（**默认**，既有宽松语义：任何已登录用户可操作任意
-  任务，老部署升级零变化）/ `owner`（仅 ADMIN、任务属主、或该项目内 editor 及以上）。
+  `TASK_OPERATE_SCOPE` 控制 —— `owner`（**默认**，安全缺省：仅 ADMIN、任务属主、或该
+  项目内 editor 及以上角色可操作；**非成员按 403 恒拒**）/ `any`（运维显式设置
+  `TASK_OPERATE_SCOPE=any` 才回退旧宽松语义：任何已登录用户可操作任意任务，老部署
+  升级需显式 opt-out 才零变化）。默认值已由审计 E-P1-S1 从 `any` 翻为 `owner`
+  （`apps/admin-api/src/config/configuration.ts:568`
+  `process.env.TASK_OPERATE_SCOPE === "any" ? "any" : "owner"`），配置读取异常亦按收紧处理。
   **项目 viewer 在任一档下始终被拒**（AUTH-02 硬约束）。注意这三个端点是历史上唯一不做
   归属校验的写面（`update`/`delete` 早已要求属主或 ADMIN），此前登记为 ADR-013 已知缺口。
 

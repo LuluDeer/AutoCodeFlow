@@ -4,6 +4,8 @@ import { AgentController } from "../agent.controller";
 import type { AgentApproval } from "../entities/agent-approval.entity";
 import type { AgentSession } from "../entities/agent-session.entity";
 import { AgentApprovalsService } from "../runtime/agent-approvals.service";
+import { AgentApprovalWakeupService } from "../runtime/agent-approval-wakeup.service";
+import { waitingForApproval } from "../runtime/agent-approval-waiting";
 
 /**
  * A1 审批闭环（实施轮 #12）：grant/deny 端点 + AgentApprovalsService 的
@@ -292,6 +294,210 @@ describe("AgentApprovalsService · TTL 过期单复位（A2）", () => {
 });
 
 describe("AgentController · grant/deny（A1 审批闭环）", () => {
+  /**
+   * 用真实 wakeup service + 最小内存替身装配尾钩（不使用 Nest 容器）。
+   * 会话替身按引用返回，以便测试在 grant 后原地推进到 waiting_input。
+   */
+  function makeWakeup(
+    session: Partial<AgentSession>,
+    approvals: { hasPendingForSession: (id: string) => Promise<boolean> },
+    add: (name: string, data: unknown, opts?: unknown) => Promise<void>,
+  ): AgentApprovalWakeupService {
+    return new AgentApprovalWakeupService(
+      { add } as never,
+      {
+        hasPendingForSession: approvals.hasPendingForSession,
+        hasGrantAwaitingResumeForSession: jest.fn(async () => true),
+      } as never,
+      { findById: jest.fn(async () => session) } as never,
+    );
+  }
+
+  /**
+   * R296 丢失唤醒竞态（E-pure，R321 §7）：requestApproval 顺序 ①落 pending 单 →
+   * ②persistAwaiting → ③markWaiting。管理员可能在 ①与③之间批准（session 仍
+   * running），decideApproval 按快照不入队；随后 markWaiting 挂起 ⇒ 单已 granted
+   * 却没有任何 job 消费，会话永久卡死。
+   *
+   * 完整时序：t0 running → grant（仍 resumed=false，PM 决策 1：不改 HTTP 响应）
+   * → t1 markWaiting 写入 waiting_input → 显式触发尾钩 wakeup.probe("s-race")
+   * ⇒ 补偿一条 resume job。内存替身，不引入 DB / Redis / Nest 容器。
+   */
+  it("R296 竞态：running 窗口 grant 后 markWaiting 尾钩补偿入队（E-pure）", async () => {
+    // t0：可变 session，grant 读到的是 running 快照。
+    const liveSession = {
+      id: "s-race",
+      status: "running" as string,
+      totalSteps: 3,
+      waitingFor: null as string | null,
+    } as Partial<AgentSession>;
+    const approvals = {
+      findByKey: jest.fn(async () => ({
+        ...pendingApproval,
+        sessionId: "s-race",
+      })),
+      decide: jest.fn(async () => ({ ...grantedRow, sessionId: "s-race" })),
+      listForSession: jest.fn(async () => []),
+      request: jest.fn(),
+      hasPendingForSession: jest.fn(async () => false),
+    };
+    const sessions = {
+      requireById: jest.fn(async () => liveSession),
+      settleToolCallByApprovalId: jest.fn(async () => 1),
+    };
+    const enqueue = jest.fn(
+      async (_name: string, _data: unknown, _opts?: unknown) => undefined,
+    );
+    const queue = { add: enqueue } as unknown as QueueLike;
+    const ctl = new AgentController(
+      sessions as never,
+      { resolveBudget: jest.fn() } as never,
+      approvals as unknown as AgentApprovalsService,
+      queue as never,
+      { get: () => false } as never,
+    );
+    const wakeup = makeWakeup(liveSession, approvals, enqueue);
+
+    // ① 单已落库（findByKey/decide 替身） ② grant 发生在 running 窗口。
+    const out = (await ctl.grantApproval(
+      "s-race",
+      pendingApproval.approvalKey!,
+      admin,
+    )) as { ok: boolean; resumed: boolean };
+    expect(out.ok).toBe(true);
+    expect(out.resumed).toBe(false);
+    expect(enqueue).not.toHaveBeenCalled();
+
+    // ③ markWaiting 提交：status + waitingFor 一起写入（真实时序由 tool-executor 完成）。
+    liveSession.status = "waiting_input";
+    liveSession.waitingFor = waitingForApproval(pendingApproval.approvalKey!);
+
+    // 显式模拟 markWaiting 尾钩（运行时由 session.attachApprovalWakeupProbe 注册）。
+    await wakeup.probe("s-race");
+
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const [name, data, opts] = enqueue.mock.calls[0];
+    expect(name).toBe("run");
+    expect(data).toMatchObject({
+      reason: "resume:approval",
+      expectTotalSteps: 3,
+      expectWaitingFor: "等待审批 apr-s-1-1700000000000",
+    });
+    // R323：尾钩补偿 job 走独立 dedup 命名空间，避免与手动 resume 互相吞并。
+    expect((opts as { deduplication: { id: string } }).deduplication.id).toBe(
+      "resume-wakeup-s-race-3",
+    );
+  });
+
+  it("probe 幂等：重复 probe 不再增加 job（BullMQ dedup 语义由 mock 模拟）", async () => {
+    const liveSession = {
+      id: "s-race",
+      status: "waiting_input",
+      waitingFor: waitingForApproval(pendingApproval.approvalKey!),
+      totalSteps: 3,
+    } as Partial<AgentSession>;
+    const jobs: string[] = [];
+    const add = jest.fn(
+      async (_name: string, _data: unknown, opts?: unknown): Promise<void> => {
+        const id = (opts as { deduplication: { id: string } }).deduplication.id;
+        // 同一 dedup id 在 job 终结前只保留一份（真实 BullMQ 行为）。
+        if (!jobs.includes(id)) jobs.push(id);
+      },
+    );
+    const wakeup = makeWakeup(
+      liveSession,
+      { hasPendingForSession: jest.fn(async () => false) },
+      add,
+    );
+
+    await wakeup.probe("s-race");
+    await wakeup.probe("s-race");
+    await wakeup.probe("s-race");
+
+    expect(add).toHaveBeenCalledTimes(3);
+    // 幂等仍按补偿 job 自己的 dedup id 收敛（R323 换命名空间，语义不变）。
+    expect(jobs).toEqual(["resume-wakeup-s-race-3"]);
+  });
+
+  it("非等待审批的 waiting_input 不入队", async () => {
+    const liveSession = {
+      id: "s-race",
+      status: "waiting_input",
+      waitingFor: "等待执行器 asg-1 澄清回复",
+      totalSteps: 3,
+    } as Partial<AgentSession>;
+    const add = jest.fn(async () => undefined);
+    const hasPending = jest.fn(async () => false);
+    const wakeup = makeWakeup(
+      liveSession,
+      { hasPendingForSession: hasPending },
+      add,
+    );
+
+    await wakeup.probe("s-race");
+
+    expect(hasPending).not.toHaveBeenCalled();
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  /**
+   * R323 并存反证（内存替身级）：两条来源共用同一个 queue 替身，替身按 BullMQ
+   * 语义模拟 dedup——同 id 后者被吞、不同 id 两条都留存。旧实现两条都用
+   * `resume-{sid}-{steps}`，此用例会红（jobs 只剩 1 条）；换命名空间后转绿。
+   */
+  it("手动 resume 与补偿 job 用不同 dedup id，可并存（R323）", async () => {
+    const sessionId = "s-coexist";
+    const liveSession = {
+      id: sessionId,
+      status: "waiting_input",
+      waitingFor: waitingForApproval(pendingApproval.approvalKey!),
+      totalSteps: 3,
+    } as Partial<AgentSession>;
+
+    type RecordedJob = { name: string; id: string };
+    const jobs: RecordedJob[] = [];
+    const add = jest.fn(
+      async (name: string, _data: unknown, opts?: unknown): Promise<void> => {
+        const id = (opts as { deduplication: { id: string } }).deduplication.id;
+        // 模拟 BullMQ：dedup id 在 job 终结前唯一，同 id 的 add 被吞。
+        if (!jobs.some((j) => j.id === id)) jobs.push({ name, id });
+      },
+    );
+    const approvals = {
+      hasPendingForSession: jest.fn(async () => false),
+    };
+    const queue = { add } as unknown as QueueLike;
+    const ctl = new AgentController(
+      { requireById: jest.fn(async () => liveSession) } as never,
+      { resolveBudget: jest.fn() } as never,
+      approvals as unknown as AgentApprovalsService,
+      queue as never,
+      { get: () => false } as never,
+    );
+    const wakeup = makeWakeup(liveSession, approvals, add);
+
+    // ① 手动路径：controller.enqueueResume → manualResumeJobOptions。
+    await (
+      ctl as unknown as { resume: (id: string) => Promise<unknown> }
+    ).resume(sessionId);
+    // ② 补偿路径：markWaiting 尾钩 → wakeup.probe → approvalWakeupJobOptions。
+    await wakeup.probe(sessionId);
+
+    expect(add).toHaveBeenCalledTimes(2);
+    const manualId = (add.mock.calls[0][2] as { deduplication: { id: string } })
+      .deduplication.id;
+    const wakeupId = (add.mock.calls[1][2] as { deduplication: { id: string } })
+      .deduplication.id;
+    expect(manualId).toBe(`resume-${sessionId}-3`);
+    expect(wakeupId).toBe(`resume-wakeup-${sessionId}-3`);
+    expect(wakeupId).not.toBe(manualId);
+    // 两个 job 都被队列记录——手动 resume 没有被补偿 job 的 dedup 吞掉。
+    expect(jobs).toEqual([
+      { name: "run", id: `resume-${sessionId}-3` },
+      { name: "run", id: `resume-wakeup-${sessionId}-3` },
+    ]);
+  });
+
   it("grant：单不存在 → 404", async () => {
     const h = harness({
       session: { id: "s-1", status: "waiting_input" } as Partial<AgentSession>,
@@ -326,7 +532,7 @@ describe("AgentController · grant/deny（A1 审批闭环）", () => {
 
   it("grant：挂起会话 → 条件写 + 复用 resume 链路（reason=resume:approval）", async () => {
     const h = harness({
-      session: { id: "s-1", status: "waiting_input" } as Partial<AgentSession>,
+      session: { id: "s-1", status: "waiting_input", totalSteps: 7 },
       approval: pendingApproval as Partial<AgentApproval>,
       decideResult: grantedRow as Partial<AgentApproval>,
     });
@@ -347,8 +553,12 @@ describe("AgentController · grant/deny（A1 审批闭环）", () => {
     );
     expect(h.queue.add).toHaveBeenCalledWith(
       "run",
-      { sessionId: "s-1", reason: "resume:approval" },
-      expect.objectContaining({ attempts: 1 }),
+      { sessionId: "s-1", reason: "resume:approval", expectTotalSteps: 7 },
+      {
+        attempts: 1,
+        removeOnComplete: true,
+        deduplication: { id: "resume-s-1-7" },
+      },
     );
   });
 

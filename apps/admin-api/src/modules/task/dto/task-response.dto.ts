@@ -820,6 +820,35 @@ export class ExecutionLogsPageResponseDto {
     description: "fromLine + lines.length < totalLines 时为 true",
   })
   hasMore: boolean;
+
+  /**
+   * R284-LOGPURGE-01：日志是否**已被保留期清理**（日志行留 `logRetention.days`，
+   * 默认 30 天；执行行留 90 天）⇒ 31~90 天前的执行详情里日志区是空的。
+   *
+   * 三态，**不可互相替代**：
+   *   · `true`  = 已按策略清理（有 `logsPurgedAt` 给出清理截止时刻）；
+   *   · `false` = 日志确实为空/存在，但**不是**清理造成的（真没输出）；
+   *   · `null`  = **未知**（保留期配置读不到、或该执行窗口的判定前提缺失）。
+   *
+   * 为什么必须区分：只按时间推会把「30 天内真没输出」谎报成「已清理」，而
+   * 读者据此写复盘会把两种完全不同的结论混成一条。
+   */
+  @ApiPropertyOptional({
+    nullable: true,
+    type: Boolean,
+    description:
+      "日志是否已被保留期清理（日志行保留期短于执行行）。true=已按策略清理；false=日志为空但不是清理造成的；null=未知（保留期配置不可读）。仅当本次读取的日志为空时有判定意义。",
+  })
+  logsPurged?: boolean | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    type: String,
+    format: "date-time",
+    description:
+      "清理截止时刻（当前时间减去日志保留期天数）；仅 logsPurged 为 true 时非 null。",
+  })
+  logsPurgedAt?: string | null;
 }
 
 /** GET /tasks/:id/executions/:execId/report（OBS-04 一次性三合一载荷）。 */

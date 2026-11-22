@@ -8,6 +8,7 @@ import { Task } from "../../task/entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
+  FAILED_EXECUTION_STATUSES,
 } from "../../task/entities/task-execution.entity";
 import {
   Executor,
@@ -123,6 +124,48 @@ describe("MetricsService", () => {
       expect(result.executions.total).toBe(10);
       expect(result.successRate).toBe(80);
       expect(result.avgDurationMs).toBe(1500);
+    });
+
+    // ③R280：成功率卡的失败数 = FAILED 桶 + TIMEOUT 桶。
+    // 同一个 timeout 语义分叉落两个桶（回调 → TIMEOUT；stale sweep →
+    // FAILED + failureReason=TIMEOUT），只数一个桶必然少算。
+    it("R280: executions.failed = FAILED 桶 + TIMEOUT 桶（timeout 分叉落两桶）", async () => {
+      taskRepo.count.mockResolvedValue(0);
+      executorRepo.count.mockResolvedValue(0);
+      const qb = makeQb({
+        getRawMany: jest.fn().mockResolvedValue([
+          { status: ExecutionStatus.SUCCESS, count: "10" },
+          { status: ExecutionStatus.FAILED, count: "2" }, // 含 sweep 的超时
+          { status: ExecutionStatus.TIMEOUT, count: "3" }, // 回调上报的超时
+          { status: ExecutionStatus.KILLED, count: "4" },
+          { status: ExecutionStatus.CANCELLED, count: "1" },
+        ]),
+        getRawOne: jest.fn().mockResolvedValue({ avg: "0" }),
+      });
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+
+      const result = await service.getSummary();
+
+      expect(result.executions.failed).toBe(5); // 2 + 3
+      expect(result.executions.failed).toBeGreaterThan(3); // 只数 TIMEOUT 也不够
+      expect(result.executions.failed).toBeGreaterThan(2); // 只数 FAILED 也不够
+      expect(result.executions.total).toBe(20); // total 不受口径影响
+    });
+
+    it("R280: 无 TIMEOUT 行时 failed 退化为 FAILED 桶（不改既有语义）", async () => {
+      taskRepo.count.mockResolvedValue(0);
+      executorRepo.count.mockResolvedValue(0);
+      const qb = makeQb({
+        getRawMany: jest.fn().mockResolvedValue([
+          { status: ExecutionStatus.SUCCESS, count: "8" },
+          { status: ExecutionStatus.FAILED, count: "2" },
+        ]),
+        getRawOne: jest.fn().mockResolvedValue({ avg: "0" }),
+      });
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      const result = await service.getSummary();
+      expect(result.executions.failed).toBe(2);
+      expect(result.successRate).toBe(80);
     });
 
     it("should return successRate 0 when no executions", async () => {
@@ -277,19 +320,139 @@ describe("MetricsService", () => {
   });
 
   describe("getRecentFailures", () => {
-    it("should return top 10 failed executions", async () => {
+    // R280（失败口径统一）：两条分支都必须查 FAILED ∪ TIMEOUT。
+    //
+    // 下面的替身**真的**按 status 过滤（从 where 里取出状态集合再筛行），
+    // 所以把代码改回 `status = FAILED` 时 TIMEOUT 行会直接从结果里消失 ⇒
+    // 用例变红。这是反证点，不是形状断言。
+    const oneRowPerStatus = (): TaskExecution[] =>
+      [
+        { id: "timeout-1", status: ExecutionStatus.TIMEOUT },
+        { id: "failed-1", status: ExecutionStatus.FAILED },
+        { id: "killed-1", status: ExecutionStatus.KILLED },
+        { id: "cancelled-1", status: ExecutionStatus.CANCELLED },
+      ] as unknown as TaskExecution[];
+
+    // repo.find 替身：In(...) → 集合成员判定；裸值 → 等值判定。
+    const findHonouringWhere = (all: TaskExecution[]) =>
+      jest.fn(async (opts: any) => {
+        const status = opts?.where?.status;
+        const allowed: string[] = Array.isArray(status?.value)
+          ? status.value
+          : [status?.value ?? status];
+        const take = opts?.take ?? all.length;
+        return all
+          .filter((r) => allowed.includes(r.status as string))
+          .slice(0, take);
+      });
+
+    // QueryBuilder 替身：只实现 getRecentFailures 用到的链式方法，where 的
+    // (sql, params) 被记录并在 getMany 时真正用于筛选。
+    const qbHonouringWhere = (all: TaskExecution[]) => {
+      const whereCalls: Array<[string, Record<string, unknown> | undefined]> =
+        [];
+      const qb: any = {
+        select: jest.fn(() => qb),
+        leftJoin: jest.fn(() => qb),
+        where: jest.fn((sql: string, params?: Record<string, unknown>) => {
+          whereCalls.push([sql, params]);
+          return qb;
+        }),
+        andWhere: jest.fn(() => qb),
+        orderBy: jest.fn(() => qb),
+        take: jest.fn(() => qb),
+        getMany: jest.fn(async () => {
+          const [, params] = whereCalls[0] ?? [];
+          const allowed: string[] = Array.isArray(params?.failedStatuses)
+            ? (params!.failedStatuses as string[])
+            : params?.status
+              ? [params.status as string]
+              : [];
+          return all.filter((r) => allowed.includes(r.status as string));
+        }),
+      };
+      return qb;
+    };
+
+    it("常量是唯一事实源：恰好 [failed, timeout]——KILLED/CANCELLED 永不混入", () => {
+      expect([...FAILED_EXECUTION_STATUSES]).toEqual([
+        ExecutionStatus.FAILED,
+        ExecutionStatus.TIMEOUT,
+      ]);
+    });
+
+    it("should return top 10 failed executions (保持 take/排序/投影不变)", async () => {
       const failures = Array.from({ length: 10 }, (_, i) => ({
         id: `e${i}`,
-      })) as TaskExecution[];
+        status: ExecutionStatus.FAILED,
+      })) as unknown as TaskExecution[];
       execRepo.find.mockResolvedValue(failures);
       const result = await service.getRecentFailures();
       expect(result).toHaveLength(10);
-      expect(execRepo.find).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { status: ExecutionStatus.FAILED },
-          take: 10,
-        }),
+      const findOpts = execRepo.find.mock.calls[0][0] as any;
+      expect((findOpts.where.status as any).value).toEqual([
+        ExecutionStatus.FAILED,
+        ExecutionStatus.TIMEOUT,
+      ]);
+      expect(findOpts.take).toBe(10);
+      expect(findOpts.order).toEqual({ createdAt: "DESC" });
+      expect(Object.keys(findOpts.select).sort()).toEqual(
+        [
+          "createdAt",
+          "duration",
+          "errorMessage",
+          "exitCode",
+          "failureReason",
+          "id",
+          "taskId",
+          "taskName",
+        ].sort(),
       );
+    });
+
+    // ①反证点：回调上报的超时落 status=TIMEOUT（不是 FAILED），
+    // `status = FAILED` 的旧口径会让它在「最近失败」里彻底消失。
+    it("R280: 无 projectId 分支返回 status=TIMEOUT 的行（反证点）", async () => {
+      execRepo.find.mockImplementation(
+        findHonouringWhere(oneRowPerStatus()) as never,
+      );
+      const result = await service.getRecentFailures();
+      expect(result.map((r) => r.id)).toEqual(
+        expect.arrayContaining(["timeout-1", "failed-1"]),
+      );
+    });
+
+    it("R280: 有 projectId 分支同样返回 status=TIMEOUT 的行（反证点）", async () => {
+      const qb = qbHonouringWhere(oneRowPerStatus());
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      const result = await service.getRecentFailures("p1");
+      expect(result.map((r) => r.id)).toEqual(
+        expect.arrayContaining(["timeout-1", "failed-1"]),
+      );
+      // 口径来源必须是唯一事实源，且投影/排序/上限原样保留。
+      expect(qb.where).toHaveBeenCalledWith(
+        "e.status IN (:...failedStatuses)",
+        { failedStatuses: [...FAILED_EXECUTION_STATUSES] },
+      );
+      expect(qb.take).toHaveBeenCalledWith(10);
+      expect(qb.orderBy).toHaveBeenCalledWith("e.createdAt", "DESC");
+    });
+
+    // ②KILLED / CANCELLED 是人主动停的，不算失败。
+    it("R280: KILLED/CANCELLED 不出现（两个分支都排除）", async () => {
+      execRepo.find.mockImplementation(
+        findHonouringWhere(oneRowPerStatus()) as never,
+      );
+      const noProject = await service.getRecentFailures();
+      expect(noProject.map((r) => r.id)).not.toContain("killed-1");
+      expect(noProject.map((r) => r.id)).not.toContain("cancelled-1");
+
+      execRepo.createQueryBuilder.mockReturnValue(
+        qbHonouringWhere(oneRowPerStatus()),
+      );
+      const withProject = await service.getRecentFailures("p1");
+      expect(withProject.map((r) => r.id)).not.toContain("killed-1");
+      expect(withProject.map((r) => r.id)).not.toContain("cancelled-1");
     });
   });
 
