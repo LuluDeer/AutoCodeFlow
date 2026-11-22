@@ -1,6 +1,6 @@
 # Python SDK — autoflow-sdk
 
-> 重组自 [packages/autoflow-sdk/README.md](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/packages/autoflow-sdk/README.md)
+> 重组自 [packages/autoflow-sdk/README.md](https://github.com/LuluDeer/AutoCodeFlow/blob/main/packages/autoflow-sdk/README.md)
 > 与 SDK 源码（`autoflow_sdk/context.py` / `callback.py` / `http.py` / `logger.py` / `result.py` / `models.py`）。
 
 AutoCodeFlow 任务执行器（executor-python）侧的 Python SDK：提供任务上下文
@@ -31,16 +31,16 @@ ctx = TaskContext.from_env()
 
 | 成员 | 说明 |
 |------|------|
-| `TaskContext.from_env()` | 读取 `EXECUTION_ID` / `TASK_ID` / `TASK_NAME`（缺失回落 `"unknown"`）与全部 `AUTOFLOW_*` 触发参数（凭证三件套除外，归一化进 `ctx.params`，键小写） |
+| `TaskContext.from_env()` | 读取 `EXECUTION_ID` / `TASK_ID` / `TASK_NAME`（缺失回落 `"unknown"`），优先解析 `AUTOFLOW_PARAMS_JSON`（旧执行器回落 `AUTOFLOW_*` 逐键通道）归一化进 `ctx.params`（小写键，凭据与身份变量除外） |
 | `ctx.task_id` / `ctx.execution_id` / `ctx.task_name` | 任务标识 |
-| `ctx.params` | `AUTOFLOW_<KEY>` 触发参数字典（小写键，值恒为字符串） |
-| `ctx.get_param(key, default=None)` | 读参数 |
-
-> `ctx.get_param(key, default=None)` 按**大小写不敏感**匹配（SDK-DX-09，与 node `ctx.getParam()` 对齐）：精确命中优先，否则取第一个大写相等的键。
+| `ctx.params` | 触发参数字典（小写键；协议 v5 起经 `AUTOFLOW_PARAMS_JSON` 保留真实类型） |
+| `ctx.get_param(key, default=None)` | 按大小写不敏感方式读取触发参数（精确命中优先，再按大写等价回落） |
 | `ctx.get_env(key, default="")` | 读环境变量（任务 env 优先，再 OS env） |
 | `ctx.log` | 日志器（懒加载） |
 | `ctx.callback` | 回调客户端（懒加载单例） |
-| `ctx.admin_api_url` / `ctx.callback_token` / `ctx.executor_address` | 凭证三件套专用字段，**绝不混入 params**；`repr` / `to_dict` 均脱敏（N40/N27） |
+| `ctx.admin_api_url` / `ctx.callback_token` / `ctx.executor_address` / `ctx.device_fingerprint` | 回调凭据与执行器身份专用字段，**绝不混入 params**；`repr` / `to_dict` 均脱敏（N40/N27） |
+
+> `ctx.get_param(key, default=None)` 按**大小写不敏感**匹配（SDK-DX-09，与 node `ctx.getParam()` 对齐）：精确命中优先，否则取第一个大写相等的键。
 
 ## CallbackClient（回调专用）
 
@@ -150,5 +150,5 @@ config = TaskConfig(
 
 ## 下一步
 
-- [能力矩阵](capability-matrix)：与 node SDK 的 5 条差异逐条裁定
-- [官方示例库](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples)
+- [能力矩阵](capability-matrix)：与 node SDK 的差异逐条裁定
+- [官方示例库](https://github.com/LuluDeer/AutoCodeFlow/tree/main/examples)

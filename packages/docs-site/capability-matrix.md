@@ -1,6 +1,6 @@
 # 能力矩阵（ECO-01，第十六轮逐项对齐）
 
-> 重组自 [docs/sdk-guide.md「能力矩阵」](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/sdk-guide.md)。
+> 重组自 [docs/sdk-guide.md「能力矩阵」](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/sdk-guide.md)。
 > 每项断言均标注证据文件路径；矩阵之后逐条解释差异。✅=两侧等价，
 > ⚠️=有差异（差异格说明语义）。
 
@@ -17,7 +17,7 @@
 | **callback: report_failure** | ✅ `ctx.reportFailure(error, { summary?, durationMs?, failureReason? })`（ECO-01 补齐，默认 `script_error`） — `context.ts` | ✅ `ctx.report_failure(error, summary=..., duration_ms=..., failure_reason=...)`（默认 `script_error`） — `context.py:92` | ✅ 对等：两侧都在客户端做 12 项白名单早拒（node 抛 `TypeError`、py 抛 `ValueError`；白名单 = `protocol.json` 的 `failureReason.executorReportable`）。**差异只在抛错形态**：py 在 `report_failure` 内 `raise`（`await` 后拿到 reject），node 的 `reportFailure` 是**非 async** 方法、非法值**同步 throw**——`try { await f() } catch` 一致可用，`f().catch(...)` 接不到 |
 | **callback: 批量/自定义字段** | ✅ `ctx.http.post('/api/executions/callback', [items])`（executorAddress 仅对 callback URL 自动补齐） — `http-client.ts:122-138` | ✅ `ctx.callback.report([items])`（executionId/executorAddress 全量自动补齐） — `callback.py:195-208` | ✅ 对等 |
 | **callback: 截断上限** | ✅ `ERROR_MESSAGE_MAX_LENGTH=4096` / `LOGS_MAX_LENGTH=512_000`（ECO-01 起导出，与 py 同值） — `context.ts` | 同值常量 — `callback.py:44-45` | ✅ 对等 |
-| **callback: 不可用异常** | 请求方法 rejects `Error("HttpClient is disabled: …")`（原因含缺失变量名） — `http-client.ts:52-59,141-146` | `CallbackDisabledError`（原因含缺失变量名） — `callback.py:66,155-156` | ⚠️ 类型不同（语言惯用形态），语义等价 fail-closed |
+| **callback: 不可用异常** | 请求方法 rejects `HttpClientDisabledError`（继承 `Error`，包入口已导出，原因含缺失变量名） — `http-client.ts:272-277` | `CallbackDisabledError`（原因含缺失变量名） — `callback.py:66,155-156` | ✅ 语义等价 fail-closed（各自导出专用错误类） |
 | **env 注入: AUTOFLOW_\* 参数** | ✅ `ctx.getParam(key, fallback?)` 优先读 `AUTOFLOW_PARAMS_JSON`（**真实类型**），旧执行器回落逐键 `AUTOFLOW_<KEY>` 并做尽力而为的类型还原；`process.env.AUTOFLOW_X` 直读仍可用（字符串裸值） — `context.ts` | ✅ `from_env()` 优先读 `AUTOFLOW_PARAMS_JSON` 归一化为 `ctx.params`（小写键）；旧执行器回落逐键通道（含 A-11 引号容错） — `context.py` | ✅ 语义对等（A-11R 起两端都优先类型化通道；差异：py 收敛进 `ctx.params`，node 走 `ctx.getParam()` 且允许直读 env） |
 | **env 注入: 凭证三件套** | ✅ `AUTOFLOW_ADMIN_API_URL`+`AUTOFLOW_CALLBACK_TOKEN`→enabled；`AUTOFLOW_EXECUTOR_ADDRESS`→`ctx.executorAddress`；legacy `ADMIN_API_URL`/`EXECUTOR_TOKEN` 优先 — `context.ts:82-94` | ✅ 同名三键→`ctx.admin_api_url`/`callback_token`/`executor_address` 专用字段，**绝不混入 params**（泄漏面）；repr/to_dict 均脱敏（N40/N27） — `context.py:14-18,40-42` | ✅ 语义对等（差异：node 有 legacy 变量回退，py 无——py 执行器从 N23 起注入，无需 legacy 兼容） |
 | **env 注入: 缺变量行为** | `fromEnv()` 缺 `EXECUTION_ID`/`TASK_ID`/`TASK_NAME` **抛错** — `context.ts:72-80` | `from_env()` 缺失回落 `"unknown"` — `context.py:139-142` | ⚠️ node 严格抛错 vs py 宽松兜底（node 语境下 fromEnv 抛错在 worker 侧早失败更利于排障；py 脚本形态常见手工直跑，兜底更友好） |
@@ -37,11 +37,11 @@
    `HttpClient.get()` 拿到的是原始 httpx Response（含 envelope）。任务
    代码若跨语言移植，注意这一格。**不收敛裁定**：py 返回 Response 对象
    是刻意的（保留 headers/status 全量信息），收敛会破坏既有任务。
-2. **unwrap 严格度**：两侧解包都要求 `code+message+data` 严格三元组；
-   cli/mcp 用宽松 `data+(code|message)` 启发式——分歧已留档
-   [packages/contract-fixtures/contract.json](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/packages/contract-fixtures/contract.json)
-   的 `knownDivergence`（admin-api 恒发 code，真实流量不受影响，
-   四端统一需 breaking release）。详见[契约页](contract)。
+2. **unwrap 严格度（PK-06 已关闭）**：自 2026-09-14（PK-06 统一批次）起，四端
+   （`acf-cli` / `mcp-server` / `@autocodeflow/sdk` / `autoflow-sdk`）的信封拆包判据
+   已完全一致：**载荷是对象、含 `data` 键、且 `code` 为数值**（`message` 不再参与判定）；
+   [packages/contract-fixtures/contract.json](https://github.com/LuluDeer/AutoCodeFlow/blob/main/packages/contract-fixtures/contract.json)
+   的 `knownDivergence` 仅保留为 2026-09-13 之前旧版 cli/mcp 宽松启发式的历史档案。详见[契约页](contract)。
 3. **failureReason 校验位置**：**两侧都在客户端早拒**，白名单同源
    （`packages/executor-protocol/protocol.json` 的
    `failureReason.executorReportable`，12 项；admin 枚举全集 15 项 = 可上报

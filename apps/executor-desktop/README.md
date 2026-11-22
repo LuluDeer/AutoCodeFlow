@@ -1,6 +1,6 @@
 # AutoCodeFlow Executor Desktop
 
-> **受众**：桌面执行器的开发者与打包者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：桌面执行器的开发者与打包者 · **状态**：稳定 · **最后核对**：2026-11-22
 
 在任意设备上安装运行，连接 AutoCodeFlow 平台接收并执行调度任务。常驻系统托盘，无需手动维护。
 
@@ -124,7 +124,7 @@ uv 的解析顺序（由 executor-node 实现）：
 # Linux / macOS（以及 CI）——直接前置于 npm 命令即可
 ACF_BUNDLE_UV=1 npm run build:executor                             # 尝试联网下载 uv
 ACF_BUNDLE_UV=1 ACF_UV_SOURCE=/path/to/uv npm run build:executor   # 用本地已下载的 uv
-ACF_BUNDLE_UV=1 ACF_UV_VERSION=0.8.17 npm run build:executor       # 指定版本（默认 0.8.17）
+ACF_BUNDLE_UV=1 ACF_UV_VERSION=0.13.4 npm run build:executor       # 指定版本（默认 0.13.4）
 
 # 发布用：缺 uv 直接让构建失败，绝不产出残包
 ACF_BUNDLE_UV=1 ACF_UV_REQUIRED=1 npm run build:executor
@@ -146,7 +146,7 @@ best-effort 契约，于是一个能力残缺的包被正常发布了。全新�
 而客户端与平台两侧都没有"这个包是残的"的提示。现在：
 
 - 发布流水线（`release-desktop.yml`）固定带
-  `ACF_BUNDLE_UV=1 ACF_UV_REQUIRED=1 ACF_UV_VERSION=0.8.17`；
+  `ACF_BUNDLE_UV=1 ACF_UV_REQUIRED=1 ACF_UV_VERSION=0.13.4`；
 - `ACF_UV_REQUIRED=1` 时，缺 uv（含"忘开 `ACF_BUNDLE_UV`"）→ **`exit 1`**，
   发布被拦下；
 - 出包后还会**解包安装产物**断言 uv 确实在包里（`extraResources` 漏带也能发现）；
@@ -246,7 +246,7 @@ uv **无法在线下载 Python 3.7**（可下载区间是 3.8~3.14）。要跑 3
 ## 使用流程
 
 1. 安装后首次启动，弹出配置向导
-2. 填写 Admin API 地址（如 `http://192.168.1.10:8001`）
+2. 填写 Admin API 地址（如 `http://192.168.1.10:3105`）
 3. 填写执行器名称、端口、对外地址（供平台回调）、Token
 4. 点击「完成并启动」，执行器自动注册到平台
 5. 托盘图标绿色 = 在线，红色 = 离线
@@ -319,7 +319,7 @@ src/
     pages/AppsPage.tsx     # 已部署应用与日志
 resources/
   executor-node/  # ncc 打包后的 executor-node 单文件
-assets/           # 托盘图标（需自行准备）
+assets/           # 应用与托盘图标（由 npm run brand:build 生成，勿手绘）
 scripts/
   bundle-executor.sh  # 打包 executor-node
 ```

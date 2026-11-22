@@ -1,13 +1,13 @@
 # 教程 05 · SOP 生态演示：从种子到 Agent 执行
 
-> 重组自 [docs/tutorials/05-sop-agent-demo.md](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/tutorials/05-sop-agent-demo.md)（DOC-06）。
+> 重组自 [docs/tutorials/05-sop-agent-demo.md](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/tutorials/05-sop-agent-demo.md)（DOC-06）。
 > 目标：跑通「SOP 起草 → 发布 → 版本 → 指派 → 执行 → 平台复核」的完整链路，
 > 并在 Linux X11 会话里演示 GUI 能力域。内容面全程 ≤ 15 分钟、零配置；
 > 执行面（§3 起）需要 Agent 执行器在线，前置单独列出。
-> 前提：已按[快速上手](getting-started)启动全栈，并跑过一次种子：
+> 前提：已按 [快速上手指南](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/quickstart.md) 启动全栈，并跑过一次种子：
 >
 > ```bash
-> npm run demo:seed -- --base-url http://localhost:3105 --username admin --password 'Admin@123456'
+> npm run demo:seed -- --base-url http://localhost:3105 --username admin --password '<你的管理员密码>'
 > ```
 >
 > 种子会预置 3 条已发布的演示 SOP（`demo-sop-` 前缀，v1.0.0）+ 3 个演示任务
@@ -73,9 +73,8 @@ SOP 发布产生**不可变版本快照**（v1.0.0，contentHash 锚定），执
 ## 3. 指派与执行链路（前置：Agent 执行器在线）
 
 > **前置**（缺任一则本节只能看不能跑）：
-> - 一台 desktop 执行器（AutoFlow 桌面端）在线，且「Agent（实验性）」已启用；
-> - Agent 需要真实 LLM——桌面端配置里填好模型与 Key（DashScope Key 未开通前
->   本节不可跑）。
+> - 一台 desktop 执行器（AutoCodeFlow 桌面端）在线，且「Agent（实验性）」已启用；
+> - Agent 需要真实 LLM——桌面端配置里填好兼容 OpenAI 协议的模型与 API Key。
 
 指派是管理面动作（ADMIN-only——发布权 = 间接的指令注入权）：
 

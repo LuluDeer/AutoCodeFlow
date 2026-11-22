@@ -1,6 +1,6 @@
 # SDK 使用指南
 
-> **受众**：在任务脚本里接入 Node/Python SDK 的开发者 · **状态**：稳定 · **最后核对**：2026-11-20
+> **受众**：在任务脚本里接入 Node/Python SDK 的开发者 · **状态**：稳定 · **最后核对**：2026-11-22
 > 本文件是 SDK 文档的**源头事实**（ECO-01 能力矩阵/差异裁定/缺口计划）。
 > ECO-05 起另有按导航重组的 VitePress 文档站（`packages/docs-site/`，
 > 内容全部镜像自本文件与双 SDK README/examples——修改请改本文件后同步）：
@@ -28,11 +28,11 @@ fail-closed 语义。能力对照如下：
 | 执行上下文 | `TaskContext.fromEnv()`（缺 `EXECUTION_ID`/`TASK_ID`/`TASK_NAME` 抛错）；`TaskContext.create(env)` 显式构造 | `TaskContext.from_env()`（缺失变量回落 `"unknown"`）；`AUTOFLOW_*` 归入 `ctx.params`，凭证三件套除外 |
 | HTTP 客户端 | `ctx.http` / `new HttpClient(baseURL, token, traceId?, executorAddress?)`（axios；`enabled`/`disabledReason`） | `autoflow_sdk.HttpClient` / `AsyncHttpClient`（httpx，通用请求）+ `ctx.callback`（`CallbackClient`，回调专用） |
 | 回调上报 | `ctx.http.post('/api/executions/callback', [item])`，`executorAddress` 自动补齐（N27）；**ECO-01 起**另有 `ctx.reportSuccess()` / `ctx.reportFailure()` 便捷方法 | `ctx.report_success()` / `ctx.report_failure(e, failure_reason=...)` / `ctx.callback.report([item])`，`executionId`/`executorAddress` 自动补齐 |
-| 回调契约 | `CallbackItemDto`：`executionId` / `status: success\|failed` / `executorAddress` / `logs` / `errorMessage` / `failureReason` / `durationMs` | 同左（字段逐一对齐；`failureReason` **两侧**都在客户端做 12 项白名单早拒） |
+| 回调契约 | `CallbackItemDto`：`executionId` / `status: success\|failed` / `executorAddress` / `deviceFingerprint` / `exitCode` / `logs` / `errorMessage` / `failureReason` / `durationMs` / `artifacts` / `result` | 同左（字段逐一对齐；`failureReason` **两侧**都在客户端做 12 项白名单早拒） |
 | 日志 | `ctx.logger`（`TaskLogger`，结构化，随 `ctx.success()/failure()` 附带进 `TaskResult.logs`） | `ctx.log`（`get_logger(task_name)`，stdout/stderr 由执行器采集） |
 | README | [packages/autocodeflow-node-sdk/README.md](../packages/autocodeflow-node-sdk/README.md) | [packages/autoflow-sdk/README.md](../packages/autoflow-sdk/README.md) |
 | 发布渠道 | npm（scoped 公开包，`publishConfig.access=public`） | PyPI（`pyproject.toml` 为元数据单一来源） |
-| 发布 job | `release.yml → publish-npm`（node 24，secret `NPM_TOKEN`） | `release.yml → publish-pypi`（python 3.12，secret `PYPI_API_TOKEN`） |
+| 发布 job | `release.yml → publish-npm`（node 24，secret `NPM_TOKEN`） | `release.yml → publish-pypi`（python 3.12，PyPI Trusted Publishing OIDC，`id-token: write`，无需 `PYPI_API_TOKEN`） |
 
 ### 能力矩阵（ECO-01，第十六轮逐项对齐）
 
@@ -52,7 +52,7 @@ fail-closed 语义。能力对照如下：
 | **callback: report_failure** | ✅ `ctx.reportFailure(error, { summary?, durationMs?, failureReason? })`（ECO-01 补齐，默认 `script_error`） — `context.ts` | ✅ `ctx.report_failure(error, summary=..., duration_ms=..., failure_reason=...)`（默认 `script_error`） — `context.py:92` | ✅ 对等：两侧都在客户端做 12 项白名单早拒（node 抛 `TypeError`、py 抛 `ValueError`；白名单 = `protocol.json` 的 `failureReason.executorReportable`）。**差异只在抛错形态**：py 在 `report_failure` 内 `raise`（调用方 `await` 后拿到 reject），node 的 `reportFailure` 是**非 async** 方法、非法值**同步 throw**——`try { await f() } catch` 写法一致可用，但 `f().catch(...)` 接不到 |
 | **callback: 批量/自定义字段** | ✅ `ctx.http.post('/api/executions/callback', [items])`（executorAddress 仅对 callback URL 自动补齐） — `http-client.ts:122-138` | ✅ `ctx.callback.report([items])`（executionId/executorAddress 全量自动补齐） — `callback.py:195-208` | ✅ 对等 |
 | **callback: 截断上限** | ✅ `ERROR_MESSAGE_MAX_LENGTH=4096` / `LOGS_MAX_LENGTH=512_000`（ECO-01 起导出，与 py 同值） — `context.ts` | 同值常量 — `callback.py:44-45` | ✅ 对等（ECO-01 前 node 无便捷方法故无上限常量） |
-| **callback: 不可用异常** | 请求方法 rejects `Error("HttpClient is disabled: …")`（原因含缺失变量名） — `http-client.ts:52-59,141-146` | `CallbackDisabledError`（原因含缺失变量名） — `callback.py:66,155-156` | ⚠️ 类型不同（语言惯用形态），语义等价 fail-closed |
+| **callback: 不可用异常** | 请求方法 rejects `HttpClientDisabledError`（继承 `Error`，包入口已导出，原因含缺失变量名） — `http-client.ts:272-277` | `CallbackDisabledError`（原因含缺失变量名） — `callback.py:66,155-156` | ✅ 语义等价 fail-closed（各自导出专用错误类） |
 | **env 注入: AUTOFLOW_\* 参数** | ✅ `ctx.getParam(key, fallback?)` 优先读 `AUTOFLOW_PARAMS_JSON`（**真实类型**），旧执行器回落逐键 `AUTOFLOW_<KEY>` 并做尽力而为的类型还原；`process.env.AUTOFLOW_X` 直读仍可用（字符串裸值） — `context.ts` | ✅ `from_env()` 优先读 `AUTOFLOW_PARAMS_JSON` 归一化为 `ctx.params`（小写键）；旧执行器回落逐键通道（含 A-11 引号容错） — `context.py` | ✅ 语义对等（A-11R 起两端都优先类型化通道；SDK-DX-09 起两端 `getParam()`/`get_param()` 都**大小写不敏感**；差异：py 收敛进 `ctx.params`，node 允许直读 env） |
 | **env 注入: 凭证三件套** | ✅ `AUTOFLOW_ADMIN_API_URL`+`AUTOFLOW_CALLBACK_TOKEN`→enabled；`AUTOFLOW_EXECUTOR_ADDRESS`→`ctx.executorAddress`；legacy `ADMIN_API_URL`/`EXECUTOR_TOKEN` 优先 — `context.ts:82-94` | ✅ 同名三键→`ctx.admin_api_url`/`callback_token`/`executor_address` 专用字段，**绝不混入 params**（泄漏面）；repr/to_dict 均脱敏（N40/N27） — `context.py:14-18,40-42` | ✅ 语义对等（差异：node 有 legacy 变量回退，py 无——py 执行器从 N23 起注入，无需 legacy 兼容） |
 | **env 注入: 缺变量行为** | `fromEnv()` 缺 `EXECUTION_ID`/`TASK_ID`/`TASK_NAME` **抛错** — `context.ts:72-80` | `from_env()` 缺失回落 `"unknown"` — `context.py:139-142` | ⚠️ node 严格抛错 vs py 宽松兜底（node 语境下 fromEnv 抛错在 worker 侧早失败更利于排障；py 脚本形态常见手工直跑，兜底更友好） |
@@ -72,10 +72,11 @@ fail-closed 语义。能力对照如下：
    `HttpClient.get()` 拿到的是原始 httpx Response（含 envelope）。任务
    代码若跨语言移植，注意这一格。**不收敛裁定**：py 返回 Response 对象
    是刻意的（保留 headers/status 全量信息），收敛会破坏既有任务。
-2. **unwrap 严格度**：两侧解包都要求 `code+message+data` 严格三元组；
-   cli/mcp 用宽松 `data+(code|message)` 启发式——分歧已留档
-   `packages/contract-fixtures/contract.json` 的 `knownDivergence`
-   （admin-api 恒发 code，真实流量不受影响，四端统一需 breaking release）。
+2. **unwrap 严格度（PK-06 已关闭）**：自 2026-09-14（PK-06 统一批次）起，四端
+   （`acf-cli` / `mcp-server` / `@autocodeflow/sdk` / `autoflow-sdk`）的信封拆包判据
+   已完全一致：**载荷是对象、含 `data` 键、且 `code` 为数值**（`message` 是否存在不再
+   参与判定）。`packages/contract-fixtures/contract.json` 的 `knownDivergence`
+   仅保留为 2026-09-13 之前旧版 cli/mcp 宽松启发式的历史档案。
 3. **failureReason 校验位置**：**两侧都在客户端早拒**，白名单同源
    （`packages/executor-protocol/protocol.json` 的
    `failureReason.executorReportable`，12 项）：py 抛 `ValueError`
@@ -117,17 +118,22 @@ fail-closed 语义。能力对照如下：
   `{retry: null}` 整体关闭）。仍缺的是**按请求**覆盖（当前只在构造期
   生效）——需要再说。
 
-### 官方示例（examples/，ECO-01 起）
+### 官方示例（examples/）
+
+仓库提供 **8 组**自包含官方示例（含 3 组 v2.3.0 零依赖业务场景示例、4 组双 SDK 回调/私服示例与 1 组桌面 RPA 脚本集合），总索引见 [examples/README.md](../examples/README.md)：
 
 | 示例 | 语言 | 演示内容 | 目录 |
 |------|------|---------|------|
+| 每日报表导出 | Node | 定时 cron + CSV 文件产物 + 告警占位（零依赖 TTFV 首跑） | [examples/daily-report](../examples/daily-report) |
+| 内网巡检 | Node | 批量 TCP 连通性并发探测 + 结果汇总回调（零依赖） | [examples/intranet-inspection](../examples/intranet-inspection) |
+| 桌面数据填报 | Node | 桌面执行器标签路由 + 本地 CSV 校验与 JSON 产物输出 | [examples/desktop-data-entry](../examples/desktop-data-entry) |
 | 回调示例 | Python | 能力探测（`ctx.callback.enabled`）+ `report_success`/`report_failure` 双路径 + `CallbackDisabledError` 降级 | [examples/callback-report](../examples/callback-report) |
 | 回调示例 | Node | 同上对等实现（`ctx.http.enabled` + `ctx.reportSuccess`/`reportFailure`） | [examples/callback-report-node](../examples/callback-report-node) |
 | 私服依赖示例 | Python | 任务 `requirements` + executor `PYPI_REGISTRY_URL` → per-task venv `uv pip install --index-url` | [examples/private-registry-deps](../examples/private-registry-deps) |
-| 私服依赖示例 | Node | 任务 `requirements` + executor `NPM_REGISTRY_URL`（可选 `NPM_REGISTRY_TOKEN`）→ 隔离目录 `.npmrc` + `npm install --prefix` | [examples/private-registry-deps-node](../examples/private-registry-deps-node) |
+| 私服依赖示例 | Node | 任务 `requirements` + executor `NPM_REGISTRY_URL`（可选 `NPM_REGISTRY_TOKEN` / Basic）→ 隔离目录 `.npmrc` + `npm install --prefix` | [examples/private-registry-deps-node](../examples/private-registry-deps-node) |
+| 桌面自动化集合 | Python / Node | 浏览器（Selenium/Puppeteer）、桌面 GUI、文件系统与系统集成 RPA 多脚本 | [examples/desktop-automation](../examples/desktop-automation) |
 
-每个示例自包含：入口脚本（与双 SDK 源码逐行核对的真实 API）+ README
-（executor 侧前置条件）+ `task.example.json`（最小任务配置）。
+前 7 组示例均自包含：入口脚本 + README（前置条件与运行命令）+ `task.example.json`（最小任务配置）。
 
 `task.example.json` 是**可直接当作 `POST /api/tasks` 请求体**的 `CreateTaskDto`
 载荷（键集 ⊆ DTO 白名单、必填 `name`/`triggerType` 齐全、`cronExpression` 是
@@ -173,9 +179,9 @@ EP409、PyPI 必回 400（File already exists），发布链无覆盖逻辑。�
 审批门需重新 Approve）；仅当需要更换 tag 指向的内容时才删 tag 重打，
 且已发布成功的一侧必须 bump 版本换新 tag（详见 release.yml 头注释）。
 
-> `acf-cli` 暂不发布：npm 上 `acf-cli` 名称已被第三方占用，需先改名
-> （如 `@autocodeflow/cli`——勿用 `@autoflow/*`，该 org 已被抢注）再
-> 加入发布矩阵。本地演练（不真发布）：
+> 四包（含已改名为 `@autocodeflow/cli` 的 CLI，勿用被占用的 `@autoflow/*`）均已接入
+> `release.yml` lockstep 发布矩阵；桌面执行器（`apps/executor-desktop`）独立走
+> `desktop-v*` tag 与 `.github/workflows/release-desktop.yml`。本地演练（不真发布）：
 > `npm publish --access public --dry-run`（node 包）、
 > `python -m build --wheel`（python 包，产物 `dist/` 已 gitignore）。
 
@@ -496,8 +502,9 @@ if __name__ == "__main__":
 ```
 
 回调请求体与 Node SDK 完全一致，遵循 `CallbackItemDto` 字段
-（`executionId` / `status: success|failed` / `executorAddress` / `logs` /
-`errorMessage` / `failureReason` / `durationMs`）。需要更细粒度控制（如批量
+（`executionId` / `status: success|failed` / `executorAddress` /
+`deviceFingerprint` / `exitCode` / `logs` / `errorMessage` /
+`failureReason` / `durationMs` / `artifacts` / `result`）。需要更细粒度控制（如批量
 上报或自定义字段）时，可直接使用底层客户端：
 
 ```python
@@ -658,10 +665,12 @@ export default async function main() {
 > 不能访问其他需要用户 JWT 的管理端点；也不要将其持久化或跨执行复用——它绑定
 > 单次 execution 且会过期，任何越权使用都会 fail-closed。
 
-## 执行器注册流程
+## 执行器注册与任务包上传流程
 
-1. 在管理后台「执行器管理」页面点击「新增执行器」
-2. 填写执行器名称、类型（Python/Node）和访问地址
-3. 上传或填写 `manifest.yaml` / `manifest.json`
-4. 平台自动同步任务定义，执行器注册完成
-5. 在任务管理页面可选择该执行器下的任务类型创建任务
+执行器采用**自注册 + 心跳保活**机制，无需在后台手工上传执行器 manifest：
+
+1. **接入执行器**：在管理后台「执行器管理 → 安装向导」（`/executors/install`，ADMIN）复制一键安装命令，或在目标主机部署 `executor-node` / `executor-python` / `executor-desktop` 并配置 `ADMIN_API_URL` 与 `EXECUTOR_SECRET`。
+2. **自动注册与能力上报**：执行器启动后向 `POST /api/executors/register` 自注册，自动上报支持的运行时（`node` / `python` / `shell`）、协议版本、设备指纹及并发上限，并按心跳周期持续保活（NAT/内网可设 `EXECUTOR_PULL_MODE=true` 免开放入站端口）。
+3. **部署任务代码**：
+   - 轻量脚本可直接在「任务管理 → 新建任务」粘贴 Glue 脚本或从官方模板实例化；
+   - 带第三方依赖或需要 `manifest.yaml` 的打包任务，将 `manifest.yaml` 置于 zip 包根目录，通过管理后台「应用管理」或 `POST /api/applications/upload`（亦可用 `acf app upload`）上传后关联到任务。

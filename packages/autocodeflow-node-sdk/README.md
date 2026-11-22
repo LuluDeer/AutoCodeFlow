@@ -85,8 +85,8 @@ if (!http.enabled) throw new Error(http.disabledReason);
 const tasks = await http.get('/api/tasks');
 ```
 
-凭证缺失时构造不报错，但任何请求方法抛出带 `disabledReason` 的明确错误
-（N23 fail-closed 语义，与 Python `CallbackDisabledError` 对齐）。
+凭证缺失时构造不报错，但任何请求方法抛出 `HttpClientDisabledError`（继承 `Error`，带 `disabledReason`；
+N23 fail-closed 语义，与 Python `CallbackDisabledError` 对齐）。
 
 **重试与熔断（默认开启）**：`GET`/`HEAD` 等**幂等方法**在可重试状态下会自动重试 ——
 `429/500/502/503/504` 或网络层错误，共 `maxRetries = 3`（总 4 次尝试），
@@ -160,8 +160,8 @@ try {
 
 ## 版本与发布
 
-- 版本策略：与 `autoflow-sdk`（PyPI）、`autocodeflow-mcp-server` 走
-  **lockstep** 单版本线，当前 `2.3.0`。<!-- x-release-please-version -->
+- 版本策略：与 `autoflow-sdk`（PyPI）、`autocodeflow-mcp-server`（npm）、
+  `@autocodeflow/cli`（npm）四包走 **lockstep** 单版本线，当前 `2.3.0`。<!-- x-release-please-version -->
 - 发布管道：[.github/workflows/release.yml](../../.github/workflows/release.yml)。
   push tag `vX.Y.Z` 触发：版本一致性守卫（tag 必须等于本包
   `package.json` version，不一致直接 fail）→ `publish-npm` job

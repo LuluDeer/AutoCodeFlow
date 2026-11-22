@@ -89,7 +89,7 @@ if command -v npm &> /dev/null; then
     echo "使用 npm: $(npm --version)"
     
     # 进入 Node.js 执行器目录
-    EXECUTOR_NODE_DIR="../../../apps/executor-node"
+    EXECUTOR_NODE_DIR="../../apps/executor-node"
     if [ -d "$EXECUTOR_NODE_DIR" ]; then
         echo "进入 Node.js 执行器目录: $EXECUTOR_NODE_DIR"
         cd "$EXECUTOR_NODE_DIR"
@@ -136,8 +136,8 @@ if [ "${MACHINE}" = "Mac" ]; then
     
 elif [ "${MACHINE}" = "Linux" ]; then
     echo "Linux 特定配置:"
-    echo "1. 如果需要截图功能，已安装 scrot 工具"
-    echo "2. 如果需要通知功能，已安装 libnotify-bin"
+    echo "1. 若已勾选桌面 GUI 自动化依赖，脚本已安装 scrot 截图工具"
+    echo "2. 如果需要桌面通知功能，请手动安装 libnotify-bin（sudo apt-get install -y libnotify-bin）"
     echo "3. 如果使用 X11，确保 DISPLAY 环境变量正确设置"
     
 elif [[ "${MACHINE}" == *"MINGW"* ]] || [[ "${MACHINE}" == *"Git"* ]]; then

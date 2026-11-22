@@ -19,10 +19,11 @@ export default defineConfig({
   title: 'AutoCodeFlow SDK 文档',
   description:
     'AutoCodeFlow 双 SDK（Node.js / Python）使用指南、能力矩阵、官方示例与发布契约',
-  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }]], // logo.svg = 狐狸形象（build-fox-assets.py 生成）
+  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: `${BASE_PATH}logo.svg` }]], // logo.svg = 狐狸形象（build-fox-assets.py 生成）
   ignoreDeadLinks: false,
   srcExclude: ['README.md'], // README 仅入库说明，不作为站点页面路由
   themeConfig: {
+    logo: '/logo.svg',
     nav: [
       { text: '首页', link: '/' },
       { text: '快速开始', link: '/getting-started' },
@@ -32,6 +33,27 @@ export default defineConfig({
       { text: '示例库', link: '/examples' },
       { text: '契约', link: '/contract' },
       { text: '发布', link: '/release' },
+      {
+        text: '平台文档',
+        items: [
+          {
+            text: '平台文档中心',
+            link: 'https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/README.md',
+          },
+          {
+            text: '部署指南',
+            link: 'https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/deployment.md',
+          },
+          {
+            text: 'CLI 命令地图（69 命令）',
+            link: 'https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/atlas/05-interfaces/cli.md',
+          },
+          {
+            text: 'MCP 工具地图（56 工具）',
+            link: 'https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/atlas/05-interfaces/mcp-tools.md',
+          },
+        ],
+      },
     ],
     sidebar: [
       {

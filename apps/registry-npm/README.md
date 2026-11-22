@@ -1,6 +1,6 @@
 # registry-npm — 私有 npm 仓库（Verdaccio）
 
-> **受众**：配置私有 npm 源的运维 / 开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：配置私有 npm 源的运维 / 开发者 · **状态**：稳定 · **最后核对**：2026-11-22
 
 AutoCodeFlow 的私有 npm registry，用于托管 `@autoflow/*` 内部包并缓存
 npmjs 公共包。采用官方 [Verdaccio](https://verdaccio.org/) 镜像部署，

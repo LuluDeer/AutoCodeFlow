@@ -1,6 +1,6 @@
 # 私服依赖示例任务（Python SDK）
 
-> **受众**：要在任务里装私有 PyPI 依赖的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：要在任务里装私有 PyPI 依赖的开发者 · **状态**：稳定 · **最后核对**：2026-11-22
 
 演示**任务级依赖声明（requirements，W-21）+ 私服 PyPI registry** 的完整链路：
 
@@ -20,7 +20,7 @@ admin 下发任务(requirements)
 
 | 配置 | 位置 | 说明 |
 |------|------|------|
-| `PYPI_REGISTRY_URL` | executor-python 的 `.env` / 启动环境 | 私服 PyPI 地址（如 `http://registry-pypi:3110/simple`）。**未配置时走公共 PyPI**；平台内置私服见 `apps/registry-pypi` |
+| `PYPI_REGISTRY_URL` | executor-python 的 `.env` / 启动环境 | 私服 PyPI 地址（如 `http://registry-pypi:8003/simple/`）。**未配置时走公共 PyPI**；平台内置私服见 `apps/registry-pypi` |
 | 网络可达 | executor 容器/主机 | 需能访问私服地址；内网部署时确认防火墙放行 |
 | 私有包已发布 | registry-pypi | 私服中需存在 `acfdemopkg` / `example_pkg` 等示例包（BUG-18 链路攻坚轮已在 registry-pypi 侧准备演示包素材） |
 

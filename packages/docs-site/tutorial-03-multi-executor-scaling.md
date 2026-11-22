@@ -1,6 +1,6 @@
 # 教程 03 · 多执行器扩容
 
-> 重组自 [docs/tutorials/03-multi-executor-scaling.md](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/tutorials/03-multi-executor-scaling.md)（DOC-06）。
+> 重组自 [docs/tutorials/03-multi-executor-scaling.md](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/tutorials/03-multi-executor-scaling.md)（DOC-06）。
 > 目标：把执行器从 1 台扩到 2 台，理解分派逻辑与灰度发布。
 
 ## 0. 平台如何挑执行器
@@ -40,7 +40,7 @@ curl -fsSL 'http://<admin>:3105/api/executors/install.sh' \
 
 `--runtime` 支持 `node`/`python`/`universal`。预期：「执行器」页约 10 秒内
 出现新的在线行。脚本细节见
-[部署指南](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/deployment.md)。
+[部署指南](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/deployment.md)。
 
 ## 2. 验证负载分派
 
@@ -70,7 +70,7 @@ curl -fsSL 'http://<admin>:3105/api/executors/install.sh' \
 提升其余台；首批失败自动回滚已触发升级的部署（重新部署上一版本）。
 **注意**：批次是 admin-api 进程内状态，服务重启即暂停（遗留批次标 failed
 需人工重发）；批次硬超时 15 分钟。契约详见
-[API 参考·Rollout](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/api-reference.md)。
+[API 参考·Rollout](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/api-reference.md)。
 
 ## 4. 容量与隔离的进阶手段
 
