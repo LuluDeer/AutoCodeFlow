@@ -840,6 +840,15 @@ export default {
   // AUDIT-01：action 代码中文化（未知值回退原始代码，信息不抹零）
   'audit.operator.system': '系统（调度器/API）',
   // R6-P3：标点属于词条——tooltip 里 id 与「（打开详情）」之间不能由代码拼全角括号
+  'audit.group.task': '任务',
+  'audit.group.application': '应用',
+  'audit.group.sop': 'SOP',
+  'audit.group.auth': '认证与密钥',
+  'audit.group.project': '项目',
+  'audit.group.notification': '通知',
+  'audit.group.eventSubscription': '事件订阅',
+  'audit.group.configExecutor': '配置与执行器',
+  'audit.group.registry': '制品库',
   'audit.resourceId.openHint': '{{id}}（打开详情）',
   'audit.action.auth_login': '登录',
   'audit.action.auth_logout': '退出登录',
