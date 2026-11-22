@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { createHash } from "node:crypto";
-import { LessThan, MoreThan, Repository } from "typeorm";
+import { In, LessThan, MoreThan, Repository } from "typeorm";
 import { AppError } from "../../../common/errors/app-error";
 import {
   AgentApproval,
@@ -755,6 +755,44 @@ export class AgentApprovalsService {
       take: 1,
     });
     return pending.length > 0;
+  }
+
+  /**
+   * 会话是否有一张**已批准、尚未被 consume** 的人工审批单等待恢复消费
+   * （R296 granted 丢失唤醒补偿的 wakeup probe 判据）。
+   *
+   * 谓词钉死 `scope='once'` + `status='granted'`：
+   *   · `scope='once'`——会话级授权（`scope='session'`）是已批单派生的**内部
+   *     实现细节**，不是「谁点了批准」，不能算进来（照抄 `listForSession`
+   *     的纪律；只凭它误 resume 会把无人工批准的会话往前推）。
+   *   · `status='granted'`——已领取的 `consumed` 单不再需要恢复；`pending`
+   *     由 `hasPendingForSession` 单独管。
+   *
+   * 与紧邻的 `hasPendingOrGrantedForSession`（sweep 跳过判据，pending+granted）
+   * 语义不重叠：那个回答「会话是否还在等人处置」，本方法回答「是否确实有
+   * 一张待消费的 granted 单可供补偿入队」。
+   */
+  async hasGrantAwaitingResumeForSession(sessionId: string): Promise<boolean> {
+    const pending = await this.approvals.find({
+      where: { sessionId, scope: "once", status: "granted" },
+      take: 1,
+    });
+    return pending.length > 0;
+  }
+
+  /**
+   * 会话是否还挂着**需要人工处置的**审批单（waiting_input sweep 的跳过判据）。
+   *
+   * `pending` 尚未被批准；`granted` 已批准但尚未被 consume——两者都意味着会话
+   * 的等待尚未结束（R296 竞态会让 granted 单挂在 waiting_input 上），不能收敛。
+   * `consumed` / `denied` / `expired` 都已终局，不拦。
+   */
+  async hasPendingOrGrantedForSession(sessionId: string): Promise<boolean> {
+    const open = await this.approvals.find({
+      where: { sessionId, status: In(["pending", "granted"]) },
+      take: 1,
+    });
+    return open.length > 0;
   }
 
   /**

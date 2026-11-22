@@ -1,6 +1,8 @@
 import type { JobsOptions } from "bullmq";
 
 import {
+  approvalWakeupDeduplicationId,
+  approvalWakeupJobOptions,
   autoResumeJobId,
   autoResumeJobOptions,
   manualResumeJobOptions,
@@ -78,6 +80,65 @@ describe("agent-job-options —— BullMQ job 选项的合法性", () => {
 
     it("④ 对照：`${id}:resume`（2 段）**会**被拒绝 —— 防止有人「优化」回带冒号的形态", () => {
       expect(bullmqRejects(`${SID}:resume`)).toBe(true);
+    });
+  });
+
+  /**
+   * R323：补偿 job（reason=resume:approval）换独立 dedup 命名空间，让两来源并存。
+   * 核心反证是 ③——钉死补偿键与手动 resume 键永不撞；两来源双跑由 markRunning CAS
+   * 兜底，不靠 dedup 吞并。此组为纯函数级断言，不含 Redis。
+   */
+  describe("R323 · 审批补偿 job 的独立 dedup 命名空间", () => {
+    it("① dedup id 精确 = resume-wakeup-s-1-3，无冒号、过 BullMQ 校验，跨 session/steps 不撞", () => {
+      const id = approvalWakeupDeduplicationId("s-1", 3);
+      expect(id).toBe("resume-wakeup-s-1-3");
+      expect(id).not.toContain(":");
+      expect(bullmqRejects(id)).toBe(false);
+      // 跨 session / 跨 steps 均不相撞。
+      expect(approvalWakeupDeduplicationId("s-2", 3)).not.toBe(id);
+      expect(approvalWakeupDeduplicationId("s-1", 4)).not.toBe(id);
+    });
+
+    it("② opts 结构精确：attempts/removeOnComplete/deduplication.id，且无 keepLastIfActive", () => {
+      const opts = approvalWakeupJobOptions("s-1", 3);
+      expect(opts).toEqual({
+        attempts: 1,
+        removeOnComplete: true,
+        deduplication: { id: "resume-wakeup-s-1-3" },
+      });
+      // 两来源天然并存，双跑由 CAS 兜底，无需靠 keepLastIfActive 吞并。
+      expect(opts.deduplication).not.toHaveProperty("keepLastIfActive");
+    });
+
+    it("③ 与手动 resume 的 dedup id **不同**（本切片核心反证：两来源不撞键）", () => {
+      const wakeupId = approvalWakeupJobOptions("s-1", 3).deduplication?.id;
+      const manualId = manualResumeJobOptions("s-1", 3).deduplication?.id;
+      expect(manualId).toBe("resume-s-1-3");
+      expect(wakeupId).toBe("resume-wakeup-s-1-3");
+      expect(wakeupId).not.toBe(manualId);
+      // 跨多组 session/steps 都不撞，防止只在某些入参下碰巧分键。
+      for (const [sid, steps] of [
+        ["s-1", 0],
+        ["s-2", 3],
+        ["3f2b9c1e", 9],
+      ] as const) {
+        expect(approvalWakeupJobOptions(sid, steps).deduplication?.id).not.toBe(
+          manualResumeJobOptions(sid, steps).deduplication?.id,
+        );
+      }
+    });
+
+    it("④ 确定性：同入参同 dedup id，重复 probe 幂等仍成立", () => {
+      // 补偿 probe 可被 markWaiting 尾钩多次触发；纯函数下重复调用恒得同一 dedup id，
+      // 这是 BullMQ 去重（同键重复 add 为 no-op / 幂等）成立的前提。
+      const first = approvalWakeupJobOptions("s-1", 3);
+      for (let i = 0; i < 5; i += 1) {
+        expect(approvalWakeupDeduplicationId("s-1", 3)).toBe(
+          approvalWakeupDeduplicationId("s-1", 3),
+        );
+        expect(approvalWakeupJobOptions("s-1", 3)).toEqual(first);
+      }
+      expect(first.deduplication?.id).toBe("resume-wakeup-s-1-3");
     });
   });
 });

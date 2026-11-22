@@ -1064,6 +1064,7 @@ describe("AgentSessionService · 审批超时收口（PK-19）", () => {
           sessionIds: [],
         })),
         hasPendingForSession: jest.fn(),
+        hasPendingOrGrantedForSession: jest.fn(),
       },
     });
     await expect(svc.sweepStaleApprovals()).resolves.toBe(0);
@@ -1199,11 +1200,30 @@ describe("AgentSessionService · 等待输入超时收口（PK-19 续）", () =>
     };
     const approvals = {
       hasPendingForSession: jest.fn(async () => true),
+      hasPendingOrGrantedForSession: jest.fn(async () => true),
       expireStalePending: jest.fn(),
     };
     const svc = make(sessions, approvals);
     await expect(svc.sweepAbandonedWaitingInput()).resolves.toBe(0);
     expect(sessions.update).not.toHaveBeenCalled();
+  });
+
+  it("waitingFor='等待审批' 且有 granted 未消费单 → 跳过不收敛（resolves 0，update 未调用）", async () => {
+    const sessions = {
+      find: jest.fn(async () => [
+        { id: "s3", waitingFor: "等待审批 apr-granted" },
+      ]),
+      findOne: jest.fn(),
+      update: jest.fn(),
+    };
+    const approvals = {
+      hasPendingForSession: jest.fn(async () => false),
+      hasPendingOrGrantedForSession: jest.fn(async () => true),
+    };
+    const svc = make(sessions, approvals);
+    await expect(svc.sweepAbandonedWaitingInput()).resolves.toBe(0);
+    expect(sessions.update).not.toHaveBeenCalled();
+    expect(approvals.hasPendingOrGrantedForSession).toHaveBeenCalledWith("s3");
   });
 });
 

@@ -43,6 +43,7 @@ import {
   AGENT_APPROVAL_TTL_MS,
   AgentApprovalsService,
 } from "./agent-approvals.service";
+import { WAITING_FOR_APPROVAL_PREFIX } from "./agent-approval-waiting";
 import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 import { LeaderGateService } from "../../../common/leader-gate/leader-gate.service";
 // R9：23505 按约束名归因（四态语义见 util 头注）。
@@ -489,6 +490,16 @@ export type AppendedStep = AgentStep & {
 @Injectable()
 export class AgentSessionService {
   private readonly logger = new Logger(AgentSessionService.name);
+
+  /**
+   * R296 尾钩端口：markWaiting 命中后补偿「granted 未消费」的入队。
+   * 由 AgentModule.onModuleInit 反向注册（本服务不注入 wakeup，避免 DI 成环）。
+   */
+  approvalWakeupProbe: ((sessionId: string) => Promise<void>) | null = null;
+
+  attachApprovalWakeupProbe(probe: (sessionId: string) => Promise<void>): void {
+    this.approvalWakeupProbe = probe;
+  }
 
   constructor(
     @InjectRepository(AgentSession)
@@ -1048,6 +1059,16 @@ export class AgentSessionService {
       this.logger.debug(
         `markWaiting(${id}) skipped — the session is already terminal`,
       );
+    } else {
+      // R296：必须在 UPDATE 命中之后——提前 probe 会回读到 running，补偿失效。
+      // 旁路 fail-closed：只 warn 不 throw，绝不影响审批申请主链。
+      try {
+        await this.approvalWakeupProbe?.(id);
+      } catch (err) {
+        this.logger.warn(
+          `markWaiting(${id}) approval wakeup probe failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 
@@ -2098,8 +2119,9 @@ export class AgentSessionService {
    * PK-19 续：等待人工输入的会话超时收口（30 天）。
    *
    * 审批面由 `sweepStaleApprovals`（7 天）处理；这里兜住「等待澄清」等其它
-   * waiting_input 场景——它们没有 TTL 时同样永久挂起。仍挂在**未过期**审批上的
-   * 会话跳过（交给审批 TTL 流程，避免两套规则互相抢）。
+   * waiting_input 场景——它们没有 TTL 时同样永久挂起。仍挂着 pending 审批的
+   * 会话跳过（交给审批 TTL 流程）；R296 竞态下 granted 未 consume 的单也跳过
+   * （否则用户已批准的会话会被误判 abandoned → 收敛 failed）。
    */
   async sweepAbandonedWaitingInput(now: Date = new Date()): Promise<number> {
     const cutoff = new Date(now.getTime() - STALE_WAITING_INPUT_TIMEOUT_MS);
@@ -2110,9 +2132,9 @@ export class AgentSessionService {
     let converged = 0;
     for (const row of rows) {
       if (
-        row.waitingFor?.startsWith("等待审批") &&
+        row.waitingFor?.startsWith(WAITING_FOR_APPROVAL_PREFIX) &&
         this.approvals &&
-        (await this.approvals.hasPendingForSession(row.id))
+        (await this.approvals.hasPendingOrGrantedForSession(row.id))
       ) {
         continue;
       }
@@ -2155,7 +2177,8 @@ export class AgentSessionService {
         select: { id: true, status: true, waitingFor: true },
       });
       if (!session || session.status !== "waiting_input") continue;
-      if (!session.waitingFor?.startsWith("等待审批")) continue;
+      if (!session.waitingFor?.startsWith(WAITING_FOR_APPROVAL_PREFIX))
+        continue;
       if (await this.approvals.hasPendingForSession(sessionId)) continue;
       await this.finish(sessionId, "failed", {
         errorMessage:

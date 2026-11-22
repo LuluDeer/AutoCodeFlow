@@ -12,6 +12,7 @@ import {
   computeApprovalPolicyFingerprint,
   isSessionScopeEligible,
 } from "../runtime/agent-approvals.service";
+import { waitingForApproval } from "../runtime/agent-approval-waiting";
 import { AgentBoundaryService } from "../boundary/agent-boundary.service";
 import { EXECUTABLE_SOURCE_KEYS } from "../boundary/agent-boundary.service";
 import { SopService } from "../../sop/sop.service";
@@ -1328,7 +1329,10 @@ export class ToolExecutorService implements AgentToolExecutor {
     });
     // waiting_input 一旦可见，新 worker 就可能开始重放；其候选行必须先落盘。
     await persistAwaiting();
-    await this.sessions.markWaiting(session.id, `等待审批 ${approvalKey}`);
+    await this.sessions.markWaiting(
+      session.id,
+      waitingForApproval(approvalKey),
+    );
     this.logger.log(
       `Agent approval requested: session=${session.id} tool=${spec.name} approval=${approvalKey}`,
     );
