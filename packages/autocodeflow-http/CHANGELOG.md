@@ -2,6 +2,13 @@
 
 所有对外可见的变更记录在本文件。格式参照 Keep a Changelog；版本遵循语义化版本。
 
+## [0.3.3](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-http-v0.3.2...autocodeflow-http-v0.3.3) (2026-11-22)
+
+
+### Documentation
+
+* **surface:** 刷新 README、文档站、子包与示例门面至 v2.3.0 ([1a2fe28](https://github.com/LuluDeer/AutoCodeFlow/commit/1a2fe28111d2259404ee89183eb4e0c4dbf21b71))
+
 ## [0.3.2](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-http-v0.3.1...autocodeflow-http-v0.3.2) (2026-10-26)
 
 
