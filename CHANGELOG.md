@@ -1,5 +1,37 @@
 # Changelog
 
+## [2.3.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v2.2.0...v2.3.0) (2026-11-22)
+
+
+### Features
+
+* **admin-web:** 管理台展示版本号改由构建期注入，单一事实源 version.txt（P1-9） ([b95318b](https://github.com/LuluDeer/AutoCodeFlow/commit/b95318b8122c785bc17fef1f8d4764e102b4fde7))
+* **agent,web:** Agent 会话失败可见 —— 收件箱补上「终态」这一格（R279） ([378a124](https://github.com/LuluDeer/AutoCodeFlow/commit/378a12431db8e2b60bcd597694664b72d94f24b0))
+* **agent:** 「积压」自动补入队 —— 本仓第一条自动处置判据，副作用全部封顶（R216） ([dbea247](https://github.com/LuluDeer/AutoCodeFlow/commit/dbea247b67af1ea7b3746e0834262cadb074e1ec))
+* **agent:** 「队列空转」接线 —— 接管台第五个徽标，阈值由已有量推导（R207） ([3543f93](https://github.com/LuluDeer/AutoCodeFlow/commit/3543f932ced8ffba8f95a8bb8a7b32124a76ddf9))
+* **guards:** `*.selftest.*` 命名即接线契约 —— 把 470 的处置表变成机器判据（R251） ([31ec977](https://github.com/LuluDeer/AutoCodeFlow/commit/31ec97746e55bec692851bd42ce895a5cca972f8))
+* **guards:** 9 个真机探针的「不会静默失效」守卫（R229） ([efbe7eb](https://github.com/LuluDeer/AutoCodeFlow/commit/efbe7eb4b080ff9b3fd016edd164e2897992911a))
+* **guards:** query 参数 `required` 契约守卫 + 回收 7 条欠账（R287） ([3eea12c](https://github.com/LuluDeer/AutoCodeFlow/commit/3eea12ca868b31e36956e9333158ab74653c1a21))
+* **guards:** typecheck:all 必须覆盖 spec 层 —— 把教训 426 机械化（R224） ([65ca921](https://github.com/LuluDeer/AutoCodeFlow/commit/65ca921a1713993e08ca5d335d540bef655d0b20))
+* **guards:** 变异体残留检测（本轮真实残留 3 次，人工发现不可靠） ([6df78af](https://github.com/LuluDeer/AutoCodeFlow/commit/6df78af8d49b28181ff1c129f3d337d402ca65ab))
+* **security,cli:** 审批预览值级凭据脱敏防线 (C1) + acf deploy stop 确认门 (A3)（R289） ([1fb7d6f](https://github.com/LuluDeer/AutoCodeFlow/commit/1fb7d6f914d65aca647c59dd1c96e8edb4118db9))
+
+
+### Bug Fixes
+
+* **agent:** 「积压」判据的真实误报 —— 它的前提 jobId===session.id 只对首跑成立（R215） ([19a56e3](https://github.com/LuluDeer/AutoCodeFlow/commit/19a56e339facf3b1d42eeb2acae127d15a8b5295))
+* **agent:** AGENT_OBSERVATION_TIMEOUT_MS 从配置读 —— 判据文档写了可配但代码是硬编码（R222） ([d1ec671](https://github.com/LuluDeer/AutoCodeFlow/commit/d1ec67101350ff4107f81aa4a337eb9b43cb5fd9))
+* **agent:** 修掉「停摆」判据的真实误报路径 —— 并推翻它自己登记的误报成因（R210） ([d7b9380](https://github.com/LuluDeer/AutoCodeFlow/commit/d7b938074a68b6efa1078f50bf916e2f46bfcf73))
+* **agent:** 观测调用超时 —— 修掉 R212 挖出的洞「Redis 卡住 ⇒ 端点挂死」（R213） ([98b2653](https://github.com/LuluDeer/AutoCodeFlow/commit/98b2653afbde09c3f5367946c337ef207181b9a4))
+* **api:** 稳定 openapi 导出键序并修复 lint/audit ([88003c8](https://github.com/LuluDeer/AutoCodeFlow/commit/88003c8f657b577bbc24d324409a679ad97c8791))
+* **ci:** 修复 develop 首推后的 CI 失败批（secret-scan/迁移/e2e/格式） ([357488c](https://github.com/LuluDeer/AutoCodeFlow/commit/357488c83cd44968df3cfbe97c5e34c91f0ea26b))
+* **ci:** 修复依赖集成后的 secret-scan / bundle-drift / openapi-drift ([4b8f647](https://github.com/LuluDeer/AutoCodeFlow/commit/4b8f64784a75752e9768bcf6b3155147622bdc97))
+* **deps:** 将 acf-cli/mcp-server 的 minimatch override 提升到 11.0.8（GHSA-g3hv-75wg-m249） ([050d0bb](https://github.com/LuluDeer/AutoCodeFlow/commit/050d0bb3f7b4997999c913a58350e3418862d479))
+* **deps:** 收敛 acf-cli/mcp-server 的 minimatch 到 11.0.8 ([2facdbc](https://github.com/LuluDeer/AutoCodeFlow/commit/2facdbc43f934971924f206acdf3d4d6424c63db))
+* **guards:** typecheck:all 还漏了 renderer —— R224 同一根因的推广（R225） ([472ab3b](https://github.com/LuluDeer/AutoCodeFlow/commit/472ab3bed69d6bbd234b28a56ba981ae3fef62dc))
+* **registry:** admin 侧改用独立键 —— 修「包注册中心」页恒 502（R207 真机缺陷） ([ebf6597](https://github.com/LuluDeer/AutoCodeFlow/commit/ebf65974019bd5492e8e3453799dfacb66d28f35))
+* **repo:** 7 个 Python 测试脚本硬编码 `python` —— 新发行版上全部 exit 127（R235） ([747d976](https://github.com/LuluDeer/AutoCodeFlow/commit/747d976031a475edf5b82a521f29e1cc24154f97))
+
 ## [2.2.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v2.1.1...v2.2.0) (2026-11-09)
 
 
