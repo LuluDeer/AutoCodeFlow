@@ -1585,6 +1585,7 @@
         "apps/admin-web/src/pages/task-detail/ExecutionsTab.tsx",
         "apps/admin-web/src/pages/ExecutionsPage.tsx",
         "apps/admin-web/src/pages/AgentSessionsPage.tsx",
+        "apps/admin-web/src/pages/agent-sessions/ToolColumns.tsx",
         "apps/admin-web/src/pages/SopsPage.tsx",
         "apps/admin-web/src/pages/sops/AssignmentClarificationsList.tsx"
       ],
