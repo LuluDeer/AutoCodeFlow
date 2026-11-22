@@ -28,7 +28,7 @@
  *   · 体积超过 DOCS-STYLE §6.2 的 350KB 上限时告警（不失败——上限是为了提醒压缩）。
  */
 import { chromium } from 'playwright-core';
-import { mkdirSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,6 +40,15 @@ const REPO_ROOT = resolve(APP_ROOT, '..', '..');
 export const VIEWPORT = { width: 1760, height: 1100 };
 export const MAX_BYTES = 350 * 1024;
 
+/** 读取 PNG IHDR 头的宽高，断言截图与 VIEWPORT 精确一致。 */
+function readPngSize(file) {
+  const buf = readFileSync(file);
+  if (buf.length < 24 || buf.toString('ascii', 1, 4) !== 'PNG') {
+    throw new Error(`非有效 PNG 文件：${file}`);
+  }
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+
 /**
  * 页面清单。`key` 就是 `docs/assets/screenshots/<lang>/<key>.png` 的文件名，
  * 也就是 README 里 `![](.../<key>.png)` 引用的路径——改名要同步改 README。
@@ -48,26 +57,26 @@ export const MAX_BYTES = 350 * 1024;
 export const PAGES = [
   { key: 'dashboard', path: '/dashboard', wait: '.ant-statistic, [data-testid="dashboard-empty-guide"]' },
   { key: 'tasks', path: '/tasks', wait: '.ant-table-row' },
+  { key: 'task-templates', path: '/task-templates', wait: '.ant-card, .ant-table-row' },
   { key: 'executions', path: '/executions', wait: '.ant-table-row' },
   { key: 'execution-detail', path: null, wait: '.ant-descriptions, .ant-tabs' },
   { key: 'executors', path: '/executors', wait: '.ant-table-row, .ant-card' },
   { key: 'executor-detail', path: null, wait: '.ant-descriptions, .ant-tabs' },
   { key: 'task-detail', path: null, wait: '.ant-descriptions, .ant-tabs' },
-  { key: 'task-templates', path: '/task-templates', wait: '.ant-card, .ant-table-row' },
   { key: 'applications', path: '/applications', wait: '.ant-table-row, .ant-empty' },
   /**
-   * 两张「一条命令跑起来」用的演示图（README 的 One-command demo / 快速开始 小节）：
-   * 它们不是独立页面，而是详情页的一个 Tab + 一次真实执行的产物——所以带 step。
-   * demo-dashboard 与 dashboard 拍的是同一屏：README 里它用于「demo 栈刚起来时
-   * 长什么样」，两处必须同源，所以这里让它**复用** dashboard 的路径，不另造数据。
+   * 「一条命令跑起来」模板执行演示图（README 的 One-command demo / 快速开始 小节）：
+   * 切到模板创建任务的「执行记录」Tab，展示真实执行与产物。
    */
-  { key: 'demo-dashboard', path: '/dashboard', wait: '.ant-statistic', reuse: 'dashboard' },
   {
     key: 'demo-template-run',
-    path: null, // 由 resolveDetailPaths 填：demo-template-backup 任务
+    path: null, // 由 resolveDetailPaths 填：demo-template-backup → demo-from-template → withExec
     wait: '.ant-tabs',
     step: 'executions-tab',
   },
+  { key: 'sops', path: '/sops', wait: '.ant-table-row' },
+  { key: 'audit', path: '/audit', wait: '.ant-table-row' },
+  { key: 'notifications', path: '/notifications', wait: '.ant-tabs-tab' },
 ];
 
 /**
@@ -140,8 +149,11 @@ async function resolveDetailPaths(baseUrl, token, lang) {
   }
   if (withExec) paths['task-detail'] = `/tasks/${withExec.id}`;
   // demo 图要的是一条「从模板创建并跑过一次」的任务（README 讲的是这条链路）；
-  // demo-seed.mjs 里有 demo-template-backup，找不到才退回任意任务。
-  const templateTask = tasks.find((t) => t.name === 'demo-template-backup') ?? withExec;
+  // 按 demo-template-backup → demo-from-template → withExec 顺序回退。
+  const templateTask =
+    tasks.find((t) => t.name === 'demo-template-backup') ??
+    tasks.find((t) => t.name === 'demo-from-template') ??
+    withExec;
   if (templateTask) paths['demo-template-run'] = `/tasks/${templateTask.id}`;
   if (executor) paths['executor-detail'] = `/executors/${executor.id}`;
   void lang;
@@ -257,15 +269,28 @@ async function main() {
         } catch {
           console.warn(`  · ${lang}/${p.key}：等待 ${p.wait} 超时，按当前画面拍摄`);
         }
+        if (p.key === 'dashboard') {
+          await page
+            .waitForSelector('[data-testid="north-star-strict"], [data-testid="north-star-read-failed"]', {
+              timeout: 8_000,
+            })
+            .catch(() => undefined);
+        }
         await page.waitForLoadState('networkidle').catch(() => undefined);
         await page.waitForTimeout(1500);
         const file = join(args.out, lang, `${p.key}.png`);
         await page.screenshot({ path: file });
-        const size = stat(file).size;
+        const dims = readPngSize(file);
+        if (dims.width !== VIEWPORT.width || dims.height !== VIEWPORT.height) {
+          throw new Error(
+            `${lang}/${p.key} 分辨率 ${dims.width}×${dims.height} != ${VIEWPORT.width}×${VIEWPORT.height}`,
+          );
+        }
+        const size = statSync(file).size;
         const flag = size > MAX_BYTES ? ` ⚠ 超过 ${MAX_BYTES / 1024}KB 上限` : '';
-        console.log(`  ✔ ${lang}/${p.key}  ${(size / 1024).toFixed(0)}KB${flag}`);
+        console.log(`  ✔ ${lang}/${p.key}  ${dims.width}×${dims.height}  ${(size / 1024).toFixed(0)}KB${flag}`);
         if (errors.length) console.warn(`    pageerror: ${errors.join(' | ').slice(0, 200)}`);
-        written.push({ lang, key: p.key, file, size });
+        written.push({ lang, key: p.key, file, size, ...dims });
         await ctx.close();
       }
     }

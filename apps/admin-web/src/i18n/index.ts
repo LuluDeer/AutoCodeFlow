@@ -127,6 +127,7 @@ function initI18n(): void {
     },
     lng,
     fallbackLng: 'zh',
+    returnEmptyString: true, // i18next 27 默认改为 false；保留蓄意留白列头（如 execs.col.action=''）不回退显示 raw key
     interpolation: { escapeValue: false }, // React 已转义，无需 i18next 二次转义
     react: { useSuspense: false },
   });

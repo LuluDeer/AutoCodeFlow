@@ -39,23 +39,39 @@ function mkWorkDir(empty) {
   fs.mkdirSync(metaDir, { recursive: true });
   const now = Date.now();
   const MIN = 60_000;
-  const longName = '跨境电商订单对账与发票归档批处理（华东节点）';
+  const isEn = LANG === 'en';
+  const longName = isEn
+    ? 'Cross-border Order Reconciliation & Invoice Archival Batch (East Region)'
+    : '跨境电商订单对账与发票归档批处理（华东节点）';
   const records = [
-    { executionId: 'e1f0a2b3-c7d8-4e5f-9a01-234567890abc', taskId: 't-1001', taskName: longName, startTime: now - 8 * MIN, endTime: now - 5 * MIN, status: 'failed', exitCode: 1, errorMessage: 'python: No module named pandas —— 解释器 3.11 准备失败：下载超时（registry.npmmirror.com 连接被重置），请检查网络或改用离线包' },
+    {
+      executionId: 'e1f0a2b3-c7d8-4e5f-9a01-234567890abc',
+      taskId: 't-1001',
+      taskName: longName,
+      startTime: now - 8 * MIN,
+      endTime: now - 5 * MIN,
+      status: 'failed',
+      exitCode: 1,
+      errorMessage: isEn
+        ? 'python: No module named pandas — Python 3.11 runtime prep failed: download timeout (mirror connection reset), check network or use offline cache'
+        : 'python: No module named pandas —— 解释器 3.11 准备失败：下载超时（registry.npmmirror.com 连接被重置），请检查网络或改用离线包',
+    },
     { executionId: 'e2f0a2b3-c7d8-4e5f-9a01-234567890abd', taskId: 't-1001', taskName: longName, startTime: now - 3 * 60 * MIN, endTime: now - 2 * 60 * MIN, status: 'success', exitCode: 0 },
     { executionId: 'e3f0a2b3-c7d8-4e5f-9a01-234567890abe', taskId: 't-1001', taskName: longName, startTime: now - 5 * 60 * MIN, endTime: now - 4 * 60 * MIN, status: 'success', exitCode: 0 },
-    { executionId: 'e4f0a2b3-c7d8-4e5f-9a01-234567890abf', taskId: 't-1002', taskName: '库存系统定时对账', startTime: now - 30 * MIN, endTime: now - 28 * MIN, status: 'success', exitCode: 0 },
-    { executionId: 'e5f0a2b3-c7d8-4e5f-9a01-234567890ac0', taskId: 't-1002', taskName: '库存系统定时对账', startTime: now - 26 * 60 * MIN, status: 'running' },
-    { executionId: 'e6f0a2b3-c7d8-4e5f-9a01-234567890ac1', taskId: 't-1003', taskName: '客户资料增量同步（CRM → 数据仓库）', startTime: now - 20 * MIN, endTime: now - 12 * MIN, status: 'failed', exitCode: 2, errorMessage: 'HTTP 502 Bad Gateway: upstream connect error or disconnect/reset before headers' },
-    { executionId: 'e7f0a2b3-c7d8-4e5f-9a01-234567890ac2', taskId: 't-1004', taskName: '月度经营分析报表', startTime: now - 26 * 60 * MIN, endTime: now - 25 * 60 * MIN, status: 'success', exitCode: 0 },
-    { executionId: 'e8f0a2b3-c7d8-4e5f-9a01-234567890ac3', taskId: 't-1005', taskName: '供应商结算单生成', startTime: now - 3 * 24 * 60 * MIN, endTime: now - 3 * 24 * 60 * MIN + 40000, status: 'failed', exitCode: 1 },
+    { executionId: 'e4f0a2b3-c7d8-4e5f-9a01-234567890abf', taskId: 't-1002', taskName: isEn ? 'Scheduled Inventory Reconciliation' : '库存系统定时对账', startTime: now - 30 * MIN, endTime: now - 28 * MIN, status: 'success', exitCode: 0 },
+    { executionId: 'e5f0a2b3-c7d8-4e5f-9a01-234567890ac0', taskId: 't-1002', taskName: isEn ? 'Scheduled Inventory Reconciliation' : '库存系统定时对账', startTime: now - 26 * 60 * MIN, status: 'running' },
+    { executionId: 'e6f0a2b3-c7d8-4e5f-9a01-234567890ac1', taskId: 't-1003', taskName: isEn ? 'Incremental Customer Sync (CRM -> Data Warehouse)' : '客户资料增量同步（CRM → 数据仓库）', startTime: now - 20 * MIN, endTime: now - 12 * MIN, status: 'failed', exitCode: 2, errorMessage: 'HTTP 502 Bad Gateway: upstream connect error or disconnect/reset before headers' },
+    { executionId: 'e7f0a2b3-c7d8-4e5f-9a01-234567890ac2', taskId: 't-1004', taskName: isEn ? 'Monthly Operations Analytics Report' : '月度经营分析报表', startTime: now - 26 * 60 * MIN, endTime: now - 25 * 60 * MIN, status: 'success', exitCode: 0 },
+    { executionId: 'e8f0a2b3-c7d8-4e5f-9a01-234567890ac3', taskId: 't-1005', taskName: isEn ? 'Supplier Settlement Statement Generator' : '供应商结算单生成', startTime: now - 3 * 24 * 60 * MIN, endTime: now - 3 * 24 * 60 * MIN + 40000, status: 'failed', exitCode: 1 },
   ];
   records.forEach((r, i) => fs.writeFileSync(path.join(metaDir, 'meta-' + String(i).padStart(4, '0') + '.json'), JSON.stringify(r)));
   const longLog = Array.from({ length: 60 }, (_, i) => '2026-10-20T06:12:' + String(i).padStart(2, '0') + '.000Z [INFO] [23fb6898-e228-4ca2-8ed4-956758b5d2f0] sync batch #' + i + ' done rows=' + (1000 + i) + ' elapsed=' + (120 + i) + 'ms strategy=upsert-on-conflict target=warehouse.fact_orders_2026 partition=region=cn-east');
+  const names = isEn
+    ? ['Data Sync Bot', 'Report Generator Service', longName + ' (Legacy)', 'Inventory Reconciliation Daemon', 'Customer Cleansing Pipeline']
+    : ['数据同步机器人', '报表生成服务', longName + '（旧版）', '库存对账守护进程', '客户资料清洗管道'];
   for (let a = 1; a <= 5; a++) {
     const appId = 'a1b2c3d4-0000-4000-8000-00000000000' + a;
     const appA = path.join(root, 'apps', appId);
-    const names = ['数据同步机器人', '报表生成服务', longName + '（旧版）', '库存对账守护进程', '客户资料清洗管道'];
     const relA1 = path.join(appA, 'releases', '1.4.2-3fa1b2c3-0000-4000-8000-00000000000a');
     const relA2 = path.join(appA, 'releases', '1.4.3-3fa1b2c3-0000-4000-8000-00000000000b');
     fs.mkdirSync(relA1, { recursive: true });
@@ -172,10 +188,16 @@ const PROBE = (label) => {
   // 但 CI 上可能是 en——审计必须在确定语言下比较布局）
   fs.writeFileSync(path.join(userData, 'config.json'), JSON.stringify({ uiLanguage: LANG }));
   const workDir = mkWorkDir(SCENARIO === 'empty');
+  const launchEnv = {
+    ...process.env,
+    ELECTRON_USER_DATA_DIR: userData,
+    LANG: LANG === 'en' ? 'en_US.UTF-8' : 'zh_CN.UTF-8',
+  };
+  delete launchEnv.ELECTRON_RUN_AS_NODE;
   const app = await electron.launch({
     executablePath: ELECTRON_BIN,
-    args: [APP_ENTRY],
-    env: { ...process.env, ELECTRON_USER_DATA_DIR: userData },
+    args: ['--lang=' + (LANG === 'en' ? 'en-US' : 'zh-CN'), APP_ENTRY],
+    env: launchEnv,
   });
   const report = [];
   const log = (s) => { report.push(s); };
@@ -282,19 +304,29 @@ const PROBE = (label) => {
     if (!ONLY || ONLY.includes('detail')) {
       await status.getByRole('tab', { name: LBL.apps }).click();
       await status.waitForTimeout(400);
-      const appToggle = status.getByRole('button', { name: /数据同步机器人/ }).first();
+      const appTargetName = LANG === 'en' ? 'Data Sync Bot' : '数据同步机器人';
+      const appRow = status.locator('.appx-row', { hasText: appTargetName }).first();
+      const appToggle = (await appRow.count())
+        ? appRow
+        : status.getByRole('button', { name: LANG === 'en' ? /Data Sync Bot/ : /数据同步机器人/ }).first();
       if (await appToggle.count()) {
         await appToggle.click();
+        await status.locator('.appx-drawer').waitFor({ timeout: 5000 }).catch(() => {});
         await status.waitForTimeout(400);
         await shot(status, '1440x900-apps-expanded');
         await probe(status, '1440x900/apps-expanded');
-        const delBtn = status.getByRole('button', { name: /删除 v1\.4\.2 的本地部署/ });
+        const delBtn = status.getByRole('button', { name: LANG === 'en' ? /Delete local deployment v1\.4\.2/ : /删除 v1\.4\.2 的本地部署/ });
         if (await delBtn.count()) {
           await delBtn.click();
           await status.waitForTimeout(300);
           await shot(status, '1440x900-apps-confirm');
           const cancel = status.getByRole('button', { name: LBL.cancel });
           if (await cancel.count()) await cancel.click();
+          await status.waitForTimeout(200);
+        }
+        const drawerClose = status.locator('.appx-drawer-close');
+        if (await drawerClose.isVisible().catch(() => false)) {
+          await drawerClose.click();
           await status.waitForTimeout(200);
         }
       }
@@ -384,6 +416,11 @@ const PROBE = (label) => {
       // 窄窗历史日志查看器（标题可能很长）
       await status.getByRole('tab', { name: LBL.history }).click();
       await status.waitForTimeout(450);
+      const histClose = status.locator('.historyx-detail-close');
+      if (await histClose.isVisible().catch(() => false)) {
+        await histClose.click();
+        await status.waitForTimeout(250);
+      }
       const hLog = status.getByRole('button', { name: LBL.viewLogs }).first();
       if (await hLog.count()) {
         await hLog.click();
@@ -397,12 +434,17 @@ const PROBE = (label) => {
       // 窄窗应用展开（路径芯片左截断）
       await status.getByRole('tab', { name: LBL.apps }).click();
       await status.waitForTimeout(400);
-      const appToggle2 = status.getByRole('button', { name: /数据同步机器人/ }).first();
+      const appCompact = status.locator('.appx-compact-row').first();
+      const appToggle2 = (await appCompact.count())
+        ? appCompact
+        : status.getByRole('button', { name: LANG === 'en' ? /Data Sync Bot/ : /数据同步机器人/ }).first();
       if (await appToggle2.count()) {
         await appToggle2.click();
         await status.waitForTimeout(450);
         await shot(status, '760x560-apps-expanded');
         await probe(status, '760x560/apps-expanded');
+        await status.keyboard.press('Escape');
+        await status.waitForTimeout(200);
       }
 
       // 窄窗配置未保存 + 改动清单
