@@ -407,7 +407,7 @@ export default function ExecutorListPage() {
     {
       title: t('execList.col.action'),
       key: 'action',
-      width: 70,
+      width: 92,
       fixed: 'right' as const,
       render: (_: unknown, r: Executor) => (
         <Button type="link" size="small" onClick={() => navigate(`/executors/${r.id}`)}>{t('execList.action.detail')}</Button>

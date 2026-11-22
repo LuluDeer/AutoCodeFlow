@@ -14,7 +14,8 @@ import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../
 // 都只在一处），抽到 concurrency-gauge.ts 由 test:renderer 真执行断言。
 import { concurrencyGauge } from '../concurrency-gauge';
 
-const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
+const locale = resolveRendererLocale(() => navigator.language);
+const t = createCfgTexts(locale);
 
 // B-02：今日概览条的数据源（history:get）。本页只读少量字段，
 // 不需要 HistoryPage 的完整 ExecRecord 形状——保持最小依赖，避免跨页耦合。
@@ -1074,7 +1075,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
                 <div className="overview-agent-entry">
                   <span className="overview-agent-entry-text">
                     <span className="agent-status-dot" aria-hidden="true" />
-                    <span>{t('status.agentEntryHint', agentActivityLabel(agentStatus))}</span>
+                    <span>{t('status.agentEntryHint', agentActivityLabel(agentStatus, locale))}</span>
                   </span>
                   <button
                     type="button"
@@ -1092,14 +1093,14 @@ export default function StatusWindow({ active }: { active: boolean }) {
                 <div className="overview-agent-head">
                   <span className={`agent-status-dot${agentStatus?.working ? ' is-working' : agentStatus?.enabled ? ' is-ok' : ''}`} aria-hidden="true" />
                   <div className="overview-agent-status" role="status" aria-live="polite">
-                    {agentStatusError ?? (agentStatus ? agentActivityLabel(agentStatus) : t('status.readingAgent'))}
+                    {agentStatusError ?? (agentStatus ? agentActivityLabel(agentStatus, locale) : t('status.readingAgent'))}
                   </div>
                 </div>
                 <div className="overview-agent-meta">
                   {/* 状态读取失败（agentStatus 为 null）时不得谎报「已处理 0 个」——
                       未知就显示 —，与下方「最近结果：—」同一空态口径。 */}
                 <span>{t('status.agentProcessed', agentStatus?.processed ?? '—')}</span>
-                <span>{t('status.agentLastResult', agentStatus ? agentOutcomeLabel(agentStatus.lastOutcome) : '—')}</span>
+                <span>{t('status.agentLastResult', agentStatus ? agentOutcomeLabel(agentStatus.lastOutcome, locale) : '—')}</span>
                 {agentStatus?.lastEffectiveProfile && <span>{t('status.agentLastProfile', agentStatus.lastEffectiveProfile)}</span>}
                 {/* 未启用不是错误态而是入口态：给出开启路径（2026-10 指引升级） */}
                 {agentStatus && !agentStatus.enabled && (

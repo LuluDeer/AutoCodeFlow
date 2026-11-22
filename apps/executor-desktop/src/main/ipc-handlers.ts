@@ -1276,6 +1276,7 @@ export function registerIpcHandlers(): void {
     // 判据同源），日期倒序。
     const desktopLogDir = path.join(app.getPath('userData'), 'logs');
     if (fs.existsSync(desktopLogDir)) {
+      const uiLocale = currentUiLocale();
       const desktopLogs = fs
         .readdirSync(desktopLogDir)
         .filter((f: string) => /^executor-\d{4}-\d{2}-\d{2}\.log$/.test(f))
@@ -1285,7 +1286,7 @@ export function registerIpcHandlers(): void {
       for (const f of desktopLogs) {
         const date = f.replace(/^executor-/, '').replace(/\.log$/, '');
         result.push({
-          label: `桌面端日志 (${date})`,
+          label: uiLocale === 'en' ? `Desktop log (${date})` : `桌面端日志 (${date})`,
           path: path.join(desktopLogDir, f),
           date,
         });
