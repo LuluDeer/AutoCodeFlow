@@ -28,6 +28,10 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  # deploy-pages 查询本次 run 的 github-pages artifact metadata 需要 actions:read。
+  # 缺它时 upload 成功、deploy 报 "No artifacts named github-pages were found"
+  # （2026-11-22 15:56 起连续失败，15:55 之前同 workflow 成功）。
+  actions: read
 
 # 同一分支新部署取消旧跑；部署期间并发组互斥，防止 Pages 产物交错覆盖
 concurrency:
