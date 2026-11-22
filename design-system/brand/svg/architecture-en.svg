@@ -96,7 +96,7 @@
 <rect x="136" y="524" width="1488" height="1.2" fill="#7C93B4" opacity="0.22"/>
 <g transform="translate(142,556)"><rect x="0" y="0" width="32" height="32" rx="8.96" fill="#22C55E" opacity="0.1"/><g transform="scale(1.33333)" fill="none" stroke="#22C55E" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" color="#22C55E"><path d="M12 3.3l7.2 4.15v8.3L12 20.7l-7.2-4.15v-8.3z"/><circle cx="12" cy="12" r="2.3"/></g></g>
 <text x="186" y="566" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="21" font-weight="700" fill="#F8FAFC" xml:space="preserve">admin-api</text>
-<text x="186" y="594" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14.5" font-weight="400" fill="#7C90AB" xml:space="preserve">scheduling · callbacks · RBAC · audit · notifications</text>
+<text x="186" y="594" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14.5" font-weight="400" fill="#7C90AB" xml:space="preserve">scheduling · callbacks · SOP · Agent · RBAC · audit · notifications</text>
 <rect x="1019.7" y="556" width="204.953" height="32" rx="16" fill="#14263B" stroke="#22334D" stroke-width="1"/>
 <text x="1034.7" y="577" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="13.5" font-weight="500" fill="#A9B8CC" xml:space="preserve">Cron / rate / webhook / DAG</text>
 <rect x="1234.66" y="556" width="193.766" height="32" rx="16" fill="#14263B" stroke="#22334D" stroke-width="1"/>

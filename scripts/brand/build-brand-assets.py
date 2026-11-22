@@ -497,7 +497,7 @@ ARCH = {
                 ],
             },
         ],
-        "api": ("hex", "admin-api", "scheduling · callbacks · RBAC · audit · notifications"),
+        "api": ("hex", "admin-api", "scheduling · callbacks · SOP · Agent · RBAC · audit · notifications"),
         "api_chips": ["Cron / rate / webhook / DAG", "Leases & concurrency gates", "Retries · timeouts · alerts"],
         "stores": [
             ("PostgreSQL 16", "state, audit log, migrations"),
@@ -544,7 +544,7 @@ ARCH = {
                 ],
             },
         ],
-        "api": ("hex", "admin-api", "调度 · 回调 · RBAC · 审计 · 通知"),
+        "api": ("hex", "admin-api", "调度 · 回调 · SOP · Agent · RBAC · 审计 · 通知"),
         "api_chips": ["Cron / 固定频率 / Webhook / DAG", "租约与并发闸", "重试 · 超时 · 告警"],
         "stores": [
             ("PostgreSQL 16", "状态、审计日志、迁移"),
