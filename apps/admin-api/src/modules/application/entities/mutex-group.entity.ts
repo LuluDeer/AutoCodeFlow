@@ -53,7 +53,7 @@ export class MutexGroup {
 
   @Column({ type: "varchar", nullable: true }) description: string | null;
 
-  @CreateDateColumn() createdAt: Date;
+  @CreateDateColumn({ type: "timestamptz" }) createdAt: Date;
 
-  @UpdateDateColumn() updatedAt: Date;
+  @UpdateDateColumn({ type: "timestamptz" }) updatedAt: Date;
 }

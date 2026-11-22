@@ -70,6 +70,6 @@ export class EventOutbox {
   @Column({ type: "boolean", default: false })
   deadLettered: boolean;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: "timestamptz" })
   createdAt: Date;
 }

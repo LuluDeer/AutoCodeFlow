@@ -269,7 +269,7 @@ export class AgentSession {
    * ① add 失败（该重试）；② add 成功但 job 已被消费/清理（**不该**再补）。
    * 队列本身**分不开**这两者，落库的计数**记得**「我试过」。
    */
-  @Column({ type: "int", default: 0 })
+  @Column({ type: "int", default: 0, nullable: true })
   backlogReenqueueCount: number;
 
   /**

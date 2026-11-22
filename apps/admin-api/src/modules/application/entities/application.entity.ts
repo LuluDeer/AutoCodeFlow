@@ -34,6 +34,7 @@ export class Application {
   @Column({
     type: "enum",
     enum: ApplicationStatus,
+    enumName: "application_status_enum",
     default: ApplicationStatus.ACTIVE,
   })
   status: ApplicationStatus;

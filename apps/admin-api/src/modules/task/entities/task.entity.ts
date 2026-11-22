@@ -35,6 +35,11 @@ export enum TaskPriority {
   CRITICAL = 4,
 }
 
+/** QA-08: DB PG enum 的实际值域（labels）；业务侧仍用数字 TaskPriority + transformer 转换。 */
+const TASK_PRIORITY_DB_VALUES = ["low", "normal", "high", "critical"];
+/** QA-08: DB PG enum 实际含 shard（实体导出 enum 不含，避免影响业务类型）。 */
+const EXECUTE_MODE_DB_VALUES = ["single", "broadcast", "shard"];
+
 /**
  * N2: `tasks.priority` 在 DB 中是 PG 字符串枚举 `task_priority_enum`（labels:
  * low/normal/high/critical），而 TS `TaskPriority` 是数字枚举（1-4）。TypeORM
@@ -138,13 +143,13 @@ export class Task {
   @PrimaryGeneratedColumn("uuid") id: string;
   @Column() name: string;
   @Column({ nullable: true }) description: string;
-  @Column({ type: "enum", enum: TaskStatus, default: TaskStatus.ACTIVE })
+  @Column({ type: "enum", enum: TaskStatus, enumName: "task_status_enum", default: TaskStatus.ACTIVE })
   status: TaskStatus;
-  @Column({ type: "enum", enum: TaskTriggerType }) triggerType: TaskTriggerType;
+  @Column({ type: "enum", enum: TaskTriggerType, enumName: "task_triggertype_enum" }) triggerType: TaskTriggerType;
   @Column({ nullable: true }) cronExpression: string;
   @Column({ nullable: true }) timezone: string;
   @Column({ nullable: true }) fixedRate: number;
-  @Column({ type: "enum", enum: TaskRuntime, default: TaskRuntime.PYTHON })
+  @Column({ type: "enum", enum: TaskRuntime, enumName: "task_runtime_enum", default: TaskRuntime.PYTHON })
   runtime: TaskRuntime;
   @Column({ nullable: true }) runtimeVersion: string;
   @Column({ type: "jsonb", nullable: true }) dependencies: Record<
@@ -190,11 +195,12 @@ export class Task {
    * guard in the processor).
    */
   @Column({ type: "simple-array", nullable: true }) retryableErrors: string[];
-  @Column({ type: "enum", enum: BlockStrategy, default: BlockStrategy.SERIAL })
+  @Column({ type: "enum", enum: BlockStrategy, enumName: "task_blockstrategy_enum", default: BlockStrategy.SERIAL })
   blockStrategy: BlockStrategy;
   @Column({
     type: "enum",
     enum: MisfireStrategy,
+    enumName: "task_misfirestrategy_enum",
     default: MisfireStrategy.IGNORE,
   })
   misfireStrategy: MisfireStrategy;
@@ -208,8 +214,9 @@ export class Task {
    */
   @Column({
     type: "enum",
-    enum: TaskPriority,
-    default: TaskPriority.NORMAL,
+    enum: TASK_PRIORITY_DB_VALUES,
+    enumName: "task_priority_enum",
+    default: "normal",
     transformer: {
       to: (v?: unknown): string | undefined => {
         if (typeof v === "number") {
@@ -221,7 +228,7 @@ export class Task {
     },
   })
   priority: TaskPriority;
-  @Column({ type: "enum", enum: ExecuteMode, default: ExecuteMode.SINGLE })
+  @Column({ type: "enum", enum: EXECUTE_MODE_DB_VALUES, enumName: "task_execute_mode_enum", default: ExecuteMode.SINGLE })
   executeMode: ExecuteMode;
   @Column({ nullable: true }) lastTriggerTime: Date;
 
@@ -257,7 +264,7 @@ export class Task {
    * （apps/executor-python/routers/execute.py），故未回填/新写入 NULL 的行
    * 仍走既有路径。写面互斥校验见 task.service 的 assertCodeSourceExclusive。
    */
-  @Column({ type: "enum", enum: TaskCodeSource, nullable: true })
+  @Column({ type: "enum", enum: TaskCodeSource, enumName: "tasks_codeSource_enum", nullable: true })
   codeSource: TaskCodeSource | null;
 
   /**
@@ -414,7 +421,7 @@ export class Task {
    * 决策逻辑统一在 task/timeout-policy.util.ts，processor/TaskService
    * 共享同一实现。
    */
-  @Column({ type: "varchar", nullable: true })
+  @Column({ type: "varchar", length: 16, nullable: true })
   timeoutAction: string | null;
 
   /**

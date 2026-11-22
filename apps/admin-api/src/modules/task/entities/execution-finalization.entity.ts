@@ -70,11 +70,11 @@ export class ExecutionFinalization {
   controllerBootId: string | null;
 
   /** 收尾历史（jsonb 数组，只追加不回改；条目类型见 ExecutionFinalizationHistoryEntry）。 */
-  @Column({ type: "jsonb", default: () => "'[]'::jsonb" })
+  @Column({ type: "jsonb", default: () => "'[]'" })
   recoveryHistory: ExecutionFinalizationHistoryEntry[];
 
-  @CreateDateColumn() createdAt: Date;
-  @UpdateDateColumn() updatedAt: Date;
+  @CreateDateColumn({ type: "timestamptz" }) createdAt: Date;
+  @UpdateDateColumn({ type: "timestamptz" }) updatedAt: Date;
 }
 
 /**

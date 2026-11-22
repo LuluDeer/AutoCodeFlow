@@ -46,6 +46,6 @@ export class EventSubscriptionDeadLetter {
   @Column({ type: "int", default: 0 })
   attempts: number;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: "timestamptz" })
   createdAt: Date;
 }

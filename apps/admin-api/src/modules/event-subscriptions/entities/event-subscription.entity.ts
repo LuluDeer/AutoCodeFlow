@@ -71,9 +71,9 @@ export class EventSubscription {
   @Column({ type: "varchar", length: 512, nullable: true })
   lastFailureError: string | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: "timestamptz" })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: "timestamptz" })
   updatedAt: Date;
 }

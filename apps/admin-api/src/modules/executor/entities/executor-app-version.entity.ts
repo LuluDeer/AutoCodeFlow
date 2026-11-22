@@ -85,10 +85,10 @@ export class ExecutorAppVersion {
    * 未变化的行）——它不是设备活性：设备是否还在上报看 executors.lastHeartbeat
    * （30s 心跳面），本列是「这份版本事实的新鲜度」。
    */
-  @Column({ type: "timestamptz" })
+  @Column({ type: "timestamptz", default: () => "now()" })
   lastReportedAt: Date;
 
-  @CreateDateColumn() createdAt: Date;
+  @CreateDateColumn({ type: "timestamptz" }) createdAt: Date;
 
-  @UpdateDateColumn() updatedAt: Date;
+  @UpdateDateColumn({ type: "timestamptz" }) updatedAt: Date;
 }

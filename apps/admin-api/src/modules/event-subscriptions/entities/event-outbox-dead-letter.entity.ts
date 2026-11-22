@@ -44,9 +44,9 @@ export class EventOutboxDeadLetter {
   lastError: string;
 
   /** Time at which the source row was reliably moved to dead-letter state. */
-  @Column({ type: "timestamptz" })
+  @Column({ type: "timestamptz", default: () => "now()" })
   deadLetteredAt: Date;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: "timestamptz" })
   createdAt: Date;
 }
