@@ -1148,10 +1148,10 @@ function runSelftest() {
   push("正例⑪（R158）：**四端**（python/node/admin-api/admin-web）各带 floor 与 `measuredAt` ⇒ exit 0，且报文说「比较 4 端」", () => {
     // R158：admin-web 接入后的**端数**判据：光说「≥1 端」不够，必须钉住 4。
     const steps = [
-      { label: "executor-python 全量（`python3 -m pytest`）", code: 0, signal: null, summary: { coveragePct: 87.45 }, measuredAt: "2026-11-07T00:00:00Z" },
-      { label: "executor-node 全量（`npm test -- --coverage`）", code: 0, signal: null, summary: { coveragePct: 88.88 }, measuredAt: "2026-11-07T00:00:00Z" },
-      { label: "admin-api 全量（默认环境，`npx jest --coverage`）", code: 0, signal: null, summary: { coveragePct: 92.76 }, measuredAt: "2026-11-07T00:00:00Z" },
-      { label: "admin-web 全量（`npx vitest run --coverage`）", code: 0, signal: null, summary: { coveragePct: 86.3 }, measuredAt: "2026-11-07T00:00:00Z" },
+      { label: "executor-python 全量（`python3 -m pytest`）", code: 0, signal: null, summary: { coveragePct: 87.45 }, measuredAt: isoAgoHours(2) },
+      { label: "executor-node 全量（`npm test -- --coverage`）", code: 0, signal: null, summary: { coveragePct: 88.88 }, measuredAt: isoAgoHours(2) },
+      { label: "admin-api 全量（默认环境，`npx jest --coverage`）", code: 0, signal: null, summary: { coveragePct: 92.76 }, measuredAt: isoAgoHours(2) },
+      { label: "admin-web 全量（`npx vitest run --coverage`）", code: 0, signal: null, summary: { coveragePct: 86.3 }, measuredAt: isoAgoHours(2) },
     ];
     const repo = makeFixtureRepo({
       [BASELINE_REL]: JSON.stringify({
@@ -1162,7 +1162,7 @@ function runSelftest() {
           "admin-web": { floor: 86.3, maxAgeHours: 336 },
         },
       }, null, 2),
-      [HEALTH_REL]: JSON.stringify({ generatedAt: "2026-11-07", steps }, null, 2),
+      [HEALTH_REL]: JSON.stringify({ generatedAt: shiftDays(0), steps }, null, 2),
     });
     try {
       expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {

@@ -82,6 +82,9 @@ import { fileURLToPath } from "node:url";
 // 这里 import 而不是内联第二份命令：两份副本必然各自漂移（ESM 开关 / 内存参数一漏就红或 OOM），
 // 且「全量体检」与「单端快照」必须给出同一口径的数字。被 import 的脚本有 main-guard，无副作用。
 import { ENDS as COVERAGE_ENDS, MEASURED_AT, isoTimestamp, labelExclude, labelHint } from "./coverage-snapshot.mjs";
+// R317：python 步不再硬编码 `python3` —— 本地系统 python3 缺项目依赖（R316 实测 51 collection errors / exit 2），
+// 而项目 .venv 有全套依赖。统一走 `scripts/py.mjs` 的探测（venv 优先 + 系统兜底），与 `npm run test:python` 同口径。
+import { detectPython } from "./py.mjs";
 
 const ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 const OUT = join(ROOT, "docs/health-baseline.md");
@@ -400,8 +403,24 @@ function runNode() {
  * 修法（零侵入、不改 pytest 配置）：`--junitxml` 落 XML 再解析，临时文件跑完即删；不再传多余的 `-q`。
  */
 function runPython() {
+  // R317：旧实现把解释器写死为 `python3` —— 本地系统 python3(3.14) 缺 pydantic_settings 等项目依赖，
+  // pytest 在收集阶段就 51 errors / exit 2；而 apps/executor-python/.venv/bin/python 有全套依赖。
+  // 改用 R235 的统一探测：项目 venv（POSIX/Windows）优先、系统兜底，与 `npm run test:python` 同口径。
+  // 探测失败显式记成失败 step（code=2 + reason + coveragePct:null），不伪造覆盖率 ——
+  // 把「环境没准备好」渲染成「测试数字」是本仓反复踩的坑。
+  const py = detectPython("apps/executor-python");
+  if (!py.ok) {
+    const reason = `找不到带依赖的 Python 解释器：${py.reason}`;
+    process.stderr.write(`[health] executor-python：${reason}（本步记为失败，不伪造覆盖率）\n`);
+    return {
+      code: 2,
+      signal: null,
+      summary: { reason, coveragePct: null },
+      secs: 0,
+    };
+  }
   const junitPath = join(ROOT, "artifacts", `.health-pytest-${process.pid}.xml`);
-  const r = run("executor-python 全量", "python3", ["-m", "pytest", `--junitxml=${junitPath}`], {
+  const r = run("executor-python 全量", py.python, ["-m", "pytest", `--junitxml=${junitPath}`], {
     cwd: join(ROOT, "apps/executor-python"),
   });
   const jr = readJunit(junitPath);
