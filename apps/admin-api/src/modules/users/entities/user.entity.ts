@@ -30,7 +30,12 @@ export class User {
   @Exclude()
   password: string;
 
-  @Column({ type: "enum", enum: UserRole, enumName: "user_role_enum", default: UserRole.USER })
+  @Column({
+    type: "enum",
+    enum: UserRole,
+    enumName: "user_role_enum",
+    default: UserRole.USER,
+  })
   role: UserRole;
 
   @Column({ default: true })

@@ -76,7 +76,12 @@ export class Executor {
   })
   status: ExecutorStatus;
   // 遗留 P1-24：离线原因。null=在线或历史数据未标注。
-  @Column({ type: "enum", enum: ExecutorOfflineReason, enumName: "executors_offlineReason_enum", nullable: true })
+  @Column({
+    type: "enum",
+    enum: ExecutorOfflineReason,
+    enumName: "executors_offlineReason_enum",
+    nullable: true,
+  })
   offlineReason: ExecutorOfflineReason | null;
 
   /**
@@ -99,7 +104,12 @@ export class Executor {
    */
   @Column({ type: "int", default: 0 })
   consecutiveHeartbeatMisses: number;
-  @Column({ type: "enum", enum: ExecutorType, enumName: "executor_type_enum", default: ExecutorType.PYTHON })
+  @Column({
+    type: "enum",
+    enum: ExecutorType,
+    enumName: "executor_type_enum",
+    default: ExecutorType.PYTHON,
+  })
   type: ExecutorType;
   @Column({ nullable: true }) executorVersion: string;
 

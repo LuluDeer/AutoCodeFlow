@@ -23,26 +23,36 @@ import { getEnvVar } from "./config/env";
 
 const QA08_INDEX_NAMES: Record<string, string> = {
   "agent_approvals|approvalKey": "UQ_agent_approvals_approvalKey",
-  "execution_artifacts|executionId,name": "UQ_execution_artifacts_execution_name",
-  "executor_app_versions|applicationId,executorId": "UQ_executor_app_versions_executor_application",
+  "execution_artifacts|executionId,name":
+    "UQ_execution_artifacts_execution_name",
+  "executor_app_versions|applicationId,executorId":
+    "UQ_executor_app_versions_executor_application",
   "project_members|projectId,userId": "uq_project_members_project_user",
   "task_templates|key": "uq_task_templates_key",
   "app_deployments|applicationId": "idx_app_deployments_applicationId",
-  "app_deployments|applicationId,status": "idx_app_deployments_applicationId_status",
+  "app_deployments|applicationId,status":
+    "idx_app_deployments_applicationId_status",
   "app_deployments|status": "idx_app_deployments_status",
-  "application_versions|applicationId": "idx_application_versions_applicationId",
-  "application_versions|applicationId,version": "uq_application_versions_applicationId_version",
+  "application_versions|applicationId":
+    "idx_application_versions_applicationId",
+  "application_versions|applicationId,version":
+    "uq_application_versions_applicationId_version",
   "application_versions|createdAt": "idx_application_versions_createdAt",
-  "application_versions|sourceDeploymentId": "idx_application_versions_sourceDeploymentId",
+  "application_versions|sourceDeploymentId":
+    "idx_application_versions_sourceDeploymentId",
   "applications|status": "idx_applications_status",
   "audit_logs|createdAt": "IDX_audit_logs_createdAt",
   "audit_logs|userId": "IDX_audit_logs_userId",
   "config_history|configKey": "idx_config_history_configKey",
-  "config_history|configKey,createdAt": "idx_config_history_configKey_createdAt",
-  "execution_log_lines|executionId,lineNumber": "IDX_execution_log_lines_execId_lineNumber",
+  "config_history|configKey,createdAt":
+    "idx_config_history_configKey_createdAt",
+  "execution_log_lines|executionId,lineNumber":
+    "IDX_execution_log_lines_execId_lineNumber",
   "execution_reports|triggerDay": "idx_execution_reports_triggerDay",
-  "executor_metrics_history|createdAt,executorAddress": "idx_executor_metrics_history_address_createdAt",
-  "executor_packages|name,type,version": "IDX_executor_packages_name_version_type",
+  "executor_metrics_history|createdAt,executorAddress":
+    "idx_executor_metrics_history_address_createdAt",
+  "executor_packages|name,type,version":
+    "IDX_executor_packages_name_version_type",
   "executors|lastHeartbeat": "idx_executors_last_heartbeat",
   "executors|status": "idx_executors_status",
   "refresh_tokens|jti": "idx_refresh_tokens_jti",
@@ -53,11 +63,13 @@ const QA08_INDEX_NAMES: Record<string, string> = {
 };
 
 const QA08_FK_NAMES: Record<string, string> = {
-  "app_deployment_events|applicationId": "FK_app_deployment_events_applicationId",
+  "app_deployment_events|applicationId":
+    "FK_app_deployment_events_applicationId",
   "app_deployments|applicationId": "FK_app_deployments_applicationId",
   "application_versions|applicationId": "FK_application_versions_applicationId",
   "execution_artifacts|executionId": "FK_execution_artifacts_executionId",
-  "executor_app_versions|applicationId": "FK_executor_app_versions_applicationId",
+  "executor_app_versions|applicationId":
+    "FK_executor_app_versions_applicationId",
   "executor_app_versions|executorId": "FK_executor_app_versions_executorId",
   "task_executions|taskId": "FK_task_executions_taskId",
   "tasks|applicationId": "FK_tasks_applicationId",
@@ -67,10 +79,13 @@ const QA08_FK_NAMES: Record<string, string> = {
 const QA08_UC_NAMES: Record<string, string> = {
   "u|agent_approvals|approvalKey": "UQ_agent_approvals_approvalKey",
   "u|task_templates|key": "uq_task_templates_key",
-  "c|mutex_groups|1,maxConcurrentPerDevice": "ck_mutex_groups_max_concurrent_positive",
+  "c|mutex_groups|1,maxConcurrentPerDevice":
+    "ck_mutex_groups_max_concurrent_positive",
   "c|mutex_groups|scope": "chk_mutex_groups_scope",
-  "u|execution_artifacts|executionId,name": "UQ_execution_artifacts_execution_name",
-  "u|executor_app_versions|applicationId,executorId": "UQ_executor_app_versions_executor_application",
+  "u|execution_artifacts|executionId,name":
+    "UQ_execution_artifacts_execution_name",
+  "u|executor_app_versions|applicationId,executorId":
+    "UQ_executor_app_versions_executor_application",
   "u|project_members|projectId,userId": "uq_project_members_project_user",
 };
 
@@ -85,28 +100,48 @@ class Qa08NamingStrategy extends DefaultNamingStrategy {
     const name = typeof t === "string" ? t : t.name;
     return `${name}|${[...cols].sort().join(",")}`;
   }
-  foreignKeyName(t: Table | string, cols: string[], rt?: string, rc?: string[]): string {
-    return QA08_FK_NAMES[Qa08NamingStrategy.key(t, cols)]
-      ?? super.foreignKeyName(t, cols, rt, rc);
+  foreignKeyName(
+    t: Table | string,
+    cols: string[],
+    rt?: string,
+    rc?: string[],
+  ): string {
+    return (
+      QA08_FK_NAMES[Qa08NamingStrategy.key(t, cols)] ??
+      super.foreignKeyName(t, cols, rt, rc)
+    );
   }
   indexName(t: Table | string, cols: string[], where?: string): string {
-    return QA08_INDEX_NAMES[Qa08NamingStrategy.key(t, cols)]
-      ?? super.indexName(t, cols, where);
+    return (
+      QA08_INDEX_NAMES[Qa08NamingStrategy.key(t, cols)] ??
+      super.indexName(t, cols, where)
+    );
   }
   uniqueConstraintName(t: Table | string, cols: string[]): string {
     const name = typeof t === "string" ? t : t.name;
-    return QA08_UC_NAMES[`u|${name}|${[...cols].sort().join(",")}`]
-      ?? super.uniqueConstraintName(t, cols);
+    return (
+      QA08_UC_NAMES[`u|${name}|${[...cols].sort().join(",")}`] ??
+      super.uniqueConstraintName(t, cols)
+    );
   }
-  checkConstraintName(t: Table | string, expression: string, isEnum?: boolean): string {
+  checkConstraintName(
+    t: Table | string,
+    expression: string,
+    isEnum?: boolean,
+  ): string {
     const name = typeof t === "string" ? t : t.name;
     if (name === "mutex_groups") {
-      if (expression.includes("maxConcurrentPerDevice")) return "ck_mutex_groups_max_concurrent_positive";
+      if (expression.includes("maxConcurrentPerDevice"))
+        return "ck_mutex_groups_max_concurrent_positive";
       if (expression.includes("scope")) return "chk_mutex_groups_scope";
     }
-    const cols = [...new Set([...expression.matchAll(/"([^"]+)"/g)].map(m => m[1]))].sort();
-    return QA08_UC_NAMES[`c|${name}|${cols.join(",")}`]
-      ?? super.checkConstraintName(t, expression, isEnum);
+    const cols = [
+      ...new Set([...expression.matchAll(/"([^"]+)"/g)].map((m) => m[1])),
+    ].sort();
+    return (
+      QA08_UC_NAMES[`c|${name}|${cols.join(",")}`] ??
+      super.checkConstraintName(t, expression, isEnum)
+    );
   }
 }
 

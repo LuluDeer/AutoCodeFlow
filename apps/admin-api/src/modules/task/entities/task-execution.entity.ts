@@ -419,7 +419,8 @@ export class TaskExecution {
    * 执行器，终态行携带供 UI 展示与 Jaeger/Tempo 检索。NULL=追踪未开启或旧数据。
    * 迁移见 migrations/1789900000003-AddExecutionTraceId.ts。
    */
-  @Column({ type: "varchar", length: 64, nullable: true }) traceId: string | null;
+  @Column({ type: "varchar", length: 64, nullable: true }) traceId:
+    string | null;
   /** QA-08: DB 已有列（迁移 1790000000040, uuid NULL），实体此前漏声明。 */
   @Column({ type: "uuid", nullable: true }) agentSessionId: string | null;
   /**
