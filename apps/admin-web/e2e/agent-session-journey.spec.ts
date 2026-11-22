@@ -116,6 +116,32 @@ const test = base.extend<{ accountRole: Role; api: Traffic }>({
         case '/api/auth/profile': return reply(route, { id: 7, username: '值班员', role: accountRole });
         case '/api/projects': case '/api/metrics/failures': return reply(route, []);
         case '/api/app-deployments/approvals/pending': return reply(route, { data: [], total: 0 });
+        // R278：顶栏徽标唯一计数源（AgentInboxCountsResponseDto，扁平、非 {counts} 包裹）。
+        // 全 0 是安全空值；failedWindowHours 必须正数（0 会退化成默认窗口的运动量）。
+        case '/api/agent/inbox/counts': return reply(route, {
+          pendingApprovals: 0, waitingSessions: 0, stalled: 0, backlogged: 0, backlogTruncated: false,
+          deployments: 0, queueStall: 0, failedSessions: 0, failedWindowHours: 24, degraded: false,
+        });
+        // R280：升级澄清总数（readSopClarificationTotal 读 total；D3 口径 0=已读过且确认为零）。
+        case '/api/sop/clarifications/pending': return reply(route, {
+          items: [], data: [], total: 0, returned: 0, truncated: false, degraded: false,
+        });
+        // R286：阻塞工单总数（readSopBlockedTotal 读 total；DTO 无 count 字段，不能写 count）。
+        case '/api/sop/assignments/lagging': return reply(route, {
+          items: [], data: [], total: 0, returned: 0, truncated: false, degraded: false,
+        });
+        // R278：收件箱 agentApprovals 行来自本路由的 items（不是 app-deployments 那条）。
+        // 必须带齐 3 张 fixture 审批单，窄屏用例 :191 才能按 reason 精确命中 target。
+        case '/api/agent/approvals/pending': return reply(route, {
+          items: approvals.map((a) => ({
+            approvalKey: a.approvalKey, sessionId: a.sessionId,
+            sessionTitle: listed.find(s => s.id === a.sessionId)?.title ?? null,
+            toolName: a.toolName, reason: a.reason, createdAt: a.createdAt,
+            preview: a.preview, argsDigest: a.argsDigest,
+          })),
+          total: approvals.length, sessionTotal: new Set(approvals.map(a => a.sessionId)).size,
+          returned: approvals.length, truncated: false, degraded: false,
+        });
         case '/api/agent/budget': return reply(route, { maxSteps: 12, maxTokens: 4000, maxToolCalls: 6, wallClockMs: 60_000 });
         case `${LIST}/backlogged`: return reply(route, { sessionIds: [], count: 0, probed: 0, truncated: false });
         case `${LIST}/queue-stall`: return reply(route, {

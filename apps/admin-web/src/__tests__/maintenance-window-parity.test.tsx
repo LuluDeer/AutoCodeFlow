@@ -405,22 +405,37 @@ describe('性能红线（D2）：20 个带窗口任务全量计算必须 < 50ms'
     // 预热：Intl 格式化器首次构造与 JIT 不计入断言
     for (let i = 0; i < 3; i++) for (const t of tasks) nextRunOutcome(t, now);
 
-    // 取 **3 次的最小值**：本机全量并跑（vitest forks 池 × 数百文件）时，
-    // 单次墙钟测到的是「本函数 + 被操作系统抢走的时间片」。预热消不掉抢占，
-    // 而最小值天然排除抢占——这是性能断言的常规口径（也写进回执，避免把
-    // 一次噪声当成回归）。有效上限不变：50ms。
-    let best = Number.POSITIVE_INFINITY;
+    // R444：墙钟 → CPU user time 口径（不再靠 best-of-N 赌抢占窗口）。
+    //   R442 全量实证：单跑 13.07ms，全量 forks 池 350 文件并发 best-of-3 = 72.8ms；
+    //   R444 验收实测 best-of-9 仍 9/9 全被抢占 = 61.94ms > 50。OS 抢走的时间片
+    //   算进墙钟、却不算进本进程 CPU，所以再多次取最小也救不回来。
+    //   process.cpuUsage() 的 user 增量只统计本进程真正执行的 CPU 时间，天然免疫
+    //   并发抢占；忙等/真实计算会转成 CPU 时间，反证照样转红，断言没被架空。
+    // 阈值来源（PM 裁决）：R282 墙钟基线 13ms / 红线 50ms = 3.8× 余量；CPU user 口径
+    //   实测区间 10.59–34.90ms（中位 ~20ms，独立验收多次采样），/ 红线 50ms = 1.4–4.7×
+    //   余量——与墙钟同量级且部分更严，故 50ms 上限在 CPU 口径下不是放宽，数值保持 R282 契约。
+    //   5 次取最小只用于滤掉进程内多线程/GC 的 CPU 记账抖动，与防抢占无关。
+    // fail-closed：口径不可用/读数异常直接红，不降级为墙钟、不 skip。
+    expect(typeof process?.cpuUsage).toBe('function');
+    const CPU_SAMPLES = 5;
+    const CPU_LIMIT_MS = 50;
+    let cpuMs = Number.POSITIVE_INFINITY;
     let kinds: string[] = [];
-    for (let run = 0; run < 3; run++) {
-      const t0 = performance.now();
+    const cpuSamples: number[] = [];
+    for (let i = 0; i < CPU_SAMPLES; i++) {
+      const before = process.cpuUsage();
       kinds = tasks.map((t) => nextRunOutcome(t, now).kind);
-      best = Math.min(best, performance.now() - t0);
+      const userUs = process.cpuUsage(before).user;
+      expect(Number.isFinite(userUs) && userUs >= 0).toBe(true); // fail-closed
+      const sample = userUs / 1000; // µs → ms
+      cpuSamples.push(sample);
+      cpuMs = Math.min(cpuMs, sample);
     }
 
     expect(kinds).toHaveLength(20);
     expect(kinds.every((k) => k === 'at' || k === 'skipped-by-window')).toBe(true);
-    console.log(`[PERF] 20 tasks best-of-3 = ${best.toFixed(2)}ms`);
-    expect(best, `20 tasks best-of-3 took ${best.toFixed(2)}ms`).toBeLessThan(50);
+    console.log(`[PERF] 20 tasks cpu-user best-of-${CPU_SAMPLES} = ${cpuMs.toFixed(2)}ms samples=[${cpuSamples.map((s) => s.toFixed(1)).join(',')}]`);
+    expect(cpuMs, `20 tasks cpu-user best-of-${CPU_SAMPLES} took ${cpuMs.toFixed(2)}ms`).toBeLessThan(CPU_LIMIT_MS);
   });
 });
 

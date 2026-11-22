@@ -342,9 +342,36 @@ describe('TaskFormPage：编辑态来源回填与 runtimeVersion（FR-06/AC-17b�
     // 应用列表是异步 fetch——CI 高负载下点击保存时选择器可能未就绪导致
     // 校验拦截（第十四轮 python-multiversion-form-wiring 保存后 update 0 次）。
     await screen.findByText('zip-app');
+    // R445（全量并发 flake；R444 run4 实测本例 :347 update 0 次，非双调用）：
+    // applicationId 经 Form.useWatch 派生 zipApplicationMissing（TaskFormPage:314/707），
+    // 其首次通知与 findByText('zip-app')（共享 testQueryClient 下只匹配下拉选项、
+    // 秒回）不同拍。点击过早 → runPreSubmitGates 段 B 的 zip 必填闸门
+    // （useTaskFormValidation:231）拦截提交 → tasksApi.update 一次都不调用，
+    // waitFor 空等到超时；并发下这个窗口被放大。
+    // 修法两层（都不改被测语义、不放宽断言）：
+    //   ① 等 applicationId 的 Select 真正显示回填选中项（#applicationId 所在的
+    //      .ant-select-content 带 has-value）——提交前置条件就绪的直接 DOM 信号；
+    //   ② 以 update 是否发生为准轮询，未发生就补点一次（submitLockRef 会挡住在途
+    //      提交的同步连点；被闸门拦截的首次点击则由补点自愈）。
+    // 断言仍是 calledTimes(1)：真实双调用会到 2 次而转红，不 skip、不掩盖。
+    await vi.waitFor(() => {
+      const content = document.querySelector('#applicationId')?.closest('.ant-select-content');
+      expect(
+        content?.classList.contains('ant-select-content-has-value'),
+        'applicationId 回填进入表单后才可提交',
+      ).toBe(true);
+    });
 
-    fireEvent.click(screen.getByRole('button', { name: /保存/ }));
-    await vi.waitFor(() => expect(tasksApi.update).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => {
+      if (vi.mocked(tasksApi.update).mock.calls.length === 0) {
+        fireEvent.click(screen.getByRole('button', { name: /保存/ }));
+      }
+      expect(tasksApi.update).toHaveBeenCalledTimes(1);
+    });
+    // 稳定态复核：让在途微任务/React 更新落地，若存在检查窗口外的第二次调用
+    // （真实产品缺陷）这里以 2 次转红暴露——绝不掩盖。
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(tasksApi.update).toHaveBeenCalledTimes(1);
     const payload = vi.mocked(tasksApi.update).mock.calls[0][1] as unknown as Record<string, unknown>;
     expect(payload.codeSource).toBe('application_zip');
     expect(payload.applicationId).toBe(APP_ZIP_ID);

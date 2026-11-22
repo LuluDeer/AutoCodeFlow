@@ -25,8 +25,11 @@ test.describe('Page rendering smoke tests', () => {
       (e) => !e.includes('favicon') && !e.includes('401') && !e.includes('403')
     );
     expect(fatal).toHaveLength(0);
-    const url = page.url();
-    expect(url).toMatch(/localhost:5176/);
+    // 未认证的 /dashboard 必须被 PrivateRoute 重定向到 /login；
+    // 断言路径而非端口/主机（离线 preview 端口与 dev 不同）。
+    await page.waitForURL(/\/login(?:\?|$)/);
+    const pathname = new URL(page.url()).pathname;
+    expect(pathname).toBe('/login');
   });
 
   test('tasks page loads (may redirect to login)', async ({ page }) => {
