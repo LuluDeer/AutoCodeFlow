@@ -8,6 +8,9 @@
 |---|
 | [callback-report/](callback-report/README.md) |
 | [callback-report-node/](callback-report-node/README.md) |
+| [daily-report/](daily-report/README.md) |
 | [desktop-automation/](desktop-automation/README.md) |
+| [desktop-data-entry/](desktop-data-entry/README.md) |
+| [intranet-inspection/](intranet-inspection/README.md) |
 | [private-registry-deps/](private-registry-deps/README.md) |
 | [private-registry-deps-node/](private-registry-deps-node/README.md) |

@@ -1,0 +1,23 @@
+{
+  "name": "内网巡检（批量探测 + 汇总回调）",
+  "description": "批量探测内网目标并把结果汇总回调上报；目标与凭据均为占位符。对应 examples/intranet-inspection/intranet_inspection.js",
+  "triggerType": "cron",
+  "runtime": "node",
+  "entrypoint": "examples/intranet-inspection/intranet_inspection.js",
+  "cronExpression": "0 */6 * * *",
+  "timezone": "Asia/Shanghai",
+  "timeoutSeconds": 600,
+  "maxRetry": 1,
+  "retryDelay": 20,
+  "params": {
+    "targets": [
+      "HOST_A:PORT_A",
+      "HOST_B:PORT_B"
+    ],
+    "timeoutMs": 1000,
+    "callbackUrl": "https://callback.example.com/intranet-inspection"
+  },
+  "secrets": {
+    "INTRANET_SCAN_TOKEN": "<在此填巡检系统访问令牌，或用 acf task update 注入；示例值为占位符>"
+  }
+}
