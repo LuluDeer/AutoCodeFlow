@@ -1,4 +1,4 @@
-import { randomBytes } from "crypto";
+import { createHmac, randomBytes } from "crypto";
 import {
   SECRET_ENC_PREFIX,
   SECRET_MASK_LITERAL,
@@ -344,5 +344,62 @@ describe("SecretsCryptoService (SEC-02)", () => {
   it("rejects encryptValue in degraded mode", () => {
     const svc = makeService({});
     expect(() => svc.encryptValue("x")).toThrow(/未配置 SEC_SECRETS_KEY/);
+  });
+
+  describe("deriveAnonymousId（TTFV 匿名 ID 派生）", () => {
+    const INPUT = "device-fp-uuid-abc123";
+
+    it("同 input+purpose 稳定派生相同的 32-hex（前 16 字节）", () => {
+      const svc = makeService({ SEC_SECRETS_KEY: HEX_KEY });
+      const a = svc.deriveAnonymousId(INPUT, "ttfv-install");
+      const b = svc.deriveAnonymousId(INPUT, "ttfv-install");
+      expect(a).toBe(b);
+      expect(a).toMatch(/^[0-9a-f]{32}$/);
+    });
+
+    it("不同 purpose 域分离（同 input 不产生相同 ID）", () => {
+      const svc = makeService({ SEC_SECRETS_KEY: HEX_KEY });
+      const install = svc.deriveAnonymousId(INPUT, "ttfv-install");
+      const task = svc.deriveAnonymousId(INPUT, "ttfv-task");
+      const execution = svc.deriveAnonymousId(INPUT, "ttfv-execution");
+      expect(install).not.toBe(task);
+      expect(install).not.toBe(execution);
+      expect(task).not.toBe(execution);
+    });
+
+    it("不同 input 产生不同 ID", () => {
+      const svc = makeService({ SEC_SECRETS_KEY: HEX_KEY });
+      const a = svc.deriveAnonymousId(INPUT, "ttfv-install");
+      const b = svc.deriveAnonymousId("device-fp-uuid-xyz789", "ttfv-install");
+      expect(a).not.toBe(b);
+    });
+
+    it("输出不泄漏原始 input 子串", () => {
+      const svc = makeService({ SEC_SECRETS_KEY: HEX_KEY });
+      const id = svc.deriveAnonymousId(INPUT, "ttfv-install")!;
+      expect(id).not.toContain(INPUT);
+      // 输入里较长的特征片段同样不可见
+      expect(id).not.toContain("device-fp");
+    });
+
+    it("输出确为 HMAC-SHA256(`${purpose}:${input}`) 前 16 字节（反证裸 HMAC(input) 实现）", () => {
+      const svc = makeService({ SEC_SECRETS_KEY: HEX_KEY });
+      const expected = createHmac("sha256", KEY)
+        .update(`ttfv-install:${INPUT}`)
+        .digest("hex")
+        .slice(0, 32);
+      expect(svc.deriveAnonymousId(INPUT, "ttfv-install")).toBe(expected);
+      // 若实现漏掉 purpose 域分离（裸 HMAC(input)），上面的断言即转红。
+      const noPurpose = createHmac("sha256", KEY)
+        .update(INPUT)
+        .digest("hex")
+        .slice(0, 32);
+      expect(svc.deriveAnonymousId(INPUT, "ttfv-install")).not.toBe(noPurpose);
+    });
+
+    it("degraded（无 key）时返回 null，不臆造匿名 ID", () => {
+      const svc = makeService({});
+      expect(svc.deriveAnonymousId(INPUT, "ttfv-install")).toBeNull();
+    });
   });
 });
