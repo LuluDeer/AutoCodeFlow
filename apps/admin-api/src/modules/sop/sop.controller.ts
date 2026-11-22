@@ -277,6 +277,7 @@ export class SopController {
     summary: "列出跨 SOP、待人工答复的升级澄清（含总数、截断与降级标记）",
   })
   @ApiOkResponse({ type: SopPendingClarificationsResponseDto })
+  @ApiQuery({ name: "limit", required: false, type: String })
   async listPendingClarifications(
     @Query("limit") limit?: string,
   ): Promise<SopPendingClarificationsResponseDto> {
@@ -354,6 +355,9 @@ export class SopController {
   // N-12: 裸分页 {items,total}——无 page/pageSize/totalPages 元数据（与
   // tasks 的 paginate() 双键信封不同源），契约如实钉住。
   @ApiOkResponse({ type: SopListResponseDto })
+  @ApiQuery({ name: "status", required: false, type: String })
+  @ApiQuery({ name: "page", required: false, type: String })
+  @ApiQuery({ name: "pageSize", required: false, type: String })
   async list(
     @Query("status") status?: string,
     @Query("page") page?: string,

@@ -21,12 +21,15 @@ import {
   ApiBearerAuth,
   ApiProperty,
   ApiPropertyOptional,
+  ApiQuery,
   ApiOkResponse,
   ApiCreatedResponse,
 } from "@nestjs/swagger";
 import { InjectQueue } from "@nestjs/bullmq";
+import { InjectRepository } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import type { Queue } from "bullmq";
+import type { Repository } from "typeorm";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
@@ -72,6 +75,27 @@ import {
   AgentInboxCountsResponseDto,
   AgentPendingApprovalsResponseDto,
 } from "./dto/agent-inbox.dto";
+// R308：TTFV opt-in 授权闭环。依赖全部走模块已有 provider，不新增 module 接线。
+import { SystemConfigService } from "../config/config.service";
+import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
+import {
+  TelemetryOptinService,
+  TTFV_SYSTEM_GATE_KEY,
+} from "./runtime/telemetry-optin.service";
+import { Executor } from "../executor/entities/executor.entity";
+import { TelemetryOptin } from "./entities/telemetry-optin.entity";
+import {
+  AgentTelemetryConsentDto,
+  AgentTelemetryConsentResultDto,
+  AgentTelemetryStatusDto,
+} from "./dto/agent-telemetry.dto";
+// R325（北极星 business_confirmed）：显式确认端点只加一条薄路由，业务/emit
+// 逻辑全在独立 service；此处仅做依赖缺席 503 与 404 映射。
+import { AgentExecutionConfirmationService } from "./runtime/agent-execution-confirmation.service";
+// R327（北极星双口径看板）：只读读面 service + 响应契约。与 telemetry/status
+// 同面（class 级 JwtAuthGuard + ADMIN），不进 metrics 的 @Public 抓取面。
+import { NorthStarMetricsService } from "./runtime/north-star-metrics.service";
+import { AgentNorthStarResponseDto } from "./dto/agent-north-star.dto";
 
 /**
  * R279：把 `since` query（ISO-8601）解析成 `Date`；**解析不出 ⇒ `undefined`（不筛）**。
@@ -176,12 +200,59 @@ export class AgentController {
      */
     @Optional()
     private readonly inbox?: AgentInboxService | null,
+    /**
+     * R308：以下依赖必须继续追加在末尾且 `@Optional`。
+     * R202/R205/R207/R278 已有 5 次教训：既有 spec 用定位参数装配本 controller，
+     * 插在中间会让它们整体错位。生产装配里这些 provider 均存在（AgentModule 已
+     * 引入 SystemConfigModule / TaskModule / forFeature(Executor, TelemetryOptin)）；
+     * 缺席时相关端点显式 503，绝不回 200 空状态。
+     */
+    @Optional()
+    private readonly systemConfig?: SystemConfigService | null,
+    @Optional()
+    private readonly telemetryOptin?: TelemetryOptinService | null,
+    @Optional()
+    private readonly secretsCrypto?: SecretsCryptoService | null,
+    @Optional()
+    @InjectRepository(Executor)
+    private readonly executors?: Repository<Executor> | null,
+    @Optional()
+    @InjectRepository(TelemetryOptin)
+    private readonly optinRows?: Repository<TelemetryOptin> | null,
+    /**
+     * R325：北极星「被业务确认」显式确认 service。
+     *
+     * ⚠️ **同样追加在末尾且 `@Optional`**（R202/R205/R207/R278 + R308 教训）：
+     * 既有 spec 用定位参数装配本 controller，插在中间会让它们整体错位。
+     * 生产装配里 provider 由主 agent 在 AgentModule 统一接线；缺席时端点
+     * 显式抛 `DEPENDENCY_UNAVAILABLE`（503），绝不回 200 空信封。
+     */
+    @Optional()
+    private readonly confirmation?: AgentExecutionConfirmationService | null,
+    /**
+     * R327：北极星双口径周报读面。
+     *
+     * ⚠️ **同样追加在末尾且 `@Optional`**（R202/R205/R207/R278/R308/R325
+     * 教训）：既有 spec 用定位参数装配本 controller，插在中间会让它们整体错位。
+     * 生产装配里 provider 由 AgentModule 注册；缺席时端点显式 503，绝不回
+     * 200 空信封（「读不到」不能伪装成「没有数据」）。
+     */
+    @Optional()
+    private readonly northStarMetrics?: NorthStarMetricsService | null,
   ) {}
 
   @Get("sessions")
   @ApiOperation({ summary: "列出 Agent 会话（最新在前）" })
   // N-12: 裸分页 {items,total}（与 /sop 同形态，无页元数据）。
   @ApiOkResponse({ type: AgentSessionListResponseDto })
+  // R292：具名 @Query 运行期全可选；Swagger 默认推断 required:true，逐个显式标注。
+  @ApiQuery({ name: "kind", required: false, type: String })
+  @ApiQuery({ name: "status", required: false, type: String })
+  @ApiQuery({ name: "page", required: false, type: String })
+  @ApiQuery({ name: "stalled", required: false, type: String })
+  @ApiQuery({ name: "stalledMinutes", required: false, type: String })
+  @ApiQuery({ name: "pageSize", required: false, type: String })
+  @ApiQuery({ name: "since", required: false, type: String })
   async list(
     @Query("kind") kind?: AgentSessionKind,
     @Query("status") status?: string,
@@ -802,6 +873,7 @@ export class AgentController {
     summary: "列出跨会话的待审批单（含总数、截断与降级标记）",
   })
   @ApiOkResponse({ type: AgentPendingApprovalsResponseDto })
+  @ApiQuery({ name: "limit", required: false, type: String })
   async listPendingApprovals(
     @Query("limit") limit?: string,
   ): Promise<AgentPendingApprovalsResponseDto> {
@@ -834,5 +906,288 @@ export class AgentController {
       throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
     }
     return this.inbox.counts();
+  }
+
+  // ── R308: TTFV opt-in 授权闭环 ────────────────────────────────
+  // 只改授权状态与系统总闸，绝不直接写 funnel_events：埋点写入仍由
+  // TelemetryOptinService.isOptedIn 的双闸决定，避免绕过闸门造数据。
+
+  /** 总闸读失败 / 缺键一律 false（与 TelemetryOptinService 同口径）。 */
+  private async telemetryGateState(): Promise<boolean> {
+    try {
+      const row = await this.systemConfig!.findOne(TTFV_SYSTEM_GATE_KEY);
+      return row?.value === "true" || row?.value === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 目标 install 解析：显式 installId > 设备指纹派生 > 全部已知 executor 指纹。
+   *
+   * `includeStoredOptIns` 只用于撤销的无参分支：已下线执行器不在 executor 表里，
+   * 但授权行仍在，必须一并撤销，否则「关总闸」只是暂时遮住残留授权。
+   */
+  private async resolveTelemetryInstallIds(
+    dto: AgentTelemetryConsentDto,
+    includeStoredOptIns: boolean,
+  ): Promise<string[]> {
+    const ids = new Set<string>();
+    if (dto.installId) {
+      ids.add(dto.installId);
+      return [...ids];
+    }
+
+    const fingerprints: string[] = [];
+    if (dto.deviceFingerprint) {
+      fingerprints.push(dto.deviceFingerprint);
+    } else if (this.executors) {
+      const rows = await this.executors.find({
+        select: { deviceFingerprint: true },
+      });
+      for (const row of rows) {
+        if (row.deviceFingerprint) fingerprints.push(row.deviceFingerprint);
+      }
+    }
+
+    for (const fingerprint of fingerprints) {
+      const derived = this.secretsCrypto!.deriveAnonymousId(
+        fingerprint,
+        "ttfv-install",
+      );
+      // 无 SEC_SECRETS_KEY ⇒ 派生不出稳定匿名 id。此时授权毫无意义，
+      // 直接 fail-closed，绝不把原始指纹当 installId 落库。
+      if (!derived) throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+      ids.add(derived);
+    }
+
+    if (includeStoredOptIns) {
+      const stored = await this.optinRows!.find({
+        where: { optIn: true },
+        select: { installId: true },
+      });
+      for (const row of stored) ids.add(row.installId);
+    }
+    return [...ids];
+  }
+
+  @Post("telemetry/consent")
+  @ApiOperation({ summary: "设置 TTFV 授权状态与系统总闸" })
+  @ApiCreatedResponse({ type: AgentTelemetryConsentResultDto })
+  async setTelemetryConsent(
+    @Body() dto: AgentTelemetryConsentDto,
+    @CurrentUser() user: AuthUser,
+  ): Promise<AgentTelemetryConsentResultDto> {
+    if (
+      !this.systemConfig ||
+      !this.telemetryOptin ||
+      !this.secretsCrypto ||
+      !this.executors ||
+      !this.optinRows
+    ) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+
+    // 用户维度只落 HMAC 哈希；原始 username 既不进 telemetry_optin，也不进
+    // config_history（HistoryOptions 刻意只带数字 userId）。
+    const userIdHash = this.secretsCrypto.deriveAnonymousId(
+      user.username,
+      "ttfv-user",
+    );
+    if (!userIdHash) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+
+    const installIds = await this.resolveTelemetryInstallIds(
+      dto,
+      !dto.optIn && !dto.installId && !dto.deviceFingerprint,
+    );
+    const source = dto.source ?? "admin-ui";
+    const gateValue = dto.optIn ? "true" : "false";
+
+    if (dto.optIn) {
+      // 先授权再开闸：避免「总闸已开、install 尚未授权」的采集窗口。
+      for (const installId of installIds) {
+        await this.telemetryOptin.grant(installId, userIdHash, source);
+      }
+      await this.systemConfig.upsert(
+        {
+          key: TTFV_SYSTEM_GATE_KEY,
+          value: gateValue,
+          valueType: "boolean",
+          description: "TTFV opt-in system gate",
+        },
+        { userId: user.id },
+      );
+    } else {
+      // 反向同理：先关闸再撤销，撤销失败也不会留下一个开着的采集口。
+      await this.systemConfig.upsert(
+        {
+          key: TTFV_SYSTEM_GATE_KEY,
+          value: gateValue,
+          valueType: "boolean",
+          description: "TTFV opt-in system gate",
+        },
+        { userId: user.id },
+      );
+      for (const installId of installIds) {
+        await this.telemetryOptin.revoke(installId);
+      }
+    }
+
+    return {
+      systemEnabled: dto.optIn,
+      optedIn: dto.optIn,
+      installIds,
+      count: installIds.length,
+      source,
+    };
+  }
+
+  @Get("telemetry/status")
+  @ApiOperation({ summary: "读取 TTFV 授权状态供管理端展示" })
+  @ApiOkResponse({ type: AgentTelemetryStatusDto })
+  async telemetryStatus(): Promise<AgentTelemetryStatusDto> {
+    if (!this.systemConfig || !this.optinRows) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    const systemEnabled = await this.telemetryGateState();
+    const rows = await this.optinRows.find({ order: { optedAt: "DESC" } });
+    const optedIn = rows.filter((row) => row.optIn);
+    // 已授权 installId 集合：只取 opt_in=true 的行；撤销行（opt_in=false）
+    // 不是授权，不能拿它把覆盖率凑成 full。
+    const authorizedIds = new Set(optedIn.map((row) => row.installId));
+    const iso = (value: Date | null | undefined): string | null =>
+      value ? new Date(value).toISOString() : null;
+
+    // ── R329：授权覆盖率可观测性（纯只读，绝不授权、绝不改任何状态）──
+    // knownExecutorCount 与 consent 全量路径（resolveTelemetryInstallIds）
+    // 取数口径一致：executors 表 select deviceFingerprint 后去重计数。
+    // executors 依赖缺席 ⇒ 0，coverage 按下方规则降级（不伪造 full）。
+    const fingerprints = new Set<string>();
+    if (this.executors) {
+      const execRows = await this.executors.find({
+        select: { deviceFingerprint: true },
+      });
+      for (const row of execRows) {
+        if (row.deviceFingerprint) fingerprints.add(row.deviceFingerprint);
+      }
+    }
+    const knownExecutorCount = fingerprints.size;
+
+    let coverage: AgentTelemetryStatusDto["coverage"];
+    if (!systemEnabled) {
+      coverage = "gate_off";
+    } else if (knownExecutorCount === 0) {
+      // 审计 B2 核心见证：总闸已开但无已知执行器 ⇒ 静默零采集陷阱。
+      coverage = "no_executors";
+    } else if (!this.secretsCrypto) {
+      // 派生依赖缺席：无法比对，fail-closed 降级 partial，绝不报 full。
+      this.logger.warn(
+        "[R329] telemetry status: secretsCrypto absent, coverage degraded to partial",
+      );
+      coverage = "partial";
+    } else {
+      // 与 consent 全量路径同样用 deriveAnonymousId(fp,"ttfv-install") 派生，
+      // 只比较 HMAC 匿名 id，绝不把原始指纹/用户名带进响应。
+      const derivedIds = new Set<string>();
+      let derivationFailed = false;
+      for (const fingerprint of fingerprints) {
+        const derived = this.secretsCrypto.deriveAnonymousId(
+          fingerprint,
+          "ttfv-install",
+        );
+        if (!derived) {
+          derivationFailed = true;
+          break;
+        }
+        derivedIds.add(derived);
+      }
+      if (derivationFailed) {
+        // 无 SEC_SECRETS_KEY ⇒ 派生失败：记 warn、降级 partial，不伪造 full。
+        this.logger.warn(
+          "[R329] telemetry status: installId derivation failed, coverage degraded to partial",
+        );
+        coverage = "partial";
+      } else {
+        const allCovered = [...derivedIds].every((id) => authorizedIds.has(id));
+        coverage = allCovered ? "full" : "partial";
+      }
+    }
+
+    return {
+      systemEnabled,
+      count: optedIn.length,
+      latestOptedAt: optedIn.length > 0 ? iso(optedIn[0].optedAt) : null,
+      installs: rows.map((row) => ({
+        installId: row.installId,
+        optIn: row.optIn,
+        optedAt: iso(row.optedAt),
+        userIdHash: row.userIdHash ?? null,
+        source: row.source,
+      })),
+      knownExecutorCount,
+      coverage,
+    };
+  }
+
+  /**
+   * R325（北极星 §6 步骤 1-2）：显式确认某次执行「已被业务确认」。
+   *
+   * - 幂等：重复调用一律 ok:true 且 emit；去重由下游 listener 的
+   *   dedupeKey = confirmed:<execution_id_hash> 保证，业务侧不去重。
+   * - 鉴权沿用 controller 级 JwtAuthGuard + ADMIN（不自定义角色）。
+   * - 与 telemetry 解耦（§7）：本端点不查 opt-in，未授权也照常确认成功。
+   */
+  @Post("executions/:execId/confirm")
+  @ApiOperation({
+    summary: "显式确认执行已被业务确认（北极星 business_confirmed 事件源）",
+  })
+  @ApiOkResponse({
+    description:
+      "确认成功（幂等，重复确认同样返回成功并 emit execution.confirmed）",
+  })
+  async confirmExecution(
+    @Param("execId", ParseUuidShapePipe) execId: string,
+  ): Promise<{ ok: true; confirmedAt: string }> {
+    if (!this.confirmation) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    const result = await this.confirmation.confirm(execId);
+    if (!result.ok) {
+      throw new AppError(ErrorCode.TASK_EXECUTION_NOT_FOUND, {
+        executionId: execId,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * R327（北极星 §6 步骤 5 的后端一半）：双口径周报读面，供管理端看板消费。
+   *
+   * - `?as_of=`（ISO-8601，缺省 now）：观测截止参数；非法值由 service 抛 400。
+   * - 鉴权沿用 controller 级 JwtAuthGuard + ADMIN，与 telemetry/status 同面；
+   *   刻意不落 metrics 模块（那是 @Public + scraper guard 的 Prometheus 抓取面）。
+   * - service 缺席 ⇒ 显式 503（不回 200 空信封）；空数据由 service 返回
+   *   weeks=[]/totals=0/warnings 仍在，与脚本 buildPayload 逐字对齐。
+   */
+  @Get("north-star/metrics")
+  @ApiOperation({
+    summary: "北极星双口径周报（严格 business_confirmed + 代理值，绝不混用）",
+  })
+  @ApiQuery({
+    name: "as_of",
+    required: false,
+    type: String,
+    description: "观测截止 ISO-8601；缺省 now",
+  })
+  @ApiOkResponse({ type: AgentNorthStarResponseDto })
+  async northStarReport(
+    @Query("as_of") asOf?: string,
+  ): Promise<AgentNorthStarResponseDto> {
+    if (!this.northStarMetrics) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    return this.northStarMetrics.report(asOf);
   }
 }

@@ -1,5 +1,5 @@
 import { Controller, Get, Query, Res, Logger } from "@nestjs/common";
-import { ApiOkResponse } from "@nestjs/swagger";
+import { ApiOkResponse, ApiQuery } from "@nestjs/swagger";
 import { Response } from "express";
 import { Public } from "../../common/decorators/public.decorator";
 // LANG-ERR-01：按稳定错误码分派落地页错误标识（见 mapCallbackError 头注）。
@@ -154,6 +154,9 @@ export class OidcController {
     description: "302 重定向并写入会话 Cookie；失败时返回 502 JSON（Res 直传）",
     schema: { type: "string" },
   })
+  // R292：error 是 IdP 拒绝授权的替代参数，与 code 互斥——成功回调不带 error，
+  // 故运行期可选（required:false）。code/state 的 required 语义保持不变。
+  @ApiQuery({ name: "error", required: false, type: String })
   async callback(
     @Query("code") code: string | undefined,
     @Query("state") state: string | undefined,

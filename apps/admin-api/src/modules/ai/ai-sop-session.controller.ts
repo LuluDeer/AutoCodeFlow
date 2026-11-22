@@ -15,6 +15,7 @@ import {
   ApiOperation,
   ApiProperty,
   ApiPropertyOptional,
+  ApiQuery,
   ApiTags,
 } from "@nestjs/swagger";
 import { IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
@@ -104,6 +105,8 @@ export class AiSopSessionController {
   @Get()
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "列出本人的编写会话（最近更新在前）" })
+  @ApiQuery({ name: "page", required: false, type: String })
+  @ApiQuery({ name: "pageSize", required: false, type: String })
   async list(
     @CurrentUser() user?: { id: number | string },
     @Query("page") page?: string,

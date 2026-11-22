@@ -186,6 +186,7 @@ import {
   ExecutorCommandFailedEventPayload,
   ExecutorOfflineEventPayload,
   ExecutorOnlineEventPayload,
+  type ExecutorRegisteredEventPayload,
 } from "../../common/events/domain-events";
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
 import { Optional } from "@nestjs/common";
@@ -1652,6 +1653,11 @@ export class ExecutorService implements OnModuleInit {
     }
   }
 
+  // R309（TTFV §7.6）：首次注册锚点。本文件在 size-caps 顶格基线（非注释行 / 最长函数），
+  // 故 emit 实现压缩为单行并保持 prettier-ignore——语义是完整 fail-open 派生+发布。
+  // prettier-ignore
+  private emitInstallCompleted(executor: Pick<Executor, "deviceFingerprint" | "createdAt" | "type">, appName: string): void { if (!this.eventBus) return; try { const installId = this.secretsCrypto.deriveAnonymousId(executor.deviceFingerprint, "ttfv-install"); if (!installId) return; const payload: ExecutorRegisteredEventPayload = { installId, appName, executorType: executor.type, observedAt: executor.createdAt.toISOString() }; this.eventBus.emit(DOMAIN_EVENTS.EXECUTOR_REGISTERED, payload); } catch { /* fail-open：总线缺席/异常不影响注册主链 */ } }
+
   public getExecutorUrl(address: string, path: string): string {
     // SEC-SSRF-03：地址来自执行器自报的 register/heartbeat 字段，未做归一。
     // 若地址里含 '#'，URL 解析会把其后内容当作 fragment，导致我们拼出的
@@ -2818,8 +2824,8 @@ export class ExecutorService implements OnModuleInit {
             );
           });
         }
-        // E-03: send notification on first registration
         if (isFirstTime) {
+          this.emitInstallCompleted(saved, data.appName); // E-03/R309: first registration anchor
           this.notificationService
             .notifyExecutorOnline(data.appName, data.address)
             .catch((err) =>

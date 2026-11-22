@@ -66,6 +66,20 @@ describe("AgentController · 深链参数", () => {
       );
     },
   );
+
+  it("confirmExecution 在查库前使用 UUID 形状校验", () => {
+    const args = Reflect.getMetadata(
+      ROUTE_ARGS_METADATA,
+      AgentController,
+      "confirmExecution",
+    );
+    expect(Object.values(args)).toContainEqual(
+      expect.objectContaining({
+        data: "execId",
+        pipes: [ParseUuidShapePipe],
+      }),
+    );
+  });
 });
 
 describe("AgentController · resume 状态防线（B-8）", () => {
