@@ -189,6 +189,8 @@ data/redis/
 
 # vitest 本地输出（不入库）
 vitest-out.json
+# pytest-cov 生成的原始覆盖率数据（health-snapshot 只消费汇总，不入库）
+/apps/executor-python/coverage.json
 
 # 提交草稿 / release-please 排障草稿（本地临时文件，不入库；E-P1-P2）
 COMMIT_MSG_*.txt
