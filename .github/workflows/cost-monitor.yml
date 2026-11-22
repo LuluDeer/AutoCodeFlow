@@ -104,21 +104,6 @@ jobs:
             echo "$json" | jq '[(.billable // {}) | to_entries[]?.value.total_ms // 0] | add // 0 | (. / 60000) | ceil'
           }
 
-          # ── 汇总 ───────────────────────────────────────────────────────
-          CI_WF="ci.yml"
-          REL_WF="release.yml"
-
-          ci_runs_json=$(fetch_runs "$CI_WF")
-          rel_runs_json=$(fetch_runs "$REL_WF")
-
-          ci_total=$(echo "$ci_runs_json" | jq 'length')
-          ci_done=$(echo "$ci_runs_json" | jq '[.[] | select(.conclusion != null)] | length')
-          ci_ok=$(echo "$ci_runs_json" | jq '[.[] | select(.conclusion == "success")] | length')
-
-          rel_total=$(echo "$rel_runs_json" | jq 'length')
-          rel_done=$(echo "$rel_runs_json" | jq '[.[] | select(.conclusion != null)] | length')
-          rel_ok=$(echo "$rel_runs_json" | jq '[.[] | select(.conclusion == "success")] | length')
-
           # 计费分钟：只对**终态**运行取 timing（进行中的还没产生最终计费）
           sum_billable() {
             local json="$1" total=0 rid m
@@ -137,17 +122,48 @@ jobs:
               | (((.updated_at | fromdate) - (.created_at | fromdate)) / 60)] | add // 0 | floor'
           }
 
-          ci_billable=$(sum_billable "$ci_runs_json")
-          rel_billable=$(sum_billable "$rel_runs_json")
-          total_billable=$((ci_billable + rel_billable))
+          # ── 覆盖仓库内主要 workflows ───────────────────────────────────
+          WORKFLOWS=(
+            "ci.yml|CI"
+            "release.yml|Release"
+            "release-desktop.yml|Release Desktop"
+            "desktop-e2e.yml|Desktop E2E"
+            "docs-site-deploy.yml|Deploy Docs Site"
+            "release-please.yml|Release Please"
+            "release-hygiene.yml|Release Hygiene"
+          )
 
-          ci_wall=$(sum_wall "$ci_runs_json")
-          rel_wall=$(sum_wall "$rel_runs_json")
-          total_wall=$((ci_wall + rel_wall))
+          table_rows=""
+          rate_lines=""
+          total_runs=0
+          total_done=0
+          total_billable=0
+          total_wall=0
 
-          # 成功率：分子分母都限定在终态集合内
-          ci_rate=0;  [ "$ci_done" -gt 0 ]  && ci_rate=$((ci_ok * 100 / ci_done))
-          rel_rate=0; [ "$rel_done" -gt 0 ] && rel_rate=$((rel_ok * 100 / rel_done))
+          for entry in "${WORKFLOWS[@]}"; do
+            wf="${entry%%|*}"
+            label="${entry#*|}"
+            runs_json=$(fetch_runs "$wf")
+
+            wf_total=$(echo "$runs_json" | jq 'length')
+            wf_done=$(echo "$runs_json" | jq '[.[] | select(.conclusion != null)] | length')
+            wf_ok=$(echo "$runs_json" | jq '[.[] | select(.conclusion == "success")] | length')
+            wf_billable=$(sum_billable "$runs_json")
+            wf_wall=$(sum_wall "$runs_json")
+
+            total_runs=$((total_runs + wf_total))
+            total_done=$((total_done + wf_done))
+            total_billable=$((total_billable + wf_billable))
+            total_wall=$((total_wall + wf_wall))
+
+            table_rows="${table_rows}| ${label} (\`${wf}\`) | ${wf_total} | ${wf_done} | ${wf_billable} | ${wf_wall} |\n"
+            if [ "$wf_done" -gt 0 ]; then
+              wf_rate=$((wf_ok * 100 / wf_done))
+              rate_lines="${rate_lines}- **${label}**：${wf_rate}%（${wf_ok}/${wf_done}）\n"
+            else
+              rate_lines="${rate_lines}- **${label}**：区间内无已完成运行\n"
+            fi
+          done
 
           {
             echo "## GitHub Actions 使用统计（最近 7 天）"
@@ -158,9 +174,8 @@ jobs:
             echo ""
             echo "| Workflow | 运行次数 | 已完成 | 计费分钟 | 实际运行时长 |"
             echo "| --- | ---: | ---: | ---: | ---: |"
-            echo "| CI (\`${CI_WF}\`) | ${ci_total} | ${ci_done} | ${ci_billable} | ${ci_wall} |"
-            echo "| Release (\`${REL_WF}\`) | ${rel_total} | ${rel_done} | ${rel_billable} | ${rel_wall} |"
-            echo "| **合计** | **$((ci_total + rel_total))** | **$((ci_done + rel_done))** | **${total_billable}** | **${total_wall}** |"
+            printf "%b" "$table_rows"
+            echo "| **合计** | **${total_runs}** | **${total_done}** | **${total_billable}** | **${total_wall}** |"
             echo ""
             echo "> **计费分钟**取自官方 \`/actions/runs/{id}/timing\` 的 \`billable_ms\`（按 runner 规格累加）。"
             echo "> **实际运行时长**是 \`updated_at - created_at\` 的墙钟时间，**含排队与人工等待**，"
@@ -168,16 +183,7 @@ jobs:
             echo ""
             echo "### 成功率（仅统计已完成运行）"
             echo ""
-            if [ "$ci_done" -gt 0 ]; then
-              echo "- **CI**：${ci_rate}%（${ci_ok}/${ci_done}）"
-            else
-              echo "- **CI**：区间内无已完成运行"
-            fi
-            if [ "$rel_done" -gt 0 ]; then
-              echo "- **Release**：${rel_rate}%（${rel_ok}/${rel_done}）"
-            else
-              echo "- **Release**：区间内无已完成运行"
-            fi
+            printf "%b" "$rate_lines"
             echo ""
             echo "### 成本评估"
             echo ""
@@ -187,7 +193,7 @@ jobs:
               echo "超出部分约 \$0.008/分钟。本区间计费 **${total_billable}** 分钟，"
               echo "按 4.3 周/月外推约 **$((total_billable * 43 / 10))** 分钟/月。"
             else
-              echo "✅ **本仓库是公开仓库，标准 runner（\`ubuntu-latest\`）不计费**——"
+              echo "✅ **本仓库是公开仓库，标准托管 runner（如 \`ubuntu-24.04\`）不计费**——"
               echo "官方 \`billable_ms\` 恒为 0（本报告已实测一致），不存在额度超支。"
               echo "本区间实际运行时长 ${total_wall} 分钟，仅反映 CI 的反馈周期。"
             fi
@@ -209,6 +215,7 @@ jobs:
           } > report.md
 
           cat report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create or update issue
         env:
@@ -217,6 +224,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # 通用滚动标题：避免已有监控 Issue 标题永久停留在创建周次
+          issue_title="chore(ci): GitHub Actions 周度运行监控（自动更新）"
 
           # `--jq '.[0].number // empty'`：没有结果时输出空串而不是 "null"，
           # 否则下面的 `-n` 判断会把 "null" 当成有效 issue 号。
@@ -229,6 +239,9 @@ jobs:
             --jq '.[0].number // empty')
 
           if [ -n "${existing_issue:-}" ]; then
+            gh issue edit "$existing_issue" \
+              --repo "$REPO" \
+              --title "$issue_title"
             gh issue comment "$existing_issue" \
               --repo "$REPO" \
               --body-file report.md
@@ -236,7 +249,7 @@ jobs:
           else
             gh issue create \
               --repo "$REPO" \
-              --title "GitHub Actions 成本监控 - $(date '+%Y 年第 %V 周')" \
+              --title "$issue_title" \
               --body-file report.md \
               --label "cost-monitor,automation"
             echo "Created new cost monitoring issue"

@@ -6,28 +6,29 @@ name: Release Please
 #      见 docs/development.md「Commit 规范」节）——release-please 对 conventional
 #      commits 原生解析，零迁移成本；changesets 依赖 PR 里手写 .changeset/*.md
 #      增量文件，与既有纪律并行多一套仪式，收益主要是 JS monorepo 手动管理场景。
-#   2) 本仓三包（@autocodeflow/sdk / autocodeflow-mcp-server / autoflow-sdk）
-#      实际走 **lockstep 单版本线**（当前均 1.0.1，version-guard 四处一致性
-#      强制同版本），无需 changesets 的「按包独立版本 + private 包提升」能力。
+#   2) 本仓四包（@autocodeflow/sdk / @autocodeflow/cli /
+#      autocodeflow-mcp-server / autoflow-sdk）实际走 **lockstep 单版本线**
+#      （现 2.x，version-guard 强制校验 version.txt + 四包共六处版本字段一致），
+#      无需 changesets 的「按包独立版本 + private 包提升」能力。
 #   3) release-please 对 python（pyproject.toml）与 node（package.json）混合仓
 #      原生支持，changesets 只管 npm 包。
 #
 # 与既有 release.yml 的衔接（**不改动 release.yml 本体**）：
 #   ┌ push main ──→ 本 workflow：汇总 conventional commits →
-#   │   若有可发布变更：开/更新 Release PR（bump 三包 version + 生成/追加
+#   │   若有可发布变更：开/更新 Release PR（bump 四包 version + 生成/追加
 #   │   CHANGELOG.md）——注意 Release PR 的 merge 不会直接触发发布；
 #   │   release-please 创建 GitHub Release 时才打 tag v(X.Y.Z)。
-#   └ tag v* push ──→ 既有 release.yml：version-guard（tag == 三包四处
-#       version 一致性）→ environment 审批闸 → npm + PyPI 发布。
+#   └ tag v* push ──→ 既有 release.yml：version-guard（tag == version.txt +
+#       四包共六处 version 一致性）→ environment 审批闸 → npm + PyPI 发布。
 #   即：**Release PR 合并 → release-please 打 tag → tag 恰好触发 release.yml**
 #   ——发布管道、审批闸、幂等语义全部复用既有实现。
 #
 # lockstep 对齐（关键配置，2026-10 根治后）：
-#   release-please-config.json 用**单一 root 条目（"."）**承担整条 1.x 版本线：
+#   release-please-config.json 用**单一 root 条目（"."）**承担整条主版本线（现 2.x）：
 #     * `include-component-in-tag: false` → tag 形态为裸 `vX.Y.Z`，与 release.yml
 #       的 tag 触发模式 `v*` 与 version-guard 的 `v(\d+\.\d+\.\d+…)` 正则精确匹配；
-#     * 其余版本承载文件（三 npm 包的 package.json + package-lock.json 两个
-#       version 槽位、pyproject.toml、py SDK `__init__.py`、docs-site 五页、
+#     * 其余版本承载文件（三个 npm 包的 package.json + package-lock.json 两个
+#       version 槽位、Python 包 pyproject.toml 与 `__init__.py`、docs-site 文档页、
 #       docs/sdk-guide.md）全部由该条目的 `extra-files` **广播**更新
 #       ——版本号只有一个来源，不再可能出现「包之间版本漂移」。
 #   py-libs 四包（autocodeflow-http/ai/db/notify）保留独立的 linked-versions 组，
@@ -52,13 +53,13 @@ name: Release Please
 #      对应 release，每个版本都靠 backfillReleasesFromTag 兜底。
 #
 # 已知限制（现行）：
-#   a) 1.x 单版本线的 CHANGELOG 落在**根** CHANGELOG.md（root 条目的 changelog
-#      路径），不再逐包生成。各包 package.json 的 `files` 均不含 CHANGELOG，
-#      不影响发布物内容。
+#   a) 主版本线（现 2.x）的 CHANGELOG 落在**根** CHANGELOG.md（root 条目的
+#      changelog 路径），不再逐包生成。各包 package.json 的 `files` 均不含
+#      CHANGELOG，不影响发布物内容。
 #   b) root 条目用 release-type `simple` + `version-file: version.txt`，因此
 #      根 package.json（private，无消费者）的版本号**不**参与 lockstep；版本
 #      事实源是 version.txt 与各包清单，由 version-guard 强校验。
-#   c) py-libs 的 tag 带 component 前缀（`<pkg>-vX.Y.Z`），与 1.x 的裸
+#   c) py-libs 的 tag 带 component 前缀（`<pkg>-vX.Y.Z`），与主版本线的裸
 #      `vX.Y.Z` 分属两个命名空间；两者互不干扰，且都不需要人工补 tag。
 on:
   push:
@@ -79,6 +80,7 @@ concurrency:
 jobs:
   release-please:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       # ── Step 0：fail-fast 前置闸（E-35）──────────────────────────────
       # 旧形态用 `secrets.RELEASE_PLEASE_TOKEN || github.token` 回落：未配 secret
@@ -95,8 +97,8 @@ jobs:
             exit 1
           fi
           echo "RELEASE_PLEASE_TOKEN 已配置，继续。"
-      # ── Step 1：release-pr（开/更新 Release PR）─────────────────────
-      # NETOPT-4：SHA 钉死（v4 = 5c625bf）。本 action 持 RELEASE_PLEASE_TOKEN
+      # ── Step 1：release-pr（开/更新 Release PR 与合并后自动打 tag）──
+      # NETOPT-4：SHA 钉死（v5.0.0 = 45996ed）。本 action 持 RELEASE_PLEASE_TOKEN
       # （PAT contents:write + pull-requests:write），tag 漂移即权限面漂移；
       # 升级走 dependabot（github-actions 生态，weekly）受控 PR。
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
@@ -113,12 +115,11 @@ jobs:
           # 显式指向 manifest 文件（缺省同为 release-please-manifest.json，
           # 写明以减少隐式约定）
           manifest-file: release-please-manifest.json
-      # **v1.3.0 发布轮实测结论（2026-09-13，修正 R19 的错误假设）**：
-      # 曾尝试在此补 `command: github-release` 第二 step，实测被 action 拒绝
-      # （v4 合法 inputs 不含 command——run 34755386601 的 warning 列出了全集），
-      # 该方案无效；且状态机另有三层阻断：① v1.2.0 缺 GitHub Release 对象
-      # （已补建，release-please 以 GitHub Releases 为「已发布」事实源）；
-      # ② 非规范 merge 标题触发 conventional 解析错误吞掉 feat 遍历；
-      # ③ 非 bot 形态（head 分支）的 Release PR 不被状态机接纳。
-      # **当前发布形态：Release PR（人工/状态机）合并 + 人工 tag 兜底**，
-      # 详见 docs/release-checklist.md「包发布」段与 docs/AGENT_HANDOFF.md v1.3.0 段。
+      # **现行发布形态（v5.0.0 + root `.` lockstep + RELEASE_PLEASE_TOKEN）**：
+      # 合并 bot 产出的 Release PR 后，release-please 自动创建 GitHub Release
+      # （prerelease: true，保护桌面自动更新 latest）与裸 tag `vX.Y.Z`，并级联
+      # 触发 release.yml 执行 npm / PyPI 发布；人工打 tag 仅保留为兜底路径。
+      # 历史注记（v1.3.0 / v4 时代）：曾因误用不存在的 `command: github-release`
+      # 输入及缺基线 Release 对象短暂走过人工 tag 主路径，已随 v5.0.0 与 root
+      # lockstep 改造收口，详见 docs/release-checklist.md 与
+      # docs/atlas/08-workflows/release-process.md。

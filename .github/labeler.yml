@@ -3,7 +3,7 @@
 # 文档相关
 'documentation':
   - changed-files:
-    - any-glob-to-any-file: ['docs/**/*', '*.md', 'README*']
+    - any-glob-to-any-file: ['docs/**/*', 'packages/docs-site/**/*', '*.md', '**/*.md', 'README*']
 
 # CI/CD 相关
 'ci/cd':
@@ -18,7 +18,7 @@
 # 后端相关
 'backend':
   - changed-files:
-    - any-glob-to-any-file: ['apps/admin-api/**/*']
+    - any-glob-to-any-file: ['apps/admin-api/**/*', 'apps/registry-npm/**/*', 'apps/registry-pypi/**/*']
 
 # 执行器相关
 'executor':
@@ -28,7 +28,13 @@
 # SDK 相关
 'sdk':
   - changed-files:
-    - any-glob-to-any-file: ['packages/*-sdk/**/*', 'packages/autoflow-sdk/**/*']
+    - any-glob-to-any-file:
+      - 'packages/*-sdk/**/*'
+      - 'packages/autoflow-sdk/**/*'
+      - 'packages/autocodeflow-ai/**/*'
+      - 'packages/autocodeflow-db/**/*'
+      - 'packages/autocodeflow-http/**/*'
+      - 'packages/autocodeflow-notify/**/*'
 
 # CLI 相关
 'cli':
@@ -48,7 +54,17 @@
 # 测试相关
 'testing':
   - changed-files:
-    - any-glob-to-any-file: ['**/*.spec.ts', '**/*.test.ts', '**/*.spec.tsx', '**/*.test.tsx', '**/e2e/**/*']
+    - any-glob-to-any-file:
+      - '**/*.spec.ts'
+      - '**/*.test.ts'
+      - '**/*.spec.tsx'
+      - '**/*.test.tsx'
+      - '**/*.selftest.*'
+      - '**/*-selftest.*'
+      - '**/e2e/**/*'
+      - '**/tests/**/*'
+      - '**/test_*.py'
+      - '**/*_test.py'
 
 # 安全相关
 'security':
@@ -65,7 +81,7 @@
   - changed-files:
     - any-glob-to-any-file: ['**/migrations/**/*', '**/entities/**/*']
 
-# Docker 相关
+# Docker 与基础设施相关
 'docker':
   - changed-files:
-    - any-glob-to-any-file: ['**/Dockerfile', 'docker-compose*.yml', '.dockerignore']
+    - any-glob-to-any-file: ['**/Dockerfile*', 'docker-compose*.yml', '.dockerignore', 'infra/**/*']

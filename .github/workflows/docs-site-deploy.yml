@@ -14,6 +14,13 @@
 # 部署历史污染。PR/push 的构建与死链验证仍由 ci.yml 的 docs-site-build 承担，
 # 本 workflow 不重复构建验证（部署前置信任 CI 绿）。
 #
+# ── 双 job 架构（消除同 job artifact 索引竞态）─────────────────────────
+# 曾把 upload-pages-artifact 与 deploy-pages 串在同一 job 内：即使具备
+# actions: read，finalize 后约 232ms 即调用 deploy-pages 仍会触发
+# "Found 0 artifact(s)" 竞态失败（run 45043421818）。按 GitHub Pages 官方
+# 架构拆分为 build（contents: read）与 deploy（needs: build + pages: write /
+# id-token: write / actions: read），同时收紧构建期权限面。
+#
 # 前置一次性配置（仓库管理员）：Settings → Pages → Source 选
 # 「GitHub Actions」（否则 deploy-pages 步骤会报 Pages not enabled）。
 name: Deploy Docs Site
@@ -23,27 +30,21 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-# Pages 官方三件套所需最小权限：部署写 Pages + OIDC token 换取部署凭证
+# 顶层默认只读兜底；deploy job 单独声明 Pages 部署所需最小权限
 permissions:
   contents: read
-  pages: write
-  id-token: write
-  # deploy-pages 查询本次 run 的 github-pages artifact metadata 需要 actions:read。
-  # 缺它时 upload 成功、deploy 报 "No artifacts named github-pages were found"
-  # （2026-11-22 15:56 起连续失败，15:55 之前同 workflow 成功）。
-  actions: read
 
-# 同一分支新部署取消旧跑；部署期间并发组互斥，防止 Pages 产物交错覆盖
+# 同一分支部署并发组互斥，排队而非中途取消正在进行的 Pages 部署
 concurrency:
   group: docs-site-deploy-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  docs-site-deploy:
+  build:
     runs-on: ubuntu-24.04
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -65,5 +66,20 @@ jobs:
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: packages/docs-site/.vitepress/dist
-      - id: deployment
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+      # deploy-pages 查询本次 run 的 github-pages artifact metadata 需要 actions: read
+      actions: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5

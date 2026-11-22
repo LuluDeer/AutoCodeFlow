@@ -2,7 +2,7 @@
 
 感谢你愿意为 AutoCodeFlow 出一份力。本文说明**怎么提、怎么写、怎么过门禁**。
 
-> **受众**：想给这个项目提 PR 的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：想给这个项目提 PR 的开发者 · **状态**：稳定 · **最后核对**：2026-11-22
 >
 > 第一次参与？先读 [文档中心](docs/README.md) 的「按角色选路线」，
 > 再按本文的流程走一遍。
@@ -123,7 +123,7 @@ npm run test:api         # 只跑后端
 npm run test:web         # 只跑前端
 npm run test:docs        # 文档守卫（链接面 5 条 + 结构面 3 条：单 H1/层级/空表格行、新鲜度标记、围栏语言）
 npm run test:guards      # 守卫 + 自测两面门禁（判据面约 40 秒，真机面分钟级）
-npm run typecheck        # 类型检查
+npm run typecheck:all    # 全量类型检查
 ```
 
 **测试只增不减**——修 Bug 要补回归用例，加功能要补覆盖。基线数字见
@@ -143,7 +143,7 @@ npm run typecheck        # 类型检查
 
 ### CI 会检查什么
 
-PR 会触发 **39 个 job**（`.github/workflows/ci.yml` 的 38 个 + `auto-label.yml` 的 1 个；全仓 10 个 workflow 合计 52 个，其余只吃 push / schedule / 手动），常见失败原因：
+PR 会触发 **39 个 job**（`.github/workflows/ci.yml` 的 38 个 + `auto-label.yml` 的 1 个；全仓 10 个 workflow 合计 55 个，其中 `ci.yml` 共 40 个，其余只吃 push / schedule / tag / 手动），常见失败原因：
 
 | 门禁 | 什么时候会红 |
 |---|---|
@@ -179,7 +179,9 @@ PR 会触发 **39 个 job**（`.github/workflows/ci.yml` 的 38 个 + `auto-labe
 4. **响应评审**。有异议直接讨论，不要默默改。
 5. **合入后**删掉远程分支。
 
-`main` 分支受保护：只接受来自 `develop` 的 PR，要求评审通过、CI 绿、线性历史。
+`main` 分支已启用基础保护（强制线性历史、要求解决评审会话、禁止强推与删除）。
+当前单人维护模式下，GitHub 侧未强制开启 PR 审批人数或强制状态检查门禁（避免阻断维护者合入及 `readme-sync` / `release-please` 自动化），
+但协作约定上仍应通过来自 `develop` 的 PR 合入并保持 CI 全绿。
 发版由维护者按 [发布流程](docs/atlas/08-workflows/release-process.md) 执行。
 
 ---

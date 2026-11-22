@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         感谢反馈。请先确认这不是**已知问题**或**用法问题**：
-        - 已知问题：https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/atlas/08-workflows/troubleshooting/known-issues.md
+        - 已知问题：https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/atlas/08-workflows/troubleshooting/known-issues.md
         - 用法问题请走 [Discussions](https://github.com/LuluDeer/AutoCodeFlow/discussions)
 
         ⚠️ **安全漏洞请不要走这里**，见 [SECURITY.md](https://github.com/LuluDeer/AutoCodeFlow/blob/main/SECURITY.md)。
@@ -88,7 +88,7 @@ body:
       options:
         - Docker Compose
         - 源码模式（deploy.sh --mode source）
-        - 本地开发（dev.sh / npm run dev）
+        - 本地开发（./dev.sh 或具体应用目录内启动）
         - 其他 / 不确定
     validations:
       required: true
@@ -97,8 +97,8 @@ body:
     id: version
     attributes:
       label: 版本
-      description: 平台版本（version.txt 或镜像 tag）+ 执行器版本
-      placeholder: "平台 v1.12.0 · 执行器 1.9.1 · 桌面端 1.9.1"
+      description: 平台版本（version.txt 或镜像 tag）+ 执行器 / 桌面端版本
+      placeholder: "平台 v2.3.0 · 桌面端 desktop-v1.12.0"
     validations:
       required: true
 

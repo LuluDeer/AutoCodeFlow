@@ -1,6 +1,6 @@
 # 获取帮助
 
-> **受众**：遇到问题要提问的用户 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：遇到问题要提问的用户 · **状态**：稳定 · **最后核对**：2026-11-22
 
 ## 我该去哪里？
 
@@ -8,6 +8,7 @@
 |---|---|
 | **报告 Bug** | [新建 Bug Issue](https://github.com/LuluDeer/AutoCodeFlow/issues/new?template=bug_report.yml) |
 | **提功能需求** | [新建 Feature Issue](https://github.com/LuluDeer/AutoCodeFlow/issues/new?template=feature_request.yml) |
+| **报告文档问题** | [新建文档 Issue](https://github.com/LuluDeer/AutoCodeFlow/issues/new?template=docs_issue.yml) |
 | **问「怎么用」** | [GitHub Discussions](https://github.com/LuluDeer/AutoCodeFlow/discussions) |
 | **报告安全漏洞** | **不要开 Issue**，见 [SECURITY.md](SECURITY.md) |
 | **贡献代码** | [CONTRIBUTING.md](CONTRIBUTING.md) |
