@@ -51,11 +51,9 @@ import {
   agentKindLabel,
   agentStatusLabel,
   agentStepRoleLabel,
-  agentToolStatusLabel,
-  agentToolTierLabel,
 } from '../utils/agent-label';
 // P3 审计：Agent 会话/工具状态 → Tag color 映射收敛到单一事实源
-import { AGENT_APPROVAL_STATUS_COLOR, AGENT_SESSION_STATUS_COLOR, AGENT_TOOL_STATUS_COLOR } from '../utils/status-color';
+import { AGENT_APPROVAL_STATUS_COLOR, AGENT_SESSION_STATUS_COLOR } from '../utils/status-color';
 // A1 审批闭环：grant/deny 失败的兜底提示（__toastedByClient 去重，见 utils/error.ts）
 import { showApiError } from '../utils/error';
 // WEB-4：批准前的二次确认走 MODAL-01 出口（主题化/locale 化；JSX 形态的
@@ -64,6 +62,8 @@ import { Modal as confirmModal } from '../utils/modal';
 // WEB-4：审批行的入参结构化视图（只读键值列表，长值可折叠）
 import ToolArgsView from '../components/ToolArgsView';
 import { argsSummary } from '../utils/toolArgs';
+// 工具调用表列定义已外提（本文件 size-caps 顶格）；结果列见该文件的诚实口径说明。
+import { buildToolColumns } from './agent-sessions/ToolColumns';
 import type {
   AgentApproval,
   AgentBudget,
@@ -550,47 +550,8 @@ export default function AgentSessionsPage() {
     { title: t('agents.col.latency'), dataIndex: 'latencyMs', width: 80 },
   ];
 
-  const toolColumns: ColumnsType<AgentToolCall> = [
-    {
-      title: t('agents.col.tool'),
-      dataIndex: 'toolName',
-      width: 180,
-      render: (v: string, c) => (
-        <Space size={4}>
-          <Tag color={AGENT_TOOL_STATUS_COLOR[c.status] ?? 'default'}>
-            {agentToolStatusLabel(c.status, t)}
-          </Tag>
-          <Text style={{ fontSize: 12 }}>{v}</Text>
-        </Space>
-      ),
-    },
-    {
-      title: t('agents.col.tier'),
-      dataIndex: 'tier',
-      width: 90,
-      render: (v: string) => agentToolTierLabel(v, t),
-    },
-    {
-      title: t('agents.col.args'),
-      ellipsis: true,
-      render: (_, c) => (
-        <Text style={{ fontSize: 12 }} type="secondary">
-          {JSON.stringify(c.argsJson ?? {}).slice(0, 160)}
-        </Text>
-      ),
-    },
-    { title: t('agents.col.duration'), dataIndex: 'durationMs', width: 80 },
-    {
-      title: t('agents.col.error'),
-      ellipsis: true,
-      render: (_, c) =>
-        c.errorMessage ? (
-          <Text style={{ fontSize: 12 }} type="danger">
-            {c.errorMessage.slice(0, 160)}
-          </Text>
-        ) : null,
-    },
-  ];
+  // 工具调用表列定义（含「结果」列与全文入参/异常）见 pages/agent-sessions/ToolColumns.tsx。
+  const toolColumns = buildToolColumns(t);
 
   // A1 审批闭环：审批单表列（详情抽屉「审批单」页签）。
   //

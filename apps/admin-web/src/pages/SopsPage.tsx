@@ -54,6 +54,7 @@ import AssignSopModal from './sops/AssignSopModal';
 import AssignmentActionCell from './sops/AssignmentActionCell';
 import AssignmentClarificationsList from './sops/AssignmentClarificationsList';
 import CancelAssignmentModal from './sops/CancelAssignmentModal';
+import EditDraftModal from './sops/EditDraftModal';
 import { useCancelAssignment } from './sops/useCancelAssignment';
 import { ASSIGN_SOP_FIELD_ID } from './sops/assign-field-ids';
 import {
@@ -165,6 +166,8 @@ export default function SopsPage() {
   const [clarifications, setClarifications] = useState<Record<string, SopClarification[]>>({});
   const [draftOpen, setDraftOpen] = useState(false);
   const [draft, setDraft] = useState({ slug: '', title: '', frontMatterYaml: '', bodyMarkdown: '' });
+  // SOP-DRAFT-EDIT-UI：草稿内容编辑弹窗的 target（null = 关闭）。仅 status==='draft' 可达。
+  const [editTarget, setEditTarget] = useState<Sop | null>(null);
   // SOPS-DRAFT-01：新建草稿提交中——Modal confirmLoading + 防重复提交
   const [creatingDraft, setCreatingDraft] = useState(false);
   // P6 升级环收口：人工回复澄清（escalated_to_human / pending）
@@ -839,15 +842,18 @@ export default function SopsPage() {
                 label: t('sops.tab.contract'),
                 children: (
                   <>
-                    <Paragraph>
-                      <Text type="secondary">{t('sops.frontMatterLabel')}</Text>
-                    </Paragraph>
+                    {/* SOP-DRAFT-EDIT-UI：空正文草稿此前创建后无编辑入口、永久无法发布。
+                        只对 draft 工作副本给入口；published/deprecated 编辑是后续独立决策。 */}
+                    {detail.status === 'draft' && (
+                      <Button size="small" data-testid={`sop-edit-draft-${detail.slug}`} onClick={() => setEditTarget(detail)}>
+                        {t('sops.editDraft.btn')}
+                      </Button>
+                    )}
+                    <Paragraph><Text type="secondary">{t('sops.frontMatterLabel')}</Text></Paragraph>
                     <pre style={{ maxHeight: 320, overflow: 'auto', fontSize: 12 }}>
                       {JSON.stringify(detail.frontMatterJson, null, 2)}
                     </pre>
-                    <Paragraph>
-                      <Text type="secondary">{t('sops.bodyLabel')}</Text>
-                    </Paragraph>
+                    <Paragraph><Text type="secondary">{t('sops.bodyLabel')}</Text></Paragraph>
                     <pre style={{ maxHeight: 320, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12 }}>
                       {detail.bodyMarkdown ?? ''}
                     </pre>
@@ -915,72 +921,26 @@ export default function SopsPage() {
         </div>
       </Drawer>
 
-      <Modal
-        title={t('sops.newDraft')}
-        open={draftOpen}
-        onOk={() => void createDraft()}
-        onCancel={() => setDraftOpen(false)}
-        confirmLoading={creatingDraft}
-        width={720}
-        okText={t('sops.create')}
-      >
-        {/* A11Y-SOPS-01：字段名从「只有 placeholder」改为可见标签（label[for] 与
-            控件 id 同源）。Form component={false} 不产 <form>，Space 间距不变。 */}
+      {/* A11Y-SOPS-01：label[for] 与控件 id 同源；maxLength 对齐 DTO 上限，超长在输入端截断。 */}
+      <Modal title={t('sops.newDraft')} open={draftOpen} onOk={() => void createDraft()}
+        onCancel={() => setDraftOpen(false)} confirmLoading={creatingDraft} width={720} okText={t('sops.create')}>
         <Form layout="vertical" component={false}>
           <Space direction="vertical" style={{ width: '100%' }} size="small">
-            <Form.Item
-              label={t('sops.field.draftSlug')}
-              htmlFor={SOPS_FIELD_ID.draftSlug}
-              style={FIELD_ITEM_STYLE}
-            >
-              <Input
-                id={SOPS_FIELD_ID.draftSlug}
-                placeholder="slug (daily-report)"
-                value={draft.slug}
-                maxLength={128}
-                onChange={(e) => setDraft({ ...draft, slug: e.target.value })}
-              />
+            <Form.Item label={t('sops.field.draftSlug')} htmlFor={SOPS_FIELD_ID.draftSlug} style={FIELD_ITEM_STYLE}>
+              <Input id={SOPS_FIELD_ID.draftSlug} placeholder="slug (daily-report)" value={draft.slug} maxLength={128}
+                onChange={(e) => setDraft({ ...draft, slug: e.target.value })} />
             </Form.Item>
-            {/* maxLength 对齐 DraftSopDto @MaxLength(255)：超长输入在输入端截断，
-                不等后端 400（弹窗里无表单回显，400 只剩一条泛化 toast） */}
-            <Form.Item
-              label={t('sops.field.draftTitle')}
-              htmlFor={SOPS_FIELD_ID.draftTitle}
-              style={FIELD_ITEM_STYLE}
-            >
-              <Input
-                id={SOPS_FIELD_ID.draftTitle}
-                placeholder={t('sops.col.title')}
-                value={draft.title}
-                maxLength={255}
-                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-              />
+            <Form.Item label={t('sops.field.draftTitle')} htmlFor={SOPS_FIELD_ID.draftTitle} style={FIELD_ITEM_STYLE}>
+              <Input id={SOPS_FIELD_ID.draftTitle} placeholder={t('sops.col.title')} value={draft.title} maxLength={255}
+                onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
             </Form.Item>
-            <Form.Item
-              label={t('sops.field.draftFrontMatter')}
-              htmlFor={SOPS_FIELD_ID.draftFrontMatter}
-              style={FIELD_ITEM_STYLE}
-            >
-              <Input.TextArea
-                id={SOPS_FIELD_ID.draftFrontMatter}
-                rows={10}
-                placeholder={t('sops.frontMatterPlaceholder')}
-                value={draft.frontMatterYaml}
-                onChange={(e) => setDraft({ ...draft, frontMatterYaml: e.target.value })}
-              />
+            <Form.Item label={t('sops.field.draftFrontMatter')} htmlFor={SOPS_FIELD_ID.draftFrontMatter} style={FIELD_ITEM_STYLE}>
+              <Input.TextArea id={SOPS_FIELD_ID.draftFrontMatter} rows={10} placeholder={t('sops.frontMatterPlaceholder')}
+                value={draft.frontMatterYaml} onChange={(e) => setDraft({ ...draft, frontMatterYaml: e.target.value })} />
             </Form.Item>
-            <Form.Item
-              label={t('sops.field.draftBody')}
-              htmlFor={SOPS_FIELD_ID.draftBody}
-              style={FIELD_ITEM_STYLE}
-            >
-              <Input.TextArea
-                id={SOPS_FIELD_ID.draftBody}
-                rows={6}
-                placeholder={t('sops.bodyPlaceholder')}
-                value={draft.bodyMarkdown}
-                onChange={(e) => setDraft({ ...draft, bodyMarkdown: e.target.value })}
-              />
+            <Form.Item label={t('sops.field.draftBody')} htmlFor={SOPS_FIELD_ID.draftBody} style={FIELD_ITEM_STYLE}>
+              <Input.TextArea id={SOPS_FIELD_ID.draftBody} rows={6} placeholder={t('sops.bodyPlaceholder')}
+                value={draft.bodyMarkdown} onChange={(e) => setDraft({ ...draft, bodyMarkdown: e.target.value })} />
             </Form.Item>
           </Space>
         </Form>
@@ -1136,6 +1096,14 @@ export default function SopsPage() {
           </Space>
         </Form>
       </Modal>
+      {/* SOP-DRAFT-EDIT-UI：表单状态与提交全在 EditDraftModal；页面只管 target 与回调。 */}
+      <EditDraftModal target={editTarget} onClose={() => setEditTarget(null)}
+        onSaved={(updated) => {
+          setEditTarget(null);
+          // updateDraft 返回最新工作副本：用其重开抽屉，发布门控才能从禁用转可用。
+          if (detail?.id === updated.id) void openDetail(updated, detailTab);
+          void load();
+        }} />
     </div>
   );
 }

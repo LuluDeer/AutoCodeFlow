@@ -64,6 +64,12 @@ async function flush(ms = 0) {
   });
 }
 
+/** Popconfirm 确认按钮 okText 同为「升级」，限定浮层内查找以区分行内按钮。 */
+const findUpgradeConfirmBtn = () =>
+  Array.from(document.body.querySelectorAll('.ant-popconfirm button')).find(
+    (b) => (b.textContent ?? '').replace(/\s/g, '') === '升级',
+  ) as HTMLButtonElement | undefined;
+
 beforeEach(() => {
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   // 页面已不请求 list()（R3-E 收口：名字解析吃 picker 行），list mock 随之退场
@@ -94,9 +100,15 @@ describe('AppDeploymentPage 定时刷新闭包与卸载（NETOPT-7③）', () =>
     await flush();
     expect(screen.getByText('10.0.0.1')).toBeTruthy();
 
-    // 触发行内"升级"→ 2s 定时刷新登记（持有此刻 page=1 的旧闭包）。
+    // 行内"升级"只弹确认框；确认后才发请求并登记 2s 定时刷新（持有此刻 page=1 的旧闭包）。
     // 按钮可访问名带图标 aria-label 前缀（"reload 升级"），用 $ 锚定排除"升级所有"。
     fireEvent.click(screen.getByRole('button', { name: /升级$/ }));
+    expect(deploymentsApi.upgrade).not.toHaveBeenCalled();
+    await flush(); // 假定时器下推进浮层挂载；waitFor 会与 fake timers 互锁到超时
+    const confirm = findUpgradeConfirmBtn();
+    expect(confirm).toBeTruthy();
+    fireEvent.click(confirm as HTMLButtonElement);
+    expect(deploymentsApi.upgrade).toHaveBeenCalledTimes(1);
     expect(deploymentsApi.upgrade).toHaveBeenCalledWith('dep-1');
     await flush();
 
@@ -123,6 +135,13 @@ describe('AppDeploymentPage 定时刷新闭包与卸载（NETOPT-7③）', () =>
     expect(deploymentsApi.list).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole('button', { name: /升级$/ }));
+    expect(deploymentsApi.upgrade).not.toHaveBeenCalled();
+    await flush(); // 假定时器下推进浮层挂载；waitFor 会与 fake timers 互锁到超时
+    const confirm = findUpgradeConfirmBtn();
+    expect(confirm).toBeTruthy();
+    fireEvent.click(confirm as HTMLButtonElement);
+    expect(deploymentsApi.upgrade).toHaveBeenCalledTimes(1);
+    expect(deploymentsApi.upgrade).toHaveBeenCalledWith('dep-1');
     await flush();
     expect(deploymentsApi.list).toHaveBeenCalledTimes(1); // 定时器未到期
 

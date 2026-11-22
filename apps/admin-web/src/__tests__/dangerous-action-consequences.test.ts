@@ -71,6 +71,9 @@ describe("R188（P3-7 / P3-8 / P3-9）· 危险操作的确认必须写明后果
     const pop = /<Popconfirm[\s\S]{0,600}?upgradeOneTitle[\s\S]{0,600}?<\/Popconfirm>/.exec(src);
     expect(pop, "找不到单行升级的 Popconfirm").toBeTruthy();
     expect(pop![0]).toMatch(/onConfirm=\{\(\) => void handleUpgrade\(/);
+    // R188 回归补牙：只钉 onConfirm 存在会被「Popconfirm 在、但 Button onClick 直接绕过」蒙混过关。
+    // 「升级」按钮自身不得绑 handleUpgrade，确认必须真的由用户点确认触发。
+    expect(pop![0]).not.toMatch(/onClick=\{[^}]*handleUpgrade/);
   });
 });
 

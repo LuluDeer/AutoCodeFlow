@@ -40,6 +40,7 @@ vi.mock('../utils/error', async (importOriginal) => ({
 vi.mock('../api/ai', () => ({ aiApi: { suggestSchedule: vi.fn() } }));
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
+  useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
   useParams: () => ({ id: 'task-1' }),
   Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
 }));

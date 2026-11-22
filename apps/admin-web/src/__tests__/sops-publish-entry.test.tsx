@@ -184,6 +184,8 @@ describe('SOP-PUBLISH-UI-01 发布入口', () => {
     // 抽屉已打开（Tab 标签渲染；deprecated 行的操作列是「恢复」而非「归档」）
     await screen.findByText('版本历史');
     expect(screen.queryByTestId('sop-publish-demo')).toBeNull();
+    // 草稿内容编辑入口只对 draft 工作副本开放
+    expect(screen.queryByTestId('sop-edit-draft-demo')).toBeNull();
   });
 
   it('工作副本缺 front-matter/正文 → 发布按钮禁用（后端必 400 SOP_CONTENT_MISSING）', async () => {
@@ -221,6 +223,133 @@ describe('SOP-PUBLISH-UI-01 发布入口', () => {
     expect(await screen.findByText(/内容与当前版本完全一致/)).toBeTruthy();
     // 弹窗保持打开，用户可修正后再试
     expect(screen.getByText('发布 SOP「demo」')).toBeTruthy();
+  });
+});
+
+describe('SOP-DRAFT-EDIT-UI 草稿内容编辑（空正文草稿可救回）', () => {
+  const emptyDraft: Sop = {
+    ...sop,
+    slug: 'empty-draft',
+    status: 'draft',
+    title: 'Empty Draft',
+    frontMatterJson: null,
+    bodyMarkdown: null,
+  };
+
+  function openEditModal() {
+    fireEvent.click(screen.getByTestId('sop-edit-draft-empty-draft'));
+    return screen.findByText('编辑草稿「empty-draft」');
+  }
+
+  it('空正文草稿 → 详情编辑并保存 → updateDraft 调用 → 刷新后发布按钮可用', async () => {
+    const updated: Sop = {
+      ...emptyDraft,
+      frontMatterJson: { acceptance: [] },
+      bodyMarkdown: '# 正文',
+    };
+    vi.mocked(sopsApi.list).mockResolvedValue({ items: [emptyDraft], total: 1 });
+    vi.mocked(sopsApi.updateDraft).mockReset().mockResolvedValue(updated);
+    renderPage();
+    await openDetail('empty-draft');
+
+    // 前置缺陷复现：空 front-matter/正文 → 发布按钮禁用（此前无编辑入口，永久卡死）
+    expect((await screen.findByTestId('sop-publish-empty-draft') as HTMLButtonElement).disabled).toBe(true);
+
+    await openEditModal();
+    // 预填：标题来自草稿，空契约/正文留空给用户填
+    expect((document.getElementById('sops-edit-draft-title') as HTMLInputElement).value).toBe('Empty Draft');
+    expect((document.getElementById('sops-edit-draft-front-matter') as HTMLTextAreaElement).value).toBe('');
+    expect((document.getElementById('sops-edit-draft-body') as HTMLTextAreaElement).value).toBe('');
+
+    fireEvent.change(document.getElementById('sops-edit-draft-front-matter')!, {
+      target: { value: 'acceptance: []' },
+    });
+    fireEvent.change(document.getElementById('sops-edit-draft-body')!, { target: { value: '# 正文' } });
+    fireEvent.click(document.getElementById('sops-edit-draft-save')!);
+
+    await waitFor(() =>
+      expect(sopsApi.updateDraft).toHaveBeenCalledWith('sop-1', {
+        title: 'Empty Draft',
+        frontMatterYaml: 'acceptance: []',
+        bodyMarkdown: '# 正文',
+      }),
+    );
+    // 成功后详情用返回值重开、列表重拉：发布门控从禁用转可用
+    await waitFor(() =>
+      expect((screen.getByTestId('sop-publish-empty-draft') as HTMLButtonElement).disabled).toBe(false),
+    );
+    await waitFor(() => expect(vi.mocked(sopsApi.list).mock.calls.length).toBeGreaterThan(1));
+    expect(sopsApi.updateDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('空草稿只填正文 → frontMatterYaml 传 undefined（空串会被后端判内容为空），保存成功且列表刷新', async () => {
+    vi.mocked(sopsApi.list).mockResolvedValue({ items: [emptyDraft], total: 1 });
+    vi.mocked(sopsApi.updateDraft).mockReset().mockResolvedValue({ ...emptyDraft, bodyMarkdown: '# 只有正文' });
+    renderPage();
+    await openDetail('empty-draft');
+    await openEditModal();
+
+    fireEvent.change(document.getElementById('sops-edit-draft-body')!, { target: { value: '# 只有正文' } });
+    fireEvent.click(document.getElementById('sops-edit-draft-save')!);
+
+    await waitFor(() =>
+      expect(sopsApi.updateDraft).toHaveBeenCalledWith('sop-1', {
+        title: 'Empty Draft',
+        frontMatterYaml: undefined,
+        bodyMarkdown: '# 只有正文',
+      }),
+    );
+    expect(await screen.findByText('草稿内容已保存')).toBeTruthy();
+    await waitFor(() => expect(vi.mocked(sopsApi.list).mock.calls.length).toBeGreaterThan(1));
+    // 契约仍为空 → 发布门控如实保持禁用（部分保存不等于补齐内容）
+    expect((screen.getByTestId('sop-publish-empty-draft') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('非空 frontMatterJson → YAML 预填；清空契约只补正文 → 不覆盖契约，刷新后发布按钮可用', async () => {
+    const withFrontMatter: Sop = { ...emptyDraft, frontMatterJson: { acceptance: [] } };
+    vi.mocked(sopsApi.list).mockResolvedValue({ items: [withFrontMatter], total: 1 });
+    vi.mocked(sopsApi.updateDraft).mockReset().mockResolvedValue({
+      ...withFrontMatter,
+      bodyMarkdown: '# 补正文',
+    });
+    renderPage();
+    await openDetail('empty-draft');
+    await openEditModal();
+
+    // dump 分支：JSON 契约被序列化成 YAML 文本回填
+    expect((document.getElementById('sops-edit-draft-front-matter') as HTMLTextAreaElement).value).toBe('acceptance: []');
+    // 用户只补正文：把契约框清空也不该把空串发给后端（保留既有契约）
+    fireEvent.change(document.getElementById('sops-edit-draft-front-matter')!, { target: { value: '' } });
+    fireEvent.change(document.getElementById('sops-edit-draft-body')!, { target: { value: '# 补正文' } });
+    fireEvent.click(document.getElementById('sops-edit-draft-save')!);
+
+    await waitFor(() =>
+      expect(sopsApi.updateDraft).toHaveBeenCalledWith('sop-1', {
+        title: 'Empty Draft',
+        frontMatterYaml: undefined,
+        bodyMarkdown: '# 补正文',
+      }),
+    );
+    await waitFor(() =>
+      expect((screen.getByTestId('sop-publish-empty-draft') as HTMLButtonElement).disabled).toBe(false),
+    );
+  });
+
+  it('保存失败 → showApiError 透出错误且弹窗不关、表单不丢', async () => {
+    vi.mocked(sopsApi.list).mockResolvedValue({ items: [emptyDraft], total: 1 });
+    vi.mocked(sopsApi.updateDraft).mockReset().mockRejectedValue(new Error('保存被后端拒绝'));
+    renderPage();
+    await openDetail('empty-draft');
+    await openEditModal();
+
+    const frontMatter = document.getElementById('sops-edit-draft-front-matter')!;
+    fireEvent.change(frontMatter, { target: { value: 'acceptance: []' } });
+    fireEvent.click(document.getElementById('sops-edit-draft-save')!);
+
+    expect(await screen.findByText('保存被后端拒绝')).toBeTruthy();
+    // 不丢表单：原样保留用户输入，弹窗仍在
+    expect((document.getElementById('sops-edit-draft-front-matter') as HTMLTextAreaElement).value).toBe('acceptance: []');
+    expect(screen.getByText('编辑草稿「empty-draft」')).toBeTruthy();
   });
 });
 

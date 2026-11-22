@@ -701,8 +701,7 @@ export default function AppDeploymentPage({
                 onConfirm={() => void handleUpgrade(r.id)}
                 okText={t('appDeploy.action.upgrade')} okButtonProps={{ danger: true }}
               >
-                <Button size="small" icon={<ReloadOutlined />} onClick={() => handleUpgrade(r.id)}
-                  loading={actingId === r.id} disabled={!isAdmin || actingId !== null}>{t('appDeploy.action.upgrade')}</Button>
+                <Button size="small" icon={<ReloadOutlined />} loading={actingId === r.id} disabled={!isAdmin || actingId !== null}>{t('appDeploy.action.upgrade')}</Button>
               </Popconfirm>
             </Tooltip>
           )}
@@ -745,6 +744,7 @@ export default function AppDeploymentPage({
                   仅终态行渲染（在途/运行中的行后端也会 409）。 */}
               <Popconfirm
                 title={t('appDeploy.op.deleteConfirm')}
+                description={t('appDeploy.op.deleteHint')}
                 onConfirm={() => handleDelete(r.id)}
                 okText={t('appDeploy.action.delete')}
                 okButtonProps={{ danger: true }}

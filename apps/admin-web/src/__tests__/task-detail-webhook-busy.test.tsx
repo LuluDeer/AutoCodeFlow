@@ -5,7 +5,7 @@
  * 用户保存的密钥其实已失效。现以 webhookBusy 互斥串行（任一在途即禁用全部）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskDetailPage from '../pages/TaskDetailPage';
 import { useAuthStore } from '../store/auth';
@@ -31,6 +31,7 @@ vi.mock('../api/tasks', () => ({
 vi.mock('../api/ai', () => ({ aiApi: { suggestSchedule: vi.fn() } }));
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
+  useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
   useParams: () => ({ id: 'task-1' }),
   Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
 }));
@@ -61,6 +62,14 @@ if (!window.matchMedia) {
   })) as unknown as typeof window.matchMedia;
 }
 
+/** 受控 Promise：把 status GET 的落点握在测试手里，验证 busy 与 stale 守卫。 */
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
+
 const BASE_TASK = {
   id: 'task-1',
   name: 'hooked-job',
@@ -83,6 +92,8 @@ beforeEach(() => {
   vi.mocked(tasksApi.schedulerStats).mockReset().mockResolvedValue({ healthy: true, activeTimers: 0, activeCronTasks: 0, runningTaskCount: 0, totalScheduledTasks: 0, uptime: 0 } as never);
   vi.mocked(tasksApi.webhookStatus).mockReset().mockResolvedValue({ enabled: false, url: '' } as never);
   vi.mocked(tasksApi.webhookEnable).mockReset();
+  vi.mocked(tasksApi.webhookRotate).mockReset();
+  vi.mocked(tasksApi.webhookDisable).mockReset();
 });
 
 afterEach(() => {
@@ -115,16 +126,48 @@ describe('TaskDetailPage webhook 防重复提交（webhookBusy 互斥）', () =>
     expect(tasksApi.webhookEnable).toHaveBeenCalledTimes(1);
   });
 
-  it('请求完成后按钮解除互斥，可再次操作', async () => {
+  it('写成功后 GET 未落定前保持互斥，晚到的旧 GET 不能覆盖 enabled=true', async () => {
+    const initialGet = deferred<{ enabled: boolean; url: string }>();
+    const refreshGet = deferred<{ enabled: boolean; url: string }>();
+    vi.mocked(tasksApi.webhookStatus)
+      .mockReset()
+      .mockImplementationOnce(() => initialGet.promise as never)
+      .mockImplementationOnce(() => refreshGet.promise as never)
+      .mockResolvedValue({ enabled: true, url: 'http://x/hook' } as never);
     vi.mocked(tasksApi.webhookEnable).mockResolvedValue({ url: 'http://x/hook', secret: 's' } as never);
 
     renderPage();
     const enableBtn = await screen.findByText('启 用');
     fireEvent.click(enableBtn);
-    // 成功后弹出一次性密钥弹窗，按钮解除禁用
-    await waitFor(() =>
-      expect((enableBtn.closest('button') as HTMLButtonElement).disabled).toBe(false),
-    );
+
+    // 写响应落定：权威状态立刻切成 enabled，但刷新 GET 仍 pending ⇒ 互斥不解除
+    const rotateButton = () => screen.getByText('轮换密钥').closest('button') as HTMLButtonElement;
+    const rotateBtn = await screen.findByText('轮换密钥');
+    expect((rotateBtn.closest('button') as HTMLButtonElement).disabled).toBe(true);
+    expect(tasksApi.webhookEnable).toHaveBeenCalledTimes(1);
+    // 已切到禁用态的按钮再点不得补发 POST/轮换
+    fireEvent.click(rotateBtn);
+    expect(tasksApi.webhookRotate).not.toHaveBeenCalled();
+    expect(tasksApi.webhookEnable).toHaveBeenCalledTimes(1);
+    expect(tasksApi.webhookStatus).toHaveBeenCalledTimes(2);
+
+    // 页面初次加载那次 GET 晚到且回报 disabled：stale 守卫必须丢弃它
+    await act(async () => {
+      initialGet.resolve({ enabled: false, url: '' });
+      await initialGet.promise;
+    });
+    expect(screen.getByText('已启用')).toBeTruthy();
+    expect(rotateButton().disabled).toBe(true);
+
+    // 写后发起的刷新 GET 落定：状态仍为 enabled，互斥解除
+    await act(async () => {
+      refreshGet.resolve({ enabled: true, url: 'http://x/hook' });
+      await refreshGet.promise;
+    });
+    await waitFor(() => expect(rotateButton().disabled).toBe(false));
+    expect(screen.getByText('已启用')).toBeTruthy();
+    expect(screen.queryByText('Webhook 状态读取失败')).toBeNull();
+    expect(tasksApi.webhookStatus).toHaveBeenCalledTimes(2);
     expect(tasksApi.webhookEnable).toHaveBeenCalledTimes(1);
   });
 });

@@ -3,7 +3,9 @@ import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, D
 import type { TablePaginationConfig } from 'antd';
 import { SearchOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
+// resource 过滤器的完整选项集（外提：本页双顶格 + 守卫可单独 AST 扫描）
+import { RESOURCE_OPTIONS } from './resourceOptions';
 // A-12: 审计 CSV 导出（GET /audit/export，携带当前筛选，axios blob 下载）
 // AUDIT-KEYSET: 列表请求也挪进 api 层——游标三态（undefined / '' / 非空）由
 // buildAuditListQuery 一处把关，页面不再手拼 URLSearchParams。
@@ -224,9 +226,13 @@ export default function AuditLogPage() {
   const { token } = theme.useToken();
   const resultLabels = RESULT_LABELS(t);
   const [page, setPage] = useState(1);
+  // ?resource=<token> 深链：从告警/文档点进来时首屏即按该 resource 过滤（filters 与草稿同源，
+  // 首屏请求就带上；点「重置」仍清空，深链只在进入时生效）。
+  const [searchParams] = useSearchParams();
+  const initialResource = searchParams.get('resource') ?? '';
   // AUTH-05: 新增 resourceId 精确筛选（与 resource 组成组合筛选）
-  const [filters, setFilters] = useState({ action: '', resource: '', resourceId: '', username: '', result: '' as '' | 'success' | 'failure', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
-  const [pending, setPending] = useState({ action: '', resource: '', resourceId: '', username: '', result: '' as '' | 'success' | 'failure', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
+  const [filters, setFilters] = useState({ action: '', resource: initialResource, resourceId: '', username: '', result: '' as '' | 'success' | 'failure', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
+  const [pending, setPending] = useState({ action: '', resource: initialResource, resourceId: '', username: '', result: '' as '' | 'success' | 'failure', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
   const [detailModal, setDetailModal] = useState<{ open: boolean; data?: Record<string, unknown> }>({ open: false });
   /**
    * §2.1「稳定翻页」开关——默认**关闭**（照 ExecutionsPage 范式）。
@@ -429,15 +435,7 @@ export default function AuditLogPage() {
   // 没筛选），点重置只是清空草稿；更糟的是此时点导出，导出的仍是**无筛选**
   // 的全量数据，而按钮存在本身在暗示「当前有筛选」。反过来，应用筛选后若
   // 再改草稿回空，按钮消失但列表仍是筛选态。
-  const hasFilters = !!(
-    filters.action ||
-    filters.resource ||
-    filters.resourceId ||
-    filters.username ||
-    filters.result ||
-    filters.startTime ||
-    filters.endTime
-  );
+  const hasFilters = !!(filters.action || filters.resource || filters.resourceId || filters.username || filters.result || filters.startTime || filters.endTime);
 
   /**
    * 表格分页配置：keyset 模式 = `false`（页码器整体消失，改由下方自绘
@@ -618,19 +616,21 @@ export default function AuditLogPage() {
           style={{ width: 140 }}
           allowClear
         />
+        {/* 与 action 同构：mode="tags" 同时给「从完整清单点选」+「直接输入任意 token」
+            （后端 resource 精确匹配且 DTO 收任意字符串，不该被前端清单绑死）。
+            onChange 只留最后一个 ⇒ 视觉恒为一个 tag，杜绝「界面 2 标签、实际只筛 1 个」。
+            virtual=false：25 项不值得虚拟滚动，关掉让完整清单一次性可见。 */}
         <Select
+          mode="tags"
+          value={pending.resource ? [pending.resource] : []}
+          onChange={(vals) => setPending((p) => ({ ...p, resource: (vals as string[]).slice(-1)[0] ?? '' }))}
+          options={RESOURCE_OPTIONS}
+          virtual={false}
           placeholder={t('audit.filter.resourceType')}
-          value={pending.resource || undefined}
-          onChange={(v) => setPending((p) => ({ ...p, resource: v ?? '' }))}
+          style={{ width: 160 }}
           allowClear
-          style={{ width: 140 }}
-        >
-          <Option value="task">task</Option>
-          <Option value="executor">executor</Option>
-          <Option value="config">config</Option>
-          <Option value="user">user</Option>
-          <Option value="application">application</Option>
-        </Select>
+          notFoundContent={null}
+        />
         {/* AUTH-05: resourceId 精确筛选（与资源类型组合） */}
         <Input
           placeholder={t('audit.filter.resourceId')}

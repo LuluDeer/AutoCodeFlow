@@ -111,6 +111,9 @@ describe('AppDeploymentPage 删除失败的部署记录（用户报障）', () =
     fireEvent.click(delBtn);
     // Popconfirm 的确认按钮
     await waitFor(() => expect(screen.getByText('确认删除这条部署记录？')).toBeTruthy());
+    // 后果说明必须直接出现在确认框内（不能只挂在行内按钮的 Tooltip 上）
+    const confirmBox = document.querySelector('.ant-popconfirm') as HTMLElement;
+    expect(confirmBox.textContent).toContain('只删除平台上的这条历史记录，不影响执行器上正在运行的进程。');
     const confirm = findConfirmBtn() as HTMLButtonElement;
     fireEvent.click(confirm);
 

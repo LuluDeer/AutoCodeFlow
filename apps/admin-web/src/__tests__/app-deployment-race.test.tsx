@@ -68,6 +68,12 @@ afterEach(() => {
 const renderPage = () =>
   render(<AppDeploymentPage applicationId="app-1" />);
 
+/** Popconfirm 确认按钮 okText 同为「升级」，限定浮层内查找以区分行内按钮。 */
+const findUpgradeConfirmBtn = () =>
+  Array.from(document.body.querySelectorAll('.ant-popconfirm button')).find(
+    (b) => (b.textContent ?? '').replace(/\s/g, '') === '升级',
+  ) as HTMLButtonElement | undefined;
+
 describe('AppDeploymentPage 翻页竞态（W7）', () => {
   it('慢响应的旧请求数据不得覆盖已返回的新请求数据（仅最后一击生效）', async () => {
     // 每次请求由测试手动 resolve，且携带可区分的执行器地址标记
@@ -123,9 +129,9 @@ describe('AppDeploymentPage 翻页竞态（W7）', () => {
   });
 });
 
-// ─── 本轮 UX 打磨回归：升级按钮防重复提交（actingId 闸，与 approve/cancel 同款）───
-describe('AppDeploymentPage 升级防重复提交', () => {
-  it('升级在途期间再点不连发：两次点击只发一次 upgrade', async () => {
+// ─── 回归：升级必须先经确认框（Button 自身不得直接触发），且 actingId 闸仍生效 ───
+describe('AppDeploymentPage 升级确认与防重复提交', () => {
+  it('点行内升级只弹确认框不发包；确认后恰好升级一次，在途再点不连发', async () => {
     vi.mocked(deploymentsApi.list).mockReset().mockResolvedValue({ data: [dep('d1', '10.0.0.1')], total: 1 } as never);
     // definite assignment：resolve 函数在 mockImplementation 同步闭包内赋值（TS 闭包赋值不改窄化，? 调用会报 never）
     let resolveUpgrade!: () => void;
@@ -138,9 +144,20 @@ describe('AppDeploymentPage 升级防重复提交', () => {
 
     const upgradeBtn = screen.getByText('升级');
     fireEvent.click(upgradeBtn);
-    await waitFor(() => expect(deploymentsApi.upgrade).toHaveBeenCalledTimes(1));
+    // 缺陷回归：Button 曾带 onClick 直接升级，确认框只是随后弹出 → 此处必须尚未发包
+    expect(deploymentsApi.upgrade).not.toHaveBeenCalled();
+    const confirm = await waitFor(() => {
+      const b = findUpgradeConfirmBtn();
+      expect(b).toBeTruthy();
+      return b as HTMLButtonElement;
+    });
+    expect(deploymentsApi.upgrade).not.toHaveBeenCalled();
 
-    // 在途期间按钮禁用（互斥），再点不再发出第二次请求
+    fireEvent.click(confirm);
+    await waitFor(() => expect(deploymentsApi.upgrade).toHaveBeenCalledTimes(1));
+    expect(deploymentsApi.upgrade).toHaveBeenCalledWith('d1');
+
+    // 确认后在途期间按钮禁用（互斥），再点不再发出第二次请求
     expect((upgradeBtn.closest('button') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(upgradeBtn);
     expect(deploymentsApi.upgrade).toHaveBeenCalledTimes(1);

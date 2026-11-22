@@ -70,6 +70,7 @@ vi.mock('../api/ai', () => ({ aiApi: { suggestSchedule: vi.fn() } }));
 vi.mock('react-router-dom', async (orig) => ({
   ...(await orig<typeof import('react-router-dom')>()),
   useNavigate: () => vi.fn(),
+  useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
   useParams: () => ({ id: 'task-1' }),
 }));
 vi.mock('../components/GlueEditor', () => ({ default: () => null }));
