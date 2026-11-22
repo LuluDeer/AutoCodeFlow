@@ -1,7 +1,79 @@
 # 快速上手指南
 
-> **受众**：第一次部署、想先跑通 demo 的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
-> 三条路径：一键 demo（推荐先看效果）→ 手动 Docker → 源码开发。
+> **受众**：第一次部署、想先跑通 demo 的开发者 · **状态**：稳定 · **最后核对**：2026-11-20
+> 三条路径：一键 demo（推荐先看效果）→ 手动 Docker → 源码开发。另见「一行接入」（CLI / MCP）：服务端就绪后可跳过 UI，直接把任务与 AI 客户端接上。
+> 生产启用北极星看板 / TTFV 漏斗（迁移 + 密钥 + 授权前置）见 [北极星/TTFV 生产启用 runbook](plan/north-star-enablement.md)。
+
+## 一行接入：CLI / MCP（TTFV 关键路径）
+
+当你已经有可访问的 AutoCodeFlow 服务（一键 demo 或手动 Docker 任一条路径启动后），**不必先走 UI**，可以用 CLI 或 MCP 一行接入，直接创建任务 / 让 AI 客户端托管任务管理。
+
+### CLI 接入（3 行跑通）
+
+CLI 包名 `@autocodeflow/cli`，全局安装后提供 `acf` 命令（版本/来源：`packages/acf-cli/package.json` 的 `name` / `bin.acf`）。
+
+```bash
+npm install -g @autocodeflow/cli          # 安装；bin 名 acf → packages/acf-cli/dist/index.js
+acf login                                 # 登录并保存凭据；TOTP 账号可加 --code <6 位>
+acf task create --file examples/daily-report/task.example.json   # 用示例 JSON 直接创建任务
+```
+
+命令与参数均为源码事实：`acf login` 见 `packages/acf-cli/src/index.ts:125` 注册的 `loginCommand()`；`acf task` 子命令树见 `packages/acf-cli/src/index.ts:128` 的 `tasksCommand()`；`task create` 的载荷旗标是 `--body <json>` / `--file <path>`（`packages/acf-cli/src/commands/tasks.ts:579`、`:581`）——**没有 `-f` 短选项**，`-f` 在别处仅用于 import / script / glue 等命令。文件示例见 `examples/daily-report/task.example.json`（每日报表导出：cron 定时触发 + 文件产物），另有 `examples/intranet-inspection/task.example.json`（内网巡检：批量探测 + 结果汇总回调）与 `examples/desktop-data-entry/task.example.json`（桌面执行器数据填报）。以上 3 个路径已与示例切片（`scenario-examples`）最终确认一致；每个示例目录含 README + `task.example.json` + 任务代码，可直接照抄。
+
+自检命令：
+
+```bash
+acf --help                    # 根命令帮助（含全部子命令与 Examples）
+acf task create --help        # 确认 create 的 --body / --file 旗标
+```
+
+### MCP 接入（粘进 Claude / 其它 MCP 客户端）
+
+MCP server 包名 `autocodeflow-mcp-server`，bin 名 `autocodeflow-mcp`（`packages/mcp-server/package.json` 的 `name` / `bin.autocodeflow-mcp`），走 **stdio transport**（`packages/mcp-server/src/index.ts:121-122` 的 `new StdioServerTransport()` + `server.connect(transport)`）。
+
+把下面片段粘进 Claude Desktop 的 `claude_desktop_config.json`（或其它 MCP 客户端等价配置，口径对齐 `packages/mcp-server/README.md:132-138`）：
+
+```json
+{
+  "mcpServers": {
+    "autocodeflow": {
+      "command": "node",
+      "args": ["/path/to/packages/mcp-server/dist/index.js"],
+      "env": {
+        "AUTOCODEFLOW_API_URL": "http://localhost:3105",
+        "AUTOCODEFLOW_API_TOKEN": "acf_<your-api-key>"
+      }
+    }
+  }
+}
+```
+
+环境变量口径（真实名称与默认值来自源码，勿改名）：
+
+| 变量 | 是否必填 | 说明 | 源码出处 |
+|------|---------|------|---------|
+| `AUTOCODEFLOW_API_URL` | 否（默认 `http://localhost:3105`） | Admin API 基地址，请求时自动补 `/api` 前缀 | `packages/mcp-server/src/api.ts:12` |
+| `AUTOCODEFLOW_API_TOKEN` | 是 | API key（`acf_…`）或用户 JWT，作为 `Bearer` 凭证；缺失时 server 启动即以退出码 1 拒绝 | `packages/mcp-server/src/api.ts:40`、`packages/mcp-server/src/index.ts:114-120` |
+| `AUTOCODEFLOW_API_REFRESH_TOKEN` | 否 | 可选；access token 过期时自动刷新并回放一次请求 | `packages/mcp-server/src/api.ts:65` |
+
+### 收敛提示：高频工具速查
+
+MCP 共暴露几十个工具，全部交给 LLM 自由选择会拉高工具选择成本；**日常高频只用 task / application 类**即可覆盖绝大多数场景。下列工具名取自 `packages/mcp-server/src/tools.ts` 的 `registerTaskTools` / `registerApplicationTools`（含其拆分的 task 子注册文件），均为真实注册名：
+
+| 高频工具 | 用途 | 源码出处（register / 文件:行） |
+|---------|------|------------------------------|
+| `list_tasks` | 列出任务（分页/过滤） | `registerTaskDefinitionTools` → `packages/mcp-server/src/tools/task-definition.ts:23` |
+| `get_task` | 查看单个任务详情 | `registerTaskDefinitionTools` → `packages/mcp-server/src/tools/task-definition.ts:63` |
+| `trigger_task` | 手动触发一次任务 | `registerTaskDefinitionTools` → `packages/mcp-server/src/tools/task-definition.ts:76` |
+| `list_executions` | 列出任务执行记录 | `registerTaskExecutionTools` → `packages/mcp-server/src/tools/task-execution.ts:27` |
+| `get_execution` | 查看单次执行详情 | `registerTaskExecutionTools` → `packages/mcp-server/src/tools/task-execution.ts:70` |
+| `get_execution_logs` | 拉取执行日志 | `registerTaskExecutionTools` → `packages/mcp-server/src/tools/task-execution.ts:164` |
+| `list_applications` | 列出应用 | `registerApplicationTools` → `packages/mcp-server/src/tools.ts:173` |
+| `analyze_application` | 应用健康分析（LLM） | `registerApplicationTools` → `packages/mcp-server/src/tools.ts:348` |
+
+> 其余工具（版本/回滚、部署审批、SOP、审计、项目、执行器等）按需在客户端工具列表里开启；不必一开始全量放出。
+
+---
 
 ## 路径 A：一键 demo（首次约 3–8 分钟，之后 ~30 秒）
 

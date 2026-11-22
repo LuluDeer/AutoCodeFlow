@@ -1,11 +1,18 @@
 # SDK 使用指南
 
-> **受众**：在任务脚本里接入 Node/Python SDK 的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：在任务脚本里接入 Node/Python SDK 的开发者 · **状态**：稳定 · **最后核对**：2026-11-20
 > 本文件是 SDK 文档的**源头事实**（ECO-01 能力矩阵/差异裁定/缺口计划）。
 > ECO-05 起另有按导航重组的 VitePress 文档站（`packages/docs-site/`，
 > 内容全部镜像自本文件与双 SDK README/examples——修改请改本文件后同步）：
 > 本地 `cd packages/docs-site && npm install && npm run dev` 即可浏览，
 > 构建说明见该目录 README。
+
+## 一行接入（CLI / MCP）
+
+服务端就绪后，除了在脚本里用 SDK，还可以用 CLI / MCP **一行接入**创建任务或让 AI 客户端托管任务管理。完整的可复制命令、MCP `mcpServers.autocodeflow` JSON 片段、环境变量口径与「高频工具速查」表统一放在 [快速上手指南 · 一行接入](quickstart.md#一行接入cli--mcp)，本文件不重复。两个关键口径先在此对齐，避免与 quickstart 漂移：
+
+- CLI：`npm install -g @autocodeflow/cli` → `acf login` → `acf task create --file <task.example.json>`；载荷旗标是 `--file` / `--body`，**没有 `-f` 短选项**（`packages/acf-cli/src/commands/tasks.ts:579,581`）。示例可直接用 [examples/daily-report/task.example.json](../examples/daily-report/task.example.json)、[examples/intranet-inspection/task.example.json](../examples/intranet-inspection/task.example.json)、[examples/desktop-data-entry/task.example.json](../examples/desktop-data-entry/task.example.json)。
+- MCP：bin 名 `autocodeflow-mcp`，stdio 传输；环境变量真名 `AUTOCODEFLOW_API_URL`（默认 `http://localhost:3105`）、`AUTOCODEFLOW_API_TOKEN`（必填）、`AUTOCODEFLOW_API_REFRESH_TOKEN`（可选），见 `packages/mcp-server/src/api.ts:12,40,65`。
 
 ## SDK 矩阵
 

@@ -52,6 +52,16 @@ docker compose exec postgres pg_dump -U autoflow autoflow > backup_$(date +%Y%m%
 ls -lh backup_*.sql
 ```
 
+### 1.5 北极星 / TTFV 生产启用前置（仅启用遥测看板的发版）
+
+> 完整 runbook 见 [plan/north-star-enablement.md](plan/north-star-enablement.md)。
+> 遥测是 opt-in 双闸 fail-closed：以下任一缺失都会让发布后看板全空**且不报错**，务必逐项确认。
+
+- [ ] 生产库已执行 `docker compose exec admin-api npm run migration:run:prod`，`migrations` 表中 `0101`(AddFunnelEvents) / `0102`(AddTelemetryOptin) 各 1 行，`funnel_events` / `telemetry_optin` 两表均存在（`migrationsRun=false` 不自愈，必须人工跑 + 核对账本）。
+- [ ] admin-api 的 `SEC_SECRETS_KEY` 为非空 32B hex（`openssl rand -hex 32`）——空值会让 consent 端点 503、listener 静默跳过；换 key 会使历史 install_id 全失效。
+- [ ] 至少一个带 `deviceFingerprint` 的执行器已在线注册（避免「先开闸后装执行器」导致 `coverage=no_executors`）。
+- [ ] 已按 runbook §2 完成授权、§3 验证 `GET /agent/telemetry/status`（`coverage`/`count`）与北极星看板出数。
+
 ---
 
 ## Phase 2 · 部署

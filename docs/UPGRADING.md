@@ -570,6 +570,8 @@ node scripts/check-migrations.mjs          # 应报 138 个迁移
 - SOP 正文供应链扫描（`SOP_BODY_SCAN_MODE`，默认 `warn`，设 `block` 才拦截发布）。
 
 > 本节是 2026-11-02 的快照；develop 随时前进，升级前以 `version.txt`、`node scripts/check-migrations.mjs` 与实际 tag 为准。
+>
+> 若本次升级目标是启用 develop 的北极星双口径看板 / TTFV 漏斗，另读 [北极星/TTFV 生产启用 runbook](plan/north-star-enablement.md)：它依赖 `0101`(funnel_events) / `0102`(telemetry_optin) 两条迁移真正落库（`migrationsRun=false` 不自愈）、非空 `SEC_SECRETS_KEY` 与带指纹的执行器授权，缺任一项看板为空。
 
 ---
 
