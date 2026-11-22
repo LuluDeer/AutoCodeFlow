@@ -7408,7 +7408,6 @@ export interface components {
              */
             taskId: string | null;
         };
-        Object: Record<string, never>;
         OidcStatusResponseDto: {
             /** @description false = OIDC 未配置，登录页隐藏 SSO 入口 */
             enabled: boolean;
@@ -10912,8 +10911,8 @@ export interface operations {
     AuditController_findAll: {
         parameters: {
             query?: {
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
+                page?: Record<string, never>;
+                pageSize?: Record<string, never>;
                 /** @description 按任务名模糊搜索 */
                 name?: string;
                 /** @description 按任务状态过滤 */
@@ -10977,8 +10976,8 @@ export interface operations {
     AuditController_exportCsv: {
         parameters: {
             query?: {
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
+                page?: Record<string, never>;
+                pageSize?: Record<string, never>;
                 /** @description 按任务名模糊搜索 */
                 name?: string;
                 /** @description 按任务状态过滤 */
@@ -11539,8 +11538,8 @@ export interface operations {
     ConfigController_getHistory: {
         parameters: {
             query?: {
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
+                page?: Record<string, never>;
+                pageSize?: Record<string, never>;
                 /** @description 按配置 key 过滤历史记录 */
                 key?: string;
             };
@@ -11586,8 +11585,8 @@ export interface operations {
     ConfigController_getHistoryByKey: {
         parameters: {
             query?: {
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
+                page?: Record<string, never>;
+                pageSize?: Record<string, never>;
                 /** @description 按任务名模糊搜索 */
                 name?: string;
                 /** @description 按任务状态过滤 */
@@ -12043,8 +12042,8 @@ export interface operations {
     ExecutorPackageController_findAll: {
         parameters: {
             query?: {
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
+                page?: Record<string, never>;
+                pageSize?: Record<string, never>;
                 /** @description 按任务名模糊搜索 */
                 name?: string;
                 /** @description 按任务状态过滤 */
@@ -12961,9 +12960,9 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description 页码 */
-                page?: components["schemas"]["Object"];
+                page?: Record<string, never>;
                 /** @description 每页条数 */
-                pageSize?: components["schemas"]["Object"];
+                pageSize?: Record<string, never>;
                 /** @description 按任务名模糊搜索 */
                 name?: string;
                 /** @description 按任务状态过滤 */
@@ -14706,9 +14705,9 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description 页码，默认 1 */
-                page?: components["schemas"]["Object"];
+                page?: Record<string, never>;
                 /** @description 每页条数，默认 20 */
-                pageSize?: components["schemas"]["Object"];
+                pageSize?: Record<string, never>;
                 /** @description 仅按任务名称模糊搜索（向后兼容通道；CLI/MCP 使用它）。控制台搜索框改用 `q`，因为其占位符承诺搜索名称或描述。 */
                 name?: string;
                 /** @description 按状态过滤（active/paused/inactive） */
@@ -14981,8 +14980,8 @@ export interface operations {
     TaskController_allExecutions: {
         parameters: {
             query?: {
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
+                page?: Record<string, never>;
+                pageSize?: Record<string, never>;
                 /** @description 按任务名模糊搜索 */
                 name?: string;
                 /** @description 按执行状态过滤 */
@@ -15356,8 +15355,8 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description 页码 */
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
+                page?: Record<string, never>;
+                pageSize?: Record<string, never>;
                 /** @description 按任务名模糊搜索 */
                 name?: string;
                 /** @description 按执行状态过滤 */
@@ -16016,8 +16015,8 @@ export interface operations {
     UsersController_findAll: {
         parameters: {
             query?: {
-                page?: components["schemas"]["Object"];
-                pageSize?: components["schemas"]["Object"];
+                page?: Record<string, never>;
+                pageSize?: Record<string, never>;
                 /** @description 按用户名或邮箱模糊搜索（不区分大小写） */
                 search?: string;
             };

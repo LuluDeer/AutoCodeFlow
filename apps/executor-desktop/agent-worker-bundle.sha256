@@ -84,3 +84,9 @@ source-digest: 2baf5cccc65948a62fb5cf5b4d5838e1c50c140d62a22daaf4633fe622ecce67
 #   本机重打 = **98ee5123…**，与 CI 该 run 的 actual **逐字节一致**
 #   （esbuild 产物确定性，与 2026-11-08 那次同结论）。
 50dc23cb5c9b62401540ac0f8f9e442f16095eb525216bf03d4517c54a1f53c9  index.js
+
+# 2026-11-22（吸收 dependabot PR #197：@playwright/test 1.65.0→1.65.1 + eslint/vite 补丁）：
+#   仅依赖变更、worker 输入源码零改动，source-digest 不变（2baf5cccc…，41 个输入文件）。
+#   esbuild 0.28.2 字节确定，本机 Linux（node 26）重打 ebe1651f…（CI run 45016314971
+#   desktop-bundle-drift 报的 actual，逐字节一致）。
+ebe1651fe7a2306d6a7ca1326fd61b016170fce9a77ec0e40ef35869d80c50aa  index.js

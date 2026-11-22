@@ -8380,10 +8380,6 @@
         ],
         "type": "object"
       },
-      "Object": {
-        "properties": {},
-        "type": "object"
-      },
       "OidcStatusResponseDto": {
         "properties": {
           "enabled": {
@@ -16456,13 +16452,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -16470,13 +16462,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -16673,13 +16661,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -16687,13 +16671,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -17651,13 +17631,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -17665,13 +17641,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -17776,13 +17748,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -17790,13 +17758,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -18544,13 +18508,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -18558,13 +18518,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -20131,13 +20087,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             },
             "x-i18n-en": "Page number"
           },
@@ -20147,13 +20099,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             },
             "x-i18n-en": "Items per page"
           },
@@ -23104,13 +23052,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             },
             "x-i18n-en": "Page number, default 1"
           },
@@ -23120,13 +23064,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             },
             "x-i18n-en": "Number of items per page, default 20"
           },
@@ -23743,13 +23683,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -23757,13 +23693,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -24547,13 +24479,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             },
             "x-i18n-en": "Page number"
           },
@@ -24562,13 +24490,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -25816,13 +25740,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -25830,13 +25750,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
