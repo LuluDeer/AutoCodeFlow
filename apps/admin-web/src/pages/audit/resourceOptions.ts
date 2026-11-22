@@ -26,13 +26,13 @@ export type ResourceOptionGroup = {
 
 /** 按域分组、组内字母序。resources 数组的字符串字面量是守卫的扫描对象，勿改成模板。 */
 export const AUDIT_RESOURCE_GROUPS: readonly { label: string; resources: readonly string[] }[] = [
-  { label: 'Task', resources: ['task', 'task_execution', 'task_template'] },
-  { label: 'Application', resources: ['application', 'app_deployment', 'artifact'] },
+  { label: '任务', resources: ['task', 'task_execution', 'task_template'] },
+  { label: '应用', resources: ['application', 'app_deployment', 'artifact'] },
   { label: 'SOP', resources: ['sop', 'sop_assignment', 'sop_clarification'] },
-  { label: 'Auth & keys', resources: ['api_key', 'auth', 'user'] },
-  { label: 'Project', resources: ['project', 'project_member'] },
+  { label: '认证与密钥', resources: ['api_key', 'auth', 'user'] },
+  { label: '项目', resources: ['project', 'project_member'] },
   {
-    label: 'Notification',
+    label: '通知',
     resources: [
       'notification',
       'notification_channel',
@@ -41,9 +41,9 @@ export const AUDIT_RESOURCE_GROUPS: readonly { label: string; resources: readonl
       'notification_silence',
     ],
   },
-  { label: 'Event subscription', resources: ['event_subscription', 'event_subscription_dead_letter'] },
-  { label: 'Config & executor', resources: ['config', 'executor'] },
-  { label: 'Registry', resources: ['registry', 'registry-package'] },
+  { label: '事件订阅', resources: ['event_subscription', 'event_subscription_dead_letter'] },
+  { label: '配置与执行器', resources: ['config', 'executor'] },
+  { label: '制品库', resources: ['registry', 'registry-package'] },
 ];
 
 /** antd `<Select options>` 的分组形状（label=域名，options=该域的 resource token）。 */
