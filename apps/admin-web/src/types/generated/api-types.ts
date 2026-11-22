@@ -182,6 +182,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/executions/{execId}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 显式确认执行已被业务确认（北极星 business_confirmed 事件源） */
+        post: operations["AgentController_confirmExecution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/inbox/counts": {
         parameters: {
             query?: never;
@@ -191,6 +208,23 @@ export interface paths {
         };
         /** 收件箱各项计数（读不到时为 null，绝不伪装成 0） */
         get: operations["AgentController_inboxCounts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/north-star/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 北极星双口径周报（严格 business_confirmed + 代理值，绝不混用） */
+        get: operations["AgentController_northStarReport"];
         put?: never;
         post?: never;
         delete?: never;
@@ -364,6 +398,40 @@ export interface paths {
         put?: never;
         /** 恢复挂起/失败的 Agent 会话 */
         post: operations["AgentController_resume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/telemetry/consent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 设置 TTFV 授权状态与系统总闸 */
+        post: operations["AgentController_setTelemetryConsent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/telemetry/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 读取 TTFV 授权状态供管理端展示 */
+        get: operations["AgentController_telemetryStatus"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4369,6 +4437,65 @@ export interface components {
             /** @description 'executor:<id>' 或 'user:<id>' */
             uploadedBy: string;
         };
+        AgentNorthStarConfirmedDto: {
+            totals: components["schemas"]["AgentNorthStarConfirmedTotalsDto"];
+            weeks: components["schemas"]["AgentNorthStarConfirmedWeekDto"][];
+        };
+        AgentNorthStarConfirmedTotalsDto: {
+            /** @description 各周 active_installs 之和（周-实例对，非全局去重实例数） */
+            active_install_weeks: number;
+            /** @description 各周 confirmed_events 之和 */
+            confirmed_events: number;
+        };
+        AgentNorthStarConfirmedWeekDto: {
+            /** @description 该周去重活跃实例数 */
+            active_installs: number;
+            /** @description 该周去重确认事件数（每次执行最多一次） */
+            confirmed_events: number;
+            /** @description UTC 周一 00:00:00.000Z */
+            week_start: string;
+        };
+        AgentNorthStarPromotionDto: {
+            /** @description 活跃 install 周合计 */
+            activeInstallWeeks: number;
+            /** @description 两数值阈值是否均满足（不含运营前置 coverage=full） */
+            eligible: boolean;
+            /** @description 未达标逐条说明 + 运营前置提示（脚本不验证 coverage） */
+            reasons: string[];
+            thresholds: components["schemas"]["AgentNorthStarPromotionThresholdsDto"];
+            /** @description 严格值周数 */
+            weeks: number;
+        };
+        AgentNorthStarPromotionThresholdsDto: {
+            /** @description 活跃 install 周合计下限 */
+            minActiveInstallWeeks: number;
+            /** @description 最小样本期周数 */
+            minWeeks: number;
+        };
+        AgentNorthStarProxyDto: {
+            totals: components["schemas"]["AgentNorthStarProxyTotalsDto"];
+            weeks: components["schemas"]["AgentNorthStarProxyWeekDto"][];
+        };
+        AgentNorthStarProxyTotalsDto: {
+            /** @description 各周 executions 之和 */
+            executions: number;
+        };
+        AgentNorthStarProxyWeekDto: {
+            /** @description 该周 SUCCESS 且 artifacts 非空、非 synthetic 的执行数 */
+            executions: number;
+            /** @description UTC 周一 00:00:00.000Z */
+            week_start: string;
+        };
+        AgentNorthStarResponseDto: {
+            /** @description 观测截止时间（ISO-8601），与脚本 buildPayload 同口径 */
+            as_of: string;
+            business_confirmed: components["schemas"]["AgentNorthStarConfirmedDto"];
+            business_results_proxy: components["schemas"]["AgentNorthStarProxyDto"];
+            /** @description R448 升主判据（eligible 仅判数值阈值，运营前置 coverage=full 见 reasons） */
+            promotionEligibility: components["schemas"]["AgentNorthStarPromotionDto"];
+            /** @description 强制口径护栏（不可省略）：严格口径说明 + 「有产物/有证据 ≠ 被业务确认，代理值勿当严格值」强警告 */
+            warnings: string[];
+        };
         AgentPendingApprovalItemDto: {
             /** @description 审批幂等键（= `agent_tool_calls.approvalId`，`apr-<sessionId>-<指纹>`）；处置端点用它定位 */
             approvalKey: string;
@@ -4555,6 +4682,48 @@ export interface components {
             toolCallsJson: {
                 [key: string]: unknown;
             }[] | null;
+        };
+        AgentTelemetryConsentDto: {
+            /** @description 原始设备指纹；派生为匿名安装标识 */
+            deviceFingerprint?: string;
+            /** @description 不透明的安装标识；优先于设备指纹 */
+            installId?: string;
+            /** @description 是否启用 TTFV 采集 */
+            optIn: boolean;
+            /**
+             * @description 本次授权动作的来源标记
+             * @enum {string}
+             */
+            source?: "admin-ui" | "api";
+        };
+        AgentTelemetryConsentResultDto: {
+            /** @description 本次涉及的安装数量 */
+            count: number;
+            /** @description 本次涉及的安装标识（匿名） */
+            installIds: string[];
+            /** @description 是否已授权采集 */
+            optedIn: boolean;
+            /** @description 实际落库的来源标记 */
+            source: string;
+            /** @description 本次操作后的系统总闸状态 */
+            systemEnabled: boolean;
+        };
+        AgentTelemetryStatusDto: {
+            /** @description 当前已授权采集的安装数 */
+            count: number;
+            /**
+             * @description 授权覆盖率状态：gate_off=总闸未开；no_executors=总闸开但无已知执行器（先开闸后装执行器陷阱）；partial=部分执行器已授权；full=全部已授权
+             * @enum {string}
+             */
+            coverage: "no_executors" | "partial" | "full" | "gate_off";
+            /** @description 按安装维度的授权概览 */
+            installs: components["schemas"]["TelemetryOptinInstallViewDto"][];
+            /** @description 已知 executor 数（去重 deviceFingerprint 后） */
+            knownExecutorCount: number;
+            /** @description 各安装中最近的授权时间（ISO-8601；可为空） */
+            latestOptedAt?: string | null;
+            /** @description 系统总闸状态 */
+            systemEnabled: boolean;
         };
         AgentToolCallDto: {
             /** @description 关联的审批业务键；历史 UUID 原样保留 */
@@ -8443,6 +8612,18 @@ export interface components {
              */
             executionId: string;
         };
+        TelemetryOptinInstallViewDto: {
+            /** @description 匿名安装标识 */
+            installId: string;
+            /** @description 当前安装的授权状态 */
+            optIn: boolean;
+            /** @description 最近一次授权变更时间（ISO-8601；可为空） */
+            optedAt?: string | null;
+            /** @description 最近一次变更的来源标记 */
+            source: string;
+            /** @description HMAC 派生的用户标识，绝不是用户名原文 */
+            userIdHash?: string | null;
+        };
         TerminalStateItemDto: {
             /**
              * @description 终态时间（ISO 8601）。endTime 缺失时（如未启动即被取消）回 createdAt 兜底值
@@ -9148,8 +9329,8 @@ export interface operations {
     };
     AgentController_listPendingApprovals: {
         parameters: {
-            query: {
-                limit: string;
+            query?: {
+                limit?: string;
             };
             header?: never;
             path?: never;
@@ -9186,6 +9367,26 @@ export interface operations {
             };
         };
     };
+    AgentController_confirmExecution: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                execId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 确认成功（幂等，重复确认同样返回成功并 emit execution.confirmed） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     AgentController_inboxCounts: {
         parameters: {
             query?: never;
@@ -9205,16 +9406,38 @@ export interface operations {
             };
         };
     };
+    AgentController_northStarReport: {
+        parameters: {
+            query?: {
+                /** @description 观测截止 ISO-8601；缺省 now */
+                as_of?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentNorthStarResponseDto"];
+                };
+            };
+        };
+    };
     AgentController_list: {
         parameters: {
-            query: {
-                kind: string;
-                status: string;
-                page: string;
-                stalled: string;
-                stalledMinutes: string;
-                pageSize: string;
-                since: string;
+            query?: {
+                kind?: string;
+                status?: string;
+                page?: string;
+                stalled?: string;
+                stalledMinutes?: string;
+                pageSize?: string;
+                since?: string;
             };
             header?: never;
             path?: never;
@@ -9453,6 +9676,48 @@ export interface operations {
             };
         };
     };
+    AgentController_setTelemetryConsent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentTelemetryConsentDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentTelemetryConsentResultDto"];
+                };
+            };
+        };
+    };
+    AgentController_telemetryStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentTelemetryStatusDto"];
+                };
+            };
+        };
+    };
     AiController_getConfig: {
         parameters: {
             query?: never;
@@ -9636,9 +9901,9 @@ export interface operations {
     };
     AiSopSessionController_list: {
         parameters: {
-            query: {
-                page: string;
-                pageSize: string;
+            query?: {
+                page?: string;
+                pageSize?: string;
             };
             header?: never;
             path?: never;
@@ -10228,8 +10493,8 @@ export interface operations {
     };
     ApplicationController_findAll: {
         parameters: {
-            query: {
-                projectId: string;
+            query?: {
+                projectId?: string;
             };
             header?: never;
             path?: never;
@@ -10828,7 +11093,7 @@ export interface operations {
             query: {
                 code: string;
                 state: string;
-                error: string;
+                error?: string;
             };
             header?: never;
             path?: never;
@@ -12229,8 +12494,8 @@ export interface operations {
         parameters: {
             query: {
                 address: string;
-                deviceFingerprint: string;
-                executorId: string;
+                deviceFingerprint?: string;
+                executorId?: string;
             };
             header: {
                 authorization: string;
@@ -12548,13 +12813,13 @@ export interface operations {
     };
     ExecutorController_getTerminalStates: {
         parameters: {
-            query: {
+            query?: {
                 /** @description ISO-8601 水位线；仅返回终态时间（COALESCE(endTime, createdAt)）>= since 的执行记录。默认最近 24 小时；最多钳制到 30 天。 */
                 since?: string;
                 /** @description 每页条数（1..2000，默认 500）。hasMore=true 表示还有更多数据。 */
                 limit?: string;
-                deviceFingerprint: string;
-                executorId: string;
+                deviceFingerprint?: string;
+                executorId?: string;
             };
             header: {
                 authorization: string;
@@ -13425,10 +13690,10 @@ export interface operations {
     };
     ProjectsController_findAll: {
         parameters: {
-            query: {
-                page: string;
-                pageSize: string;
-                q: string;
+            query?: {
+                page?: string;
+                pageSize?: string;
+                q?: string;
             };
             header?: never;
             path?: never;
@@ -13758,10 +14023,10 @@ export interface operations {
     };
     SopController_list: {
         parameters: {
-            query: {
-                status: string;
-                page: string;
-                pageSize: string;
+            query?: {
+                status?: string;
+                page?: string;
+                pageSize?: string;
             };
             header?: never;
             path?: never;
@@ -13939,8 +14204,8 @@ export interface operations {
     };
     SopController_listPendingClarifications: {
         parameters: {
-            query: {
-                limit: string;
+            query?: {
+                limit?: string;
             };
             header?: never;
             path?: never;

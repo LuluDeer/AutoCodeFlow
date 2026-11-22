@@ -316,6 +316,42 @@ export const agentApi = {
     client.get('/agent/sessions', {
       params: { status: 'failed', ...(params ?? {}) },
     }) as Promise<{ items: AgentSession[]; total: number }>,
+  /**
+   * R311：TTFV 授权写入（POST /agent/telemetry/consent）。
+   *
+   * source 固定传 'admin-ui'：后端把它与 API 调用区分开，界面操作必须可追溯。
+   * 这里刻意用**内联类型**而不是新增顶格 interface —— 仓库的
+   * `check:web-type-drift` 棘轮冻结 `src/api/*.ts` 的顶层手写声明，
+   * 新增具名类型必须走生成合同或基线登记（两者都不在本次写域）。
+   * 字段与 admin-api `AgentTelemetryConsentResultDto` 逐字对齐；
+   * 组件侧的同形 local interface 在 TelemetrySettings.tsx 内定义。
+   */
+  telemetryConsent: (body: { optIn: boolean; source?: 'admin-ui' }) =>
+    client.post('/agent/telemetry/consent', body) as Promise<{
+      systemEnabled: boolean;
+      optedIn: boolean;
+      installIds: string[];
+      count: number;
+      source: string;
+    }>,
+  /** R311：TTFV 授权状态（GET /agent/telemetry/status）。 */
+  telemetryStatus: () =>
+    client.get('/agent/telemetry/status') as Promise<{
+      systemEnabled: boolean;
+      count: number;
+      /** R329：已知执行器总数（切片①契约），用于授权覆盖率展示。 */
+      knownExecutorCount: number;
+      /** R329：覆盖状态（切片①契约）。 */
+      coverage: 'no_executors' | 'partial' | 'full' | 'gate_off';
+      latestOptedAt: string | null;
+      installs: Array<{
+        installId: string;
+        optIn: boolean;
+        optedAt: string | null;
+        userIdHash: string | null;
+        source: string;
+      }>;
+    }>,
 };
 
 /**

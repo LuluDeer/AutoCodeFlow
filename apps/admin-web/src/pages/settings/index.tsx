@@ -24,7 +24,7 @@ import {
   KeyOutlined, CopyOutlined, EyeOutlined, EyeInvisibleOutlined,
   PlusOutlined, EditOutlined, DeleteOutlined, HistoryOutlined,
   ReloadOutlined, RobotOutlined, ThunderboltOutlined, SafetyCertificateOutlined,
-  ApiOutlined, BellOutlined,
+  ApiOutlined, BellOutlined, BarChartOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory, type UpsertConfigPayload } from '../../api/config';
@@ -41,6 +41,8 @@ import PageSkeleton from '../../components/PageSkeleton';
 import StateError from '../../components/StateError';
 // SEC-03: 安全设置 Tab（TOTP 两步验证 + 登录会话管理），独立文件避免与其他 Tab 耦合
 import SecuritySettings from './SecuritySettings';
+// R311: TTFV 授权设置 Tab（opt-in 匿名统计的查看与撤销），独立文件
+import TelemetrySettings from './TelemetrySettings';
 import AiProvidersSettings from './AiProvidersSettings';
 // AUTH-03: API Keys Tab（限权机器凭证管理），独立文件
 import ApiKeysSettings from './ApiKeysSettings';
@@ -974,6 +976,13 @@ export default function SettingsPage() {
       key: 'security',
       label: <Space><SafetyCertificateOutlined aria-hidden />{t('sysSettings.tab.security')}</Space>,
       children: <SecuritySettings />,
+    },
+    // R311: TTFV 授权（opt-in 匿名统计）——紧随安全设置；端点为 ADMIN-only，
+    // 但设置页本身就是管理面，Tab 常量呈现，后端守卫负责最终鉴权。
+    {
+      key: 'telemetry',
+      label: <Space><BarChartOutlined aria-hidden />{t('sysSettings.tab.telemetry')}</Space>,
+      children: <TelemetrySettings />,
     },
     // AUTH-03: 限权 API Key 管理（CI/CD 机器认证）——所有登录用户管理本人 Key；
     // 放在安全设置之后，不改变既有 Tab 默认激活行为

@@ -36,6 +36,7 @@ import KpiSparkline, { buildSparklineData, recentDateKeys, SPARKLINE_HEIGHT } fr
 import FailureTopList from '../components/dashboard/FailureTopList';
 import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
+import NorthStarCard from '../components/dashboard/NorthStarCard';
 import DashboardEmptyGuide from '../components/dashboard/DashboardEmptyGuide';
 import { useMetricsStream, useMetricsStreamDegraded, type MetricsStreamStatus } from '../hooks/useMetricsStream';
 import { useProjectFilter } from '../hooks/useProjectFilter';
@@ -718,6 +719,10 @@ export default function DashboardPage() {
           </Card>
         </Col>
       </Row>
+
+      {/* R328：北极星双口径看板 —— 周级全局指标（请求不带 projectId，切项目不变），
+          放在全局口径分组内；严格值主 / 近似值参考并列，warnings 常驻。 */}
+      <NorthStarCard />
     </div>
   );
 }

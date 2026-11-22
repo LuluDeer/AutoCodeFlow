@@ -1,3 +1,4 @@
+import type { components } from '../types/generated/api-types';
 import { client as apiClient } from './client';
 
 export interface MetricsSummary {
@@ -95,6 +96,17 @@ export interface SchedulerMetricsResponse {
   instance: { pid: number; hostname: string };
 }
 
+/** R328 · 北极星双口径周报：单周聚合行（严格值/代理值共用同一形状，故三个计数字段均可选）。 */
+// R328：北极星类型一律从 openapi 生成物派生（合同派生，不进 web-type-drift 手写棘轮）。
+// 严格周（active_installs/confirmed_events）与代理周（executions）字段不同，NorthStarWeek
+// 取二者 union，供只需 week_start 的视图代码复用。
+export type NorthStarWeek =
+  | components['schemas']['AgentNorthStarConfirmedWeekDto']
+  | components['schemas']['AgentNorthStarProxyWeekDto'];
+
+/** GET /agent/north-star/metrics —— 字段与后端 AgentNorthStarResponseDto / 脚本 buildPayload 逐字对齐。 */
+export type NorthStarReport = components['schemas']['AgentNorthStarResponseDto'];
+
 export const metricsApi = {
   // NETOPT-10-3: optional AbortSignal so polling hooks can cancel in-flight
   // requests on unmount (mirrors executors.ts ternary pattern).
@@ -119,4 +131,10 @@ export const metricsApi = {
     signal
       ? apiClient.get<SchedulerMetricsResponse>('/metrics/scheduler', { signal })
       : apiClient.get<SchedulerMetricsResponse>('/metrics/scheduler'),
+  // R327/R328: GET /agent/north-star/metrics（ADMIN/JWT）——北极星双口径看板数据源。
+  // 路径不带 /api 前缀（client baseURL 已含）；signal/params 条件写法与 getSummary 同范式。
+  getNorthStar: (params?: { as_of?: string }, signal?: AbortSignal) =>
+    signal
+      ? apiClient.get<NorthStarReport>('/agent/north-star/metrics', { signal, params })
+      : apiClient.get<NorthStarReport>('/agent/north-star/metrics', { params }),
 };
