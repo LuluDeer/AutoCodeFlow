@@ -28,17 +28,17 @@ export enum BlockStrategy {
   COVER_EARLY = "cover_early",
 }
 
+/** QA-08: DB PG enum 的实际值域（labels）；业务侧仍用数字 TaskPriority + transformer 转换。 */
+const TASK_PRIORITY_DB_VALUES = ["low", "normal", "high", "critical"];
+/** QA-08: DB PG enum 实际含 shard（实体导出 enum 不含，避免影响业务类型）。 */
+const EXECUTE_MODE_DB_VALUES = ["single", "broadcast", "shard"];
+
 export enum TaskPriority {
   LOW = 1,
   NORMAL = 2,
   HIGH = 3,
   CRITICAL = 4,
 }
-
-/** QA-08: DB PG enum 的实际值域（labels）；业务侧仍用数字 TaskPriority + transformer 转换。 */
-const TASK_PRIORITY_DB_VALUES = ["low", "normal", "high", "critical"];
-/** QA-08: DB PG enum 实际含 shard（实体导出 enum 不含，避免影响业务类型）。 */
-const EXECUTE_MODE_DB_VALUES = ["single", "broadcast", "shard"];
 
 /**
  * N2: `tasks.priority` 在 DB 中是 PG 字符串枚举 `task_priority_enum`（labels:
