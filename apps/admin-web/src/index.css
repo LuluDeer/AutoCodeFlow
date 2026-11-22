@@ -222,6 +222,13 @@ html[data-theme='dark'] mark.log-search-hit {
     display: none;
   }
 
+  /* R278–R286 的待办徽标把「审批单/等待输入/失败/澄清/阻塞」五段文字放在图标旁，
+     375px 下与其它顶栏控件叠加会把 documentElement 撑到 ~500px。窄屏只保留图标
+     与数字徽标，完整分项仍在 Tooltip / aria-label / /inbox 页内可读（不是藏信息）。 */
+  .inbox-badge-units {
+    display: none;
+  }
+
   /* 内容区与头部 padding 收紧（覆盖 antd 内联样式需 !important） */
   .ant-layout-content {
     padding: 12px !important;

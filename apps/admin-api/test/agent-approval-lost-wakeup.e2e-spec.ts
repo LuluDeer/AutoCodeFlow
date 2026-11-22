@@ -85,14 +85,6 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
     return unwrap(r.body);
   }
 
-  async function get(path: string, token = admin): Promise<any> {
-    const r = await request(app.getHttpServer())
-      .get(path)
-      .set("Authorization", `Bearer ${token}`)
-      .expect(200);
-    return unwrap(r.body);
-  }
-
   /** 造第二个管理员（四眼审批），口令仅存在于本进程内存。 */
   async function createReviewer(): Promise<string> {
     const password = `Aa1!${randomUUID()}`;
@@ -124,7 +116,10 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
   }
 
   /** 脚本化模型：首轮发一个 approvalRequired 工具调用，拿到工具结果后给结论。 */
-  function scriptSingleApprovalTool(templateId: string, taskName: string): void {
+  function scriptSingleApprovalTool(
+    templateId: string,
+    taskName: string,
+  ): void {
     jest
       .spyOn(app.get(AiService), "chatMultimodal")
       .mockImplementation(async ({ messages }) => {
@@ -197,12 +192,17 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
   async function pollPendingApproval(sessionId: string): Promise<ApprovalRow> {
     return poll(
       `pending approval for ${sessionId}`,
-      async () => (await approvalRows(sessionId)).find((a) => a.status === "pending"),
+      async () =>
+        (await approvalRows(sessionId)).find((a) => a.status === "pending"),
       () => true,
     );
   }
 
-  async function waitForStep(id: string, n: number, status: string): Promise<void> {
+  async function waitForStep(
+    id: string,
+    n: number,
+    status: string,
+  ): Promise<void> {
     await poll(
       `${status}@step${n} of ${id}`,
       async () => sessionRow(id),
@@ -233,9 +233,11 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
     reviewer = await createReviewer();
     // 必须取 wakeup provider 实际注入的那个 Queue 实例：实测
     // app.get(getQueueToken(AGENT_QUEUE_NAME)) 拿到的是另一个实例，spy/gate 会落空。
-    queue = (app.get(AgentApprovalWakeupService) as unknown as {
-      queue: Queue<AgentJobData>;
-    }).queue;
+    queue = (
+      app.get(AgentApprovalWakeupService) as unknown as {
+        queue: Queue<AgentJobData>;
+      }
+    ).queue;
     expect(queue).toBeDefined();
   });
 
@@ -251,19 +253,34 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
       if (db && sessionIds.length) {
         for (const sid of sessionIds) {
           try {
-            await db.query(`DELETE FROM "agent_approvals" WHERE "sessionId" = $1`, [sid]);
-            await db.query(`DELETE FROM "agent_tool_calls" WHERE "sessionId" = $1`, [sid]);
-            await db.query(`DELETE FROM "agent_steps" WHERE "sessionId" = $1`, [sid]);
-            await db.query(`DELETE FROM "agent_events" WHERE "sessionId" = $1`, [sid]);
+            await db.query(
+              `DELETE FROM "agent_approvals" WHERE "sessionId" = $1`,
+              [sid],
+            );
+            await db.query(
+              `DELETE FROM "agent_tool_calls" WHERE "sessionId" = $1`,
+              [sid],
+            );
+            await db.query(`DELETE FROM "agent_steps" WHERE "sessionId" = $1`, [
+              sid,
+            ]);
+            await db.query(
+              `DELETE FROM "agent_events" WHERE "sessionId" = $1`,
+              [sid],
+            );
             await db.query(`DELETE FROM "agent_sessions" WHERE id = $1`, [sid]);
           } catch (e) {
             // 清理失败不掩盖用例结论；真跑后按实际 FK 报错再收紧删除顺序。
-            console.warn(`R296 e2e cleanup session ${sid}: ${(e as Error).message}`);
+            console.warn(
+              `R296 e2e cleanup session ${sid}: ${(e as Error).message}`,
+            );
           }
         }
       }
       if (db) {
-        await db.query(`DELETE FROM "tasks" WHERE name LIKE $1`, [`${PREFIX}%`]);
+        await db.query(`DELETE FROM "tasks" WHERE name LIKE $1`, [
+          `${PREFIX}%`,
+        ]);
       }
       if (admin) {
         for (const path of [...createdPaths].reverse()) {
@@ -321,7 +338,11 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
         reviewer,
       );
       expect(grant).toMatchObject({ ok: true, resumed: false });
-      expect((await approvalRows(sessionId)).find((a) => a.approvalKey === pending.approvalKey)?.status).toBe("granted");
+      expect(
+        (await approvalRows(sessionId)).find(
+          (a) => a.approvalKey === pending.approvalKey,
+        )?.status,
+      ).toBe("granted");
 
       // ⑤ gate 放行 → 原 markWaiting 写 waiting_input → 尾钩 probe → 补偿入队。
       gate.open();
@@ -346,7 +367,9 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
 
       // BullMQ Queue.add 的 mock.calls 元素是 [name, data, opts?]。
       const wakeupAdds = addSpy.mock.calls.filter(
-        (c) => c[0] === "run" && (c[1] as AgentJobData)?.reason === "resume:approval",
+        (c) =>
+          c[0] === "run" &&
+          (c[1] as AgentJobData)?.reason === "resume:approval",
       );
       expect(wakeupAdds.length).toBeGreaterThanOrEqual(1);
       const jobData = wakeupAdds[0][1] as AgentJobData;
@@ -366,7 +389,11 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
       expect(sameDedupAdds.length).toBeLessThanOrEqual(1);
 
       // ⑥ 轮询直到收敛；复用 journey e2e 的 waitForStep 校验步序前进。
-      await waitForStep(sessionId, Number(jobData.expectTotalSteps) + 1, "succeeded");
+      await waitForStep(
+        sessionId,
+        Number(jobData.expectTotalSteps) + 1,
+        "succeeded",
+      );
       const final = await waitForFinal(sessionId);
       expect(final.status).toBe("succeeded");
       expect((final.resultJson as any)?.conclusion).toBe(RESULT);
@@ -388,7 +415,10 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
   });
 
   /** 等本会话的 resume job 全部从 waiting/active/delayed 排空（不固定 sleep）。 */
-  async function waitJobsDrained(id: string, timeoutMs = 10_000): Promise<void> {
+  async function waitJobsDrained(
+    id: string,
+    timeoutMs = 10_000,
+  ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     do {
       const jobs = await queue.getJobs(["waiting", "active", "delayed"]);
@@ -565,7 +595,11 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
       // 放行补偿 job：测试代码未改 waitingFor ⇒ expectWaitingFor CAS 命中，
       // 旧 waitingFor 凭据正确放行一次，审批只 consume 一次、副作用只落一次。
       runGate.open();
-      await poll("gated compensation run settled", async () => gatedRunSettled, (v) => v);
+      await poll(
+        "gated compensation run settled",
+        async () => gatedRunSettled,
+        (v) => v,
+      );
 
       // 迟到手动 job 带陈旧 expectTotalSteps 放行 → CAS 让位（终态拒绝），无双跑。
       manualRunGate.open();
@@ -684,7 +718,11 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
 
       // 放行迟到的补偿 add → job 带旧 expectWaitingFor 到达，须让位。
       probeAddGate.open();
-      await poll("compensation add released", async () => compensationAddDone, (v) => v);
+      await poll(
+        "compensation add released",
+        async () => compensationAddDone,
+        (v) => v,
+      );
       await waitJobsDrained(sessionId);
 
       expect(await taskNames("late-task")).toEqual([taskName]); // 无第二份副作用

@@ -292,6 +292,11 @@ jobs:
       INITIAL_ADMIN_USERNAME: admin
       INITIAL_ADMIN_PASSWORD: admin123
       AI_PROVIDER: disabled
+      # TTFV e2e（business_confirmed / funnel_listener / ttfv_journey）需要
+      # 稳定匿名 id：SEC_SECRETS_KEY 是 32B hex 固定 fixture（非生产密钥），
+      # 与 e2e-full job 同值。缺省时 deriveAnonymousId 返回 null，测试按设计
+      # 显式失败而不是静默跳过。
+      SEC_SECRETS_KEY: 4a6b8c0d2e1f3a5b7c9d0e2f4a6b8c0d2e1f3a5b7c9d0e2f4a6b8c0d2e1f3a5b
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -392,12 +397,15 @@ jobs:
         run: |
           out=$(npm run migration:revert 2>&1)
           echo "$out"
+          # TypeORM 的 SQL 日志带 ANSI 颜色码（关键字逐词着色），直接 grep
+          # 会因 `DELETE`/`FROM` 之间夹转义序列而假红；先剥色再断言。
+          plain=$(printf '%s\n' "$out" | sed -E 's/\x1B\[[0-9;]*[mK]//g')
           # 断言 down() 真的执行了反向 DDL + 删除迁移记录，而不只是 exit 0。
           # 空实现 down() 也会 exit 0（undoLastMigration 无回退项只打日志），
           # 但不会产生 DROP/DELETE —— 必须点名这些副作用才不算假绿（R434 P2）。
-          echo "$out" | grep -qE 'DELETE FROM "migrations"' \
+          printf '%s\n' "$plain" | grep -qE 'DELETE FROM "migrations"' \
             || { echo "::error::revert did not delete a migration record (down() may be a no-op)"; exit 1; }
-          echo "$out" | grep -qE 'DROP (TABLE|INDEX) IF EXISTS' \
+          printf '%s\n' "$plain" | grep -qE 'DROP (TABLE|INDEX) IF EXISTS' \
             || { echo "::error::revert did not execute reverse DDL (down() may be a no-op)"; exit 1; }
           npm run migration:run
           echo "revert + re-run OK：down 路径可达且有副作用"

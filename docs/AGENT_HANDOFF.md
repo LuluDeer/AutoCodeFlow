@@ -19,7 +19,7 @@
 | 8 | `a7e82a95` chore(ci,guards): CI 接线 + 生成物 + 基线 | ci.yml 真栈/迁移 job + openapi/api-reference + 6 份 baseline + AGENTS.md 编排章节（16 files, +838/−194） |
 | 9 | `c06358e6` docs: 方案与验收 + 状态总览 + ROADMAP | 24 篇 plan + PROJECT-STATUS + README/ROADMAP/AGENT_HANDOFF/UPGRADING 等（34 files, +4167/−12） |
 | 10 | `0f8c7d91` feat(examples): 3 个真实场景示例 | daily-report / intranet-inspection / desktop-data-entry（10 files, +600） |
-| 11 | `2ddeb422` chore(repo): 忽略 pytest-cov 生成物 | `.gitignore` 精确忽略 `apps/executor-python/coverage.json`（1 file, +2） |
+| 11 | `2ddeb422` chore(repo): 忽略 pytest-cov 生成物 | `.gitignore` 精确忽略 `apps/executor-python/` 下的 `coverage.json`（1 file, +2） |
 
 **提交后验证（HEAD 完整性）**：`git diff HEAD` 空；typecheck:all exit 0；全守卫链 exit 0；11 组累计 157 files / +20625 / −309；完整提交清单见 `git log a234863c..HEAD`。**未 push**（用户只要求提交；本地 develop 领先 origin/develop 180 个提交，push 需单独指令）。
 

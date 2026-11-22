@@ -169,7 +169,7 @@ export default function InboxBadge() {
             <MailOutlined />
           </Button>
         </Badge>
-        <span data-testid="inbox-badge-units" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+        <span className="inbox-badge-units" data-testid="inbox-badge-units" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
           <span data-testid="inbox-badge-approvals">{approvalsText}</span>
           <span data-testid="inbox-badge-sep" aria-hidden="true">{t('common.listSep.space')}</span>
           <span data-testid="inbox-badge-waiting">{waitingText}</span>

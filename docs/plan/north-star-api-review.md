@@ -14,7 +14,7 @@
 ## 2. 采用的对账路径与验收级别
 
 - **路径①（权威）**：`node scripts/north-star-weekly.mjs --report --json --dsn=<e2e> --as-of=<fixed>`，子进程 `TZ=UTC`，`status != OK` 直接结构红。
-- **路径②（被测 API）**：`require` A 的 CommonJS 编译产物 `apps/admin-api/dist/modules/agent/runtime/north-star-metrics.service.js`，`new NorthStarMetricsService(new DataSource({ url: dsn }))`，真库执行 `report(asOf)`。这是任务允许的「直接 import 编译产物 + 注入真 DataSource」方案；`.mjs` 无法直接 import TS `createTestApp()` helper，故未起 Nest app / HTTP 进程。
+- **路径②（被测 API）**：`require` A（`apps/admin-api`）的 CommonJS 编译产物 `dist/modules/agent/runtime/north-star-metrics.service.js`，`new NorthStarMetricsService(new DataSource({ url: dsn }))`，真库执行 `report(asOf)`。这是任务允许的「直接 import 编译产物 + 注入真 DataSource」方案；`.mjs` 无法直接 import TS `createTestApp()` helper，故未起 Nest app / HTTP 进程。
 - **验收级别**：**真库 + 真 service 进程内集成**（非内存替身、非静态-only；HTTP/Nest 路由与鉴权层不在覆盖内）。另附静态 SQL 等价复核作旁证。
 - **隔离**：`--from-env` 从 `.env` 的 `DB_*` 拼 `autoflow_ttfv_e2e` <!-- metric-docs:ignore-unknown 这是 PostgreSQL 测试数据库名，不是指标名 -->；库名 `test|e2e` 防误；种子前缀 `r327_api_rec_v1_`；口令只进连接配置/子进程 argv，日志 `redact`，未出现明文口令。
 

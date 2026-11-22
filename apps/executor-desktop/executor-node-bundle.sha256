@@ -787,4 +787,4 @@ source-digest: 2534ce3bf3034103ec194167aabb57a7bf7185989c1999df9b4e1f0b63b8f7e0
 #   但字节哈希必变（与本文件 2026-10-19 / 2026-11-02 条同型）。
 #   本次取 CI desktop-bundle-drift 实测 actual=3590eb44…（run 43837538164），
 #   按本文件既定口径以 CI 产物为权威。
-3590eb4426fd32f7559eb258010d415f39f860110d8f04bc9d629780fc5309e7  index.js
+0bb8688f41a4f3bb4818b2983ce7d087d71e01f5b6bdf49b92090117c2af0da5  index.js

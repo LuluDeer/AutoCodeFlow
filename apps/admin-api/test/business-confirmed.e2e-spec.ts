@@ -197,16 +197,14 @@ describe("business_confirmed · confirm endpoint → domain event → listener �
     if (!db) return;
     const installs = [installAuth, installUnauth].filter(Boolean);
     if (installs.length > 0) {
-      await db.query(
-        `DELETE FROM funnel_events WHERE install_id = ANY($1)`,
-        [installs],
-      );
+      await db.query(`DELETE FROM funnel_events WHERE install_id = ANY($1)`, [
+        installs,
+      ]);
     }
     if (createdExecutionIds.length > 0) {
-      await db.query(
-        `DELETE FROM task_executions WHERE id = ANY($1)`,
-        [createdExecutionIds],
-      );
+      await db.query(`DELETE FROM task_executions WHERE id = ANY($1)`, [
+        createdExecutionIds,
+      ]);
     }
     if (createdTaskIds.length > 0) {
       await db.query(`DELETE FROM tasks WHERE id = ANY($1)`, [createdTaskIds]);

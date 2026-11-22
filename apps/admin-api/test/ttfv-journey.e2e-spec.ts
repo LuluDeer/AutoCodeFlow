@@ -179,10 +179,7 @@ describe("TTFV journey · authorization → gate → funnel event → persistenc
       "install_completed",
       "task_first_success",
     ]);
-    expect(rows.map((row) => row.dedupe_key)).toEqual([
-      keyInstall,
-      keySuccess,
-    ]);
+    expect(rows.map((row) => row.dedupe_key)).toEqual([keyInstall, keySuccess]);
     expect(rows.every((row) => row.install_id === installId)).toBe(true);
     const successRow = rows.find(
       (row) => row.event_name === "task_first_success",

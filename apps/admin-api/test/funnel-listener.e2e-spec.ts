@@ -124,18 +124,21 @@ describe("TTFV funnel listener · real domain event → listener → funnel_even
   /** 只删本 spec 造的行；不 DROP 表/库。执行行先于 task，executor 单独。 */
   async function cleanup(): Promise<void> {
     if (!db || !installId) return;
-    await db.query(`DELETE FROM funnel_events WHERE install_id = $1`, [installId]);
-    await db.query(`DELETE FROM telemetry_optin WHERE install_id = $1`, [installId]);
+    await db.query(`DELETE FROM funnel_events WHERE install_id = $1`, [
+      installId,
+    ]);
+    await db.query(`DELETE FROM telemetry_optin WHERE install_id = $1`, [
+      installId,
+    ]);
     await db.query(
       `DELETE FROM task_executions WHERE "taskId" IN (
          SELECT id FROM tasks WHERE name LIKE $1)`,
       [`${PREFIX}%`],
     );
     await db.query(`DELETE FROM tasks WHERE name LIKE $1`, [`${PREFIX}%`]);
-    await db.query(
-      `DELETE FROM executors WHERE "deviceFingerprint" = $1`,
-      [TEST_FP],
-    );
+    await db.query(`DELETE FROM executors WHERE "deviceFingerprint" = $1`, [
+      TEST_FP,
+    ]);
   }
 
   beforeAll(async () => {
@@ -154,11 +157,17 @@ describe("TTFV funnel listener · real domain event → listener → funnel_even
     expect(installId).toMatch(/^[0-9a-f]{32}$/);
 
     // 真 listener 挂载诊断：证明事件分发确实有订阅方（不是 emit 到空总线）。
-    expect(bus.listenerCount(DOMAIN_EVENTS.EXECUTOR_REGISTERED)).toBeGreaterThanOrEqual(1);
+    expect(
+      bus.listenerCount(DOMAIN_EVENTS.EXECUTOR_REGISTERED),
+    ).toBeGreaterThanOrEqual(1);
     // COMPLETED 至少 success + attempt 两个 listener
-    expect(bus.listenerCount(DOMAIN_EVENTS.EXECUTION_COMPLETED)).toBeGreaterThanOrEqual(2);
+    expect(
+      bus.listenerCount(DOMAIN_EVENTS.EXECUTION_COMPLETED),
+    ).toBeGreaterThanOrEqual(2);
     // KILLED 至少 attempt listener
-    expect(bus.listenerCount(DOMAIN_EVENTS.EXECUTION_KILLED)).toBeGreaterThanOrEqual(1);
+    expect(
+      bus.listenerCount(DOMAIN_EVENTS.EXECUTION_KILLED),
+    ).toBeGreaterThanOrEqual(1);
 
     await cleanup();
 
@@ -239,10 +248,7 @@ describe("TTFV funnel listener · real domain event → listener → funnel_even
       }),
     ).toBe(true);
 
-    const keys = [
-      `first-success:${taskHash}`,
-      `first-attempted:${taskHash}`,
-    ];
+    const keys = [`first-success:${taskHash}`, `first-attempted:${taskHash}`];
     const rows = await waitForRows(keys, 2, "success+attempt");
     expect(rows).toHaveLength(2);
     const success = rows.find((row) => row.event_name === "task_first_success");
@@ -311,7 +317,11 @@ describe("TTFV funnel listener · real domain event → listener → funnel_even
     // （等到哨兵落库，才断言 synthetic 的 dedupe key 仍未出现）。
     const probeTaskName = `${PREFIX}probe-${randomUUID()}`;
     const probeTaskId = await insertTask(probeTaskName);
-    const probeExecutionId = await insertExecution(probeTaskId, probeTaskName, false);
+    const probeExecutionId = await insertExecution(
+      probeTaskId,
+      probeTaskName,
+      false,
+    );
     const probeTaskHash = derive(probeTaskId, "ttfv-task");
 
     const finishedAt = new Date().toISOString();
@@ -343,8 +353,12 @@ describe("TTFV funnel listener · real domain event → listener → funnel_even
     );
     // synthetic 执行被 attempt listener 跳过：新 taskHash ⇒ dedupe 不会挡，
     // 若没跳过就会落库，故此断言真正验证了 synthetic 排除。
-    expect(await rowsByDedupe([`first-attempted:${synTaskHash}`])).toHaveLength(0);
-    expect(await rowsByDedupe([`first-success:${synTaskHash}`])).toHaveLength(0);
+    expect(await rowsByDedupe([`first-attempted:${synTaskHash}`])).toHaveLength(
+      0,
+    );
+    expect(await rowsByDedupe([`first-success:${synTaskHash}`])).toHaveLength(
+      0,
+    );
     expect(await rowsByTaskHash(synTaskHash)).toHaveLength(0);
   });
 });
