@@ -1,7 +1,130 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-21
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-22
 > 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
+
+## 本轮（2026-11-22）：审计页 resource 筛选补齐（未提交）
+
+**产品判断**：清掉最后一条已确证的 UI 候选——`/audit` 资源类型只有 5 个硬编码 Option，而后端实际写入 25 种并支持精确过滤，用户「看得到行、筛不到项」。1 实现 agent + 1 独立复核 agent 并行；复核以独立 AST 对拍确认 25/25 集合相等，棘轮有牙，无 P0/P1。
+
+| 项 | 交付 | 文件 |
+|---|---|---|
+| 筛选控件 | 与同页 action 同构的 `mode="tags"` 单选：25 项按 9 域分组可点选，也可任意输入；视觉恒一个 tag，清空回退全部 | `pages/audit/index.tsx`、`pages/audit/resourceOptions.ts`（新） |
+| 深链 | `?resource=sop` 首屏请求即带 `resource=sop`；重置清空 | 同上 + `audit-page.test.tsx` |
+| 棘轮守卫 | AST 扫后端非 spec 源码 `resource: "<literal>"` 与前端分组字面量求差；实测后端 25 / 前端 25，新增写入未同步即红；含反永真与 3 条反证 | `audit-action-labels.test.ts` |
+
+**验收证据**：audit 三文件 **62/62 tests passed**；admin-web 全量 **351 files / 2871 passed / 1 skipped（2872）exit 0**。`npx tsc -b`、`lint:web`、`lint:i18n`、`check:size-caps`、`check-atlas-counts` 全绿；页面 nonCommentLines 561→556、functionLines 637→635，baseline 未改。独立复核 verdict：无阻断问题。验收为 jsdom 单测 + AST 静态守卫，未做真浏览器。
+
+**已知边界**：tags 模式下输入与选项同名 token 会有 React duplicate-key 控制台噪音，不影响功能；模板拼接/纯 `string` 透传的 resource 静态扫描抓不到，与 action 守卫同款局限。工作树中 `apps/admin-api` 实体/openapi/package lock 等改动不是本轮产物，本轮未触碰，commit/发布前需单独确认来源。此前的 P2 候选至此全部处理或核实等价实现。未提交、未 push。
+
+---
+
+## 本轮（2026-11-22）：Agent 会话工具调用结果可见性修复（未提交）
+
+**产品判断**：沿剩余候选修「工具调用复盘只见状态不见结果」：API 已有 `resultJson`/`resultTruncated`，UI 却完全不渲染，args/error 还被 `.slice(0,160)` 硬截断，与审批 preview 的诚实口径不对称。1 实现 agent + 1 独立复核 agent 并行；复核 P2 全清。主控全量复跑时发现**跨切片集成缺口**：`raw-enum-labels.ux06.test.ts` 只读 AgentSessionsPage 源，列定义外提后误报枚举回退，已按同文件 SopsPage 的 R151 先例改为拼接页面 + ToolColumns 两文件，断言一字未改。
+
+| 项 | 交付 | 文件 |
+|---|---|---|
+| 结果列 | 新增 `agents.col.result` 列，用 `ToolArgsView` 结构化展示 `resultJson`；`resultTruncated=true` 挂橙色「结果已截断」Tag；null/空对象如实显示「未记录结果（旧调用）」 | `pages/agent-sessions/ToolColumns.tsx`（新）、`pages/AgentSessionsPage.tsx` |
+| 长文本诚实 | args/error 从 `.slice(0,160)` 改为 `Paragraph rows:3 + expandable:'collapsible'`，全文常驻 DOM；error 保留 danger 色并有显式断言 | 同上 |
+| 体量棘轮 | toolColumns 整块外提，页面 1114→1074 行；baseline 未改 | 同上 |
+| 测试与文案 | 新增 3 组成对 i18n key；新增结果结构化/截断/旧调用兜底两例；枚举守卫读取路径同步 | `locales/{zh,en}.ts`、`agent-sessions-approvals.test.tsx`、`raw-enum-labels.ux06.test.ts` |
+
+**验收证据**：定向 AgentSessions 6 文件 **48/48**；主控补测 3 文件 **49/49**；admin-web 全量 **351 files / 2861 passed / 1 skipped（2862）exit 0**。`npx tsc -b`、`lint:web`、`lint:i18n`、`check:size-caps`、`check:atlas-counts`、`check:mutation-residue` 全绿。验证级别为 vitest/jsdom + 静态门禁；未做真实浏览器展开交互。独立复核最终 verdict：P0/P1/P2 全清。
+
+**工作树提示**：`apps/admin-api/package.json` 与三个 package-lock 的并行依赖改动不是本轮产物，本轮未触碰；commit/发布前需单独确认其来源。剩余候选：审计页 resource 筛选只有 5 个硬编码项（后端实际约 24 种）。
+
+未提交、未 push。
+
+---
+
+## 本轮（2026-11-22）：SOP 空正文草稿死锁修复（未提交）
+
+**产品判断**：沿上一批审计候选，优先修「空正文草稿一旦创建即死锁」：可建仅 slug/title 的草稿，发布按钮永久禁用，详情契约 Tab 只读，`sopsApi.updateDraft` 后端/client 已存在却零 UI 调用。1 实现 agent + 1 独立复核 agent 并行；复核抓出「只补正文/只改标题会被空 YAML 400」的 P2 真实路径，修复后才收口。
+
+| 项 | 交付 | 文件 |
+|---|---|---|
+| 草稿编辑入口 | 详情「契约」Tab 仅 `draft` 显示“编辑内容”；新 Modal 预填 title / frontMatterJson→YAML / body，提交走既有 `updateDraft`，成功后刷新详情+列表，发布门控随内容补齐变可用 | `pages/sops/EditDraftModal.tsx`（新）、`pages/SopsPage.tsx` |
+| 部分保存正确性 | 空 YAML 传 `undefined`（对齐 `createDraft` 的 `|| undefined`），后端不再 parse 空串 400；body 空串保留为显式清空语义 | `EditDraftModal.tsx` |
+| 文案与测试 | 4 个成对 i18n key；新增空草稿只补正文、非空 frontMatter 预填/清空、失败保留表单等用例 | `locales/{zh,en}.ts`、`__tests__/sops-publish-entry.test.tsx` |
+
+**验收证据**：实现 agent 定向 6 文件 **42 tests passed**（publish-entry 10/10）；独立复核再次实跑 6 文件 42/42、`tsc -b` 0、`check:size-caps` 0、baseline 未改，最终 verdict“无阻断问题”。SopsPage 体量反向下降：nonCommentLines 996→917、functionLines 1062→971。验证级别为 vitest + mock sopsApi 的内存替身级，未跑真浏览器。未提交、未 push。
+
+**剩余候选（已确证，未开工）**：Agent 会话工具调用结果/截断标记 UI 不可见；审计页 resource 筛选只有 5 个硬编码项（后端实际约 24 种）。
+
+---
+
+## 本轮（2026-11-22）：部署行危险操作确认门修复 + 下一批方向盘点（未提交）
+
+**产品判断**：3 个只读审计 agent 分域扫通知/审计、应用/注册中心、Agent/SOP，主控剔除已等价实现项后，优先修「点行内升级即触发设备 git pull + 重启」这一真实高危缺陷；1 实现 agent + 1 独立复核 agent 并行，复核发现的守卫盲区由主控补牙并做有牙反证。
+
+| 项 | 交付 | 文件 |
+|---|---|---|
+| 升级确认门 | 删除行内「升级」Button 的 `onClick`，升级只由 Popconfirm.onConfirm 触发；`actingId` 互斥、loading/disabled、后果文案均保留 | `apps/admin-web/src/pages/AppDeploymentPage.tsx` |
+| 删除后果 | 终态行删除 Popconfirm 增加 `description={t('appDeploy.op.deleteHint')}`，确认框内直接看到「只删平台记录、不影响执行器进程」 | 同上 |
+| 测试加固 | race/timer 两处改为「点按钮未发包 → 点确认恰好一次」；delete 测试断言确认框内含 deleteHint；危险操作守卫补“Button 不得带 onClick→handleUpgrade”静态判据 | `app-deployment-race.test.tsx`、`app-deployment-timer-stale-closure.test.tsx`、`app-deployment-delete-record.test.tsx`、`dangerous-action-consequences.test.ts` |
+
+**反证**：临时把升级 Button 的 `onClick={() => handleUpgrade(r.id)}` 放回，新增守卫立即转红（1 failed / 4 passed），还原后 5/5 绿；`check-mutation-residue` 扫 28 个未提交代码文件无高危残留。独立复核无 P0/P1；已实跑 16 个 app-deployment + dangerous-action 文件 56/56 通过。主控定向 4 文件 17/17 通过。
+
+**下一批候选（审计已确证，未开工）**：
+1. SOP 空正文草稿死锁：可创建仅 slug/title 的草稿，但 UI 无编辑已有草稿入口（`sopsApi.updateDraft` 后端/client 已就绪、零调用），发布永久禁用。优先做「草稿编辑入口 + updateDraft 接线」。
+2. Agent 会话工具调用结果不可见：`toolColumns` 无 `resultJson`/`resultTruncated` 列，入参/错误硬截断无展开，与审批 preview 的诚实口径不对称。
+3. 审计页 resource 筛选只有 5 个硬编码选项，后端实际写入约 24 种；用户看得到行却选不到筛选项。建议先做 mode=tags + 全集选项或新增 `/audit/resources`。
+已核实等价实现、不重复报：通知中心聚合、通知铃、审计动作人话化、应用详情部署历史、注册中心版本管理、Agent 会话回放。
+
+未提交、未 push。
+
+---
+
+## 本轮（2026-11-22）：任务详情两条关键路径的真浏览器验收（未提交）
+
+**产品判断**：上一轮的 Glue 守卫与 webhook 竞态修复虽已通过真实 data router 单测，但仍缺浏览器级见证。派 1 个实现 agent 写可复用真 Chrome 验收脚本、1 个独立复核 agent 审“判据是否有牙”；复核当场抓出 Webhook 陈旧 GET 释放时序存在**误绿窗口**，实现 agent 修复后才采信。全程未改产品源码/测试/i18n/文档。
+
+| 项 | 交付 | 文件 |
+|---|---|---|
+| 可复用浏览器验收 | 新增 `verify:task-detail-ux`：真 Chrome、1280×800、独立 context；拦截 `/api/*`，其余交 `ux-walkthrough` 夹具；失败非零退出并输出 JSON | `apps/admin-web/scripts/verify-task-detail-ux.mjs`、`apps/admin-web/package.json` |
+| 路径 A：Glue 未保存 | 切 Glue Tab → 真实语言 Select 触发 dirty → 点返回 → URL 不变 + 守卫 Modal → 留下/离开语义全部断言（13/13） | 同上脚本 |
+| 路径 B：Webhook 竞态 | 初始 disabled GET 真正结算 → enable 一次 → fresh enabled GET 结算 → **关 modal 后**才释放 stale disabled GET；断言响应顺序 `initial#1 → fresh#2 → stale#3`、stale 落地后仍「已启用」、无启用按钮、有轮换/停用；轮换只发 rotate（18/18） | 同上脚本 |
+
+**运行前置**：先 `VITE_API_URL_INTERNAL=/api npm run dev -- --host 127.0.0.1 --port 5176`，再 `npm run verify:task-detail-ux`。
+
+**验收证据**：Chrome `158.0.8127.36`；路径 A 13/13、路径 B 18/18，`pageerror=[]`；`POST enable=1`、`POST rotate=1`；fixture `responseEvents=[initial-disabled#1, fresh-enabled#2, stale-disabled#3]`。独立复核最终 verdict：P0/P1 均无，反证有牙；主控再跑一次 exit 0。未提交、未 push。
+
+---
+
+## 本轮（2026-11-22）：Glue 未保存脚本站内导航守卫 + 375px 真浏览器验证（未提交）
+
+**产品判断**：沿上一轮登记的剩余高痛点继续推进——Glue 脚本改了不保存，点「返回」/面包屑/「编辑」会静默丢改动，`beforeunload` 拦不住站内导航。1 个实现 agent + 1 个独立复核 agent 并行：实现按互不重叠写域落地，复核只读审 diff 并跑定向测试；主控额外用真 Chrome 对上一轮 375px 执行记录修复做浏览器级见证。
+
+| 项 | 交付 | 文件 |
+|---|---|---|
+| 站内/关闭统一守卫 | 新增 `TaskDetailUnsavedGuard`：`useBlocker(dirty)` + antd 确认 Modal + `beforeunload`；TaskDetailPage 的 loading/404/error/主渲染全部包进守卫，早退分支也不丢守卫；GlueEditor 仍 lazy，首屏 chunk 边界不变 | `pages/task-detail/TaskDetailUnsavedGuard.tsx`、`pages/TaskDetailPage.tsx` |
+| 文案 | 新增成对 i18n 键，明确是「Glue 脚本有未保存的修改」，非泛化「表单」 | `locales/zh.ts`、`locales/en.ts` |
+| 测试兼容 | 仅对渲染 TaskDetailPage 的存量测试补 `useBlocker` 桩，不放宽任何既有断言 | 10 个 task-detail 相关测试文件 |
+| 真实 data router 回归 | `createMemoryRouter`/`RouterProvider` 验证：dirty=false 直达；dirty=true 导航被拦、URL 保持、Modal 出现；「留下」保持、「离开」放行；保存后两类守卫都解除 | `__tests__/task-detail-glue-unsaved.test.tsx` |
+
+**验收证据**：定向 19 文件 / **145 tests passed**；admin-web 全量 **351 files / 2855 passed / 1 skipped（2856）exit 0**；`npx tsc -b`、`npm run lint:i18n`、`npm run check:size-caps`、`npm run check:atlas-counts`、`npm run lint:web`、`check:mutation-residue`、`npm run test:docs` 全 exit 0。真 Chrome 375×812（25 条夹具执行）：20 个勾选框可见、下一页可用、请求 `page=1→2`、勾选两条后「对比 (2)」出现、`pageerror=[]`、body 横溢 0（截图为临时文件，未入库）。
+
+**边界/后续**：`useSafeBlocker` 对普通 `MemoryRouter` 的“data router 必需”错误降级为 unblocked，仅为兼容存量测试；生产 `createBrowserRouter` 走真 `useBlocker`。独立复核无 P0/P1；P2 已登记：全量迁 data router 后删除该降级分支。未做真浏览器手工验证 Glue 守卫与 webhook secret 轮换，作为下一优先项。未提交、未 push。
+
+---
+
+## 本轮（2026-11-22）：四条用户可见缺陷修复（4 实现 agent + 3 审计 agent，未提交）
+
+**产品判断**：继续坚持「站在用户角度自己找方向」——先用 3 个只读审计 agent 按 CodeGraph 分域扫执行页、任务详情、产物/收件箱，主控逐条复核后剔除已等价实现项，锁定 4 条真实可修复缺陷；再派 4 个实现 agent 按**互不重叠写域**并行修复，agent 之间互发消息对齐 stale-response 守卫与错误提示写法。未改后端契约、未新增 i18n key、未提交、未 push。
+
+| 切片 | 用户价值 | 改动文件 |
+|---|---|---|
+| Webhook 写后状态竞态 | 启用/轮换成功后立即落 `enabled:true`，busy 保持到刷新 GET 落定；单调序号 + 任务身份双闸门丢弃晚到旧 GET，避免再次点击等价 rotate 让第一份 secret 失效 | `pages/task-detail/useTaskWebhookSecret.ts`、`__tests__/task-detail-webhook-busy.test.tsx` |
+| 版本列表跨任务旧响应 | `:id` 切换时清掉旧任务版本/勾选/diff；旧响应不得覆盖新任务页面，防止在不可逆回滚前读错版本 | `pages/task-detail/useTaskVersionRollback.ts`、`__tests__/task-version-list-read-failure.test.tsx` |
+| 产物下载/预览双 toast | 改用仓库既定 `showApiError`，client 已弹具体错误时不再补泛化提示；预览失败标题/描述不再同文案重复 | `pages/ArtifactsPage.tsx`、`components/ArtifactPreviewModal.tsx`、`__tests__/artifacts-page.test.tsx` |
+| 375px 执行记录卡片 | 卡片分支补 OFFSET 分页、首屏骨架（读失败不再闪现空态）、受控勾选接入执行对比；桌面 Table 语义不动 | `pages/ExecutionsPage.tsx`、`__tests__/mobile-ui09.test.tsx` |
+
+**验收证据**：定向 4 文件 **32/32 passed**；admin-web 全量 **350 files / 2853 passed / 1 skipped（2854）exit 0**；`npx tsc -b`、`npm run lint:i18n`、`npm run check:size-caps`、`npm run check:guards-wired`、`npm run check:mutation-residue` 全部 exit 0。未提交代码文件 9 个 + 本 handoff；`docs/PROJECT-STATUS.md` 的既有未提交改动不是本轮产生，未触碰。
+
+**证据级别与边界**：最高为 **单测/jsdom + 类型/守卫级**；没有做真 375px 浏览器与真后端 secret 轮换复核。待用户确认后，下一步优先补两条浏览器级见证：① 375px 分页/勾选/骨架；② webhook enable→secret 弹窗→刷新状态稳定后禁止重复轮换。前述两条审计残留的 Glue dirty 站内导航丢改动、预览 Modal 自身失败态未测，均登记为后续候选，本轮不扩面。
+
+---
 
 ## 本次交接（R475 · 2026-11-22）：5 组提交完成（用户明确指令「提交」）
 
