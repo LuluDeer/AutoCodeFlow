@@ -1672,5 +1672,6 @@
   "未达标逐条说明 + 运营前置提示（脚本不验证 coverage）": "Per-threshold unmet reasons + ops prerequisite note (coverage not verified by script)",
   "严格值周数": "Number of strict-caliber weeks",
   "活跃 install 周合计": "Active-install weeks total",
-  "R448 升主判据（eligible 仅判数值阈值，运营前置 coverage=full 见 reasons）": "R448 primary-metric promotion eligibility (eligible covers numeric thresholds only; ops prerequisite coverage=full in reasons)"
+  "R448 升主判据（eligible 仅判数值阈值，运营前置 coverage=full 见 reasons）": "R448 primary-metric promotion eligibility (eligible covers numeric thresholds only; ops prerequisite coverage=full in reasons)",
+  "该执行由哪个 Agent 会话触发（Agent 触发路径可空）": "Which Agent session triggered this execution (nullable for non-Agent triggers)"
 }

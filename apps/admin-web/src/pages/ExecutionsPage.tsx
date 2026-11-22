@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { Table,
   Typography,
   Badge,
-  Button,
+  Button, Checkbox,
   Input,
   Select,
   Space,
@@ -651,8 +651,7 @@ export default function ExecutionsPage() {
     onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
     onCell: () => ({ className: 'ui09-hide-mobile' }),
   } as const;
-  const statusMap = STATUS_MAP(t);
-  const columns = [
+  const statusMap = STATUS_MAP(t); const columns = [
     {
       title: t('execs.col.task'),
       dataIndex: 'taskName',
@@ -1008,7 +1007,7 @@ export default function ExecutionsPage() {
            「任务名称」逐字竖排、操作列溢出。卡片按值班首查信息组织：状态 +
            任务名 / 触发·执行器 / 时间·耗时 / 错误 / 详情。 */
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {executions.length === 0 ? (
+          {shouldShowSkeleton(loading, error, executions.length) ? <PageSkeleton variant="cards" /> : executions.length === 0 ? (
             /* 空态区分：筛选无匹配给「清除筛选」出口；真空态如实提示
                （执行记录由任务触发产生，无直接创建入口可引导） */
             <Empty
@@ -1031,6 +1030,7 @@ export default function ExecutionsPage() {
               return (
                 <Card key={r.id} size="small">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <Checkbox checked={selectedIds.includes(r.id)} onChange={(e) => setSelectedIds((ids) => e.target.checked ? (ids.includes(r.id) ? ids : [...ids, r.id]) : ids.filter((id) => id !== r.id))} aria-label={r.taskName || r.taskId} />
                     <Link to={`/tasks/${r.taskId}`} style={{ fontWeight: 500, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {r.taskName || r.taskId}
                     </Link>
@@ -1129,11 +1129,10 @@ export default function ExecutionsPage() {
       />
       )}
 
-      {/* §2.1：keyset 模式的自绘分页器。
-          游标分页只有「下一页」令牌，没有「上一页」令牌——上一页靠游标栈回退，
-          故这里**只有两个按钮，没有页码、没有页码跳转**（见上方 pagination 注释）。
-          表格与移动端卡片共用同一个分页器：两者是同一份数据的两种渲染。 */}
-      {stablePaging ? (
+      {/* 自绘分页器：keyset 走游标栈（无页码跳转）；OFFSET 仅在卡片分支补页码器。
+          游标分页只有「下一页」令牌，上一页靠游标栈回退；OFFSET 则直接 setPage。
+          两者都只有「上一页 / 下一页」+ 总数，表格与移动端卡片共用同一份数据。 */}
+      {stablePaging || isMobile ? (
         <div
           style={{
             marginTop: 16,
@@ -1150,17 +1149,17 @@ export default function ExecutionsPage() {
           <Button
             size="small"
             icon={<LeftOutlined />}
-            // 栈首禁用：没有上一页可回（此时再点只会重复请求同一游标）
-            disabled={cursorState.index === 0}
-            onClick={goPrev}
+            // keyset 栈首禁用；OFFSET 首页禁用
+            disabled={stablePaging ? cursorState.index === 0 : page <= 1}
+            onClick={stablePaging ? goPrev : () => setPage((p) => Math.max(1, p - 1))}
           >
             {t('execs.pager.prev')}
           </Button>
           <Button
             size="small"
-            // 后端说没有下一页（nextCursor === null，含"游标行被删"的提前结束）
-            disabled={!canNext}
-            onClick={goNext}
+            // keyset 以 nextCursor 判末页；OFFSET 以 total/pageSize 判末页
+            disabled={stablePaging ? !canNext : page * pageSize >= total}
+            onClick={stablePaging ? goNext : () => setPage((p) => p + 1)}
           >
             {t('execs.pager.next')}
             <RightOutlined />

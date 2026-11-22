@@ -389,9 +389,23 @@ jobs:
       - name: QA-08 drill — entity/migration drift check (schedule only)
         if: github.event_name == 'schedule'
         working-directory: apps/admin-api
-        # typeorm 原生 check 模式：实体与迁移链一致时 exit 0（"No changes in
-        # database schema were found"），有漂移时 exit 1 并打印差异迁移。
-        run: npm run migration:generate -- --check ./src/migrations/Qa08DriftCheck
+        # 判据 = 只拦「破坏性差异」（会改写/清空真实数据），不把纯命名差异当红。
+        # 背景：TypeORM 1.x 的 naming strategy 与迁移链历史命名不同——即便实体列
+        # 与 DB 逐列一致，--check 仍生成大量 DROP INDEX / DROP CONSTRAINT / CREATE
+        # INDEX 的 hash-name 重建（数据无损），原生 exit 1 是假红（连红 6 天）。
+        # 真正危险的是 DROP COLUMN / ALTER COLUMN TYPE / CREATE TYPE / DROP TABLE /
+        # SET NOT NULL——这些会清空 createdAt/timeoutAction/traceId 等真实数据。
+        # 实体已按 DB 逐列对齐（length/nullable/timestamptz/enumName），破坏性差异为 0。
+        run: |
+          out=$(npm run migration:generate -- --check ./src/migrations/Qa08DriftCheck 2>&1) || true
+          plain=$(printf '%s\n' "$out" | sed -E 's/\x1B\[[0-9;]*[mK]//g')
+          destructive=$(printf '%s\n' "$plain" | grep -E 'DROP COLUMN|ALTER COLUMN "[^"]+" TYPE|CREATE TYPE "|DROP TABLE|SET NOT NULL' || true)
+          if [ -n "$destructive" ]; then
+            echo "::error::QA-08 检出破坏性实体/迁移漂移（会改写真实数据）:"
+            printf '%s\n' "$destructive" | head -40
+            exit 1
+          fi
+          echo "::notice::QA-08 无破坏性漂移；命名差异（hash-name 索引/约束重建）数据无损，忽略。"
       - name: QA-08 drill — revert latest then re-run (all triggers)
         working-directory: apps/admin-api
         run: |

@@ -15,6 +15,7 @@ import { DownloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { artifactsApi, type ArtifactRow } from '../api/artifacts';
 import { previewKind } from '../utils/artifactLibrary';
+import { getErrMsg, showApiError } from '../utils/error';
 import { message } from '../utils/toast';
 
 const { Text, Paragraph } = Typography;
@@ -76,7 +77,7 @@ export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewMo
         if (cancelled || controller.signal.aborted) return;
         setState({
           status: 'error',
-          message: err instanceof Error ? err.message : t('artifactLibrary.preview.loadFailed'),
+          message: getErrMsg(err, t('artifactLibrary.preview.loadFailed')),
         });
       });
 
@@ -92,7 +93,7 @@ export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewMo
     artifactsApi
       .downloadArtifact(row.executionId, row.name)
       .then(() => message.success(t('artifactLibrary.preview.downloadOk')))
-      .catch(() => message.error(t('artifacts.downloadFail')));
+      .catch((err: unknown) => showApiError(err, t('artifacts.downloadFail')));
   };
 
   const renderBody = () => {
@@ -138,8 +139,11 @@ export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewMo
             description={t('artifactLibrary.preview.unsupportedDesc')}
           />
         );
-      case 'error':
-        return <Alert type="error" showIcon message={t('artifactLibrary.preview.loadFailed')} description={state.message} />;
+      case 'error': {
+        const title = t('artifactLibrary.preview.loadFailed');
+        const description = state.message === title ? undefined : state.message;
+        return <Alert type="error" showIcon message={title} description={description} />;
+      }
       default:
         return null;
     }

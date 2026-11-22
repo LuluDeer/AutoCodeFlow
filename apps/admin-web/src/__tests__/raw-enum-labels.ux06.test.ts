@@ -147,7 +147,12 @@ describe('UX-06 源码层：调用点不得再渲染裸枚举', () => {
 });
 
 describe('UX-06 AgentSessionsPage：会话/工具/步骤枚举收敛到 utils/agent-label', () => {
-  const AGENT = stripComments(read('pages/AgentSessionsPage.tsx'));
+  // R6-工具列外提：toolColumns 已搬到 pages/agent-sessions/ToolColumns.tsx，
+  // 与同文件下方 SopsPage 的 R151 先例同型——按旧路径只读页面会误判“枚举收敛回退”，
+  // 因此拼接两文件，断言本身一字不改。
+  const AGENT = stripComments(
+    read('pages/AgentSessionsPage.tsx') + '\n' + read('pages/agent-sessions/ToolColumns.tsx'),
+  );
 
   it('七个已知会话状态都映射到 i18n key', () => {
     for (const v of [

@@ -437,3 +437,163 @@ describe('守卫自身有牙（反证：不改真实仓库也能证明判据会�
     expect([...docActions(md)].sort()).toEqual(['task.create', 'task.delete']);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────
+// 审计 **resource** 选项守卫（与上面的 action 守卫同构，但事实源换成 resource）
+//
+// 缺陷现场：后端实际写入 20+ 种 resource（sop / api_key / app_deployment /
+// task_execution / event_subscription* / artifact …），而筛选下拉只硬编码了 5 个。
+// 后端 `applyAuditFilters` 对 resource 是**精确匹配**、DTO 收任意字符串 ⇒ 列表里
+// 看得到行、下拉里选不到项。只补一次清单没有意义：下一次后端新增写入点仍会静默漏。
+// 判据 =「前端 resource 选项 ⊇ 后端实际写入 resource 全集」，新增写入而清单没跟上 ⇒ 红。
+// ────────────────────────────────────────────────────────────────────────
+
+const RESOURCE_OPTIONS_PATH = resolve(__dirname, '../pages/audit/resourceOptions.ts');
+/** resource token：小写开头，允许下划线/连字符（api_key / registry-package）。 */
+const RESOURCE_CODE_RE = /^[a-z][a-z0-9_-]*$/;
+
+export interface ResourceSite {
+  file: string;
+  line: number;
+}
+
+/**
+ * 从 resourceOptions.ts 的 `AUDIT_RESOURCE_GROUPS[].resources` 数组抠出选项字面量。
+ * 只认字面量：常量/模板拼接会让静态判据失真，直接报错而不是静默少扫。
+ */
+export function extractResourceOptions(source: string): Set<string> {
+  const sf = ts.createSourceFile('resourceOptions.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let groups: ts.ArrayLiteralExpression | null = null;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'AUDIT_RESOURCE_GROUPS' &&
+      node.initializer &&
+      ts.isArrayLiteralExpression(node.initializer)
+    ) {
+      groups = node.initializer;
+    }
+    node.forEachChild(visit);
+  };
+  visit(sf);
+  if (!groups) throw new Error('resourceOptions.ts 里找不到 AUDIT_RESOURCE_GROUPS 数组字面量（被重命名/拆分了？）');
+  const out = new Set<string>();
+  for (const el of (groups as ts.ArrayLiteralExpression).elements) {
+    if (!ts.isObjectLiteralExpression(el)) throw new Error(`AUDIT_RESOURCE_GROUPS 元素非对象字面量：${el.getText()}`);
+    const prop = el.properties.find(
+      (p) => ts.isPropertyAssignment(p) && p.name.getText(sf) === 'resources',
+    );
+    if (!prop || !ts.isPropertyAssignment(prop) || !ts.isArrayLiteralExpression(prop.initializer)) {
+      throw new Error(`AUDIT_RESOURCE_GROUPS 元素缺 resources 数组字面量：${el.getText()}`);
+    }
+    for (const item of prop.initializer.elements) {
+      if (!ts.isStringLiteral(item)) throw new Error(`resources 数组含非字符串字面量：${item.getText()}`);
+      out.add(item.text);
+    }
+  }
+  return out;
+}
+
+/**
+ * 后端实际写入集合：所有非测试 .ts 里的 `resource: "<literal>"`。
+ * 复用 action 守卫已经读好的 `backend.inputs`（同一份源码树），再排掉 __tests__。
+ * 只认字符串字面量：动态拼接/纯 string 形参静态扫不到 —— 这是已知局限，写在注释里。
+ */
+export function scanBackendResources(
+  inputs: { file: string; source: string }[],
+): Map<string, ResourceSite> {
+  const found = new Map<string, ResourceSite>();
+  for (const { file, source } of inputs) {
+    if (file.includes('/__tests__/') || /\.spec\.ts$/.test(file) || !/resource\s*:/.test(source)) continue;
+    const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const lineOf = (node: ts.Node): number =>
+      sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isPropertyAssignment(node) &&
+        (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) &&
+        node.name.text === 'resource' &&
+        ts.isStringLiteral(node.initializer)
+      ) {
+        const value = node.initializer.text;
+        if (RESOURCE_CODE_RE.test(value) && !found.has(value)) {
+          found.set(value, { file, line: lineOf(node) });
+        }
+      }
+      node.forEachChild(visit);
+    };
+    visit(sf);
+  }
+  return found;
+}
+
+/** 差集（后端写入 − 前端选项），供反证用例直接喂假数据。 */
+export function missingResources(written: Iterable<string>, options: Iterable<string>): string[] {
+  const have = new Set(options);
+  return [...new Set(written)].filter((r) => !have.has(r)).sort();
+}
+
+const resourceOptions = extractResourceOptions(readFileSync(RESOURCE_OPTIONS_PATH, 'utf-8'));
+const backendResources = scanBackendResources(backend.inputs);
+
+describe('审计 resource 选项：覆盖后端实际写入的全部 resource', () => {
+  it('扫描面非空（反永真：后端树/选项任一读空都不该判绿）', () => {
+    if (backend.skipped) {
+      console.warn('[audit-resource-options] ⚠ 未找到 apps/admin-api，后端 resource 未参与判据');
+    } else {
+      expect(backend.inputs.length).toBeGreaterThan(300);
+    }
+    expect(backendResources.size).toBeGreaterThanOrEqual(20);
+    expect(resourceOptions.size).toBeGreaterThanOrEqual(20);
+    console.log(
+      `[audit-resource-options] 后端写入 ${backendResources.size} 个 resource（扫 ${backend.inputs.length} 个文件）｜前端选项 ${resourceOptions.size}`,
+    );
+  });
+
+  it('后端写入的每个 resource 都有筛选选项（新增写入没同步清单就红）', () => {
+    expect(
+      reportDiff('前端选项缺失的 resource', missingResources(backendResources.keys(), resourceOptions)),
+    ).toBe('前端选项缺失的 resource：共 0 条');
+  });
+
+  it('audit agent 确证的关键 token 全在选项里（动态判据的显式下限）', () => {
+    const confirmed = [
+      'sop', 'auth', 'api_key', 'project', 'app_deployment', 'task', 'task_execution',
+      'task_template', 'registry', 'artifact', 'config', 'user', 'executor', 'application',
+      'notification', 'notification_channel', 'notification_silence', 'notification_digest',
+      'notification_fanout', 'event_subscription', 'event_subscription_dead_letter',
+      'sop_assignment', 'sop_clarification', 'project_member', 'registry-package',
+    ];
+    expect(reportDiff('确证 token 缺失', confirmed.filter((r) => !resourceOptions.has(r)))).toBe(
+      '确证 token 缺失：共 0 条',
+    );
+  });
+});
+
+describe('resource 守卫自身有牙（反证：不改真实仓库也能证明判据会红）', () => {
+  it('假后端源码新增 resource ⇒ missingResources 报出（红路径）', () => {
+    const fake = scanBackendResources([
+      { file: 'fake.service.ts', source: 'this.audit.log({ action: "x.y", resource: "brand_new_resource" });' },
+    ]);
+    expect([...fake.keys()]).toEqual(['brand_new_resource']);
+    expect(missingResources(fake.keys(), resourceOptions)).toEqual(['brand_new_resource']);
+  });
+
+  it('选项提取只认 AUDIT_RESOURCE_GROUPS.resources 的字符串字面量（形状不对即报错）', () => {
+    const sample = `export const AUDIT_RESOURCE_GROUPS = [{ label: 'Task', resources: ['task', 'task_template'] }];`;
+    expect([...extractResourceOptions(sample)]).toEqual(['task', 'task_template']);
+    expect(() => extractResourceOptions(`export const OTHER = { resources: ['task'] };`)).toThrow(/找不到/);
+    expect(() => extractResourceOptions(`export const AUDIT_RESOURCE_GROUPS = [{ resources: [SOME_CONST] }];`)).toThrow(/非字符串字面量/);
+  });
+
+  it('后端扫描排掉 spec/__tests__，也不吃动态拼接的 resource', () => {
+    const found = scanBackendResources([
+      { file: 'src/real.service.ts', source: 'log({ resource: "sop" });' },
+      { file: 'src/real.spec.ts', source: 'log({ resource: "synthetic" });' },
+      { file: 'src/__tests__/fixture.ts', source: 'log({ resource: "fixture_only" });' },
+      { file: 'src/dyn.service.ts', source: 'log({ resource: `task.${x}` });' },
+    ]);
+    expect([...found.keys()]).toEqual(['sop']);
+  });
+});

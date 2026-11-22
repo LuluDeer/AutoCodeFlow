@@ -69,7 +69,7 @@
  *   · `drawerA11y`（`useDrawerA11y`）：它是**通用 a11y 工具**，本页之外无消费点，
  *     但与本子域的数据流无关（同一 hook 也给将来的其它抽屉用）。留在页面。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { tasksApi } from '../../api/tasks';
@@ -150,24 +150,58 @@ export function useTaskVersionRollback(
   const [rollbackTarget, setRollbackTarget] = useState<TaskVersion | null>(null);
   const [rollingBack, setRollingBack] = useState(false);
 
+  // R（stale-response）：同一路由实例切 :id 时，旧 id 的 versions GET 可能晚于
+  // 新 id 的响应落地。用「单调序号 + 发起 id」双重闸门：只有发起 id 仍是当前
+  // id、且请求序号仍是最后一次发出的请求，才允许写 versions 三件套。
+  const versionRequestSeqRef = useRef(0);
+  const currentIdRef = useRef(id);
+  currentIdRef.current = id;
+
+  const isLatestVersionRequest = useCallback(
+    (requestId: string, requestSeq: number) =>
+      requestId === currentIdRef.current && requestSeq === versionRequestSeqRef.current,
+    [],
+  );
+
+  // id 切换时同步清掉上一个任务的可见状态，并让所有在途 versions 请求立即失效；
+  // 否则从 A 切到 B 的第一帧仍会看到 A 的列表/错误/勾选/diff。
+  useEffect(() => {
+    versionRequestSeqRef.current += 1;
+    setVersions([]);
+    setVersionsError(null);
+    setVersionsLoading(false);
+    setPickedVersionIds([]);
+    setVersionDiff(null);
+    setVersionDiffError(null);
+  }, [id]);
+
   // 直接走 tasksApi + 本地 state（与 webhookStatus 同款模式）：queries.ts 未提供
   // 版本 hooks，且版本数据只在 Drawer 打开时需要。
   const loadVersions = useCallback(() => {
     if (!id) return;
+    const requestId = id;
+    const requestSeq = ++versionRequestSeqRef.current;
     setVersionsLoading(true);
     // 每次（重）拉先清掉上次的失败——否则重试成功后错误块仍留在屏上。
     setVersionsError(null);
-    tasksApi.versions(id)
-      .then(setVersions)
+    tasksApi.versions(requestId)
+      .then((nextVersions) => {
+        if (!isLatestVersionRequest(requestId, requestSeq)) return;
+        setVersions(nextVersions);
+      })
       .catch((err: unknown) => {
+        if (!isLatestVersionRequest(requestId, requestSeq)) return;
         // R171（P2-2）：清空 + 记错**两件事都要做**。只清空（旧实现）就把
         // 「没读到」写成了「没有版本」；只记错则会把上一个任务的版本留在屏上。
         setVersions([]);
         setVersionsError(err);
         showApiError(err, t('taskDetail.version.loadFail'));
       })
-      .finally(() => setVersionsLoading(false));
-  }, [id, t]);
+      .finally(() => {
+        if (!isLatestVersionRequest(requestId, requestSeq)) return;
+        setVersionsLoading(false);
+      });
+  }, [id, t, isLatestVersionRequest]);
 
   useEffect(() => {
     if (versionDrawerOpen) {

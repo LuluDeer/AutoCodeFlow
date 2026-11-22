@@ -11,6 +11,7 @@ import { MemoryRouter } from 'react-router-dom';
 import ArtifactsPage from '../pages/ArtifactsPage';
 import { useArtifactsIndex, useApplicationsList, useTasksList } from '../api/queries';
 import { artifactsApi } from '../api/artifacts';
+import { message } from '../utils/toast';
 import '../i18n';
 
 vi.mock('../api/queries', () => ({
@@ -114,6 +115,67 @@ describe('ArtifactsPage 列表渲染', () => {
       </MemoryRouter>,
     );
     expect(await screen.findByText(/文件名关键字/)).toBeTruthy();
+  });
+});
+
+describe('ArtifactsPage 下载反馈', () => {
+  it('下载成功只提示成功，不弹错误 toast', async () => {
+    const successSpy = vi
+      .spyOn(message, 'success')
+      .mockImplementation((() => undefined) as never);
+    const errorSpy = vi
+      .spyOn(message, 'error')
+      .mockImplementation((() => undefined) as never);
+
+    render(
+      <MemoryRouter initialEntries={['/artifacts']}>
+        <ArtifactsPage />
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: /下载/ }));
+
+    await waitFor(() =>
+      expect(artifactsApi.downloadArtifact).toHaveBeenCalledWith(
+        ROW.executionId,
+        ROW.name,
+      ),
+    );
+    expect(successSpy).toHaveBeenCalledWith('已开始下载');
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('client 已打标并弹具体错误时，页面 catch 不再补泛化 toast', async () => {
+    const specific = '产物对象已被清理';
+    const errorSpy = vi
+      .spyOn(message, 'error')
+      .mockImplementation((() => undefined) as never);
+    // 模拟 client 拦截器已经弹出的那一条具体提示
+    message.error(specific, 4);
+    vi.mocked(artifactsApi.downloadArtifact).mockRejectedValueOnce({
+      __toastedByClient: true,
+      message: specific,
+      errorCode: 'ARTIFACT_OBJECT_GONE',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/artifacts']}>
+        <ArtifactsPage />
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: /下载/ }));
+
+    await waitFor(() =>
+      expect(artifactsApi.downloadArtifact).toHaveBeenCalledWith(
+        ROW.executionId,
+        ROW.name,
+      ),
+    );
+    // 让 reject 的 catch 微任务跑完，再断言没有追加 toast
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith(specific, 4);
+    expect(errorSpy).not.toHaveBeenCalledWith('产物下载失败');
   });
 });
 

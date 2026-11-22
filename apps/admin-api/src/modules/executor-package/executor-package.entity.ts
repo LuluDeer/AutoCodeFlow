@@ -106,9 +106,9 @@ export class ExecutorPackage {
   @Column({ type: "uuid", nullable: true })
   projectId: string | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ default: () => "CURRENT_TIMESTAMP" })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ default: () => "CURRENT_TIMESTAMP" })
   updatedAt: Date;
 }

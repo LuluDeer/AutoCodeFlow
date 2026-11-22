@@ -24,13 +24,13 @@ export class NotificationChannelConfig {
   key: string;
 
   /** RAW（未脱敏）配置对象，形如 { webhookUrl, secret? } */
-  @Column({ type: "jsonb", default: () => "'{}'::jsonb" })
+  @Column({ type: "jsonb", default: () => "'{}'" })
   config: Record<string, string>;
 
   /** N37：渠道开关与配置同行，防止半状态 */
   @Column({ type: "boolean", default: false })
   enabled: boolean;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: "timestamptz" })
   updatedAt: Date;
 }

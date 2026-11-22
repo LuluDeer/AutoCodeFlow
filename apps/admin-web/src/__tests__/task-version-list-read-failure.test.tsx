@@ -42,6 +42,7 @@ vi.mock('../api/tasks', () => ({
 vi.mock('../api/ai', () => ({ aiApi: { suggestSchedule: vi.fn() } }));
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
+  useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
   useParams: () => ({ id: 'task-1' }),
   Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
 }));
@@ -163,6 +164,70 @@ describe('R171 P2-2：版本列表读取失败（hook 层）', () => {
     // ⇒ 等**真正要断言的那个状态**（列表落地），而不是等一个更早的状态。
     await waitFor(() => expect(result.current.versions).toHaveLength(1));
     expect(result.current.versionsError).toBeNull();
+  });
+
+  it('④ A→B 切换后，A 的晚到响应不得覆盖 B 的版本列表/loading/error', async () => {
+    let resolveStaleA!: (value: unknown) => void;
+    let resolveFreshB!: (value: unknown) => void;
+    const staleAResponse = new Promise<unknown>((resolve) => { resolveStaleA = resolve; });
+    const freshBResponse = new Promise<unknown>((resolve) => { resolveFreshB = resolve; });
+
+    const aVersion = versionOf('ver-a-1', 'vA1');
+    const staleAVersion = { ...versionOf('ver-a-2', 'vA2'), taskId: 'task-a' };
+    const bVersion = { ...versionOf('ver-b-1', 'vB1'), taskId: 'task-b' };
+
+    vi.mocked(tasksApi.versions)
+      .mockReset()
+      .mockResolvedValueOnce([aVersion] as never)
+      .mockImplementationOnce(() => staleAResponse as never)
+      .mockImplementationOnce(() => freshBResponse as never);
+
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string }) => useTaskVersionRollback(id, () => {}),
+      { initialProps: { id: 'task-a' } },
+    );
+
+    act(() => result.current.setVersionDrawerOpen(true));
+    await waitFor(() => expect(result.current.versions).toEqual([aVersion]));
+
+    // 先把旧任务的勾选/diff 置脏，验证切 id 的同步清理，而不只是列表不被覆盖。
+    act(() => {
+      result.current.setPickedVersionIds(['ver-a-1']);
+      result.current.setVersionDiff({} as never);
+    });
+    expect(result.current.pickedVersionIds).toEqual(['ver-a-1']);
+    expect(result.current.versionDiff).not.toBeNull();
+
+    // A 的第二次请求悬挂中；切到 B 后该请求必须立即失效。
+    act(() => result.current.loadVersions());
+    expect(vi.mocked(tasksApi.versions)).toHaveBeenCalledTimes(2);
+
+    rerender({ id: 'task-b' });
+    await waitFor(() => expect(vi.mocked(tasksApi.versions)).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(tasksApi.versions)).toHaveBeenNthCalledWith(1, 'task-a');
+    expect(vi.mocked(tasksApi.versions)).toHaveBeenNthCalledWith(2, 'task-a');
+    expect(vi.mocked(tasksApi.versions)).toHaveBeenNthCalledWith(3, 'task-b');
+    expect(result.current.versions).toEqual([]);
+    expect(result.current.pickedVersionIds).toEqual([]);
+    expect(result.current.versionDiff).toBeNull();
+
+    // A 的响应在 B 仍未返回时落地：既不能写列表，也不能写 error/loading。
+    await act(async () => {
+      resolveStaleA([staleAVersion] as never);
+      await staleAResponse;
+    });
+    expect(result.current.versions).toEqual([]);
+    expect(result.current.versionsError).toBeNull();
+    expect(result.current.versionsLoading).toBe(true);
+
+    // B 的响应落地后才允许写状态，最终页面只剩 B 的版本。
+    await act(async () => {
+      resolveFreshB([bVersion] as never);
+      await freshBResponse;
+    });
+    await waitFor(() => expect(result.current.versions).toEqual([bVersion]));
+    expect(result.current.versionsError).toBeNull();
+    expect(result.current.versionsLoading).toBe(false);
   });
 });
 

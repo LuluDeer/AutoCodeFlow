@@ -263,6 +263,7 @@ export class TaskExecution {
   @Column({
     type: "enum",
     enum: ExecutionStatus,
+    enumName: "execution_status_enum",
     default: ExecutionStatus.PENDING,
   })
   status: ExecutionStatus;
@@ -418,7 +419,10 @@ export class TaskExecution {
    * 执行器，终态行携带供 UI 展示与 Jaeger/Tempo 检索。NULL=追踪未开启或旧数据。
    * 迁移见 migrations/1789900000003-AddExecutionTraceId.ts。
    */
-  @Column({ type: "varchar", nullable: true }) traceId: string | null;
+  @Column({ type: "varchar", length: 64, nullable: true }) traceId:
+    string | null;
+  /** QA-08: DB 已有列（迁移 1790000000040, uuid NULL），实体此前漏声明。 */
+  @Column({ type: "uuid", nullable: true }) agentSessionId: string | null;
   /**
    * FEAT-22 方案 A v1 配套观测：派发时刻解析的应用包与版本（仅 zip 渠道，
    * git/glue 渠道恒 NULL）。任务执行永远跑应用「当前上传版本」——dispatch
@@ -467,5 +471,5 @@ export class TaskExecution {
    *    并迫使重生成 openapi.json 与 admin-web 的生成物；
    * ② 该表的写者只有 stale sweep 一个，竞争面与终态写路径不重叠。
    */
-  @VersionColumn() version: number;
+  @VersionColumn({ default: 1 }) version: number;
 }

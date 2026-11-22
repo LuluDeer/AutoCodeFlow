@@ -194,7 +194,7 @@ export class AgentEvent {
   @Column({ type: "jsonb", default: () => "'{}'" })
   payload: Record<string, unknown>;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: "timestamptz" })
   createdAt: Date;
 }
 

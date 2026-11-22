@@ -42,6 +42,7 @@ import { useIsMobile } from '../hooks/useIsMobile';
 import { formatArtifactSize } from '../utils/artifactSize';
 import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 import { copyText } from '../utils/clipboard';
+import { showApiError } from '../utils/error';
 import { message } from '../utils/toast';
 import {
   ARTIFACT_EXTENSION_FILTERS,
@@ -345,8 +346,8 @@ export default function ArtifactsPage() {
     try {
       await artifactsApi.downloadArtifact(row.executionId, row.name);
       message.success(t('artifactLibrary.preview.downloadOk'));
-    } catch {
-      message.error(t('artifacts.downloadFail'));
+    } catch (err: unknown) {
+      showApiError(err, t('artifacts.downloadFail'));
     }
   };
 

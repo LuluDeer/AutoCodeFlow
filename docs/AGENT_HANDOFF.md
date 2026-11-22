@@ -1,7 +1,146 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-21
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-22
 > 当前工作分支为 `develop`。下方的中台 Agent 交付尚未发布；其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
+
+## 本轮（2026-11-22）：审计页 resource 筛选补齐（未提交）
+
+**产品判断**：清掉最后一条已确证的 UI 候选——`/audit` 资源类型只有 5 个硬编码 Option，而后端实际写入 25 种并支持精确过滤，用户「看得到行、筛不到项」。1 实现 agent + 1 独立复核 agent 并行；复核以独立 AST 对拍确认 25/25 集合相等，棘轮有牙，无 P0/P1。
+
+| 项 | 交付 | 文件 |
+|---|---|---|
+| 筛选控件 | 与同页 action 同构的 `mode="tags"` 单选：25 项按 9 域分组可点选，也可任意输入；视觉恒一个 tag，清空回退全部 | `pages/audit/index.tsx`、`pages/audit/resourceOptions.ts`（新） |
+| 深链 | `?resource=sop` 首屏请求即带 `resource=sop`；重置清空 | 同上 + `audit-page.test.tsx` |
+| 棘轮守卫 | AST 扫后端非 spec 源码 `resource: "<literal>"` 与前端分组字面量求差；实测后端 25 / 前端 25，新增写入未同步即红；含反永真与 3 条反证 | `audit-action-labels.test.ts` |
+
+**验收证据**：audit 三文件 **62/62 tests passed**；admin-web 全量 **351 files / 2871 passed / 1 skipped（2872）exit 0**。`npx tsc -b`、`lint:web`、`lint:i18n`、`check:size-caps`、`check-atlas-counts` 全绿；页面 nonCommentLines 561→556、functionLines 637→635，baseline 未改。独立复核 verdict：无阻断问题。验收为 jsdom 单测 + AST 静态守卫，未做真浏览器。
+
+**已知边界**：tags 模式下输入与选项同名 token 会有 React duplicate-key 控制台噪音，不影响功能；模板拼接/纯 `string` 透传的 resource 静态扫描抓不到，与 action 守卫同款局限。工作树中 `apps/admin-api` 实体/openapi/package lock 等改动不是本轮产物，本轮未触碰，commit/发布前需单独确认来源。此前的 P2 候选至此全部处理或核实等价实现。未提交、未 push。
+
+---
+
+## 本轮（2026-11-22）：Agent 会话工具调用结果可见性修复（未提交）
+
+**产品判断**：沿剩余候选修「工具调用复盘只见状态不见结果」：API 已有 `resultJson`/`resultTruncated`，UI 却完全不渲染，args/error 还被 `.slice(0,160)` 硬截断，与审批 preview 的诚实口径不对称。1 实现 agent + 1 独立复核 agent 并行；复核 P2 全清。主控全量复跑时发现**跨切片集成缺口**：`raw-enum-labels.ux06.test.ts` 只读 AgentSessionsPage 源，列定义外提后误报枚举回退，已按同文件 SopsPage 的 R151 先例改为拼接页面 + ToolColumns 两文件，断言一字未改。
+
+| 项 | 交付 | 文件 |
+|---|---|---|
+| 结果列 | 新增 `agents.col.result` 列，用 `ToolArgsView` 结构化展示 `resultJson`；`resultTruncated=true` 挂橙色「结果已截断」Tag；null/空对象如实显示「未记录结果（旧调用）」 | `pages/agent-sessions/ToolColumns.tsx`（新）、`pages/AgentSessionsPage.tsx` |
+| 长文本诚实 | args/error 从 `.slice(0,160)` 改为 `Paragraph rows:3 + expandable:'collapsible'`，全文常驻 DOM；error 保留 danger 色并有显式断言 | 同上 |
+| 体量棘轮 | toolColumns 整块外提，页面 1114→1074 行；baseline 未改 | 同上 |
+| 测试与文案 | 新增 3 组成对 i18n key；新增结果结构化/截断/旧调用兜底两例；枚举守卫读取路径同步 | `locales/{zh,en}.ts`、`agent-sessions-approvals.test.tsx`、`raw-enum-labels.ux06.test.ts` |
+
+**验收证据**：定向 AgentSessions 6 文件 **48/48**；主控补测 3 文件 **49/49**；admin-web 全量 **351 files / 2861 passed / 1 skipped（2862）exit 0**。`npx tsc -b`、`lint:web`、`lint:i18n`、`check:size-caps`、`check:atlas-counts`、`check:mutation-residue` 全绿。验证级别为 vitest/jsdom + 静态门禁；未做真实浏览器展开交互。独立复核最终 verdict：P0/P1/P2 全清。
+
+**工作树提示**：`apps/admin-api/package.json` 与三个 package-lock 的并行依赖改动不是本轮产物，本轮未触碰；commit/发布前需单独确认其来源。剩余候选：审计页 resource 筛选只有 5 个硬编码项（后端实际约 24 种）。
+
+未提交、未 push。
+
+---
+
+## 本轮（2026-11-22）：SOP 空正文草稿死锁修复（未提交）
+
+**产品判断**：沿上一批审计候选，优先修「空正文草稿一旦创建即死锁」：可建仅 slug/title 的草稿，发布按钮永久禁用，详情契约 Tab 只读，`sopsApi.updateDraft` 后端/client 已存在却零 UI 调用。1 实现 agent + 1 独立复核 agent 并行；复核抓出「只补正文/只改标题会被空 YAML 400」的 P2 真实路径，修复后才收口。
+
+| 项 | 交付 | 文件 |
+|---|---|---|
+| 草稿编辑入口 | 详情「契约」Tab 仅 `draft` 显示“编辑内容”；新 Modal 预填 title / frontMatterJson→YAML / body，提交走既有 `updateDraft`，成功后刷新详情+列表，发布门控随内容补齐变可用 | `pages/sops/EditDraftModal.tsx`（新）、`pages/SopsPage.tsx` |
+| 部分保存正确性 | 空 YAML 传 `undefined`（对齐 `createDraft` 的 `|| undefined`），后端不再 parse 空串 400；body 空串保留为显式清空语义 | `EditDraftModal.tsx` |
+| 文案与测试 | 4 个成对 i18n key；新增空草稿只补正文、非空 frontMatter 预填/清空、失败保留表单等用例 | `locales/{zh,en}.ts`、`__tests__/sops-publish-entry.test.tsx` |
+
+**验收证据**：实现 agent 定向 6 文件 **42 tests passed**（publish-entry 10/10）；独立复核再次实跑 6 文件 42/42、`tsc -b` 0、`check:size-caps` 0、baseline 未改，最终 verdict“无阻断问题”。SopsPage 体量反向下降：nonCommentLines 996→917、functionLines 1062→971。验证级别为 vitest + mock sopsApi 的内存替身级，未跑真浏览器。未提交、未 push。
+
+**剩余候选（已确证，未开工）**：Agent 会话工具调用结果/截断标记 UI 不可见；审计页 resource 筛选只有 5 个硬编码项（后端实际约 24 种）。
+
+---
+
+## 本轮（2026-11-22）：部署行危险操作确认门修复 + 下一批方向盘点（未提交）
+
+**产品判断**：3 个只读审计 agent 分域扫通知/审计、应用/注册中心、Agent/SOP，主控剔除已等价实现项后，优先修「点行内升级即触发设备 git pull + 重启」这一真实高危缺陷；1 实现 agent + 1 独立复核 agent 并行，复核发现的守卫盲区由主控补牙并做有牙反证。
+
+| 项 | 交付 | 文件 |
+|---|---|---|
+| 升级确认门 | 删除行内「升级」Button 的 `onClick`，升级只由 Popconfirm.onConfirm 触发；`actingId` 互斥、loading/disabled、后果文案均保留 | `apps/admin-web/src/pages/AppDeploymentPage.tsx` |
+| 删除后果 | 终态行删除 Popconfirm 增加 `description={t('appDeploy.op.deleteHint')}`，确认框内直接看到「只删平台记录、不影响执行器进程」 | 同上 |
+| 测试加固 | race/timer 两处改为「点按钮未发包 → 点确认恰好一次」；delete 测试断言确认框内含 deleteHint；危险操作守卫补“Button 不得带 onClick→handleUpgrade”静态判据 | `app-deployment-race.test.tsx`、`app-deployment-timer-stale-closure.test.tsx`、`app-deployment-delete-record.test.tsx`、`dangerous-action-consequences.test.ts` |
+
+**反证**：临时把升级 Button 的 `onClick={() => handleUpgrade(r.id)}` 放回，新增守卫立即转红（1 failed / 4 passed），还原后 5/5 绿；`check-mutation-residue` 扫 28 个未提交代码文件无高危残留。独立复核无 P0/P1；已实跑 16 个 app-deployment + dangerous-action 文件 56/56 通过。主控定向 4 文件 17/17 通过。
+
+**下一批候选（审计已确证，未开工）**：
+1. SOP 空正文草稿死锁：可创建仅 slug/title 的草稿，但 UI 无编辑已有草稿入口（`sopsApi.updateDraft` 后端/client 已就绪、零调用），发布永久禁用。优先做「草稿编辑入口 + updateDraft 接线」。
+2. Agent 会话工具调用结果不可见：`toolColumns` 无 `resultJson`/`resultTruncated` 列，入参/错误硬截断无展开，与审批 preview 的诚实口径不对称。
+3. 审计页 resource 筛选只有 5 个硬编码选项，后端实际写入约 24 种；用户看得到行却选不到筛选项。建议先做 mode=tags + 全集选项或新增 `/audit/resources`。
+已核实等价实现、不重复报：通知中心聚合、通知铃、审计动作人话化、应用详情部署历史、注册中心版本管理、Agent 会话回放。
+
+未提交、未 push。
+
+---
+
+## 本轮（2026-11-22）：任务详情两条关键路径的真浏览器验收（未提交）
+
+**产品判断**：上一轮的 Glue 守卫与 webhook 竞态修复虽已通过真实 data router 单测，但仍缺浏览器级见证。派 1 个实现 agent 写可复用真 Chrome 验收脚本、1 个独立复核 agent 审“判据是否有牙”；复核当场抓出 Webhook 陈旧 GET 释放时序存在**误绿窗口**，实现 agent 修复后才采信。全程未改产品源码/测试/i18n/文档。
+
+| 项 | 交付 | 文件 |
+|---|---|---|
+| 可复用浏览器验收 | 新增 `verify:task-detail-ux`：真 Chrome、1280×800、独立 context；拦截 `/api/*`，其余交 `ux-walkthrough` 夹具；失败非零退出并输出 JSON | `apps/admin-web/scripts/verify-task-detail-ux.mjs`、`apps/admin-web/package.json` |
+| 路径 A：Glue 未保存 | 切 Glue Tab → 真实语言 Select 触发 dirty → 点返回 → URL 不变 + 守卫 Modal → 留下/离开语义全部断言（13/13） | 同上脚本 |
+| 路径 B：Webhook 竞态 | 初始 disabled GET 真正结算 → enable 一次 → fresh enabled GET 结算 → **关 modal 后**才释放 stale disabled GET；断言响应顺序 `initial#1 → fresh#2 → stale#3`、stale 落地后仍「已启用」、无启用按钮、有轮换/停用；轮换只发 rotate（18/18） | 同上脚本 |
+
+**运行前置**：先 `VITE_API_URL_INTERNAL=/api npm run dev -- --host 127.0.0.1 --port 5176`，再 `npm run verify:task-detail-ux`。
+
+**验收证据**：Chrome `158.0.8127.36`；路径 A 13/13、路径 B 18/18，`pageerror=[]`；`POST enable=1`、`POST rotate=1`；fixture `responseEvents=[initial-disabled#1, fresh-enabled#2, stale-disabled#3]`。独立复核最终 verdict：P0/P1 均无，反证有牙；主控再跑一次 exit 0。未提交、未 push。
+
+---
+
+## 本轮（2026-11-22）：Glue 未保存脚本站内导航守卫 + 375px 真浏览器验证（未提交）
+
+**产品判断**：沿上一轮登记的剩余高痛点继续推进——Glue 脚本改了不保存，点「返回」/面包屑/「编辑」会静默丢改动，`beforeunload` 拦不住站内导航。1 个实现 agent + 1 个独立复核 agent 并行：实现按互不重叠写域落地，复核只读审 diff 并跑定向测试；主控额外用真 Chrome 对上一轮 375px 执行记录修复做浏览器级见证。
+
+| 项 | 交付 | 文件 |
+|---|---|---|
+| 站内/关闭统一守卫 | 新增 `TaskDetailUnsavedGuard`：`useBlocker(dirty)` + antd 确认 Modal + `beforeunload`；TaskDetailPage 的 loading/404/error/主渲染全部包进守卫，早退分支也不丢守卫；GlueEditor 仍 lazy，首屏 chunk 边界不变 | `pages/task-detail/TaskDetailUnsavedGuard.tsx`、`pages/TaskDetailPage.tsx` |
+| 文案 | 新增成对 i18n 键，明确是「Glue 脚本有未保存的修改」，非泛化「表单」 | `locales/zh.ts`、`locales/en.ts` |
+| 测试兼容 | 仅对渲染 TaskDetailPage 的存量测试补 `useBlocker` 桩，不放宽任何既有断言 | 10 个 task-detail 相关测试文件 |
+| 真实 data router 回归 | `createMemoryRouter`/`RouterProvider` 验证：dirty=false 直达；dirty=true 导航被拦、URL 保持、Modal 出现；「留下」保持、「离开」放行；保存后两类守卫都解除 | `__tests__/task-detail-glue-unsaved.test.tsx` |
+
+**验收证据**：定向 19 文件 / **145 tests passed**；admin-web 全量 **351 files / 2855 passed / 1 skipped（2856）exit 0**；`npx tsc -b`、`npm run lint:i18n`、`npm run check:size-caps`、`npm run check:atlas-counts`、`npm run lint:web`、`check:mutation-residue`、`npm run test:docs` 全 exit 0。真 Chrome 375×812（25 条夹具执行）：20 个勾选框可见、下一页可用、请求 `page=1→2`、勾选两条后「对比 (2)」出现、`pageerror=[]`、body 横溢 0（截图为临时文件，未入库）。
+
+**边界/后续**：`useSafeBlocker` 对普通 `MemoryRouter` 的“data router 必需”错误降级为 unblocked，仅为兼容存量测试；生产 `createBrowserRouter` 走真 `useBlocker`。独立复核无 P0/P1；P2 已登记：全量迁 data router 后删除该降级分支。未做真浏览器手工验证 Glue 守卫与 webhook secret 轮换，作为下一优先项。未提交、未 push。
+
+---
+
+## 本轮（2026-11-22）：四条用户可见缺陷修复（4 实现 agent + 3 审计 agent，未提交）
+
+**产品判断**：继续坚持「站在用户角度自己找方向」——先用 3 个只读审计 agent 按 CodeGraph 分域扫执行页、任务详情、产物/收件箱，主控逐条复核后剔除已等价实现项，锁定 4 条真实可修复缺陷；再派 4 个实现 agent 按**互不重叠写域**并行修复，agent 之间互发消息对齐 stale-response 守卫与错误提示写法。未改后端契约、未新增 i18n key、未提交、未 push。
+
+| 切片 | 用户价值 | 改动文件 |
+|---|---|---|
+| Webhook 写后状态竞态 | 启用/轮换成功后立即落 `enabled:true`，busy 保持到刷新 GET 落定；单调序号 + 任务身份双闸门丢弃晚到旧 GET，避免再次点击等价 rotate 让第一份 secret 失效 | `pages/task-detail/useTaskWebhookSecret.ts`、`__tests__/task-detail-webhook-busy.test.tsx` |
+| 版本列表跨任务旧响应 | `:id` 切换时清掉旧任务版本/勾选/diff；旧响应不得覆盖新任务页面，防止在不可逆回滚前读错版本 | `pages/task-detail/useTaskVersionRollback.ts`、`__tests__/task-version-list-read-failure.test.tsx` |
+| 产物下载/预览双 toast | 改用仓库既定 `showApiError`，client 已弹具体错误时不再补泛化提示；预览失败标题/描述不再同文案重复 | `pages/ArtifactsPage.tsx`、`components/ArtifactPreviewModal.tsx`、`__tests__/artifacts-page.test.tsx` |
+| 375px 执行记录卡片 | 卡片分支补 OFFSET 分页、首屏骨架（读失败不再闪现空态）、受控勾选接入执行对比；桌面 Table 语义不动 | `pages/ExecutionsPage.tsx`、`__tests__/mobile-ui09.test.tsx` |
+
+**验收证据**：定向 4 文件 **32/32 passed**；admin-web 全量 **350 files / 2853 passed / 1 skipped（2854）exit 0**；`npx tsc -b`、`npm run lint:i18n`、`npm run check:size-caps`、`npm run check:guards-wired`、`npm run check:mutation-residue` 全部 exit 0。未提交代码文件 9 个 + 本 handoff；`docs/PROJECT-STATUS.md` 的既有未提交改动不是本轮产生，未触碰。
+
+**证据级别与边界**：最高为 **单测/jsdom + 类型/守卫级**；没有做真 375px 浏览器与真后端 secret 轮换复核。待用户确认后，下一步优先补两条浏览器级见证：① 375px 分页/勾选/骨架；② webhook enable→secret 弹窗→刷新状态稳定后禁止重复轮换。前述两条审计残留的 Glue dirty 站内导航丢改动、预览 Modal 自身失败态未测，均登记为后续候选，本轮不扩面。
+
+---
+
+## 本次交接（R475 · 2026-11-22）：5 组提交完成（用户明确指令「提交」）
+
+**用户指令**：「提交」（resume goal 后执行）。按 R474 审计过的 5 组方案顺序 commit，仅本地提交、未 push（用户未授权 push）。提交前核实工作树 13 项、HEAD 未变（5h50m 间隔无并行会话干扰），提交前守卫链全绿。
+
+| # | commit | 范围 |
+|---|---|---|
+| 1 | `9fe38f87` fix(docs) | development.md CLI flag + 示例依赖注释两处用户可见 bug 修复 |
+| 2 | `1f40fcd4` test(demo) | demo.sh 三句承诺真跑验证 + selftest 五道守卫 |
+| 3 | `2edb6a67` test(guards) | CLI flag / 示例配置两守卫 + package.json CI 接线 |
+| 4 | `6f01828f` test(sdk) | SDK 集成冒烟测试 + atlas 计数同步 |
+| 5 | 本组 docs | 验收报告 + README/PROJECT-STATUS/handoff 收口 |
+
+**提交后状态**：13 项改动全部入库，工作树应为 0；本地 develop 领先 origin 若干提交，**未 push**。剩余方向仍依赖外部输入（生产样本/real token/真机/review_by/push 授权）。
+
+---
 
 ## 本次交接（R459 · 2026-11-22）：68 轮改动按主题分组提交（11 组 + docs 收尾，未 push）
 
@@ -24,6 +163,213 @@
 **提交后验证（HEAD 完整性）**：`git diff HEAD` 空；typecheck:all exit 0；全守卫链 exit 0；11 组累计 157 files / +20625 / −309；完整提交清单见 `git log a234863c..HEAD`。**未 push**（用户只要求提交；本地 develop 领先 origin/develop 180 个提交，push 需单独指令）。
 
 **过程诚实记录**：第 9 组首次提交信息里 `` `:prod` `` 的反引号在 bash 双引号中触发命令替换，导致 message 少了一段（"命令序列/ 复演/"）——用 `git commit --amend -F 文件` 修复。这与 R458 修的 demo.sh 是同一类 shell 陷阱，说明写提交信息也要防反引号。
+
+---
+## 本次交接（R474 · 2026-11-22）：提交方案可执行性审计 + 诚实的收口判断（到达外部依赖阻塞点）
+
+**本轮工作（提交前最后一道闸的审计）**：验证 R470 的 5 组提交方案是否真可执行——① 13 项改动被 5 组完整覆盖（组1 两处 bug 修复 / 组2 demo 验证 / 组3 两守卫+接线 / 组4 SDK 测试+atlas 同步 / 组5 文档收口），无遗漏无重复；② 关键跨文件依赖自洽——组3 package.json 引用的 check-cli-doc-flags/check-examples-code 均为同组新文件（各 2 处接线）、组4 SDK 测试触发的 atlas 数字同步在同组、组5 文档挂链/状态引用指向前序组文件；③ 所有新脚本 main guard（script-main-guard 绿）、新文档挂链（check-docs 绿）、CI 接线（guards-wired 105 守卫全可达）已分别验证。结论：**13 项改动处于"随时可按 5 组顺序提交"的交付就绪态**。
+
+**诚实的收口判断（重要，接手者/用户必读）**：objective「任务不停，自己找方向推进 + 流水线编排多 agent」已驱动 80 轮。本轮系统审视后确认——**所有 autonomous 可落地工作确已完成**：
+- 功能/指标线：TTFV/北极星/5 先行指标/健康度判定+采集，全部可复算 + 验证；
+- 验证线：demo 三句产品承诺真跑闭环、CLI flag/示例配置+代码/SDK 编程式集成/管线协议全覆盖；
+- 质量线：4 处并发 flake 清除、两轮独立 review + 修复、守卫加固、静态锚点假绿堵口；
+- 文档线：ROADMAP/PROJECT-STATUS/handoff/验收报告全同步；
+- 收口线：5 组提交方案可执行性已审计。
+
+**剩余方向全部依赖外部输入，不可通过"找方向"消解**：① 13 项改动提交需用户明确授权（House Rules 禁止主动 commit；R459 的指令仅针对已提交的上一批）；② 升主/W4/SOP 看板与巡检的价值验证需生产样本；③ D7 限流压测需真实 execution token/UUID fixture；④ Windows GUI 需真机；⑤ A2 Python 库处置需 review_by（2026-12-15）到期。无新外部输入时继续只会产生边际 churn——违背"站在产品角度"的实质精神。
+
+**给用户的明确决策点**：一句话「提交」→ 按 5 组顺序 commit（不 push）；或给出任一外部方向的环境/授权/输入。goal 已从 active 转为 blocked（本轮），等待外部输入后 resume。这是负责任的 PM 收口，不是放弃。
+
+**方法论沉淀**：① 交付的最后一步是让改动真正进入版本历史——提交方案从"纸面分组"到"可执行性审计"（覆盖/依赖/接线三重确认）才算交付就绪；② 区分"还能找到边际工作"与"还有真实价值工作"——前者永远能找到，后者在 80 轮后确已穷尽；承认阻塞点是诚实，不是失职；③ blocked 不是终止 mandate——外部输入到达后 resume 即可继续。
+
+---
+## 本次交接（R473 · 2026-11-22）：收口 review 剩余缺口——静态锚点假绿 + 退出码契约（多 agent + 集成期陷阱）
+
+**产品判断（自己找方向）**：R472 review 留了 4 个已知项未修，其中几个修法清晰、风险低，且就在待提交批次里——留着提交即技术债。趁未提交收口。先按 AGENTS 用 CodeGraph 确认现状，裁决：修 P2-3（静态锚点假绿——守卫本身防护有效性）、P3-2（退出码契约不符）；P3-3（cli-doc-flags 跨命令 flag 共享误绿）修复复杂、价值中等，修它引入守卫新 bug 的风险 > 收益，明确记为已知项不修；P2-2（instantiate 409）边缘场景亦不修。
+
+**交付（1 子 agent + 主 agent 集成，多 agent 编排延续）**：
+- **子 agent `r473-guard-hardening`**：① `scripts/demo.selftest.sh` —— R463 提取的内联脚本生成**去注释副本** `VERIFY_CODE`，R460/R461 六个锚点改为只在该副本 grep（注释里的字面串不再算绿），并新增 `assert_anchor` 要求每个锚点配套命中 `throw new Error`（断言无牙即死代码）；清理链同步覆盖临时文件。② `scripts/check-examples-code.mjs` 头注退出码契约改为与实现一致（方案 A，零行为改动）。
+- **反证（子 agent 两轮，主 agent 独立核验）**：反证 A 注释掉日志端点断言 → selftest 转红点名缺口、sha 逐字节还原（2dbd6626）复绿；**反证 B 更精准**——把原始错误断言整段移进注释（旧全文 grep 仍绿=假绿复现），新守卫转红，证明修复真正有效。
+
+**集成期踩坑并修复（主 agent）**：全守卫链一度 exit 1——`check-shell-multibyte-var` 抓到子 agent 新 fail 文案里 `$what：`/`$anchor」`/`$teeth」` 是"裸 $VAR 紧跟多字节字符"（macOS bash 3.2 非 UTF-8 locale 下变量名吞多字节首字节 → unbound variable）。用官方 `--fix` 加花括号（ `${what}` 等）修复，确认只改 4 处、无 yml 误改，守卫绿。
+
+**验收**：全守卫链 exit 0；demo selftest 0（三承诺去注释锚点 + R463 全绿）；check-examples-code 主跑+selftest 6/6 0；check:guards-wired 0（38/38、105 守卫全接线）；demo.sh sha 与基线一致（反证已还原）。
+
+**方法论沉淀**：① review 剩余缺口按"修法清晰+风险低+价值明确"二次筛选——守卫自身防护有效性（假绿）值得修，跨命令误绿这种"修守卫可能引入新 bug"的边缘则记录不修；② "锚点在注释里也能 Through"是静态守卫的典型假绿——解法是提取**去注释的可执行代码**再 grep，并要求配套 throw 证明有牙；③ shell 里 `$VAR` 紧跟中文/全角标点在多字节 locale 下会吞字节——变量一律 `${VAR}` 包裹是仓库硬约束（check-shell-multibyte-var 守卫），子 agent 写新文案易忽略，集成期守卫兜住；④ 官方 `--fix` 修完要核对 diff 范围（本轮确认只改 4 处），避免误改其它文件。
+
+**R470 提交分组方案仍有效**（5 组），本轮修复都落在原分组文件内（组2 demo.selftest、组3 examples-code），无需新增组。工作树 13 项未提交，按 House Rules 不主动 commit。剩余依赖外部（生产样本、真机、review_by、commit 授权）。goal 保持 active 遵守"任务不停"。
+
+---
+## 本次交接（R472 · 2026-11-22）：待提交批次独立代码审查 + 5 个真实缺口修复（多 agent 流水线）
+
+**产品判断（自己找方向）**：objective 核心精神"流水线编排多 agent"在 R467/R468 后弱化，且 R460–R469 这批 13 项未提交改动（含 demo.sh 111 行内联逻辑、3 个新守卫、SDK 测试）虽真栈验证过但**从无独立代码审查**。提交前做 review 是负责任的 PM 动作。派 2 个 review agent 并行审不同写域（r471 审 demo 脚本、r472 审守卫/SDK/docs），主 agent 集成裁决——践行多 agent 分工协作。
+
+**review 结论**：两 agent 均报**无 P0/P1**，但各自独立发现真实缺口。主 agent 逐条独立复核（不采信自述），修复其中 5 个 P2（修法清晰、风险低），记录其余为已知项：
+- **① SDK 测试 env 串扰假红（r472 P2-1，已实测复现）**：`withCleanEnv` 只保存不 *清空* env，外部注入 `ADMIN_API_URL` 即让"无凭据降级"case 假红（Expected false/Received true）——我在 R468 引入测试时的真实 bug。修：进 fn 前 delete 所有 ENV_KEYS。
+- **② SDK RESULT 空壳断言（r472 P2-2）**：records/result 全测试内硬编码自证。修：改用真实 `ctx.success()` + `ctx.logger.info()` 生成，断言 `result.output`/`result.logs`（结构化日志条目）。
+- **③ SDK 大小写不敏感未真测（r472 P3-1，顺带修）**：JSON 用大写键 `LIMIT/MODE`、小写 key 读，强制走 context.ts:378-381 分支。
+- **④ demo 失败分类假绿（r471 P2-1）**：`demo.sh:486` 检查 `reason==="UNKNOWN"` 大写，但后端枚举 `UNKNOWN="unknown"` 小写（entity:127），退化分类放行。修：`reason.toUpperCase()==="UNKNOWN"`。
+- **⑤ cli-doc-flags flagUses 无下界（r472 P2-3）**：flag 抽取全塌（正则失配/文档删空）→ flagUses=0 但命令数正常 → 静默绿。修：加 `MIN_FLAG_USES=15` + 结构红；反证（改 999）验证转红 exit 2。
+- **⑥ cli-doc-flags FLAG_RE 漏报（r472 P2-4）**：前瞻只认空白/行尾，漏 `--flag=value`（写错的也漏报）。修：前瞻放宽含 `=`/逗号/`)`/`;`。
+- **⑦ examples-code 扫 node_modules（r472 P2-5）**：开发者 npm install 后误报+分钟级负担。修：walkJs 跳过 node_modules/dist/coverage/.git。
+
+**已知项（未修，边际/修复复杂）**：r471 P2-2（instantiate 软删/并发 409 无恢复——常规重跑已实测通过，属边缘）；r471 P2-3（三承诺静态锚点是纯 grep，注释可满足——守卫的守卫假绿，修法复杂）；r472 P3-2（examples-code 头注承诺 exit 2 实现 exit 1）；r472 P3-3（cli-doc-flags 文件级 flag 共享跨命令误绿）。均不阻断提交。
+
+**验收（全量回归）**：SDK 6 suites / **151 tests**（+1 大小写用例）全绿，注入 env 仍 3/3（假红消除）；两守卫主跑+selftest（7/7、6/6）；demo selftest 0；全守卫链 0；admin-api 509 suites/8605 passed、admin-web 350 files/2847 passed 全 exit 0。反证有牙（flagUses 下界改 999→结构红、还原复绿）。
+
+**方法论沉淀**：① 提交前独立 review 能发现作者盲点——两个 agent 各自独立复现了我引入的真 bug（SDK env 串扰、demo UNKNOWN 大小写），自测全绿不等于无缺陷；② 多 agent 分工审不同写域（demo vs 守卫/SDK）无重叠、并行高效，主 agent 独立复核+裁决而非采信自述；③ review 发现按"修法清晰+风险低+价值明确"筛选修复，边际项如实记录为已知，不过度工程；④ 测试自身的健壮性（env 隔离、断言非空壳、下界反假绿）与被测代码同等重要——这批修复大半是"测试/守卫本身的缺陷"。
+
+**R470 提交分组方案仍有效**（5 组），本轮修复都落在原分组文件内（demo.sh→组2、两守卫→组3、SDK 测试→组4），无需新增组。工作树 13 项未提交，按 House Rules 不主动 commit。剩余依赖外部（生产样本、真机、review_by、commit 授权）。goal 保持 active 遵守"任务不停"。
+
+---
+## 本次交接（R470 · 2026-11-22）：待提交批次分组方案已就绪（R460–R469，一句指令可执行）
+
+**产品判断（自己找方向）**：objective 字面"任务不停"，但实质开发已闭环、剩余依赖外部。停止"确认穷尽"的空转，做一个有真实交付价值的 PM 动作——R459 用户曾明确指令"分组提交"那批 68 轮；此后 R460–R469 共 13 项改动（**含两个用户可见 bug 修复：CLI flag `--username`→`--user`、示例依赖注释 `@nut-tree/nut-js`→`canvas`**）一直未提交，用户下次拉取仍带 bug。把待提交批次整理成"一句指令即可执行"的分组方案，降低决策成本。本轮**不实际 commit**（House Rules：除非明确指令）。
+
+**13 项改动分组方案（按依赖顺序，仿 R459 11 组范式）**：
+
+| # | 建议 commit | 范围 | 依据 |
+|---|---|---|---|
+| 1 | `fix(docs): 两处用户可见的 onboarding 漂移修复` | `docs/development.md`（CLI flag）、`examples/desktop-automation/desktop_gui_automation.js`（依赖注释） | 两处独立 bug 修复、无依赖、最高优先级交付 |
+| 2 | `test(web): demo 三句产品承诺真跑验证 + 防复发守卫` | `scripts/demo.sh`、`scripts/demo.selftest.sh` | R458/460/461/463 同一文件族的验证+守卫，内聚 |
+| 3 | `test(guards): CLI flag / 示例配置一致性守卫` | `scripts/check-cli-doc-flags.mjs`、`scripts/check-examples-code.mjs`、`package.json`（三处接线） | R465/R467 两个新守卫 + 接线，互相独立但同属守卫层 |
+| 4 | `test(sdk): SDK 编程式集成冒烟测试 + 文档计数同步` | `packages/.../example-integration.test.ts`、`docs/atlas/07-testing/README.md` | R468 SDK 测试 + check-atlas-counts 触发的计数同步，强绑定 |
+| 5 | `docs: demo 真栈验收报告 + 状态同步` | `docs/plan/demo-first-experience-review.md`、`docs/README.md`、`docs/PROJECT-STATUS.md`、`docs/AGENT_HANDOFF.md` | R462/469 文档收口，放最后含最终 handoff |
+
+**批次一致性证据（R469 已验证）**：全守卫链 exit 0；admin-api 509 suites/8605 passed；admin-web 350 files/2847 passed；文档三守卫 exit 0。4 个新文件 + 9 个修改全部就位、无半成品。`package.json` 4 处接线（test:docs / check:cli-doc-flags / check:examples-code / chain）经 check:guards-wired 确认 CI 可达。
+
+**执行方式（需用户明确指令）**：用户说"提交"即按上表 5 组顺序 commit；**不 push**（本地 develop 领先 origin，push 需单独指令）。若要合并成 1 组或调整分组，给指令即可。
+
+**诚实的收口判断**：这是本轮唯一的实质动作——把"待交付"变成"待一句指令"。除此之外 objective 实质仍已闭环、剩余依赖外部（生产样本、真机、review_by、commit 授权）。goal 保持 active 遵守"任务不停"字面指令；无新外部输入时不制造低价值改动。
+
+---
+## 本次交接（R469 · 2026-11-22）：R460–R468 合并回归确认——可发布态证据刷新（验证级，无代码改动）
+
+**产品判断（自己找方向）**：先排查 MCP server 真跑覆盖——发现已有 `structured-content.e2e.test.ts`（真 McpServer+Client+tools/call 协议往返），非空白、不重复。连续多轮逐个真跑"未验证路径"，每条要么已有覆盖、要么已补齐（demo/CLI/示例/SDK/MCP 全覆盖）。转做一件有真实价值的收口：R454 之后 R460–R468 又改了 demo.sh（含 111 行内联逻辑）、package.json、3 个新守卫、SDK 集成测试、CLI/示例文档修复——**从没有一次合并的全守卫链+双端全量回归**。本轮补上，给这批改动可信的"可发布"证据。
+
+**交付（纯验证，无代码改动）**：
+- 全守卫链 `test:guards:chain` exit 0；
+- admin-api 全量 `509 suites / 8605 passed / 6 skipped` exit 0；
+- admin-web 全量 `350 files / 2847 passed / 1 skipped` exit 0；
+- 三项并行跑、互不干扰，结果都与 R454 基线一致（数字未变，说明 R460–R468 的脚本/文档/SDK 测试改动未引入运行时回归）。
+- PROJECT-STATUS §3 验证数字段口径更新为 R469（数字本身不变）。
+
+**集成前诚实核实**：R459 后曾出现并行会话迹象（admin-api 测试数 479→485 的文档同步）；本轮开工先核对 HEAD（仍是 R459 那批 5 个提交）+ 工作树（我的 R460–R468 共 13 项改动完整、4 个新文件 + 9 修改、demo 守卫 7 处全在），确认无并行会话破坏。
+
+**诚实的阶段性判断**：objective 已驱动 76 轮。核心用户路径验证已系统覆盖（demo 三句承诺真跑 R458/460/461、CLI flag R465、示例配置+代码 R467、SDK 编程式集成真跑 R468、MCP 已有协议往返测试），发布就绪证据本轮刷新到最新。**autonomous 可落地、不依赖外部条件的工作确已穷尽**——剩余全部依赖外部输入：生产样本（升主巡检/看板/指标价值）、真实 execution fixture（D7 压测）、review_by 到期（A2，12-15）、真机（Windows GUI）、用户授权（commit）。按 R435 方法论，无新外部输入时不制造低价值改动。goal 保持 active 遵守"任务不停"字面指令。
+
+**剩余方向（Non-goal until external input）**：升主/W4/SOP 指标接入看板+定时巡检（需生产数据）、D7 压测（需真 execution fixture）、A2（等 review_by）、Windows GUI 真机、commit（用户指令）。工作树 13 项未提交（R460–R469 成果），按 House Rules 不主动 commit。
+
+---
+## 本次交接（R468 · 2026-11-22）：SDK 编程式集成首次真跑 + 集成冒烟测试（真进程 + Jest 级）
+
+**产品判断（自己找方向）**：连续多轮在"验证已有产物"，本轮换到一条从没真验证过的核心路径——**SDK 编程式集成**（docs/sdk-guide.md + @autocodeflow/sdk）。r466 盘点曾指出 SDK 示例因包未构建无法离线跑。本轮把这条路径真正跑通并固化。
+
+**真跑证据（真实本地 node 进程）**：
+- SDK 本身健康：148 单测全过、tsup build 成功（CJS 31.74KB / ESM 29.64KB / DTS 25.73KB）。
+- 用本地构建 SDK + 临时 node_modules 符号链接 + 最小 env（EXECUTION_ID/TASK_ID/TASK_NAME + AUTOFLOW_PARAMS_JSON），真跑 `examples/callback-report-node/callback_report.js` → **exit 0**，`RESULT: {"success":true,"count":3,...,"callback_used":false}`——验证了"装了 SDK 后示例真能跑"，降级分支（无回调凭据不外发）正确。
+- 核实示例注释的 env 名（AUTOFLOW_ADMIN_API_URL/AUTOFLOW_CALLBACK_TOKEN）与 SDK fromEnv 源码一致（context.ts:239/241），非漂移。
+
+**交付（主 agent 亲自实现——集成测试契约清晰、串行依赖，AGENTS §4.1 例外）**：新增 `packages/autocodeflow-node-sdk/src/__tests__/example-integration.test.ts`（2 测试）——复现示例核心链（fromEnv → getParam → logger → http.enabled 降级判定 → RESULT），直接 import SDK 源码（ts-jest）、零 build、CI 的 `autocodeflow-node-sdk-test` job 会自动跑到。这覆盖了此前"SDK 单测绿 + 示例配置绿，但两者拼起来能否跑"的集成空白。
+
+**验收（真进程 + Jest 级）**：SDK 全套 6 suites / 150 tests 全过（原 148 + 新 2）；lint exit 0（仅既有 warning）；build exit 0；**反证有牙**（翻转 http.enabled 断言 → 测试转红 1 failed，还原 sha 一致 1f5d50bf、复绿）。集成期踩两个坑并修复：① lint 报三元表达式为 no-unused-expressions → 改 if/else；② `check-atlas-counts` 因新增第 6 个测试文件，文档 07-testing/README.md 写 5 超 5% 容差 → 用官方 `--update` 同步。
+
+**诚实记录（间隔期并行会话）**：`check-atlas-counts --update` 除同步 node-sdk 5→6，还同步了 admin-api（479→485 spec / 7713→7788 用例）、admin-web（339→341）——这些是 1h+ 间隔里**另一会话已提交**的测试增长造成的文档滞后（非本轮改动），数字经实测命令核对与文件系统一致。build 产出的 dist/ 被 gitignore，未污染工作树。
+
+**方法论沉淀**：① 核心用户路径要逐条真跑——SDK 编程式集成此前只有单测+配置守卫、无"拼起来能跑"的证据，手工真跑（exit 0 + RESULT）才坐实；② 集成测试优先放进目标包自己的 test 体系（CI 自动覆盖、零 build 时序风险），而非新起外部守卫引入构建依赖；③ 新增测试文件会触发文档计数守卫（check-atlas-counts）的连锁同步——用官方 --update 并核对数字真实性；④ 间隔期可能有并行会话改工作树（本轮两次遇到），集成前必须核实当前真实状态而非假设。
+
+**剩余方向**：SDK 编程式集成已真跑 + 集成测试固化。工作树现约 13 项未提交（R460–R468 成果 + 本轮 SDK 测试 + atlas 文档同步），按 House Rules 不主动 commit——如需提交请明确指令。其余依赖外部条件（生产样本、真机、review_by）。goal 保持 active 遵守"任务不停"。
+
+---
+## 本次交接（R467 · 2026-11-22）：示例依赖注释 bug 修复 + 代码/配置一致性守卫（子 agent 失败后主 agent 接管）
+
+**产品判断（自己找方向）**：前几轮在"文档对账"上做了同类工作（demo flag/CLI flag/task examples），本轮换性质——R290 的 7 个示例任务代码本身从无守卫（`check:task-examples` 只守 JSON 载荷）。先派只读盘点子 agent（r466）实证分类：① 真 bug——`desktop_gui_automation.js:4` 头注释写依赖 `@nut-tree/nut-js`，实际 `require('canvas')`（:11）、README:91 写 robotjs canvas，用户照注释装依赖会缺 canvas → MODULE_NOT_FOUND；② 3 个纯内置示例可离线真跑、4 个需 SDK/浏览器/桌面环境；③ entrypoint 存在性/runtime-扩展名匹配/JS 语法是确定可判的空缺。
+
+**交付（r466 盘点成功；实现子 agent r467 失败零落盘，主 agent 按 AGENTS §4.1 接管）**：
+- **① bug 修复**：`examples/desktop-automation/desktop_gui_automation.js:4` `@nut-tree/nut-js`→`canvas`（仅 1 行）。
+- **② 守卫** `scripts/check-examples-code.mjs`：三条确定判据——A 每个 task.example.json 的 entrypoint 文件真实存在；B runtime↔扩展名匹配（node→.js/python→.py）；C 所有 .js 过 node --check。5 条反假绿下界（json≥7/js≥7/entryChecks=json 数/事实源可读）。6 条 selftest 用内存坏样本直打 evaluate 判据。
+- **③ 接线**：package.json 加 `check:examples-code` + 接 `test:guards:chain`（check:task-examples 后）+ `test:docs`（CI 只调后者，满足 check:guards-wired 判据①）。
+
+**验收（静态守卫级）**：主 agent 亲自跑——守卫 0（7 配置 + 7 js 全过）、selftest 6/6、script 0、guards-wired 0（105 守卫全接线、新守卫自检两面都到）、全守卫链 exit 0。**反证有牙**：改坏 daily-report entrypoint → 守卫精确点名文件+路径 exit 1，还原 sha 一致（dfcb5eee）、复绿。集成期踩坑并修复：头注释 glob 里的 `*/` 提前闭合块注释导致语法错（改为散文描述），package.json 用 python json 重写经 diff 核对无格式噪音。
+
+**方法论沉淀**：① 示例的"配置"（JSON 载荷）和"代码"（.js 可执行性/路径）是两类资产——前者已有守卫、后者曾空白，用户照抄示例两类都会踩；② 依赖注释声明 vs 实际 require 的漂移靠人读发现（r466 盘点），做成通用守卫易脆弱，但本轮挑了更机械的 entrypoint/runtime/语法三条确定判据落地；③ glob 路径写进块注释要避开 `*/`（会提前闭合注释）——这是本轮自己踩的 shell/JS 语法陷阱；④ 实现子 agent 失败时先核对是否零落盘（本轮确认），再按 AGENTS §4.1 接管，契约已在任务书里写死则直接实现。
+
+**剩余方向**：示例配置+代码+CLI 文档+demo 全链路均已有守卫/真跑验证。工作树现 11 项未提交（R460–R467 成果），按 House Rules 不主动 commit——如需提交请明确指令。其余依赖外部条件（生产样本、真机、review_by）。goal 保持 active 遵守"任务不停"。
+
+---
+## 本次交接（R465 · 2026-11-22）：CLI 文档 flag 漂移修复 + 对账守卫——onboarding 第一步不再吃 unknown option（连续第 4 轮流水线）
+
+**产品判断（自己找方向）**：延续"核对首次体验路径"镜头——CLI 命令面持续变动（R278 弃用 --json/R289 补 --yes/NETOPT-2 补 --wait-timeout），但 quickstart/examples 文档里的 `acf ... --flag` 从无机器守卫。先派只读盘点子 agent（r464-cli-doc-audit）实证：onboarding 6 份文档 20 处命令 0 差异，但**范围外 development.md:217 发现真实漂移** `acf login --username`（实际是 `--user`，用户照做吃 unknown option exit 2）；并论证 flag 层守卫的必要性（已有 check-cli-doc 只判计数、check:task-examples 只判 JSON 载荷）。
+
+**交付（流水线：2 子 agent，连续第 4 轮成功）**：
+- **r464（只读盘点）**：逐条核对文档 flag ↔ 源码注册，输出差异清单 + 建守卫建议。
+- **r465（实现+接线）**：① 修 development.md:217 `--username→--user`（仅 1 行）；② 新建 `scripts/check-cli-doc-flags.mjs`——扫 6 份 onboarding 文档，事实源 index.ts + commands/*.ts 的 `new Command`/`.option`（长短名都收），白名单仅 commander 内置；5 条反假绿下界；7 条 selftest 真子进程；③ package.json 接线 `check:cli-doc-flags` + 接入守卫链 + `test:docs`（满足 check:guards-wired 判据①——CI 只调 test:docs）。
+
+**验收（静态守卫级）**：主 agent 独立核验（AGENTS §4.3）——bug 修复仅 1 行、守卫 exit 0、selftest 7/7、check:guards-wired 0（关键 CI 面判据成立）；反证（改回 --username→守卫转红点名 development.md:217，还原 sha 一致 cb2cdd1b）；确认 CI job(:866) 只调 test:docs，加进 test:docs 是必要非重复（CI 一次、本地全链两次无副作用）。文档三守卫、全守卫链 exit 0。
+
+**方法论沉淀**：① 配置有守卫、命令 flag 没守卫是常见盲区——check:task-examples 守示例 JSON、check-cli-doc 守命令计数，但 flag 层空着，文档漂移无人管；② 只读盘点先行再决定建守卫——r464 实证"范围内 0 差异但范围外 1 处真漂移"，避免盲目建守卫或无据跳过；③ 新守卫接线要满足 check:guards-wired 判据①（脚本名须在 CI run 展开可见）——CI 只调 test:docs 时，必须把守卫加进 test:docs，否则 chain 首轮红；④ 盘点要守住范围与诚实边界（r464 明确区分 6 份范围内 vs 8 份 examples、静态注册 vs 运行时行为）。
+
+**剩余方向**：CLI onboarding flag 已有对账守卫 + 一处真漂移修复。工作树现 9 项未提交（R460–R465 成果），按 House Rules 不主动 commit——如需提交请明确指令。其余依赖外部条件（生产样本、真机、review_by）。goal 保持 active 遵守"任务不停"；"核对首次体验路径 + 只读盘点先行"是再次证明有效的流水线模式。
+
+---
+## 本次交接（R463 · 2026-11-22）：内联 verify 脚本语法守卫——补 demo.selftest 覆盖盲区（连续第 2 轮流水线成功）
+
+**产品判断（自己找方向）**：先尝试两个方向均放弃——① demo 真跑日志里的 3 类 warn（LogStreamPusher 401/relay 广播失败/Misfire）核实后确认只出现在失败的 R459 首跑（容器重启噪声），成功路径为 0，价值低；②"10 分钟"墙钟计时需真跑且环境依赖，已有日志无总时长标记。转向一个具体可落地缺口：R458/R460/R461 反复改的 demo.sh 内联 verify Node 脚本（111 行 ESM）**只在真跑到最后才被解析**——一个语法错要等 build+seed 几分钟后才炸。demo.selftest 对独立 .mjs 都做 `node --check`，唯独这段内联脚本没有。
+
+**交付（流水线：1 子 agent + 主 agent 集成，连续第 2 轮成功）**：
+- **子 agent `r463-inline-syntax-guard`**：只改 `scripts/demo.selftest.sh`，加守卫——awk 提取内联 NODE heredoc 写成 .mjs 临时文件（mktemp + trap 清理）→ `node --check`（ESM/top-level await）；反假绿用 `[[ -s ]]`（提取为空必 fail，防"空文件语法检查通过"伪绿）。
+- **主 agent 集成（AGENTS §4.3 独立核验）**：确认 demo.sh sha 705497fb 与 R461 一致（反证逐字节还原）；审阅守卫块正确；亲自跑 selftest 全绿（新守卫输出 111 行）；核对 `trap - EXIT`（:34）在 STUB trap 设置（:44）之前、不冲突；`bash -n`、全守卫链 exit 0。
+
+**方法论沉淀**：① 内联脚本（heredoc）是覆盖盲区——独立 .mjs 有语法检查、内联的常被漏掉，反复改内联脚本后尤需补守卫；② 提取式守卫必须反假绿（提取为空 ⇒ fail），否则源结构变了会让检查静默通过；③ 子 agent 任务书写成"证据全给 + 零开放探查 + 明确写域"连续两轮成功（R462/R463）——近期失败根因确是开放探查阶段，objective 的多 agent 编排在适配任务书形态后稳定可用。
+
+**剩余方向**：demo.selftest 覆盖盲区已补（内联 verify 语法检查 + 三承诺静态锚点 + heredoc 反引号守卫）。本轮工作树仍 5 项未提交（R460-R463 成果），按 House Rules 不主动 commit——如需提交请明确指令。其余依赖外部条件（生产样本、真机、review_by）。goal 保持 active 遵守"任务不停"。
+
+---
+## 本次交接（R462 · 2026-11-22）：demo 首次体验验收报告归档 + 子 agent 编排能力恢复（文档级）
+
+**产品判断（自己找方向）**：连续四轮"逐句真跑产品承诺"已把 demo 三句引导语全部闭环，同镜头无新东西。转做 PM 该做的交付归档——把 R458/R460/R461 三次真跑证据固化成可交付文档；同时借此**验证子 agent 编排能力**（近期 R448–R461 子 agent 持续在探查阶段失败、我一直亲自接管，偏离 objective 的"流水线编排多 agent"核心要求）。
+
+**交付（流水线：1 子 agent + 主 agent 集成）**：
+- **子 agent `r462-demo-report`**：单一文档任务、证据全给、无需代码探查——新建 `docs/plan/demo-first-experience-review.md`（8 节：验收目标/真栈环境/三句承诺逐句证据/heredoc bug/3 守卫/幂等清理/边界声明/证据索引）。**子 agent 成功完成**——打破了 R448 之后连续失败的模式，objective 要求的多 agent 编排恢复可用。
+- **主 agent 集成**：按 AGENTS §4.3 不采信自述——独立审阅报告（8 节齐全、fenced 块带语言、验收级别诚实标注为"真进程内+容器级"而非冒充浏览器级）；发现 orphan（子 agent 写域不含 README），主 agent 挂链 README；文档三守卫 + 全守卫链全 exit 0。
+
+**方法论沉淀**：① 子 agent 连续失败的模式在"单一文档任务 + 证据全给 + 无需探查"下被打破——近期失败集中在探查阶段，把任务写成"直接执行、零开放探查"可显著提高成功率；② objective 的"流水线编排多 agent"要求主 agent 即使能亲自做，也要在合适切片（尤其独立交付物）上坚持派发——本轮证明编排能力没坏，只是任务书形态要适配；③ 验收级别诚实标注（真进程内+容器级 vs 浏览器/真机级标尺）是 AGENTS §4.4 底线，汇编报告不能拔高证据；④ 子 agent 写域边界（不含 README）导致 orphan 是预期的——集成期挂链是主 agent 固定动作。
+
+**剩余方向**：demo 三句承诺已真跑闭环 + 验收报告归档；子 agent 编排恢复。当前工作树 5 项未提交（AGENT_HANDOFF.md/demo.sh/demo.selftest.sh + 新报告 + README，均为 R460-R462 成果），按 House Rules 不主动 commit——如需提交请明确指令。其余依赖外部条件（生产样本、真机、review_by）。goal 保持 active 遵守"任务不停"。
+
+---
+## 本次交接（R461 · 2026-11-22）：demo 补齐「零代码模板路径」——三句产品承诺全部真跑闭环（提交后新增）
+
+**状态**：接续 R460，本轮改动同样在 R459 分组提交之后；当前工作树 3 项（demo.sh/demo.selftest.sh/handoff），均为 R460-R461 未提交成果。
+
+**产品判断（自己找方向）**：延续"逐句真跑产品承诺"镜头——demo 收尾 "Try next" 第 3 条 "Task templates → use template → run it (no code needed)" 是引导用户的关键动作，但核实发现 **demo-seed 完全不 seed 模板、verify 从不验证模板路径**——引导指向了一个可能没数据的功能。真实缺口。
+
+**交付（主 agent 亲自实现——串行强依赖的 demo.sh verify 改动，AGENTS §4.1 例外）**：`scripts/demo.sh` verify 加第三段——① 列官方模板找 `webhook_ping`（migration 1790000000060 预置、manual 触发、无 url 只预览 payload，安全必然成功）；② `POST /task-templates/:id/instantiate` 带裸 body `{name:"demo-from-template"}` 建任务（运行时收裸 overlay，name 防重：已存在则复用）；③ 触发新任务等 success。**零 seed 改动、零 summary 契约变动**。`scripts/demo.selftest.sh` 加静态守卫防回退。
+
+**真跑验收（浏览器/真机级）**：`./scripts/demo.sh` 完整 **exit 0（两次：首次 + --down 保留 volume 后重跑，验证幂等）**——三句承诺全绿：① success in 32ms；② failureReason=script_error + 日志原始错误；③ `template webhook_ping → task demo-from-template → success（零代码路径可用）`；seed 3/3+3/3。反证有牙（selftest 删模板断言→精确报错 exit 1）。test:demo-selftest（R458 heredoc + R460 失败诊断 + R461 模板三守卫）、全守卫链 exit 0。跑完 --down 清理：无残留容器、端口释放。
+
+**关键探查（CodeGraph + 源码）**：① instantiate 运行时收裸 overlay（service `overrides={...body}; delete templateId`），DTO 的 `overlay` 字段仅 Swagger 文档；② 系统有 5 个可运行官方模板（webhook_ping/health_check 等），无需 seed；③ 幂等靠 seed 快照含已建任务走复用分支，重跑 409 风险已实测排除。
+
+**方法论沉淀**：① 产品引导语指向的功能必须有真数据/真验证——"Try next" 第三条的模板路径此前是死路，逐句核对引导语能发现这类缺口；② 优先复用系统预置（官方模板）而非新增 seed 数据——改动面从"seed+契约+summary"缩到"verify 一段"，风险最低；③ demo 改动必须测幂等（--down 保留 volume 重跑）——首次绿不代表重复运行绿；④ 三句承诺各有独立 selftest 静态锚点（R458/R460/R461），防验证被逐步删回。
+
+**阶段性结论**：ROADMAP 核心承诺"10 分钟跑出第一个结果，并愿意交付第二件事"的三条落地路径（成功执行/失败诊断/零代码模板）现已全部真跑闭环 + selftest 防复发。本轮 3 项改动未提交（House Rules 不主动 commit）。剩余依赖外部条件（生产样本、真机、review_by、commit 指令）。goal 保持 active 遵守"任务不停"；"逐句真跑产品承诺 + 核对引导语指向"是三次证明有效的找方向镜头。
+
+---
+## 本次交接（R460 · 2026-11-22）：demo 补齐「失败可诊断」验证——产品承诺后半句真跑闭环（提交后新增）
+
+**状态背景（重要）**：本轮开始前 1h26m 间隔里，R459 会话已按用户明确指令把此前 68 轮改动分 11 组提交（工作树曾清空，本地 develop 领先 origin/develop 180 提交，未 push）。本轮改动发生在 R459 提交**之后**，当前工作树仅 2 项未提交：`scripts/demo.sh` + `scripts/demo.selftest.sh`——即本轮成果，与已提交内容无冲突。
+
+**产品判断（自己找方向）**：R458 真跑 demo 只验了核心承诺前半句"第一个结果"。后半句"愿意把第二件事交给它"依赖**失败能被诊断**——demo seed 了 demo-fragile 声称"产生失败样本供详情页/失败分类演示"，但 verify 从不检查失败是否可解释。本轮补这段验证并真跑。
+
+**交付（主 agent 亲自实现——串行强依赖的 demo.sh 内联验证脚本改动，AGENTS §4.1 例外）**：`scripts/demo.sh` verify 内联 Node 脚本重构——`triggerAndWait` helper 复用轮询；① demo-hello-fixed → success（前半句）；② demo-fragile → failed + `failureReason` 有效 + **日志端点** `GET /tasks/executions/:id/logs` 的 lines 含原始错误 "demo intentional failure"（后半句）。`scripts/demo.selftest.sh` 加静态守卫确保这段不被删回"只验 success"。
+
+**关键发现（踩坑纠正，非产品 bug）**：首版断言"errorMessage 含原始错误"→真跑红，实测 errorMessage 是壳信息"进程以退出码 1 结束"。CodeGraph 探查确认这是**既有设计**（`execute.ts describeProcessExit` 故意保留壳文案；`ExecutionListItemDto` 按 PERF-03 排除 logs；原始错误在日志端点，`execution-events.listener` 有 falls-back-to-log 语义）。修正断言打在正确诊断链（failureReason 分类 + 日志端点原始错误）——不是产品缺陷，是我对字段语义的假设错了。真跑 + CodeGraph 交叉验证纠正了假设。
+
+**真跑验收（浏览器/真机级）**：`./scripts/demo.sh` 完整 exit 0——① success in 32ms；② `failureReason=script_error` + 日志含原始错误 ✓；seed 3/3 task + 3/3 SOP。跑完 --down 清理：无残留容器、端口释放。反证有牙（selftest 删原始错误断言 → 精确报错 exit 1）。test:demo-selftest（含 R458 heredoc + R460 失败诊断守卫）、全守卫链 exit 0。
+
+**方法论沉淀**：① 产品承诺逐句验证——"第一个结果"与"愿意交付第二件事"是两句，后者靠失败可诊断兑现；② 字段语义先探查再断言——errorMessage 是退出摘要、原始错误在 logs，凭直觉写断言会假红；③ 真栈的"红"先分清产品缺陷 vs 测试假设错——本轮是后者，未误改产品代码；④ 每次真跑发现的验证缺口加 selftest 静态锚点防回退。
+
+**剩余方向**：demo 核心承诺两句均已真跑闭环（R458 前半 + R460 后半）。本轮 2 项改动尚未提交——按 House Rules 不主动 commit；如需纳入提交请明确指令。goal 保持 active 遵守"任务不停"；"逐句真跑产品承诺"是继 R458 后再次证明有效的找方向镜头。
 
 ---
 ## 本次交接（R458 · 2026-11-22）：真跑产品核心 demo + 修复 heredoc 命令替换 bug（真栈最高级）

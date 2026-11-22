@@ -30,7 +30,12 @@ export class User {
   @Exclude()
   password: string;
 
-  @Column({ type: "enum", enum: UserRole, default: UserRole.USER })
+  @Column({
+    type: "enum",
+    enum: UserRole,
+    enumName: "user_role_enum",
+    default: UserRole.USER,
+  })
   role: UserRole;
 
   @Column({ default: true })
@@ -70,7 +75,7 @@ export class User {
    *
    * 漏一处的后果：`totpVerify(undefined, ...)` ⇒ 登录 2FA **恒失败**（不是绕过，是拒绝服务）。
    */
-  @Column({ nullable: true, type: "varchar", length: 64, select: false })
+  @Column({ nullable: true, type: "varchar", select: false })
   @Exclude()
   totpSecret: string | null;
 

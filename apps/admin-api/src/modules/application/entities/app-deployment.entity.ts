@@ -103,7 +103,12 @@ export class AppDeployment {
   })
   status: DeploymentStatus;
 
-  @Column({ type: "enum", enum: RunMode, default: RunMode.DAEMON })
+  @Column({
+    type: "enum",
+    enum: RunMode,
+    enumName: "app_deployments_run_mode_enum",
+    default: RunMode.DAEMON,
+  })
   runMode: RunMode;
 
   /** Git commit that is currently deployed */
@@ -129,7 +134,8 @@ export class AppDeployment {
   @Column({ nullable: true }) deployedAt: Date | null;
 
   /** DEP-02/DEP-03：灰度批次推进状态（迁移 1790000000001）。NULL=非批次路径。 */
-  @Column({ type: "varchar", nullable: true }) rolloutState: string | null;
+  @Column({ type: "varchar", length: 32, nullable: true }) rolloutState:
+    string | null;
 
   /** DEP-02/DEP-03：批次元数据 { batchId, role, strategy, percentage,
    *  upgradedIds, failureReason?, rolledBackTo? }。 */
@@ -148,7 +154,8 @@ export class AppDeployment {
   rolloutBatchClaimId: string | null;
 
   /** DEP-04：审批推进状态（迁移 1790000000002）。NULL=非审批路径。 */
-  @Column({ type: "varchar", nullable: true }) approvalStatus: string | null;
+  @Column({ type: "varchar", length: 32, nullable: true }) approvalStatus:
+    string | null;
 
   /** DEP-04：审批痕迹 { requestedBy, requestedByName, requestedAt,
    *  actedBy?, actedByName?, actedAt?, reason? }。 */
@@ -157,11 +164,13 @@ export class AppDeployment {
 
   /** FEAT-20（迁移 1790000000004）：触发动作语义——manual/upgrade/rollback/
    *  approval（DeploymentTriggerType）。NULL = 存量行未标注，前端已兼容。 */
-  @Column({ type: "varchar", nullable: true }) triggerType: string | null;
+  @Column({ type: "varchar", length: 32, nullable: true }) triggerType:
+    string | null;
 
   /** FEAT-20：触发操作人用户名（JWT user.username）。
    *  NULL = 存量行/机器路径（心跳等）未标注。 */
-  @Column({ type: "varchar", nullable: true }) operator: string | null;
+  @Column({ type: "varchar", length: 100, nullable: true }) operator:
+    string | null;
 
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;
@@ -171,5 +180,5 @@ export class AppDeployment {
    *  自动追加 `AND version = :expected`，并发后写撞版本抛
    *  OptimisticLockVersionMismatchError → service 转 409。心跳走独立
    *  条件 UPDATE（不 bump version），避免每次心跳都与用户动作互撞。 */
-  @VersionColumn() version: number;
+  @VersionColumn({ default: 1 }) version: number;
 }

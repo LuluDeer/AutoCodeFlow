@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense } from 'react';
+import { useState, lazy, Suspense, type ReactNode } from 'react';
 import { Card,
   Descriptions,
   Tag,
@@ -100,6 +100,7 @@ import { useTaskVersionRollback } from './task-detail/useTaskVersionRollback';
 // 在别的端点上），故与相邻的「版本历史」按钮同级：**不加** `isAdmin` 门控、
 // **不包** `adminOnly` Tooltip。加了反而会让非管理员看得到任务却导不出它。
 import { useTaskDefinitionExport } from './task-detail/useTaskDefinitionExport';
+import TaskDetailUnsavedGuard from './task-detail/TaskDetailUnsavedGuard';
 // R6（同一债轴的**第二形态**）：版本历史抽屉的视图模型（列定义 + diff 键值行）外提，
 // 纯声明 + 依赖全显式参数，照 `pages/task-list-columns.tsx` 的先例；**不进任何 hook**
 // （hook 只管数据与请求）——判断见新文件头注与 `useTaskVersionRollback` 的「刻意未搬」。
@@ -281,16 +282,9 @@ export default function TaskDetailPage() {
   const [tplModalOpen, setTplModalOpen] = useState(false);
   const [tplForm] = Form.useForm<{ name: string; description?: string; category?: string }>();
   const [tplSaving, setTplSaving] = useState(false);
-  // GLUE-DIRTY-01：Glue 脚本编辑器有未保存改动时拦截浏览器关闭/刷新——
-  // 详情页没有表单 dirty 语义，beforeunload 是唯一守卫层。
+  // GLUE-DIRTY-NAV：dirty 统一交给守卫组件（站内 useBlocker + beforeunload）。
   const [glueDirty, setGlueDirty] = useState(false);
-
-  useEffect(() => {
-    if (!glueDirty) return;
-    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [glueDirty]);
+  const withGuard = (node: ReactNode) => <TaskDetailUnsavedGuard dirty={glueDirty}>{node}</TaskDetailUnsavedGuard>;
 
   const taskStatusLabels = TASK_STATUS_LABEL(t);
 
@@ -335,7 +329,7 @@ export default function TaskDetailPage() {
   // R6 刀 4：整个子域（8 state + 3 handler + 1 effect）已迁到
   // pages/task-detail/useTaskVersionRollback.ts（纯搬移，页面只做解构）。
   // ⚠️ 调用点**刻意停在这里**（不与其他子域 hook 归拢到文件头）：本 hook 内含
-  // 一个 effect，挪到文件头会让它跑到 glueDirty 的 beforeunload 之前 —— 首帧两者
+  // 一个 effect，挪到文件头会让它跑到 glueDirty 守卫的 beforeunload 之前 —— 首帧两者
   // 都空转，但「副作用顺序变了」是拆分不该引入的风险面。`refreshTask` 是本页
   // （Facade）持有、跨四个域共享的失效函数，**注入**给它而非塞进 hook（理由见该
   // 文件头注「Facade 持共享、协作者拿引用」）。
@@ -442,20 +436,20 @@ export default function TaskDetailPage() {
   const { nameOf } = useExecutorNames();
 
   // UI-08：首屏骨架屏替代裸 Spin
-  if (taskLoading && !task) return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
+  if (taskLoading && !task) return withGuard(<PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />);
   // U7: 请求失败 ≠ 任务不存在——错误态给重试入口，数据确空才显示 Empty
   if (!task && taskError) {
     // F-41（UIUX 审计 P1-2）：确定性 404（id 不存在/已删除）与 5xx 分流——
     // 404 走「任务不存在」空态（复用下方 notFound 组件与出口；重试不可能
     // 成功，不该渲染「加载失败 + 重试」）；5xx/网络错误维持错误态 + 重试。
     if (isNotFoundError(taskError)) {
-      return (
+      return withGuard(
         <Empty description={t('taskDetail.notFound')} style={{ padding: 80 }}>
           <Button onClick={() => nav('/tasks')}>{t('taskDetail.backToList')}</Button>
         </Empty>
       );
     }
-    return (
+    return withGuard(
       <Result
         status="error"
         title={t('taskDetail.loadErrorTitle')}
@@ -472,7 +466,7 @@ export default function TaskDetailPage() {
   if (!task) {
     // 排查清单 #4：任务不存在（id 非法/已在别处删除且查询被禁用）时不能只给一句
     // Empty——补「回任务列表」出口，避免报错死胡同（上方 error 分支已有同款出口）。
-    return (
+    return withGuard(
       <Empty description={t('taskDetail.notFound')} style={{ padding: 80 }}>
         <Button onClick={() => nav('/tasks')}>{t('taskDetail.backToList')}</Button>
       </Empty>
@@ -530,7 +524,7 @@ export default function TaskDetailPage() {
     }
   };
 
-  return (
+  return withGuard(
     <div>
       <Space style={{ marginBottom: 16 }}>
         <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/tasks')}>{t('taskDetail.back')}</Button>

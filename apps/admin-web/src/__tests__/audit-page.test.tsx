@@ -63,12 +63,12 @@ const makeLog = (over: Record<string, unknown>) => ({
   ...over,
 });
 
-function renderPage() {
+function renderPage(entries: string[] = ['/']) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // AUDIT-03：资源ID 列改用 react-router <Link> 跳转详情页 → 渲染需 Router 上下文
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={entries}>
         <AuditLogPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -126,6 +126,38 @@ function clearActionDraft() {
   expect(remove, '未找到 action tag 的移除按钮').toBeTruthy();
   // antd 6 的 tag 移除走 onClick（mouseDown 不会触发移除）
   fireEvent.click(remove!);
+}
+
+/**
+ * resource 过滤器（tags 模式 Select）的根节点。
+ *
+ * 页面现在有两个 `.ant-select-multiple`（action/resource 各一个，按 DOM 顺序），
+ * action 由 actionSelect() 取第 1 个，resource 取第 2 个。不用 placeholder 反查——
+ * 一旦选中 tag，placeholder 文案就消失，锚点会失效。
+ */
+function resourceSelect(): HTMLElement {
+  const root = document.querySelectorAll('.ant-select-multiple')[1] as HTMLElement | undefined;
+  expect(root, '未找到 resource 过滤器（tags 模式 Select）').toBeTruthy();
+  return root!;
+}
+
+/** 往 resource 过滤器里自由输入一个 token 并回车成 tag。 */
+async function typeResourceToken(value: string) {
+  const input = resourceSelect().querySelector('input') as HTMLInputElement;
+  fireEvent.change(input, { target: { value } });
+  fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', keyCode: 13 });
+  // React 自动批处理下必须等一拍再做下一次输入：否则连续两次 change 会基于同一份
+  // 未刷新的内部 state，第二次回车提交的仍是第一个 token。
+  await waitFor(() => {
+    const tags = Array.from(resourceSelect().querySelectorAll('.ant-select-selection-item'));
+    expect(tags.some((t) => (t.textContent ?? '').trim() === value)).toBe(true);
+  });
+}
+
+/** 输入缩小范围后，从下拉里点选一个已知 resource（tags 模式下新建项与清单项同名，取后者）。 */
+async function pickResourceOption(text: string) {
+  const options = await screen.findAllByText(text, { selector: '.ant-select-item-option-content' });
+  fireEvent.click(options[options.length - 1]);
 }
 
 beforeEach(() => {
@@ -234,17 +266,72 @@ describe('AuditLogPage 筛选链路（QA-03）', () => {
     });
   });
 
-  it('资源类型下拉选择后查询串携带 resource 参数', async () => {
+  it('资源类型选择后查询串携带 resource 参数', async () => {
     renderPage();
     await screen.findByText('创建任务');
 
-    fireEvent.mouseDown(screen.getByText('资源类型'));
-    const option = await screen.findByText('executor', { selector: '.ant-select-item-option-content' });
-    fireEvent.click(option);
+    await typeResourceToken('executor');
     fireEvent.click(findBtn(document.body, '搜索')!);
 
     await waitFor(() => {
       expect(lastAuditQuery()).toContain('resource=executor');
+    });
+  });
+});
+
+describe('审计 resource 筛选（完整清单 + 任意 token + 深链）', () => {
+  it('?resource=sop 深链：首屏请求即带 resource=sop（无需点选）', async () => {
+    renderPage(['/?resource=sop']);
+    await waitFor(() => {
+      expect(lastAuditQuery()).toContain('resource=sop');
+    });
+  });
+
+  it('tags 自由输入自定义 resource（不在清单里）也能进查询', async () => {
+    renderPage();
+    await screen.findByText('创建任务');
+
+    await typeResourceToken('custom_thing');
+    fireEvent.click(findBtn(document.body, '搜索')!);
+    await waitFor(() => {
+      expect(lastAuditQuery()).toContain('resource=custom_thing');
+    });
+  });
+
+  it('从完整清单点选 resource（分组 option 可见）', async () => {
+    renderPage();
+    await screen.findByText('创建任务');
+
+    // 25 个分组 option 在 jsdom 下受 rc-virtual-list 可视区限制，先输入缩小范围再点选
+    const input = resourceSelect().querySelector('input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'registry' } });
+    fireEvent.mouseDown(resourceSelect());
+    await pickResourceOption('registry');
+    fireEvent.click(findBtn(document.body, '搜索')!);
+
+    await waitFor(() => {
+      expect(lastAuditQuery()).toContain('resource=registry');
+    });
+  });
+
+  it('再选一个 resource = 替换（单选语义）：界面只留一个 tag，查询串只带最后一个', async () => {
+    renderPage();
+    await screen.findByText('创建任务');
+
+    await typeResourceToken('sop');
+    // 第二次从选项里点选：浮层展开时回车会解释为「选中高亮项」而非「提交输入文本」，
+    // 点选才是「已有值时再选一个」的真实用户手势。
+    const input = resourceSelect().querySelector('input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'api_key' } });
+    fireEvent.mouseDown(resourceSelect());
+    await pickResourceOption('api_key');
+    expect(resourceSelect().querySelectorAll('.ant-select-selection-item')).toHaveLength(1);
+
+    fireEvent.click(findBtn(document.body, '搜索')!);
+    await waitFor(() => {
+      const qs = lastAuditQuery();
+      expect(qs).toContain('resource=api_key');
+      expect(qs).not.toContain('resource=sop');
     });
   });
 });
@@ -295,9 +382,7 @@ describe('AUTH-05 资源ID 筛选', () => {
     renderPage();
     await screen.findByText('创建任务');
 
-    fireEvent.mouseDown(screen.getByText('资源类型'));
-    const option = await screen.findByText('executor', { selector: '.ant-select-item-option-content' });
-    fireEvent.click(option);
+    await typeResourceToken('executor');
     fireEvent.change(screen.getByPlaceholderText('资源 ID'), { target: { value: 'e-42' } });
     fireEvent.click(findBtn(document.body, '搜索')!);
 

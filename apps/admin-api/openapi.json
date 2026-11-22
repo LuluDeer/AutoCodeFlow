@@ -4926,6 +4926,13 @@
       },
       "ExecutionListItemDto": {
         "properties": {
+          "agentSessionId": {
+            "description": "该执行由哪个 Agent 会话触发（Agent 触发路径可空）",
+            "format": "uuid",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Which Agent session triggered this execution (nullable for non-Agent triggers)"
+          },
           "aiAnalysis": {
             "description": "列表/统计读取会排除该列（PERF-03）",
             "nullable": true,
@@ -5192,6 +5199,7 @@
           "exitCode",
           "artifacts",
           "triggerType",
+          "agentSessionId",
           "taskVersion",
           "traceId",
           "resolvedPackageUrl",
@@ -8380,10 +8388,6 @@
         ],
         "type": "object"
       },
-      "Object": {
-        "properties": {},
-        "type": "object"
-      },
       "OidcStatusResponseDto": {
         "properties": {
           "enabled": {
@@ -10677,6 +10681,13 @@
       },
       "TaskExecutionResponseDto": {
         "properties": {
+          "agentSessionId": {
+            "description": "该执行由哪个 Agent 会话触发（Agent 触发路径可空）",
+            "format": "uuid",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Which Agent session triggered this execution (nullable for non-Agent triggers)"
+          },
           "aiAnalysis": {
             "description": "AI 失败分析文本（空字符串 = 无分析）",
             "nullable": true,
@@ -10946,6 +10957,7 @@
           "aiAnalysis",
           "artifacts",
           "triggerType",
+          "agentSessionId",
           "taskVersion",
           "traceId",
           "resolvedPackageUrl",
@@ -16456,13 +16468,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -16470,13 +16478,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -16673,13 +16677,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -16687,13 +16687,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -17651,13 +17647,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -17665,13 +17657,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -17776,13 +17764,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -17790,13 +17774,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -18544,13 +18524,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -18558,13 +18534,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -20131,13 +20103,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             },
             "x-i18n-en": "Page number"
           },
@@ -20147,13 +20115,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             },
             "x-i18n-en": "Items per page"
           },
@@ -23104,13 +23068,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             },
             "x-i18n-en": "Page number, default 1"
           },
@@ -23120,13 +23080,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             },
             "x-i18n-en": "Number of items per page, default 20"
           },
@@ -23743,13 +23699,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -23757,13 +23709,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -24547,13 +24495,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             },
             "x-i18n-en": "Page number"
           },
@@ -24562,13 +24506,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {
@@ -25816,13 +25756,9 @@
             "name": "page",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 1,
-              "maximum": 10000
+              "maximum": 10000,
+              "type": "object"
             }
           },
           {
@@ -25830,13 +25766,9 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Object"
-                }
-              ],
               "default": 20,
-              "maximum": 100
+              "maximum": 100,
+              "type": "object"
             }
           },
           {

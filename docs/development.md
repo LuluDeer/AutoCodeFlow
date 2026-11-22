@@ -214,7 +214,7 @@ npm run build
 npm link                   # 全局安装到本地
 
 # 使用
-acf login --url http://localhost:3105 --username admin
+acf login --url http://localhost:3105 --user admin
 acf task list
 acf task trigger <taskId>
 ```

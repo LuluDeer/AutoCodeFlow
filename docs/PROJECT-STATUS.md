@@ -1,16 +1,16 @@
-# 项目状态总览（R290–R457 收口快照）
+# 项目状态总览（R290–R475 收口快照）
 
 > **受众**：接手维护者 / 发布决策者 · **状态**：内部 · **最后核对**：2026-11-22
-> 一页看懂这批改动的整体状态：68 轮交付地图、当前验证数字、已知未决项、发布与接手指引。本文是阶段性快照，不替代各专项文档。**R459 已按主题分 11 组提交（a234863c..HEAD，157 files / +20625 / −309），未 push。**
+> 一页看懂这批改动的整体状态：73 轮交付地图、当前验证数字、已知未决项、发布与接手指引。本文是阶段性快照，不替代各专项文档。**R459 按主题分 11 组提交（157 files）；R475 追加 5 组提交（demo 验证/两守卫/SDK 测试/文档收口）；工作树干净，本地 develop 领先 origin/develop 5 提交，未 push。**
 > **数字口径**：轮次/项数均由命令实测（`git status --short | wc -l`、`ls docs/plan/*.md | wc -l`），不手写估计——历史快照的手写值曾漂移，本版已按实测校正。
 
 ---
 
 ## 1. 一句话状态
 
-当前 `develop` 已提交 **R290–R457 共 68 轮改动**（R459 按主题分 11 组入库；含 2 个新迁移、11 个新脚本、24 篇 plan 文档；工作树干净）。整批在「admin-api/admin-web 全量测试 + 全守卫链 + typecheck 8 端 + 迁移 up/幂等/down 全链（dev 与 :prod 双路径真机复演）+ 北极星健康自检 + **真浏览器+真后端端到端**」下全绿，**处于可发布态**；R459 已按主题分组提交（未 push）。R436/R437 补上最后一层覆盖（看板与生产启用路径真栈端到端）；R439 把两个真栈 e2e 接入 CI；R440/R441 空库复演 CI 精确序列与 `:prod` 迁移路径（无 dev/prod 分叉）。R442–R452 清掉全量回归的 4 处并发 flake、拍板升主三阈值并贯通脚本→API→看板→真栈回归闸、补齐 W4 留存与 SOP 成功率/接管率两个 ROADMAP 先行指标。R453–R457 把指标脚本 selftest 接入 CI、新建先行指标健康度判定（`evaluateHealth`，无样本不算达标）+ 一条命令采集入口（`metrics-health-collect`）。**至此 ROADMAP 先行指标全部有可复算实现或明确放弃结论，autonomous 可落地的产品工作已穷尽——剩余全部依赖外部输入。**
+当前 `develop` 已提交 **R290–R475 共 73 轮改动**（R459 按主题分 11 组入库 + R475 追加 5 组；含 2 个新迁移、13 个新脚本、25 篇 plan 文档；工作树干净）。整批在「admin-api/admin-web 全量测试 + 全守卫链 + typecheck 8 端 + 迁移 up/幂等/down 全链（dev 与 :prod 双路径真机复演）+ 北极星健康自检 + **真浏览器+真后端端到端**」下全绿，**处于可发布态**；R459/R475 已按主题分组提交（本地领先 origin 5 提交，未 push）。R458–R475 补齐 demo 三句产品承诺真跑验证（成功执行/失败可诊断/零代码模板）、CLI flag 与示例配置一致性守卫、SDK 编程式集成冒烟测试，并经两轮独立 review 修复 7+ 真实缺口。R436/R437 补上最后一层覆盖（看板与生产启用路径真栈端到端）；R439 把两个真栈 e2e 接入 CI；R440/R441 空库复演 CI 精确序列与 `:prod` 迁移路径（无 dev/prod 分叉）。R442–R452 清掉全量回归的 4 处并发 flake、拍板升主三阈值并贯通脚本→API→看板→真栈回归闸、补齐 W4 留存与 SOP 成功率/接管率两个 ROADMAP 先行指标。R453–R457 把指标脚本 selftest 接入 CI、新建先行指标健康度判定（`evaluateHealth`，无样本不算达标）+ 一条命令采集入口（`metrics-health-collect`）。**至此 ROADMAP 先行指标全部有可复算实现或明确放弃结论，autonomous 可落地的产品工作已穷尽——剩余全部依赖外部输入。**
 
-## 2. 68 轮交付地图
+## 2. 73 轮交付地图
 
 按产品线分组，不逐轮流水账。验收级别按仓库四级口径：静态探查 < 单测/内存替身 < 真实进程内集成 < 浏览器/真机。
 
@@ -22,22 +22,27 @@
 | **CI 防复发线** | R314 / R433–R434 / R439–R441 | CI 迁移闸本地复现；[迁移 roundtrip 报告](plan/migration-roundtrip-review.md)；[CI revert drill 常态化报告](plan/ci-revert-always-review.md)——revert 去 `if: schedule` 改每 PR 跑 + 加副作用断言（`grep DELETE/DROP`，防空 `down()` 假绿）；R439 新增 `north-star-real-e2e` job 把 R436/R437 两个真栈 spec 接入 CI（此前 CI 零引用、从不自动跑），[接入验收](plan/ci-realstack-e2e-review.md)；R440 [空库→迁移→两 spec 序列本机复演](plan/ci-replay-verification.md) 7 步全绿；R441 [`:prod` 迁移路径空库复演](plan/prod-migration-replay.md) 7 步全绿、无 dev/prod 分叉 | 真实 PG 进程级（R433 迁移链、R440 CI 序列、R441 `:prod` 路径真机复演）；静态 CI 配置 + 守卫（R434/R439）；仍未真跑 GitHub Actions / 生产环境（PG16 vs 本机 18 差异） |
 | **质量与守卫线** | R297–R301 / R321–R323 / R432 / R444–R447 | 审批 granted 丢失唤醒 E-pure 修复 + 补偿 job 独立 dedup 命名空间（[方案](plan/approval-lost-wakeup-fix.md)）；全守卫链跨轮回归修复；[健康自检](../scripts/north-star-health.mjs)（一条命令验表/事件/口径/API/看板/双闸）；4 处全量并发 flake 清除（墙钟→CPU 口径、时间漂移、vi.fn 计数、DOM 就绪信号）——全量回归信号可信 | 真实进程内集成（R322 / R323）+ 纯函数 selftest / 真库查询（R432）+ 全量并发真跑（R444–R447） |
 | **先行指标补全线** | R451–R452 / R455–R457 | [W4 实例留存](plan/w4-retention.md) ≥40%、[SOP 成功率/人工接管率](plan/sop-success-rate.md) ≥90%/≤10% 可复算脚本（复用漏斗/SOP 数据，零 DDL）；[健康度判定](plan/metrics-health.md)（`evaluateHealth`，无样本不算达标）+ [一条命令采集](plan/metrics-health-collect.md)（`metrics-health-collect`，fail-closed）；升主三阈值（R448–R450）贯通脚本→API→看板→真栈回归闸 | 纯函数 selftest + 真库造数对账 + 真浏览器+真后端（升主看板 R450）；指标脚本 selftest 已接 CI（R453/R455） |
+| **首次体验验证线** | R458–R475 | [demo 真栈验收报告](plan/demo-first-experience-review.md)——三句产品承诺逐句真跑（成功执行/失败可诊断/零代码模板）；CLI flag 对账守卫 `check-cli-doc-flags`、示例配置/代码守卫 `check-examples-code`、SDK 编程式集成冒烟测试；两轮独立多 agent review 修复 7+ 真实缺口（含 SDK env 串扰、失败分类假绿、静态锚点假绿）；R475 分 5 组提交 | 真 docker compose 全栈真跑（R461 exit 0 两次含幂等）+ 静态守卫 selftest + SDK 进程内集成；未真跑生产环境 |
 
 ## 3. 当前验证状态
 
-主 agent 最新实跑数字（R454 最终全量确认口径，覆盖 R448–R453 全部改动）：
+主 agent 最新实跑数字（R469 合并回归确认口径，覆盖 R448–R468 全部改动——含 R460–R468 的 demo 三句承诺验证、3 个新守卫、SDK 集成测试、CLI 文档 flag 修复）：
 
 | 项目 | 数字 | 结果 |
 |---|---|---|
 | admin-api 全量测试 | 509 suites / 8605 passed / 6 skipped | exit 0 |
 | admin-web 全量测试 | 350 files / 2847 passed / 1 skipped | exit 0 |
+| CI 复演·SDK job（`npm test -- --coverage`） | 6 suites / 151 passed，stmt 96.78% | exit 0 |
+| CI 复演·Docs job（`npm run test:docs`） | 两新守卫确实执行（7/7、6/6 selftest + 主跑） | exit 0 |
+| CI 复演·admin-web coverage | 350 files / 2847 passed，stmt 83.04% | exit 0 |
+| CI 复演·executor-node coverage | 64 suites / 1875 passed，stmt 86.91% | exit 0 |
 | `typecheck:all` | 8 个端 | exit 0 |
 | `test:guards:chain` | 全守卫链 | exit 0 |
 | north-star-health | 静态 5/5（真库 6/6） | exit 0 |
 | 迁移独立库往返 | 146 up → 幂等 → revert ×2 → 清理 | 全 exit 0 |
 | 真浏览器 + 真后端 e2e（R436） | 真 PG/后端 dist/系统 Chrome：确认端点→漏斗落行→看板真读→反证 1→0→1 | 1 passed / exit 0，无 mock、pageerror=[] |
 
-说明：健康自检区分「代码在（静态）」与「运行时健康（真库）」，静态 PASS ≠ 运行时健康；迁移链在独立干净库实测，`down()` 真回滚已验证（R314 只验 up+幂等的缺口已补）。R436 端到端验收抓到浏览器真发 `GET /api/agent/north-star/metrics` 200，看板数值=真后端数（非 mock/硬编码），反证增删漏斗行看板随之变化——这是四级验收里的最高层。R442 在 R433 之后所有改动落定后**最终复跑**双端全量：admin-api 8602 passed exit 0；admin-web 首跑遇 1 例性能红线 flake（`maintenance-window-parity` 20 tasks best-of-3 72.8ms > 50ms，与文案改动无关，单跑 13ms），重跑全量 350/350 / 2845 passed exit 0，坐实为 350 workers 并发争抢的一次性抖动而非回归。
+说明：健康自检区分「代码在（静态）」与「运行时健康（真库）」，静态 PASS ≠ 运行时健康；迁移链在独立干净库实测，`down()` 真回滚已验证（R314 只验 up+幂等的缺口已补）。R436 端到端验收抓到浏览器真发 `GET /api/agent/north-star/metrics` 200，看板数值=真后端数（非 mock/硬编码），反证增删漏斗行看板随之变化——这是四级验收里的最高层。R442 在 R433 之后所有改动落定后**最终复跑**双端全量：admin-api 8602 passed exit 0；admin-web 首跑遇 1 例性能红线 flake（`maintenance-window-parity` 20 tasks best-of-3 72.8ms > 50ms，与文案改动无关，单跑 13ms），重跑全量 350/350 / 2845 passed exit 0，坐实为 350 workers 并发争抢的一次性抖动而非回归。R477 在 R475 提交后、用户 push 前，按 CI 真实命令逐个复演关键 job（SDK/docs/admin-web/executor-node 的 coverage 与 test:docs），全部 exit 0——消除 R459 首推后曾出现「本地绿 CI 红」的那类风险，确认这批提交在 CI 命令下不会红。
 
 ## 4. 已知未决项
 

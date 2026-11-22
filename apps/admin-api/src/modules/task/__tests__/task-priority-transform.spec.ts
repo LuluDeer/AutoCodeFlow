@@ -57,11 +57,19 @@ describe("tasks.priority 列 transformer（CORE-01 数字→PG label 写路径�
     expect(from("normal")).toBe("normal");
   });
 
-  it("接线断言：transformer 挂在 Task.priority 列上且列类型为 pg enum", () => {
+  it("接线断言：transformer 挂在 Task.priority 列上且列类型为 pg enum（值域=DB label）", () => {
     const cols = getMetadataArgsStorage().columns.filter(
       (c) => c.target === Task && c.propertyName === "priority",
     );
     expect(cols[0].options?.type).toBe("enum");
-    expect(cols[0].options?.enum).toBe(TaskPriority);
+    // PG enum 实际值域是小写 label（low/normal/high/critical），不是 TS 数字
+    // 枚举 TaskPriority(1-4)——transformer.to() 正是把数字映射成这些 label。
+    // 断言值域而非对象引用：钉住「写出去的值能被 PG enum 接受」这一真正契约。
+    expect(cols[0].options?.enum).toEqual([
+      "low",
+      "normal",
+      "high",
+      "critical",
+    ]);
   });
 });

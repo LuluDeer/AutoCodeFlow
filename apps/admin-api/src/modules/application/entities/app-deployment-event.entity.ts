@@ -63,7 +63,7 @@ export class AppDeploymentEvent {
   application: Application;
 
   /** 触发本事件的部署行 id；行可能已被 remove 删除（无外键，见类注释）。 */
-  @Column({ nullable: true }) deploymentId: string | null;
+  @Column({ nullable: true, type: "uuid" }) deploymentId: string | null;
 
   @Column({ nullable: true }) executorId: string | null;
 

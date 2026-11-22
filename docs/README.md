@@ -100,6 +100,7 @@
 | [plan/sop-success-rate.md](plan/sop-success-rate.md) | R452 SOP 成功率/人工接管率先行指标口径与可复算脚本（复用 SOP 数据） |
 | [plan/metrics-health.md](plan/metrics-health.md) | R455 先行指标健康度判定（目标数字→机器可判，无样本不算达标） |
 | [plan/metrics-health-collect.md](plan/metrics-health-collect.md) | R456 健康度采集入口（一条命令跑三指标→判定，fail-closed） |
+| [plan/demo-first-experience-review.md](plan/demo-first-experience-review.md) | R462 demo 首次体验真栈验收（三句产品承诺逐句闭环 + heredoc bug 修复） |
 | [plan/north-star-enablement.md](plan/north-star-enablement.md) | **R329 北极星 / TTFV 生产启用 runbook**（发布前置：迁移 0101/0102 + SEC_SECRETS_KEY + 执行器指纹 + 授权/验证/隐私口径/故障表） |
 | [plan/north-star-review.md](plan/north-star-review.md) | R324 A/B 独立验收报告（P0 哨针虚绿口径分叉 + 修复结论） |
 | [plan/north-star-pg-reconcile-review.md](plan/north-star-pg-reconcile-review.md) | R326 北极星脚本真库对账的独立验收报告（7 项清单 + 三手法反证 + 代理时区缺口） |

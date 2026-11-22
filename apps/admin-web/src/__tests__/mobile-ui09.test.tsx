@@ -61,9 +61,10 @@ if (!g.ResizeObserver) {
     disconnect() {}
   };
 }
-if (!window.matchMedia) {
+/** 测试视口切换：useIsMobile 只在挂载时读 matchMedia，故需在 render 前设置 */
+function mockMatchMedia(matches: boolean) {
   window.matchMedia = ((q: string) => ({
-    matches: false,
+    matches,
     media: q,
     onchange: null,
     addListener: () => {},
@@ -72,6 +73,9 @@ if (!window.matchMedia) {
     removeEventListener: () => {},
     dispatchEvent: () => false,
   })) as unknown as typeof window.matchMedia;
+}
+if (!window.matchMedia) {
+  mockMatchMedia(false);
 }
 if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
@@ -126,6 +130,7 @@ const makeExec = (over: Partial<TaskExecution> = {}): TaskExecution =>
 
 beforeEach(() => {
   localStorage.clear();
+  mockMatchMedia(false);
   vi.stubGlobal('EventSource', NoopEventSource);
   vi.mocked(authApi.me).mockReset().mockRejectedValue(new Error('skip profile'));
   vi.mocked(tasksApi.list).mockReset().mockResolvedValue({ items: [makeTask()], total: 1, page: 1, pageSize: 20 } as never);
@@ -282,6 +287,72 @@ describe('UI-09 三页表格移动端产物', () => {
     expect(Number.parseFloat(style!.width)).toBe(1080);
     const classes = cellClassSet();
     expect(classes.has('ui09-hide-mobile')).toBe(true);
+  });
+});
+
+describe('UI-09 375px 执行记录卡片', () => {
+  it('慢请求在途显示骨架，不闪现空态', async () => {
+    mockMatchMedia(true);
+    let resolveList: (value: { items: TaskExecution[]; total: number; page: number; pageSize: number }) => void = () => {};
+    vi.mocked(tasksApi.allExecutions).mockReset().mockImplementationOnce(
+      () => new Promise<{ items: TaskExecution[]; total: number; page: number; pageSize: number }>((resolve) => {
+        resolveList = resolve;
+      }) as never,
+    );
+
+    renderPage(<ExecutionsPage />, '/executions');
+
+    expect(await screen.findByTestId('page-skeleton')).toBeTruthy();
+    expect(screen.queryByText('暂无执行记录')).toBeNull();
+    expect(screen.queryByText('没有匹配的执行记录')).toBeNull();
+    resolveList({ items: [], total: 0, page: 1, pageSize: 20 });
+  });
+
+  it('OFFSET 卡片分页点击下一页请求 page=2', async () => {
+    mockMatchMedia(true);
+    vi.mocked(tasksApi.allExecutions).mockReset().mockImplementation(async (params) => ({
+      items: [makeExec({
+        id: params?.page === 2 ? 'exec-page2' : 'exec-page1',
+        taskName: params?.page === 2 ? '第二页任务' : '备份任务',
+      })],
+      total: 40,
+      page: params?.page ?? 1,
+      pageSize: params?.pageSize ?? 20,
+    }));
+
+    renderPage(<ExecutionsPage />, '/executions');
+
+    await screen.findByText('备份任务');
+    expect(screen.getByText('共 40 条')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /下一页/ }));
+    await waitFor(() => {
+      expect(vi.mocked(tasksApi.allExecutions).mock.calls.some(([params]) => params?.page === 2)).toBe(true);
+    });
+    await screen.findByText('第二页任务');
+  });
+
+  it('卡片勾选两条后对比按钮出现', async () => {
+    mockMatchMedia(true);
+    vi.mocked(tasksApi.allExecutions).mockReset().mockResolvedValue({
+      items: [makeExec({ id: 'exec-a' }), makeExec({ id: 'exec-b', taskName: '巡检任务' })],
+      total: 2,
+      page: 1,
+      pageSize: 20,
+    });
+
+    renderPage(<ExecutionsPage />, '/executions');
+
+    await screen.findByText('巡检任务');
+    const boxes = await screen.findAllByRole('checkbox');
+    expect(boxes).toHaveLength(2);
+    fireEvent.click(boxes[0]);
+    fireEvent.click(boxes[1]);
+
+    await waitFor(() => {
+      const compare = screen.getByRole('button', { name: /对比/ }) as HTMLButtonElement;
+      expect(compare.textContent).toContain('2');
+      expect(compare.disabled).toBe(false);
+    });
   });
 });
 

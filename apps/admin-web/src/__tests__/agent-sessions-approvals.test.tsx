@@ -537,6 +537,65 @@ describe('WEB-4：审批单的决策依据（入参 / 全文理由 / 批准前�
   });
 });
 
+/**
+ * 工具调用台账的「结果」列（与审批 preview 同一诚实口径）：
+ * 后端/client 已带 resultJson / resultTruncated，但 UI 此前完全不渲染结果、也不标记截断；
+ * 同时入参与异常在数据层被 `.slice(0, 160)` 硬截——长值尾部永久丢失。
+ */
+describe('工具调用台账：结果 / 全文入参与异常', () => {
+  async function openToolsTab() {
+    renderPage();
+    await screen.findByText('session-s-wait');
+    await openDetail('s-wait');
+    // antd 6 未激活过的面板不挂载：必须真实点击页签才能断言表格内容
+    fireEvent.click(await screen.findByRole('tab', { name: /工具调用/ }));
+  }
+
+  it('结果列展示结构化结果 + 截断 Tag；长结果/入参/异常全文留在 DOM（不再 slice 160）', async () => {
+    const argsTail = 'ARGS-TAIL-' + 'a'.repeat(220);
+    const resultTail = 'RESULT-TAIL-' + 'r'.repeat(220);
+    const errorTail = 'ERROR-TAIL-' + 'e'.repeat(220);
+    vi.mocked(agentApi.detail).mockResolvedValue({
+      session: sessionOf('s-wait', 'waiting_input', '等待审批 apr-s-wait-1700000000000'),
+      steps: [],
+      toolCalls: [toolCallOf({
+        status: 'error',
+        argsJson: { payload: 'ARGS-HEAD-' + argsTail },
+        resultJson: { status: 'partial', output: 'RESULT-HEAD-' + resultTail },
+        resultTruncated: true,
+        errorMessage: 'ERROR-HEAD-' + errorTail,
+      })],
+      children: [],
+    });
+    await openToolsTab();
+
+    expect(await screen.findByText('结果')).toBeTruthy();
+    const row = screen.getByText('task_restart').closest('tr')!;
+    // 结果按键值结构化展示（不是一坨 JSON 串），截断有显式 Tag
+    expect(within(row).getByText('output')).toBeTruthy();
+    expect(within(row).getByText('结果已截断')).toBeTruthy();
+    // 三处长尾标记都必须在 DOM——slice(0,160) 会让它们全部消失在数据层
+    expect(document.body.textContent).toContain(resultTail);
+    expect(document.body.textContent).toContain(argsTail);
+    expect(document.body.textContent).toContain(errorTail);
+    // 异常全文虽可展开，语义色不能因换折叠形态而丢（requirement: danger 色保留）
+    expect(row.querySelector('.ant-typography-danger')?.textContent).toContain('ERROR-HEAD-');
+  });
+
+  it('旧调用无结果（resultJson=null）→ 显示「未记录结果（旧调用）」，不误报截断', async () => {
+    vi.mocked(agentApi.detail).mockResolvedValue({
+      session: sessionOf('s-wait', 'waiting_input', '等待审批 apr-s-wait-1700000000000'),
+      steps: [],
+      toolCalls: [toolCallOf({ resultJson: null, resultTruncated: false })],
+      children: [],
+    });
+    await openToolsTab();
+
+    expect(await screen.findByText('未记录结果（旧调用）')).toBeTruthy();
+    expect(screen.queryByText('结果已截断')).toBeNull();
+  });
+});
+
 describe('审批单深链', () => {
   it('链接内已处置的请求只读，不显示同工具另一张待批单的操作', async () => {
     vi.mocked(agentApi.list).mockResolvedValue({ items: [], total: 0 });

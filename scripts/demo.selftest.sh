@@ -17,6 +17,28 @@ bash -n scripts/demo-desktop-agent-diagnose.sh || fail "scripts/demo-desktop-age
 node --check scripts/demo-headless-agent.mjs || fail "scripts/demo-headless-agent.mjs syntax"
 node --check scripts/demo-ops-agent.mjs || fail "scripts/demo-ops-agent.mjs syntax"
 
+# ── R463：独立语法检查 demo.sh 内联 verify NODE 脚本 ───────────────────
+# 这段内联脚本是 ESM（含 top-level await），只在真跑 demo 时才被 node 解析；
+# 一个语法错要等完整 build+seed（几分钟）之后才炸。这里用 awk 抽出同一段
+# heredoc 源码写成 .mjs 临时文件，单独 node --check 提前拦住。
+# 关键反假绿：提取为空必须 fail —— demo.sh 结构变了 / heredoc 标记改了时，
+# 空文件会让 node --check 通过，形成「什么都验不到却全绿」的伪通过。
+VERIFY_MJS="$(mktemp "${TMPDIR:-/tmp}/acf-demo-verify.XXXXXX.mjs")"
+# R460/R461 的三承诺锚点要 grep 同一份脚本的「去注释」副本。路径先声明，和
+# VERIFY_MJS 一起挂在 EXIT 清理链上（trap 到退出才展开，set -u 下也已存在）。
+VERIFY_CODE="${VERIFY_MJS%.mjs}.code"
+trap 'rm -f "$VERIFY_MJS" "$VERIFY_CODE"' EXIT
+awk '/node --input-type=module <<.NODE./{f=1;next} /^NODE$/{f=0} f' scripts/demo.sh >"$VERIFY_MJS"
+VERIFY_LINES="$(wc -l <"$VERIFY_MJS")"
+[[ -s "$VERIFY_MJS" ]] || fail "提取不到 demo.sh 内联 verify NODE 脚本（heredoc 标记变了？空文件会造成语法检查假绿）"
+node --check "$VERIFY_MJS" || fail "scripts/demo.sh 内联 verify NODE 脚本语法错误（ESM node --check 失败）"
+pass "scripts/demo.sh 内联 verify NODE 脚本语法检查通过（$VERIFY_LINES 行，ESM）"
+# 去掉整行 // 与 * 注释（含块注释引导行）。R460/R461 的字面串必须存在于可执行
+# 代码：demo.sh:477 的注释就含 "demo intentional failure"，扫全文会假绿。
+grep -vE '^[[:space:]]*(//|\*|/\*)' "$VERIFY_MJS" >"$VERIFY_CODE" || true
+[[ -s "$VERIFY_CODE" ]] || fail "去注释后 verify 脚本为空——R460/R461 锚点检查失去意义"
+rm -f "$VERIFY_MJS"
+
 # ── 预检门（node ≥18 / curl）：从 demo.sh 抽出同一份函数单独跑 ──────────
 # 真栈要 Docker，CI 跑不了 ./scripts/demo.sh，于是「预检到底门不门得住」
 # 长期只能靠人读代码。这里用 sed 取 demo.sh 里的函数源码，再用 stub PATH
@@ -25,7 +47,8 @@ GATE_SRC="$(sed -n '/^require_node_and_curl() {/,/^}/p' scripts/demo.sh)"
 [[ -n "$GATE_SRC" ]] || fail "demo.sh 没有 require_node_and_curl（node/curl 预检）"
 
 STUB="$(mktemp -d "${TMPDIR:-/tmp}/acf-demo-gate.XXXXXX")"
-trap 'rm -rf "$STUB"' EXIT
+# 覆盖上面的 EXIT trap 时把 R460/R461 用的去注释副本一并带上，别漏清理。
+trap 'rm -rf "$STUB"; rm -f "$VERIFY_CODE"' EXIT
 mkdir -p "$STUB/old/bin" "$STUB/new/bin" "$STUB/nocurl/bin"
 # stub 的解释器写绝对路径、下面刻意把 PATH 收窄成 stub 目录：系统 PATH 里一直
 # 有 curl，「缺 curl」这一态就永远复现不了。
@@ -140,6 +163,40 @@ while read -r v; do
   grep -qE "^$v=" scripts/demo.sh || fail "demo.sh does not provide required compose variable $v"
 done <<<"$REQUIRED_VARS"
 pass "demo .env.demo covers every required compose variable"
+
+# ── R461：demo verify 必须验证「零代码从模板运行」路径 ──────────────────
+# 产品第三句承诺的引导语「use template → run it」此前无任何演示数据支撑。
+# R461 让 verify 用官方 webhook_ping 模板 instantiate → 触发 → success。
+# R473（P2-3）：锚点只在 R463 抽出的**去注释可执行代码**里找；注释里出现相同字面串
+# 不算绿（demo.sh:477 就有一条含 "demo intentional failure" 的注释曾造成假绿）。
+# 每个锚点还必须有配套 throw new Error —— 断言无牙就是死代码。
+assert_anchor() {
+  local anchor="$1" teeth="$2" what="$3"
+  grep -qF -- "$anchor" "$VERIFY_CODE" \
+    || fail "${what}：去注释后的 verify 代码里找不到「${anchor}」（断言被删或移进注释？）"
+  grep -qF -- "$teeth" "$VERIFY_CODE" \
+    || fail "${what}：找不到配套的 throw new Error 断言「${teeth}」（锚点可能是死代码）"
+}
+assert_anchor 'task-templates' 'throw new Error("官方模板 webhook_ping 不存在' \
+  "demo.sh verify 未访问模板端点（模板引导死路）"
+assert_anchor '/instantiate' 'throw new Error("模板 instantiate 未返回任务 id' \
+  "demo.sh verify 未实例化模板"
+assert_anchor '零代码路径可用' 'throw new Error(`模板实例化的任务未成功' \
+  "demo.sh verify 未确认模板任务运行成功"
+pass "demo verify checks zero-code template path (instantiate → run → success)"
+
+# ── R460：demo verify 必须验证「失败可诊断」而不只是 success ────────────
+# 产品承诺后半句是「愿意把第二件事交给它」——失败要能诊断。R460 之前 verify
+# 只验 demo-hello-fixed success，从不验 demo-fragile 的失败样本是否可解释。
+# 同样只认去注释代码里的锚点 + 配套 throw，注释里的字面串不再算绿。
+assert_anchor 'failureReason' 'throw new Error(`失败样本缺少有效 failureReason' \
+  "demo.sh verify 未断言 failureReason（失败可诊断缺口）"
+assert_anchor 'demo intentional failure' 'throw new Error(`失败样本日志缺原始错误' \
+  "demo.sh verify 未断言日志含原始错误"
+assert_anchor '/executions/${bad.executionId}/logs' 'throw new Error(`失败样本日志缺原始错误' \
+  "demo.sh verify 未读日志端点（原始错误在 logs 不在 errorMessage）"
+pass "demo verify checks failure diagnosis (failureReason + logs原始错误)"
+rm -f "$VERIFY_CODE"
 
 # ── R458：未加引号 heredoc 的注释里禁止反引号 ──────────────────────────
 # demo.sh 的 .env.demo 用未加引号的 <<EOF 生成（需要 $var 展开生成密钥）。

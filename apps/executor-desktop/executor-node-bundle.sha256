@@ -788,3 +788,9 @@ source-digest: 2534ce3bf3034103ec194167aabb57a7bf7185989c1999df9b4e1f0b63b8f7e0
 #   本次取 CI desktop-bundle-drift 实测 actual=3590eb44…（run 43837538164），
 #   按本文件既定口径以 CI 产物为权威。
 0bb8688f41a4f3bb4818b2983ce7d087d71e01f5b6bdf49b92090117c2af0da5  index.js
+
+# 2026-11-22（吸收 dependabot PR #196：axios 1.21.0 → 1.21.1 + eslint/typescript-eslint 补丁）：
+#   ncc 会把依赖树内联进产物 ⇒ 仅依赖变更、src 零改动，source-digest 不变
+#   （2534ce3b…，61 个输入文件），字节哈希必变。本机 Linux（node 26 / ncc 0.45.0）重打
+#   53aa2ffc…，与 CI（run 45016297344）实测 actual **逐字节一致**。
+53aa2ffc5f6897ea8fac587ef3770f350c20f6088bc09cc667679d5d53a639d3  index.js

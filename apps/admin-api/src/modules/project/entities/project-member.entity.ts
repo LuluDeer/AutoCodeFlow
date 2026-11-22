@@ -63,6 +63,6 @@ export class ProjectMember {
   @Column({ type: "varchar", length: 16 })
   role: ProjectRole;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: "timestamptz" })
   createdAt: Date;
 }
