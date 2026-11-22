@@ -14,7 +14,7 @@ on:
   # 冒烟，无 PG/redis/浏览器，约 2 分钟）已于 2026-10-08 改为随 develop push 跑：
   # 它此前同为 PR 门控，结果 6/6 develop push 全 skip、长期无人发现地腐烂。
   workflow_dispatch:
-  # QA-08：每月 1 日 03:20 UTC 跑一次跨版本迁移演练（迁移链空库全量 + 二次幂等 +
+  # QA-08：每日 03:20 UTC（R134 由月度改为 nightly）跑一次跨版本迁移演练（迁移链空库全量 + 二次幂等 +
   # 实体同步漂移检查 + revert 单步回滚）；主 jobs 由 `if: github.event_name != 'schedule'`
   # 旁路，仅迁移演练与冒烟套件运行。
   schedule:
@@ -107,7 +107,7 @@ jobs:
   admin-api-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
@@ -183,7 +183,7 @@ jobs:
   # 覆盖率门：全量跑一遍 + coverageThreshold（这是分片化之后唯一不变的全局口径）。
   # NETOPT-1⑪: 该 job 无分片无重试，是 CI 最长尾且唯一 flake 暴露点——每次 push
   # 全量套件已在 admin-api-test 实跑 4 遍（分片），coverage 再跑第 5 遍纯属重复。
-  # 收窄触发：PR 只跑分片门；develop push 与 schedule（月度迁移演练）跑 coverage。
+  # 收窄触发：PR 只跑分片门；develop push 与 schedule（每日迁移演练）跑 coverage。
   admin-api-coverage:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -363,7 +363,7 @@ jobs:
           cache-dependency-path: apps/admin-api/package-lock.json
       - run: npm ci
         working-directory: apps/admin-api
-      - name: Migration chain on empty DB (full chain, currently 25)
+      - name: Migration chain on empty DB (full chain, currently 146)
         run: npm run migration:run
         working-directory: apps/admin-api
       - name: Idempotency guard — second run must be a no-op
@@ -375,7 +375,7 @@ jobs:
             || { echo "::error::second migration:run was not a no-op"; exit 1; }
       - run: npm run typecheck
         working-directory: apps/admin-api
-      # ── QA-08：跨版本迁移演练增强步（revert 全触发 / drift 月度）──────
+      # ── QA-08：跨版本迁移演练增强步（revert 全触发 / drift 每日）──────
       # PR/push 轮：上面三步已覆盖「空库全量 + 二次幂等 + typecheck」，
       # 并追加最新迁移 revert → 重跑（R434 起 ALL triggers，秒级开销）——
       # 目的是让新写/改的 down() 路径在日常 CI 就被真实执行，堵住
@@ -384,7 +384,7 @@ jobs:
       # 本 job 之后无依赖 DB 的 step（typecheck 在前、不依赖 DB）。
       # ① 迁移链 ↔ 实体定义漂移检查（migration:generate 必须产出空迁移，
       #    否则说明实体与迁移链脱节——历史真机轮抓过迁移链断裂，此为防复发闸）
-      #    仍保持 schedule only（下方 if 不动）：秒级之外的漂移检查按月跑。
+      #    仍保持 schedule only（下方 if 不动）：秒级之外的漂移检查按每日 schedule 跑。
       # 两种形态共用本 job：schedule 触发时主套件已被 if 旁路，本 job 独跑。
       - name: QA-08 drill — entity/migration drift check (schedule only)
         if: github.event_name == 'schedule'
@@ -442,7 +442,7 @@ jobs:
   npm-audit:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
@@ -528,7 +528,7 @@ jobs:
   executor-node-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -560,7 +560,7 @@ jobs:
   acf-cli-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -593,7 +593,7 @@ jobs:
   mcp-server-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -624,7 +624,7 @@ jobs:
   autocodeflow-node-sdk-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -646,7 +646,7 @@ jobs:
   admin-web-build:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -760,7 +760,7 @@ jobs:
   lockfile-integrity:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
@@ -773,6 +773,7 @@ jobs:
           - packages/acf-cli
           - packages/mcp-server
           - packages/autocodeflow-node-sdk
+          - packages/docs-site
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -807,7 +808,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1956,7 +1957,7 @@ jobs:
   executor-python-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2002,7 +2003,7 @@ jobs:
   autoflow-sdk-python-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2019,7 +2020,7 @@ jobs:
   python-packages-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     strategy:
       matrix:
@@ -2040,7 +2041,7 @@ jobs:
   registry-pypi-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2065,7 +2066,7 @@ jobs:
   desktop-bundle-drift:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2174,7 +2175,7 @@ jobs:
   windows-node-tests:
     runs-on: windows-latest
     timeout-minutes: 20
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
@@ -2907,7 +2908,7 @@ jobs:
   docs-site-build:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2935,7 +2936,7 @@ jobs:
   api-types-drift:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    # QA-08：每日迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     services:
       postgres:
@@ -3029,10 +3030,10 @@ jobs:
   # 触发策略（刻意的）：
   #   · `selftest`（纯函数断言 + 模型与真实公式同序）**每次 push 都跑**——
   #     它不依赖机器性能，是真正的逻辑闸（阈值/gate/场景枚举/除零探针）。
-  #   · 阈值门只在 `schedule`（月度）与手动触发跑，且阈值取**宽松档**：
+  #   · 阈值门只在 `schedule`（每日 nightly）与手动触发跑，且阈值取**宽松档**：
   #     GitHub 共享 runner 的性能抖动可达数倍，把本机阈值搬上去必然假红，
   #     假红的闸等于没有闸（本仓 lint-gates / coverage 棘轮都吃过这个亏）。
-  #     月度跑的目的不是"精确门禁"而是"留下趋势基线 + 拦住数量级退化"。
+  #     每日跑的目的不是"精确门禁"而是"留下趋势基线 + 拦住数量级退化"。
   benchmark:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -3069,7 +3070,7 @@ jobs:
       #    dispatch-decision 1.6 / load-score 1.5-1.6 ms）的约 10 倍宽松档
       #    （8 / 60 / 15 / 15 ms），只拦数量级退化，不追精确水位；
       # ② 命中阈值时以红 step 呈现（脚本原生 exit 1），人工复核
-      #    micro-benchmark-results artifact 与本机复测，但不让月度演练轮被
+      #    micro-benchmark-results artifact 与本机复测，但不让每日演练轮被
       #    runner 抖动染红（假红的闸等于没有闸——红的是 step，不是 job）。
       - name: Micro-benchmark threshold alarm (schedule/manual only, non-blocking)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

@@ -1,11 +1,13 @@
 name: Release
 
 # ── 触发与保护 ──────────────────────────────────────────────────────────
-# 仅 push tag `vX.Y.Z[-pre]` 触发真发布（SDK lockstep：node-sdk / mcp-server /
-# python-sdk 共用同一版本号）。桌面端安装包已**解耦**为独立 workflow
-# `release-desktop.yml`（`desktop-vX.Y.Z` tag 触发），不在此处。发布流程：
-#   1) 同步 bump SDK 三处版本（见下方守卫清单）并提交 develop/main；
-#   2) git tag v<version> && git push origin v<version>。
+# 仅 push tag `vX.Y.Z[-pre]` 触发真发布（四包 lockstep：@autocodeflow/sdk /
+# @autocodeflow/cli / autocodeflow-mcp-server / autoflow-sdk 共用同一版本号）。
+# 桌面端安装包已**解耦**为独立 workflow `release-desktop.yml`（`desktop-vX.Y.Z`
+# tag 触发），不在此处。标准发布流程：
+#   1) 合并 release-please.yml 自动生成的 Release PR（同步 bump version.txt 与四包版本）；
+#   2) release-please 自动创建 Release 与 tag `v<version>` 并级联触发本 workflow
+#      （兜底时可按 docs/release-checklist.md 手动 `git tag v<version> && git push origin v<version>`）。
 # 故意不配 workflow_dispatch：避免手动误触发真发布；本地演练请用
 #   `npm publish --dry-run` / `npm pack --dry-run` / `python -m build`，
 #   取证方法见 docs/sdk-guide.md「SDK 矩阵」小节。
@@ -38,6 +40,7 @@ jobs:
   # ── 版本一致性守卫：tag 必须等于每个待发布包的 version，否则 fail ──
   version-guard:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     # N44 (round-11)：原 outputs.version 无任何下游消费（两个 publish job
     # 仅 needs 依赖本 job 的通过/失败），死输出已删除。
     steps:
@@ -125,6 +128,7 @@ jobs:
   publish-npm:
     needs: version-guard
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     # N42 (round-10): tag push 本身即发布动作，version-guard 之外再加一道
     # 人工审批闸门。`environment: release` 需在 GitHub 侧配置：
     #   仓库 Settings → Environments → New environment（名必须为 `release`）
@@ -194,6 +198,7 @@ jobs:
   publish-pypi:
     needs: version-guard
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     # U-1: OIDC 取 token 需要 id-token 权限；contents: read 保留给 checkout。
     # 注意：job 级 permissions 会覆盖 workflow 级默认（此处显式补回 contents: read）。
     permissions:
@@ -250,13 +255,14 @@ jobs:
   #   越好；且即使某个 publish 失败，latest 也必须已经被保护（否则存量用户
   #   立刻受影响）。故与 publish 并行，不等其结果。
   # ── 发版卫生（N-15 后续）：确保 Release 对象存在 ──────────────────────
-  # 人工 tag 主路径没有 release PR，release-please 不会创建 Release 对象；
-  # 忘建的历史后果是 Draft 遗留（v1.1.x/v1.5.2 即案例）。本 job 幂等创建，
+  # 人工 tag 兜底路径或 release-please 创建竞态窗口下，可能尚无对应 Release
+  # 对象（忘建的历史后果是 Draft 遗留，v1.1.x/v1.5.2 即案例）。本 job 幂等创建，
   # 并按仓库惯例标 prerelease——退出 GitHub Latest 竞争，保护桌面自动更新
   # 源（v1.5.1 实爆教训，与 demote-sdk-release 同语义）。
   ensure-release:
     needs: version-guard
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: write
     env:
@@ -277,6 +283,7 @@ jobs:
   demote-sdk-release:
     needs: [version-guard, ensure-release]
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: write
     env:

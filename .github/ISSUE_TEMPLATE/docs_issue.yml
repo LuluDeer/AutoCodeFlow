@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        文档入口：[docs/README.md](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/README.md)。
+        文档入口：[docs/README.md](https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/README.md)。
         报告前请确认你看的不是**归档区的历史快照**（`docs/archive/`，不随代码更新）。
 
   - type: input

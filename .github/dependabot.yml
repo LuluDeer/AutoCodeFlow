@@ -4,6 +4,15 @@
 # SHA 钉死）此前仅靠裸 tag 引用、无任何升级通知：tag 被上游移动/投毒时
 # 无告警面。本文件让 dependabot 周期扫描 `uses:` 引用并以受控 PR 形式
 # 提出升级（钉死 SHA 的引用会跟随 `# <tag>` 注释重钉），升级即显式评审。
+# ── 分支与生态取舍说明 ──────────────────────────────────────────────────
+# 1. 所有更新项的 target-branch 均为 `develop`：前提是发版后及时将 `develop`
+#    与 `main` 同步（fast-forward），否则 Dependabot 会基于落后的依赖树生成
+#    陈旧 PR 或产生不必要冲突。
+# 2. 暂未对 Python 目录（`apps/executor-python`、`apps/registry-pypi`、
+#    `packages/autoflow-sdk`、`packages/autocodeflow-*`）启用 `pip` 生态：
+#    Python 侧实行 `==` 精确锁版本纪律，已知漏洞检测已由 CI 的 `pip-audit`
+#    job 兜底（基于锁定的 `requirements.txt` 全传递树比对 OSV），发现漏洞时
+#    按需人工升级并回归，避免周度批量 bump 破坏可复现性。
 version: 2
 updates:
   - package-ecosystem: github-actions

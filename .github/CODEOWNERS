@@ -28,11 +28,15 @@
 /packages/executor-protocol/        @LuluDeer
 /packages/contract-fixtures/        @LuluDeer
 
-# ── 对外 SDK / CLI（breaking 变更需同批适配）────────────────────────────
+# ── 对外 SDK / CLI 与 Python 公共库（breaking 变更需同批适配）────────────
 /packages/acf-cli/                  @LuluDeer
 /packages/mcp-server/               @LuluDeer
 /packages/autocodeflow-node-sdk/    @LuluDeer
 /packages/autoflow-sdk/             @LuluDeer
+/packages/autocodeflow-ai/          @LuluDeer
+/packages/autocodeflow-db/          @LuluDeer
+/packages/autocodeflow-http/        @LuluDeer
+/packages/autocodeflow-notify/      @LuluDeer
 
 # ── 私有 registry ────────────────────────────────────────────────────────
 /apps/registry-npm/                 @LuluDeer
@@ -53,7 +57,6 @@
 # ── 数据库迁移（时间戳冲突与不可逆变更的高发区）────────────────────────
 /apps/admin-api/src/migrations/     @LuluDeer
 
-# ── 文档与计划（低风险，但保持归属可见）────────────────────────────────
+# ── 文档与文档站（低风险，但保持归属可见）────────────────────────────────
 /docs/                              @LuluDeer
-/PLAN-*.md                          @LuluDeer
-/PLANS-INDEX.md                     @LuluDeer
+/packages/docs-site/                @LuluDeer

@@ -9,7 +9,7 @@ contact_links:
     url: https://github.com/LuluDeer/AutoCodeFlow/discussions
     about: 「怎么用」「怎么配」这类问题请走 Discussions，不要开 Issue
   - name: 📖 文档中心
-    url: https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/README.md
+    url: https://github.com/LuluDeer/AutoCodeFlow/blob/main/docs/README.md
     about: 按角色索引的全部文档入口，提问前先在这里找一遍
   - name: 🌐 SDK 文档站
     url: https://luludeer.github.io/AutoCodeFlow/

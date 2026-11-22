@@ -40,7 +40,7 @@
 
 如遇骚扰、滥用或其他不可接受的行为，请通过以下方式联系维护者：
 
-- GitHub 私密报告：https://github.com/LuluDeer/AutoCodeFlow/security/advisories/new
+- GitHub 私密报告（借用 GitHub 私密安全通道作为私密举报入口）：https://github.com/LuluDeer/AutoCodeFlow/security/advisories/new
 - 或通过维护者的 GitHub 主页联系
 
 所有投诉都会被及时、公正地审阅与调查。维护者有义务对举报者身份保密。
