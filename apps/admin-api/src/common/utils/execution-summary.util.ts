@@ -61,3 +61,73 @@ export function logHeadOf(
   const line = firstLineOf(logs);
   return line.length > max ? line.slice(0, max) : line;
 }
+
+/**
+ * 通用「进程退出骨架」文案判定（node / python 两端执行器同形）：
+ * - `进程以退出码 N 结束`
+ * - `进程被信号 <SIG> 终止…`
+ *
+ * 这类骨架只说明「进程没跑成」，原始 throw 消息 / 异常类型留在回调 `logs`
+ * 的栈里（D-3 实测：Node `Error: demo intentional failure…` 在 stderr 栈中，
+ * 落库摘要只有退出码）。
+ */
+const GENERIC_PROCESS_EXIT_MESSAGE_RE =
+  /^进程以退出码\s*\d+\s*结束|^进程被信号\s*\S+\s*终止/i;
+
+/**
+ * 日志里的「原始异常行」候选：JS/TS 栈的 `Error: 消息`、Python 栈尾的
+ * `XxxError / XxxException: 消息`。栈帧行（`at …`、`File "…"`、`^`  caret）
+ * 不匹配。
+ */
+const ERROR_LINE_RE =
+  /^(?:[A-Za-z_$][\w$.]*)?(?:Error|Exception|Interrupt|Failure):\s*(.+)$/;
+
+/**
+ * 从回调日志中提取最能定位问题的异常行（**栈尾优先**：Python Traceback 的
+ * 真实错误行在最后；JS 栈一般只有一条 `Error:` 行，链式 cause 也取最后一条）。
+ *
+ * 找不到异常形态行时返回 `null`——不回退到任意 stdout 行（那可能是任务正常
+ * 打印，不是错误）；调用方保留原骨架文案。
+ */
+function extractErrorLineFromLogs(logs: string): string | null {
+  const lines = logs.split(/\r?\n/);
+  let last: string | null = null;
+  for (const raw of lines) {
+    const line = raw.trim();
+    const m = ERROR_LINE_RE.exec(line);
+    if (m && m[1].trim()) last = m[1].trim();
+  }
+  return last;
+}
+
+/**
+ * D-3：失败摘要补全——骨架文案时从 `logs` 上提原始异常消息。
+ *
+ * - 摘要已经是可读原因（非退出码 / 信号骨架）→ 原样返回，不改动。
+ * - 骨架文案 + `logs` 含异常行 → 返回「原始异常消息（骨架旁证）」，上限
+ *   {@link EXECUTION_SUMMARY_MAX_CHARS}（与 `logHead` / `errorSummary` 同口径，
+ *   不加省略号；完整栈与退出码仍在 DB `logs` / `exitCode` 列，不丢全文）。
+ * - 骨架文案但 `logs` 无可识别异常行 → 原样返回骨架（不硬造消息）。
+ *
+ * `errorMessage` 非字符串时原样返回（类型上与回调 DTO 的可空字符串对齐）。
+ */
+export function summarizeScriptFailure(
+  errorMessage: unknown,
+  logs: string | null | undefined,
+  max: number = EXECUTION_SUMMARY_MAX_CHARS,
+): string | undefined {
+  if (typeof errorMessage !== "string" || errorMessage.trim() === "") {
+    return errorMessage as string | undefined;
+  }
+  const trimmed = errorMessage.trim();
+  if (!GENERIC_PROCESS_EXIT_MESSAGE_RE.test(trimmed)) {
+    return errorMessage;
+  }
+  if (!logs) return errorMessage;
+  const extracted = extractErrorLineFromLogs(logs);
+  if (!extracted) return errorMessage;
+  const summary = extracted.length > max ? extracted.slice(0, max) : extracted;
+  // 保留退出码骨架作为旁证：用户既能看到原始消息，也不丢「怎么退出的」；
+  // 完整栈仍在 logs 列。
+  return `${summary}（${trimmed}）`;
+}

@@ -11,6 +11,7 @@ import { MemoryRouter } from 'react-router-dom';
 import ArtifactsPage from '../pages/ArtifactsPage';
 import { useArtifactsIndex, useApplicationsList, useTasksList } from '../api/queries';
 import { artifactsApi } from '../api/artifacts';
+import { TASK_LIST_PAGE_SIZE } from '../api/tasks';
 import { message } from '../utils/toast';
 import '../i18n';
 
@@ -115,6 +116,23 @@ describe('ArtifactsPage 列表渲染', () => {
       </MemoryRouter>,
     );
     expect(await screen.findByText(/文件名关键字/)).toBeTruthy();
+  });
+});
+
+describe('ArtifactsPage 任务名字典分页', () => {
+  it('pageSize 对齐后端 @Max(100)，不发超限的 200', async () => {
+    render(
+      <MemoryRouter initialEntries={['/artifacts']}>
+        <ArtifactsPage />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(useTasksList).toHaveBeenCalledWith({
+        page: 1,
+        pageSize: TASK_LIST_PAGE_SIZE,
+      });
+    });
+    expect(TASK_LIST_PAGE_SIZE).toBeLessThanOrEqual(100);
   });
 });
 

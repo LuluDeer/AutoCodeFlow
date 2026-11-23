@@ -179,6 +179,22 @@ export const PACKAGE_FETCH_PATTERN =
 export const SCRIPT_ERROR_PATTERN =
   /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code|脚本(?:错误|异常)|命令执行失败/i;
 
+/**
+ * 「无匹配过滤器的在线执行器」兜底判据（码化通道之外，服务旧执行器与裸 Error）。
+ *
+ * 与 `EXECUTOR_OFFLINE_PATTERN` 的 `no available executor` 族刻意分开：
+ *   · `no available executor`（整机队下线/离线，可自愈）→ `executor_offline`；
+ *   · `no online executor matches …filters`（group/tags/runtime 无匹配，
+ *     可能是永久配置错误）→ `UNKNOWN`，不进互斥 WAITING 回队门（理由见
+ *     `error-code-failure-reason.ts` 该码的注释）。
+ *
+ * **必须先于 `SCRIPT_ERROR_PATTERN`**：派发失败栈首是
+ * `ServiceUnavailableException`，名字里的 `exception` 令牌会被脚本错误规则
+ * 吞成 `script_error`（D-1 实测现场），故本规则在脚本错误分支之前拦截。
+ */
+export const NO_MATCHING_EXECUTOR_PATTERN =
+  /no online executors? matches? the requested|没有在线执行器匹配所请求的|没有执行器匹配所请求/i;
+
 /** 分类入参（两条路径共用同一形状）。 */
 export interface ClassifyFailureInput {
   /** 错误文案（`err.message` 或回调的 `errorMessage`）。 */
@@ -274,6 +290,13 @@ export function classifyFailure(
   // ⑦ `package_fetch_failed`（含 `module not found` / `cannot find module`）。
   if (PACKAGE_FETCH_PATTERN.test(text)) {
     return ExecutionFailureReason.PACKAGE_FETCH_FAILED;
+  }
+
+  // ⑦.5 「无匹配过滤器的在线执行器」→ UNKNOWN。先于 script_error：栈首
+  //     ServiceUnavailableException 的 `exception` 令牌会被脚本错误规则吞掉；
+  //     刻意不进 executor_offline（避免互斥组无限排队，理由见码表注释）。
+  if (NO_MATCHING_EXECUTOR_PATTERN.test(text)) {
+    return ExecutionFailureReason.UNKNOWN;
   }
 
   // ⑧ `script_error`：退出码非 0 是**充分**证据（无 exitCode 时才看文案）。

@@ -135,6 +135,20 @@ describe("classifyFailure（失败归因唯一入口）", () => {
       ).toBe(ExecutionFailureReason.TIMEOUT);
     });
 
+    it("NO_EXECUTOR_MATCHING_FILTERS → UNKNOWN，即使栈首是 ServiceUnavailableException", () => {
+      // D-1：该码此前未收录进码表，兜底正则被栈名里的 `exception` 令牌吞成
+      // script_error。码化通道应确定性落 UNKNOWN，与文案/栈原型解耦。
+      expect(
+        classifyFailure({
+          errorCode: "NO_EXECUTOR_MATCHING_FILTERS",
+          errorMessage: "没有在线执行器匹配所请求的 group/tags/runtime",
+          logs:
+            "ServiceUnavailableException: 没有在线执行器匹配所请求的 group/tags/runtime\n" +
+            "    at ExecutorService.dispatch (executor.service.js:2032:27)",
+        }),
+      ).toBe(ExecutionFailureReason.UNKNOWN);
+    });
+
     it("码表映射必须全部是合法的 ExecutionFailureReason 值", () => {
       // 元数据一致性：码表不能映射到不存在的枚举值（否则运行期落 undefined）。
       const valid = new Set<string>(Object.values(ExecutionFailureReason));
@@ -218,7 +232,62 @@ describe("classifyFailure（失败归因唯一入口）", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // ⑤ 负向：不该命中的不要命中（防止正则过宽）
+  // ⑤ 无匹配执行器过滤器族（D-1：派发失败误归 script_error）
+  // ---------------------------------------------------------------------------
+  describe("无匹配过滤器的在线执行器族（D-1）", () => {
+    it("中文文案 + ServiceUnavailableException 栈 → UNKNOWN（不是 script_error）", () => {
+      // 实测现场：栈首 `ServiceUnavailableException: 没有在线执行器匹配…`，
+      // `exception` 令牌曾把本族失败吞成脚本错误。
+      expect(
+        classifyFailure({
+          errorMessage: "没有在线执行器匹配所请求的 group/tags/runtime",
+          logs:
+            "ServiceUnavailableException: 没有在线执行器匹配所请求的 group/tags/runtime\n" +
+            "    at ExecutorService.dispatch (executor.service.js:2032:27)",
+        }),
+      ).toBe(ExecutionFailureReason.UNKNOWN);
+    });
+
+    it("英文文案（executor / executors 单复数）→ UNKNOWN", () => {
+      expect(
+        classifyFailure({
+          errorMessage:
+            "No online executor matches the requested group/tags/runtime",
+        }),
+      ).toBe(ExecutionFailureReason.UNKNOWN);
+      expect(
+        classifyFailure({
+          errorMessage:
+            "No online executors match the requested group/tags/runtime",
+        }),
+      ).toBe(ExecutionFailureReason.UNKNOWN);
+    });
+
+    it("回归：no available executor 族仍归 EXECUTOR_OFFLINE（可自愈离线）", () => {
+      // 两族刻意分开：available 族是整机队下线/离线，归 offline 回队等待；
+      // matching-filters 族是配置无匹配，落 UNKNOWN，不进互斥 WAITING 门。
+      expect(
+        classifyFailure({
+          errorMessage:
+            "No available executor (all candidates are offline or at capacity)",
+        }),
+      ).toBe(ExecutionFailureReason.EXECUTOR_OFFLINE);
+    });
+
+    it("回归：真实脚本崩溃（原始 Error 消息 + 退出码 1）仍归 SCRIPT_ERROR", () => {
+      expect(
+        classifyFailure({
+          errorMessage: "进程以退出码 1 结束",
+          logs: "Error: demo intentional failure: check failureReason & error message\n" +
+            "    at Object.<anonymous> (glue_script.js:2:7)",
+          exitCode: 1,
+        }),
+      ).toBe(ExecutionFailureReason.SCRIPT_ERROR);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // ⑥ 负向：不该命中的不要命中（防止正则过宽）
   // ---------------------------------------------------------------------------
   describe("负向断言（判据不得过宽）", () => {
     it("任务代码只是打印了 interpreter 一词 → 不判 INTERPRETER_UNAVAILABLE", () => {
@@ -252,7 +321,7 @@ describe("classifyFailure（失败归因唯一入口）", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // ⑥ exitCode 语义
+  // ⑦ exitCode 语义
   // ---------------------------------------------------------------------------
   describe("exitCode 语义", () => {
     it("非 0 退出码是无关键词时的充分证据 → SCRIPT_ERROR", () => {

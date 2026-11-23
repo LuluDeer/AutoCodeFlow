@@ -27,6 +27,8 @@ import { recordRuntime } from "../metrics/runtime-metrics-entry";
 import { RedisLockService } from "../../common/services/redis-lock.service";
 // T2-B4 收尾：截断标记的**唯一事实源**（收尾前两份逐字相同的副本）。
 import { LOG_TRUNCATION_MARKER } from "./log-truncation-marker.util";
+// D-3：骨架退出文案时从 logs 上提原始异常消息（纯函数，全文仍落 logs 列）。
+import { summarizeScriptFailure } from "../../common/utils/execution-summary.util";
 
 /**
  * T2-B4 第二刀：**回调处理与终态事件**协作者。
@@ -473,7 +475,12 @@ export class ExecutionCallback {
               : ExecutionStatus.FAILED;
           patch.failureReason = failureReason;
           if (cb.errorMessage !== undefined) {
-            patch.errorMessage = cb.errorMessage;
+            // D-3：骨架退出文案（「进程以退出码 N 结束」）在 logs 含原始异常行时
+            // 上提摘要；无可识别异常行则原样保留。纯函数，不改 logs 全文。
+            patch.errorMessage = summarizeScriptFailure(
+              cb.errorMessage,
+              cb.logs,
+            );
           }
           // FIX-7.1: 脚本阶段失败的自动 AI 分析——在终态转换**前**触发，
           // 使分析结果同时进终态 patch（一次写库，与 processor 派发失败路径

@@ -41,7 +41,7 @@ import { ExecutionFailureReason } from "../../modules/task/entities/task-executi
  * | 码 | 为什么不进表 |
  * |---|---|
  * | `PINNED_EXECUTOR_NOT_FOUND` | 语义是「pin 的目标行已不存在」，**没有**对应的 `failureReason` 枚举值；原实现刻意留 UNKNOWN（`executor.service.ts` 有注释：归 `EXECUTOR_OFFLINE` 是**说谎**——它从未注册过）。硬塞进本表会制造一个新的错误归因。 |
- * | `NO_EXECUTOR_MATCHING_FILTERS` | 归 `executor_offline` 看似更准，但它会**静默改变互斥组任务的语义**：互斥任务命中 `executor_offline` 即回 WAITING 等唤醒（每 10s 重试），而「没有执行器匹配 group/tags/runtime」可能是**永久性**配置错误（永远不会自愈）⇒ 执行会无限排队而不是落死。要改这条必须同时设计「排队超时」，属独立立项。 |
+ * | `NO_EXECUTOR_MATCHING_FILTERS` | **已收录为 `UNKNOWN`**（见下表映射）。刻意不进 `executor_offline`：互斥任务命中 offline 会回 WAITING 等唤醒，而「无匹配 group/tags/runtime」可能是永久配置错误、不会自愈，归 offline 会让执行无限排队。UNKNOWN 与 script_error 同属可重试集，不触互斥 WAITING 门、不触不可重试门禁。 |
  * | `BROADCAST_DISPATCH_ALL_FAILED` / `NO_BROADCAST_EXECUTOR` | 同上：广播任务的失败语义与重试门禁耦合，改归因需同步评审。 |
  * | `TASK_SECRET_DECRYPT_FAILED` | 是**凭据配置**问题（人工重新加密），与本次执行的代码/环境无关。归 `script_error` 会污染「脚本错误」这个面向用户的类别，归 UNKNOWN 则维持现状——两者都不是好答案，应另立一个 `config_error` 类枚举（需产品拍板）。 |
 
@@ -67,4 +67,23 @@ export const ERROR_CODE_FAILURE_REASON: Readonly<
    * 健壮性提升，零行为变更。
    */
   PINNED_EXECUTOR_OFFLINE: ExecutionFailureReason.EXECUTOR_OFFLINE,
+
+  /**
+   * 「没有在线执行器匹配所请求的 group/tags/runtime」→ `UNKNOWN`。
+   *
+   * 为什么是 UNKNOWN 而不是另外两个相近类目：
+   * - **不归 `executor_offline`**：互斥组任务命中 offline 即回 WAITING 等
+   *   唤醒（见 `task.processor.ts` 互斥回队门），而过滤器无匹配可能是**永久
+   *   配置错误**（group/tags/runtime 写错），不会自愈——归 offline 会让执行
+   *   无限排队。要改这条必须另立「排队超时」设计，属独立立项。
+   * - **不归 `script_error`**：这不是任务脚本的问题。此前本码未收录进本表，
+   *   文案兜底时栈首 `ServiceUnavailableException` 名字里的 `exception` 令牌
+   *   被脚本错误规则吞掉，用户被引向「查自己脚本」的错误方向（D-1 实测现场：
+   *   派发失败行 `failureReason=script_error`、`exitCode=NULL`）。
+   *
+   * 语义确认（满足收录判据第 3 条）：`UNKNOWN` 与 `script_error` 在默认
+   * 重试集上等价（均可重试），均不在 `inherentNonRetryable` 门禁内；本映射
+   * **不改变重试/排队语义**，只纠正面向用户的分类标签。
+   */
+  NO_EXECUTOR_MATCHING_FILTERS: ExecutionFailureReason.UNKNOWN,
 };

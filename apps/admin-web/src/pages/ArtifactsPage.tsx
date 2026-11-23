@@ -38,6 +38,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useApplicationsList, useArtifactsIndex, useTasksList } from '../api/queries';
 import { artifactsApi, type ArtifactRow } from '../api/artifacts';
+import { TASK_LIST_PAGE_SIZE } from '../api/tasks';
 import { useUrlStateSync } from '../hooks/useUrlStateSync';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { formatArtifactSize } from '../utils/artifactSize';
@@ -334,9 +335,15 @@ export default function ArtifactsPage() {
   const { data: indexPage, isLoading, isError, error, refetch } =
     useArtifactsIndex(indexQuery);
 
-  // 下拉候选 + 名称解析（后端索引行只带 id 列，名字回查应用/任务列表）
+  // 下拉候选 + 名称解析（后端索引行只带 id 列，名字回查应用/任务列表）。
+  // 任务名字典走首页：后端 GET /tasks 的 pageSize @Max(100)（pagination.dto），
+  // 传 200 会直接 400 VALIDATION_FAILED。任务量超百时未收录的任务名回退显示
+  // id；全量名称聚合应走共享 listAll 分页 hook（与 DAG 取数同策），属后续项。
   const { data: apps } = useApplicationsList();
-  const { data: taskPage } = useTasksList({ page: 1, pageSize: 200 });
+  const { data: taskPage } = useTasksList({
+    page: 1,
+    pageSize: TASK_LIST_PAGE_SIZE,
+  });
 
   const appMap = useMemo(() => {
     const m: Record<string, string> = {};
