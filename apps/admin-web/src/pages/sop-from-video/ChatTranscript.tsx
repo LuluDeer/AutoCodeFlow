@@ -6,10 +6,13 @@
  * 而 P2-1/P3-3 的修复必须在本组件函数体里加分支。把这段无状态 JSX
  * （40 余行的内联样式气泡）搬出来，是唯一不动业务语义的等价压缩。
  *
- * 渲染口径逐字节沿用原实现：用户气泡右对齐、`#e6f4ff`；模型气泡左对齐、
- * `#fafafa`；流式增量用 `#f6ffed` + 闪烁光标，且**只在 `sending` 为真时**出现。
+ * 渲染口径：用户气泡右对齐、主色浅底；模型气泡左对齐、中性填充底；流式增量用
+ * 成功色浅底 + 闪烁光标，且**只在 `sending` 为真时**出现。底色/边框均消费 antd
+ * 主题 token，随明暗算法翻转；前景继承 colorText，气泡上不覆盖字色，避免暗色下
+ * 浅底配浅字导致消息不可读。
  */
 import type { CSSProperties } from 'react';
+import { theme } from 'antd';
 import type { SopSessionMessage } from '../../api/ai';
 
 const ROW: CSSProperties = {
@@ -21,7 +24,6 @@ const BUBBLE: CSSProperties = {
   maxWidth: '86%',
   padding: '8px 12px',
   borderRadius: 10,
-  border: '1px solid #f0f0f0',
   whiteSpace: 'pre-wrap',
 };
 
@@ -38,6 +40,7 @@ export default function ChatTranscript({
   streaming,
   streamingText,
 }: ChatTranscriptProps) {
+  const { token } = theme.useToken();
   return (
     <div style={{ maxHeight: 420, overflowY: 'auto' }}>
       {messages.map((m, i) => (
@@ -45,14 +48,26 @@ export default function ChatTranscript({
           key={`${m.at}-${i}`}
           style={{ ...ROW, justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}
         >
-          <div style={{ ...BUBBLE, background: m.role === 'user' ? '#e6f4ff' : '#fafafa' }}>
+          <div
+            style={{
+              ...BUBBLE,
+              border: `1px solid ${token.colorBorderSecondary}`,
+              background: m.role === 'user' ? token.colorPrimaryBg : token.colorFillQuaternary,
+            }}
+          >
             {m.text}
           </div>
         </div>
       ))}
       {streaming && streamingText ? (
         <div style={{ ...ROW, justifyContent: 'flex-start' }}>
-          <div style={{ ...BUBBLE, background: '#f6ffed' }}>
+          <div
+            style={{
+              ...BUBBLE,
+              border: `1px solid ${token.colorSuccessBorder}`,
+              background: token.colorSuccessBg,
+            }}
+          >
             {streamingText}
             <span style={{ opacity: 0.45 }}>▍</span>
           </div>

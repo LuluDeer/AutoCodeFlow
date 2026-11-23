@@ -1076,6 +1076,8 @@ function ReleasesTab({ app }: { app: Application }) {
   const { t } = useTranslation();
   // 用户报障（中台看不出是哪个执行器）：执行器可读名解析（口径见该 hook）。
   const { nameOf } = useExecutorNames();
+  // 离线设备徽标消费主题 token（置灰文字/中性填充底），随明暗算法翻转。
+  const { token } = theme.useToken();
 
   /**
    * RACE-PAGE（审计 P2，2026-10-17）：分页响应的序号守卫。
@@ -1221,7 +1223,7 @@ function ReleasesTab({ app }: { app: Application }) {
                     style={
                       d.online
                         ? undefined
-                        : { color: '#9ca3af', background: '#fafafa' }
+                        : { color: token.colorTextTertiary, background: token.colorFillQuaternary }
                     }
                   >
                     {name} · {label}
