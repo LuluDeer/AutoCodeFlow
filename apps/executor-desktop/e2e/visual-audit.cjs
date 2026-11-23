@@ -8,12 +8,22 @@ const path = require('path');
 
 const APP_ENTRY = path.join(__dirname, '..', 'dist', 'main', 'index.js');
 const ELECTRON_BIN = require('electron');
-const OUT = path.join(__dirname, '.visual');
 const argv = process.argv.slice(2);
 const argOf = (k) => {
   const hit = argv.find((a) => a.startsWith('--' + k + '='));
   return hit ? hit.slice(k.length + 3) : null;
 };
+const OUT = argOf('out') ? path.resolve(argOf('out')) : path.join(__dirname, '.visual');
+// 取证中性临时根：默认 os.tmpdir() 在 Windows 下嵌入本机用户名（C:\Users\<user>\...），
+// 会随运行日志泄露进存档截图。--tmpdir 指到不含身份信息的目录后，重定向 TEMP/TMP，
+// 使 mkdtemp 与子进程 userData/workDir 全部落在中性路径下。
+const TMPROOT = argOf('tmpdir') ? path.resolve(argOf('tmpdir')) : null;
+if (TMPROOT) {
+  fs.mkdirSync(TMPROOT, { recursive: true });
+  process.env.TEMP = TMPROOT;
+  process.env.TMP = TMPROOT;
+  process.env.TMPDIR = TMPROOT;
+}
 const ONLY = argOf('only') ? argOf('only').split(',') : null;
 const LANG = argOf('lang') || 'zh';
 const TAG = argOf('tag') || '';
@@ -343,6 +353,18 @@ const PROBE = (label) => {
         await status.waitForTimeout(250);
       }
 
+      // 历史行选中态取证：点首条失败行，核验选中不把红/蓝状态条覆写成绿条，
+      // 详情面板「近期同任务」活跃行保持中性底（B1/B2 语义解耦）。
+      const histRow = status.locator('.historyx-row-select').first();
+      if (await histRow.count()) {
+        await histRow.click();
+        await status.waitForTimeout(450);
+        await shot(status, '1440x900-history-selected');
+        await probe(status, '1440x900/history-selected');
+        await status.keyboard.press('Escape');
+        await status.waitForTimeout(250);
+      }
+
       await status.getByRole('tab', { name: LBL.status }).click();
       await status.waitForTimeout(400);
       const statusLog = status.getByRole('button', { name: LBL.viewLogs }).first();
@@ -358,6 +380,20 @@ const PROBE = (label) => {
       // 配置页 5 分区
       await status.getByRole('tab', { name: LBL.config }).click();
       await status.waitForTimeout(400);
+
+      // A5 配置搜索下拉取证：驱动搜索输入（agent 命中 Agent 分区 + 各 agent* 字段），
+      // 核验结果标签省略号（cfgx-search-result-label）与分区副标签无硬裁切。
+      const searchInput = status.locator('.cfgx-search-input').first();
+      if (await searchInput.count()) {
+        await searchInput.fill('agent');
+        await status.locator('.cfgx-search-results').first().waitFor({ timeout: 3000 }).catch(() => {});
+        await status.waitForTimeout(300);
+        await shot(status, '1440x900-config-search');
+        await probe(status, '1440x900/config-search');
+        await status.keyboard.press('Escape');
+        await status.waitForTimeout(200);
+      }
+
       await shot(status, '1440x900-config-connect');
       for (const name of [LBL.net, LBL.py, LBL.agent, LBL.about]) {
         await status.getByRole('button', { name }).click();

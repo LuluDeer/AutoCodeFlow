@@ -69,7 +69,9 @@ html[lang='en'] .cfg-nav { width: 208px; }
   align-items: stretch;
   gap: 1px;
   width: 100%;
-  padding: var(--space-1) var(--space-2);
+  /* 垂直内边距 5px：整行命中高度 ≥24px（WCAG 2.5.8 AA 最小目标），
+     原 4px 时双行结果行实测 23px，差 1px 不达标。 */
+  padding: 5px var(--space-2);
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
