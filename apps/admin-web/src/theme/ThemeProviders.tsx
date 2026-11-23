@@ -13,7 +13,15 @@ import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
-import { DESIGN_TOKENS, DARK_TOKENS, LIGHT_TOKENS, FONT_STACKS, CARD_RADIUS } from './tokens';
+import {
+  DESIGN_TOKENS,
+  DARK_TOKENS,
+  LIGHT_TOKENS,
+  FONT_STACKS,
+  CARD_RADIUS,
+  PRIMARY_BUTTON,
+  SEMANTIC_TEXT,
+} from './tokens';
 import {
   useThemeStore,
   selectResolvedTheme,
@@ -36,15 +44,27 @@ import { registerModalApi } from '../utils/modal';
 export function buildAntdTheme(resolved: 'light' | 'dark'): ThemeConfig {
   const isDark = resolved === 'dark';
   const face = isDark ? DARK_TOKENS : LIGHT_TOKENS;
+  const linkColor = SEMANTIC_TEXT.link[resolved];
+  const linkHover = isDark ? '#86efac' : '#166534';
+  const infoColor = SEMANTIC_TEXT.info[resolved];
   return {
     algorithm: isDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
     token: {
-      // MASTER.md Accent/CTA——antd 主色与强调色共源
+      // MASTER.md Accent/CTA——antd 主色与强调色共源（保持 #22C55E 品牌色相）
       colorPrimary: DESIGN_TOKENS.accent,
-      colorLink: DESIGN_TOKENS.accent,
-      colorInfo: DESIGN_TOKENS.accent,
+      colorPrimaryText: linkColor,
+      colorLink: linkColor,
+      colorLinkHover: linkHover,
+      colorLinkActive: isDark ? '#22c55e' : '#14532d',
+      // 信息语义色回归语义蓝（亮 #2563EB 5.17:1 / 暗 #60A5FA >7:1），
+      // 避免全站 <Alert type="info"> 与 processing 状态点被品牌绿染绿
+      colorInfo: infoColor,
+      colorInfoText: infoColor,
       colorSuccess: DESIGN_TOKENS.accent,
+      colorSuccessText: SEMANTIC_TEXT.success[resolved],
+      colorWarningText: SEMANTIC_TEXT.warning[resolved],
       colorError: DESIGN_TOKENS.destructive,
+      colorErrorText: SEMANTIC_TEXT.danger[resolved],
       colorBgLayout: face.background,
       colorBgContainer: face.container,
       colorBgElevated: isDark ? DESIGN_TOKENS.muted : '#FFFFFF',
@@ -53,6 +73,7 @@ export function buildAntdTheme(resolved: 'light' | 'dark'): ThemeConfig {
       colorText: face.text,
       colorTextSecondary: face.textSecondary,
       colorTextTertiary: face.textSecondary,
+      colorTextPlaceholder: isDark ? '#94a3b8' : '#64748b',
       borderRadius: 8,
       fontFamily: FONT_STACKS.body,
       // MASTER §Typography：代码/日志/等宽场景（Typography.Text code 等）跟随
@@ -65,6 +86,41 @@ export function buildAntdTheme(resolved: 'light' | 'dark'): ThemeConfig {
       // 注意与全局 token.borderRadius=8 的差异是**有意的**——卡片视觉上比
       // 按钮/输入框更圆，故不并入全局值。
       Card: { borderRadius: CARD_RADIUS },
+      // 侧边栏选中项 AA 对比度（替代 #22C55E 在白底 2.28:1 低对比）
+      Menu: {
+        itemSelectedColor: linkColor,
+        subMenuItemSelectedColor: linkColor,
+        itemSelectedBg: isDark ? 'rgba(74, 222, 128, 0.14)' : '#f0fdf4',
+      },
+      // 实心单选按钮 AA 对比度（修 TaskForm 运行时等选中态白字 2.28:1）
+      Radio: {
+        buttonSolidCheckedBg: PRIMARY_BUTTON.bg,
+        buttonSolidCheckedHoverBg: PRIMARY_BUTTON.hoverBg,
+        buttonSolidCheckedActiveBg: PRIMARY_BUTTON.activeBg,
+        buttonSolidCheckedColor: PRIMARY_BUTTON.text,
+      },
+      Tabs: {
+        itemSelectedColor: linkColor,
+        itemHoverColor: linkHover,
+        inkBarColor: linkColor,
+      },
+      Segmented: {
+        trackBg: face.muted,
+        itemColor: face.textSecondary,
+        itemHoverColor: face.text,
+        itemSelectedBg: isDark ? DARK_TOKENS.border : LIGHT_TOKENS.container,
+        itemSelectedColor: face.text,
+      },
+      Tag: {
+        defaultBg: isDark ? DESIGN_TOKENS.secondary : LIGHT_TOKENS.muted,
+        defaultColor: face.text,
+      },
+      Pagination: {
+        itemActiveColor: linkColor,
+        itemActiveColorHover: linkHover,
+        colorPrimary: linkColor,
+        colorPrimaryHover: linkHover,
+      },
     },
   };
 }
