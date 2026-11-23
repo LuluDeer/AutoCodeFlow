@@ -1,7 +1,30 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-23
-> 当前治理分支为 `chore/repo-governance-2026-11`（基于 `origin/main` `v2.3.0`，`develop` 已 fast-forward 同步至 `origin/main`）。其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-23（第 2 轮）
+> 当前分支 `develop` = `main` = `origin/main` = `de49cf9e`（v2.3.0 / desktop 1.12.1 准备版），本轮开工时已确认同步、无需合并。其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
+
+## 本轮（2026-11-23 · 第 2 轮）：体验优化自主推进（四切片并行 + 审计驱动修复轮 + 独立验收）
+
+**编排方式**：主控核实同步与种子候选 → 四路写域互斥并行（desktop-visual / guards / web-p3 / new-surface-audit）→ 审计确证项修复轮（复用审计 agent）→ 独立集成验收（diff 复核 + 全量门禁复跑 + 真浏览器 smoke + 桌面证据抽查）。全部产出落在工作树，**未提交、未 push**，HEAD 仍 `de49cf9e`，`stash@{0}`（用户 11-16 WIP）未动。
+
+| 切片 | 交付 | 关键文件 |
+|---|---|---|
+| 桌面 Electron Windows 真机复验 | 真窗（Playwright electron.launch，未打包主进程）zh/en × 4 档尺寸（760×560 最小可用 / 900×620 / 1280×800 / 1440×900）覆盖 status/history/apps/config + 向导 5 步 + 抽屉/确认条/详情/日志/未保存-差异态，**66 张真机 PNG、probe 中英各 0 告警**；上一轮三类静态修复（文本硬裁切/选中态语义/对齐）全部真机确认通过，含补证的 A5 搜索下拉与 C3 confirm-key。harness 增 `--out`/`--tmpdir`（中性临时根防用户名路径入档）/历史选中态/配置搜索取证步骤。**新发现并修复 1 个确证缺陷**：搜索下拉命中行高 23px < WCAG 2.5.8 AA 24px，`.cfgx-search-result` 垂直 padding 4→5px，前后对比截图 + probe 转零 | `apps/executor-desktop/e2e/visual-audit.cjs`、`src/renderer/styles/pages/config-v5.css` |
+| 守卫补牙 | ① size-caps CLI 默认根从 `process.cwd()` 改为按脚本位置锚定（`--root` 覆盖优先，`check({root})` 语义不变），子目录实跑 exit 0，新增 selftest ㊲（41/41）；② desktop 守卫新增判据⑥：renderer 9 组 selftest 必须全部被入口 import 接线（直连 + for 循环数组均解析）、`test:renderer` 必须执行入口，含下界/结构红/7 条新用例⑰-㉓（23/23）；顺带修 2 个 Windows 路径归一化缺陷（main 侧 indexOf 正斜杠失配、walkRenderer 相对目录误传）。反证全部有牙（变异红/还原绿），门禁继承既有接线（根 package.json L259→L117 chain、ci.yml L1192-1193），无孤儿守卫 | `scripts/check-size-caps.mjs`、`scripts/check-desktop-selftests-wired.mjs` |
+| admin-web 占位符收口 | 13 个确证空值回落位点 `-`→`—`（6 生产文件），新增字形守卫（6 用例，反证有牙）；合法例外登记保留（artifactSize 边界契约、`taskList.nextRun.none` 词条、slug/负号解析）。**「ExecutorDetailPage 4 处标签重复」经穷尽溯源（archive/handoff/会话轨迹/board/悬空提交）+ 全量标签静态枚举判为当前树不可复现**：各视图内标签键唯一，跨弹窗共享四行是独立确认框的身份回显范式，未做推测性改动 | `ExecutionCompare.tsx`、`ExecutionRetryChain.tsx`、`ApplicationDetailPage.tsx`、`settings/{EventSubscriptionsSettings,index}.tsx`、`task-detail/version-view-models.tsx`、`__tests__/placeholder-fallback-glyph.test.ts`（新）等 |
+| 新功能面审计 + 修复轮 | 只读审计 Inbox/NorthStar/Telemetry/建会话弹窗/诊断/sops 指派，确证 11 条（P2×3、P3×8，无 P0/P1）；修复轮 12 项处置：停摆横幅 reason 走 i18n + 消费 `degradedCounts` 下界 `+`/`workersKnown` 限定语（对齐 R211）、SOP 指派/澄清失败改 `showApiError` 去双 toast、建会话弹窗透后端错误、NorthStar 错误行不再 `[object Object]`、空标题不回 uuid、深链未命中中性 Alert（保留 R289 B 契约）、`useRaceGuard` 序号守卫（先红后绿）、拒绝按钮 Tooltip、Telemetry 待确认期间 Switch 禁用（先红后绿）；F1 前端抽常量部分修复（后端 reasons 结构化属 admin-api 写域，留后续） | `InboxPage.tsx`、`components/inbox/*`、`api/inbox.ts`、`SopsPage.tsx`、`NorthStarCard.tsx`、`TelemetrySettings.tsx`、`AgentSessionCreateModal.tsx`、`TaskAgentDiagnosis.tsx`、locales 等 10 生产 + 9 测试 |
+
+**验收证据（最高级别：admin-web 真浏览器 + 桌面真 Electron 窗口；独立验收方复核）**：
+- admin-web 全量 `npm test -- --run`：**355 files / 2904 passed / 1 skipped / 0 failed** exit 0；`npx tsc -b` 0；`lint:i18n` 0（selftest 9/9，zh/en 各 3847 键 0 缺失）。
+- 真浏览器 smoke：`PLAYWRIGHT_CHROMIUM_CHANNEL=chrome` + 真实 `vite build` + preview(4177) + 系统 Chrome 157 → **9/9 passed** exit 0（oidc ECONNREFUSED 为离线夹具预期噪音）。
+- 守卫：size-caps 主跑（仓根与 admin-web 子目录均 exit 0，2265 文件）+ selftest **41/41**；desktop-wired 主跑（60 main + 9 renderer 接线一致）+ selftest **23/23**；mutation-residue selftest 11/11 + 实扫 28 文件配对 0 高危。
+- 桌面：`typecheck:renderer` / `test:renderer` 全绿；66 PNG 全部真实分辨率（≥660×560），IDAT 泄露扫描 0 命中；验收方抽查 6 张与判定表一致。
+- 独立 diff 复核：28 M + 3 新增全部落在声明写域，`source-size-baseline.json` **零 diff**，安全语义（确认门/RBAC/竞态守卫/第二人 Tooltip）未放松，verdict **无阻断（P0/P1/P2 = 0）**。
+- 证据留档（agent artifacts，绝对路径）：桌面 `…\.sessions\38455867820709890\agents\s_000VYkKqJl0\artifacts\visual-evidence\REPORT.md`（+zh/en 各 33 PNG、_comparison 前后对比）；审计与修复 `…\agents\s_000VYkKSf40\artifacts\admin-web-incremental-ux-audit-2026-11-23.md`、`admin-web-ux-fix-report-2026-11-23.md`；验收 `…\agents\s_000VybeZLu6\artifacts\acceptance-report-2026-11-23.md`（+full-diff.patch、测试/smoke 日志）。
+
+**未覆盖边界（如实）**：① 桌面真机证据为实现方产出、验收方只读抽查（未二次重拉 Electron）；执行器真实运行态未启动（夹具 autoStart:false），复制 ID/导出/导入/NIC 等次级动作未断言副作用；仅浅色主题；executor-node bundle 未重建。② 无真实 PG/Redis 后端集成级验证。③ F1 根因（后端 reasons 结构化）、C1 原位 Alert 追加后端原因、H1 接 AbortController 属后续项；`queueStallBannerItem` subtitle 存量 `pendingJobs=` token 旧形残留（非本轮回归）；详情页配置弹窗 `maxConcurrentTasks` 借用 `editModal.maxConcurrent` 标签键（零视觉影响，待产品口径）。④ 「4 处标签重复」原始审计位点不可考，如后续拿到原始清单可对照复核。⑤ 未提交、未 push——按 House Rules 等明确指令。
+
+---
 
 ## 本轮（2026-11-23）：中台与桌面客户端 UI/UX 细节优化收口（3 阶段多 Agent 流水线）
 
