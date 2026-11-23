@@ -3,10 +3,10 @@
 > **受众**：正在执行版本升级的自托管运维 · **状态**：稳定 · **最后核对**：2026-11-22
 > **读者**：自托管运维。本文覆盖两段路，按需取用：
 > - **① v1.15.0（上一稳定线）→ v2.0.0（2026-10-30 已发布）**——**必须做**，含 15 个迁移与 3 条破坏性改动（§0–§8）；
-> - **② v2.0.0 → v2.3.0（2026-11-22 已发布）**——累计 20 个新迁移（`0082`–`0102`，全库共 **146 个迁移**），含 SSRF 出站闸收紧（§10–§13）、令牌派生轮换（§14）、Agent 工具调用审批键重写（§15，迁移 `0100`）以及 TTFV 漏斗与北极星体系（迁移 `0101`/`0102`，详见 [北极星/TTFV 生产启用 runbook](plan/north-star-enablement.md)）；桌面端最新为 **`desktop-v1.12.0`**。§9 保留截至 `0093` 的阶段快照以便对照。
+> - **② v2.0.0 → v2.3.0（2026-11-22 已发布）**——累计 20 个新迁移（`0082`–`0102`，全库共 **146 个迁移**），含 SSRF 出站闸收紧（§10–§13）、令牌派生轮换（§14）、Agent 工具调用审批键重写（§15，迁移 `0100`）以及 TTFV 漏斗与北极星体系（迁移 `0101`/`0102`，详见 [北极星/TTFV 生产启用 runbook](plan/north-star-enablement.md)）；桌面端最新为 **`desktop-v1.12.1`**。§9 保留截至 `0093` 的阶段快照以便对照。
 >
 > **当前发布基线（2026-11-22 核对）**：
-> - `version.txt` = `2.3.0`；`release-please-manifest.json` 的 `"."` = `2.3.0`；最新平台 tag = `v2.3.0`（2026-11-22）；桌面最新 tag = `desktop-v1.12.0`（2026-11-09）。
+> - `version.txt` = `2.3.0`；`release-please-manifest.json` 的 `"."` = `2.3.0`；最新平台 tag = `v2.3.0`（2026-11-22）；桌面最新 tag = `desktop-v1.12.1`（2026-11-23）。
 > - **历史核实基线（保留可追溯）**：v2.0.0 阶段（2026-11-05，commit `907879f0`）：`main` = `3159ad86`（v2.0.0 之后 31 个提交）；`develop` = `e3cb0797`（领先 main 45 个提交，main 无独有提交）；v2.0.0 tag commit `4da13ab3`（2026-10-30 04:44 +0800）；当时桌面 tag `desktop-v1.10.2`。
 > - **覆盖范围**：v1.15.0 → v2.0.0 的迁移矩阵（§0–§8）、v2.0.0 → v2.3.0 增量与破坏性变更（§9–§15）。**不覆盖** v1.15.0 之前的历史版本。
 > - 本文所有命令/路径/env 键均可在仓库内核对；锚点写成 `file:line`，合并后行号可能漂移，**以符号名/文件名兜底**。
@@ -473,8 +473,8 @@ done
 
 **桌面是既有先例**：`desktop-vX.Y.Z` 独立 tag + `release-desktop.yml`，version-guard 只比
 `apps/executor-desktop/package.json`，不参与 root lockstep。v2.0.0 发布时桌面是 **1.10.0**；
-当前最新是 **1.12.0**（`package.json` + lock 已同步），需要发桌面时直接
-`git tag desktop-v1.12.0 && git push origin desktop-v1.12.0`（`desktop-version-guard` 要求
+当前最新是 **1.12.1**（`package.json` + lock 已同步），需要发桌面时直接
+`git tag desktop-v1.12.1 && git push origin desktop-v1.12.1`（`desktop-version-guard` 要求
  tag 与 `apps/executor-desktop/package.json` **逐字相等**，写错版本号会被它当场拒掉）。
 
 > 结论：**这次选 A 或 B 都不动流水线**，区别只在 commit 里有没有 `!`。选 C 才需要改造。
@@ -494,7 +494,7 @@ npm run check:release-config   # 六层一致性全绿才打 tag
 - CHANGELOG 顶部应出现 `⚠ BREAKING CHANGES` 两条（产物上传鉴权 / webhook 投递语义）；
 - SDK 的 GitHub Release 会被 `release.yml` 的 `demote-sdk-release` 自动标成 **prerelease**
   （这是刻意的：GitHub `latest` 必须留给 `desktop-v*`，否则桌面自动更新会去比 SDK 版本号）；
-- 桌面单独打 `desktop-v1.12.0`（当前桌面最新），与平台 `v2.3.0` 互不影响。
+- 桌面单独打 `desktop-v1.12.1`（当前桌面最新），与平台 `v2.3.0` 互不影响。
 
 ## 7. 已知取舍
 
@@ -528,7 +528,7 @@ npm run check:release-config   # 六层一致性全绿才打 tag
 | 项 | v2.0.0 | v2.3.0（2026-11-22 已发布） | 影响 |
 |---|---|---|---|
 | 迁移 | 126 | **146**（+20：`0082`–`0102`；下表为 `0082`–`0093` 阶段快照，`0100` 见 §15，`0101`/`0102` 为 TTFV/北极星表） | `0100` 含列类型改写与表锁（见 §15）；其余为建表 / 加列 / 建索引，不删数据 |
-| 桌面端 | `1.10.0` | **`desktop-v1.12.0`**（独立发布线） | 建议升；不做自动降级，回退见 `docs/deployment.md` |
+| 桌面端 | `1.10.0` | **`desktop-v1.12.1`**（独立发布线） | 建议升；不做自动降级，回退见 `docs/deployment.md` |
 | env 键 | — | **+2**：`AGENT_DEPLOY_APPROVAL_REQUIRED`（默认 `true`）、`SOP_BODY_SCAN_MODE`（默认 `warn`）；北极星遥测复用 `SEC_SECRETS_KEY` | 不配也能起来；启用北极星需配非空 `SEC_SECRETS_KEY` |
 | 线缆协议 | 8 | **9**（heartbeat 新增可选 `taskSandbox`） | `supportedMinProtocolVersion` 仍为 1；老执行器照常注册 |
 | 破坏性变更 | — | **1 条**：执行器/中台出站 SSRF 姿态收紧（R05/R66） | 内网执行器/webhook 需显式开开关；**同机 `127.0.0.1` 任何开关态不再可用**，见 [§11](#11-执行器出站姿态r05-起破坏性) |

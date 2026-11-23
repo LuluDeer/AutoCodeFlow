@@ -104,7 +104,7 @@ cd AutoCodeFlow
 
 > 桌面 GUI 能力现状：Linux X11/XWayland 已真机验收；Windows GUI 为 beta（focus/click/type/screenshot + 应用白名单）；macOS 仅侦察。详见 [执行器 Agent 路线图](docs/design/agent-and-deployment/06-roadmap.md)。
 
-> **Status**：当前平台版本为 **v2.3.0**（2026-11-22 发布）；桌面执行器独立发版（`desktop-v1.12.0`，2026-11-09，保留 GitHub Latest 以支持桌面端自动更新）。self-hosted first——2.x 内 API 仍可能变化，生产使用请钉 release tag。 · **最后核对**：2026-11-22
+> **Status**：当前平台版本为 **v2.3.0**（2026-11-22 发布）；桌面执行器独立发版（`desktop-v1.12.1`，2026-11-23，保留 GitHub Latest 以支持桌面端自动更新）。self-hosted first——2.x 内 API 仍可能变化，生产使用请钉 release tag。 · **最后核对**：2026-11-23
 
 ## 🖼️ 界面一览
 
