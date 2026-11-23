@@ -36,6 +36,19 @@ body {
 
 button, input, select, textarea { font-family: inherit; }
 
+/* 仅对读屏可见的视觉隐藏容器（用于 aria-live 状态播报） */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ── 焦点：键盘用户必须可见 ─────────────────────────────────────────── */
 button:focus-visible,
 input:focus-visible,
@@ -253,20 +266,31 @@ textarea:focus-visible,
 }
 .tab:hover { color: var(--text2); background: var(--surface-2); }
 .tab.active {
-  color: var(--accent);
+  color: var(--accent-hover);
   border-color: var(--accent-border);
   background: var(--accent-muted);
   font-weight: 600;
 }
 .tab.active:hover { background: var(--accent-muted); }
-/* 选中态只保留药丸（浅绿底 + accent 描边 + accent 字）：
+/* 选中态只保留药丸（浅绿底 + accent 描边 + 深绿字，6.41:1 过 AA）：
    此前药丸之外还叠了一条 2px 绿色下划线，同一处出现两个"选中"信号，
    且下划线用 -7px/-5px 两个魔数适配折行，视觉上像是没对齐的装饰线。 */
 .tab-icon { width: 16px; height: 16px; flex: none; }
 
 @media (max-width: 820px) {
-  .tabs { gap: 3px; padding: 0 8px; }
-  .tab { flex: 1; min-width: 0; padding: 0 6px; gap: 6px; }
+  .tabs {
+    flex: 1;
+    width: 100%;
+    min-width: 0;
+    gap: 4px;
+    padding: 0 4px;
+  }
+  .tab {
+    flex: 1;
+    min-width: 0;
+    padding: 0 10px;
+    gap: 6px;
+  }
 }
 
 /* ── 主内容区 ───────────────────────────────────────────────────────── */

@@ -18,65 +18,36 @@ import {
   type AppFilter,
   type AppSort,
 } from '../apps-view';
+import AppsDrawer from './apps/AppsDrawer';
+import {
+  buildAppGroups,
+  countAppFilters,
+  firstDeletable,
+  formatDeployTime,
+  groupStatus,
+  runModePrefix,
+  sortAriaOf,
+  type AppGroup,
+  type RunStatus,
+  type RunningMap,
+} from './apps/apps-helpers';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
-
 type AppEntry = {
   appId: string;
-  /**
-   * app.json 记录的真实应用名。
-   *
-   * **null = 本机没记录过名字**（旧部署早于 app.json 落地，且日志回溯也没命中）。
-   * 绝不回落成 appId：把 UUID 当名字渲染正是用户报障的
-   * 「显示的应用也是ID形式 我都看不出是什么应用」——而且回落之后，
-   * 「有名字」与「没名字」在 UI 上就再也分不出来，无法给出可操作提示。
-   */
   appName: string | null;
   deploymentId: string;
-  /** releaseKey 里的版本号；无法解析时为 null（UI 如实显示「版本未知」）。 */
   version: string | null;
   releaseKey: string;
-  /** current 软链指向的即时版本。 */
   isCurrent: boolean;
-  /** release 目录 mtime（部署时间）；读取失败为 null。 */
   deployedAt: number | null;
   hasLog: boolean;
   logPath: string;
   deployDir: string;
-  /** 应用根目录（跨 release 稳定）——「打开文件夹」的目标。 */
   appRoot: string;
-  /** 部署时的 runMode；旧部署无此字段时为 null。用于解释「为什么没有日志」。 */
   runMode: string | null;
 };
-
-/** 部署时间行内显示；跨年时保留年份，避免旧版本看起来像今年部署。 */
-function formatDeployTime(ms: number | null): string {
-  if (!ms) return '';
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, '0');
-  const year = d.getFullYear() === new Date().getFullYear() ? '' : `${d.getFullYear()}-`;
-  return `${year}${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-type AppGroup = {
-  appId: string;
-  name: string | null;
-  entries: AppEntry[];
-  newestAt: number;
-  current: AppEntry | null;
-  runningCount: number;
-  versionCount: number;
-  hasName: boolean;
-  hasCurrent: boolean;
-  hasLog: boolean;
-  nameMatches: boolean;
-  matchedEntries: AppEntry[];
-};
-
-type RunningMap = Record<string, { pid?: number; running?: boolean }>;
-
-type RunStatus = 'running' | 'scheduled' | 'stopped';
 
 const STATUS_LABEL_KEY: Record<RunStatus, string> = {
   running: 'appx.status.running',
@@ -100,22 +71,6 @@ function classifyLog(line: string): ViewerLogLevel {
   return '';
 }
 
-function groupStatus(group: AppGroup): RunStatus {
-  if (group.runningCount > 0) return 'running';
-  if (runModeOf(group) === 'scheduled') return 'scheduled';
-  return 'stopped';
-}
-
-function runModeOf(group: AppGroup): string {
-  return group.entries[0]?.runMode ?? '—';
-}
-
-/** 列表副标题用的「模式 · 」前缀；无模式（null / '-' / '—'）时不渲染分隔符。 */
-function runModePrefix(group: AppGroup): string {
-  const mode = group.entries[0]?.runMode?.trim();
-  return mode && mode !== '-' && mode !== '—' ? `${mode} · ` : '';
-}
-
 function versionLabel(entry: AppEntry): string {
   if (entry.version) return `v${entry.version}`;
   return entry.releaseKey ? t('apps.versionUnknown') : t('apps.noReleaseYet');
@@ -130,14 +85,6 @@ function avatarClassName(name: string | null, appId: string, size?: 'sm' | 'lg')
 
 function avatarInitial(name: string | null): string {
   return name ? name.trim().charAt(0).toUpperCase() : '?';
-}
-
-function firstDeletable(group: AppGroup, running: RunningMap): AppEntry | null {
-  return group.entries.find(entry =>
-    entry.releaseKey
-    && !entry.isCurrent
-    && !running[entry.deploymentId]?.running,
-  ) ?? null;
 }
 
 // ── 应用日志查看器（日志工作台 v3 第二步之二：改接共享 components/LogViewer）──
@@ -608,19 +555,6 @@ export default function AppsPage() {
     }
   }
 
-  /** 复制完整 appId（详情抽屉用）。 */
-  async function handleCopyId(appId: string) {
-    try {
-      const res = await window.electronAPI.writeClipboardText(appId);
-      setNotice({
-        kind: res.ok ? 'ok' : 'err',
-        text: `${t('appx.action.copyId')} ${appId.slice(0, 8)}`,
-      });
-    } catch (err) {
-      setNotice({ kind: 'err', text: ipcErrorMessage(err) });
-    }
-  }
-
   /** 删除单个历史版本（用户报障：无法撤销部署）。仅由页内确认条触发。 */
   async function handleDeleteRelease(entry: AppEntry) {
     const label = entry.version ? `v${entry.version}` : entry.releaseKey;
@@ -684,46 +618,9 @@ export default function AppsPage() {
   const deferredSearch = useDeferredValue(search);
   const query = deferredSearch.trim().toLocaleLowerCase();
   const tokens = useMemo(() => query.split(/\s+/).filter(Boolean), [query]);
-  const grouped = useMemo(() => {
-    const byId = new Map<string, AppEntry[]>();
-    for (const entry of apps) {
-      const entries = byId.get(entry.appId) ?? [];
-      entries.push(entry);
-      byId.set(entry.appId, entries);
-    }
-    return Array.from(byId, ([appId, unsorted]): AppGroup => {
-      // 生效、运行中的版本优先；其余按部署时间。旧 current 也不会埋在长列表底部。
-      const entries = [...unsorted].sort((a, b) =>
-        Number(b.isCurrent) - Number(a.isCurrent)
-        || Number(Boolean(running[b.deploymentId]?.running)) - Number(Boolean(running[a.deploymentId]?.running))
-        || (b.deployedAt ?? 0) - (a.deployedAt ?? 0),
-      );
-      const name = entries.find(entry => entry.appName)?.appName ?? null;
-      const common = `${name ?? ''} ${appId} ${entries[0]?.appRoot ?? ''}`.toLocaleLowerCase();
-      const nameMatches = tokens.every(token => common.includes(token));
-      const matchedEntries = tokens.length && !nameMatches
-        ? entries.filter(entry => {
-          const searchable = `${common} ${entry.version ?? ''} ${entry.releaseKey} ${entry.deploymentId}`.toLocaleLowerCase();
-          return tokens.every(token => searchable.includes(token));
-        })
-        : entries;
-      const current = entries.find(entry => entry.isCurrent) ?? null;
-      return {
-        appId,
-        name,
-        entries,
-        newestAt: entries.reduce((latest, entry) => Math.max(latest, entry.deployedAt ?? 0), 0),
-        current,
-        runningCount: entries.filter(entry => running[entry.deploymentId]?.running).length,
-        versionCount: entries.filter(entry => Boolean(entry.releaseKey)).length,
-        hasName: Boolean(name),
-        hasCurrent: Boolean(current),
-        hasLog: entries.some(entry => entry.hasLog),
-        nameMatches,
-        matchedEntries,
-      };
-    });
-  }, [apps, running, tokens]);
+  const grouped = useMemo(() => buildAppGroups(apps, running, tokens), [apps, running, tokens]);
+
+  const filterCounts = useMemo(() => countAppFilters(grouped), [grouped]);
 
   const filteredGroups = useMemo(() => grouped
     .filter(group => (!tokens.length || group.matchedEntries.length > 0) && passesFilter(group, filter))
@@ -758,11 +655,7 @@ export default function AppsPage() {
 
   function sortAria(col: 'app' | 'current' | 'versions' | 'status' | 'deployed'):
   'ascending' | 'descending' | 'none' {
-    if (sortOrder === 'name' && col === 'app') return 'ascending';
-    if (sortOrder === 'versions' && col === 'versions') return 'descending';
-    if (sortOrder === 'recent' && col === 'deployed') return 'descending';
-    if (sortOrder === 'running' && col === 'status') return 'descending';
-    return 'none';
+    return sortAriaOf(sortOrder, col);
   }
 
   if (viewing) {
@@ -835,100 +728,35 @@ export default function AppsPage() {
   function renderDrawer(group: AppGroup) {
     const status = groupStatus(group);
     return (
-      <aside
-        className="appx-drawer"
-        role="dialog"
-        aria-modal="false"
-        aria-labelledby="appx-detail-title"
-      >
-        <header className="appx-drawer-head">
-          <h2 id="appx-detail-title" className="appx-drawer-title">{t('appx.detail.title')}</h2>
-          <button
-            ref={drawerCloseRef}
-            type="button"
-            className="btn btn-sm appx-drawer-close"
-            onClick={closeDetail}
-            aria-label={t('ui.close')}
-            title={t('ui.close')}
-          ><Icon name="close" /></button>
-        </header>
-        <div className="appx-drawer-body">
-          {confirmInDrawer && renderConfirmBar()}
-          <section className="appx-detail-hero">
-            <span className={avatarClassName(group.name, group.appId, 'lg')} aria-hidden="true">{avatarInitial(group.name)}</span>
-            <span className="appx-detail-hero-text">
-              <strong
-                className={group.name ? 'appx-detail-name' : 'appx-detail-name appx-detail-name-unknown'}
-                title={group.name
-                  ? t('apps.nameTitle', group.name, group.appId)
-                  : t('apps.nameUnknownTitle', group.appId)}
-              >
-                {group.name ?? t('apps.unknownName')}
-              </strong>
-              <span className="appx-detail-sub">
-                {runModePrefix(group)}{group.appId.slice(0, 8)}
-              </span>
-            </span>
-          </section>
-
-          {!group.name && <p className="appx-detail-hint">{t('appx.unknownHint')}</p>}
-
-          <section className="appx-detail-section">
-            <div className="appx-detail-id-row">
-              <code className="appx-detail-id" title={group.appId}>{group.appId}</code>
-              <button type="button" className="btn btn-sm" onClick={() => void handleCopyId(group.appId)}>
-                <Icon name="copy" /> {t('appx.action.copyId')}
-              </button>
-            </div>
-            <h3 className="appx-detail-heading">{t('appx.detail.overview')}</h3>
-            <div className="appx-detail-grid">
-              <div className="appx-detail-row">
-                <span className="appx-detail-label">{t('appx.col.status')}</span>
-                <span className={`appx-status appx-status-${status}`}>
-                  <span className={`appx-dot appx-dot-${status}`} aria-hidden="true" />
-                  {t(STATUS_LABEL_KEY[status])}
-                </span>
-              </div>
-              <div className="appx-detail-row">
-                <span className="appx-detail-label">{t('appx.col.current')}</span>
-                <span className="appx-detail-value">
-                  {group.current ? (
-                    <span className="app-badge app-badge-current">
-                      {group.current.version ? `v${group.current.version}` : t('apps.noCurrent')}
-                    </span>
-                  ) : t('apps.noCurrent')}
-                </span>
-              </div>
-              <div className="appx-detail-row">
-                <span className="appx-detail-label">{t('appx.col.deployedAt')}</span>
-                <span className="appx-detail-value appx-num">{group.newestAt > 0 ? formatDeployTime(group.newestAt) : '—'}</span>
-              </div>
-              <div className="appx-detail-row">
-                <span className="appx-detail-label">{t('appx.col.versions')}</span>
-                <span className="appx-detail-value appx-num">{group.versionCount}</span>
-              </div>
-            </div>
-          </section>
-
-          <section className="appx-detail-section">
-            {renderReleases(group)}
-          </section>
-
-          <section className="appx-detail-section appx-danger-zone">
-            <h3 className="appx-detail-heading">{t('appx.detail.danger')}</h3>
-            <p className="appx-danger-hint">{t('appx.detail.uninstallHint')}</p>
-            <button
-              type="button"
-              className="btn btn-sm btn-outline-danger"
-              onClick={() => setPendingConfirm({ kind: 'uninstall', appId: group.appId, name: group.name ?? group.appId.slice(0, 8), count: group.entries.length })}
-              disabled={Boolean(busy) || Boolean(pendingConfirm)}
-              title={t('apps.uninstallTitle')}
-            >
-              {busy === group.appId ? t('apps.busy') : t('apps.uninstall')}
-            </button>
-          </section>
-        </div>
-      </aside>
+      <AppsDrawer
+        group={{
+          appId: group.appId,
+          name: group.name,
+          entriesCount: group.entries.length,
+          currentVersion: group.current?.version ?? null,
+          hasCurrent: Boolean(group.current),
+          newestAtText: group.newestAt > 0 ? formatDeployTime(group.newestAt) : '—',
+          versionCount: group.versionCount,
+          runModePrefix: runModePrefix(group),
+        }}
+        status={status}
+        statusLabel={t(STATUS_LABEL_KEY[status])}
+        avatarClass={avatarClassName(group.name, group.appId, 'lg')}
+        avatarInitialText={avatarInitial(group.name)}
+        busy={busy}
+        hasPendingConfirm={Boolean(pendingConfirm)}
+        closeRef={drawerCloseRef}
+        confirmBar={confirmInDrawer ? renderConfirmBar() : null}
+        releases={renderReleases(group)}
+        onClose={closeDetail}
+        onRequestUninstall={() => setPendingConfirm({
+          kind: 'uninstall',
+          appId: group.appId,
+          name: group.name ?? group.appId.slice(0, 8),
+          count: group.entries.length,
+        })}
+        t={t}
+      />
     );
   }
 
@@ -971,7 +799,10 @@ export default function AppsPage() {
               className={filter === item.value ? 'active' : ''}
               aria-pressed={filter === item.value}
               onClick={() => setFilter(item.value)}
-            >{item.label}</button>
+            >
+              <span>{item.label}</span>
+              <span className="appx-filter-count">{filterCounts[item.value]}</span>
+            </button>
           ))}
         </div>
         <select
@@ -1040,7 +871,7 @@ export default function AppsPage() {
           <span className="empty-state-text">{filter === 'running' && !query
             ? t('apps.empty.noRunningBody')
             : t('apps.empty.noMatchBody')}</span>
-          <button type="button" className="btn btn-sm" onClick={() => { setSearch(''); setFilter('all'); }}>{t('appx.filter.all')}</button>
+          <button type="button" className="btn btn-sm" onClick={() => { setSearch(''); setFilter('all'); }}>{t('history.empty.clearFilters')}</button>
         </EmptyState>
       )}
 
@@ -1048,7 +879,12 @@ export default function AppsPage() {
           与右侧排序下拉重复，却多占一行、把列表往下挤 20px。 */}
       {filteredGroups.length > 0 && (query || filter !== 'all') && (
         <div className="apps-results-summary">
-          {t('apps.summary.found', filteredGroups.length)}
+          <span>{t('apps.summary.found', filteredGroups.length)}</span>
+          <button
+            type="button"
+            className="btn btn-sm appx-reset-btn"
+            onClick={() => { setSearch(''); setFilter('all'); }}
+          >{t('history.empty.clearFilters')}</button>
         </div>
       )}
 
@@ -1077,7 +913,8 @@ export default function AppsPage() {
                   return (
                     <tr
                       key={appId}
-                      className="appx-row"
+                      className={detailAppId === appId ? 'appx-row is-selected' : 'appx-row'}
+                      aria-current={detailAppId === appId ? 'true' : undefined}
                       tabIndex={0}
                       onClick={event => openDetail(appId, event.currentTarget)}
                       onKeyDown={event => {
@@ -1094,7 +931,7 @@ export default function AppsPage() {
                             className={name ? 'appx-app-name' : 'appx-app-name appx-app-name-unknown'}
                             title={name ? t('apps.nameTitle', name, appId) : t('apps.nameUnknownTitle', appId)}
                           >
-                            {name ?? t('apps.unknownName')}
+                            <span className="appx-app-name-text">{name ?? t('apps.unknownName')}</span>
                             {!name && <span className="appx-id-chip">{appId.slice(0, 8)}</span>}
                           </span>
                           <span className="appx-app-sub">
@@ -1207,7 +1044,8 @@ export default function AppsPage() {
               <button
                 key={appId}
                 type="button"
-                className="appx-compact-row"
+                className={detailAppId === appId ? 'appx-compact-row is-selected' : 'appx-compact-row'}
+                aria-current={detailAppId === appId ? 'true' : undefined}
                 onClick={event => openDetail(appId, event.currentTarget)}
               >
                 <span className={avatarClassName(name, appId, 'sm')} aria-hidden="true">{avatarInitial(name)}</span>

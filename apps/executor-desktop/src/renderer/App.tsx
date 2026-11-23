@@ -366,12 +366,12 @@ function MainWindow() {
 
       {/* 内容区 — 所有页面常驻 DOM，用 display 控制显隐，避免切 tab 时重新挂载导致闪烁。
           面板 DOM 序随 V4-1 Tab 重排（状态→历史→应用→配置），显隐由 hidden 控制。 */}
-      <div className="main-content">
+      <main className="main-content">
         <div id="status-panel" role="tabpanel" aria-labelledby="status-tab" hidden={tab !== 'status'} className={tab === 'status' ? 'tab-panel is-active' : 'tab-panel'}><StatusWindow active={tab === 'status'} /></div>
         <div id="history-panel" role="tabpanel" aria-labelledby="history-tab" hidden={tab !== 'history'} className={tab === 'history' ? 'tab-panel is-active' : 'tab-panel'}><HistoryPage active={tab === 'history'} /></div>
         <div id="apps-panel" role="tabpanel" aria-labelledby="apps-tab" hidden={tab !== 'apps'} className={tab === 'apps' ? 'tab-panel is-active' : 'tab-panel'}><AppsPage /></div>
         <div id="config-panel" role="tabpanel" aria-labelledby="config-tab" hidden={tab !== 'config'} className={tab === 'config' ? 'tab-panel is-active' : 'tab-panel'}><ConfigPage /></div>
-      </div>
+      </main>
     </div>
   );
 }

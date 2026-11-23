@@ -14,6 +14,7 @@
 import * as assert from 'node:assert';
 import {
   describeConnectionError,
+  describeConnectionMessage,
   ipv4Rank,
   isUnusableIPv4,
   listLocalIPv4s,
@@ -51,6 +52,30 @@ function main(): void {
   // ③ 未知码：回显**码本身**（那是常量枚举，不是数据），但不回显 message
   assert.equal(describeConnectionError('ESOMETHINGNEW'), '连接失败（ESOMETHINGNEW）');
   assert.equal(describeConnectionError(undefined), '连接失败（未知错误）');
+
+  // ③-b 英文界面分支：全部已知 errno、防地址回显、未知码与非 errno 报文均输出英文
+  assert.ok(describeConnectionError('ECONNREFUSED', 'en').includes('Connection refused'), 'EN ECONNREFUSED');
+  assert.ok(describeConnectionError('ENOTFOUND', 'en').includes('could not be resolved'), 'EN ENOTFOUND');
+  assert.ok(describeConnectionError('EAI_AGAIN', 'en').includes('could not be resolved'), 'EN EAI_AGAIN');
+  assert.ok(describeConnectionError('EHOSTUNREACH', 'en').includes('unreachable'), 'EN EHOSTUNREACH');
+  assert.ok(describeConnectionError('ETIMEDOUT', 'en').includes('timed out'), 'EN ETIMEDOUT');
+  assert.ok(describeConnectionError('ECONNRESET', 'en').includes('Connection reset'), 'EN ECONNRESET');
+  assert.ok(describeConnectionError('DEPTH_ZERO_SELF_SIGNED_CERT', 'en').includes('TLS'), 'EN TLS');
+  assert.equal(describeConnectionError('ESOMETHINGNEW', 'en'), 'Connection failed (ESOMETHINGNEW)');
+  assert.equal(describeConnectionError(undefined, 'en'), 'Connection failed (unknown error)');
+  for (const input of hostileInputs) {
+    const msg = describeConnectionError(input, 'en');
+    for (const leak of ['192.168.1.5', '10.0.0.7', 'internal.corp.example', '::1', 'getaddrinfo']) {
+      assert.ok(!msg.includes(leak), `EN 文案不得包含 ${leak}（输入：${String(input)}）`);
+    }
+    assert.ok(!/[\u4e00-\u9fff]/.test(msg), `EN 文案不得含中文：${msg}`);
+  }
+  assert.equal(describeConnectionMessage({ kind: 'ok', statusCode: 200 }, 'en'), 'Connected (HTTP 200)');
+  assert.equal(describeConnectionMessage({ kind: 'timeout' }, 'en'), 'Connection timed out (5s)');
+  assert.ok(describeConnectionMessage({ kind: 'unsupportedProtocol', protocol: 'ftp:' }, 'en').includes('Unsupported protocol'));
+  assert.ok(describeConnectionMessage({ kind: 'httpStatus', statusCode: 502 }, 'en').includes('502'));
+  assert.ok(describeConnectionMessage({ kind: 'invalidUrl', detail: 'bad' }, 'en').includes('Invalid URL'));
+  assert.equal(describeConnectionMessage({ kind: 'ok', statusCode: 200 }, 'zh'), '连接成功 (HTTP 200)');
 
   // ④ P1-1（生产实证 2026-10-22）：对外地址**排除段**与排序。
   //

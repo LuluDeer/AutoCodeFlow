@@ -1,4 +1,5 @@
 import * as os from 'os';
+import type { UiLocale } from './ui-language';
 
 /**
  * 虚拟/隧道网卡的接口名前缀与子串（小写匹配）。
@@ -155,31 +156,77 @@ export function normalizeListenHost(host: unknown): string {
 /** errno 码的形状：大写字母/数字/下划线（`ECONNREFUSED` / `EAI_AGAIN` / `ERR_TLS_…`）。 */
 const ERRNO_CODE_RE = /^[A-Z][A-Z0-9_]{1,63}$/;
 
-export function describeConnectionError(code: unknown): string {
+export function describeConnectionError(code: unknown, locale: UiLocale = 'zh'): string {
   // 只认**码的形状**：把 `err.message` 误传进来时（`getaddrinfo ENOTFOUND internal.corp.example`）
   // 会落到“未知错误”，而不是把整条消息原样回显 —— 否则这个函数就成了新的泄漏点。
   // 归一后的值：只有**长得像 errno 码**的输入才会被继续使用（message/地址一律变成空串）。
   const safeCode = typeof code === 'string' && ERRNO_CODE_RE.test(code) ? code : '';
+  const en = locale === 'en';
   switch (safeCode) {
     case 'ECONNREFUSED':
-      return '连接被拒绝：目标端口没有服务在监听（地址或端口可能不对）';
+      return en
+        ? 'Connection refused: no service is listening on the target port (check address or port)'
+        : '连接被拒绝：目标端口没有服务在监听（地址或端口可能不对）';
     case 'ENOTFOUND':
     case 'EAI_AGAIN':
-      return '域名无法解析：请检查地址拼写与本机 DNS/网络';
+      return en
+        ? 'Hostname could not be resolved: check the address and local DNS/network'
+        : '域名无法解析：请检查地址拼写与本机 DNS/网络';
     case 'EHOSTUNREACH':
     case 'ENETUNREACH':
-      return '目标不可达：本机到该网段没有路由';
+      return en
+        ? 'Target unreachable: no route from this machine to that network'
+        : '目标不可达：本机到该网段没有路由';
     case 'ETIMEDOUT':
-      return '连接超时：目标无响应（防火墙或服务未启动）';
+      return en
+        ? 'Connection timed out: target did not respond (firewall or service not running)'
+        : '连接超时：目标无响应（防火墙或服务未启动）';
     case 'ECONNRESET':
-      return '连接被重置：目标端口不是 HTTP 服务，或中间设备拦截';
+      return en
+        ? 'Connection reset: target port is not an HTTP service or was blocked by an intermediary'
+        : '连接被重置：目标端口不是 HTTP 服务，或中间设备拦截';
     case 'EPROTO':
     case 'ERR_TLS_CERT_ALTNAME_INVALID':
     case 'DEPTH_ZERO_SELF_SIGNED_CERT':
     case 'SELF_SIGNED_CERT_IN_CHAIN':
     case 'UNABLE_TO_VERIFY_LEAF_SIGNATURE':
-      return 'TLS 校验失败：证书与地址不匹配或为自签名';
+      return en
+        ? 'TLS verification failed: certificate does not match address or is self-signed'
+        : 'TLS 校验失败：证书与地址不匹配或为自签名';
     default:
-      return '连接失败（' + (safeCode || '未知错误') + '）';
+      return en
+        ? 'Connection failed (' + (safeCode || 'unknown error') + ')'
+        : '连接失败（' + (safeCode || '未知错误') + '）';
+  }
+}
+
+export type ConnectionMessageInput =
+  | { kind: 'ok'; statusCode: number }
+  | { kind: 'httpStatus'; statusCode: number | undefined }
+  | { kind: 'unsupportedProtocol'; protocol: string }
+  | { kind: 'timeout' }
+  | { kind: 'invalidUrl'; detail: string };
+
+/** 将 testAdminApiConnection 的非 errno 结果文案按界面语言本地化（默认 zh 兼容旧口径）。 */
+export function describeConnectionMessage(
+  input: ConnectionMessageInput,
+  locale: UiLocale = 'zh',
+): string {
+  const en = locale === 'en';
+  switch (input.kind) {
+    case 'ok':
+      return en ? `Connected (HTTP ${input.statusCode})` : `连接成功 (HTTP ${input.statusCode})`;
+    case 'httpStatus':
+      return en
+        ? `Server returned HTTP ${input.statusCode}; check the address`
+        : `服务器返回 HTTP ${input.statusCode}，请检查地址是否正确`;
+    case 'unsupportedProtocol':
+      return en
+        ? `Unsupported protocol: ${input.protocol} (only http/https supported)`
+        : `不支持的协议: ${input.protocol}（仅支持 http/https）`;
+    case 'timeout':
+      return en ? 'Connection timed out (5s)' : '连接超时 (5s)';
+    case 'invalidUrl':
+      return en ? `Invalid URL: ${input.detail}` : `无效的 URL: ${input.detail}`;
   }
 }

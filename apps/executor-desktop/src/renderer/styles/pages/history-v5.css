@@ -7,6 +7,12 @@
  * ledger, one surface for details: maxBorderDepth stays at 2.
  */
 
+/* 消除 base.css input:focus-visible 与 .history-search:focus-within 的双层绿框，
+   并收口 pages.css 裸 11.5px / 12.5px 到字号阶梯。 */
+.history-search-input { font-size: var(--fs-sm); }
+.history-search-input:focus-visible { outline: none; }
+.history-chip { font-size: var(--fs-sm); }
+
 /* ==========================================================================
  * 台账容器：单列、单表面；日期头吸顶
  * ========================================================================== */
@@ -59,21 +65,22 @@
 
 /* ==========================================================================
  * 台账行：52–56px 单行；失败行内嵌一行错误摘要
+ * 主选按钮（.historyx-row-select）与右侧操作区（.historyx-run-actions）为同级兄弟，
+ * 避免 nested-interactive 违规。
  * ========================================================================== */
 .history-run-row {
   display: grid;
-  grid-template-columns: 86px minmax(0, 1fr) auto auto;
-  grid-template-areas: 'status task meta actions';
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'select actions';
   align-items: center;
-  gap: var(--space-3);
+  gap: 0;
   min-height: 54px;
-  padding: 7px 14px;
+  padding: 0;
   border-bottom: 1px solid var(--border);
   background: var(--surface-0);
   color: inherit;
   font: inherit;
   text-align: left;
-  cursor: pointer;
   transition: background var(--transition-fast), box-shadow var(--transition-fast);
 }
 .history-run-row:last-child {
@@ -82,24 +89,61 @@
   border-bottom-right-radius: var(--radius-lg);
 }
 .history-run-row:hover { background: var(--surface-2); }
-/* outline 而不是 box-shadow：失败/运行中行的左侧色条也用 box-shadow，
-   两者同一属性会互相覆盖，键盘焦点在失败行上会消失。 */
-.history-run-row:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
+
+/* 选中态与状态色解耦：失败/运行行保留红/蓝左条与强化状态浅底，不覆写为绿条。 */
 .history-run-row.is-failed {
   background: var(--red-bg);
   box-shadow: inset 3px 0 0 var(--red);
+}
+.history-run-row.is-failed:hover {
+  background: rgb(220 38 38 / 0.11);
 }
 .history-run-row.is-running {
   background: var(--blue-bg);
   box-shadow: inset 3px 0 0 var(--blue);
 }
+.history-run-row.is-running:hover {
+  background: rgb(37 99 235 / 0.11);
+}
 .history-run-row.is-selected,
 .history-run-row.is-selected:hover {
   background: var(--surface-2);
-  box-shadow: inset 3px 0 0 var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 1px var(--border-strong);
+}
+.history-run-row.is-failed.is-selected,
+.history-run-row.is-failed.is-selected:hover {
+  background: rgb(220 38 38 / 0.14);
+  box-shadow: inset 3px 0 0 var(--red), inset 0 0 0 1px var(--red-border);
+}
+.history-run-row.is-running.is-selected,
+.history-run-row.is-running.is-selected:hover {
+  background: rgb(37 99 235 / 0.14);
+  box-shadow: inset 3px 0 0 var(--blue), inset 0 0 0 1px var(--blue-border);
+}
+
+.historyx-row-select {
+  grid-area: select;
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr) auto;
+  grid-template-areas: 'status task meta';
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+  min-height: 54px;
+  padding: 7px var(--space-3) 7px 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/* outline 而不是 box-shadow：失败/运行中行的左侧色条用 box-shadow，
+   两者互不覆盖，键盘焦点在异常行上依然清晰可见。 */
+.historyx-row-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .historyx-run-status {
@@ -186,7 +230,7 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.historyx-run-time { color: var(--text3); text-align: right; }
+.historyx-run-time { color: var(--text2); text-align: right; }
 .historyx-run-dur { color: var(--text2); text-align: right; }
 .history-run-dur-stale { color: var(--yellow-text); }
 
@@ -196,6 +240,7 @@
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
+  padding: 7px 14px 7px 0;
 }
 .historyx-action {
   min-height: var(--control-h-sm);
@@ -307,8 +352,10 @@
 }
 
 /* ==========================================================================
- * 详情面板（>=1400px 常驻右侧） / 抽屉（<1400px）
+ * 详情面板（>=1400px 常驻右侧） / 抽屉（<1400px，带点击关闭遮罩）
  * ========================================================================== */
+.historyx-drawer-backdrop { display: none; }
+
 .historyx-detail {
   position: sticky;
   top: calc(var(--historyx-filter-h, 58px) + var(--space-3));
@@ -326,7 +373,7 @@
 .historyx-detail-head {
   display: flex;
   flex: none;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-2);
   padding: 12px var(--space-4);
   border-bottom: 1px solid var(--border);
@@ -335,12 +382,15 @@
   flex: 1;
   min-width: 0;
   margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
   color: var(--text);
   font-size: var(--fs-lg);
   font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 .historyx-detail-close {
   flex: none;
@@ -427,6 +477,18 @@
 .historyx-copy.is-copied { color: var(--accent-hover); border-color: var(--green-border); background: var(--green-bg); }
 .historyx-copy.is-error { color: var(--red-text); border-color: var(--red-border); background: var(--red-bg); }
 
+.historyx-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .historyx-detail-error {
   margin: 0;
   padding: 10px 12px;
@@ -475,7 +537,13 @@
 }
 .historyx-recent-row:last-child { border-bottom: 0; }
 .historyx-recent-row:hover { background: var(--surface-2); }
-.historyx-recent-row.is-active { background: var(--accent-muted); color: var(--text); }
+/* 中性选中态：彻底消除失败项绿底配红点红字的语义冲突。 */
+.historyx-recent-row.is-active {
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--border-strong);
+}
 .historyx-recent-time { font-variant-numeric: tabular-nums; }
 .historyx-recent-dur { color: var(--text3); font-variant-numeric: tabular-nums; }
 .historyx-recent-status { font-weight: 600; white-space: nowrap; }
@@ -484,9 +552,19 @@
 .historyx-recent-status.is-running { color: var(--blue-text); }
 
 /* ==========================================================================
- * 响应式：<1400 抽屉；窄窗行内按钮只留图标
+ * 响应式：<1400 抽屉 + 遮罩；窄窗行内按钮只留图标
  * ========================================================================== */
 @media (max-width: 1399px) {
+  .historyx-drawer-backdrop {
+    position: fixed;
+    top: var(--topbar-h);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 44;
+    display: block;
+    background: rgb(16 24 40 / 0.28);
+  }
   .historyx-detail {
     position: fixed;
     top: var(--topbar-h);
@@ -514,17 +592,19 @@
   /* <900px 顶栏折成两行（42px + 44px），抽屉从第二行下方开始。
      420px 抽屉在此会把台账遮掉一半：窄窗改为整宽详情页，关闭回列表；
      列表本身不自动打开抽屉（见 HistoryPage autoExpanded）。 */
+  .historyx-drawer-backdrop { display: none; }
   .historyx-detail {
     top: calc(var(--topbar-h-narrow) + 44px);
     left: 0;
     width: auto;
     border-left: 0;
+    box-shadow: none;
   }
 }
 
 @media (max-width: 1099px) {
-  .history-run-row {
-    grid-template-columns: 78px minmax(0, 1fr) auto auto;
+  .historyx-row-select {
+    grid-template-columns: 78px minmax(0, 1fr) auto;
     row-gap: 2px;
     column-gap: var(--space-3);
   }
@@ -543,19 +623,29 @@
 
 @media (max-width: 760px) {
   .history-run-row {
-    grid-template-columns: 78px minmax(0, 1fr) auto;
-    grid-template-areas:
-      'status task actions'
-      'meta meta actions';
-    padding: 7px 12px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'select actions';
+    padding: 0;
   }
+  .historyx-row-select {
+    grid-template-columns: 78px minmax(0, 1fr);
+    grid-template-areas:
+      'status task'
+      'meta meta';
+    padding: 7px var(--space-2) 7px 12px;
+  }
+  .historyx-run-actions { padding: 7px 12px 7px 0; }
   .historyx-run-meta {
     flex-direction: row;
     align-items: baseline;
     justify-content: flex-start;
   }
-  .historyx-facts { grid-template-columns: 1fr; }
   .historyx-task-select { max-width: 150px; }
+}
+
+@media (max-width: 480px) {
+  /* 760px 维持 2×2 KPI 网格让错误信息留在首屏，仅极窄屏退化为单列。 */
+  .historyx-facts { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
