@@ -24,6 +24,9 @@
   --color-on-primary: #ffffff;
   --color-secondary: #1e293b;
   --color-accent: #22c55e;
+  --color-on-accent: #0f172a;
+  --color-link: #15803d;
+  --color-link-hover: #166534;
   --color-background: #f8fafc;
   --color-foreground: #0f172a;
   --color-muted: #f1f5f9;
@@ -86,6 +89,9 @@ html[data-theme='dark'] {
   --color-primary: #f8fafc;
   --color-on-primary: #020617;
   --color-secondary: #1e293b;
+  --color-on-accent: #0f172a;
+  --color-link: #4ade80;
+  --color-link-hover: #86efac;
   --color-background: #020617;
   --color-foreground: #f8fafc;
   --color-muted: #1a1e2f;
@@ -124,13 +130,12 @@ body {
 
 a {
   font-weight: 500;
-  color: var(--color-accent);
+  color: var(--color-link);
   text-decoration: none;
 }
 
 a:hover {
-  color: var(--color-accent);
-  opacity: 0.85;
+  color: var(--color-link-hover);
 }
 
 /* UI-02：主题切换过渡（150-300ms，MASTER 反模式清单「Instant state changes」） */
@@ -146,6 +151,27 @@ a:hover {
 .header-project {
   width: 176px;
   min-width: 120px;
+}
+
+/* 顶栏时钟与用户信息防折行（避免 56px 顶栏在英文/紧凑宽度下把日期压成四行裁切） */
+.header-time {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.header-user-meta {
+  white-space: nowrap;
+}
+
+/* 顶栏待办入口默认收口为紧凑图标 + 总数角标，明细由 Tooltip 浮层承载，
+   避免 1280/1440 英文顶栏横向爆版；DOM 节点保留供无障碍与单测消费。 */
+.inbox-badge-units {
+  display: none;
+}
+
+/* 全站表格状态圆点与文案防折行（避免 • 已启用 / • Active 断成两行） */
+.ant-table-cell .ant-badge-status {
+  white-space: nowrap;
 }
 
 /* OBS-03: 执行日志行级高亮——ERROR 红 / WARN 黄。
@@ -212,9 +238,9 @@ html[data-theme='dark'] mark.log-search-hit {
     display: none;
   }
   .header-project {
-    /* 375 头部收敛：项目切换器收窄（长名称省略号，完整名在下拉选项内），
-       给待办/通知/用户头像留出宽度，不再把右侧控件顶出 375 视口。 */
-    width: 88px;
+    /* 375 头部收敛：项目切换器放宽至 112px，保证「全部项目」/「All projects」完整可读，
+       同时给待办/通知/用户头像留足空间，顶栏零横向溢出。 */
+    width: 112px;
     min-width: 0;
   }
   /* 窄屏隐藏用户触发器的用户名/角色文本（下拉菜单内仍可读）；头像保留 */
@@ -352,14 +378,35 @@ html[data-theme='dark'] mark.log-search-hit {
    覆盖同法）；同时覆盖 LoginPage 主按钮内联 BRAND_GRADIENT，使全站主按钮一致。
    守卫：__tests__/primary-button-contrast.ux.test.ts 实测对比 + 值双向对齐。
    ========================================================================== */
-.ant-btn-primary:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled) {
+.ant-btn-primary:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled):not(.ant-btn-dangerous):not(.ant-btn-color-dangerous) {
   background: #15803d !important;
 }
-.ant-btn-primary:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled):hover {
+.ant-btn-primary:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled):not(.ant-btn-dangerous):not(.ant-btn-color-dangerous):hover {
   background: #166534 !important;
 }
-.ant-btn-primary:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled):active {
+.ant-btn-primary:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled):not(.ant-btn-dangerous):not(.ant-btn-color-dangerous):active {
   background: #14532d !important;
+}
+
+/* 危险实心主确认按钮（Modal / Popconfirm danger okButton 等）：
+   独立于绿底主按钮，使用 red-600/700/800 深红填充 + 纯白文字（对比度 4.83:1 ≥ 4.5:1）。 */
+.ant-btn-primary.ant-btn-dangerous:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled),
+.ant-btn-primary.ant-btn-color-dangerous:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled) {
+  background: #dc2626 !important;
+  border-color: #dc2626 !important;
+  color: #ffffff !important;
+}
+.ant-btn-primary.ant-btn-dangerous:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled):hover,
+.ant-btn-primary.ant-btn-color-dangerous:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled):hover {
+  background: #b91c1c !important;
+  border-color: #b91c1c !important;
+  color: #ffffff !important;
+}
+.ant-btn-primary.ant-btn-dangerous:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled):active,
+.ant-btn-primary.ant-btn-color-dangerous:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled):active {
+  background: #991b1b !important;
+  border-color: #991b1b !important;
+  color: #ffffff !important;
 }
 
 /* ==========================================================================

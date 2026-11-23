@@ -61,6 +61,7 @@ import PageHeader from '../components/PageHeader';
 // UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
+import { StablePagingSwitch } from '../components/StablePagingSwitch';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
@@ -717,7 +718,7 @@ export default function TaskListPage() {
         <Select
           placeholder={t('taskList.statusAll')}
           allowClear
-          style={{ width: 110, maxWidth: '100%' }}
+          style={{ width: 148, maxWidth: '100%' }}
           value={statusFilter}
           onChange={v => { setStatusFilter(v); setPage(1); resetCursorStack(stablePaging); }}
           suffixIcon={<FilterOutlined />}
@@ -729,7 +730,7 @@ export default function TaskListPage() {
         <Select
           placeholder={t('taskList.triggerAll')}
           allowClear
-          style={{ width: 120, maxWidth: '100%' }}
+          style={{ width: 148, maxWidth: '100%' }}
           value={triggerFilter}
           onChange={v => { setTriggerFilter(v); setPage(1); resetCursorStack(stablePaging); }}
           options={[
@@ -752,7 +753,7 @@ export default function TaskListPage() {
           disabled={stablePaging}
           aria-label={t('taskList.lastRunAll')}
           aria-describedby={stablePaging ? 'tasklist-laststatus-note' : undefined}
-          style={{ width: 110, maxWidth: '100%' }}
+          style={{ width: 140, maxWidth: '100%' }}
           value={lastStatusFilter}
           onChange={v => { setLastStatusFilter(v); setPage(1); resetCursorStack(stablePaging); }}
           options={[
@@ -819,17 +820,9 @@ export default function TaskListPage() {
             Tab 可聚焦、Space/Enter 可切换，无需再补键盘处理；aria-label 给出
             可访问名（开关没有可见文字标签时，纯靠旁边的文字不构成可访问名）。
             关闭时不发任何 cursor 参数，后端与页面行为都回到改动前。 */}
-        <Space size={6} style={{ marginLeft: 'auto' }}>
-          <Switch
-            size="small"
-            checked={stablePaging}
-            onChange={toggleStablePaging}
-            aria-label={t('taskList.stablePaging.aria')}
-          />
-          <Tooltip title={t('taskList.stablePaging.hint')}>
-            <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.stablePaging')}</Text>
-          </Tooltip>
-        </Space>
+        <div style={{ marginLeft: 'auto' }}>
+          <StablePagingSwitch checked={stablePaging} onChange={toggleStablePaging} label={t('taskList.stablePaging')} hint={t('taskList.stablePaging.hint')} ariaLabel={t('taskList.stablePaging.aria')} />
+        </div>
       </Space>
 
       {selectedRowKeys.length > 0 && (
@@ -904,7 +897,7 @@ export default function TaskListPage() {
                         </Text>
                       )}
                     </div>
-                    <Badge status={cfg.badge} text={cfg.label} />
+                    <Badge status={cfg.badge} text={cfg.label} style={{ whiteSpace: 'nowrap', flexShrink: 0 }} />
                   </div>
                   <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                     <Tag color={TRIGGER_COLOR[r.triggerType] || 'default'} style={{ marginInlineEnd: 0 }}>
@@ -957,7 +950,7 @@ export default function TaskListPage() {
                         onConfirm={() => handleDelete(r.id)}
                         okText={t('taskList.ok')} okButtonProps={{ danger: true }}
                       >
-                        <Tooltip title={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')}>
+                        <Tooltip title={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')} placement="bottom">
                           <Button type="text" size="small" icon={<DeleteOutlined />} danger aria-label={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')} disabled={!isAdmin} />
                         </Tooltip>
                       </Popconfirm>

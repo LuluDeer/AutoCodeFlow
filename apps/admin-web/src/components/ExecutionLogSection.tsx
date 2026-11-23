@@ -14,8 +14,8 @@
  * - `reconnectKey`：父页「重新连接」按钮递增此键，强制重建 SSE 连接
  *   （effect 依赖含此键，重建时内部自行复位断流标记）。
  */
-import { Badge, Card, Typography, Button, Space, Alert, Select, Input } from 'antd';
-import { CopyOutlined, DownloadOutlined, SearchOutlined, BookOutlined, ExperimentOutlined, RedoOutlined, LinkOutlined } from '@ant-design/icons';
+import { Card, Typography, Button, Space, Alert } from 'antd';
+import { DownloadOutlined, BookOutlined, ExperimentOutlined, LinkOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
@@ -25,8 +25,7 @@ import type { TaskExecution } from '../api/tasks';
 import { getApiBaseUrl } from '../api/client';
 import { createSseClient } from '../api/sse-client';
 import { showApiError } from '../utils/error';
-import { copyText } from '../utils/clipboard';
-import { LOG_LEVEL_VALUES, logLineHighlightClass, jsonLineTokens } from '../utils/logLevel';
+import { logLineHighlightClass, jsonLineTokens } from '../utils/logLevel';
 import type { JsonToken } from '../utils/logLevel';
 // UI-05: 搜索高亮分段（纯函数）+ 防抖常量
 import { buildLogSearchSegments, LOG_SEARCH_DEBOUNCE_MS } from '../utils/log-search';
@@ -38,6 +37,7 @@ import EmptyLogsAlert from './EmptyLogsAlert';
 import { failureRunbookAction, FAILURE_CARD_STATUSES } from '../pages/failure-runbook';
 // LOG-WIN-01：大日志窗口化渲染组件（零依赖虚拟滚动，见组件头注释）
 import LogWindow, { JsonLine, JsonPrettyPopover } from './LogWindow';
+import ExecutionLogToolbar, { LOG_LEVEL_FILTER_ALL, logPreWrapStyle, type LogLevelFilter } from './ExecutionLogToolbar';
 
 const { Text } = Typography;
 
@@ -95,9 +95,6 @@ const LOG_VIRTUAL_THRESHOLD = 500;
 // 会把延迟重置回起步值。
 const SSE_POLL_BASE_MS = 8000;
 const SSE_POLL_MAX_MS = 60_000;
-// OBS-03: 级别过滤下拉——'ALL' 表示不过滤（不带 level，行为与之前完全一致）
-const LOG_LEVEL_FILTER_ALL = 'ALL';
-type LogLevelFilter = typeof LOG_LEVEL_FILTER_ALL | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
 
 // O-25：SSE 断线短退避自动重连预算——初次断线后先重连至多 MAX_SSE_AUTO_RETRIES
 // 次（退避 SSE_RETRY_BASE_MS × 2^(n-1)：1.5s → 3s），重连成功（onStatus 'live'）
@@ -122,8 +119,8 @@ export interface ExecutionLogSectionProps {
   runbookText: string | null;
   /** 当前状态的本地化标签（页头 Tag 同源，供失败卡片标题拼接） */
   statusLabel: string;
-  onRetrigger: () => void;
-  retriggering: boolean;
+  onRetrigger?: () => void;
+  retriggering?: boolean;
   /** 失败卡片「查看 AI 分析与时间线」→ 父页切到 report Tab */
   onJumpToReport: () => void;
 }
@@ -138,12 +135,11 @@ export default function ExecutionLogSection({
   reconnectKey,
   runbookText,
   statusLabel,
-  onRetrigger,
-  retriggering,
   onJumpToReport,
 }: ExecutionLogSectionProps) {
   const { t } = useTranslation();
   const logRef = useRef<HTMLPreElement>(null);
+  const [wrapLines, setWrapLines] = useState(true);
   const [streamLines, setStreamLines] = useState<string[] | null>(null);
   // PERF-06（本轮体验审查）：SSE 日志追加改**批量累积 + 按帧刷新**。
   //
@@ -165,6 +161,11 @@ export default function ExecutionLogSection({
   // OBS-03: 级别过滤拉取的时序守卫——快速连续切换级别时只让最新一次
   // 请求的响应落地，过期响应（晚到的旧 seq）直接丢弃。
   const levelFetchSeq = useRef(0);
+  // P2（audit-web-code）：loading 归属与数据新鲜度必须分开（参照 AppDeploymentPage
+  // E2 的 loadingSeq）。旧实现两者共用 levelFetchSeq：ERROR 在途时切 ALL 会自增
+  // 序号并直接 return，旧请求的 finally 被判过期而跳过复位，Select 永久 disabled。
+  // 现在每次选择（含 ALL）都认领唯一 loadSeq，只有"最后一次发起者"负责清 loading。
+  const levelLoadingSeq = useRef(0);
   // NETOPT-7②（2026-09-20）：完整日志拉取的时序守卫，与 levelFetchSeq 同型。
   // "加载完整日志"是最多 LOG_MAX_PAGES 页×顺序请求的长链路（可达数秒）；重试链
   // 的兄弟执行 Link（同路由 :execId 组件不重挂）切执行时 U2 effect 重置
@@ -221,7 +222,8 @@ export default function ExecutionLogSection({
   // 收到服务端终态 event: error（带 data，流已被 end）后再降级 8s 轮询兜底。
   // 工厂内置的无限退避重连在此显式关闭（reconnect:false），改由本 effect 控制预算。
   useEffect(() => {
-    if (data?.status !== 'running' && data?.status !== 'pending') return;
+    const isRunningOrPending = ['running', 'pending'].includes(data?.status as string);
+    if (!isRunningOrPending) return;
     setStreaming(true);
     setStreamDisconnected(false);
     setStreamLines([]);
@@ -290,7 +292,7 @@ export default function ExecutionLogSection({
             client = null;
             setStreaming(false);
             // 执行仍未终态：标记断流，交由轮询兜底并提示用户
-            if (data?.status === 'running' || data?.status === 'pending') {
+            if (isRunningOrPending) {
               setStreamDisconnected(true);
               reportStream({ streaming: false, disconnected: true });
             }
@@ -315,7 +317,7 @@ export default function ExecutionLogSection({
             client?.close();
             client = null;
             setStreaming(false);
-            if (data?.status === 'running' || data?.status === 'pending') {
+            if (isRunningOrPending) {
               setStreamDisconnected(true);
               reportStream({ streaming: false, disconnected: true });
             }
@@ -564,18 +566,20 @@ export default function ExecutionLogSection({
    * 流缓冲单做一条客户端过滤路径；代价是流模式下过滤视图为拉取时刻的快照，
    * 新增行需切回"全部"查看（实时流视图不受影响）。
    * 空结果属合法态（该级别无日志）→ 展示空视图不报错；失败 toast 且保留
-   * 原视图。seq 计数防快速连续切换的过期响应回写。
+   * 原视图。数据落地与 loading 复位各认各的序号：seq 防过期响应回写，
+   * loadSeq 保证"最后一次发起者"唯一负责清 loading（ALL 分支也要走 finally）。
    */
   const handleLevelFilterChange = async (value: LogLevelFilter) => {
     setLevelFilter(value);
     const seq = ++levelFetchSeq.current;
-    if (value === LOG_LEVEL_FILTER_ALL) {
-      setFilteredLogs(null);
-      setFilteredTruncated(false);
-      return;
-    }
+    const loadSeq = ++levelLoadingSeq.current;
     setLoadingFilteredLogs(true);
     try {
+      if (value === LOG_LEVEL_FILTER_ALL) {
+        setFilteredLogs(null);
+        setFilteredTruncated(false);
+        return;
+      }
       // P1-25（UX-AUDIT-2026-09-21）：**必须**接住 truncated。
       //
       // 此前只解构 lines、丢弃 truncated，而截断告警（logsTruncated）又被硬门控在
@@ -592,12 +596,13 @@ export default function ExecutionLogSection({
       setFilteredTruncated(false);
       showApiError(err, t('execDetail.levelFilterFail'));
     } finally {
-      if (levelFetchSeq.current === seq) setLoadingFilteredLogs(false);
+      // 只由最后一次级别选择清 loading：旧请求的 finally 即使晚到也不得插手。
+      if (loadSeq === levelLoadingSeq.current) setLoadingFilteredLogs(false);
     }
   };
 
   // UI-05: 失败定位卡片可见性（failed/timeout；killed 无排障价值不渲染）
-  const showFailureCard = FAILURE_CARD_STATUSES.includes(data?.status || '');
+  const showFailureCard = FAILURE_CARD_STATUSES.includes(data?.status as string);
   // UI-05: 建议动作（未知键回退 unknown 兜底）。P1-27：第三参传 status——
   // cancelled 由调度器自动覆盖产生、不落 failureReason，必须按 status 命中。
   // S8：第四参传 synthetic——cancelled 有两个来源，「本行从未运行」必须给出
@@ -608,8 +613,9 @@ export default function ExecutionLogSection({
     data?.status,
     data?.synthetic,
   );
-  const failureReasonLabel = data?.failureReason
-    ? FAILURE_REASON_LABELS(t)[data.failureReason] ?? data.failureReason
+  const failureReason = data?.failureReason;
+  const failureReasonLabel = failureReason
+    ? FAILURE_REASON_LABELS(t)[failureReason] ?? failureReason
     : undefined;
 
   return (
@@ -671,13 +677,6 @@ export default function ExecutionLogSection({
             </div>
           }
           style={{ marginBottom: 16 }}
-          action={
-            data?.status === 'failed' ? (
-              <Button size="small" danger icon={<RedoOutlined />} onClick={onRetrigger} loading={retriggering}>
-                {t('execDetail.retrigger')}
-              </Button>
-            ) : undefined
-          }
         />
       )}
       <Card
@@ -685,76 +684,18 @@ export default function ExecutionLogSection({
         className="ui09-log-toolbar-card"
         styles={{ body: { paddingTop: 12 } }}
         extra={
-          // UI-09：工具条 5 个控件最小宽 ~448px > 375px 卡头——窄屏
-          // 由 .ui09-log-toolbar-card 换行独占整行（见 index.css）
-          <Space wrap className="ui09-log-toolbar">
-            {streaming && <Badge status="processing" text={t('execDetail.log.live')} />}
-            {/* UI-05: 关键词搜索——前端对已加载行切分高亮，
-                防抖 300ms 生效；清空即恢复原渲染。 */}
-            <Input
-              size="small"
-              allowClear
-              prefix={<SearchOutlined />}
-              placeholder={t('execDetail.log.searchPlaceholder')}
-              aria-label={t('execDetail.log.searchAria')}
-              // data-testid 落在真实 <input> 上（allowClear 时 Input
-              // 根节点会包一层 span，取根会拿不到输入元素）
-              data-testid="log-search-input"
-              style={{ width: 180 }}
-              value={inputKeyword}
-              onChange={(e) => setInputKeyword(e.target.value)}
-            />
-            {/* OBS-03: 级别过滤（服务端）。"全部"不带 level——行为与
-                OBS-03 之前完全一致；选择具体级别后经分页端点重新拉取
-                过滤后行集（流模式下为拉取时刻的服务端快照，见
-                handleLevelFilterChange 注释）。 */}
-            <Select<LogLevelFilter>
-              size="small"
-              style={{ minWidth: 112 }}
-              aria-label={t('execDetail.log.levelFilterAria')}
-              value={levelFilter}
-              loading={loadingFilteredLogs}
-              disabled={loadingFilteredLogs}
-              onChange={handleLevelFilterChange}
-              options={[
-                { value: LOG_LEVEL_FILTER_ALL, label: t('execDetail.log.levelAll') },
-                ...LOG_LEVEL_VALUES.map((lv) => ({ value: lv, label: lv })),
-              ]}
-            />
-            <Button
-              size="small"
-              icon={<CopyOutlined />}
-              onClick={async () => {
-                // OBS-03 取舍：复制反映"当前视图"（所见即所得）——级别
-                // 过滤生效时复制过滤视图，"全部"时复制当前展示内容
-                // （可能含 SSE 流缓冲）。需要全量请切回"全部"后复制。
-                // F-18（DEEP_REVIEW 0ef3bbe）：补错误处理——失败不弹成功提示。
-                const ok = await copyText(displayLogs);
-                if (ok) message.success(t('execDetail.log.copied'));
-                else message.error(t('execDetail.log.copyFailed'));
-              }}
-            >
-              {t('execDetail.log.copy')}
-            </Button>
-            <Button
-              size="small"
-              icon={<DownloadOutlined />}
-              onClick={() => {
-                // OBS-03 取舍：与复制一致——下载当前视图（过滤生效时
-                // 即过滤结果），与页面展示严格一致，避免"看到的与拿到
-                // 的不同"。需要全量请切回"全部"后下载。
-                const blob = new Blob([displayLogs], { type: 'text/plain;charset=utf-8' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `exec-${execId}-${new Date().toISOString().slice(0, 10)}.log`;
-                a.click();
-                URL.revokeObjectURL(url);
-              }}
-            >
-              {t('execDetail.log.download')}
-            </Button>
-          </Space>
+          <ExecutionLogToolbar
+            streaming={streaming}
+            inputKeyword={inputKeyword}
+            onInputKeywordChange={setInputKeyword}
+            levelFilter={levelFilter}
+            loadingFilteredLogs={loadingFilteredLogs}
+            onLevelFilterChange={handleLevelFilterChange}
+            wrapLines={wrapLines}
+            onWrapLinesChange={setWrapLines}
+            displayLogs={displayLogs}
+            execId={execId}
+          />
         }
       >
         {logsTruncated && (
@@ -816,15 +757,14 @@ export default function ExecutionLogSection({
               color: 'var(--log-text)',
               padding: 16,
               borderRadius: 8,
-              maxHeight: 500,
+              maxHeight: 'min(62vh, 640px)',
               overflow: 'auto',
               fontSize: 12,
               margin: 0,
               // UI-01：MASTER.md §Typography——日志/等宽场景用 Fira Code
               fontFamily: 'var(--font-mono)',
               lineHeight: 1.6,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
+              ...logPreWrapStyle(wrapLines),
             }}
           >
             {logSegments === null

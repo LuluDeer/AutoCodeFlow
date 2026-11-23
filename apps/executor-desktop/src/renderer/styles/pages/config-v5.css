@@ -45,13 +45,16 @@ html[lang='en'] .cfg-nav { width: 208px; }
   color: var(--text);
   font-size: var(--fs-sm);
 }
+.cfgx-search-input:focus-visible { outline: none; }
 .cfgx-search-input::placeholder { color: var(--text3); }
 .cfgx-search-results {
   position: absolute;
   top: calc(100% + var(--space-1));
   left: 0;
-  min-width: 260px;
-  max-width: 320px;
+  right: 0;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   max-height: 320px;
   overflow-y: auto;
   padding: var(--space-1);
@@ -62,8 +65,9 @@ html[lang='en'] .cfg-nav { width: 208px; }
 }
 .cfgx-search-result {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
   width: 100%;
   padding: var(--space-1) var(--space-2);
   border: none;
@@ -76,6 +80,12 @@ html[lang='en'] .cfg-nav { width: 208px; }
 }
 .cfgx-search-result:hover,
 .cfgx-search-result:focus-visible { background: var(--surface-2); color: var(--text); }
+.cfgx-search-result-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
 .cfgx-search-result .icon { flex: none; color: var(--text3); }
 .cfgx-search-result-label {
   flex: 1;
@@ -85,9 +95,12 @@ html[lang='en'] .cfg-nav { width: 208px; }
   white-space: nowrap;
 }
 .cfgx-search-result-section {
-  flex: none;
+  padding-left: 20px;
   color: var(--text3);
   font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cfgx-search-empty {
   padding: var(--space-2);
@@ -106,6 +119,7 @@ html[lang='en'] .cfg-nav { width: 208px; }
   line-height: 1.4;
 }
 .cfg-nav-item { padding: var(--space-2); gap: var(--space-2); }
+.cfg-nav-item.active { color: var(--accent-hover); }
 .cfg-nav-label { font-weight: 500; }
 
 /* ==========================================================================
@@ -155,6 +169,19 @@ html[lang='en'] .cfg-nav { width: 208px; }
    负责区分条目（审计：panel + row + input 三层描边叠加造成结构噪声）。
    分组之间仍由 .cfgx-group + .cfgx-group 的发丝线分隔。 */
 .cfgx-row:hover { background: var(--surface-2); }
+.cfgx-row.cfgx-row-flash { animation: cfgxRowFlash 1.2s var(--ease-out); }
+@keyframes cfgxRowFlash {
+  0% { background: var(--accent-muted); }
+  100% { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cfgx-row.cfgx-row-flash { animation: none; }
+}
+.cfgx-row .input:focus-visible { outline: none; }
+.cfgx-row .input.error:focus {
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px var(--red-bg);
+}
 .cfgx-row-label {
   padding-top: var(--space-2);
   color: var(--text2);
@@ -196,14 +223,16 @@ html[lang='en'] .cfg-nav { width: 208px; }
   line-height: 1.5;
 }
 
-/* 短字段并排：标签在上、控件在下，避免 180px 标签列挤占两列空间。 */
+/* 短字段并排：标签在上、控件在下，顶对齐消除左右辅助文案行数不同导致的 9–19px 错位。 */
 .cfgx-row-pair {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   column-gap: var(--space-6);
 }
 .cfgx-row-pair .cfgx-row {
   grid-template-columns: minmax(0, 1fr);
+  align-content: start;
   row-gap: var(--space-1);
   padding: var(--space-3) var(--space-2);
 }
@@ -215,7 +244,7 @@ html[lang='en'] .cfg-nav { width: 208px; }
 .cfgx-group > .cfgx-row-pair:last-child { margin-bottom: 0; }
 
 /* ==========================================================================
- * 右栏「当前生效」
+ * 右栏「当前生效」与运行环境诊断覆写
  * ========================================================================== */
 .cfgx-effective {
   padding: var(--space-4);
@@ -247,7 +276,7 @@ html[lang='en'] .cfg-nav { width: 208px; }
 .cfgx-effective-status.is-ok {
   border-color: var(--green-border);
   background: var(--green-bg);
-  color: var(--accent);
+  color: var(--accent-hover);
 }
 .cfgx-effective-status.is-fail {
   border-color: var(--red-border);
@@ -305,6 +334,32 @@ html[lang='en'] .cfg-nav { width: 208px; }
   line-height: 1.5;
 }
 
+/* 覆写 pages.css .py-env-val：仅 code 路径允许字符级断行，说明正文按词折行；
+   em 仅在紧跟 code 时留左侧间距，消除无前置 code 时的首行异常缩进。 */
+.py-env-val {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.py-env-val code { word-break: break-all; }
+.py-env-val em { margin-left: 0; }
+.py-env-val code + em { margin-left: 6px; }
+
+/* 覆写 pages.css .health-panel-head：保证 .health-badge 完整落在 .health-panel-title 包围盒内不产生 bleed-right，超宽时受控换行。 */
+.cfg-aside .health-panel-head {
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+.cfg-aside .health-panel-title {
+  flex-wrap: wrap;
+  min-width: auto;
+  gap: 6px;
+}
+.cfg-aside .health-panel-head .btn {
+  flex: none;
+  white-space: nowrap;
+}
+.cfg-aside .health-badge.is-ok { color: var(--accent-hover); }
+
 /* 右栏小节标题 / 动作钮 */
 .cfgx-aside-title {
   display: flex;
@@ -317,7 +372,7 @@ html[lang='en'] .cfg-nav { width: 208px; }
 .cfgx-aside-title .icon { color: var(--text3); }
 .cfgx-aside-action { align-self: flex-start; }
 
-/* 首次配置引导：折叠为一行 summary（默认 closed），展开后仍是原三步 + 重跑钮。
+/* 首次配置引导：折叠为一行 summary（默认 closed），展开后含指引与重跑向导入口。
    原生 <details>/<summary>：零 JS、键盘可达。 */
 .cfgx-guide-summary {
   display: flex;
@@ -402,16 +457,6 @@ html[lang='en'] .cfg-nav { width: 208px; }
   margin-right: auto;
 }
 .cfgx-footer-dirty .cfg-unsaved { margin-right: 0; }
-.cfgx-dirty-count {
-  flex: none;
-  padding: 1px var(--space-2);
-  border-radius: 999px;
-  background: var(--yellow-bg);
-  color: var(--yellow-text);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  white-space: nowrap;
-}
 
 /* ==========================================================================
  * 响应式
@@ -429,10 +474,20 @@ html[lang='en'] .cfg-nav { width: 208px; }
 @media (max-width: 820px) {
   .cfg-nav { width: 148px; padding: var(--space-3) var(--space-1); }
   html[lang='en'] .cfg-nav { width: 176px; }
-  .cfgx-search-results { min-width: 240px; }
-  .cfg-footer-inner { max-width: none; }
+  .cfgx-search-results { min-width: 0; }
+  .cfg-footer { padding: 8px 16px; }
+  .cfg-footer-inner { max-width: none; gap: var(--space-2); }
+  .cfg-footer-inner .btn-lg {
+    min-height: var(--control-h);
+    padding: 0 14px;
+    font-size: var(--fs-sm);
+  }
   .cfgx-group { padding: var(--space-3); }
   .cfgx-row { padding: var(--space-2); }
+}
+
+@media (max-width: 480px) {
+  .cfg-aside .health-panel-head { flex-wrap: wrap; }
 }
 
 /* 宽屏（1600+）：控件列实际可用宽度接近 900，560 的输入上限会让每行右侧

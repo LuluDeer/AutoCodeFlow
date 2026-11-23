@@ -9,8 +9,6 @@ import { Table,
   Tag,
   Popconfirm,
   Card,
-  Row,
-  Col,
   Empty,
   Typography,
   Switch,
@@ -486,30 +484,23 @@ export default function UserManagementPage() {
     // UI 打磨：去掉页级 padding 24——MainLayout Content 已有 20/24 内边距，
     // 此前双重缩进使本页比其它列表页多一圈 48px，同类页面观感不一致
     <div>
-      {/* UI-03/UI-08：页头标准化（原 Title 区块迁入 PageHeader） */}
-      <PageHeader title={t('users.title')} description={t('users.description')} />
+      {/* UI-03/UI-08：页头标准化（主 CTA 置于 PageHeader.extra 右侧） */}
+      <PageHeader
+        title={t('users.title')}
+        description={t('users.description')}
+        extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>{t('users.create')}</Button>}
+      />
       <Card>
-        <Row gutter={16} style={{ marginBottom: 16 }} align="middle">
-          <Col flex="auto">
-            <Input
-              placeholder={t('users.searchPlaceholder')}
-              prefix={<SearchOutlined />}
-              allowClear
-              value={searchText}
-              onChange={(e) => handleSearch(e.target.value)}
-              style={{ maxWidth: 300 }}
-            />
-          </Col>
-          <Col>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={openCreate}
-            >
-              {t('users.create')}
-            </Button>
-          </Col>
-        </Row>
+        <div style={{ marginBottom: 16 }}>
+          <Input
+            placeholder={t('users.searchPlaceholder')}
+            prefix={<SearchOutlined />}
+            allowClear
+            value={searchText}
+            onChange={(e) => handleSearch(e.target.value)}
+            style={{ maxWidth: 300 }}
+          />
+        </div>
         {/* UI-16：列表请求失败不再只弹 toast —— 页内原位呈现错误块 + 重试入口
             （新建/禁用等 mutation 失败仍走 toast，语义不变） */}
         {error ? (

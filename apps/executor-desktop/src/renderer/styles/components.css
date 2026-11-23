@@ -125,14 +125,14 @@
 .btn.is-active {
   background: var(--green-bg);
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-hover);
 }
 /* 开关型按钮（aria-pressed）与 .is-active 同族：查看器的「折行」等按钮此前
    只有文案在变，按钮本体没有任何按下态。 */
 .btn[aria-pressed='true'] {
   background: var(--accent-muted);
   border-color: var(--accent-border);
-  color: var(--accent);
+  color: var(--accent-hover);
 }
 .btn-lg { min-height: 40px; padding: 0 20px; font-size: var(--fs-md); border-radius: var(--radius-md); }
 
@@ -176,6 +176,8 @@ textarea.input {
   background: var(--input-bg);
   box-shadow: 0 0 0 3px var(--accent-muted);
 }
+/* 已有清晰绿边+光环，屏蔽 base.css 通用 input:focus-visible 避免双层绿框 */
+.input:focus-visible { outline: none; }
 .input.error { border-color: var(--red); box-shadow: 0 0 0 3px var(--red-bg); }
 .input:disabled { background: var(--surface-1); color: var(--text3); cursor: not-allowed; }
 /* 下拉控件：自定义箭头，避免系统默认亮块 */
@@ -220,6 +222,7 @@ select.input {
 .test-result {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 7px;
   margin-top: 8px;
   padding: 7px 12px;
@@ -228,7 +231,7 @@ select.input {
   font-weight: 500;
   animation: fadeIn var(--anim-in);
 }
-.test-result.ok   { background: var(--green-bg); color: var(--accent); border: 1px solid var(--green-border); }
+.test-result.ok   { background: var(--green-bg); color: var(--accent-hover); border: 1px solid var(--green-border); }
 .test-result.fail { background: var(--red-bg); color: var(--red-text); border: 1px solid var(--red-border); }
 
 .saved-toast {
@@ -312,7 +315,7 @@ select.input {
   border-radius: 50%;
   flex-shrink: 0;
 }
-.badge-success { background: var(--green-bg); color: var(--accent); border: 1px solid var(--green-border); }
+.badge-success { background: var(--green-bg); color: var(--accent-hover); border: 1px solid var(--green-border); }
 .badge-success::before { background: var(--green); }
 .badge-blue { background: var(--blue-bg); color: var(--blue-text); border: 1px solid var(--blue-border); }
 .badge-blue::before { background: var(--blue); }
@@ -359,7 +362,7 @@ select.input {
     border-color var(--transition-fast);
 }
 .copy-btn:hover { background: var(--surface-2); color: var(--text); }
-.copy-btn.copied { color: var(--accent); border-color: var(--green-border); background: var(--green-bg); }
+.copy-btn.copied { color: var(--accent-hover); border-color: var(--green-border); background: var(--green-bg); }
 .copy-btn.copy-failed { color: var(--red-text); border-color: var(--red-border); background: var(--red-bg); }
 
 /* ==========================================================================
@@ -389,7 +392,7 @@ select.input {
 .info-banner.warn .info-banner-icon { color: var(--yellow-hover); }
 .info-banner.danger .info-banner-icon { color: var(--red-hover); }
 .info-banner-icon .icon { width: 15px; height: 15px; }
-.info-banner strong { color: var(--text); font-weight: 650; }
+.info-banner strong { color: var(--text); font-weight: 600; }
 .info-banner.warn strong { color: var(--yellow-hover); }
 .info-banner code {
   font-family: var(--font-mono);
@@ -463,13 +466,14 @@ select.input {
 
 /* 单条日志行（position:relative 供 V4-2 行内工具 hover 浮现定位） */
 .log-line { display: block; position: relative; min-height: 0; padding: 0 2px; border-radius: 3px; }
-.log-line:hover { background: rgb(15 23 42 / 0.045); }
+.log-line:hover,
+.log-line:focus-within { background: rgb(15 23 42 / 0.045); }
 .log-line.error { color: var(--red-text); }
 .log-line.warn { color: var(--yellow-text); }
 
-/* 行内工具（V4-2，hover 浮现）：复制此行 / 打开文件（仅 warn/error 行）。
+/* 行内工具（V4-2，hover / focus-within 浮现）：复制此行 / 打开文件（仅 warn/error 行）。
    absolute 定位贴行右侧——flex 行与 block 行的宽度都是滚动容器行宽，
-   长行横向滚动时工具钮仍停在可视右缘 */
+   长行横向滚动时工具钮仍停在可视右缘；常驻 DOM + opacity 切换让键盘 Tab 可达 */
 .log-line-tools {
   position: absolute;
   right: 4px;
@@ -483,6 +487,15 @@ select.input {
   background: var(--surface-0);
   box-shadow: var(--shadow-xs);
   z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+}
+.log-line:hover .log-line-tools,
+.log-line:focus-within .log-line-tools,
+.log-line.is-tools-visible .log-line-tools {
+  opacity: 1;
+  pointer-events: auto;
 }
 .log-line-tool {
   display: inline-flex;

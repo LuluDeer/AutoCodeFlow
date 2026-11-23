@@ -241,14 +241,14 @@ export default function ApiKeysSettings() {
       render: (v: string | null) => formatDateTime(v),
     },
     {
-      title: t('apiKeys.col.status'), key: 'status', width: 90,
+      title: t('apiKeys.col.status'), key: 'status', width: 110,
       render: (_: unknown, record: ApiKeyView) => {
         const s = apiKeyStatus(record, t);
         return <Tag color={s.color}>{s.label}</Tag>;
       },
     },
     {
-      // 定宽列合计 1016（220+130+150+165+165+90+96）= scroll.x；操作列 fixed right
+      // 定宽列合计 1036（220+130+150+165+165+110+96）= scroll.x；操作列 fixed right
       // 与 scroll.x 成对出现，窄屏横向滚动时「吊销/删除」入口常驻可见。
       // 两种动作按行状态二选一：活跃 → 吊销；已吊销/已过期 → 删除（清理）。
       title: t('apiKeys.col.actions'), key: 'action', width: 96, fixed: 'right',
@@ -334,10 +334,10 @@ export default function ApiKeysSettings() {
           columns={columns}
           dataSource={keys}
           loading={isLoading}
-          // 与列表宽合计一致（220+130+150+165+165+90+96）；tableLayout=fixed 让
+          // 与列表宽合计一致（220+130+150+165+165+110+96）；tableLayout=fixed 让
           // 上面写死的列宽成为权威，宽屏下不再由某一列吞掉全部剩余宽度。
           tableLayout="fixed"
-          scroll={{ x: 1016 }}
+          scroll={{ x: 1036 }}
           pagination={false}
           data-testid="apikey-table"
         />

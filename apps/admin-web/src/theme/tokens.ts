@@ -157,6 +157,35 @@ export const PRIMARY_BUTTON = {
   text: '#FFFFFF',
 } as const;
 
+/**
+ * 危险确认实心按钮填充（WCAG AA ≥4.5:1）：
+ * red-600 `#dc2626` 上白字 4.83:1、hover `#b91c1c` 6.47:1、active `#991b1b` 8.70:1。
+ * index.css 的 `.ant-btn-primary.ant-btn-dangerous` 覆盖块与本处镜像，由
+ * `__tests__/primary-button-contrast.ux.test.ts` 双向钉住。
+ */
+export const DANGER_BUTTON = {
+  /** 危险实心按钮填充（白字 4.83:1） */
+  bg: '#dc2626',
+  /** hover 填充（白字 6.47:1） */
+  hoverBg: '#b91c1c',
+  /** active 填充（白字 8.70:1） */
+  activeBg: '#991b1b',
+  /** 按钮文字色 */
+  text: '#FFFFFF',
+} as const;
+
+/**
+ * 双主题语义文字色（亮面在 #FFFFFF/#F8FAFC、暗面在 #1A1E2F/#020617 均 ≥4.5:1）。
+ * 供 ThemeProviders.tsx token 映射及业务详情页（如 ExecutorDetailPage 轮换 Token）共源消费。
+ */
+export const SEMANTIC_TEXT = {
+  warning: { light: '#b45309', dark: '#fbbf24' },
+  danger: { light: '#dc2626', dark: '#f87171' },
+  info: { light: '#2563EB', dark: '#60A5FA' },
+  link: { light: '#15803d', dark: '#4ade80' },
+  success: { light: '#15803d', dark: '#4ade80' },
+} as const;
+
 /** SSE 日志区双主题面（亮面白底深字 / 暗面 MASTER 画布 + foreground） */
 export const LOG_PANEL_COLORS = {
   light: { bg: '#FFFFFF', text: '#0F172A' },

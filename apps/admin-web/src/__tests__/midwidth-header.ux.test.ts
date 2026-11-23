@@ -68,7 +68,15 @@ describe('阶段一遗留：768–1024px 中宽屏头部排布', () => {
     expect(layout).toContain('justifyContent: \'space-between\'');
   });
 
-  it('不影响 ≤768px 既有移动端规则（移动块仍在）', () => {
+  it('不影响 ≤768px 既有移动端规则（移动块仍在且项目选择器放宽至 112px）', () => {
     expect(CSS).toContain('@media (max-width: 768px)');
+    const mobile = mediaBlock(CSS, 'max-width: 768px') ?? '';
+    expect(mobile).toMatch(/\.header-project\s*\{[^}]*width:\s*112px/);
+  });
+
+  it('防 1280/1440 英文顶栏横向溢出与时钟纵向裁切：收口 .inbox-badge-units 且 .header-time 不折行', () => {
+    expect(CSS).toMatch(/\.inbox-badge-units\s*\{[^}]*display:\s*none/);
+    expect(CSS).toMatch(/\.header-time\s*\{[^}]*white-space:\s*nowrap/);
+    expect(layout).toContain("month: 'short'");
   });
 });

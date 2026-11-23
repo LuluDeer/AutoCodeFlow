@@ -62,7 +62,6 @@ interface LogRowProps {
   isNew: boolean;
   lineNo: number;
   showLineNo: boolean;
-  hovered: boolean;
   copyFeedback: CopyFeedback;
   /** P3-3：失败态 title（父组件按错误类别区分「内容过大 / 一般失败」）。 */
   copyFailTitle: string;
@@ -70,7 +69,6 @@ interface LogRowProps {
   q: string;
   onOpenFile?: () => void;
   onOpenFileTitle: string;
-  onHover: (i: number | null) => void;
   onCopy: (text: string, i: number) => void;
 }
 
@@ -82,50 +80,44 @@ const LogRow = memo(function LogRow({
   isNew,
   lineNo,
   showLineNo,
-  hovered,
   copyFeedback,
   copyFailTitle,
   searching,
   q,
   onOpenFile,
   onOpenFileTitle,
-  onHover,
   onCopy,
 }: LogRowProps) {
   return (
     <div
       data-logidx={i}
-      className={`log-line ${line.level}${isCurrent ? ' log-highlight' : ''}${inBlock ? ' log-trace-block' : ''}${isNew ? ' log-line-arrive' : ''}`}
-      onMouseEnter={() => onHover(i)}
-      onMouseLeave={() => onHover(null)}
+      className={`log-line ${line.level}${isCurrent ? ' log-highlight' : ''}${inBlock ? ' log-trace-block' : ''}${isNew ? ' log-line-arrive' : ''}${copyFeedback !== 'none' ? ' is-tools-visible' : ''}`}
     >
       {showLineNo && <span className="log-line-no">{lineNo}</span>}
       {searching ? <HighlightText text={line.text} query={q} /> : <FormattedLogText text={line.text} hideTrace={inBlock} />}
-      {hovered && (
-        <span className="log-line-tools">
-          {onOpenFile && line.level !== '' && (
-            <button
-              type="button"
-              className="log-line-tool"
-              title={onOpenFileTitle}
-              aria-label={onOpenFileTitle}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={onOpenFile}
-            >
-              <Icon name="external" className="icon-xs" />
-            </button>
-          )}
+      <span className="log-line-tools">
+        {onOpenFile && line.level !== '' && (
           <button
             type="button"
-            className={`log-line-tool${copyFeedback === 'copied' ? ' is-ok' : copyFeedback === 'error' ? ' is-err' : ''}`}
-            title={copyFeedback === 'error' ? copyFailTitle : t('logviewer.copyLine')}
-            aria-label={t('logviewer.copyLine')}
-            onClick={() => onCopy(line.text, i)}
+            className="log-line-tool"
+            title={onOpenFileTitle}
+            aria-label={onOpenFileTitle}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={onOpenFile}
           >
-            <Icon name={copyFeedback === 'copied' ? 'check' : copyFeedback === 'error' ? 'close' : 'copy'} className="icon-xs" />
+            <Icon name="external" className="icon-xs" />
           </button>
-        </span>
-      )}
+        )}
+        <button
+          type="button"
+          className={`log-line-tool${copyFeedback === 'copied' ? ' is-ok' : copyFeedback === 'error' ? ' is-err' : ''}`}
+          title={copyFeedback === 'error' ? copyFailTitle : t('logviewer.copyLine')}
+          aria-label={t('logviewer.copyLine')}
+          onClick={() => onCopy(line.text, i)}
+        >
+          <Icon name={copyFeedback === 'copied' ? 'check' : copyFeedback === 'error' ? 'close' : 'copy'} className="icon-xs" />
+        </button>
+      </span>
     </div>
   );
 });
@@ -149,9 +141,8 @@ export default function LogLineList({
     arrivalIdsRef.current = new Set(lines.map((line) => line.id));
   }, [arriveAnimation, lines]);
 
-  // ── 行内工具状态：hover/复制反馈都按「展示行下标」记录——memo 行组件下，
-  // 一次 hover 只重渲染进出的两行，而不是整个窗口。
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  // ── 行内工具状态：显隐走 CSS :hover/:focus-within（零 hover 重渲染且键盘可达），
+  // 仅复制反馈按行下标下发至对应 memo 行组件。
   const [copyIdx, setCopyIdx] = useState<number | null>(null);
   const [copyFeedback, setCopyFeedback] = useState<CopyFeedback>('none');
   // P3-3：最近一次复制失败是否因内容过大（超 1MiB 被 preload 拒绝）——
@@ -159,14 +150,13 @@ export default function LogLineList({
   const copyFailTooLargeRef = useRef(false);
   useEffect(() => {
     if (copyFeedback === 'none') return;
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       setCopyFeedback('none');
       setCopyIdx(null);
     }, 1200);
-    return () => clearTimeout(t);
+    return () => clearTimeout(timer);
   }, [copyFeedback]);
 
-  const handleHover = useCallback((i: number | null) => setHoverIdx(i), []);
   const handleCopy = useCallback((text: string, i: number) => {
     const api = (window as unknown as {
       electronAPI?: { writeClipboardText?: (t: string) => Promise<{ ok: boolean; error?: string }> };
@@ -195,6 +185,12 @@ export default function LogLineList({
     copyFeedback === 'error' && copyFailTooLargeRef.current
       ? t('status.copyTooLarge')
       : t('logviewer.copyFail');
+  const copyLiveText =
+    copyFeedback === 'copied'
+      ? t('status.copied')
+      : copyFeedback === 'error'
+        ? copyFailTitleText
+        : '';
 
   // ── trace 合并：对展示行抽取 trace 段（渲染层能力，不改行文本）──
   const q = query.trim().toLowerCase();
@@ -224,18 +220,17 @@ export default function LogLineList({
             isNew={isNew}
             lineNo={lineNo}
             showLineNo={showLineNo}
-            hovered={hoverIdx === i}
             copyFeedback={copyIdx === i ? copyFeedback : 'none'}
             copyFailTitle={copyFailTitleText}
             searching={searching}
             q={q}
             onOpenFile={onOpenFile}
             onOpenFileTitle={onOpenFileTitle}
-            onHover={handleHover}
             onCopy={handleCopy}
           />
         );
       })}
+      <span className="sr-only" role="status" aria-live="polite">{copyLiveText}</span>
     </>
   );
 }

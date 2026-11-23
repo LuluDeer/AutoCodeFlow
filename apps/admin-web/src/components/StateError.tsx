@@ -119,11 +119,19 @@ export default function StateError({
       <Text type="danger" strong style={{ display: 'block', marginBottom: 4 }}>
         {resolvedTitle}
       </Text>
-      <Text type="secondary" style={{ fontSize: 12, wordBreak: 'break-all' }}>
+      <Text type="secondary" style={{ display: 'block', fontSize: 12, wordBreak: 'break-all' }}>
         {msg}
       </Text>
       {(onRetry || msg) && (
-        <Space style={{ marginTop: 12, display: centered ? 'flex' : undefined, justifyContent: centered ? 'center' : undefined }} wrap>
+        <Space
+          size={8}
+          style={{
+            marginTop: 12,
+            display: 'flex',
+            justifyContent: centered ? 'center' : 'flex-start',
+          }}
+          wrap
+        >
           {onRetry && (
             <Button size="small" icon={<ReloadOutlined />} onClick={onRetry}>
               {t('stateError.retry')}

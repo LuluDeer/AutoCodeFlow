@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Icon from '../components/Icon';
 // BRAND（2026-11-02）：向导品牌位用狐狸（与顶栏、中台同源），不再用闪电。
 import foxImg from '../assets/acf-fox.png';
@@ -77,6 +77,18 @@ export default function Wizard() {
   // 预填源（重跑向导）：挂载时读一次当前配置。null = 读取失败或首次安装
   // （配置为默认值），finish() 回落原固定默认，行为不变。
   const [wizardCfg, setWizardCfg] = useState<Record<string, unknown> | null>(null);
+  const wizardRef = useRef<HTMLElement>(null);
+  const prevStepRef = useRef(step);
+
+  useEffect(() => {
+    if (prevStepRef.current === step) return;
+    prevStepRef.current = step;
+    const root = wizardRef.current;
+    if (!root) return;
+    const firstInput = root.querySelector<HTMLElement>('.wizard-body input.input:not([disabled])');
+    const heading = root.querySelector<HTMLElement>('h1.wizard-title');
+    (firstInput ?? heading)?.focus();
+  }, [step]);
 
   function set(key: keyof WizardForm, value: unknown) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -191,7 +203,7 @@ export default function Wizard() {
 
   return (
     <div className="wizard-wrap">
-      <div className="wizard">
+      <main className="wizard" ref={wizardRef}>
         {/* 品牌 + 进度——作为拖拽区域 */}
         <div className="wizard-header">
           <div className="wizard-header-drag wizard-drag-region">
@@ -265,7 +277,7 @@ export default function Wizard() {
             error={finishError}
           />
         )}
-      </div>
+      </main>
     </div>
   );
 }
@@ -273,10 +285,10 @@ export default function Wizard() {
 function StepWelcome({ onNext }: { onNext: () => void }) {
   return (
     <>
-      <div className="wizard-title">{t('wizard.welcome.title')}</div>
+      <h1 className="wizard-title" tabIndex={-1}>{t('wizard.welcome.title')}</h1>
       <div className="wizard-subtitle">{t('wizard.welcome.subtitle')}</div>
       <div className="wizard-body">
-        <div className="wizard-hero" aria-hidden="true">
+        <div className="wizard-hero">
           <img className="wizard-hero-glyph" src={foxImg} alt="" draggable={false} />
           <div className="wizard-hero-text">
             <strong>{t('wizard.welcome.heroTitle')}</strong>
@@ -346,7 +358,7 @@ function StepConnect({
 
   return (
     <>
-      <div className="wizard-title">{t('wizard.connect.title')}</div>
+      <h1 className="wizard-title" tabIndex={-1}>{t('wizard.connect.title')}</h1>
       <div className="wizard-subtitle">{t('wizard.connect.subtitle')}</div>
       <div className="wizard-body">
         <div className="field">
@@ -365,7 +377,7 @@ function StepConnect({
           </div>
           <span className="hint">{t('wizard.connect.hint')}</span>
           {testResult && (
-            <div className={`test-result ${testResult.ok ? 'ok' : 'fail'}`}>
+            <div className={`test-result ${testResult.ok ? 'ok' : 'fail'}`} role="status" aria-live="polite">
               <Icon name={testResult.ok ? 'check' : 'close'} className="icon-xs" /> {testResult.message}
             </div>
           )}
@@ -404,6 +416,7 @@ function StepExecutor({
   const [showToken, setShowToken] = useState(false);
   const [checkingPort, setCheckingPort] = useState(false);
   const [portResult, setPortResult] = useState<{ available: boolean; message: string } | null>(null);
+  const [nameTouched, setNameTouched] = useState(false);
   // F-33（UIUX 审计）：端口输入改为「草稿字符串」受控。原实现把
   // parseInt('') = NaN 直接塞进表单并渲染 value={NaN}（React 控制台告警
   // "Received NaN for the `value` attribute"），且清空后「下一步」静默禁用、
@@ -444,8 +457,15 @@ function StepExecutor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 端口必须落在合法区间：原实现只判 > 0，用户可填 99999 并一路走到完成，
+  // 最终由子进程 bind 失败才暴露，错误信息也难懂。
+  const portValid = Number.isInteger(form.executorPort) && form.executorPort >= 1 && form.executorPort <= 65535;
+  const nameMissing = nameTouched && form.executorName.trim() === '';
+  const portInvalid = !portValid || Boolean(portResult && !portResult.available);
+  const canNext = form.executorName.trim().length > 0 && portValid;
+
   async function checkPort() {
-    if (!form.executorPort) return;
+    if (!portValid) return;
     setCheckingPort(true);
     setPortResult(null);
     try {
@@ -496,24 +516,26 @@ function StepExecutor({
     onChange('executorAddressPublic', `${ip}:${form.executorPort}`);
   }
 
-  // 端口必须落在合法区间：原实现只判 > 0，用户可填 99999 并一路走到完成，
-  // 最终由子进程 bind 失败才暴露，错误信息也难懂。
-  const portValid = Number.isInteger(form.executorPort) && form.executorPort >= 1 && form.executorPort <= 65535;
-  const canNext = !!form.executorName && portValid;
-
   return (
     <>
-      <div className="wizard-title">{t('wizard.machine.title')}</div>
+      <h1 className="wizard-title" tabIndex={-1}>{t('wizard.machine.title')}</h1>
       <div className="wizard-subtitle">{t('wizard.machine.subtitle')}</div>
       <div className="wizard-body">
         <div className="field">
           <label className="label">{t('wizard.machine.nameLabel')}</label>
           <input aria-label={t('wizard.machine.nameLabel')}
-            className="input"
+            className={`input${nameMissing ? ' error' : ''}`}
+            aria-invalid={nameMissing ? 'true' : undefined}
             placeholder="my-workstation"
             value={form.executorName}
             onChange={(e) => onChange('executorName', e.target.value)}
+            onBlur={() => setNameTouched(true)}
           />
+          {nameMissing && (
+            <div className="test-result fail" role="alert">
+              <Icon name="close" className="icon-xs" /> {t('cfgx.validation.required')}
+            </div>
+          )}
           <span className="hint">{t('wizard.machine.nameHint')}</span>
         </div>
 
@@ -521,7 +543,8 @@ function StepExecutor({
           <label className="label">{t('wizard.machine.portLabel')}</label>
           <div className="input-group">
             <input aria-label={t('wizard.machine.portLabel')}
-              className={`input${portResult && !portResult.available ? ' error' : ''}`}
+              className={`input${portInvalid ? ' error' : ''}`}
+              aria-invalid={portInvalid ? 'true' : undefined}
               // min 与本页校验口径（1–65535，见下方越界提示）及设置页
               // EXECUTOR_PORT 区间对齐——原 min={1024} 与校验文案自相矛盾。
               // F-33：value 走 portText 草稿（清空 = 空串），NaN 不再进 DOM。
@@ -530,12 +553,12 @@ function StepExecutor({
               value={portText}
               onChange={(e) => handlePortChange(e.target.value)}
             />
-            <button className="btn wizard-inline-button" onClick={checkPort} disabled={!form.executorPort || checkingPort}>
+            <button className="btn wizard-inline-button" onClick={checkPort} disabled={!portValid || checkingPort}>
               {checkingPort ? t('wizard.machine.checking') : t('wizard.machine.checkPort')}
             </button>
           </div>
           {portResult && (
-            <div className={`test-result ${portResult.available ? 'ok' : 'fail'}`}>
+            <div className={`test-result ${portResult.available ? 'ok' : 'fail'}`} role="status" aria-live="polite">
               <Icon name={portResult.available ? 'check' : 'close'} className="icon-xs" /> {portResult.message}
             </div>
           )}
@@ -581,10 +604,9 @@ function StepExecutor({
                       onClick={() => { if (portValid) selectIP(ip); }}
                       disabled={!portValid}
                       aria-pressed={sel}
-                      aria-label={`${full}${sel ? t('wizard.machine.chipSelected') : t('wizard.machine.chipUse')}${rec ? t('wizard.machine.chipRecommended') : ''}`}
                     >
                       {full}
-                      {rec && <span className="ip-chip-recommended-badge">{t('wizard.machine.recommended')}</span>}
+                      {rec && <> <span className="ip-chip-recommended-badge">{t('wizard.machine.recommended')}</span></>}
                     </button>
                   );
                 })}
@@ -593,7 +615,7 @@ function StepExecutor({
           )}
           <input aria-label={t('wizard.machine.publicLabel')}
             className="input wizard-address-input"
-            placeholder={`192.168.x.x:${form.executorPort}`}
+            placeholder={`192.168.x.x:${portValid ? form.executorPort : 8002}`}
             value={form.executorAddressPublic}
             onChange={(e) => onChange('executorAddressPublic', e.target.value)}
           />
@@ -711,7 +733,7 @@ function StepSource({
 
   return (
     <>
-      <div className="wizard-title">{t('wizard.source.title')}</div>
+      <h1 className="wizard-title" tabIndex={-1}>{t('wizard.source.title')}</h1>
       <div className="wizard-subtitle">{t('wizard.source.subtitle')}</div>
       <div className="wizard-body">
         <div className="field">
@@ -774,7 +796,7 @@ function StepFinish({
 }) {
   return (
     <>
-      <div className="wizard-title">{t('wizard.finish.title')}</div>
+      <h1 className="wizard-title" tabIndex={-1}>{t('wizard.finish.title')}</h1>
       <div className="wizard-subtitle">{t('wizard.finish.subtitle')}</div>
       <div className="wizard-body">
         <div className="confirm-grid">

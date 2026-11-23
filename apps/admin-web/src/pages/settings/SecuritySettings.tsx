@@ -416,21 +416,21 @@ export function SessionsCard() {
       title: 'IP', dataIndex: 'ip', width: 140,
       onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
       onCell: () => ({ className: 'ui09-hide-mobile' }),
-      render: (v: string | null) => v ?? <Text type="secondary">-</Text>,
+      render: (v: string | null) => v ?? <Text type="secondary">—</Text>,
     },
     {
       title: t('security.session.col.loginTime'), dataIndex: 'createdAt', width: 170,
-      // 占位符保持本表既有约定 '-'（与同表 IP 列一致），时间渲染走共享 formatDateTime
-      render: (v: string) => (v ? formatDateTime(v) : '-'),
+      // 占位符保持本表统一约定 '—'，时间渲染走共享 formatDateTime
+      render: (v: string) => (v ? formatDateTime(v) : '—'),
     },
     {
-      title: t('security.session.col.current'), dataIndex: 'current', width: 80,
+      title: t('security.session.col.current'), dataIndex: 'current', width: 108,
       onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
       onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: boolean) => (v ? <Tag color="green">{t('security.session.currentTag')}</Tag> : <Tag>{t('security.session.otherTag')}</Tag>),
     },
     {
-      title: '', width: 90,
+      title: t('security.col.action'), width: 90,
       render: (_: unknown, row: AuthSession) =>
         row.current ? (
           <Text type="secondary" style={{ fontSize: 12 }}>{t('security.session.local')}</Text>
@@ -499,8 +499,8 @@ export function SessionsCard() {
           rowKey="id"
           columns={cols}
           size="small"
-          // UI 打磨：设备列改为弹性（最小 240），其余定宽合计 480 → 720，窄屏防溢出
-          scroll={{ x: 720 }}
+          // UI 打磨：设备列改为弹性（最小 240），其余定宽合计 508 → 748，窄屏防溢出
+          scroll={{ x: 748 }}
           pagination={false}
           locale={{ emptyText: t('security.session.empty') }}
         />

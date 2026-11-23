@@ -28,7 +28,7 @@
  * - 0 件时整体隐藏（不占顶栏位置）。
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Badge, Button, Space, Tooltip } from 'antd';
+import { Badge, Button, Tooltip } from 'antd';
 import { MailOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -153,12 +153,25 @@ export default function InboxBadge() {
     : t('inbox.badge.sopBlocked', { n: sopBlocked === null ? UNKNOWN : sopBlocked });
   const known = approvals !== null && waiting !== null && failed !== null
     && sopClarifications !== null && sopBlocked !== null;
-  const unitText = [approvalsText, waitingText, failedText, sopText, sopBlockedText].filter(Boolean).join(' · ');
+  const unitItems = [approvalsText, waitingText, failedText, sopText, sopBlockedText].filter(Boolean);
+  const unitText = unitItems.join(' · ');
+  const tooltipContent = (
+    <div>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>{t('inbox.badge.tooltip')}</div>
+      {unitItems.map((line) => (
+        <div key={line}>{line}</div>
+      ))}
+    </div>
+  );
 
   return (
-    <Tooltip title={`${t('inbox.badge.tooltip')} · ${unitText}`}>
-      <Space size={4} align="center" data-testid="inbox-badge" data-degraded={known ? undefined : 'true'}>
-        <Badge count={badgeContent} size="small">
+    <Tooltip title={tooltipContent}>
+      <span
+        style={{ display: 'inline-flex', alignItems: 'center' }}
+        data-testid="inbox-badge"
+        data-degraded={known ? undefined : 'true'}
+      >
+        <Badge count={badgeContent} dot={total === 0} size="small">
           <Button
             type="text"
             size="small"
@@ -169,6 +182,8 @@ export default function InboxBadge() {
             <MailOutlined />
           </Button>
         </Badge>
+        {/* 顶栏默认仅渲染紧凑图标+总角标，明细以 Tooltip 浮层呈现，避免 1280/1440 英文顶栏横向溢出；
+            保留 .inbox-badge-units DOM（CSS 隐藏）以兼容既有单测契约。 */}
         <span className="inbox-badge-units" data-testid="inbox-badge-units" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
           <span data-testid="inbox-badge-approvals">{approvalsText}</span>
           <span data-testid="inbox-badge-sep" aria-hidden="true">{t('common.listSep.space')}</span>
@@ -192,7 +207,7 @@ export default function InboxBadge() {
             </>
           )}
         </span>
-      </Space>
+      </span>
     </Tooltip>
   );
 }

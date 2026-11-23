@@ -6,7 +6,7 @@ import { message } from '../utils/toast';
 import { Modal as confirmModal } from '../utils/modal';
 // R59：展示口径与「计数不一致」提示外提到组件（页面已到体量棘轮上限）。
 import RunningMetricsCard from '../components/executor/RunningMetricsCard';
-import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined, ArrowLeftOutlined, MoreOutlined } from '@ant-design/icons';
+import { WarningOutlined, KeyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined, ArrowLeftOutlined, MoreOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
@@ -36,7 +36,7 @@ import { runtimeLabel } from '../utils/runtime-label';
 import { executorEditFormValues, pickExecutorEditPayload, type ExecutorEditValues } from './executor-edit';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
-import { CHART_COLORS } from '../theme/tokens';
+import { CHART_COLORS, SEMANTIC_TEXT } from '../theme/tokens';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 // R149-F2：页内标准错误块 + 重试入口（与 ExecutorPackagesPage/SopsPage 同一件）
@@ -407,7 +407,7 @@ export default function ExecutorDetailPage() {
   const heartbeatStale = executor.lastHeartbeat
     ? isHeartbeatStale(new Date(executor.lastHeartbeat).getTime(), Date.now(), heartbeatTimeoutMs)
     : false;
-  const heartbeatText = executor.lastHeartbeat ? formatRelativeTime(executor.lastHeartbeat, t) : '-';
+  const heartbeatText = executor.lastHeartbeat ? formatRelativeTime(executor.lastHeartbeat, t) : '—';
   const heartbeatAbsolute = executor.lastHeartbeat ? formatDateTime(executor.lastHeartbeat) : '';
 
   type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
@@ -429,11 +429,11 @@ export default function ExecutorDetailPage() {
       // 的 stopPropagation 避免双跳。
       <Link to={`/tasks/${r.taskId}/executions/${r.id}`} onClick={(e) => e.stopPropagation()}>{v || r.taskId}</Link>
     )},
-    { title: t('executorDetail.history.col.status'), dataIndex: 'status', key: 'status', width: 90, render: (v: string) => {
+    { title: t('executorDetail.history.col.status'), dataIndex: 'status', key: 'status', width: 116, render: (v: string) => {
       const cfg = statusMap[v] || { badge: 'default' as BadgeStatus, label: v };
       return <Badge status={cfg.badge} text={cfg.label} />;
     }},
-    { title: t('executorDetail.history.col.startTime'), dataIndex: 'startTime', key: 'startTime', width: 170, render: (v: string) => v ? formatDateTime(v) : '-' },
+    { title: t('executorDetail.history.col.startTime'), dataIndex: 'startTime', key: 'startTime', width: 170, render: (v: string) => v ? formatDateTime(v) : '—' },
     // F-35（DEEP_REVIEW 0ef3bbe）：时长格式统一走 formatDurationShort（含小时档）
     // UI-09 第三轮：时长/退出码是次要列——窄屏（≤768px）由媒体查询隐藏
     // （onHeaderCell/onCell 双端挂类，对齐 mobile-ui09 既有模式），
@@ -452,11 +452,11 @@ export default function ExecutorDetailPage() {
       dataIndex: 'exitCode',
       key: 'exitCode',
       width: 80,
-      render: (v: number | null | undefined) => v != null ? <Text type={v !== 0 ? 'danger' : undefined} code>{v}</Text> : '-',
+      render: (v: number | null | undefined) => v != null ? <Text type={v !== 0 ? 'danger' : undefined} code>{v}</Text> : '—',
       onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
       onCell: () => ({ className: 'ui09-hide-mobile' }),
     },
-    { title: t('executorDetail.history.col.error'), dataIndex: 'errorMessage', key: 'errorMessage', ellipsis: true, minWidth: 175, render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-' },
+    { title: t('executorDetail.history.col.error'), dataIndex: 'errorMessage', key: 'errorMessage', ellipsis: true, minWidth: 175, render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '—' },
   ];
 
   // P1-7：页头动作分级——唯一主按钮=编辑（元数据主管理流程）；配置热更新收进
@@ -481,6 +481,9 @@ export default function ExecutorDetailPage() {
     setConfigOpen(true);
   };
 
+  const warnColor = SEMANTIC_TEXT.warning[isDark ? 'dark' : 'light'];
+  const trendDot = historyPoints.length <= 1 ? { r: 4 } : false;
+
   return (
     // UI-09 第三轮：页面根挂 ui09-exec-detail 作用域（与 ExecutionDetailPage
     // 同源复用既有媒体查询规则：面包屑 li 允许收缩，本页无新增 CSS）。
@@ -490,12 +493,7 @@ export default function ExecutorDetailPage() {
           描述行承载实体名、返回与管理操作进 extra。按钮组自 Card extra 原样迁移，
           可见性判定（N-02③/AUTH-05）与各提示语义不变。） */}
       <PageHeader
-        title={t('executorDetail.title')}
-        description={
-          <span className="ui09-pageheader-description" title={executor.appName}>
-            {executor.appName}
-          </span>
-        }
+        title={<Space size={8} align="center"><span className="ui09-pageheader-description" title={executor.appName}>{executor.appName}</span><Badge status={isOnline ? 'success' : 'default'} text={`${isOnline ? t('execList.status.online') : t('execList.status.offline')}\u200B`} /></Space>}
         breadcrumb={[
           { title: t('executorDetail.breadcrumb.list'), to: '/executors' },
           // UI-09 第二轮同款：超长不可断执行器名会撑破面包屑（li min-width:auto
@@ -507,14 +505,14 @@ export default function ExecutorDetailPage() {
           <Space wrap size={4}>
             <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/executors')}>{t('executorDetail.backToList')}</Button>
             {canManageMetadata && (
-              <Button type="primary" onClick={() => { editForm.setFieldsValue(executorEditFormValues(executor)); setEditOpen(true); }}>
-                {t('executorDetail.edit')}
-              </Button>
-            )}
-            {canManageMetadata && (
-              <Dropdown trigger={['click']} placement="bottomRight" menu={{ items: moreMenuItems, onClick: onMoreMenuClick }}>
-                <Button icon={<MoreOutlined />}>{t('executorDetail.more')}</Button>
-              </Dropdown>
+              <>
+                <Dropdown trigger={['click']} placement="bottomRight" menu={{ items: moreMenuItems, onClick: onMoreMenuClick }}>
+                  <Button icon={<MoreOutlined />}>{t('executorDetail.more')}</Button>
+                </Dropdown>
+                <Button type="primary" onClick={() => { editForm.setFieldsValue(executorEditFormValues(executor)); setEditOpen(true); }}>
+                  {t('executorDetail.edit')}
+                </Button>
+              </>
             )}
             {isAdmin && (
               <>
@@ -538,8 +536,8 @@ export default function ExecutorDetailPage() {
                 {/* 危险分组②：轮换 Token = warning（旧令牌立即失效、执行器短暂重注册，非不可逆） */}
                 <Tooltip title={t('executorDetail.rotate.oldTokenInvalidTip')}>
                   <Button
-                    icon={<CopyOutlined />}
-                    style={{ color: token.colorWarning, borderColor: token.colorWarning }}
+                    icon={<KeyOutlined />}
+                    style={{ color: warnColor, borderColor: warnColor }}
                     onClick={() => { rotateForm.resetFields(); setRotateOpen(true); }}
                   >{t('executorDetail.rotate.rotateToken')}</Button>
                 </Tooltip>
@@ -569,7 +567,7 @@ export default function ExecutorDetailPage() {
       />
 
       {/* UI 打磨：列数随断点收敛（全站 Descriptions 惯例），窄屏不再三列挤压 */}
-      <Card>
+      <Card extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('executorDetail.snapshotHint')}</Text>}>
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }}>
           <Descriptions.Item label={t('executorDetail.field.appName')}>{executor.appName}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.address')}>{executor.address}</Descriptions.Item>
@@ -596,9 +594,9 @@ export default function ExecutorDetailPage() {
             </Space>
           </Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.type')}>
-            {executor.type ? <Tag>{runtimeLabel(executor.type, t)}</Tag> : '-'}
+            {executor.type ? <Tag>{runtimeLabel(executor.type, t)}</Tag> : '—'}
           </Descriptions.Item>
-          <Descriptions.Item label={t('executorDetail.field.version')}>{executor.executorVersion || '-'}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.version')}>{executor.executorVersion || '—'}</Descriptions.Item>
           {/* UI-17/ARCH-32: 派发模式（pull = NAT 内零入站，长轮询取件） */}
           <Descriptions.Item label={t('executorDetail.field.dispatchMode')}>
             <Space wrap size={4}>
@@ -614,8 +612,8 @@ export default function ExecutorDetailPage() {
               )}
             </Space>
           </Descriptions.Item>
-          <Descriptions.Item label={t('executorDetail.field.group')}>{executor.groupName || '-'}</Descriptions.Item>
-          <Descriptions.Item label={t('executorDetail.field.tags')}>{executor.tags?.join(', ') || '-'}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.group')}>{executor.groupName || '—'}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.tags')}>{executor.tags?.join(', ') || '—'}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.maxConcurrent')}>{executor.maxConcurrentTasks ?? t('executorDetail.unlimited')}</Descriptions.Item>
           {/* S4-C4（沙箱姿态在控制面可见）：那台机器上的 TASK_SANDBOX 到底开没开。
               此前只能 SSH 上机看环境变量——「默认关」是运维的显式取舍还是疏忽，
@@ -674,7 +672,7 @@ export default function ExecutorDetailPage() {
               xs 单列超出列数（命中 rc Descriptions「Sum of column span not match
               column」告警）；filled 在 xs/sm/md 均与原渲染产物一致（md 下与
               心跳项同行 1+2 填满、sm/xs 独占整行）。 */}
-          <Descriptions.Item label={t('executorDetail.field.description')} span="filled">{executor.description || '-'}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.description')} span="filled">{executor.description || '—'}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.runningExecutions')}>
             {reportedIds === undefined || reportedIds === null ? (
               <Tooltip title={t('executorDetail.running.notReportedTip')}>
@@ -852,7 +850,7 @@ export default function ExecutorDetailPage() {
                   {/* METRIC-01：分母含超时/已终止等非成功/失败终态，计数行补「其他」，
                       避免 85.7% 与「成功 6 / 失败 0」对不上。
                       R285：超时单独成桶（缺失时退回旧文案），见 statsCountsLine */}
-                  <Text type="secondary" style={{ fontSize: 12 }}>{statsCountsLine(metrics.sevenDayStats, t)}</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{statsCountsLine(metrics.sevenDayStats, t).split(' / ').map((seg, i) => <span key={i}>{i > 0 && ' / '}<span style={{ whiteSpace: 'nowrap' }}>{seg}</span></span>)}</Text>
                 </Col>
                 {/* EXEC-DETAIL-01：337,261ms 这类裸毫秒不可读，与全站统一走
                     formatDuration 人性化（5分37秒/1小时2分） */}
@@ -879,27 +877,24 @@ export default function ExecutorDetailPage() {
         ) : historyPoints.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('executorDetail.history.empty')} />
         ) : (
-          <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={historyPoints} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
-              {/* UI-02：网格/轴随双主题切换 */}
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={CHART_COLORS.grid(isDark)} />
-              <XAxis
-                dataKey="timestamp"
-                tickFormatter={trendTickFormatter}
-                tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }}
-                minTickGap={32}
-                interval="preserveStartEnd"
-              />
-              {/* 左轴：CPU/内存百分比；右轴：并发任务数（独立量纲） */}
-              <YAxis yAxisId="pct" domain={[0, 100]} width={36} tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
-              <YAxis yAxisId="cnt" orientation="right" allowDecimals={false} width={36} tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
-              <RechartTooltip labelFormatter={(label) => trendTooltipLabel(String(label))} labelStyle={{ fontSize: 12 }} />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Line yAxisId="pct" type="monotone" dataKey="cpuUsage" name={t('executorDetail.trend.cpu')} stroke={CHART_COLORS.cpu} strokeWidth={1.5} dot={false} connectNulls />
-              <Line yAxisId="pct" type="monotone" dataKey="memUsage" name={t('executorDetail.trend.mem')} stroke={CHART_COLORS.memory} strokeWidth={1.5} dot={false} connectNulls />
-              <Line yAxisId="cnt" type="monotone" dataKey="runningTaskCount" name={t('executorDetail.trend.concurrent')} stroke={CHART_COLORS.concurrent} strokeWidth={1.5} dot={false} connectNulls />
-            </LineChart>
-          </ResponsiveContainer>
+          <>
+            <ResponsiveContainer width="100%" height={260}>
+              <LineChart data={historyPoints} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
+                {/* UI-02：网格/轴随双主题切换 */}
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={CHART_COLORS.grid(isDark)} />
+                <XAxis dataKey="timestamp" tickFormatter={trendTickFormatter} tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} minTickGap={32} interval="preserveStartEnd" />
+                {/* 左轴：CPU/内存百分比；右轴：并发任务数（独立量纲） */}
+                <YAxis yAxisId="pct" domain={[0, 100]} width={36} tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
+                <YAxis yAxisId="cnt" orientation="right" allowDecimals={false} width={36} tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
+                <RechartTooltip labelFormatter={(label) => trendTooltipLabel(String(label))} labelStyle={{ fontSize: 12 }} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Line yAxisId="pct" type="monotone" dataKey="cpuUsage" name={t('executorDetail.trend.cpu')} stroke={CHART_COLORS.cpu} strokeWidth={1.5} dot={trendDot} connectNulls />
+                <Line yAxisId="pct" type="monotone" dataKey="memUsage" name={t('executorDetail.trend.mem')} stroke={CHART_COLORS.memory} strokeWidth={1.5} dot={trendDot} connectNulls />
+                <Line yAxisId="cnt" type="monotone" dataKey="runningTaskCount" name={t('executorDetail.trend.concurrent')} stroke={CHART_COLORS.concurrent} strokeWidth={1.5} dot={trendDot} connectNulls />
+              </LineChart>
+            </ResponsiveContainer>
+            {historyPoints.length === 1 && <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 8, textAlign: 'center' }}>{t('executorDetail.trend.singlePointHint')}</Text>}
+          </>
         )}
       </Card>
 

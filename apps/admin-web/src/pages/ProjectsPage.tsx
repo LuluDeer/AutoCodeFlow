@@ -491,14 +491,14 @@ export default function ProjectsPage() {
         width: 280,
         ellipsis: { showTitle: false },
         render: (v: string, row: ProjectViewRow) => (
-          <Space size={4}>
-            <Text strong style={{ display: 'inline-block', maxWidth: '100%' }} ellipsis={{ tooltip: v }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+            <Text strong style={{ flex: 1, minWidth: 0 }} ellipsis={{ tooltip: v }}>
               {v}
             </Text>
             {isDefaultProject(row.id) && (
               <Tag color="default">{t('projects.defaultBadge')}</Tag>
             )}
-          </Space>
+          </div>
         ),
       },
       {
@@ -536,7 +536,7 @@ export default function ProjectsPage() {
         // 宽度不足会让内容溢出单元格——而**溢出正是 fixed 列失效的直接原因**
         // （sticky 元素的内容比自身宽时，右侧溢出部分会被滚动容器裁掉，看起来
         // 就是「操作列没固定住」）。故这里给足 220 并保持 fixed right。
-        width: 220,
+        width: 310,
         fixed: 'right' as const,
         render: (_: unknown, row: ProjectViewRow) => {
           const immutable = isDefaultProject(row.id);
@@ -743,10 +743,10 @@ export default function ProjectsPage() {
               return (
                 <Card key={row.id} size="small">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                    <Space size={4} style={{ flex: 1, minWidth: 0 }}>
-                      <Text strong ellipsis style={{ minWidth: 0 }}>{row.name}</Text>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, minWidth: 0 }}>
+                      <Text strong ellipsis={{ tooltip: row.name }} style={{ flex: 1, minWidth: 0 }}>{row.name}</Text>
                       {immutable && <Tag color="default">{t('projects.defaultBadge')}</Tag>}
-                    </Space>
+                    </div>
                     <RoleTag role={row.myRole} t={t} />
                   </div>
                   {row.description && (
@@ -824,7 +824,7 @@ export default function ProjectsPage() {
           // 差额从弹性列里扣，名称列被压到 262px 且描述列几乎不可读；同时
           // scroll.x < 容器宽时表格整体不产生横向滚动，fixed 列反而在容器内
           // 「跟着滚」——这正是「操作列没固定住」的观感来源。
-          scroll={{ x: 1180 }}
+          scroll={{ x: 1270 }}
           // UI 打磨：loading 直传 isFetching——翻页/重取期间表格有反馈，
           // 首屏（无数据）仍走上方整页骨架
           loading={projectsQuery.isFetching}

@@ -55,3 +55,27 @@ export function buildResourceOptions(t: Translate): ResourceOptionGroup[] {
     options: group.resources.map((value) => ({ value, label: value })),
   }));
 }
+
+const KNOWN_AUDIT_RESOURCES = new Set<string>(
+  AUDIT_RESOURCE_GROUPS.flatMap((group) => group.resources),
+);
+
+/**
+ * 审计列表资源类型展示名：对已收录的 25 项，按 `audit.resource.` 前缀拼接 token
+ * 组成 key 交给 t() 翻译，输出中英文；未知 token 原样回退（保留可检索性，不抹成"未知资源"）。
+ */
+export function formatAuditResource(v: string | null | undefined, t: Translate): string {
+  if (!v) return '—';
+  if (!KNOWN_AUDIT_RESOURCES.has(v)) return v;
+  const key = `audit.resource.${v}`;
+  const label = t(key);
+  return label && label !== key ? label : v;
+}
+
+/**
+ * 审计 IP 展示格式化：剥离 IPv4-mapped IPv6 前缀 `^::ffff:`，完整原值交由外层 Tooltip 保留。
+ */
+export function formatAuditIp(ip: string | null | undefined): string {
+  if (!ip) return '';
+  return ip.replace(/^::ffff:/i, '');
+}

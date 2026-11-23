@@ -89,7 +89,7 @@ import log, { applyLogLevel } from './logger';
 // SEC-IPC-SENDER（R86-A1 轴 1）：渲染层 → 主进程 IPC 的 sender 白名单闸。
 import { createGuardedIpcMain } from './ipc-sender-guard';
 // R89：连接失败文案归一（只回错误码，不回显解析后的地址）。
-import { describeConnectionError } from './network-util';
+import { describeConnectionError, describeConnectionMessage } from './network-util';
 // R105：破坏性通道的主进程二次确认（渲染层的 ConfirmBar 拦不住注入脚本）。
 // F-27：确认文案双语——zh/en 同源存放在 destructive-actions 的 policy 上。
 import { CONFIRM_CANCELED, confirmDestructive } from './destructive-actions';
@@ -1891,7 +1891,7 @@ function testAdminApiConnection(url: string): Promise<{ ok: boolean; message: st
       // https used to be dialed over plain http:80 and always failed.
       const isHttps = parsed.protocol === 'https:';
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        resolve({ ok: false, message: `不支持的协议: ${parsed.protocol}（仅支持 http/https）` });
+        resolve({ ok: false, message: describeConnectionMessage({ kind: 'unsupportedProtocol', protocol: parsed.protocol }, currentUiLocale()) });
         return;
       }
       const transport = (isHttps ? https : http) as typeof http;
@@ -1905,23 +1905,23 @@ function testAdminApiConnection(url: string): Promise<{ ok: boolean; message: st
         (res) => {
           res.resume();
           if (res.statusCode === 200) {
-            resolve({ ok: true, message: `连接成功 (HTTP ${res.statusCode})` });
+            resolve({ ok: true, message: describeConnectionMessage({ kind: 'ok', statusCode: res.statusCode }, currentUiLocale()) });
           } else {
-            resolve({ ok: false, message: `服务器返回 HTTP ${res.statusCode}，请检查地址是否正确` });
+            resolve({ ok: false, message: describeConnectionMessage({ kind: 'httpStatus', statusCode: res.statusCode }, currentUiLocale()) });
           }
         },
       );
       // R89：只回**稳定的错误码文案**，不回显 err.message —— Node 的消息里带解析后的地址
       // （`connect ECONNREFUSED 192.168.1.5:3105`），等于把这条通道变成 DNS/内网探测器。
       req.on('error', (err) =>
-        resolve({ ok: false, message: describeConnectionError((err as NodeJS.ErrnoException).code) }),
+        resolve({ ok: false, message: describeConnectionError((err as NodeJS.ErrnoException).code, currentUiLocale()) }),
       );
       req.on('timeout', () => {
         req.destroy();
-        resolve({ ok: false, message: '连接超时 (5s)' });
+        resolve({ ok: false, message: describeConnectionMessage({ kind: 'timeout' }, currentUiLocale()) });
       });
     } catch (err: unknown) {
-      resolve({ ok: false, message: `无效的 URL: ${err instanceof Error ? err.message : String(err)}` });
+      resolve({ ok: false, message: describeConnectionMessage({ kind: 'invalidUrl', detail: err instanceof Error ? err.message : String(err) }, currentUiLocale()) });
     }
   });
 }

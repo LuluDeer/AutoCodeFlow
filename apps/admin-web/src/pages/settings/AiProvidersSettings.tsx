@@ -166,7 +166,7 @@ export default function AiProvidersSettings() {
     {
       title: t('aiProviders.col.video'),
       dataIndex: 'supportsVideo',
-      width: 96,
+      width: 108,
       render: (v: boolean) => (
         <Tag color={v ? 'green' : 'default'}>
           {v ? t('aiProviders.videoYes') : t('aiProviders.videoNo')}
@@ -176,7 +176,7 @@ export default function AiProvidersSettings() {
     {
       title: t('aiProviders.col.key'),
       dataIndex: 'hasApiKey',
-      width: 96,
+      width: 108,
       render: (v: boolean) => (
         <Tag color={v ? 'blue' : 'orange'}>
           {v ? t('aiProviders.keyConfigured') : t('aiProviders.keyMissing')}
@@ -186,7 +186,7 @@ export default function AiProvidersSettings() {
     {
       title: t('aiProviders.col.status'),
       dataIndex: 'enabled',
-      width: 88,
+      width: 108,
       render: (v: boolean) => (v ? t('aiProviders.enabled') : t('aiProviders.disabled')),
     },
     {

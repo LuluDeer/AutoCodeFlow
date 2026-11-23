@@ -102,8 +102,58 @@ export default function TaskFormNavRail({ anchorItems, announcement, completionP
     };
   });
 
+  const completionBar = showCompletion ? (
+    /* §2.3 整体完成度。aria-valuenow 与可视百分比同源（同一个 percent），
+       不会出现「看到 60% 却读出 100%」。宽屏放锚点条内部顶端（sticky），
+       窄屏（<lg）独立渲染在表单顶部轻量进度条。 */
+    <div
+      role="progressbar"
+      aria-valuenow={percent}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label={t('taskForm.completion.aria', { percent })}
+      data-testid="task-form-completion"
+      style={{ marginBottom: 12 }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 4 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {t('taskForm.completion.label')}
+        </Typography.Text>
+        <Typography.Text strong style={{ fontSize: 12 }} data-testid="task-form-completion-text">
+          {t('taskForm.completion.percent', { percent })}
+        </Typography.Text>
+      </div>
+      {/* 进度条视觉本体：数值已由外层 progressbar 播报，此处 aria-hidden
+          以免同一信息被读两遍。 */}
+      <div
+        aria-hidden="true"
+        style={{
+          marginTop: 4,
+          height: 4,
+          borderRadius: 2,
+          background: token.colorFillSecondary,
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            width: `${percent}%`,
+            height: '100%',
+            background: percent === 100 ? token.colorSuccess : token.colorPrimary,
+            transition: 'width 0.2s',
+          }}
+        />
+      </div>
+    </div>
+  ) : null;
+
   return (
     <>
+      {!screens.lg && completionBar && (
+        <div style={{ width: '100%' }}>
+          {completionBar}
+        </div>
+      )}
       {/* 左侧锚点条（jsdom 无布局，Anchor 原生滚动监听依赖 getBoundingClientRect——
           测试环境只断言锚点渲染与点击可滚，不测监听） */}
       <nav
@@ -120,52 +170,10 @@ export default function TaskFormNavRail({ anchorItems, announcement, completionP
         }}
         className="task-form-anchor-rail"
       >
-        {showCompletion && (
-          /* §2.3 整体完成度。aria-valuenow 与可视百分比同源（同一个 percent），
-             不会出现「看到 60% 却读出 100%」。放在锚点条**内部顶端**：
-             它随锚点条一起 sticky，长表单滚动时始终可见。 */
-          <div
-            role="progressbar"
-            aria-valuenow={percent}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label={t('taskForm.completion.aria', { percent })}
-            data-testid="task-form-completion"
-            style={{ marginBottom: 12 }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 4 }}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {t('taskForm.completion.label')}
-              </Typography.Text>
-              <Typography.Text strong style={{ fontSize: 12 }} data-testid="task-form-completion-text">
-                {t('taskForm.completion.percent', { percent })}
-              </Typography.Text>
-            </div>
-            {/* 进度条视觉本体：数值已由外层 progressbar 播报，此处 aria-hidden
-                以免同一信息被读两遍。 */}
-            <div
-              aria-hidden="true"
-              style={{
-                marginTop: 4,
-                height: 4,
-                borderRadius: 2,
-                background: token.colorFillSecondary,
-                overflow: 'hidden',
-              }}
-            >
-              <div
-                style={{
-                  width: `${percent}%`,
-                  height: '100%',
-                  background: percent === 100 ? token.colorSuccess : token.colorPrimary,
-                  transition: 'width 0.2s',
-                }}
-              />
-            </div>
-          </div>
-        )}
+        {screens.lg && completionBar}
         <Anchor
           affix={false}
+          targetOffset={LAYOUT_TOKENS.anchorScrollOffset}
           items={items}
           onClick={(e) => {
             e.preventDefault();

@@ -184,7 +184,7 @@ export default function ParamsEditor({ value, onChange }: ParamsEditorProps) {
               value={row.type}
               onChange={v => update(idx, { type: v })}
               options={TYPE_OPTIONS}
-              style={{ width: 82 }}
+              style={{ width: 108 }}
               aria-label={t('paramsEditor.typeLabel')}
             />
             {row.type === 'boolean' ? (

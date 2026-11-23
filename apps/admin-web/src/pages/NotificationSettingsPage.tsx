@@ -438,9 +438,9 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
         return r.scope === 'global' ? (
           <Tag color="purple">{t('notif.silence.scope.global')}</Tag>
         ) : r.scope === 'task' ? (
-          <span>{t('notif.silence.scope.task')} <Tooltip title={r.taskId ?? undefined}><Typography.Text code style={{ ...clip, fontSize: 12 }}>{r.taskId ?? '-'}</Typography.Text></Tooltip></span>
+          <span>{t('notif.silence.scope.task')} <Tooltip title={r.taskId ?? undefined}><Typography.Text code style={{ ...clip, fontSize: 12 }}>{r.taskId ?? '—'}</Typography.Text></Tooltip></span>
         ) : (
-          <span>{t('notif.silence.scope.application')} <Tooltip title={r.applicationId ?? undefined}><Typography.Text code style={{ ...clip, fontSize: 12 }}>{r.applicationId ?? '-'}</Typography.Text></Tooltip></span>
+          <span>{t('notif.silence.scope.application')} <Tooltip title={r.applicationId ?? undefined}><Typography.Text code style={{ ...clip, fontSize: 12 }}>{r.applicationId ?? '—'}</Typography.Text></Tooltip></span>
         );
       } },
     { title: t('notif.silence.col.channel'), dataIndex: 'channelType', width: 100,
@@ -456,14 +456,14 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
       render: (v: string | null) => {
         const remain = fmtRemaining(v);
         if (remain) return remain;
-        return v ? <Tag color="red">{t('notif.silence.expired')}</Tag> : <Typography.Text type="secondary">-</Typography.Text>;
+        return v ? <Tag color="red">{t('notif.silence.expired')}</Tag> : <Typography.Text type="secondary">—</Typography.Text>;
       } },
     { title: t('notif.silence.col.createdBy'), dataIndex: 'createdBy', width: 100,
       onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
       onCell: () => ({ className: 'ui09-hide-mobile' }),
-      render: (v: string | null) => v ?? '-' },
+      render: (v: string | null) => v ?? '—' },
     { title: t('notif.silence.col.reason'), dataIndex: 'reason', ellipsis: true, minWidth: 100,
-      render: (v: string | null) => v ?? '-' },
+      render: (v: string | null) => v ?? '—' },
     { title: '', width: 80,
       render: (_: unknown, r: NotificationSilence) => (
         // Popconfirm 删除，对齐 settings 页 SystemConfigTab 先例
@@ -690,7 +690,18 @@ export default function NotificationSettingsPage() {
             />
           </>
         ) : (
-          <Alert title={t('notif.channel.disabledAlert')} type="info" showIcon />
+          <div
+            style={{
+              padding: '10px 14px',
+              borderRadius: 6,
+              border: `1px dashed ${token.colorBorder}`,
+              background: token.colorFillAlter,
+              color: token.colorTextSecondary,
+              fontSize: 13,
+            }}
+          >
+            {t('notif.channel.disabledAlert')}
+          </div>
         )}
       </div>
     ),
@@ -714,24 +725,17 @@ export default function NotificationSettingsPage() {
 
   return (
     <div>
-      {/* UI-03/UI-08：页头标准化（原 Typography.Title 区块迁入 PageHeader） */}
+      {/* UI-03/UI-08：页头标准化，将顶部 alarmNotice（含 /tasks 跳转）收敛进 description 降噪三层 Alert 堆叠 */}
       <PageHeader
         title={t('notif.title')}
-        description={t('notif.description')}
-      />
-      {/* P1-19（UX 审计）：本页只配置通知渠道连通性；各任务在何失败条件下发告警
-          （告警规则）挂在任务的告警配置里，此前通知设置页无指向，用户找不到入口。
-          补一条说明 + 跳转任务列表（不改动 TaskFormPage）。 */}
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 16 }}
-        title={t('notif.alarmNotice.title')}
         description={
-          <Space orientation="vertical" size={4}>
-            <span>{t('notif.alarmNotice.description')}</span>
-            <Link to="/tasks">{t('notif.alarmNotice.link')}</Link>
-          </Space>
+          <span>
+            {t('notif.description')} · <span>{t('notif.alarmNotice.title')}</span>（
+            <span title={t('notif.alarmNotice.description')}>
+              <Link to="/tasks">{t('notif.alarmNotice.link')}</Link>
+            </span>
+            ）
+          </span>
         }
       />
       {/* UI-16：渠道列表请求失败且无任何缓存数据 → 页内错误块（重试=refresh）；
@@ -778,7 +782,7 @@ export default function NotificationSettingsPage() {
         >
           <Form.Item name="channels" label={t('notif.test.channels')} rules={[{ required: true, message: t('notif.test.channelsRequired') }]}>
             <Checkbox.Group>
-              <Space orientation="vertical">
+              <Space wrap size={[16, 8]}>
                 <Checkbox value="email">{t('notif.channel.email')}</Checkbox>
                 <Checkbox value="slack">Slack</Checkbox>
                 <Checkbox value="dingtalk">{t('notif.channel.dingtalk')}</Checkbox>

@@ -2226,18 +2226,16 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
   }
 }
 
-// ── R7-C：ConfigPage 纯逻辑外提的真行为断言（不是源码文本契约）────────
+// R7-C：ConfigPage 纯逻辑外提的真行为断言（不是源码文本契约）
 // 与上面各块不同：这里不看源码写什么，而是**执行**被搬出去的纯函数
 // （numDraft / dirty / savePlan / searchIndex），逐条钉边界与真值表格子。
-await import('./pages/config/pure-logic.selftest.mjs');
-// R7-B：配置 IO 层（use-config-io）的结果归一是纯函数 ⇒ 同一条通道真执行断言。
-await import('./pages/config/io-result.selftest.mjs');
-// R7-B：配置 IO 层的取数面自检 + 实现体唯一性（与实现在同目录）。
-await import('./pages/config/io-layer.selftest.mjs');
-// R7-B 第二刀：配置源（读路径）的合并真值表 + 取数面自检 + effect 结构证据。
-await import('./pages/config/config-source.selftest.mjs');
-// R7-B 第三刀：配置写路径（save/requestSave）——requestSaveRef 的刷新语义
-// （两次渲染 + 冻结监听器）+ 判定分支真执行 + 取数面自检 + effect 结构证据。
-await import('./pages/config/writer-layer.selftest.mjs');
+// R7-B/R7-C 五个 config selftest（纯逻辑 / IO 结果归一 / IO 取数面 / 配置源 / 写路径）
+// 合并为单行串行加载：维持 nonCommentLines 棘轮 1608，逐条说明见 git 历史。
+for (const p of ['./pages/config/pure-logic.selftest.mjs', './pages/config/io-result.selftest.mjs', './pages/config/io-layer.selftest.mjs', './pages/config/config-source.selftest.mjs', './pages/config/writer-layer.selftest.mjs']) await import(p);
+// R-UX：apps/config/history/status 四组纯逻辑 selftest 接线（真执行，非文本存在性守卫）。
+await import('./pages/apps/apps-helpers.selftest.mjs');
+await import('./pages/config/agent-matrix.selftest.mjs');
+await import('./pages/history/history-nav.selftest.mjs');
+await import('./pages/status/status-helpers.selftest.mjs');
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit, R7-B config-io layer passed');
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit, R7-B config-io layer, R-UX apps/config/history/status pure-logic selftests passed');

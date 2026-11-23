@@ -25,12 +25,13 @@ export default function SettingRow({
   compact?: boolean;
   children: React.ReactNode;
 }) {
+  const errorId = error && field ? `cfgx-err-${field}` : undefined;
   return (
-    <div className={`cfgx-row${compact ? ' cfgx-row-compact' : ''}`} data-cfgx-field={field}>
+    <div className={`cfgx-row${compact ? ' cfgx-row-compact' : ''}${error ? ' has-error' : ''}`} data-cfgx-field={field}>
       <div className="cfgx-row-label">{label}</div>
       <div className="cfgx-row-control">
         {children}
-        {error ? <span className="cfgx-error" role="alert">{error}</span> : null}
+        {error ? <span id={errorId} className="cfgx-error" role="alert">{error}</span> : null}
         {hint ? <div className="cfgx-hint">{hint}</div> : null}
       </div>
     </div>

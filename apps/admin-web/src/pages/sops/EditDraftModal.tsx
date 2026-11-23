@@ -64,6 +64,11 @@ export default function EditDraftModal({ target, onClose, onSaved }: EditDraftMo
 
   const submit = async () => {
     if (!target || saving) return;
+    const title = form.title.trim();
+    if (!title) {
+      message.warning(t('sops.titleRequired'));
+      return;
+    }
     setSaving(true);
     try {
       // 空 YAML 不能发：后端 `!== undefined` 即 parse，空串会被判「front-matter 为空」→ 400。
@@ -71,7 +76,7 @@ export default function EditDraftModal({ target, onClose, onSaved }: EditDraftMo
       // bodyMarkdown 保留空串语义——用户清空正文是一次显式编辑。
       const frontMatterYaml = form.frontMatterYaml.trim();
       const updated = await sopsApi.updateDraft(target.id, {
-        title: form.title,
+        title,
         frontMatterYaml: frontMatterYaml ? form.frontMatterYaml : undefined,
         bodyMarkdown: form.bodyMarkdown,
       });

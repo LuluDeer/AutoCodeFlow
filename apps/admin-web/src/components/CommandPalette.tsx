@@ -63,6 +63,7 @@ import {
   FolderOpenOutlined,
   HistoryOutlined,
   HomeOutlined,
+  LoadingOutlined,
   MailOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
@@ -428,7 +429,7 @@ export default function CommandPalette({
   const runTaskAction = useCallback(
     async (kind: TaskActionKind, item: PaletteItem) => {
       if (actingKey) return;
-      setActingKey(item.key);
+      setActingKey(`${item.key}:${kind}`);
       const label = t(TASK_ACTION_LABEL_KEY[kind]);
       try {
         if (kind === 'trigger') {
@@ -484,6 +485,14 @@ export default function CommandPalette({
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       if (flatItems.length) setActiveIndex((i) => (i - 1 + flatItems.length) % flatItems.length);
+    } else if (e.key === 'ArrowRight') {
+      const btn = listRef.current?.querySelector<HTMLButtonElement>(
+        `[data-palette-index="${activeIndex}"] button:not(:disabled)`,
+      );
+      if (btn) {
+        e.preventDefault();
+        btn.focus();
+      }
     } else if (e.key === 'Enter') {
       e.preventDefault();
       const entry = flatItems[Math.min(activeIndex, Math.max(flatItems.length - 1, 0))];
@@ -527,6 +536,7 @@ export default function CommandPalette({
                     gap: 10,
                     padding: '7px 10px',
                     borderRadius: 8,
+                    borderLeft: active ? '2px solid var(--color-link)' : '2px solid transparent',
                     cursor: 'pointer',
                     background: active ? token.colorBgTextHover : undefined,
                   }}
@@ -607,6 +617,7 @@ export default function CommandPalette({
                     gap: 10,
                     padding: '7px 10px',
                     borderRadius: 8,
+                    borderLeft: active ? '2px solid var(--color-link)' : '2px solid transparent',
                     cursor: 'pointer',
                     background: active ? token.colorBgTextHover : undefined,
                   }}
@@ -652,7 +663,8 @@ export default function CommandPalette({
                     >
                       {item.actions.map((ak) => {
                         const amLabel = t(TASK_ACTION_LABEL_KEY[ak]);
-                        const amIcon = TASK_ACTION_ICON[ak];
+                        const thisActing = actingKey === `${item.key}:${ak}`;
+                        const amIcon = thisActing ? <LoadingOutlined /> : TASK_ACTION_ICON[ak];
                         return (
                           <button
                             key={ak}
@@ -661,7 +673,8 @@ export default function CommandPalette({
                               action: amLabel,
                               name: item.title,
                             })}
-                            disabled={actingKey !== null && actingKey !== item.key}
+                            aria-busy={thisActing || undefined}
+                            disabled={actingKey !== null}
                             onClick={() => runTaskAction(ak, item)}
                             style={{
                               display: 'inline-flex',
@@ -675,6 +688,7 @@ export default function CommandPalette({
                               background: token.colorBgContainer,
                               color: token.colorTextSecondary,
                               cursor: actingKey ? 'not-allowed' : 'pointer',
+                              opacity: actingKey ? 0.65 : 1,
                             }}
                           >
                             {amIcon}
@@ -768,6 +782,7 @@ export default function CommandPalette({
           borderTop: `1px solid ${token.colorBorderSecondary}`,
           paddingTop: 8,
           display: 'flex',
+          flexWrap: 'wrap',
           gap: 16,
         }}
       >

@@ -578,50 +578,50 @@ export default function SopsPage() {
     [detail?.id, load, openDetail, t],
   );
 
+  const renderSopActions = (record: Sop) => (
+    <Space size={4}>
+      <Button size="small" onClick={() => void openDetail(record)}>
+        {t('sops.view')}
+      </Button>
+      {record.status === 'deprecated' ? (
+        <Popconfirm
+          title={t('sops.restore.confirmTitle', { slug: record.slug })}
+          description={t('sops.restore.confirmDesc')}
+          okText={t('sops.restore.okBtn')}
+          cancelText={t('sops.cancel')}
+          onConfirm={() => void mutateArchive(record, 'restore')}
+        >
+          <Button size="small" data-testid={`sop-restore-${record.slug}`} loading={archivingId === record.id}>
+            {t('sops.restore.btn')}
+          </Button>
+        </Popconfirm>
+      ) : (
+        <Popconfirm
+          title={t('sops.archive.confirmTitle', { slug: record.slug })}
+          description={t('sops.archive.confirmDesc')}
+          okText={t('sops.archive.okBtn')}
+          okButtonProps={{ danger: true }}
+          cancelText={t('sops.cancel')}
+          onConfirm={() => void mutateArchive(record, 'deprecate')}
+        >
+          <Button size="small" danger data-testid={`sop-archive-${record.slug}`} loading={archivingId === record.id}>
+            {t('sops.archive.btn')}
+          </Button>
+        </Popconfirm>
+      )}
+    </Space>
+  );
+
   const sopColumns: ColumnsType<Sop> = [
     { title: t('sops.col.slug'), dataIndex: 'slug', width: 200 },
     { title: t('sops.col.title'), dataIndex: 'title', ellipsis: true },
-    { title: t('sops.col.status'), dataIndex: 'status', width: 110, render: (s: Sop['status']) => statusTag(s, t) },
+    { title: t('sops.col.status'), dataIndex: 'status', width: 120, render: (s: Sop['status']) => statusTag(s, t) },
     { title: t('sops.col.version'), dataIndex: 'currentVersion', width: 100, render: (v: string | null) => v ?? '—' },
     { title: t('sops.col.updatedAt'), dataIndex: 'updatedAt', width: 170, render: (v: string) => formatDateTime(v) },
     {
       title: t('sops.col.actions'),
-      width: 190,
-      render: (_, record) => (
-        <Space size={4}>
-          <Button size="small" onClick={() => void openDetail(record)}>
-            {t('sops.view')}
-          </Button>
-          {record.status === 'deprecated' ? (
-            <Popconfirm
-              title={t('sops.restore.confirmTitle', { slug: record.slug })}
-              description={t('sops.restore.confirmDesc')}
-              okText={t('sops.restore.okBtn')}
-              cancelText={t('sops.cancel')}
-              onConfirm={() => void mutateArchive(record, 'restore')}
-            >
-              <Button size="small" data-testid={`sop-restore-${record.slug}`}
-                loading={archivingId === record.id}>
-                {t('sops.restore.btn')}
-              </Button>
-            </Popconfirm>
-          ) : (
-            <Popconfirm
-              title={t('sops.archive.confirmTitle', { slug: record.slug })}
-              description={t('sops.archive.confirmDesc')}
-              okText={t('sops.archive.okBtn')}
-              okButtonProps={{ danger: true }}
-              cancelText={t('sops.cancel')}
-              onConfirm={() => void mutateArchive(record, 'deprecate')}
-            >
-              <Button size="small" danger data-testid={`sop-archive-${record.slug}`}
-                loading={archivingId === record.id}>
-                {t('sops.archive.btn')}
-              </Button>
-            </Popconfirm>
-          )}
-        </Space>
-      ),
+      width: 200,
+      render: (_, record) => renderSopActions(record),
     },
   ];
 
@@ -659,7 +659,7 @@ export default function SopsPage() {
       ),
     },
     { title: t('sops.col.version'), dataIndex: 'sopVersion', width: 90 },
-    { title: t('sops.col.status'), dataIndex: 'status', width: 120, render: (s: SopAssignment['status']) => assignmentStatusTag(s, t) },
+    { title: t('sops.col.status'), dataIndex: 'status', width: 140, render: (s: SopAssignment['status']) => assignmentStatusTag(s, t) },
     {
       title: t('sops.col.clarifications'),
       width: 100,
@@ -668,7 +668,7 @@ export default function SopsPage() {
     { title: t('sops.col.updatedAt'), dataIndex: 'updatedAt', width: 165, render: (v: string) => formatDateTime(v) },
     {
       title: t('sops.col.actions'),
-      width: 155,
+      width: 185,
       render: (_, a) => {
         if (!detail) return null;
         return (
@@ -745,9 +745,7 @@ export default function SopsPage() {
                 {t('sops.col.version_colon')}{sop.currentVersion ?? '—'} · {t('sops.col.updatedAt_colon')}{formatDateTime(sop.updatedAt)}
               </div>
               <div style={{ marginTop: 8 }}>
-                <Button size="small" onClick={() => void openDetail(sop)}>
-                  {t('sops.view')}
-                </Button>
+                {renderSopActions(sop)}
               </div>
             </Card>
           ))}
@@ -845,16 +843,16 @@ export default function SopsPage() {
                     {/* SOP-DRAFT-EDIT-UI：空正文草稿此前创建后无编辑入口、永久无法发布。
                         只对 draft 工作副本给入口；published/deprecated 编辑是后续独立决策。 */}
                     {detail.status === 'draft' && (
-                      <Button size="small" data-testid={`sop-edit-draft-${detail.slug}`} onClick={() => setEditTarget(detail)}>
+                      <Button size="small" style={{ marginBottom: 12 }} data-testid={`sop-edit-draft-${detail.slug}`} onClick={() => setEditTarget(detail)}>
                         {t('sops.editDraft.btn')}
                       </Button>
                     )}
                     <Paragraph><Text type="secondary">{t('sops.frontMatterLabel')}</Text></Paragraph>
-                    <pre style={{ maxHeight: 320, overflow: 'auto', fontSize: 12 }}>
+                    <pre style={{ maxHeight: 320, overflow: 'auto', fontSize: 12, padding: 8, borderRadius: 6, background: token.colorFillTertiary, border: `1px solid ${token.colorBorderSecondary}`, fontFamily: 'var(--font-mono)' }}>
                       {JSON.stringify(detail.frontMatterJson, null, 2)}
                     </pre>
                     <Paragraph><Text type="secondary">{t('sops.bodyLabel')}</Text></Paragraph>
-                    <pre style={{ maxHeight: 320, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12 }}>
+                    <pre style={{ maxHeight: 320, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12, padding: 8, borderRadius: 6, background: token.colorFillTertiary, border: `1px solid ${token.colorBorderSecondary}`, fontFamily: 'var(--font-mono)' }}>
                       {detail.bodyMarkdown ?? ''}
                     </pre>
                   </>
@@ -865,7 +863,7 @@ export default function SopsPage() {
                 label: t('sops.tab.versions'),
                 children: (
                   <Table<SopVersion> rowKey="id" columns={versionColumns} dataSource={versions} pagination={false} size="small"
-                    loading={detailLoading} locale={{ emptyText: detailError ? null : undefined }} />
+                    scroll={{ x: 720 }} loading={detailLoading} locale={{ emptyText: detailError ? null : undefined }} />
                 ),
               },
               {
@@ -890,6 +888,7 @@ export default function SopsPage() {
                       dataSource={assignments}
                       pagination={false}
                       size="small"
+                      scroll={{ x: 850 }}
                       loading={detailLoading}
                       locale={{ emptyText: detailError ? null : undefined }}
                       onRow={(record) => {
@@ -925,7 +924,7 @@ export default function SopsPage() {
       <Modal title={t('sops.newDraft')} open={draftOpen} onOk={() => void createDraft()}
         onCancel={() => setDraftOpen(false)} confirmLoading={creatingDraft} width={720} okText={t('sops.create')}>
         <Form layout="vertical" component={false}>
-          <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Space orientation="vertical" style={{ width: '100%' }} size="small">
             <Form.Item label={t('sops.field.draftSlug')} htmlFor={SOPS_FIELD_ID.draftSlug} style={FIELD_ITEM_STYLE}>
               <Input id={SOPS_FIELD_ID.draftSlug} placeholder="slug (daily-report)" value={draft.slug} maxLength={128}
                 onChange={(e) => setDraft({ ...draft, slug: e.target.value })} />
@@ -956,7 +955,7 @@ export default function SopsPage() {
       >
         {/* A11Y-SOPS-01：三个（sop_amended 时四个）控件补可见标签 */}
         <Form layout="vertical" component={false}>
-          <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Space orientation="vertical" style={{ width: '100%' }} size="small">
             {/* SOPS-UI-01：原生 <select className="ant-input"> 换 antd Select——
                 原生控件不吃暗色主题，下拉是白底黑字，与其余表单控件割裂 */}
             <Form.Item
@@ -1058,7 +1057,7 @@ export default function SopsPage() {
       >
         {/* A11Y-SOPS-01：版本档位与变更说明补可见标签 */}
         <Form layout="vertical" component={false}>
-          <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Space orientation="vertical" style={{ width: '100%' }} size="small">
             <Form.Item
               label={t('sops.field.publishBump')}
               htmlFor={SOPS_FIELD_ID.publishBump}

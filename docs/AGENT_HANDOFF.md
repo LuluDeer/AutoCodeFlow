@@ -1,7 +1,34 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-22
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-23
 > 当前治理分支为 `chore/repo-governance-2026-11`（基于 `origin/main` `v2.3.0`，`develop` 已 fast-forward 同步至 `origin/main`）。其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
+
+## 本轮（2026-11-23）：中台与桌面客户端 UI/UX 细节优化收口（3 阶段多 Agent 流水线）
+
+**编排方式**：Stage 1 四路只读审计（web-visual / web-code / desktop-visual / desktop-code）→ Stage 2 五路零写域冲突并行修复（brand-gradient / audit-i18n / test-alignment / log-loading-race / desktop-wiring）→ Stage 3 独立只读复核（review-gate）+ 主控真机浏览器验收。全部产出落在工作树，**未提交、未 push**。
+
+**接手时工作树状态**：约 79 个修改文件 + 14 个新增外提组件（中台 `components/inbox/`、`dashboard/AvgDurationCard`、`ExecutionLogToolbar`、`StablePagingSwitch`、`login/LoginTotpStep`、`app-deployments/RolloutModal`；桌面 `renderer/pages/{apps,config,history,status}/` 子目录与 4 个 `.selftest.mjs`）。这些是上一轮审计整改的中间态，本轮完成收口并验证。
+
+**Stage 1 结论**：上一轮交接列出的中台 17 条细节问题中 15 条已修复、2 条部分（全站 `-` 占位符残留、执行器详情页 4 处标签重复，均 P3）；桌面列出的文本硬裁切、选中态语义冲突、对齐一致性问题基本已静态修复（唯一真机未复验）。审计另发现 3 个 P2：日志级别过滤 loading 复位竞态、dashboard 徽章断言被放宽且测试名实不符、桌面 4 个新 selftest 未接线（孤儿守卫）。
+
+| 切片 | 交付 | 关键文件 |
+|---|---|---|
+| 品牌渐变单源 | 恢复 LoginPage 从 `theme/tokens` 消费 `BRAND_GRADIENT`（品牌位装饰条），主按钮保持纯 `type="primary"` 不破坏 WCAG 对比度修复 | `pages/LoginPage.tsx` |
+| 审计 i18n 裸 key | `resourceOptions.ts` 注释措辞绕开字面量守卫误扫（守卫正则不剥注释，属写域外观察项）；补 4 条 `formatAuditIp` 单测 | `pages/audit/resourceOptions.ts`、`__tests__/audit-page.test.tsx` |
+| 测试判据对齐 | 筛选 Select 断言迁到新筛选栏并钉 180px；部署表 scroll.x 720→795；stop 测试补 `useInRouterContext` mock（根因是 mock 缺失致组件 render 抛错，非产品 bug） | `__tests__/ui09-mobile-round3-{content,exec}.test.tsx`、`__tests__/stop-and-stats-honesty.test.tsx` |
+| 日志 loading 竞态 | 拆分 `levelLoadingSeq`（loading 归属）与 `levelFetchSeq`（数据新鲜度），ALL 分支走同一 `finally` 复位；新回归测试先红后绿 | `components/ExecutionLogSection.tsx`、`__tests__/log-level-filter-loading.test.tsx` |
+| 桌面 selftest 接线 | 4 个孤儿 selftest 接入 `test:renderer`；5 个既有 config import 合并为 for 循环抵消新增行，size-caps 基线未改 | `executor-desktop/src/renderer/renderer.selftest.mjs` |
+
+**验收证据（最高级别：浏览器真机 + 全量单测 + 反证有牙）**：
+- 中台全量 `npm test -- --run`：**352 files / 2882 passed / 1 skipped / 0 failed** exit 0（9 个初始失败全部消除）。
+- 中台真机浏览器：`PLAYWRIGHT_CHROMIUM_CHANNEL=chrome npx playwright test --config=playwright.smoke.config.ts` → **9/9 passed**（系统 Chrome 158 + 真实 build + preview，端口 4177）；`/api/auth/oidc/status` 的 ECONNREFUSED 是离线夹具预期。
+- 双端门禁：`npx tsc -b`（web）、`npm run lint:i18n`、仓库根 `node scripts/check-size-caps.mjs`、桌面 `npm run typecheck:renderer` / `test:renderer`（9 组 selftest 全过）均 exit 0；`check-mutation-residue` 96 文件配对命中 0。
+- 独立复核三条反证全命中且逐字节还原：scroll.x 795→720、loading 复位行注释、renderer import 注释，对应测试/断言计数均按预期转红或消失。
+- 5 切片写域互斥、无相互覆盖、无变异体残留，review-gate verdict **无阻断（P0/P1 无）**。
+
+**未覆盖边界（如实）**：① 桌面视觉为静态 CSS/几何证据，Electron 在本机 ozone 下窗口 1×1（截图空 PNG），未做多窗尺寸 × 中英真机复验；Chrome headless 1440×900 截图能力已验证可用，后续可从这条路径补中台视觉真机取证。② 两条 P3 建议未修：`check-size-caps.mjs` 以 `process.cwd()` 定位根（须在仓库根跑，web 目录内跑 exit 1）；`renderer.selftest.mjs` 缺少「9 组断言必须全部注册」的出口守卫，漏接 import 不会让门禁转红。③ 中台 2.6 占位符残留（`ExecutionCompare` 等处 `-`）、3.8 执行器详情标签重复均为 P3，本轮未扩面。④ 未提交、未 push——按 House Rules 等明确指令。
+
+---
 
 ## 本轮（2026-11-22）：GitHub 仓库全面规范化治理与多 Agent 流水线优化（v2.3.0 / desktop-v1.12.0）
 

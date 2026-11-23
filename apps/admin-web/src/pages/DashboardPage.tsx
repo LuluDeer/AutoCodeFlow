@@ -34,6 +34,7 @@ import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
 import KpiSparkline, { buildSparklineData, recentDateKeys, SPARKLINE_HEIGHT } from '../components/dashboard/KpiSparkline';
 import FailureTopList from '../components/dashboard/FailureTopList';
+import AvgDurationCard from '../components/dashboard/AvgDurationCard';
 import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
 import NorthStarCard from '../components/dashboard/NorthStarCard';
@@ -403,8 +404,8 @@ export default function DashboardPage() {
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.tasks')} <ScopeBadge scope="project" /></Text>}
-                value={s?.totalTasks ?? '-'}
+                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.tasks')}</Text>}
+                value={s?.totalTasks ?? '—'}
                 prefix={<RocketOutlined style={{ color: CHART_COLORS.cpu }} />}
                 styles={{ content: { color: CHART_COLORS.cpu, fontSize: 28 } }}
               />
@@ -431,7 +432,7 @@ export default function DashboardPage() {
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.todayRuns')} <ScopeBadge scope="project" /></Text>}
+                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.todayRuns')}</Text>}
                 value={s?.todayRuns ?? totalExec}
                 prefix={<ThunderboltOutlined style={{ color: CHART_COLORS.success }} />}
                 styles={{ content: { color: CHART_COLORS.success, fontSize: 28 } }}
@@ -444,7 +445,7 @@ export default function DashboardPage() {
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.running')} <ScopeBadge scope="project" /></Text>}
+                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.running')}</Text>}
                 value={runningCount}
                 prefix={<ClockCircleOutlined style={{ color: CHART_COLORS.concurrent }} />}
                 styles={{ content: { color: runningCount > 0 ? CHART_COLORS.concurrent : 'var(--chart-axis-text)', fontSize: 28 } }}
@@ -465,7 +466,7 @@ export default function DashboardPage() {
         <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.successRate')} <ScopeBadge scope="project" /></Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.successRate')}</Text>}
             style={{ height: '100%' }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -505,28 +506,14 @@ export default function DashboardPage() {
           </Card>
         </Col>
         <Col xs={24} md={12}>
-          <Card
-            size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.avgDuration')} <ScopeBadge scope="project" /></Text>}
-            style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
-            styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' } }}
-          >
-            <div style={{ textAlign: 'center' }}>
-              <Text style={{ fontSize: 32, fontWeight: 700, color: CHART_COLORS.cpu }}>
-                {formatDuration(s?.avgDurationMs, t)}
-              </Text>
-              <div style={{ marginTop: 8 }}>
-                <Text type="secondary" style={{ fontSize: 12 }}>{t('dashboard.avgHint')}</Text>
-              </div>
-            </div>
-          </Card>
+          <AvgDurationCard avgDurationMs={s?.avgDurationMs} todayRuns={s?.todayRuns ?? totalExec} runningCount={runningCount} sparkHasData={sparkHasData} sparkData={runSpark} />
         </Col>
       </Row>
 
       {/* 趋势图 */}
       <Card
         size="small" variant="borderless"
-        title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.trend')} <ScopeBadge scope="project" /></Text>}
+        title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.trend')}</Text>}
         extra={
           <Segmented
             size="small"
@@ -577,8 +564,9 @@ export default function DashboardPage() {
         <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.failureTop')} <ScopeBadge scope="project" /></Text>}
-            style={{ height: '100%' }}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.failureTop')}</Text>}
+            style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+            styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column' } }}
             extra={<Link to={executionsHref('failed,timeout') /* R281-DEEPLINK-01：多值 FAILED∪TIMEOUT，**不要**「统一」回 'failed'——理由见模块级注释块 */} style={{ fontSize: 12 }}>{t('dashboard.failureTop.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
@@ -592,7 +580,7 @@ export default function DashboardPage() {
         <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.recentFailures')} <ScopeBadge scope="project" /></Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.recentFailures')}</Text>}
             style={{ height: '100%' }}
             extra={<Link to={executionsHref() /* R281-DEEPLINK-01：此处**刻意**不带 status——「全部记录」承诺的是全部，改成 failed,timeout 会把「全部」变成「全部失败」，属另一个（更坏的）谎报。详见模块级注释 */} style={{ fontSize: 12 }}>{t('dashboard.recentFailures.all')}</Link>}
           >
@@ -681,8 +669,8 @@ export default function DashboardPage() {
           <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
             <Statistic
               className="ui09-kpi-stat"
-              title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.onlineExecutors')} <ScopeBadge scope="global" /></Text>}
-              value={`${g?.onlineExecutors ?? '-'} / ${g?.totalExecutors ?? '-'}`}
+              title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.onlineExecutors')}</Text>}
+              value={`${g?.onlineExecutors ?? '—'} / ${g?.totalExecutors ?? '—'}`}
               prefix={<ApiOutlined style={{ color: CHART_COLORS.memory }} />}
               styles={{ content: { color: CHART_COLORS.memory, fontSize: 28 } }}
             />
@@ -696,7 +684,7 @@ export default function DashboardPage() {
         <Col xs={24} md={8}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.executors')} <ScopeBadge scope="global" /></Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.executors')}</Text>}
             style={{ height: '100%' }}
             extra={<Link to="/executors" style={{ fontSize: 12 }}>{t('dashboard.executors.all')}</Link>}
           >
@@ -711,7 +699,7 @@ export default function DashboardPage() {
         <Col xs={24} md={8}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.schedulerLatency')} <ScopeBadge scope="global" /></Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.schedulerLatency')}</Text>}
             style={{ height: '100%' }}
           >
             {/* R171（P2-3）：读不到不能渲染成「暂无样本」（那是「确实没有」的文案）。 */}

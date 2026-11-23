@@ -951,7 +951,7 @@ export default function TaskFormPage() {
 
       <div
         style={{
-          display: 'flex',
+          display: 'flex', flexWrap: 'wrap',
           gap: 24,
           alignItems: 'flex-start',
         }}

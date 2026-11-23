@@ -63,29 +63,74 @@ const CSS = read('index.css');
 const cleanCss = stripCssComments(CSS);
 const tokensTs = read('theme/tokens.ts');
 
-/** 从 .ant-btn-primary 覆盖块里抽某一态的 background hex。 */
-function buttonBg(state: 'base' | 'hover' | 'active'): string | null {
-  const selector =
-    state === 'base'
-      ? /\.ant-btn-primary:not\([^)]*\):not\(:disabled\):not\(\.ant-btn-disabled\)\s*\{([^}]*)\}/
-      : state === 'hover'
-        ? /\.ant-btn-primary:not\([^)]*\):not\(:disabled\):not\(\.ant-btn-disabled\):hover\s*\{([^}]*)\}/
-        : /\.ant-btn-primary:not\([^)]*\):not\(:disabled\):not\(\.ant-btn-disabled\):active\s*\{([^}]*)\}/;
-  const m = selector.exec(cleanCss);
+/** 从 .ant-btn-primary 覆盖块里抽某一态的完整选择器与 background hex（不含危险按钮）。 */
+function primaryButtonRule(state: 'base' | 'hover' | 'active'): { selector: string; bg: string } | null {
+  const suffix = state === 'base' ? '' : `:${state}`;
+  const re = new RegExp(
+    `(\\.ant-btn-primary(?::not\\([^)]*\\))+)${suffix}\\s*\\{([^}]*)\\}`,
+  );
+  const m = re.exec(cleanCss);
+  if (!m) return null;
+  const bg = /background:\s*(#[0-9a-fA-F]{6})/.exec(m[2]);
+  return bg ? { selector: m[1], bg: bg[1].toLowerCase() } : null;
+}
+
+/** 从 .ant-btn-primary.ant-btn-dangerous 覆盖块里抽某一态的 background 与 color hex。 */
+function dangerButtonRule(state: 'base' | 'hover' | 'active'): { bg: string; color: string } | null {
+  const suffix = state === 'base' ? '' : `:${state}`;
+  const re = new RegExp(
+    `\\.ant-btn-primary\\.ant-btn-dangerous(?::not\\([^)]*\\))+${suffix}[^{]*\\{([^}]*)\\}`,
+  );
+  const m = re.exec(cleanCss);
   if (!m) return null;
   const bg = /background:\s*(#[0-9a-fA-F]{6})/.exec(m[1]);
-  return bg ? bg[1].toLowerCase() : null;
+  const color = /(?<!-)color:\s*(#[0-9a-fA-F]{6})/.exec(m[1]);
+  return bg && color ? { bg: bg[1].toLowerCase(), color: color[1].toLowerCase() } : null;
 }
 
 describe('阶段一遗留：主操作按钮白字对比度（WCAG AA ≥4.5:1）', () => {
-  const base = buttonBg('base');
-  const hover = buttonBg('hover');
-  const active = buttonBg('active');
+  const baseRule = primaryButtonRule('base');
+  const hoverRule = primaryButtonRule('hover');
+  const activeRule = primaryButtonRule('active');
+  const base = baseRule?.bg ?? null;
+  const hover = hoverRule?.bg ?? null;
+  const active = activeRule?.bg ?? null;
 
   it('三态覆盖块都存在且取出了 hex（反永真：块被删/改名即红）', () => {
     expect(base, '缺少 .ant-btn-primary base 覆盖块').toBeTruthy();
     expect(hover, '缺少 .ant-btn-primary:hover 覆盖块').toBeTruthy();
     expect(active, '缺少 .ant-btn-primary:active 覆盖块').toBeTruthy();
+  });
+
+  it('反回归：三态绿底覆盖选择器必须排除危险按钮（防危险确认按钮被 !important 染绿）', () => {
+    for (const [name, rule] of [
+      ['base', baseRule],
+      ['hover', hoverRule],
+      ['active', activeRule],
+    ] as const) {
+      expect(rule, `缺少 .ant-btn-primary ${name} 规则`).toBeTruthy();
+      expect(rule!.selector, `${name} 未排除 .ant-btn-dangerous`).toContain(':not(.ant-btn-dangerous)');
+      expect(rule!.selector, `${name} 未排除 .ant-btn-color-dangerous`).toContain(':not(.ant-btn-color-dangerous)');
+    }
+  });
+
+  it('危险实心主按钮（base/hover/active）独立使用深红且白字对比度 ≥4.5:1', () => {
+    const dangerBase = dangerButtonRule('base');
+    const dangerHover = dangerButtonRule('hover');
+    const dangerActive = dangerButtonRule('active');
+    for (const [name, rule] of [
+      ['base', dangerBase],
+      ['hover', dangerHover],
+      ['active', dangerActive],
+    ] as const) {
+      expect(rule, `缺少危险实心主按钮 ${name} 规则`).toBeTruthy();
+      expect(rule!.bg, `危险按钮 ${name} 不得落回绿色`).not.toBe(base);
+      const r = contrast(rule!.bg, rule!.color);
+      expect(r, `危险实心按钮 ${name} ${rule!.bg} on ${rule!.color} 仅 ${r.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
+    }
+    const m = /DANGER_BUTTON\s*=\s*\{[^}]*bg:\s*'(#[0-9a-fA-F]{6})'/.exec(tokensTs);
+    expect(m, 'tokens.ts 缺少 DANGER_BUTTON.bg').toBeTruthy();
+    expect(m![1].toLowerCase()).toBe(dangerBase!.bg);
   });
 
   it('base / hover / active 白字对比度均 ≥4.5:1', () => {

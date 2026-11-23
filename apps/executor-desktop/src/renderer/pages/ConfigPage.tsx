@@ -39,9 +39,13 @@ import { pickRecommendedIp } from '../network-address';
 // R7-C：纯逻辑外提（本页只留 setState 与 JSX）。这些文件不含 JSX，可被 node
 // 直接执行 ⇒ 本页从「只有源码文本契约」第一次有了真行为断言
 // （pages/config/pure-logic.selftest.mjs 由 test:renderer 驱动）。
-import { anyFieldDiffer, changedEntriesOf, dirtySectionsOf } from './config/dirty';
+import { restartRequiredFieldsDiffer } from '../../main/config-restart';
+import { changedEntriesOf, dirtySectionsOf } from './config/dirty';
 import { type NumRule, commitFromDraft, draftOrDisplay, settleDraft, withoutKey } from './config/num-draft';
 import { normalizeSearchTerm, searchResultsOf } from './config/search-index';
+import { fieldErrorProps } from './config/agent-matrix';
+import AgentPermissionMatrix from './config/AgentPermissionMatrix';
+import ConfigSearchBox from './config/ConfigSearchBox';
 import { useConfigIo } from './config/use-config-io';
 // R7-B 第三刀（写路径出仓）：save / requestSave / 4 个写路径原子 / Ctrl+S 键盘
 // 绑定搬到 pages/config/use-config-writer.ts；其中的**判定**分支（保存前置三态、
@@ -315,6 +319,7 @@ export default function ConfigPage() {
   /** 数值输入 onChange：草稿原样保留 + 合法整数即时入表单（越界先钳）。 */
   function numChange(key: string, rule: NumRule, raw: string): void {
     setNumDrafts((d) => ({ ...d, [key]: raw }));
+    clearFieldError(key);
     const commit = commitFromDraft(rule, raw);
     if (commit !== null) set(key, commit);
   }
@@ -466,7 +471,7 @@ export default function ConfigPage() {
     }
   }
 
-  // 搜索命中字段后：分区已切过去，下一帧把目标行滚到视野中央。
+  // 搜索命中字段后：分区已切过去，下一帧把目标行滚到视野中央并聚焦目标控件。
   useEffect(() => {
     if (!pendingField) return;
     const field = pendingField;
@@ -474,6 +479,11 @@ export default function ConfigPage() {
     const target = document.querySelector(`[data-cfgx-field="${field}"]`);
     if (target instanceof HTMLElement) {
       target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      const ctrl = target.querySelector<HTMLElement>('input, select, textarea, button');
+      ctrl?.focus({ preventScroll: true });
+      target.classList.remove('cfgx-row-flash');
+      void target.offsetWidth;
+      target.classList.add('cfgx-row-flash');
     }
   }, [pendingField, active]);
 
@@ -535,6 +545,10 @@ export default function ConfigPage() {
     setAllowedAppsText(listText(savedForm.agentAllowedApps));
     setAllowedDomainsText(listText(savedForm.agentAllowedDomains));
     setNumDrafts({});
+    setFieldErrors({});
+    setClampNotice({});
+    for (const timer of Object.values(clampTimersRef.current)) clearTimeout(timer);
+    clampTimersRef.current = {};
     setTestResult(null);
     setShowDiff(false);
     setSaveError(null);
@@ -580,6 +594,8 @@ export default function ConfigPage() {
       setSavedForm(cfg);
       setAllowedAppsText(listText(cfg.agentAllowedApps));
       setAllowedDomainsText(listText(cfg.agentAllowedDomains));
+      setFieldErrors({});
+      setClampNotice({});
       setTestResult(null);
       // i18n-DESK-01：备份文件里可能带着另一种界面语言——导入后同样需要重载
       // 才能生效（同 save() 的口径），否则用户看到"导入成功"但界面没变。
@@ -610,11 +626,9 @@ export default function ConfigPage() {
     return key ? t(key) : raw;
   }
 
-  // 「当前生效」里的重启提示：只看连接/网络/并发（与 save 的真实重启判据
-  // 解耦——这里是设置台的状态提示，不改变保存行为）。
-  const effectiveRestartDirty = anyFieldDiffer(form, savedForm, [
-    ...SECTION_KEYS.connection, ...SECTION_KEYS.network,
-  ]);
+  // 「当前生效」里的重启提示：与主进程/写路径共用 config-restart 单一真值源
+  // （含连接/网络/并发与 5 个 Python 字段，不与实际重启行为漂移）。
+  const effectiveRestartDirty = restartRequiredFieldsDiffer(savedForm, form);
 
   const renderEffective = () => (
     <div className="cfgx-effective">
@@ -650,7 +664,9 @@ export default function ConfigPage() {
         </div>
         <div className="cfgx-effective-item">
           <dt>{t('cfgx.effective.agent')}</dt>
-          <dd>{agentValueLabel(savedForm.agentPermissionProfile, 'minimal')}</dd>
+          <dd title={agentValueLabel(savedForm.agentPermissionProfile, 'minimal')}>
+            {String(savedForm.agentPermissionProfile || 'minimal')}
+          </dd>
         </div>
       </dl>
       {isDirty && effectiveRestartDirty && (
@@ -676,55 +692,15 @@ export default function ConfigPage() {
           e2e 依赖的 cfg-nav / cfg-nav-item / cfg-nav-text / cfg-nav-label /
           cfg-nav-icon / cfg-nav-dirty 类名全部保留。 */}
       <nav className="cfg-nav">
-        <div className="cfgx-search-wrap">
-          <div className="cfgx-search">
-            <Icon name="search" className="cfgx-search-icon icon-xs" />
-            <input
-              type="search"
-              className="cfgx-search-input"
-              value={searchQuery}
-              placeholder={t('cfgx.search.placeholder')}
-              aria-label={t('cfgx.search.placeholder')}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setSearchQuery('');
-                  return;
-                }
-                if (e.key === 'Enter' && searchResults.length > 0) {
-                  e.preventDefault();
-                  pickSearchResult(searchResults[0]);
-                }
-              }}
-            />
-          </div>
-          {searchTerm !== '' && (
-            <div className="cfgx-search-results" role="listbox" aria-label={t('cfgx.search.placeholder')}>
-              {searchResults.length === 0 ? (
-                <div className="cfgx-search-empty">{t('cfgx.search.empty')}</div>
-              ) : (
-                searchResults.map((result) => (
-                  <button
-                    type="button"
-                    key={`${result.kind}:${result.id}`}
-                    className="cfgx-search-result"
-                    role="option"
-                    aria-selected="false"
-                    onClick={() => pickSearchResult(result)}
-                  >
-                    <Icon name={result.kind === 'section' ? 'chevron-right' : 'pin'} className="icon-xs" />
-                    <span className="cfgx-search-result-label">{result.label}</span>
-                    {result.kind === 'field' && (
-                      <span className="cfgx-search-result-section">
-                        {t(SECTIONS.find((section) => section.id === result.section)?.labelKey ?? '')}
-                      </span>
-                    )}
-                  </button>
-                ))
-              )}
-            </div>
-          )}
-        </div>
+        <ConfigSearchBox
+          query={searchQuery}
+          term={searchTerm}
+          results={searchResults}
+          sectionLabelOf={(id) => t(SECTIONS.find((section) => section.id === id)?.labelKey ?? '')}
+          onQueryChange={setSearchQuery}
+          onPick={pickSearchResult}
+          t={t}
+        />
         {NAV_GROUPS.map((group) => (
           <div className="cfgx-nav-group" key={group.labelKey}>
             <div className="cfgx-nav-group-title">{t(group.labelKey)}</div>
@@ -783,7 +759,6 @@ export default function ConfigPage() {
           {active === 'connection' && (
             <div className="cfg-section">
               <PageHeader
-                headingLevel="h2"
                 icon={<Icon name="link" />}
                 title={t('cfg.conn.title')}
                 meta={t('cfg.conn.subtitle')}
@@ -800,7 +775,7 @@ export default function ConfigPage() {
                     hint={t('cfg.conn.adminApiHint')}
                   >
                     <div className="cfgx-inline">
-                      <input aria-label={t('cfg.conn.adminApiLabel')} className="input" placeholder="http://192.168.1.10:3001"
+                      <input aria-label={t('cfg.conn.adminApiLabel')} {...fieldErrorProps(fieldErrors, 'adminApiUrl')} placeholder="http://192.168.1.10:3001"
                         value={String(form.adminApiUrl || '')}
                         onChange={(e) => set('adminApiUrl', e.target.value)}
                         onBlur={(e) => validateAdminApiUrl(e.target.value)} />
@@ -827,7 +802,7 @@ export default function ConfigPage() {
                     error={fieldErrors.executorToken}
                     hint={t('cfg.conn.tokenHint')}
                   >
-                    <input aria-label={t('cfg.conn.tokenLabel')} className="input" type="password" placeholder={t('cfg.conn.tokenPlaceholder')}
+                    <input aria-label={t('cfg.conn.tokenLabel')} {...fieldErrorProps(fieldErrors, 'executorToken')} type="password" placeholder={t('cfg.conn.tokenPlaceholder')}
                       value={String(form.executorToken || '')}
                       onChange={(e) => set('executorToken', e.target.value)}
                       onBlur={(e) => validateRequired('executorToken', e.target.value)} />
@@ -841,7 +816,7 @@ export default function ConfigPage() {
                       hint={t('cfg.gen.nameHint')}
                       compact
                     >
-                      <input aria-label={t('cfg.gen.nameLabel')} className="input" placeholder="my-executor-1"
+                      <input aria-label={t('cfg.gen.nameLabel')} {...fieldErrorProps(fieldErrors, 'executorName')} placeholder="my-executor-1"
                         value={String(form.executorName || '')}
                         onChange={(e) => set('executorName', e.target.value)}
                         onBlur={(e) => validateRequired('executorName', e.target.value)} />
@@ -907,7 +882,6 @@ export default function ConfigPage() {
           {active === 'network' && (
             <div className="cfg-section">
               <PageHeader
-                headingLevel="h2"
                 icon={<Icon name="globe" />}
                 title={t('cfg.net.title')}
                 meta={t('cfg.net.subtitle')}
@@ -949,9 +923,9 @@ export default function ConfigPage() {
                           钳回（HTML min/max 不阻止手输/粘贴）。F-34：夹紧时机后移
                           到 blur——键入过程显示草稿原样串（含空串），不再清空即
                           回填默认；显示层仍走 numValue（脏值回落默认）。 */}
-                      <input aria-label={t('cfg.net.portLabel')} className="input" type="number" min={1} max={65535} value={numValue('executorPort', form.executorPort, EXECUTOR_PORT.fallback)}
+                      <input aria-label={t('cfg.net.portLabel')} {...fieldErrorProps(fieldErrors, 'executorPort')} type="number" min={1} max={65535} value={numValue('executorPort', form.executorPort, EXECUTOR_PORT.fallback)}
                         onChange={(e) => numChange('executorPort', EXECUTOR_PORT, e.target.value)}
-                        onBlur={(e) => { validatePortRange(e.target.value); numBlur('executorPort', EXECUTOR_PORT, e.target.value); }} />
+                        onBlur={(e) => { numBlur('executorPort', EXECUTOR_PORT, e.target.value); validatePortRange(e.target.value); }} />
                     </SettingRow>
                   </div>
                 </div>
@@ -1042,7 +1016,6 @@ export default function ConfigPage() {
           {active === 'python' && (
             <div className="cfg-section">
               <PageHeader
-                headingLevel="h2"
                 icon={<Icon name="terminal" />}
                 title={t('cfg.py.title')}
                 meta={t('cfg.py.subtitle')}
@@ -1208,7 +1181,6 @@ export default function ConfigPage() {
           {active === 'agent' && (
             <div className="cfg-section">
               <PageHeader
-                headingLevel="h2"
                 icon={<Icon name="bot" />}
                 title={t('cfg.agent.title')}
                 meta={t('cfg.agent.subtitle')}
@@ -1320,7 +1292,7 @@ export default function ConfigPage() {
                       {t('cfg.agent.domainsHintA')}<strong>{t('cfg.agent.domainsHintStrong')}</strong>{t('cfg.agent.domainsHintB')}
                     </HintDetails>}
                   >
-                    <textarea aria-label={t('cfg.agent.domainsLabel')} className="input cfg-list-input" rows={6}
+                    <textarea aria-label={t('cfg.agent.domainsLabel')} {...fieldErrorProps(fieldErrors, 'agentAllowedDomains', 'input cfg-list-input')} rows={6}
                       placeholder={'erp.corp.com\ncrm.corp.com'}
                       value={allowedDomainsText}
                       onChange={(e) => {
@@ -1351,47 +1323,13 @@ export default function ConfigPage() {
                   </div>
                 )}
 
-                {/* UI V5：权限生效矩阵——「本地设置」（当前草稿）与「当前生效」
-                    （已保存配置）纵向排列；右栏只有 310px，三列并排会把
-                    “minimal —— 什么都不做”压成三行，改成每项两行更好读。 */}
-                <div className="cfgx-matrix">
-                  <div className="cfgx-aside-title">
-                    <Icon name="shield" className="icon-xs" /> {t('cfgx.agent.matrixTitle')}
-                  </div>
-                  <div className="cfgx-matrix-row">
-                    <span className="cfgx-matrix-cap">{t('cfg.agent.profileLabel')}</span>
-                    <span className="cfgx-matrix-values">
-                      <span title={agentValueLabel(form.agentPermissionProfile, 'minimal')}>
-                        <em>{t('cfgx.agent.localSetting')}</em>{String(form.agentPermissionProfile || 'minimal')}
-                      </span>
-                      <span title={agentValueLabel(savedForm.agentPermissionProfile, 'minimal')}>
-                        <em>{t('cfgx.agent.effective')}</em>{String(savedForm.agentPermissionProfile || 'minimal')}
-                      </span>
-                    </span>
-                  </div>
-                  <div className="cfgx-matrix-row">
-                    <span className="cfgx-matrix-cap">{t('cfg.agent.codeExecLabel')}</span>
-                    <span className="cfgx-matrix-values">
-                      <span><em>{t('cfgx.agent.localSetting')}</em>{agentValueLabel(form.agentCodeExecution)}</span>
-                      <span><em>{t('cfgx.agent.effective')}</em>{agentValueLabel(savedForm.agentCodeExecution)}</span>
-                    </span>
-                  </div>
-                  <div className="cfgx-matrix-row">
-                    <span className="cfgx-matrix-cap">{t('cfg.agent.hostAccessLabel')}</span>
-                    <span className="cfgx-matrix-values">
-                      <span><em>{t('cfgx.agent.localSetting')}</em>{agentValueLabel(form.agentHostAccess)}</span>
-                      <span><em>{t('cfgx.agent.effective')}</em>{agentValueLabel(savedForm.agentHostAccess)}</span>
-                    </span>
-                  </div>
-                  <div className="cfgx-matrix-row">
-                    <span className="cfgx-matrix-cap">{t('cfg.agent.taskExecLabel')}</span>
-                    <span className="cfgx-matrix-values">
-                      <span><em>{t('cfgx.agent.localSetting')}</em>{agentValueLabel(form.agentTaskExecution)}</span>
-                      <span><em>{t('cfgx.agent.effective')}</em>{agentValueLabel(savedForm.agentTaskExecution)}</span>
-                    </span>
-                  </div>
-                  <div className="cfgx-matrix-note">{t('cfgx.agent.matrixNote')}</div>
-                </div>
+                <AgentPermissionMatrix
+                  form={form}
+                  savedForm={savedForm}
+                  locale={locale}
+                  agentValueLabel={agentValueLabel}
+                  t={t}
+                />
 
                 {/* G-01（v3 规划补落地）：「这是什么/开启后果/如何收紧」三行引导卡，
                     术语墙（SOP 指派/权限档位/钳回/沙箱）在字段 hint 里的压力由它分走 */}
@@ -1420,7 +1358,6 @@ export default function ConfigPage() {
           {active === 'about' && (
             <div className="cfg-section">
               <PageHeader
-                headingLevel="h2"
                 icon={<Icon name="gear" />}
                 title={t('cfg.about.title')}
                 meta={t('cfg.about.subtitle')}
@@ -1655,8 +1592,7 @@ export default function ConfigPage() {
           {isDirty && (
             <>
               <div className="cfgx-footer-dirty">
-                <span className="cfg-unsaved" role="status"><span aria-hidden="true" />{t('cfg.footer.unsavedBar')}</span>
-                <span className="cfgx-dirty-count" role="status">{t('cfgx.dirty.count', changedEntries.length)}</span>
+                <span className="cfg-unsaved" role="status"><span aria-hidden="true" />{t('cfgx.dirty.count', changedEntries.length)}</span>
               </div>
               <button
                 type="button"

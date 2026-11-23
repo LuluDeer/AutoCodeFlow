@@ -23,12 +23,15 @@ import {
   Tag,
   Tooltip,
   Typography,
+  theme,
 } from 'antd';
 import { Link } from 'react-router-dom';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
+import InboxFilterBar, { type InboxFilterMode } from '../components/inbox/InboxFilterBar';
 import { Modal as ConfirmModal } from '../utils/modal';
 import { message } from '../utils/toast';
 import { showApiError } from '../utils/error';
@@ -173,10 +176,13 @@ function inboxSubtitleText(item: InboxItem, t: ReturnType<typeof useTranslation>
   return item.subtitle;
 }
 
+type InboxActingAction = 'approve' | 'reject' | 'deny' | 'resume';
+
 interface InboxRowActionsProps {
   item: InboxItem;
   canWrite: boolean;
   actingId: string | null;
+  actingAction?: InboxActingAction | null;
   userId: number | null | undefined;
   onApprove: (item: InboxItem) => void;
   onReject: (item: InboxItem) => void;
@@ -189,6 +195,7 @@ function InboxRowActions({
   item,
   canWrite,
   actingId,
+  actingAction,
   userId,
   onApprove,
   onReject,
@@ -199,14 +206,15 @@ function InboxRowActions({
 
   if (READONLY_SECTIONS.has(item.section)) {
     return item.detailUrl ? (
-      <Link to={item.detailUrl}>
-        <Button size="small">{t('inbox.action.viewDetail')}</Button>
+      <Link to={item.detailUrl} style={{ fontSize: 12 }}>
+        {t('inbox.action.viewDetail')}
       </Link>
     ) : null;
   }
 
   const self = isSelfDeployment(item.deployment, userId ?? null);
-  const writeDisabled = !canWrite || self || actingId === item.id;
+  const rowActing = actingId === item.id;
+  const writeDisabled = !canWrite || self || rowActing;
 
   switch (item.section) {
     case 'deployments':
@@ -217,7 +225,7 @@ function InboxRowActions({
               size="small"
               type="primary"
               disabled={writeDisabled}
-              loading={actingId === item.id}
+              loading={rowActing && actingAction === 'approve'}
               onClick={() => onApprove(item)}
             >
               {t('inbox.action.approve')}
@@ -227,14 +235,14 @@ function InboxRowActions({
             size="small"
             danger
             disabled={writeDisabled}
-            loading={actingId === item.id}
+            loading={rowActing && actingAction === 'reject'}
             onClick={() => onReject(item)}
           >
             {t('inbox.action.reject')}
           </Button>
           {item.detailUrl && (
-            <Link to={item.detailUrl}>
-              <Button size="small">{t('inbox.action.viewDetail')}</Button>
+            <Link to={item.detailUrl} style={{ fontSize: 12 }}>
+              {t('inbox.action.viewDetail')}
             </Link>
           )}
         </Space>
@@ -242,12 +250,12 @@ function InboxRowActions({
     case 'agentApprovals':
       return (
         <Space size={4} wrap>
-          {item.detailUrl && <Link to={item.detailUrl}>{t('inbox.action.reviewApproval')}</Link>}
+          {item.detailUrl && <Link to={item.detailUrl} style={{ fontSize: 12 }}>{t('inbox.action.reviewApproval')}</Link>}
           <Button
             size="small"
             danger
-            disabled={!canWrite || actingId === item.id}
-            loading={actingId === item.id}
+            disabled={!canWrite || rowActing}
+            loading={rowActing && actingAction === 'deny'}
             onClick={() => onDeny(item)}
           >
             {t('inbox.action.deny')}
@@ -263,14 +271,14 @@ function InboxRowActions({
             <Button
               size="small"
               type="primary"
-              disabled={!canWrite || actingId === item.id}
-              loading={actingId === item.id}
+              disabled={!canWrite || rowActing}
+              loading={rowActing && actingAction === 'resume'}
               onClick={() => onResume(item)}
             >
               {t('inbox.action.resume')}
             </Button>
           )}
-          {item.detailUrl && <Link to={item.detailUrl}>{t('inbox.action.viewSession')}</Link>}
+          {item.detailUrl && <Link to={item.detailUrl} style={{ fontSize: 12 }}>{t('inbox.action.viewSession')}</Link>}
         </Space>
       );
     default:
@@ -307,6 +315,7 @@ interface InboxRowProps {
   item: InboxItem;
   canWrite: boolean;
   actingId: string | null;
+  actingAction?: InboxActingAction | null;
   userId: number | null | undefined;
   onApprove: (item: InboxItem) => void;
   onReject: (item: InboxItem) => void;
@@ -322,8 +331,9 @@ interface InboxRowProps {
  * 只剩 4 行，下一个加个小节的人会先撞墙再拆，那时改动面已经更大。
  * 外提的是**纯版式**：动作回调仍由页面注入，`InboxRowActions` 的权限/动作块一行未动。
  */
-function InboxRow({ item, canWrite, actingId, userId, onApprove, onReject, onDeny, onResume }: InboxRowProps) {
+function InboxRow({ item, canWrite, actingId, actingAction, userId, onApprove, onReject, onDeny, onResume }: InboxRowProps) {
   const { t } = useTranslation();
+  const { token } = theme.useToken();
   const subtitle = inboxSubtitleText(item, t);
   const title = inboxTitleText(item, t);
   return (
@@ -336,7 +346,7 @@ function InboxRow({ item, canWrite, actingId, userId, onApprove, onReject, onDen
         gap: 12,
         flexWrap: 'wrap',
         padding: '10px 0',
-        borderBottom: '1px solid var(--ant-color-border-secondary, #f0f0f0)',
+        borderBottom: `1px solid ${token.colorBorderSecondary}`,
       }}
     >
       <div style={{ minWidth: 0, flex: 1 }}>
@@ -361,6 +371,7 @@ function InboxRow({ item, canWrite, actingId, userId, onApprove, onReject, onDen
           item={item}
           canWrite={canWrite}
           actingId={actingId}
+          actingAction={actingAction}
           userId={userId}
           onApprove={onApprove}
           onReject={onReject}
@@ -380,6 +391,8 @@ export default function InboxPage() {
   const [sections, setSections] = useState<InboxSections | null>(null);
   const [loading, setLoading] = useState(true);
   const [actingId, setActingId] = useState<string | null>(null);
+  const [actingAction, setActingAction] = useState<InboxActingAction | null>(null);
+  const [filterMode, setFilterMode] = useState<InboxFilterMode>('all');
   const [rejectTarget, setRejectTarget] = useState<InboxItem | null>(null);
   const [rejectReason, setRejectReason] = useState('');
 
@@ -401,11 +414,12 @@ export default function InboxPage() {
 
   // ── 写动作 ────────────────────────────────────────────────────────────────
 
-  const confirmThen = (title: string, action: () => Promise<void>) => {
+  const confirmThen = (title: string, action: () => Promise<void>, danger = false) => {
     ConfirmModal.confirm({
       title,
       okText: t('inbox.action.confirm'),
       cancelText: t('inbox.action.cancel'),
+      okButtonProps: danger ? { danger: true } : undefined,
       onOk: async () => {
         try {
           await action();
@@ -438,6 +452,7 @@ export default function InboxPage() {
     const dep = rejectTarget?.deployment;
     if (!dep) return;
     setActingId(rejectTarget.id);
+    setActingAction('reject');
     try {
       await deploymentsApi.reject(dep.id, rejectReason.trim() || undefined);
       message.success(t('inbox.success.rejected'));
@@ -448,6 +463,7 @@ export default function InboxPage() {
       showApiError(err);
     } finally {
       setActingId(null);
+      setActingAction(null);
     }
   };
 
@@ -460,7 +476,7 @@ export default function InboxPage() {
       } else {
         message.warning(t('inbox.approvalState', { status: agentApprovalStatusLabel(result.approval.status, t) }));
       }
-    });
+    }, true);
   };
 
   const handleResume = ({ canResume, session, title }: InboxItem) => {
@@ -489,6 +505,7 @@ export default function InboxPage() {
       item={item}
       canWrite={canWrite}
       actingId={actingId}
+      actingAction={actingAction}
       userId={user?.id}
       onApprove={handleApprove}
       onReject={openReject}
@@ -587,42 +604,32 @@ export default function InboxPage() {
       <PageHeader
         title={t('inbox.title')}
         description={t('inbox.description')}
-        extra={
-          <Button icon={<ReloadOutlined />} onClick={() => void reload()} loading={loading}>
-            {t('inbox.action.refresh')}
-          </Button>
-        }
+        extra={<Button icon={<ReloadOutlined />} onClick={() => void reload()} loading={loading}>{t('inbox.action.refresh')}</Button>}
       />
 
-      {allClear ? (
+      {loading && !sections ? (
+        <PageSkeleton variant="cards" rows={4} />
+      ) : allClear ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description={
-            <div>
-              <Text strong>{t('inbox.empty.title')}</Text>
-              <br />
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('inbox.empty.description')}
-              </Text>
-            </div>
-          }
+          description={<div><Text strong>{t('inbox.empty.title')}</Text><br /><Text type="secondary" style={{ fontSize: 12 }}>{t('inbox.empty.description')}</Text></div>}
         />
       ) : (
-        SECTION_ORDER.map(renderSection)
+        <>
+          <InboxFilterBar value={filterMode} onChange={setFilterMode} />
+          {SECTION_ORDER.filter((k) => filterMode === 'all' || (filterMode === 'readonly') === READONLY_SECTIONS.has(k)).map(renderSection)}
+        </>
       )}
 
-      {anyError && (
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          {t('inbox.partialErrorHint')}
-        </Text>
-      )}
+      {anyError && <Text type="secondary" style={{ fontSize: 12 }}>{t('inbox.partialErrorHint')}</Text>}
 
       <Modal
         open={!!rejectTarget}
         title={t('inbox.rejectConfirm.title')}
         okText={t('inbox.rejectConfirm.okText')}
+        okButtonProps={{ danger: true }}
         cancelText={t('inbox.action.cancel')}
-        confirmLoading={actingId === rejectTarget?.id}
+        confirmLoading={actingId === rejectTarget?.id && actingAction === 'reject'}
         onCancel={() => setRejectTarget(null)}
         onOk={() => void confirmReject()}
       >

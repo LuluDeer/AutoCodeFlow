@@ -8,13 +8,12 @@ import { Table,
   Select,
   Tooltip,
   Alert,
-  Checkbox,
   Empty,
   Popconfirm,
   Form,
-  Radio,
   Input,
   theme } from 'antd';
+import RolloutModal, { InstallExecutorButton } from './app-deployments/RolloutModal';
 import { message } from '../utils/toast';
 import {
   RocketOutlined, StopOutlined, ReloadOutlined, PlusOutlined,
@@ -338,6 +337,8 @@ export default function AppDeploymentPage({
   };
 
   const handleStop = async (id: string) => {
+    if (actingId) return;
+    setActingId(id);
     try {
       const res = await deploymentsApi.stop(id);
       // 用户报障（中台显示不可信）：stop() 是 best-effort——执行器离线/不可达时
@@ -353,6 +354,8 @@ export default function AppDeploymentPage({
       fetchAll();
     } catch (err: unknown) {
       showApiError(err, t('appDeploy.msg.stopFail'));
+    } finally {
+      setActingId(null);
     }
   };
 
@@ -360,12 +363,16 @@ export default function AppDeploymentPage({
   // （failed/stopped），在途/运行中/待审批返回 409——错误文案由后端给出，
   // 此处如实透传（getErrMsg 取响应 message）。
   const handleDelete = async (id: string) => {
+    if (actingId) return;
+    setActingId(id);
     try {
       await deploymentsApi.remove(id);
       message.success(t('appDeploy.msg.deleted'));
       fetchAll();
     } catch (err: unknown) {
       showApiError(err, t('appDeploy.msg.deleteFail'));
+    } finally {
+      setActingId(null);
     }
   };
 
@@ -401,25 +408,6 @@ export default function AppDeploymentPage({
       ).length,
     };
   }, [deployments]);
-
-  // 弹窗内「将覆盖 M 台设备（运行 X + 仅部署 Y…）」的分组文案素材。
-  // A-4 披露口径：升级推送的 entrypoint = 当前 app.entrypoint，行上与它不同的
-  // startCommand（部署时自定义的启动命令）会被重置——这些行必须被点名。
-  const customStartCommandRows = deployments.filter(
-    (d) => !!d.startCommand && appEntrypoint !== undefined && d.startCommand !== appEntrypoint,
-  );
-  const rolloutWillIncludeStopped = rolloutStrategy === 'full' && rolloutIncludeStopped;
-  const rolloutCovered =
-    coverageStats.running +
-    coverageStats.scheduled +
-    (rolloutWillIncludeStopped ? coverageStats.stopped : 0);
-  const rolloutCoverageParts = [
-    t('appDeploy.rollout.coverageRunning', { count: coverageStats.running }),
-    t('appDeploy.rollout.coverageScheduled', { count: coverageStats.scheduled }),
-    ...(rolloutWillIncludeStopped
-      ? [t('appDeploy.rollout.coverageStopped', { count: coverageStats.stopped })]
-      : []),
-  ];
 
   const handleUpgradeAll = async (strategy: 'full' | 'canary') => {
     // 前置判断按分组覆盖面：运行 + 仅部署为默认覆盖；stopped 仅在 full 策略
@@ -599,7 +587,7 @@ export default function AppDeploymentPage({
     {
       title: t('appDeploy.col.runMode'),
       dataIndex: 'runMode',
-      width: 90,
+      width: 120,
       onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
       onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string) => {
@@ -622,7 +610,7 @@ export default function AppDeploymentPage({
       onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string, r: AppDeployment) => {
         const d = v || r.createdAt;
-        if (!d) return '-';
+        if (!d) return '—';
         // P2-9：旧实现手搓了一套相对时间（mins<1/<60 两档），与仓库共享
         // formatRelativeTime（含天/月档、统一 i18n 键 time.relative.*）不一致。
         // 改用共享工具，Tooltip 仍保留绝对时间（统一走 formatDateTime——
@@ -636,7 +624,7 @@ export default function AppDeploymentPage({
     },
     {
       title: t('appDeploy.col.actions'),
-      width: 200,
+      width: 245,
       render: (_: unknown, r: AppDeployment) => {
         // DEP-04: 待审批行——出口只有审批三动作（后端对 upgrade/stop 返回 409）
         if (r.approvalStatus === 'pending_approval') {
@@ -650,7 +638,7 @@ export default function AppDeploymentPage({
                 : undefined
             : t('appDeploy.op.adminOnlyApprove');
           return (
-            <Space size={4}>
+            <Space size={4} wrap>
               <Tooltip title={secondPersonHint}>
                 <Button
                   size="small"
@@ -689,7 +677,7 @@ export default function AppDeploymentPage({
           );
         }
         return (
-        <Space size={4}>
+        <Space size={4} wrap>
           {r.status === 'running' && (
             <Tooltip title={isAdmin ? undefined : t('appDeploy.op.adminOnlyUpgrade')}>
               {/* R171 体量压缩：属性行合并（等价；本文件基线只减不增）。 */}
@@ -712,12 +700,12 @@ export default function AppDeploymentPage({
               // 什么会被中断、怎么才能恢复（重新部署）。正文见 zh/en 的
               // appDeploy.op.stopConsequence（成对，禁硬编码）。
               description={<span style={{ fontSize: 12 }}>{t('appDeploy.op.stopConsequence')}</span>}
-              onConfirm={() => handleStop(r.id)}
+              onConfirm={() => void handleStop(r.id)}
               okText={t('appDeploy.action.stop')} okButtonProps={{ danger: true }}
-              disabled={!isAdmin}
+              disabled={!isAdmin || actingId !== null}
             >
               <Tooltip title={isAdmin ? undefined : t('appDeploy.op.adminOnlyStop')}>
-                <Button size="small" danger icon={<StopOutlined />} disabled={!isAdmin}>{t('appDeploy.action.stop')}</Button>
+                <Button size="small" danger icon={<StopOutlined />} loading={actingId === r.id} disabled={!isAdmin || actingId !== null}>{t('appDeploy.action.stop')}</Button>
               </Tooltip>
             </Popconfirm>
           )}
@@ -745,13 +733,13 @@ export default function AppDeploymentPage({
               <Popconfirm
                 title={t('appDeploy.op.deleteConfirm')}
                 description={t('appDeploy.op.deleteHint')}
-                onConfirm={() => handleDelete(r.id)}
+                onConfirm={() => void handleDelete(r.id)}
                 okText={t('appDeploy.action.delete')}
                 okButtonProps={{ danger: true }}
-                disabled={!isAdmin}
+                disabled={!isAdmin || actingId !== null}
               >
                 <Tooltip title={isAdmin ? t('appDeploy.op.deleteHint') : t('appDeploy.op.adminOnlyDelete')}>
-                  <Button size="small" danger icon={<DeleteOutlined />} disabled={!isAdmin}>
+                  <Button size="small" danger icon={<DeleteOutlined />} loading={actingId === r.id} disabled={!isAdmin || actingId !== null}>
                     {t('appDeploy.action.delete')}
                   </Button>
                 </Tooltip>
@@ -779,7 +767,7 @@ export default function AppDeploymentPage({
           )}
         </Space>
         <Space>
-          <Button icon={<ReloadOutlined />} size="small" onClick={fetchAll}>{t('appDeploy.action.refresh')}</Button>
+          <Button icon={<ReloadOutlined />} onClick={fetchAll}>{t('appDeploy.action.refresh')}</Button>
           {/* R2 §4.4：入口放宽为「存在可覆盖或可 opt-in 的行」——stopped-only 的
               应用也能从弹窗勾选「包含已停止」走升级；全在途/无部署行仍隐藏。 */}
           {deployments.some((d) => d.status === 'running' || d.status === 'stopped') && (
@@ -787,7 +775,6 @@ export default function AppDeploymentPage({
               {/* P1-9：灰度策略需 Radio 选择，Popconfirm 装不下——改开策略 Modal */}
               <Button
                 icon={<UpCircleOutlined />}
-                size="small"
                 disabled={!isAdmin}
                 onClick={() => { setRolloutStrategy('full'); setRolloutIncludeStopped(false); setRolloutModalOpen(true); }}
               >
@@ -813,7 +800,7 @@ export default function AppDeploymentPage({
           type="warning"
           title={t('appDeploy.alert.noExecutorTitle')}
           description={t('appDeploy.alert.noExecutorDesc')}
-          action={isAdmin ? <Button size="small" href="/executors/install">{t('appDeploy.action.installExecutor')}</Button> : undefined}
+          action={isAdmin ? <InstallExecutorButton label={t('appDeploy.action.installExecutor')} /> : undefined}
           style={{ marginBottom: 16 }}
         />
       )}
@@ -870,7 +857,7 @@ export default function AppDeploymentPage({
           dataSource={deployments}
           loading={loading}
           size="small"
-          scroll={{ x: 720 }}
+          scroll={{ x: 795 }}
           pagination={{ current: page, pageSize: 20, total, onChange: (p) => setPage(p), showTotal: (n: number) => t('appDeploy.count', { count: n }) }}
         />
       )}
@@ -984,75 +971,20 @@ export default function AppDeploymentPage({
         </Form>
       </Modal>
 
-      {/* P1-9：全部升级策略 Modal（全量 / 灰度 20%） */}
-      <Modal
-        title={t('appDeploy.rollout.modalTitle')}
+      {/* P1-9：全部升级策略 Modal（全量 / 灰度 20%），外提至 pages/app-deployments/RolloutModal.tsx */}
+      <RolloutModal
         open={rolloutModalOpen}
-        onOk={() => void handleUpgradeAll(rolloutStrategy)}
+        upgradingAll={upgradingAll}
+        rolloutStrategy={rolloutStrategy}
+        onStrategyChange={setRolloutStrategy}
+        rolloutIncludeStopped={rolloutIncludeStopped}
+        onIncludeStoppedChange={setRolloutIncludeStopped}
+        coverageStats={coverageStats}
+        deployments={deployments}
+        appEntrypoint={appEntrypoint}
+        onConfirm={(strategy) => void handleUpgradeAll(strategy)}
         onCancel={() => setRolloutModalOpen(false)}
-        confirmLoading={upgradingAll}
-        okText={t('appDeploy.action.confirmUpgrade')}
-        okButtonProps={{ icon: <UpCircleOutlined /> }}
-        width={520}
-      >
-        <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-          {t('appDeploy.op.upgradeAllDesc')}
-        </Text>
-        {/* R2 §4.4：覆盖面如实前置——「将覆盖 M 台设备（运行 X + 仅部署 Y…）」。
-            默认覆盖 = 运行中 + 仅部署（scheduled 实证稳态即 RUNNING）；stopped
-            仅勾选后计入；canary 不扩覆盖（健康探测需要活进程）。 */}
-        <Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 12 }}>
-          {t('appDeploy.rollout.coverageLead', { count: rolloutCovered })}
-          {rolloutCoverageParts.join(' + ')}
-        </Text>
-        {/* A-4 披露（部署模型评审 §9.3-2 收口）：升级推送的 entrypoint 即当前
-            app.entrypoint，部署时自定义过启动命令的行会被重置为新 entrypoint
-            ——不披露则用户以为自定义命令仍在生效。 */}
-        {customStartCommandRows.length > 0 && (
-          <Alert
-            type="warning"
-            showIcon
-            style={{ marginBottom: 12 }}
-            message={t('appDeploy.rollout.startCommandReset.title', { count: customStartCommandRows.length })}
-            description={t('appDeploy.rollout.startCommandReset.desc', {
-              entrypoint: appEntrypoint ?? '—',
-              detail: customStartCommandRows
-                .map((r) => shortExecutorRowId(r.id) + ': ' + r.startCommand)
-                .join(t('common.listSep.semicolon')),
-            })}
-          />
-        )}
-        <Radio.Group
-          value={rolloutStrategy}
-          onChange={(e) => setRolloutStrategy(e.target.value)}
-          style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
-        >
-          <Radio value="full">
-            <Text strong>{t('appDeploy.rollout.full')}</Text>
-            <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
-              {t('appDeploy.rollout.fullDesc')}
-            </Text>
-          </Radio>
-          <Radio value="canary">
-            <Text strong>{t('appDeploy.rollout.canary')}</Text>
-            <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
-              {t('appDeploy.rollout.canaryDesc')}
-            </Text>
-          </Radio>
-        </Radio.Group>
-        {rolloutStrategy === 'full' && (
-          <Checkbox
-            checked={rolloutIncludeStopped}
-            onChange={(e) => setRolloutIncludeStopped(e.target.checked)}
-            style={{ marginTop: 12 }}
-          >
-            {t('appDeploy.rollout.includeStopped')}
-            <Text type="secondary" style={{ marginLeft: 6, fontSize: 12 }}>
-              {t('appDeploy.rollout.includeStoppedHint')}
-            </Text>
-          </Checkbox>
-        )}
-      </Modal>
+      />
     </div>
   );
 }

@@ -168,7 +168,7 @@ export default function TaskImportModal({
       style={{ marginBottom: 12 }}
       message={t('taskImport.conflict.title', { count: conflicts.length })}
       description={
-        <Space direction="vertical" size={4}>
+        <Space orientation="vertical" size={4}>
           {conflicts.map((c, i) => (
             <Text key={i} type="warning">{conflictText(c, t)}</Text>
           ))}

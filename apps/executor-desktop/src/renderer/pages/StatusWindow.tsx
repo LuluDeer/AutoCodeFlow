@@ -9,10 +9,12 @@ import { requestTabSwitch } from '../tab-switch';
 // P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
 import { ipcErrorMessage } from '../ipc-error';
 // V4 后续优化（6）i18n 二期：状态页文案入双语表（zh 值与原硬编码逐字一致）。
-import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../i18n';
+import { createCfgTexts, resolveRendererLocale } from '../i18n';
 // PLAN-EXECUTOR-DESKTOP-UX 2.1：并发饱和度是纯算术（除零/NaN/超额/阈值配色
 // 都只在一处），抽到 concurrency-gauge.ts 由 test:renderer 真执行断言。
 import { concurrencyGauge } from '../concurrency-gauge';
+import RunningTaskChip from './status/RunningTaskChip';
+import { formatCopyLiveText, formatFailureTime, formatFailureTitle, formatRunningDuration, useStatusCtrlF } from './status/status-helpers';
 
 const locale = resolveRendererLocale(() => navigator.language);
 const t = createCfgTexts(locale);
@@ -82,9 +84,10 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
   }
   return (
     <div className="copy-row">
-      <span className={`copy-val${mono ? '' : ' copy-val-plain'}`}>{value || '—'}</span>
+      <span className={`copy-val${mono ? '' : ' copy-val-plain'}`} title={value && value !== '—' ? value : undefined}>{value || '—'}</span>
       {value && value !== '—' && (
         <button
+          type="button"
           className={`copy-btn${state === 'copied' ? ' copied' : state === 'error' ? ' copy-failed' : ''}`}
           onClick={copy}
           // P3-3：复制失败（IPC reject / 内容超 1MiB 被拒绝）时给出原因——
@@ -94,6 +97,7 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
           {state === 'copied' ? <>{t('status.copied')} <Icon name="check" className="icon-xs" /></> : state === 'error' ? copyErrorText : t('status.copy')}
         </button>
       )}
+      <span className="sr-only" role="status" aria-live="polite">{formatCopyLiveText(state, t('status.copied'), copyErrorText)}</span>
     </div>
   );
 }
@@ -739,6 +743,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
     setLogViewerShowFiles(showFiles);
     setFullscreen(true);
   }
+  useStatusCtrlF(active, fullscreen, openLogViewer);
   function jumpPreviewToBottom() {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
     autoScroll.current = true;
@@ -953,12 +958,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
                   <span className="today-summary-running">
                     <Icon name="play" className="today-summary-runicon" />
                     {todaySummary.runningTasks.slice(0, 2).map((task) => (
-                      <span key={task.id} className="today-summary-task" title={task.name}>
-                        {task.name}
-                        {task.since !== null && (
-                          <b className="today-summary-task-dur">{t('status.runningFor', formatRunningMs(Date.now() - task.since))}</b>
-                        )}
-                      </span>
+                      <RunningTaskChip key={task.id} name={task.name} duration={formatRunningDuration(task.since, formatRunningMs, (d) => t('status.runningFor', d))} />
                     ))}
                     {todaySummary.runningTasks.length > 2 && (
                       <span className="today-summary-task">+{todaySummary.runningTasks.length - 2}</span>
@@ -987,12 +987,13 @@ export default function StatusWindow({ active }: { active: boolean }) {
                   className={`btn btn-sm${hideHeartbeat ? ' is-active' : ''}`}
                   onClick={toggleHeartbeatFilter}
                   aria-pressed={hideHeartbeat}
+                  disabled={logs.length === 0}
                   title={hideHeartbeat ? t('status.heartbeatFilterShowTitle') : t('status.heartbeatFilterHideTitle')}
                 >
                   <Icon name="eye-off" /> {t('status.heartbeatFilter')}
                 </button>
                 <button className="btn btn-sm" onClick={() => openLogViewer()}><Icon name="expand" /> {t('status.viewLogs')}</button>
-                <button className="btn btn-sm" onClick={jumpPreviewToBottom}><Icon name="arrow-down" /> {unreadLogs > 0 ? t('status.newLogs', unreadLogs) : t('status.bottom')}</button>
+                <button className="btn btn-sm" onClick={jumpPreviewToBottom} disabled={logs.length === 0}><Icon name="arrow-down" /> {unreadLogs > 0 ? t('status.newLogs', unreadLogs) : t('status.bottom')}</button>
               </div>
             </div>
             {/* 包裹层承载 C-06 的顶部渐隐遮罩与「查看更早」胶囊（定位锚点） */}
@@ -1124,12 +1125,10 @@ export default function StatusWindow({ active }: { active: boolean }) {
                         key={record.executionId || record.startTime}
                         type="button"
                         className="rail-failure-item"
-                        title={record.errorMessage || t('status.viewHistory')}
+                        title={formatFailureTitle(record, t('status.unnamedTask'), t('status.viewHistory'))}
                         onClick={() => requestTabSwitch('history', 'failed')}
                       >
-                        <span className="rail-failure-time">
-                          {record.startTime ? formatLocaleDateTime(record.startTime, { hour: '2-digit', minute: '2-digit' }) : '—'}
-                        </span>
+                        <span className="rail-failure-time">{formatFailureTime(record.startTime)}</span>
                         <span className="rail-failure-name">{record.taskName || t('status.unnamedTask')}</span>
                       </button>
                     ))}

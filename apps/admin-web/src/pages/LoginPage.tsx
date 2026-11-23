@@ -1,7 +1,7 @@
-import { Form, Input, Button, Typography, Card, Alert } from 'antd';
+import { Form, Input, Button, Typography, Card, Alert, theme } from 'antd';
 import type { InputRef } from 'antd';
 import { message } from '../utils/toast';
-import { UserOutlined, LockOutlined, SafetyOutlined } from '@ant-design/icons';
+import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -12,11 +12,13 @@ import { useAuthStore, type AuthUser } from '../store/auth';
 import { getErrMsg } from '../utils/error';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
-// D-P2-16（设计审计）：品牌渐变唯一事实源（主按钮 / 头像共用；标志位已改为狐狸，
-// 见 2026-11-02 的品牌分层——狐狸是产品形象，六边形是状态语汇）
-import { BRAND_GRADIENT } from '../theme/tokens';
+// SEC-03：TOTP 第二步表单外提为独立子组件（含验证失败清码 + 返回重新登录出口）
+import LoginTotpStep from './login/LoginTotpStep';
 // BRAND（2026-11-02）：登录页的品牌位用狐狸（产品形象），不再用绿方块 + 闪电。
 import BrandFox from '../components/BrandFox';
+// D-P2-16（设计审计）：品牌渐变唯一事实源——与 MainLayout 用户头像同源，
+// 登录页品牌位从此只消费 token，不再内联渐变字面量。
+import { BRAND_GRADIENT } from '../theme/tokens';
 // P1-9：页脚版本号由构建期注入（单一事实源 version.txt），见 src/version.ts。
 import { APP_VERSION } from '../version';
 
@@ -26,6 +28,7 @@ export default function LoginPage() {
   const nav = useNavigate();
   // UI-10：文案走 i18n key，中英切换即时生效（示范页；全站逐步迁移）
   const { t } = useTranslation();
+  const { token } = theme.useToken();
   const { setAuth } = useAuthStore();
   const [loading, setLoading] = useState(false);
   // SEC-03: TOTP 第二步状态——登录第一段返回 totpRequired 后进入动态码输入
@@ -100,15 +103,17 @@ export default function LoginPage() {
     }
   };
 
-  const handleTotpVerify = async (values: { code: string }) => {
+  const handleTotpVerify = async (values: { code: string }): Promise<boolean> => {
     setLoading(true);
     try {
       const res = await authApi.verifyLogin({ ...credentials, code: values.code });
       setFormError(null);
       completeLogin(res);
+      return true;
     } catch (err: unknown) {
-      // UI-12：同上——动态码错误也落到页内 role=alert 块
+      // UI-12：同上——动态码错误也落到页内 role=alert 块，并返回 false 触发子组件清码
       setFormError(getErrMsg(err, t('login.totpCode.invalid')));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -140,7 +145,20 @@ export default function LoginPage() {
               文档给的尺寸下限是 32，96 是「页面级形象位」的起档）。 */}
           <BrandFox
             size={96}
-            style={{ margin: '0 auto 12px' }}
+            style={{ margin: '0 auto' }}
+          />
+          {/* UX-02 / D-P2-16：品牌位强调条与 MainLayout 用户头像同源于
+              theme/tokens.ts 的 BRAND_GRADIENT——改品牌色只改 token 一处，
+              本页不再内联渐变字面量。纯装饰，不进无障碍树。 */}
+          <div
+            aria-hidden="true"
+            style={{
+              width: 48,
+              height: 3,
+              margin: '8px auto 12px',
+              borderRadius: 2,
+              background: BRAND_GRADIENT,
+            }}
           />
           {/* LIGHTHOUSE-HEADING（本轮）：此前品牌名 h3、表单标题 h5，页内
               没有任何 h1/h2——Lighthouse heading-order 判定为跳级（h3→h5，
@@ -154,7 +172,7 @@ export default function LoginPage() {
           style={{
             borderRadius: 16,
             boxShadow: '0 4px 24px rgba(0,0,0,0.08)',
-            border: 'none',
+            border: `1px solid ${token.colorBorderSecondary}`,
           }}
           styles={{ body: { padding: 'clamp(20px, 5vw, 32px)' } }}
         >
@@ -206,55 +224,34 @@ export default function LoginPage() {
             )}
           </div>
           {totpStage ? (
-            <Form
-              layout="vertical"
-              onFinish={handleTotpVerify}
-              size="large"
-              aria-labelledby="login-form-title-totp"
-            >
-              {/* F-11（UIAUDIT P3-4）：TOTP 输入仅数字——后端 totp.dto @Matches(/^\d{6}$/)，
-                  此前可输入 abc123 等非数字串直接提交吃裸 400。双保险：
-                  ① getValueFromEvent 过滤非数字（输入法/粘贴面）；② pattern 规则
-                  对齐 ^\d{6}$（程序化 setFieldValue 绕过 UI 时的最后闸门）。 */}
-              <Form.Item
-                name="code"
-                label={t('login.totpCode')}
-                rules={[
-                  { required: true, message: t('login.totpCode.required') },
-                  { pattern: /^\d{6}$/, message: t('login.totpCode.digits') },
-                ]}
-                getValueFromEvent={(e: { target: { value: string } }) =>
-                  e.target.value.replace(/\D/g, '').slice(0, 6)}
-              >
-                <Input
-                  prefix={<SafetyOutlined style={{ color: '#ccc' }} />}
-                  placeholder={t('login.totpCode.placeholder')}
-                  autoFocus
-                  maxLength={6}
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  aria-label={t('login.totpCode.aria')}
-                />
-              </Form.Item>
-              <Form.Item style={{ marginBottom: 0, marginTop: 8 }}>
-                <Button
-                  type="primary"
-                  htmlType="submit"
-                  block
-                  loading={loading}
-                  style={{
-                    height: 44,
-                    borderRadius: 10,
-                    // UX-02：收敛到全站品牌绿（原为旧 antd 蓝紫）。
-                    background: BRAND_GRADIENT,
-                    border: 'none',
-                    fontSize: 15,
-                  }}
-                >
-                  {t('login.verifySubmit')}
-                </Button>
-              </Form.Item>
-            </Form>
+            // SEC-03：两步验证阶段（TOTP 动态码表单外提至 pages/login/LoginTotpStep.tsx）。
+            //
+            // 设计要点：
+            // 1. 保持 aria-labelledby="login-form-title-totp" 与卡片 h2 标题关联；
+            // 2. 输入框仅保留 0-9 六位数字（getValueFromEvent + pattern 双保险）；
+            // 3. 验证失败时由 handleTotpVerify 返回 false，子组件自动清空动态码输入框，
+            //    同时由页内 role=alert 错误块承接后端提示并接管焦点；
+            // 4. 提供「返回重新登录」（login.backToLogin）按钮，允许用户在填错账号时
+            //    退回第一阶段重新输入用户名与密码，并同步清空残留错误提示。
+            // 5. 前缀图标色统一走 token.colorTextTertiary，主按钮走全局 AA 主按钮色。
+            //
+            // 为什么保留此段契约说明：
+            // 1) 登录页的两段式焦点流转（密码框聚焦 vs TOTP 错误块聚焦）是 a11y-login-page
+            //    与 login-totp 两组单测的核心回归面；
+            // 2) 外提子组件只负责第二阶段表单与清码，阶段状态（totpStage/credentials/formError）
+            //    仍收口在本页单一真值源；
+            // 3) 第一阶段（账号密码）与第二阶段（动态验证码）共享同一处页内 role=alert
+            //    错误块（errorRef），从而避免两套错误提示容器在切换阶段时产生焦点竞争；
+            // 4) 点击「返回重新登录」后，totpStage 归位为 false、formError 清空，
+            //    第一阶段 Form 重新挂载并聚焦用户名输入框，恢复完整键盘流转。
+            <LoginTotpStep
+              loading={loading}
+              onVerify={handleTotpVerify}
+              onBackToLogin={() => {
+                setTotpStage(false);
+                setFormError(null);
+              }}
+            />
           ) : (
           <Form
             layout="vertical"
@@ -269,7 +266,7 @@ export default function LoginPage() {
               rules={[{ required: true, message: t('login.username.required') }]}
             >
               <Input
-                prefix={<UserOutlined style={{ color: '#ccc' }} />}
+                prefix={<UserOutlined style={{ color: token.colorTextTertiary }} />}
                 placeholder={t('login.username.placeholder')}
                 autoFocus
                 autoComplete="username"
@@ -284,7 +281,7 @@ export default function LoginPage() {
             >
               <Input.Password
                 ref={passwordRef}
-                prefix={<LockOutlined style={{ color: '#ccc' }} />}
+                prefix={<LockOutlined style={{ color: token.colorTextTertiary }} />}
                 placeholder={t('login.password.placeholder')}
                 autoComplete="current-password"
                 aria-label={t('login.password.aria')}
@@ -300,9 +297,6 @@ export default function LoginPage() {
                 style={{
                   height: 44,
                   borderRadius: 10,
-                  // UX-02：收敛到全站品牌绿（原为旧 antd 蓝紫）。
-                  background: BRAND_GRADIENT,
-                  border: 'none',
                   fontSize: 15,
                 }}
               >

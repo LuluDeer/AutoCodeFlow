@@ -17,6 +17,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import AuditLogPage from '../pages/audit';
+import { formatAuditIp } from '../pages/audit/resourceOptions';
 import { client } from '../api/client';
 import { message } from '../utils/toast';
 import dayjs from 'dayjs';
@@ -197,8 +198,8 @@ describe('AuditLogPage 列表渲染（QA-03）', () => {
     expect(screen.getAllByText('失败').length).toBeGreaterThanOrEqual(1);
     // 资源ID >8 字符截断为前 8 位+省略号（Tooltip 悬浮层同文案 → 容忍多命中）
     expect(screen.getAllByText(/abcd1234…/).length).toBeGreaterThanOrEqual(1);
-    // 资源ID 缺省显示 -
-    expect(screen.getAllByText('-').length).toBeGreaterThanOrEqual(1);
+    // 资源ID 缺省显示 —
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(1);
     // P2 溯源修复：username 为空但 userId=7 的存量行显示「#7」可追溯形态，
     // 不再误标「系统」；真正无操作人行（userId 也空）才显示系统 Tag。
     expect(screen.getByText('#7')).toBeTruthy();
@@ -765,5 +766,25 @@ describe('AuditLogPage 时间范围筛选（2026-10-24 与 events 统一口径�
       expect(p.get('startTime')).toBe(expected.since);
       expect(p.get('endTime')).toBe(expected.until);
     });
+  });
+});
+
+describe('formatAuditIp：审计 IP 展示格式化', () => {
+  it('剥离 IPv4-mapped IPv6 前缀 ::ffff:', () => {
+    expect(formatAuditIp('::ffff:1.2.3.4')).toBe('1.2.3.4');
+  });
+
+  it('前缀大小写不敏感（::FFFF:）', () => {
+    expect(formatAuditIp('::FFFF:1.2.3.4')).toBe('1.2.3.4');
+  });
+
+  it('空值返回空串', () => {
+    expect(formatAuditIp(null)).toBe('');
+    expect(formatAuditIp(undefined)).toBe('');
+    expect(formatAuditIp('')).toBe('');
+  });
+
+  it('普通 IPv4 原样返回', () => {
+    expect(formatAuditIp('1.2.3.4')).toBe('1.2.3.4');
   });
 });

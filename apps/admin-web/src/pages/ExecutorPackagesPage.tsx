@@ -12,7 +12,6 @@ import { Table,
   Typography,
   Badge,
   Card,
-  Switch,
   theme } from 'antd';
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
@@ -38,6 +37,7 @@ import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
+import { StablePagingSwitch } from '../components/StablePagingSwitch';
 import { Empty as AntEmpty } from 'antd';
 // B-4：包名搜索防抖——复用既有 useDebounce hook（CommandPalette 同源）
 import { useDebounce } from '../hooks/useDebounce';
@@ -69,7 +69,7 @@ const STATUS_TAG = (t: (k: string) => string): Record<string, { color: string; l
 });
 
 function fmtBytes(b?: number) {
-  if (!b) return '-';
+  if (!b) return '—';
   if (b < 1024) return `${b} B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
   return `${(b / 1024 / 1024).toFixed(1)} MB`;
@@ -598,7 +598,7 @@ export default function ExecutorPackagesPage() {
       ),
     },
     { title: t('execPkg.col.version'), dataIndex: 'version', width: 100, render: (v: string) => <Tag color="blue">{v}</Tag> },
-    { title: t('execPkg.col.type'), dataIndex: 'type', width: 90, render: (v: string) => <Tag>{runtimeLabel(v, t)}</Tag> },
+    { title: t('execPkg.col.type'), dataIndex: 'type', width: 90, render: (v: string) => <Tag>{v === 'universal' ? t('packages.type.universal') : runtimeLabel(v, t)}</Tag> },
     // UI-09 第三轮：平台/大小/上传者是次要列——窄屏（≤768px）由媒体查询隐藏
     // （onHeaderCell/onCell 双端挂类，对齐 mobile-ui09 既有模式），
     // 值班关键列（包名/版本/类型/状态/上传时间）+ 操作列 fixed right 保留。
@@ -606,7 +606,7 @@ export default function ExecutorPackagesPage() {
       title: t('execPkg.col.platform'), dataIndex: 'platform', width: 90,
       onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
       onCell: () => ({ className: 'ui09-hide-mobile' }),
-      render: (v?: string) => v ?? '-',
+      render: (v?: string) => (v === 'universal' ? t('packages.type.universal') : v) ?? '—',
     },
     {
       title: t('execPkg.col.size'), dataIndex: 'fileSize', width: 90,
@@ -635,7 +635,7 @@ export default function ExecutorPackagesPage() {
       onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
       onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v?: string) => {
-        if (!v) return '-';
+        if (!v) return '—';
         const short = shortUploader(v);
         return short === v ? (
           <Text style={{ fontSize: 12 }}>{v}</Text>
@@ -689,7 +689,12 @@ export default function ExecutorPackagesPage() {
       <PageHeader
         title={t('execPkg.title')}
         description={t('execPkg.description')}
-        extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>{t('execPkg.uploadNew')}</Button>}
+        extra={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>{t('execPkg.refresh')}</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>{t('execPkg.uploadNew')}</Button>
+          </>
+        }
       />
 
       {loadError !== null && !loading && (
@@ -701,7 +706,7 @@ export default function ExecutorPackagesPage() {
         />
       )}
 
-      <Space style={{ marginBottom: 16 }} wrap>
+      <Space style={{ display: 'flex', marginBottom: 16 }} wrap>
         <Input.Search
           placeholder={t('execPkg.searchPlaceholder')} value={search} allowClear style={{ width: 200 }}
           // §2.1：筛选变化必须同时重置游标栈（原因见 resetCursorStack 注释）
@@ -722,24 +727,10 @@ export default function ExecutorPackagesPage() {
             { value: 'uploading', label: t('execPkg.status.uploading') },
           ]}
         />
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>{t('execPkg.refresh')}</Button>
         <Text type="secondary">{t('execPkg.count', { count: total })}</Text>
-        {/* §2.1：稳定翻页开关（默认关闭）。
-            用 antd Switch——它本身就是 role="switch" + 原生 button 语义，
-            Tab 可聚焦、Space/Enter 可切换，无需再补键盘处理；aria-label 给出
-            可访问名（开关没有可见文字标签时，纯靠旁边的文字不构成可访问名）。
-            关闭时不发任何 cursor 参数，后端与页面行为都回到改动前。 */}
-        <Space size={6} style={{ marginLeft: 'auto' }}>
-          <Switch
-            size="small"
-            checked={stablePaging}
-            onChange={toggleStablePaging}
-            aria-label={t('execPkg.stablePaging.aria')}
-          />
-          <Tooltip title={t('execPkg.stablePaging.hint')}>
-            <Text type="secondary" style={{ fontSize: 12 }}>{t('execPkg.stablePaging')}</Text>
-          </Tooltip>
-        </Space>
+        <div style={{ marginLeft: 'auto' }}>
+          <StablePagingSwitch checked={stablePaging} onChange={toggleStablePaging} label={t('execPkg.stablePaging')} hint={t('execPkg.stablePaging.hint')} ariaLabel={t('execPkg.stablePaging.aria')} />
+        </div>
       </Space>
 
       {/* 2026-10-23：批量删除条。只在有选中时出现，避免常驻占位。
@@ -748,7 +739,7 @@ export default function ExecutorPackagesPage() {
         <Space
           data-testid="execPkg-batch-bar"
           size={8}
-          style={{ marginBottom: 12, padding: '6px 12px', background: token.colorFillQuaternary, borderRadius: 6 }}
+          style={{ display: 'flex', marginBottom: 12, padding: '6px 12px', background: token.colorFillQuaternary, borderRadius: 6 }}
         >
           <Text type="secondary" style={{ fontSize: 12 }}>
             {t('execPkg.selected', { count: selectedIds.length })}
@@ -782,7 +773,7 @@ export default function ExecutorPackagesPage() {
         />
       ) : null}
       {!fleetVersionsLoadError && fleetVersionKeys.length > 0 && (
-        <Space style={{ marginBottom: 12 }} size={4} wrap>
+        <Space style={{ display: 'flex', marginBottom: 12 }} size={4} wrap>
           <Text type="secondary" style={{ fontSize: 12 }}>{t('execPkg.fleetVersions.label')}:</Text>
           {fleetVersionKeys.sort().map(v => (
             <Tag key={v} color={fleetDriftCount > 1 ? 'orange' : 'default'}>

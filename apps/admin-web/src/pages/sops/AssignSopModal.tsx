@@ -76,7 +76,7 @@ export default function AssignSopModal({
     >
       {/* A11Y-SOPS-01：两个下拉补可见标签（仍是 Space 的直接子项，间距不变） */}
       <Form layout="vertical" component={false}>
-        <Space direction="vertical" style={{ width: '100%' }} size="small">
+        <Space orientation="vertical" style={{ width: '100%' }} size="small">
           <AssignableExecutorPicker assignable={assignable} />
           <Form.Item
             label={t('sops.field.assignVersion')}

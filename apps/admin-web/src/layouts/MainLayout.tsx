@@ -244,7 +244,7 @@ const Clock = memo(function Clock({
   // （与 currentLocale() 同源），不跟随浏览器默认。
   const locale = i18n.language || 'zh-CN';
   const timeStr = now.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
-  const dateStr = now.toLocaleDateString(locale, { month: 'long', day: 'numeric', weekday: 'short' });
+  const dateStr = now.toLocaleDateString(locale, { month: 'short', day: 'numeric', weekday: 'short' });
   return (
     <div className="header-time" aria-hidden="true" style={{ textAlign: 'right', marginRight: 8, lineHeight: 1.3 }}>
       <div style={{ fontSize: 14, fontWeight: 600, color: colorText }}>{timeStr}</div>

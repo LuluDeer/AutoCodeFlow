@@ -29,6 +29,7 @@ import {
   DownloadOutlined,
   EyeOutlined,
   LinkOutlined,
+  ReloadOutlined,
   RightOutlined,
 } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
@@ -64,6 +65,7 @@ interface ArtifactFilterBarProps {
   from?: string;
   to?: string;
   ext?: string;
+  hasFilters?: boolean;
   appOptions: { value: string; label: string }[];
   taskOptions: { value: string; label: string }[];
   extOptions: { value: string; label: string }[];
@@ -72,6 +74,7 @@ interface ArtifactFilterBarProps {
   onQChange: (value?: string) => void;
   onRangeChange: (range: [string, string] | undefined) => void;
   onExtChange: (value?: string) => void;
+  onClearFilters?: () => void;
 }
 
 /** 筛选工具栏：应用 / 任务 / 文件名关键字 / 产出时间范围 / 扩展名，全部下推后端索引查询。 */
@@ -82,6 +85,7 @@ function ArtifactFilterBar({
   from,
   to,
   ext,
+  hasFilters,
   appOptions,
   taskOptions,
   extOptions,
@@ -90,6 +94,7 @@ function ArtifactFilterBar({
   onQChange,
   onRangeChange,
   onExtChange,
+  onClearFilters,
 }: ArtifactFilterBarProps) {
   const { t } = useTranslation();
   const rangeValue: [Dayjs, Dayjs] | null =
@@ -147,6 +152,11 @@ function ArtifactFilterBar({
         options={extOptions}
         onChange={(v) => onExtChange(v || undefined)}
       />
+      {hasFilters && onClearFilters && (
+        <Button size="small" onClick={onClearFilters}>
+          {t('common.clearFilters')}
+        </Button>
+      )}
     </Space>
   );
 }
@@ -170,12 +180,16 @@ function buildArtifactColumns(
       title: t('artifactLibrary.col.name'),
       dataIndex: 'name',
       key: 'name',
+      minWidth: 220,
+      ellipsis: { showTitle: false },
       render: (name: string, row: ArtifactRow) => (
-        <Tooltip title={t('artifactLibrary.preview.sha256') + ': ' + row.sha256}>
-          <Text code style={{ fontSize: 12, wordBreak: 'break-all' }}>
-            {name}
-          </Text>
-        </Tooltip>
+        <Text
+          code
+          ellipsis={{ tooltip: `${name} (${t('artifactLibrary.preview.sha256')}: ${row.sha256})` }}
+          style={{ fontSize: 12, maxWidth: '100%' }}
+        >
+          {name}
+        </Text>
       ),
     },
     {
@@ -183,7 +197,7 @@ function buildArtifactColumns(
       key: 'typeSize',
       width: 150,
       render: (_: unknown, row: ArtifactRow) => {
-        const ext = row.name.includes('.') ? row.name.split('.').pop()!.toUpperCase() : '-';
+        const ext = row.name.includes('.') ? row.name.split('.').pop()!.toUpperCase() : '—';
         return (
           <Space size={6}>
             <Tag>{ext}</Tag>
@@ -237,7 +251,7 @@ function buildArtifactColumns(
     {
       title: t('artifactLibrary.col.action'),
       key: 'action',
-      width: 240,
+      width: 290,
       render: (_: unknown, row: ArtifactRow) => (
         <Space size={4} wrap>
           <Button size="small" icon={<EyeOutlined />} onClick={() => onPreview(row)}>
@@ -247,7 +261,12 @@ function buildArtifactColumns(
             {t('artifactLibrary.action.download')}
           </Button>
           <Tooltip title={t('artifactLibrary.action.copyLink')}>
-            <Button size="small" icon={<LinkOutlined />} onClick={() => onCopyLink(row)} />
+            <Button
+              size="small"
+              icon={<LinkOutlined aria-hidden />}
+              aria-label={t('artifactLibrary.action.copyLink')}
+              onClick={() => onCopyLink(row)}
+            />
           </Tooltip>
           <Button
             size="small"
@@ -377,6 +396,16 @@ export default function ArtifactsPage() {
     onGoto: (row) => nav(executionDeepLink(row)),
   });
 
+  const clearAllFilters = () => {
+    setApplicationId(undefined);
+    setTaskId(undefined);
+    setQ(undefined);
+    setFrom(undefined);
+    setTo(undefined);
+    setExt(undefined);
+    resetPage();
+  };
+
   const renderEmpty = () => (
     <Empty
       image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -385,19 +414,7 @@ export default function ArtifactsPage() {
       }
     >
       {hasFilters && (
-        <Button
-          type="link"
-          size="small"
-          onClick={() => {
-            setApplicationId(undefined);
-            setTaskId(undefined);
-            setQ(undefined);
-            setFrom(undefined);
-            setTo(undefined);
-            setExt(undefined);
-            resetPage();
-          }}
-        >
+        <Button type="link" size="small" onClick={clearAllFilters}>
           {t('artifactLibrary.clearFilters')}
         </Button>
       )}
@@ -409,6 +426,11 @@ export default function ArtifactsPage() {
       <PageHeader
         title={t('artifactLibrary.title')}
         description={t('artifactLibrary.description')}
+        extra={
+          <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void refetch()} loading={isLoading}>
+            {t('sops.refresh')}
+          </Button>
+        }
       />
 
       <ArtifactFilterBar
@@ -418,6 +440,7 @@ export default function ArtifactsPage() {
         from={from}
         to={to}
         ext={ext}
+        hasFilters={hasFilters}
         appOptions={appOptions}
         taskOptions={taskOptions}
         extOptions={extOptions}
@@ -442,13 +465,14 @@ export default function ArtifactsPage() {
           setExt(v);
           resetPage();
         }}
+        onClearFilters={clearAllFilters}
       />
 
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message={t('artifactLibrary.filter.note')}
+        title={t('artifactLibrary.filter.note')}
       />
 
       {isLoading ? (
@@ -462,7 +486,7 @@ export default function ArtifactsPage() {
           {list.map((row) => (
             <Card key={row.id} size="small">
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, minWidth: 0 }}>
-                <Text code style={{ fontSize: 12, wordBreak: 'break-all' }}>
+                <Text code ellipsis={{ tooltip: row.name }} style={{ fontSize: 12, flex: 1, minWidth: 0 }}>
                   {row.name}
                 </Text>
                 <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
@@ -485,7 +509,14 @@ export default function ArtifactsPage() {
                 <Button size="small" icon={<DownloadOutlined />} onClick={() => handleDownload(row)}>
                   {t('artifactLibrary.action.download')}
                 </Button>
-                <Button size="small" icon={<LinkOutlined />} onClick={() => handleCopyLink(row)} />
+                <Tooltip title={t('artifactLibrary.action.copyLink')}>
+                  <Button
+                    size="small"
+                    icon={<LinkOutlined aria-hidden />}
+                    aria-label={t('artifactLibrary.action.copyLink')}
+                    onClick={() => handleCopyLink(row)}
+                  />
+                </Tooltip>
               </div>
             </Card>
           ))}
@@ -507,7 +538,7 @@ export default function ArtifactsPage() {
               setPageSize(nextPageSize);
             },
           }}
-          scroll={{ x: 1080 }}
+          scroll={{ x: 1130 }}
         />
       )}
 

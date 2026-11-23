@@ -11,6 +11,17 @@ import { ipcErrorMessage } from '../ipc-error';
 import { classifyLogRead, MISSING_AFTER_START_MESSAGE } from '../log-read-classify';
 // V4 后续优化（6）i18n 二期：历史页文案入双语表（zh 值与原硬编码逐字一致）。
 import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../i18n';
+import HistoryDetailPanel from './history/HistoryDetailPanel';
+import {
+  dateBucketOf,
+  formatDuration,
+  isStaleRunning,
+  nextHistoryIndex,
+  rowErrorSummary,
+  startOf,
+  statusTone,
+  taskKeyOf,
+} from './history/history-nav';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
@@ -35,17 +46,6 @@ const STALE_RUNNING_MS = 6 * 60 * 60 * 1000;
 // ≥1400px 详情面板常驻右侧；更窄时同一节点切换为右侧抽屉。
 const DETAIL_NARROW_QUERY = '(max-width: 1399px)';
 
-/**
- * 列表里一次执行的开始时间缺省值。
- *
- * meta 记录理论上都带 startTime，但早期/异常中断写入的记录可能缺字段——
- * 排序与展示都要有确定行为，不能让 undefined 参与比较（NaN 排序会让整条
- * 台账顺序随机抖动，且刷新一次变一次）。
- */
-function startOf(r: ExecRecord): number {
-  return typeof r.startTime === 'number' && Number.isFinite(r.startTime) ? r.startTime : 0;
-}
-
 // ── B-04（2026-10 审计）：历史列表的时间维度 ──────────────────────────
 /** 日期分桶标签，下标即桶序（按时间从新到旧单调；V4 后续优化（6）入双语表）。 */
 const DATE_BUCKET_LABELS = [
@@ -54,37 +54,6 @@ const DATE_BUCKET_LABELS = [
   t('history.bucket.week'),
   t('history.bucket.earlier'),
 ] as const;
-
-/**
- * 一次执行所属的日期桶（本地时区自然日）：今天=d0、昨天=d1、近 7 天=d2、
- * 其余为更早。startTime 缺失（startOf 归 0）无法判定 → 归「更早」，记录本身
- * 仍可见，只是不享受时间定位。
- * 用「本地零点差 ÷ 一天」取整而不是直接减 86_400_000：DST 切换日自然日
- * 只有 23/25 小时，直接相减会把桶边界附近的记录错分进相邻桶。
- */
-function dateBucketOf(latestStart: number, nowMs: number): number {
-  if (!latestStart) return 3;
-  const startOfDay = (ms: number) => {
-    const d = new Date(ms);
-    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  };
-  const dayDiff = Math.round((startOfDay(nowMs) - startOfDay(latestStart)) / 86_400_000);
-  if (dayDiff <= 0) return 0;
-  if (dayDiff === 1) return 1;
-  if (dayDiff <= 6) return 2;
-  return 3;
-}
-
-function formatDuration(ms?: number): string {
-  if (ms === undefined || !Number.isFinite(ms) || ms < 0) return '—';
-  if (ms < 1000) return `${ms}ms`;
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  // 跨小时任务显示成「345m 0s」不可读（2026-10 审计）：≥1h 切换 h/m 档位
-  if (m < 60) return `${m}m ${s % 60}s`;
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
-}
 
 function formatTime(ts?: number): string {
   if (!ts || !Number.isFinite(ts)) return '—';
@@ -112,24 +81,13 @@ function statusBadge(status?: string) {
   return <span className={`badge ${cls}`}>{labels[status || ''] || t('history.status.unknown')}</span>;
 }
 
-/** 台账行内的状态点（色彩只落在 8px 圆点上，不再满屏彩色徽章）。 */
-function statusTone(status?: string): string {
-  if (status === 'success') return 'is-success';
-  if (status === 'failed') return 'is-failed';
-  if (status === 'running') return 'is-running';
-  return 'is-unknown';
-}
-
 function statusText(status?: string): string {
-  if (status === 'success') return t('history.status.success');
-  if (status === 'failed') return t('history.status.failed');
-  if (status === 'running') return t('history.status.running');
-  return t('history.status.unknown');
-}
-
-/** 任务的稳定键：任务名优先（任务筛选按名称收口），缺失时退回 taskId/执行 ID。 */
-function taskKeyOf(r: ExecRecord): string {
-  return r.taskName || r.taskId || r.executionId;
+  const labels: Record<string, string> = {
+    success: t('history.status.success'),
+    failed: t('history.status.failed'),
+    running: t('history.status.running'),
+  };
+  return labels[status || ''] || t('history.status.unknown');
 }
 
 function taskLabelOf(r: ExecRecord): string {
@@ -171,21 +129,35 @@ function CopyExecIdButton({ id }: { id: string }) {
       })
       .catch(() => { setTooLarge(false); setState('error'); });
   }
+  const errorText = tooLarge ? t('status.copyTooLarge') : t('status.copyFailed');
+  const view = {
+    idle: {
+      cls: '', icon: 'copy' as const, label: t('status.copy'),
+      aria: t('historyx.detail.copyId'), title: t('history.execIdTitle', id), live: '',
+    },
+    copied: {
+      cls: ' is-copied', icon: 'check' as const, label: t('status.copied'),
+      aria: t('status.copied'), title: t('history.execIdTitle', id), live: t('status.copied'),
+    },
+    error: {
+      cls: ' is-error', icon: 'warning' as const, label: errorText,
+      aria: errorText, title: errorText, live: errorText,
+    },
+  }[state];
   return (
-    <button
-      type="button"
-      className={`btn btn-sm historyx-copy${state === 'copied' ? ' is-copied' : state === 'error' ? ' is-error' : ''}`}
-      onClick={copy}
-      title={state === 'error' ? (tooLarge ? t('status.copyTooLarge') : t('status.copyFailed')) : t('history.execIdTitle', id)}
-      aria-label={t('historyx.detail.copyId')}
-    >
-      <Icon name={state === 'copied' ? 'check' : state === 'error' ? 'warning' : 'copy'} />
-      {state === 'copied'
-        ? t('status.copied')
-        : state === 'error'
-          ? (tooLarge ? t('status.copyTooLarge') : t('status.copyFailed'))
-          : t('historyx.detail.copyId')}
-    </button>
+    <>
+      <button
+        type="button"
+        className={`btn btn-sm historyx-copy${view.cls}`}
+        onClick={copy}
+        title={view.title}
+        aria-label={view.aria}
+      >
+        <Icon name={view.icon} />
+        {view.label}
+      </button>
+      <span className="historyx-sr-only" role="status" aria-live="polite">{view.live}</span>
+    </>
   );
 }
 
@@ -806,6 +778,17 @@ export default function HistoryPage({ active }: { active: boolean }) {
     setSelectedId(run.executionId);
   };
 
+  function handleRowKeyDown(e: React.KeyboardEvent<HTMLButtonElement>, idx: number) {
+    const nextIdx = nextHistoryIndex(e.key, idx, visibleRows.length);
+    if (nextIdx === null) return;
+    e.preventDefault();
+    const nextRun = visibleRows[nextIdx];
+    const buttons = layoutRef.current?.querySelectorAll<HTMLButtonElement>('.historyx-row-select');
+    const nextBtn = buttons?.[nextIdx] ?? null;
+    nextBtn?.focus();
+    if (nextRun) selectRun(nextRun, nextBtn);
+  }
+
   // 汇总统计（基于全量，不随过滤变化——作为"总览"语义）
   const totalRuns = records.length;
   const taskCount = useMemo(() => new Set(records.map(taskKeyOf)).size, [records]);
@@ -1031,16 +1014,11 @@ export default function HistoryPage({ active }: { active: boolean }) {
               // B-05 后半（2026-10 审计）：running 超 6h 仍无终态，大概率进程
               // 僵死——时长染黄 + tooltip 引导看日志确认。判定是启发式，不自动
               // 改写状态（误报比漏报更伤信任）。
-              const staleRunning = run.status === 'running' && startOf(run) > 0
-                && Date.now() - startOf(run) > STALE_RUNNING_MS;
+              const staleRunning = isStaleRunning(run, nowMs, STALE_RUNNING_MS);
               const key = run.executionId;
               const isOpen = selectedId === key;
               const label = taskLabelOf(run);
-              const errText = run.errorMessage
-                ? run.errorMessage.replace(/\s+/g, ' ').trim()
-                : run.status === 'failed' && run.exitCode !== undefined
-                  ? t('history.run.exitCode', run.exitCode)
-                  : '';
+              const errText = rowErrorSummary(run, (code) => t('history.run.exitCode', code));
 
               return (
                 <React.Fragment key={key}>
@@ -1049,59 +1027,52 @@ export default function HistoryPage({ active }: { active: boolean }) {
                   )}
                   <div
                     className={`history-run-row ${statusTone(run.status)}${isOpen ? ' is-selected' : ''}`}
-                    role="button"
-                    tabIndex={0}
-                    aria-expanded={isOpen}
-                    aria-controls={`history-runs-${key}`}
-                    aria-label={t('historyx.rowAria', label, statusText(run.status))}
-                    onClick={(e) => selectRun(run, e.currentTarget)}
-                    onKeyDown={(e) => {
-                      if (e.key !== 'Enter' && e.key !== ' ') return;
-                      e.preventDefault();
-                      selectRun(run, e.currentTarget);
-                    }}
                   >
-                    <span className="historyx-run-status">
-                      <span className={`historyx-status-dot ${statusTone(run.status)}`} aria-hidden="true" />
-                      <span className={`historyx-status-text ${statusTone(run.status)}`}>{statusText(run.status)}</span>
-                    </span>
+                    <button
+                      type="button"
+                      className="historyx-row-select"
+                      aria-expanded={isOpen}
+                      aria-controls={`history-runs-${key}`}
+                      onClick={(e) => selectRun(run, e.currentTarget)}
+                      onKeyDown={(e) => handleRowKeyDown(e, idx)}
+                    >
+                      <span className="historyx-run-status">
+                        <span className={`historyx-status-dot ${statusTone(run.status)}`} aria-hidden="true" />
+                        <span className={`historyx-status-text ${statusTone(run.status)}`}>{statusText(run.status)}</span>
+                      </span>
 
-                    <span className="historyx-run-main">
-                      {/* 任务名是展示文本，不再做成行内按钮：整行 role=button
-                          里嵌 button 既不合 ARIA，也会让窄窗点击任务名变成
-                          “筛选”而不是“打开详情”。按任务筛选由顶部 select 承担。 */}
-                      <span className="historyx-task-name" title={label}>{label}</span>
-                      {errText && (
-                        <span className="history-run-err" title={run.errorMessage || errText}>
-                          <Icon name="warning" className="icon-xs" />
-                          <span>{errText}</span>
+                      <span className="historyx-run-main">
+                        <span className="historyx-task-name" title={label}>{label}</span>
+                        {errText && (
+                          <span className="history-run-err" title={run.errorMessage || errText}>
+                            <Icon name="warning" className="icon-xs" />
+                            <span>{errText}</span>
+                          </span>
+                        )}
+                      </span>
+
+                      <span className="historyx-run-meta">
+                        <span className="historyx-run-time" title={run.startTime ? formatLocaleDateTime(run.startTime) : undefined}>
+                          {formatTime(run.startTime)}
                         </span>
-                      )}
-                    </span>
-
-                    <span className="historyx-run-meta">
-                      <span className="historyx-run-time" title={run.startTime ? formatLocaleDateTime(run.startTime) : undefined}>
-                        {formatTime(run.startTime)}
+                        <span className={`historyx-run-dur${staleRunning ? ' history-run-dur-stale' : ''}`} title={staleRunning ? t('history.run.staleTitle') : undefined}>
+                          {runDurationText(run)}
+                        </span>
                       </span>
-                      <span className={`historyx-run-dur${staleRunning ? ' history-run-dur-stale' : ''}`} title={staleRunning ? t('history.run.staleTitle') : undefined}>
-                        {runDurationText(run)}
-                      </span>
-                    </span>
+                    </button>
 
                     <span className="historyx-run-actions">
                       <button
                         type="button"
                         className="btn btn-sm historyx-action"
-                        onClick={(e) => { e.stopPropagation(); setViewingLog(run); }}
-                        onKeyDown={(e) => e.stopPropagation()}
+                        onClick={() => setViewingLog(run)}
                         title={t('status.viewLogs')}
                         aria-label={t('status.viewLogs')}
                       ><Icon name="terminal" /><span className="historyx-action-text">{t('status.viewLogs')}</span></button>
                       <button
                         type="button"
                         className="btn btn-sm historyx-action"
-                        onClick={(e) => { e.stopPropagation(); void handleRevealLog(run.executionId); }}
-                        onKeyDown={(e) => e.stopPropagation()}
+                        onClick={() => void handleRevealLog(run.executionId)}
                         title={t('history.run.revealTitle')}
                         aria-label={t('history.run.reveal')}
                       ><Icon name="external" /><span className="historyx-action-text">{t('history.run.reveal')}</span></button>
@@ -1123,127 +1094,27 @@ export default function HistoryPage({ active }: { active: boolean }) {
             )}
           </div>
 
-          <aside
-            id={selected ? `history-runs-${selected.executionId}` : undefined}
-            ref={detailRef}
-            className={`historyx-detail${selected ? ' has-selection' : ' is-empty'}${isNarrow ? ' is-drawer' : ''}`}
-            aria-label={t('historyx.detail.title')}
-          >
-            <div className="historyx-detail-head">
-              <h2 className="historyx-detail-title">
-                {selected ? taskLabelOf(selected) : t('historyx.detail.title')}
-              </h2>
-              <button
-                ref={closeBtnRef}
-                type="button"
-                className="btn btn-sm historyx-detail-close"
-                onClick={closeDetail}
-                aria-label={t('historyx.detail.close')}
-                title={t('historyx.detail.close')}
-              ><Icon name="close" /></button>
-            </div>
-
-            {!selected ? (
-              <p className="historyx-detail-guide">{t('historyx.detail.empty')}</p>
-            ) : (
-              <div className="historyx-detail-body">
-                <div className="historyx-detail-status">
-                  {statusBadge(selected.status)}
-                  <span className="historyx-detail-duration">{runDurationText(selected)}</span>
-                </div>
-
-                <dl className="historyx-facts">
-                  <div className="historyx-fact">
-                    <dt>{t('historyx.detail.start')}</dt>
-                    <dd title={selected.startTime ? formatLocaleDateTime(selected.startTime) : undefined}>{formatTime(selected.startTime)}</dd>
-                  </div>
-                  <div className="historyx-fact">
-                    <dt>{t('historyx.detail.end')}</dt>
-                    <dd title={selected.endTime ? formatLocaleDateTime(selected.endTime) : undefined}>
-                      {selected.endTime !== undefined
-                        ? formatTime(selected.endTime)
-                        : selected.status === 'running'
-                          ? t('historyx.detail.running')
-                          : '—'}
-                    </dd>
-                  </div>
-                  <div className="historyx-fact">
-                    <dt>{t('historyx.detail.duration')}</dt>
-                    <dd>{runDurationText(selected)}</dd>
-                  </div>
-                  <div className="historyx-fact">
-                    <dt>{t('historyx.detail.exitCode')}</dt>
-                    <dd>{selected.exitCode !== undefined ? String(selected.exitCode) : '—'}</dd>
-                  </div>
-                </dl>
-
-                <section className="historyx-section">
-                  <h3 className="historyx-section-title">{t('historyx.detail.execId')}</h3>
-                  <div className="historyx-id-row">
-                    <code className="historyx-detail-id">{selected.executionId}</code>
-                    <CopyExecIdButton key={selected.executionId} id={selected.executionId} />
-                  </div>
-                </section>
-
-                <section className="historyx-section">
-                  <h3 className="historyx-section-title">{t('historyx.detail.error')}</h3>
-                  {selected.errorMessage ? (
-                    <p className="historyx-detail-error">{selected.errorMessage}</p>
-                  ) : selected.status === 'failed' ? (
-                    <p className="historyx-detail-error">
-                      {selected.exitCode !== undefined ? t('history.run.exitCode', selected.exitCode) : t('historyx.detail.noError')}
-                    </p>
-                  ) : (
-                    <p className="historyx-detail-noerror">{t('historyx.detail.noError')}</p>
-                  )}
-                </section>
-
-                <div className="historyx-detail-actions">
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={() => setViewingLog(selected)}
-                  ><Icon name="terminal" /> {t('historyx.detail.viewLog')}</button>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={() => void handleRevealLog(selected.executionId)}
-                  ><Icon name="external" /> {t('historyx.detail.reveal')}</button>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={() => void handleExportSelectedLog(selected.executionId)}
-                    disabled={exportingId === selected.executionId}
-                  ><Icon name="download" /> {t('history.exportLog')}</button>
-                </div>
-
-                {recentSameTask.length > 1 && (
-                  <section className="historyx-section">
-                    <h3 className="historyx-section-title">{t('historyx.detail.recent')}</h3>
-                    <div className="historyx-recent">
-                      {recentSameTask.map((run) => {
-                        const active = run.executionId === selected.executionId;
-                        return (
-                          <button
-                            key={run.executionId}
-                            type="button"
-                            className={`historyx-recent-row${active ? ' is-active' : ''}`}
-                            onClick={() => setSelectedId(run.executionId)}
-                            aria-current={active ? 'true' : undefined}
-                          >
-                            <span className={`historyx-status-dot ${statusTone(run.status)}`} aria-hidden="true" />
-                            <span className="historyx-recent-time">{formatTime(run.startTime)}</span>
-                            <span className="historyx-recent-dur">{runDurationText(run)}</span>
-                            <span className={`historyx-recent-status ${statusTone(run.status)}`}>{statusText(run.status)}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </section>
-                )}
-              </div>
-            )}
-          </aside>
+          <HistoryDetailPanel
+            selected={selected}
+            isNarrow={isNarrow}
+            detailRef={detailRef}
+            closeBtnRef={closeBtnRef}
+            exportingId={exportingId}
+            recentSameTask={recentSameTask}
+            copyIdButton={selected ? <CopyExecIdButton key={selected.executionId} id={selected.executionId} /> : null}
+            statusBadge={statusBadge}
+            statusTone={statusTone}
+            statusText={statusText}
+            taskLabelOf={taskLabelOf}
+            formatTime={formatTime}
+            runDurationText={runDurationText}
+            onClose={closeDetail}
+            onViewLog={setViewingLog}
+            onRevealLog={(id) => { void handleRevealLog(id); }}
+            onExportLog={(id) => { void handleExportSelectedLog(id); }}
+            onSelectRunId={setSelectedId}
+            t={t}
+          />
         </div>
       )}
     </div>

@@ -57,6 +57,11 @@ vi.mock('react-router-dom', () => ({
   Link: ({ children }: { children?: unknown }) => children,
   useSearchParams: () => [new URLSearchParams(), vi.fn()],
   useLocation: () => ({ pathname: '/applications', search: '', hash: '', state: null }),
+  // AppDeploymentPage 渲染 InstallExecutorButton（RolloutModal.tsx），它在无 Router
+  // 的单测里用 useInRouterContext() 决定走 pushState 回退分支。整模块 mock 必须
+  // 补齐这个导出，否则组件在 render 阶段抛 "No export is defined"，stop 的两条
+  // 用例根本走不到 warning/success 断言。
+  useInRouterContext: () => false,
 }));
 
 /**
