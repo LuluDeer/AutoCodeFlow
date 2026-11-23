@@ -251,7 +251,7 @@ export default function TaskFormBasicSection({
             data-testid="runtime-version-capability-advisory"
             style={{ marginBottom: 16 }}
             title={t('taskForm.field.runtimeVersion.capabilityAdvisoryTitle', {
-              version: runtimeVersion ?? '-',
+              version: runtimeVersion ?? '—',
             })}
             description={t('taskForm.field.runtimeVersion.capabilityAdvisoryDesc')}
           />
@@ -364,8 +364,8 @@ export default function TaskFormBasicSection({
                 showIcon
                 data-testid="code-source-runtime-mismatch"
                 title={t('taskForm.field.codeSource.runtimeMismatch', {
-                  task: runtimeWatch ?? '-',
-                  app: apps.find(a => a.id === applicationIdWatch)?.runtime ?? '-',
+                  task: runtimeWatch ?? '—',
+                  app: apps.find(a => a.id === applicationIdWatch)?.runtime ?? '—',
                 })}
                 style={{ marginBottom: 16 }}
               />

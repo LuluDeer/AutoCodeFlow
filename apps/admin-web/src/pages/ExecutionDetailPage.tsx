@@ -234,14 +234,13 @@ export default function ExecutionDetailPage() {
       {/* UI-03：页头标准化（面包屑/返回/状态标签/操作按钮迁入 PageHeader；
           终止/重新触发/AI 分析/刷新原样保留于 extra，语义不变） */}
       <PageHeader
-        title={t('execDetail.title')}
-        description={
-          data?.taskName ? (
-            <span className="ui09-pageheader-description" title={data.taskName}>
-              {data.taskName}
-            </span>
-          ) : undefined
+        title={
+          <Space size={8} align="center">
+            <span className="ui09-pageheader-description" title={data?.taskName}>{data?.taskName || t('execDetail.title')}</span>
+            <Tag color={status.color} style={{ fontSize: 14, padding: '2px 10px' }}>{status.label}</Tag>
+          </Space>
         }
+        description={data?.startTime ? `#${execId?.slice(0, 8)} · ${data.startTime}` : `#${execId?.slice(0, 8)}`}
         breadcrumb={[
           { title: t('execDetail.breadcrumb.executions'), to: '/executions' },
           // UI-09：超长不可断任务名（构建号/英文长名）会撑破面包屑（li
@@ -252,15 +251,10 @@ export default function ExecutionDetailPage() {
         extra={
           <>
             <Button icon={<ArrowLeftOutlined />} onClick={() => nav(`/tasks/${taskId}`)}>{t('execDetail.backToTask')}</Button>
-            <Tag color={status.color} style={{ fontSize: 14, padding: '2px 10px' }}>
-              {status.label}
-            </Tag>
             {data?.status === 'running' && !streamStatus.disconnected && (
               <Badge status="processing" text={<Text type="secondary">{t('execDetail.liveUpdating')}</Text>} />
             )}
-            {(data?.status === 'running' ||
-              data?.status === 'pending' ||
-              data?.status === 'waiting') && (
+            {(isLive || data?.status === 'waiting') && (
               // KILL-WAITING：waiting（互斥排队）也是打开态——后端
               // OPEN_EXECUTION_STATUSES（execution-terminal.ts, MUTEX-01）允许
               // 把排队中的执行人工终态化；前端补上按钮，排队不再只能干等。
@@ -274,30 +268,20 @@ export default function ExecutionDetailPage() {
                 onConfirm={handleKill}
                 okText={t('execDetail.killAction')} okButtonProps={{ danger: true }}
               >
-                <Button
-                  icon={<StopOutlined />}
-                  danger
-                  loading={killing}
-                >
+                <Button icon={<StopOutlined />} danger loading={killing}>
                   {t('execDetail.killButton')}
                 </Button>
               </Popconfirm>
             )}
-            {RETRIGGERABLE_STATUSES.includes(data?.status ?? '') && (
+            {RETRIGGERABLE_STATUSES.includes(data?.status as string) && (
               // RETRIGGER-TERMINAL：超时/被终止的执行同样是"任务没跑成"，
               // 重新触发按钮此前只对 failed 显示——用户在 timeout/killed 详情页
               // 找不到重跑入口（只能回任务页手动触发）。
-              <Button
-                icon={<RedoOutlined />}
-                type="primary"
-                danger={data?.status === 'failed'}
-                loading={retrying}
-                onClick={openRetrigger}
-              >
+              <Button icon={<RedoOutlined />} type="primary" loading={retrying} onClick={openRetrigger}>
                 {t('execDetail.retrigger')}
               </Button>
             )}
-            {(data?.status === 'failed' || data?.status === 'timeout') && (
+            {['failed', 'timeout'].includes(data?.status as string) && (
               <Button
                 icon={<RobotOutlined />}
                 loading={analyzing}

@@ -55,7 +55,7 @@ import { getErrMsg, isNotFoundError, showApiError } from '../utils/error';
 import { triggerLabel, TRIGGER_COLOR } from '../utils/trigger-label';
 // D-P2-02a（设计审计）：运行时枚举本地化唯一事实源
 import { runtimeLabel } from '../utils/runtime-label';
-import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
+import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 // 2026-10-23：任务详情状态行改为**任务级**调度信息（此前误用全平台计数，
 // 见下方渲染处的注释）。复用列表页同一套纯函数，保证两处口径一致。
 import { nextRunOutcome, formatFireTime, formatWindowEdge, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
@@ -160,9 +160,9 @@ const CODE_SOURCE_T_KEY: Record<string, string> = {
  * 序列化；undefined（旧快照缺键）显示 "-"。
  */
 const formatDiffValue = (v: unknown): string => {
-  if (v === undefined) return '-';
+  if (v === undefined) return '—';
   if (typeof v === 'string') return v;
-  return JSON.stringify(v) ?? '-';
+  return JSON.stringify(v) ?? '—';
 };
 
 // D-P2-02a（设计审计）：任务级状态（active/paused/inactive/failed）复用 taskList.status.*
@@ -526,21 +526,27 @@ export default function TaskDetailPage() {
 
   return withGuard(
     <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/tasks')}>{t('taskDetail.back')}</Button>
-      </Space>
-
       {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，面包屑语义=任务→详情（≤2 跳），
-          操作按钮整体进 extra；返回按钮与状态 Badge/调度 Tag 原样保留） */}
+          操作按钮整体进 extra；返回按钮与状态 Badge/调度 Tag 并入 PageHeader，消除多层堆叠） */}
       <PageHeader
         title={task.name}
-        description={task.description}
+        description={
+          <Space wrap size={8}>
+            <Badge
+              status={isActive ? 'success' : isPaused ? 'warning' : 'default'}
+              text={isActive ? t('taskDetail.state.running') : isPaused ? t('taskDetail.state.paused') : (taskStatusLabels[task.status] ?? task.status)}
+            />
+            {task && <TaskScheduleTags task={task} isActive={isActive} />}
+            {task.description && <span>{task.description}</span>}
+          </Space>
+        }
         breadcrumb={[
           { title: t('taskDetail.breadcrumb.scheduler'), to: '/tasks' },
           { title: task.name },
         ]}
         extra={
           <Space wrap>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/tasks')}>{t('taskDetail.back')}</Button>
             {/* P1-3：产物库入口（次级按钮，不占唯一主按钮位；携带 taskId 预填筛选） */}
             <Button icon={<FolderOpenOutlined />} onClick={() => nav(`/artifacts?taskId=${task.id}`)}>
               {t('taskDetail.viewAllArtifacts')}
@@ -559,23 +565,6 @@ export default function TaskDetailPage() {
           </Space>
         }
       />
-      {/* UI-09：状态行 Tag 群窄屏换行（Space wrap） */}
-      <div style={{ marginBottom: 16 }}>
-        <Space wrap>
-          <Badge
-            status={isActive ? 'success' : isPaused ? 'warning' : 'default'}
-            text={isActive ? t('taskDetail.state.running') : isPaused ? t('taskDetail.state.paused') : (taskStatusLabels[task.status] ?? task.status)}
-          />
-          {/* 2026-10-23 口径修正：这里此前渲染 `schedulerStats` 的三个计数，
-              而那是**全平台调度器**的内存态（timers.size / cronTasks.size /
-              runningTasks.size，见 scheduler.service.getStats）。后果是
-              `demo-fragile`（manual 任务，根本没有定时器）也显示「活跃定时器 1
-              · Cron 1」——用户会以为这个任务挂了两个调度器。
-              现在只显示**本任务**的调度事实：下次执行时刻 + 上次触发时刻；
-              全平台健康度归 Dashboard（那边有独立的「调度延迟/健康」卡）。 */}
-          {task && <TaskScheduleTags task={task} isActive={isActive} />}
-        </Space>
-      </div>
 
       {/* Stats row */}
       {taskStats && (
@@ -629,8 +618,7 @@ export default function TaskDetailPage() {
             <Card size="small">
               <Statistic
                 title={t('taskDetail.stats.avgDuration')}
-                value={taskStats.avgDuration ? (taskStats.avgDuration / 1000).toFixed(1) : '-'}
-                suffix={taskStats.avgDuration ? 's' : ''}
+                value={taskStats.avgDuration ? formatDuration(taskStats.avgDuration, t) : '—'}
                 prefix={<FieldTimeOutlined />}
               />
             </Card>
@@ -673,7 +661,7 @@ export default function TaskDetailPage() {
                   {/* UX-06：此前 <Tag>{task.triggerType}</Tag> 渲染裸枚举。 */}
                   <Descriptions.Item label={t('taskDetail.field.triggerType')}>
                     <Tag color={TRIGGER_COLOR[task.triggerType] || 'default'}>
-                      {triggerLabel(task.triggerType, t) || '-'}
+                      {triggerLabel(task.triggerType, t) || '—'}
                     </Tag>
                   </Descriptions.Item>
                   {task.cronExpression && (() => {
@@ -719,7 +707,7 @@ export default function TaskDetailPage() {
                       </Space>
                     </Descriptions.Item>
                   )}
-                  <Descriptions.Item label={t('taskDetail.field.entrypoint')}>{task.entrypoint || '-'}</Descriptions.Item>
+                  <Descriptions.Item label={t('taskDetail.field.entrypoint')}>{task.entrypoint || '—'}</Descriptions.Item>
                   {task.requirements && task.requirements.length > 0 && (
                     <Descriptions.Item label={t('taskDetail.field.requirements')}>
                       <Space size={[4, 4]} wrap>
@@ -811,7 +799,7 @@ export default function TaskDetailPage() {
                 }
               >
                 {webhookStatusError ? (
-                  <Space direction="vertical" size={8}>
+                  <Space orientation="vertical" size={8}>
                     <Text type="danger">{t('taskDetail.webhook.statusUnknown')}</Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       {t('taskDetail.webhook.statusUnknownHint')}
@@ -842,11 +830,14 @@ export default function TaskDetailPage() {
                     </Typography.Paragraph>
                   </>
                 ) : (
-                  <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
-                    <Button size="small" type="primary" disabled={!isAdmin || webhookBusy !== null} loading={webhookBusy === 'enable'} onClick={handleWebhookEnable}>
-                      {t('taskDetail.webhook.enable')}
-                    </Button>
-                  </Tooltip>
+                  <Space orientation="vertical" size={8}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{t('taskDetail.webhook.disabledDesc')}</Text>
+                    <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
+                      <Button size="small" disabled={!isAdmin || webhookBusy !== null} loading={webhookBusy === 'enable'} onClick={handleWebhookEnable}>
+                        {t('taskDetail.webhook.enable')}
+                      </Button>
+                    </Tooltip>
+                  </Space>
                 )}
               </Card>
               )}
@@ -1005,7 +996,7 @@ export default function TaskDetailPage() {
           <div>
             <Descriptions size="small" column={1} bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label={t('taskDetail.ai.successRate')}>{(aiSuggestion.successRate * 100).toFixed(1)}%</Descriptions.Item>
-              <Descriptions.Item label={t('taskDetail.ai.p95')}>{aiSuggestion.p95Duration ? `${(aiSuggestion.p95Duration / 1000).toFixed(1)}s` : '-'}</Descriptions.Item>
+              <Descriptions.Item label={t('taskDetail.ai.p95')}>{aiSuggestion.p95Duration ? formatDuration(aiSuggestion.p95Duration, t) : '—'}</Descriptions.Item>
               <Descriptions.Item label={t('taskDetail.ai.currentCron')}>{aiSuggestion.currentCron || t('taskDetail.ai.none')}</Descriptions.Item>
               <Descriptions.Item label={t('taskDetail.ai.suggestedCron')}><Text code style={{ color: token.colorSuccess }}>{aiSuggestion.suggestedCron || t('taskDetail.ai.noSuggestion')}</Text></Descriptions.Item>
             </Descriptions>

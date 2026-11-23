@@ -69,7 +69,7 @@ export default function TaskFormGlueSection({ glueTaskId, isEdit, createdTaskId,
           </Suspense>
           <Divider />
           <Space>
-            <Button type="primary" onClick={() => nav(`/tasks/${glueTaskId}`)}>{t('taskForm.glue.done')}</Button>
+            <Button type={isEdit ? 'default' : 'primary'} onClick={() => nav(`/tasks/${glueTaskId}`)}>{t('taskForm.glue.done')}</Button>
             {!isEdit && (
               <Button onClick={() => nav('/tasks')}>{t('taskForm.glue.skip')}</Button>
             )}

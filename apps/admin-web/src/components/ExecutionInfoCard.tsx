@@ -120,7 +120,7 @@ export default function ExecutionInfoCard({ taskId, data }: {
           <Link to={`/tasks/${taskId}`}>{data?.taskName}</Link>
         </Descriptions.Item>
         <Descriptions.Item label={t('execDetail.field.trigger')}>
-          {triggerLabels[data?.triggerType || ''] ?? data?.triggerType ?? '-'}
+          {triggerLabels[data?.triggerType || ''] ?? data?.triggerType ?? '—'}
         </Descriptions.Item>
         <Descriptions.Item label={t('execDetail.field.executor')}>
           {/* ADR-017 阶段 3（决策 §7）：主显可读名，地址为 tooltip 副信息——
@@ -131,7 +131,7 @@ export default function ExecutionInfoCard({ taskId, data }: {
                 {executorName ?? data?.executorAddress}
               </span>
             </Tooltip>
-          ) : '-'}
+          ) : '—'}
         </Descriptions.Item>
         {/* FEAT-22 配套观测：派发时刻解析的应用包版本（仅 zip 渠道；null=
             git/glue 渠道或旧数据）。任务恒跑应用「当前上传版本」，命中部署
@@ -144,25 +144,25 @@ export default function ExecutionInfoCard({ taskId, data }: {
                 {data.resolvedPackageVersion}
               </span>
             </Tooltip>
-          ) : '-'}
+          ) : '—'}
         </Descriptions.Item>
-        <Descriptions.Item label={t('execDetail.field.taskVersion')}>{data?.taskVersion || '-'}</Descriptions.Item>
+        <Descriptions.Item label={t('execDetail.field.taskVersion')}>{data?.taskVersion || '—'}</Descriptions.Item>
         <Descriptions.Item label={t('execDetail.field.retryCount')}>{data?.retryCount ?? 0}</Descriptions.Item>
         <Descriptions.Item label={t('execDetail.field.startTime')}>
-          {data?.startTime ? formatDateTime(data.startTime) : '-'}
+          {data?.startTime ? formatDateTime(data.startTime) : '—'}
         </Descriptions.Item>
         <Descriptions.Item label={t('execDetail.field.endTime')}>
-          {data?.endTime ? formatDateTime(data.endTime) : '-'}
+          {data?.endTime ? formatDateTime(data.endTime) : '—'}
         </Descriptions.Item>
         <Descriptions.Item label={t('execDetail.field.duration')}>
-          {data?.duration != null ? formatDuration(data.duration, t) : '-'}
+          {data?.duration != null ? formatDuration(data.duration, t) : '—'}
         </Descriptions.Item>
         <Descriptions.Item label={t('execDetail.field.exitCode')}>
           {data?.exitCode != null ? (
             <Text type={data.exitCode !== 0 ? 'danger' : undefined} code>
               {data.exitCode}
             </Text>
-          ) : '-'}
+          ) : '—'}
         </Descriptions.Item>
         {/* OBS-01: traceId 有值时展示追踪标识 + 复制按钮。Jaeger/Tempo 跳转
             链接留配置项（collector 未部署，不硬编码 URL）——后续接入时在此
@@ -260,17 +260,20 @@ export default function ExecutionInfoCard({ taskId, data }: {
             </Descriptions.Item>
             <Descriptions.Item label={t('execDetail.interpreter.reason')}>
               {/* 未收录的 reason 原样展示 token——宁可露出 `some_new_reason`
-                  也不要显示"未知原因"把可诊断信息抹掉（与 failureReason 同策）。 */}
-              {interpreterCtx.reason ? (
-                <Space size={4}>
-                  <Tag color="gold">{interpreterCtx.reason}</Tag>
-                  <Text type="secondary">
-                    {INTERPRETER_REASON_T_KEY[interpreterCtx.reason]
-                      ? t(INTERPRETER_REASON_T_KEY[interpreterCtx.reason])
-                      : interpreterCtx.reason}
-                  </Text>
-                </Space>
-              ) : (
+                  也不要显示"未知原因"把可诊断信息抹掉（与 failureReason 同策）。
+                  仅当映射文本存在且不同于原码时才渲染副文本，防止重复渲染 [match] match。 */}
+              {interpreterCtx.reason ? (() => {
+                const reasonKey = INTERPRETER_REASON_T_KEY[interpreterCtx.reason];
+                const reasonLabel = reasonKey ? t(reasonKey) : '';
+                return (
+                  <Space size={4}>
+                    <Tag color="gold">{interpreterCtx.reason}</Tag>
+                    {reasonLabel && reasonLabel !== interpreterCtx.reason && (
+                      <Text type="secondary">{reasonLabel}</Text>
+                    )}
+                  </Space>
+                );
+              })() : (
                 <Text type="secondary">{t('execDetail.interpreter.missing')}</Text>
               )}
             </Descriptions.Item>
@@ -279,7 +282,7 @@ export default function ExecutionInfoCard({ taskId, data }: {
                 <Space orientation="vertical" size={2} style={{ width: '100%' }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     {t('execDetail.interpreter.poolDir')}
-                    {interpreterCtx.pool.installDir || '-'}
+                    {interpreterCtx.pool.installDir || '—'}
                   </Text>
                   {interpreterCtx.pool.versions.length > 0 ? (
                     <Space orientation="vertical" size={2} style={{ width: '100%' }}>

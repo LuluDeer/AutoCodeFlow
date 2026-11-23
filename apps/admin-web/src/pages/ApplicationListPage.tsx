@@ -86,15 +86,15 @@ const runtimeOptions = [
 ];
 
 const statusColors: Record<string, string> = {
-  active: 'green',
-  deploying: 'blue',
-  failed: 'red',
+  active: 'green', running: 'green', deploying: 'blue', failed: 'red', stopped: 'default',
 };
 
 const statusLabels = (t: (k: string) => string): Record<string, string> => ({
   active: t('appList.status.active'),
+  running: t('apps.status.running'),
   deploying: t('appList.status.deploying'),
   failed: t('appList.status.failed'),
+  stopped: t('apps.status.stopped'),
 });
 
 // AppWithStats（含 statsAvailable 降级标记）与合并/错误描述纯函数见
@@ -671,19 +671,17 @@ export default function ApplicationListPage() {
         title={t('appList.title')}
         extra={
           <>
+            <Button icon={<ReloadOutlined />} onClick={refreshAfterMutation} loading={loading}>{t('appList.refresh')}</Button>
+            <Tooltip title={isAdmin ? undefined : t('appList.uploadDisableHint')}>
+              <Button icon={<UploadOutlined />} onClick={() => setUploadModalOpen(true)} disabled={!isAdmin}>
+                {t('appList.uploadZip')}
+              </Button>
+            </Tooltip>
             <Tooltip title={isAdmin ? undefined : t('appList.createDisableHint')}>
               <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate} disabled={!isAdmin}>
                 {t('appList.create')}
               </Button>
             </Tooltip>
-            <Tooltip title={isAdmin ? undefined : t('appList.uploadDisableHint')}>
-              <Button icon={<UploadOutlined />} onClick={() => {
-                setUploadModalOpen(true);
-              }} disabled={!isAdmin}>
-                {t('appList.uploadZip')}
-              </Button>
-            </Tooltip>
-            <Button icon={<ReloadOutlined />} onClick={refreshAfterMutation} loading={loading}>{t('appList.refresh')}</Button>
           </>
         }
       />
@@ -757,7 +755,7 @@ export default function ApplicationListPage() {
         <Select
           placeholder={t('appList.statusFilter')}
           allowClear
-          style={{ width: 130 }}
+          style={{ width: 160 }}
           value={statusFilter}
           onChange={setStatusFilter}
           suffixIcon={<FilterOutlined />}
@@ -770,7 +768,7 @@ export default function ApplicationListPage() {
         <Select
           placeholder={t('appList.runtimeFilter')}
           allowClear
-          style={{ width: 120 }}
+          style={{ width: 150 }}
           value={runtimeFilter}
           onChange={setRuntimeFilter}
           options={runtimeOptions}

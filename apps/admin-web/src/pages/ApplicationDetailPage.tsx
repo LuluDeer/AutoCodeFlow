@@ -152,7 +152,7 @@ function AiAnalysisTab({ appId }: { appId: string }) {
             </Col>
             <Col xs={24} sm={8}>
               <Card size="small" style={{ height: '100%' }}>
-                <Statistic title={t('appDetail.ai.stat.avgDuration')} value={report.stats.avgDuration ? `${(report.stats.avgDuration / 1000).toFixed(1)}s` : '-'} />
+                <Statistic title={t('appDetail.ai.stat.avgDuration')} value={report.stats.avgDuration ? `${(report.stats.avgDuration / 1000).toFixed(1)}s` : '—'} />
               </Card>
             </Col>
           </Row>
@@ -243,10 +243,10 @@ function OverviewTab({ app }: { app: Application }) {
             <Descriptions.Item label={t('appDetail.field.entrypoint')}><Text code>{app.entrypoint}</Text></Descriptions.Item>
           )}
           <Descriptions.Item label={t('appDetail.field.createdAt')}>
-            {app.createdAt ? formatDateTime(app.createdAt) : '-'}
+            {app.createdAt ? formatDateTime(app.createdAt) : '—'}
           </Descriptions.Item>
           <Descriptions.Item label={t('appDetail.field.updatedAt')}>
-            {app.updatedAt ? formatDateTime(app.updatedAt) : '-'}
+            {app.updatedAt ? formatDateTime(app.updatedAt) : '—'}
           </Descriptions.Item>
         </Descriptions>
 
@@ -397,7 +397,7 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
               render: (n: string, r: Task) => <Link to={`/tasks/${r.id}`}>{n}</Link>,
             },
             {
-              title: t('appDetail.tasks.col.status'), dataIndex: 'status', width: 100,
+              title: t('appDetail.tasks.col.status'), dataIndex: 'status', width: 116,
               render: (s: string) => (
                 <Badge status={s === 'active' ? 'success' : s === 'paused' ? 'warning' : 'default'}
                   text={s === 'active' ? t('appDetail.tasks.status.running') : s === 'paused' ? t('appDetail.tasks.status.paused') : s} />
@@ -410,11 +410,11 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
                 // 而同一张表的「状态」列已走 t()——中英混排且对非英语用户
                 // 不可读。收敛到 utils/trigger-label.ts 的唯一事实源。
                 <Tag color={TRIGGER_COLOR[r.triggerType] || 'default'}>
-                  {triggerLabel(r.triggerType, t) || '-'}
+                  {triggerLabel(r.triggerType, t) || '—'}
                 </Tag>
               ),
             },
-            { title: t('appDetail.tasks.col.runtime'), dataIndex: 'runtime', width: 80, render: (v: string) => v ? <Tag color="blue">{runtimeLabel(v, t)}</Tag> : '-' },
+            { title: t('appDetail.tasks.col.runtime'), dataIndex: 'runtime', width: 80, render: (v: string) => v ? <Tag color="blue">{runtimeLabel(v, t)}</Tag> : '—' },
           ]}
           dataSource={tasks}
           rowKey="id" loading={loading} size="small"
@@ -659,13 +659,13 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
               </Space>
             ),
           },
-          { title: t('appDetail.col.commit'), dataIndex: 'commit', width: 100, render: (v: string | null) => v ? <Text code>{v.slice(0, 8)}</Text> : '-' },
+          { title: t('appDetail.col.commit'), dataIndex: 'commit', width: 100, render: (v: string | null) => v ? <Text code>{v.slice(0, 8)}</Text> : '—' },
           {
-            title: t('appDetail.history.col.status'), dataIndex: 'status', width: 90,
+            title: t('appDetail.history.col.status'), dataIndex: 'status', width: 116,
             render: (v: string) => (
               // UX-06：状态列此前渲染裸枚举（released / deploying / failed…）。
               <Tag color={{ released: 'green', running: 'green', stopped: 'default', failed: 'red', deploying: 'blue' }[v] || 'default'}>
-                {releaseStatusLabel(v, t) || '-'}
+                {releaseStatusLabel(v, t) || '—'}
               </Tag>
             ),
           },
@@ -689,7 +689,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
             title: t('appDetail.col.deployedAt'), dataIndex: 'deployedAt', width: 170,
             render: (_: string | null, r: VersionRecord) => {
               const deployedAt = r.createdAt ?? r.deployedAt;
-              return deployedAt ? formatDateTime(deployedAt) : '-';
+              return deployedAt ? formatDateTime(deployedAt) : '—';
             },
           },
           {
@@ -938,7 +938,7 @@ function DeploymentEventsTable({ app }: { app: Application }) {
       title: t('appDetail.events.col.version'),
       dataIndex: 'deployedVersion',
       width: 110,
-      render: (v: string | null) => (v ? <Tag color="blue">{v}</Tag> : '-'),
+      render: (v: string | null) => (v ? <Tag color="blue">{v}</Tag> : '—'),
     },
     {
       title: t('appDetail.events.col.operator'),
@@ -980,7 +980,7 @@ function DeploymentEventsTable({ app }: { app: Application }) {
         // triggerType 是动作语义的补充（manual/upgrade/rollback/approval），
         // 放摘要末尾；机器路径（null）不展示——与 operator 的系统标注呼应。
         if (r.triggerType) parts.push(triggerLabel(r.triggerType, t) || r.triggerType);
-        if (parts.length === 0) return <Text type="secondary">-</Text>;
+        if (parts.length === 0) return <Text type="secondary">—</Text>;
         return parts.join(' · ');
       },
     },
@@ -1135,10 +1135,10 @@ function ReleasesTab({ app }: { app: Application }) {
     },
     {
       title: t('appDetail.col.commit'), dataIndex: 'gitCommit', width: 110,
-      render: (v: string | null) => (v ? <Text code>{v.slice(0, 8)}</Text> : '-'),
+      render: (v: string | null) => (v ? <Text code>{v.slice(0, 8)}</Text> : '—'),
     },
     {
-      title: t('appDetail.releases.col.deployStatus'), dataIndex: 'deploymentStatus', width: 100,
+      title: t('appDetail.releases.col.deployStatus'), dataIndex: 'deploymentStatus', width: 116,
       render: (v: string | null) =>
         v ? (
           <Tag color={RELEASE_DEPLOY_STATUS_COLOR[v] || 'default'}>
@@ -1150,7 +1150,7 @@ function ReleasesTab({ app }: { app: Application }) {
     },
     {
       title: t('appDetail.releases.col.trigger'), dataIndex: 'triggerType', width: 100,
-      render: (v: string | null) => (v ? <Tag>{RELEASE_TRIGGER_LABELS(t)[v] || v}</Tag> : '-'),
+      render: (v: string | null) => (v ? <Tag>{RELEASE_TRIGGER_LABELS(t)[v] || v}</Tag> : '—'),
     },
     {
       title: t('appDetail.col.executor'),
@@ -1173,7 +1173,7 @@ function ReleasesTab({ app }: { app: Application }) {
       title: t('appDetail.col.deployedAt'), dataIndex: 'deployedAt', width: 170,
       render: (v: string | null, r: AppReleaseRow) => {
         const time = v ?? r.createdAt;
-        return time ? formatDateTime(time) : '-';
+        return time ? formatDateTime(time) : '—';
       },
     },
     {
@@ -1186,7 +1186,7 @@ function ReleasesTab({ app }: { app: Application }) {
         const devices = r.devices ?? [];
         // 旧后端（R3-A 前）/无任何设备上报：无徽标。与「未部署」区分——
         // 部署推断字段仍在（执行器列/部署状态列），此处如实显示占位。
-        if (devices.length === 0) return <Text type="secondary">-</Text>;
+        if (devices.length === 0) return <Text type="secondary">—</Text>;
         return (
           <Space size={4} wrap>
             {devices.map((d) => {
@@ -1442,9 +1442,11 @@ export default function ApplicationDetailPage() {
             <Button icon={<FolderOpenOutlined />} onClick={() => nav(`/artifacts?applicationId=${app.id}`)}>
               {t('appDetail.viewAllArtifacts')}
             </Button>
-            <Button type="primary" icon={<RocketOutlined />} onClick={() => setSearchParams({ tab: 'deployments' })}>
-              {t('appDetail.newDeploy')}
-            </Button>
+            {activeTab !== 'deployments' && (
+              <Button type="primary" icon={<RocketOutlined />} onClick={() => setSearchParams({ tab: 'deployments' })}>
+                {t('appDetail.newDeploy')}
+              </Button>
+            )}
           </>
         }
       />

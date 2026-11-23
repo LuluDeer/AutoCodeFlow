@@ -137,7 +137,7 @@ export default function TemplateImportModal({
       style={{ marginBottom: 12 }}
       message={t('templateImport.conflict.title', { count: conflicts.length })}
       description={
-        <Space direction="vertical" size={4}>
+        <Space orientation="vertical" size={4}>
           {conflicts.map((c, i) => (
             <Text key={i} type="warning">
               {t('templateImport.conflict.key', { key: c.key, name: c.existingName ?? '' })}

@@ -326,7 +326,7 @@ export default function ExecutorListPage() {
         <Space size={4} wrap>
           {r.groupName && <Tag color="geekblue">{r.groupName}</Tag>}
           {r.tags?.map(t2 => <Tag key={t2}>{t2}</Tag>)}
-          {!r.groupName && !r.tags?.length && <Typography.Text type="secondary">-</Typography.Text>}
+          {!r.groupName && !r.tags?.length && <Typography.Text type="secondary">—</Typography.Text>}
         </Space>
       ),
     },
@@ -392,7 +392,7 @@ export default function ExecutorListPage() {
       sorter: (a: Executor, b: Executor) =>
         new Date(a.lastHeartbeat || 0).getTime() - new Date(b.lastHeartbeat || 0).getTime(),
       render: (v: string) => {
-        if (!v) return '-';
+        if (!v) return '—';
         const hb = heartbeatLabel(t, v, token, heartbeatTimeoutMs);
         return (
           <Tooltip title={formatDateTime(v)}>
@@ -418,32 +418,6 @@ export default function ExecutorListPage() {
   return (
     <div>
       {notifContextHolder}
-      {hasLongOffline && (
-        <Alert
-          type="warning"
-          showIcon
-          title={t('execList.online.alert')}
-          // 2026-10-23：告知**自动清理**策略，否则运维不知道这些离线行
-          // 会不会自己消失、还是需要手动清（保留天数可在系统配置里改）。
-          description={t('execList.online.alertDesc')}
-          style={{ marginBottom: 16 }}
-          closable
-        />
-      )}
-      {/* P3-9（executor lifecycle audit）：列表硬上限截断提示——total/limit
-          来自 GET /executors/runtime-config，避免把前 500 行的子集说成全量。 */}
-      {listTruncated && (
-        <Alert
-          type="info"
-          showIcon
-          title={t('execList.truncated', {
-            limit: runtimeConfig?.listLimit,
-            total: runtimeConfig?.executorTotal,
-          })}
-          style={{ marginBottom: 16 }}
-          closable
-        />
-      )}
       {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，安装向导/快速添加进 extra） */}
       <PageHeader
         title={t('execList.title')}
@@ -479,6 +453,32 @@ export default function ExecutorListPage() {
           </Space>
         }
       />
+      {hasLongOffline && (
+        <Alert
+          type="warning"
+          showIcon
+          title={t('execList.online.alert')}
+          // 2026-10-23：告知**自动清理**策略，否则运维不知道这些离线行
+          // 会不会自己消失、还是需要手动清（保留天数可在系统配置里改）。
+          description={t('execList.online.alertDesc')}
+          style={{ marginBottom: 16 }}
+          closable
+        />
+      )}
+      {/* P3-9（executor lifecycle audit）：列表硬上限截断提示——total/limit
+          来自 GET /executors/runtime-config，避免把前 500 行的子集说成全量。 */}
+      {listTruncated && (
+        <Alert
+          type="info"
+          showIcon
+          title={t('execList.truncated', {
+            limit: runtimeConfig?.listLimit,
+            total: runtimeConfig?.executorTotal,
+          })}
+          style={{ marginBottom: 16 }}
+          closable
+        />
+      )}
 
       <Space style={{ marginBottom: 16 }} wrap>
         <Input
@@ -490,7 +490,7 @@ export default function ExecutorListPage() {
         />
         <Select
           placeholder={t('execList.statusAll')}
-          allowClear style={{ width: 120, maxWidth: '100%' }}
+          allowClear style={{ width: 148, maxWidth: '100%' }}
           value={statusFilter}
           onChange={(v) => setStatusFilter(v)}
           suffixIcon={<FilterOutlined />}

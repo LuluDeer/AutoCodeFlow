@@ -6,7 +6,6 @@ import {
   Card,
   Drawer,
   Empty,
-  message,
   Pagination,
   Select,
   Space,
@@ -14,7 +13,9 @@ import {
   Tabs,
   Tag,
   Typography,
+  theme,
 } from 'antd';
+import { message } from '../utils/toast';
 import {
   DownloadOutlined,
   PlayCircleOutlined,
@@ -258,6 +259,7 @@ function needsApprovalBadge(s: AgentSession): boolean {
 
 export default function AgentSessionsPage() {
   const { t } = useTranslation();
+  const { token } = theme.useToken();
   // UI-09 第三轮：≤768px 结构级降级开关（表格→卡片、抽屉满宽、筛选堆叠）
   const isMobile = useIsMobile();
   // A11Y-DRAWER-01：会话详情抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
@@ -513,7 +515,7 @@ export default function AgentSessionsPage() {
       width: 180,
       ellipsis: true,
     },
-    { title: t('agents.col.usage'), width: 200, render: (_, s) => usageOf(s, t) },
+    { title: t('agents.col.usage'), width: 200, render: (_, s) => <span style={{ whiteSpace: 'nowrap' }}>{usageOf(s, t)}</span> },
     { title: t('agents.col.startedAt'), dataIndex: 'startedAt', width: 170, render: (v: string | null) => formatDateTime(v) },
     {
       title: t('sops.col.actions'),
@@ -676,7 +678,7 @@ export default function AgentSessionsPage() {
       width: 120,
       render: (v: string) => agentKindLabel(v, t),
     },
-    { title: t('agents.col.usage'), width: 200, render: (_, s) => usageOf(s, t) },
+    { title: t('agents.col.usage'), width: 200, render: (_, s) => <span style={{ whiteSpace: 'nowrap' }}>{usageOf(s, t)}</span> },
     {
       title: t('sops.col.actions'),
       width: 90,
@@ -724,7 +726,7 @@ export default function AgentSessionsPage() {
     <Select
       allowClear
       placeholder={t('agents.filter.kind')}
-      style={{ width: isMobile ? '100%' : 160 }}
+      style={{ width: isMobile ? '100%' : 180 }}
       value={kindFilter}
       onChange={filterKind}
       options={['ops_watch', 'incident', 'sop_authoring', 'sop_review', 'app_scaffold', 'chat'].map((k) => ({
@@ -738,7 +740,7 @@ export default function AgentSessionsPage() {
     <Select
       allowClear
       placeholder={t('agents.filter.status')}
-      style={{ width: isMobile ? '100%' : 160 }}
+      style={{ width: isMobile ? '100%' : 180 }}
       value={statusFilter}
       onChange={filterStatus}
       options={Object.keys(AGENT_SESSION_STATUS_COLOR).map((s) => ({ value: s, label: agentStatusLabel(s, t) }))}
@@ -750,9 +752,10 @@ export default function AgentSessionsPage() {
       {t('sops.refresh')}
     </Button>
   );
+  const hasFilters = Boolean(kindFilter || statusFilter || stalledOnly);
   // 空态区分（桌面表格 locale 与移动端卡片空态同源）：筛选无匹配给
   //「清除筛选」出口；真空态如实提示。
-  const emptyNode = (kindFilter || statusFilter || stalledOnly) ? (
+  const emptyNode = hasFilters ? (
     <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('agents.empty.noMatch')}>
       <Button
         type="link"
@@ -773,6 +776,8 @@ export default function AgentSessionsPage() {
         description={t('agents.description')}
         extra={!isMobile ? (
           <Space wrap>
+            {budgetNode}
+            {refreshButton}
             <Button
               icon={<PlusOutlined />}
               type="primary"
@@ -780,22 +785,11 @@ export default function AgentSessionsPage() {
             >
               {t('agents.create')}
             </Button>
-            {budgetNode}
-            <AgentAttentionBadges
-              refreshToken={pendingRefreshToken}
-              stalledOnly={stalledOnly}
-              onShowPending={() => filterStatus('waiting_input')}
-              onShowStalled={showStalled}
-              onClearStalled={clearStalled}
-            />
-            {kindSelect}
-            {statusSelect}
-            {refreshButton}
           </Space>
         ) : undefined}
       />
-      {/* 移动端：页头操作行收进下方纵向堆叠的筛选栏（Select 各占满一行） */}
-      {isMobile && (
+      {/* 独立筛选栏：桌面下沉为横向流式筛选条（徽标 + 类型/状态 Select 180px + 条件显示清除筛选）；移动端纵向堆叠 */}
+      {isMobile ? (
         <div style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {budgetNode}
           <AgentAttentionBadges
@@ -808,7 +802,7 @@ export default function AgentSessionsPage() {
           {kindSelect}
           {statusSelect}
           <div>
-            <Space>
+            <Space wrap>
               <Button
                 icon={<PlusOutlined />}
                 type="primary"
@@ -817,8 +811,30 @@ export default function AgentSessionsPage() {
                 {t('agents.create')}
               </Button>
               {refreshButton}
+              {hasFilters && (
+                <Button size="small" onClick={clearFilters}>
+                  {t('common.clearFilters')}
+                </Button>
+              )}
             </Space>
           </div>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 16, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+          <AgentAttentionBadges
+            refreshToken={pendingRefreshToken}
+            stalledOnly={stalledOnly}
+            onShowPending={() => filterStatus('waiting_input')}
+            onShowStalled={showStalled}
+            onClearStalled={clearStalled}
+          />
+          {kindSelect}
+          {statusSelect}
+          {hasFilters && (
+            <Button size="small" onClick={clearFilters}>
+              {t('common.clearFilters')}
+            </Button>
+          )}
         </div>
       )}
       <AgentSessionCreateModal open={createOpen} onClose={() => setCreateOpen(false)}
@@ -1041,13 +1057,13 @@ export default function AgentSessionsPage() {
                       <Paragraph>
                         <Text type="secondary">{t('agents.scopeLabel')}</Text>
                       </Paragraph>
-                      <pre style={{ maxHeight: 200, overflow: 'auto', fontSize: 12 }}>
+                      <pre style={{ maxHeight: 200, overflow: 'auto', fontSize: 12, padding: 8, borderRadius: 6, background: token.colorFillTertiary, border: `1px solid ${token.colorBorderSecondary}`, fontFamily: 'var(--font-mono)' }}>
                         {JSON.stringify(detail.scopeJson ?? {}, null, 2)}
                       </pre>
                       <Paragraph>
                         <Text type="secondary">{t('agents.contextLabel')}</Text>
                       </Paragraph>
-                      <pre style={{ maxHeight: 240, overflow: 'auto', fontSize: 12 }}>
+                      <pre style={{ maxHeight: 240, overflow: 'auto', fontSize: 12, padding: 8, borderRadius: 6, background: token.colorFillTertiary, border: `1px solid ${token.colorBorderSecondary}`, fontFamily: 'var(--font-mono)' }}>
                         {JSON.stringify(detail.contextJson ?? {}, null, 2)}
                       </pre>
                       {detail.resultJson && (
@@ -1055,7 +1071,7 @@ export default function AgentSessionsPage() {
                           <Paragraph>
                             <Text type="secondary">{t('agents.resultLabel')}</Text>
                           </Paragraph>
-                          <pre style={{ maxHeight: 240, overflow: 'auto', fontSize: 12 }}>
+                          <pre style={{ maxHeight: 240, overflow: 'auto', fontSize: 12, padding: 8, borderRadius: 6, background: token.colorFillTertiary, border: `1px solid ${token.colorBorderSecondary}`, fontFamily: 'var(--font-mono)' }}>
                             {JSON.stringify(detail.resultJson, null, 2)}
                           </pre>
                         </>

@@ -10,7 +10,7 @@
  * objectURL 在弹窗关闭/切换/卸载时 revoke，避免泄漏。
  */
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Modal, Spin, Typography } from 'antd';
+import { Alert, Button, Modal, Spin, Typography, theme } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { artifactsApi, type ArtifactRow } from '../api/artifacts';
@@ -34,7 +34,9 @@ type PreviewState =
 
 export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewModalProps) {
   const { t } = useTranslation();
+  const { token } = theme.useToken();
   const [state, setState] = useState<PreviewState>({ status: 'loading' });
+  const [downloading, setDownloading] = useState(false);
   const objectUrlRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -88,12 +90,17 @@ export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewMo
     };
   }, [row, t]);
 
-  const handleDownload = () => {
-    if (!row) return;
-    artifactsApi
-      .downloadArtifact(row.executionId, row.name)
-      .then(() => message.success(t('artifactLibrary.preview.downloadOk')))
-      .catch((err: unknown) => showApiError(err, t('artifacts.downloadFail')));
+  const handleDownload = async () => {
+    if (!row || downloading) return;
+    setDownloading(true);
+    try {
+      await artifactsApi.downloadArtifact(row.executionId, row.name);
+      message.success(t('artifactLibrary.preview.downloadOk'));
+    } catch (err: unknown) {
+      showApiError(err, t('artifacts.downloadFail'));
+    } finally {
+      setDownloading(false);
+    }
   };
 
   const renderBody = () => {
@@ -120,9 +127,11 @@ export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewMo
               overflow: 'auto',
               margin: 0,
               padding: 12,
-              background: 'rgba(128,128,128,0.08)',
+              background: token.colorFillTertiary,
+              border: `1px solid ${token.colorBorderSecondary}`,
               borderRadius: 8,
               fontSize: 12,
+              fontFamily: 'var(--font-mono)',
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
             }}
@@ -135,14 +144,14 @@ export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewMo
           <Alert
             type="info"
             showIcon
-            message={t('artifactLibrary.preview.unsupportedTitle')}
+            title={t('artifactLibrary.preview.unsupportedTitle')}
             description={t('artifactLibrary.preview.unsupportedDesc')}
           />
         );
       case 'error': {
         const title = t('artifactLibrary.preview.loadFailed');
         const description = state.message === title ? undefined : state.message;
-        return <Alert type="error" showIcon message={title} description={description} />;
+        return <Alert type="error" showIcon title={title} description={description} />;
       }
       default:
         return null;
@@ -156,7 +165,7 @@ export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewMo
       title={row?.name ?? t('artifactLibrary.preview.title')}
       width={720}
       footer={[
-        <Button key="download" icon={<DownloadOutlined />} onClick={handleDownload}>
+        <Button key="download" icon={<DownloadOutlined />} loading={downloading} onClick={() => void handleDownload()}>
           {t('artifacts.download')}
         </Button>,
       ]}

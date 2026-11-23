@@ -11,7 +11,6 @@ import { Table,
   Popconfirm,
   DatePicker,
   Card,
-  Switch,
   Alert,
   Tag } from 'antd';
 import type { TablePaginationConfig } from 'antd';
@@ -44,6 +43,7 @@ import PageHeader from '../components/PageHeader';
 // UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
+import { StablePagingSwitch } from '../components/StablePagingSwitch';
 // MOBILE-CARD-01：≤768px 时表格 → 卡片列表（结构级降级，CSS 做不到）
 import { useIsMobile } from '../hooks/useIsMobile';
 // P1-17（UX 审计）：触发方式列此前直接输出后端裸 token（cron/manual/fixed_rate），
@@ -670,10 +670,10 @@ export default function ExecutionsPage() {
     {
       title: t('execs.col.status'),
       dataIndex: 'status',
-      width: 90,
+      width: 118,
       render: (s: string) => {
         const cfg = statusMap[s] || { badge: 'default' as BadgeStatus, label: s };
-        return <Badge status={cfg.badge} text={cfg.label} />;
+        return <Badge status={cfg.badge} text={cfg.label} style={{ whiteSpace: 'nowrap' }} />;
       },
     },
     {
@@ -685,13 +685,13 @@ export default function ExecutionsPage() {
       // 不再直接渲染 {v || '-'} 裸枚举。
       render: (v: string) => {
         const label = triggerLabel(v, t);
-        return <Text type="secondary" style={{ fontSize: 12 }}>{label || '-'}</Text>;
+        return <Text type="secondary" style={{ fontSize: 12 }}>{label || '—'}</Text>;
       },
     },
     {
       title: t('execs.col.executor'),
       dataIndex: 'executorAddress',
-      width: 160,
+      width: 210,
       ellipsis: true,
       ...hideOnMobile,
       // ADR-017 阶段 3（决策 §7）：主显可读名（员工给机器起的名字），地址降为
@@ -701,7 +701,7 @@ export default function ExecutionsPage() {
         const name = nameOf(r);
         const fallback = v || null;
         if (!name && !fallback) {
-          return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+          return <Text type="secondary" style={{ fontSize: 12 }}>—</Text>;
         }
         // §8.3 工单 10：名字旁标注**行 id 前 8 位**（tooltip 给地址与完整 id）。
         // 同址多行时（pull 各自成行 / DHCP 复用同一 IP）名字与地址都可能相同，
@@ -732,7 +732,7 @@ export default function ExecutionsPage() {
         <Tooltip title={formatDateTime(v)}>
           <Text style={{ fontSize: 12 }}>{formatRelativeTime(v, t)}</Text>
         </Tooltip>
-      ) : '-',
+      ) : '—',
     },
     {
       title: t('execs.col.duration'),
@@ -740,13 +740,14 @@ export default function ExecutionsPage() {
       width: 90,
       ...hideOnMobile,
       // UI-08：时长如「32分46秒」窄列会折成两行，nowrap 保证单行可扫读
-      render: (v: number) => v != null ? <Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatDuration(v, t)}</Text> : '-',
+      render: (v: number) => v != null ? <Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatDuration(v, t)}</Text> : '—',
     },
     {
       title: t('execs.col.error'),
       dataIndex: 'errorMessage',
+      minWidth: 160,
       ellipsis: true,
-      render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-',
+      render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12, display: 'block' }} ellipsis={{ tooltip: v }}>{v}</Text> : '—',
     },
     {
       title: t('execs.col.action'),
@@ -890,7 +891,7 @@ export default function ExecutionsPage() {
         <Select
           placeholder={t('execs.statusAll')}
           allowClear
-          style={{ width: 120, maxWidth: '100%' }}
+          style={{ width: 148, maxWidth: '100%' }}
           value={statusFilter}
           onChange={v => { setStatusFilter(v); setPage(1); resetCursorStack(stablePaging); }}
           suffixIcon={<FilterOutlined />}
@@ -953,17 +954,9 @@ export default function ExecutionsPage() {
             Tab 可聚焦、Space/Enter 可切换，无需再补键盘处理；aria-label 给出
             可访问名（开关没有可见文字标签时，纯靠旁边的文字不构成可访问名）。
             关闭时不发任何 cursor 参数，后端与页面行为都回到改动前。 */}
-        <Space size={6} style={{ marginLeft: 'auto' }}>
-          <Switch
-            size="small"
-            checked={stablePaging}
-            onChange={toggleStablePaging}
-            aria-label={t('execs.stablePaging.aria')}
-          />
-          <Tooltip title={t('execs.stablePaging.hint')}>
-            <Text type="secondary" style={{ fontSize: 12 }}>{t('execs.stablePaging')}</Text>
-          </Tooltip>
-        </Space>
+        <div style={{ marginLeft: 'auto' }}>
+          <StablePagingSwitch checked={stablePaging} onChange={toggleStablePaging} label={t('execs.stablePaging')} hint={t('execs.stablePaging.hint')} ariaLabel={t('execs.stablePaging.aria')} />
+        </div>
       </Space>
 
       {/* UI-16：列表请求失败不再只弹 toast —— 页内原位呈现错误块 + 重试入口
@@ -1034,7 +1027,7 @@ export default function ExecutionsPage() {
                     <Link to={`/tasks/${r.taskId}`} style={{ fontWeight: 500, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {r.taskName || r.taskId}
                     </Link>
-                    <Badge status={cfg.badge} text={cfg.label} />
+                    <Badge status={cfg.badge} text={cfg.label} style={{ whiteSpace: 'nowrap', flexShrink: 0 }} />
                   </div>
                   <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
                     {/* ADR-017 阶段 3（决策 §7）：与表格列同口径——名字优先、
@@ -1042,7 +1035,7 @@ export default function ExecutionsPage() {
                     {[triggerLabel(r.triggerType, t), nameOf(r) ?? r.executorAddress].filter(Boolean).join(' · ')}
                   </div>
                   <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                    {r.startTime ? `${formatRelativeTime(r.startTime, t)} · ${r.duration != null ? formatDuration(r.duration, t) : '-'}` : '-'}
+                    {r.startTime ? `${formatRelativeTime(r.startTime, t)} · ${r.duration != null ? formatDuration(r.duration, t) : '—'}` : '—'}
                   </div>
                   {r.errorMessage && (
                     <Typography.Paragraph type="danger" style={{ marginTop: 6, marginBottom: 0, fontSize: 12 }} ellipsis={{ rows: 2, tooltip: r.errorMessage }}>
@@ -1083,7 +1076,7 @@ export default function ExecutionsPage() {
         // 任务/错误两个弹性列各 ~160 ≈ 967，取 1080 留出弹性余量。
         // 原 1040 是操作列 135 时代的数，操作列加宽后必须同步上调，否则
         // 固定列会把弹性列挤到比 minWidth 还窄。
-        scroll={{ x: 1080 }}
+        scroll={{ x: 1158 }}
         rowSelection={{
           selectedRowKeys: selectedIds,
           onChange: (keys) => setSelectedIds(keys as string[]),

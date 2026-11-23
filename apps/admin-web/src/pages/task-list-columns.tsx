@@ -255,10 +255,10 @@ export function buildTaskListColumns(deps: TaskListColumnsDeps) {
       // COLSET-01：显式 key（原仅 dataIndex）——列显隐过滤按 key 匹配，渲染不变
       key: 'status',
       dataIndex: 'status',
-      width: 84,
+      width: 112,
       render: (s: string) => {
         const cfg = statusConfig[s] || { badge: 'default', label: s, color: 'default' };
-        return <Badge status={cfg.badge} text={cfg.label} />;
+        return <Badge status={cfg.badge} text={cfg.label} style={{ whiteSpace: 'nowrap' }} />;
       },
     },
     {
@@ -317,7 +317,7 @@ export function buildTaskListColumns(deps: TaskListColumnsDeps) {
     {
       title: t('taskList.col.nextRun'),
       key: 'nextRun',
-      width: 140,
+      width: 170,
       ...hideOnMobile,
       render: (_: unknown, r: Task) => {
         return renderNextRun(t, r);
@@ -379,7 +379,7 @@ export function buildTaskListColumns(deps: TaskListColumnsDeps) {
             onConfirm={() => onDelete(r.id)}
             okText={t('taskList.ok')} okButtonProps={{ danger: true }}
           >
-            <Tooltip title={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')}>
+            <Tooltip title={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')} placement="bottom">
               <Button type="text" size="small" icon={<DeleteOutlined />} danger aria-label={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')} disabled={!isAdmin} />
             </Tooltip>
           </Popconfirm>
@@ -447,7 +447,7 @@ export function buildTaskListColumns(deps: TaskListColumnsDeps) {
       dataIndex: 'runtime',
       width: 96,
       ...hideOnMobile,
-      render: (v: string) => v ? <Tag>{runtimeLabel(v, t)}</Tag> : '-',
+      render: (v: string) => v ? <Tag>{runtimeLabel(v, t)}</Tag> : '—',
     },
   ];
 }

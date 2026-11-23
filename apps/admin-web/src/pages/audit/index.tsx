@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react';
-import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, DatePicker, Empty, theme, Card, Switch } from 'antd';
+import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, DatePicker, Empty, theme, Card } from 'antd';
 import type { TablePaginationConfig } from 'antd';
 import { SearchOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 // resource 过滤器的完整选项集（外提：本页双顶格 + 守卫可单独 AST 扫描）
-import { buildResourceOptions } from './resourceOptions';
+import { buildResourceOptions, formatAuditIp, formatAuditResource } from './resourceOptions';
 // A-12: 审计 CSV 导出（GET /audit/export，携带当前筛选，axios blob 下载）
 // AUDIT-KEYSET: 列表请求也挪进 api 层——游标三态（undefined / '' / 非空）由
 // buildAuditListQuery 一处把关，页面不再手拼 URLSearchParams。
@@ -24,6 +24,7 @@ import PageHeader from '../../components/PageHeader';
 import PageSkeleton from '../../components/PageSkeleton';
 // UI-16：toast-only 页补齐页内错误态标准块（错误块 + 重试，对齐 UI-08 形态）
 import StateError from '../../components/StateError';
+import { StablePagingSwitch } from '../../components/StablePagingSwitch';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级，CSS 做不到）
 import { useIsMobile } from '../../hooks/useIsMobile';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -479,7 +480,7 @@ export default function AuditLogPage() {
         return (
           <Space orientation="vertical" size={0}>
             {operator ? <Typography.Text strong>{operator}</Typography.Text> : <Tag>{t('audit.operator.system')}</Tag>}
-            {r.ip && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.ip}</Typography.Text>}
+            {r.ip && <Tooltip title={r.ip}><Typography.Text type="secondary" style={{ fontSize: 12 }}>{formatAuditIp(r.ip)}</Typography.Text></Tooltip>}
           </Space>
         );
       },
@@ -500,15 +501,16 @@ export default function AuditLogPage() {
         );
       },
     },
-    { title: t('audit.col.resource'), dataIndex: 'resource', width: 120, ellipsis: true },
+    { title: t('audit.col.resource'), dataIndex: 'resource', width: 120, ellipsis: true, render: (v: string) => formatAuditResource(v, t) },
     {
       title: t('audit.col.resourceId'),
       dataIndex: 'resourceId',
-      width: 100,
+      width: 120,
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' } }),
       // AUDIT-03：task/application/executor 资源直接链接到详情页，审计 → 溯源
       // 一步到位（其余类型无详情路由，维持纯文本）
       render: (v: string, r: AuditLog) => {
-        if (!v) return '-';
+        if (!v) return '—';
         const href = resourceIdHref(r.resource, v, r.detail);
         const content = (
           <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
@@ -525,7 +527,7 @@ export default function AuditLogPage() {
     {
       title: t('audit.col.result'),
       dataIndex: 'result',
-      width: 80,
+      width: 96,
       render: (v: string) => (
         <Tag color={RESULT_COLOR[v] ?? 'default'}>{resultLabels[v] ?? v}</Tag>
       ),
@@ -543,7 +545,7 @@ export default function AuditLogPage() {
         >
           {t('audit.action.view')}
         </Button>
-      ) : '-',
+      ) : '—',
     },
     {
       title: t('audit.col.time'),
@@ -556,7 +558,11 @@ export default function AuditLogPage() {
   return (
     <div>
       {/* UI-03/UI-08：页头标准化（原 Typography.Title 区块迁入 PageHeader） */}
-      <PageHeader title={t('audit.title')} description={t('audit.description')} />
+      <PageHeader
+        title={t('audit.title')}
+        description={t('audit.description')}
+        extra={<Button icon={<DownloadOutlined />} loading={exporting} onClick={handleExport}>{t('audit.action.export')}</Button>}
+      />
       <Space style={{ marginBottom: 16 }} wrap>
         {/* R67-A1：action 过滤器 = **可发现**下拉（首屏拉一次 /audit/actions）。
             此前是纯自由文本输入框：动作已有 61 个（19 个域），用户必须先把动作名
@@ -683,24 +689,9 @@ export default function AuditLogPage() {
         </Tooltip>
         <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>{t('audit.action.search')}</Button>
         {hasFilters && <Button icon={<ReloadOutlined />} onClick={handleReset}>{t('audit.action.reset')}</Button>}
-        {/* A-12: 导出 CSV（后端 GET /audit/export 同滤，ADMIN-only） */}
-        <Button icon={<DownloadOutlined />} loading={exporting} onClick={handleExport}>{t('audit.action.export')}</Button>
-        {/* §2.1：稳定翻页开关（默认关闭）。
-            用 antd Switch——它本身就是 role="switch" + 原生 button 语义，
-            Tab 可聚焦、Space/Enter 可切换，无需再补键盘处理；aria-label 给出
-            可访问名（开关没有可见文字标签时，纯靠旁边的文字不构成可访问名）。
-            关闭时不发任何 cursor 参数，后端与页面行为都回到改动前。 */}
-        <Space size={6} style={{ marginLeft: 'auto' }}>
-          <Switch
-            size="small"
-            checked={stablePaging}
-            onChange={toggleStablePaging}
-            aria-label={t('audit.stablePaging.aria')}
-          />
-          <Tooltip title={t('audit.stablePaging.hint')}>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('audit.stablePaging')}</Typography.Text>
-          </Tooltip>
-        </Space>
+        <div style={{ marginLeft: 'auto' }}>
+          <StablePagingSwitch checked={stablePaging} onChange={toggleStablePaging} label={t('audit.stablePaging')} hint={t('audit.stablePaging.hint')} ariaLabel={t('audit.stablePaging.aria')} />
+        </div>
       </Space>
       {/* UI-16：请求失败渲染页内错误态标准块（StateError，重试=refetch），
           此前失败静默表现为「暂无审计记录」空态——查询失败与确无记录两种语义分离 */}
@@ -738,10 +729,10 @@ export default function AuditLogPage() {
                   <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
                     {/* P2 溯源修复：username 为空但 userId 非空 → 「#<userId>」回退（同表格列）。 */}
                     {r.username || (r.userId != null ? `#${r.userId}` : '') || t('audit.operator.system')}
-                    {r.ip ? ` · ${r.ip}` : ''}
+                    {r.ip ? <Tooltip title={r.ip}><span>{` · ${formatAuditIp(r.ip)}`}</span></Tooltip> : ''}
                   </div>
                   <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                    {r.resource}
+                    {formatAuditResource(r.resource, t)}
                     {r.resourceId ? (
                       <>
                         {' · '}
@@ -779,7 +770,7 @@ export default function AuditLogPage() {
         columns={columns}
         // UI 打磨：定宽列合计 930（70+120+180+120+100+80+80+180）→ scroll.x 同值，
         // 窄屏横向滚动兜底（审查建议 1040，按「列宽合计与 scroll.x 必须一致」取 930）
-        scroll={{ x: 930 }}
+        scroll={{ x: 966 }}
         dataSource={data?.data ?? []}
         locale={{
           emptyText: isLoading

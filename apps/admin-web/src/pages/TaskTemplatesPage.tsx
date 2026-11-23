@@ -43,7 +43,7 @@ const TRIGGER_LABEL = (t: TFn): Record<string, string> => ({
   api: t('templates.trigger.api'),
 });
 const CATEGORY_COLOR: Record<string, string> = {
-  备份: 'blue', 巡检: 'green', 同步: 'purple', 清理: 'orange', 通知: 'cyan',
+  备份: 'blue', 巡检: 'green', 同步: 'purple', 清理: 'orange', 通知: 'cyan', 报表: 'geekblue',
 };
 
 /**
@@ -69,6 +69,7 @@ const CATEGORY_T_KEY: Record<string, string> = {
   同步: 'templates.category.sync',
   清理: 'templates.category.cleanup',
   通知: 'templates.category.notify',
+  报表: 'templates.category.report',
 };
 
 /** 分类展示文本：已知分类走 i18n，未知分类回退原始值。 */
@@ -78,8 +79,8 @@ function categoryLabel(category: string | null | undefined, t: TFn): string {
   return key ? t(key) : category;
 }
 
-/** 把模板 config 摘要成一行人类可读描述。 */
-function configSummary(config: Record<string, unknown>, t: TFn): string {
+/** 把模板 config 摘要成结构化片段（每段渲染在 nowrap span 内防数字断行）。 */
+function configSummary(config: Record<string, unknown>, t: TFn): string[] {
   const bits: string[] = [];
   const trigger = config.triggerType as string | undefined;
   if (trigger) {
@@ -90,13 +91,13 @@ function configSummary(config: Record<string, unknown>, t: TFn): string {
   }
   if (config.runtime) {
     // 「开箱即跑」模板带内联脚本（glueSource），没有 entrypoint——继续渲染
-    // `runtime · -` 会让用户以为模板缺入口文件。有 glueSource 时显示 glue。
+    // `runtime · —` 会让用户以为模板缺入口文件。有 glueSource 时显示 glue。
     const hasGlue = typeof config.glueSource === 'string' && config.glueSource.trim().length > 0;
-    bits.push(`${config.runtime} · ${hasGlue ? t('templates.config.glue') : (config.entrypoint ?? '-')}`);
+    bits.push(`${config.runtime} · ${hasGlue ? t('templates.config.glue') : (config.entrypoint ?? '—')}`);
   }
   if (config.timeoutSeconds) bits.push(t('templates.config.timeout', { seconds: String(config.timeoutSeconds) }));
   if (config.maxRetry != null) bits.push(t('templates.config.retry', { count: String(config.maxRetry) }));
-  return bits.join(t('common.listSep.space'));
+  return bits;
 }
 
 export default function TaskTemplatesPage() {
@@ -175,10 +176,15 @@ export default function TaskTemplatesPage() {
 
   return (
     <div>
-      {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader） */}
+      {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，导入模板迁 extra） */}
       <PageHeader
         title={t('templates.title')}
         description={t('templates.description')}
+        extra={
+          <Button icon={<ImportOutlined aria-hidden />} onClick={() => setImportOpen(true)}>
+            {t('templates.import')}
+          </Button>
+        }
       />
 
       {/* UI-08：错误态标准化——原仅 Alert 提示，升级为「重试 + 复制错误信息」错误块 */}
@@ -191,11 +197,11 @@ export default function TaskTemplatesPage() {
         />
       )}
 
-      {!loading && !error && (!templates || templates.length === 0) && (
+      {!error && (!templates || templates.length === 0) && (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('templates.empty')} />
       )}
 
-      {!loading && !error && (
+      {!error && (
         <Space style={{ marginBottom: 16 }} wrap>
           <Input
             allowClear
@@ -205,21 +211,21 @@ export default function TaskTemplatesPage() {
             onChange={(e) => setKeyword(e.target.value)}
             style={{ width: 240, maxWidth: '100%' }}
           />
-          <Button icon={<ImportOutlined aria-hidden />} onClick={() => setImportOpen(true)}>
-            {t('templates.import')}
-          </Button>
         </Space>
       )}
 
-      {!loading && !error && (templates?.length ?? 0) > 0 && filteredTemplates.length === 0 && (
+      {!error && (templates?.length ?? 0) > 0 && filteredTemplates.length === 0 && (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('templates.searchNoResult')} />
       )}
 
       <Row gutter={[16, 16]}>
-        {filteredTemplates.map((tpl) => (
+        {filteredTemplates.map((tpl) => {
+          const summaryBits = configSummary(tpl.config, t);
+          return (
           <Col xs={24} sm={12} lg={8} xl={6} key={tpl.id}>
             <Card
-              style={{ height: '100%' }}
+              style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+              styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column' } }}
               title={
                 // UI 打磨：模板名过长时（title 为 Space 节点，antd 默认省略号
                 // 不生效）用 Text ellipsis+tooltip 收口，卡片等高避免换行锯齿
@@ -251,13 +257,20 @@ export default function TaskTemplatesPage() {
               </Space>
               <div>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  <FieldTimeOutlined aria-hidden /> {configSummary(tpl.config, t) || '—'}
+                  <FieldTimeOutlined aria-hidden />{' '}
+                  {summaryBits.length > 0
+                    ? summaryBits.map((bit, idx) => (
+                        <span key={idx} style={{ whiteSpace: 'nowrap' }}>
+                          {idx > 0 ? t('common.listSep.space') : ''}{bit}
+                        </span>
+                      ))
+                    : '—'}
                 </Text>
               </div>
               {/* 操作行：不用 Card 等分 actions——窄卡片(xl=6, 约 241px)下 5 个 link 按钮
                   被 antd 压进等宽 li,文字 nowrap 溢出相邻按钮形成横向重叠。改为 body 内
-                  flex-wrap 自绘行,空间不足时自然折行,与执行器/应用卡片同一套惯例。 */}
-              <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  flex-wrap 自绘行 + marginTop: 'auto' 让同行卡片底部操作栏严格水平对齐。 */}
+              <div style={{ marginTop: 'auto', paddingTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                 <Button
                   type="link" size="small" icon={<CopyOutlined aria-hidden />}
                   onClick={() => setUsingTpl(tpl)}
@@ -306,7 +319,8 @@ export default function TaskTemplatesPage() {
               </div>
             </Card>
           </Col>
-        ))}
+          );
+        })}
       </Row>
 
       <TemplateUseDialog

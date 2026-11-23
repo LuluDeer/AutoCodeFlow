@@ -4,7 +4,7 @@ import { message } from '../utils/toast';
 import {
   UploadOutlined, ReloadOutlined, CodeOutlined, InboxOutlined,
 } from '@ant-design/icons';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { registryApi } from '../api/registry';
 import { showApiError } from '../utils/error';
 import { normFileList } from '../utils/upload';
@@ -27,16 +27,13 @@ import '../i18n';
 const { Text, Paragraph } = Typography;
 
 // ─── PyPI tab ────────────────────────────────────────────────────────────────
-function PypiTab() {
+function PypiTab({ uploadOpen, setUploadOpen }: { uploadOpen: boolean; setUploadOpen: (v: boolean) => void }) {
   const { t } = useTranslation();
   // 仓库命令基址（不带尾斜杠；空串 = 同源）
   const registryBase = registryBaseUrl();
   const { token } = theme.useToken(); // F-15（DEEP_REVIEW 0ef3bbe）
-  const [uploadOpen, setUploadOpen] = useState(false);
   const [form] = Form.useForm();
   const [uploading, setUploading] = useState(false);
-  // A7：私有 PyPI 上传是全局写操作（影响所有任务的依赖解析），仅管理员可用。
-  const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
 
   // F-16（DEEP_REVIEW 0ef3bbe）：ahooks useRequest → TanStack Query useQuery（主栈统一）。
   const { data: packages = [], isLoading: loading, error, refetch: refresh } = useQuery({
@@ -84,17 +81,6 @@ function PypiTab() {
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }} wrap>
-        {isAdmin ? (
-          <Button type="primary" icon={<UploadOutlined aria-hidden />} onClick={() => setUploadOpen(true)}>{t('registry.upload')}</Button>
-        ) : (
-          <Tooltip title={t('registry.upload.adminOnly')}>
-            <Button icon={<UploadOutlined aria-hidden />} disabled>{t('registry.upload')}</Button>
-          </Tooltip>
-        )}
-        <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void refresh()}>{t('registry.refresh')}</Button>
-      </Space>
-
       <Card size="small" style={{ marginBottom: 16, background: token.colorSuccessBg, border: `1px solid ${token.colorSuccessBorder}` }}>
         <Paragraph style={{ margin: 0 }}>
           <Text strong>{t('registry.pypiHint')}</Text>
@@ -179,12 +165,11 @@ function PypiTab() {
 }
 
 // ─── NPM tab ─────────────────────────────────────────────────────────────────
-function NpmTab() {
+function NpmTab({ publishOpen, setPublishOpen }: { publishOpen: boolean; setPublishOpen: (v: boolean) => void }) {
   // 同 PypiTab：仓库命令基址走推导（见 utils/registry-base.ts）
   const registryBase = registryBaseUrl();
   const { t } = useTranslation();
   const { token } = theme.useToken(); // F-15（DEEP_REVIEW 0ef3bbe）
-  const [publishOpen, setPublishOpen] = useState(false);
   // F-16（DEEP_REVIEW 0ef3bbe）：ahooks useRequest → TanStack Query useQuery（主栈统一）。
   const { data: packages = [], isLoading: loading, error, refetch: refresh } = useQuery({
     queryKey: ['registry', 'npm'],
@@ -200,7 +185,7 @@ function NpmTab() {
       title: t('registry.col.latest'), dataIndex: 'latest', key: 'latest', width: 100,
       onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
       onCell: () => ({ className: 'ui09-hide-mobile' }),
-      render: (v: string) => v ? <Tag color="blue">{v}</Tag> : <Text type="secondary">-</Text>,
+      render: (v: string) => v ? <Tag color="blue">{v}</Tag> : <Text type="secondary">—</Text>,
     },
     {
       title: t('registry.col.desc'), dataIndex: 'description', key: 'description',
@@ -210,7 +195,7 @@ function NpmTab() {
       ellipsis: { showTitle: false },
       render: (d: string) => d
         ? <Text style={{ display: 'block' }} ellipsis={{ tooltip: d }}>{d}</Text>
-        : '-',
+        : '—',
     },
     {
       title: t('registry.col.install'), key: 'install', width: 300,
@@ -226,11 +211,6 @@ function NpmTab() {
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }} wrap>
-        <Button type="primary" icon={<CodeOutlined aria-hidden />} onClick={() => setPublishOpen(true)}>{t('registry.publish')}</Button>
-        <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void refresh()}>{t('registry.refresh')}</Button>
-      </Space>
-
       <Card size="small" style={{ marginBottom: 16, background: token.colorPrimaryBg, border: `1px solid ${token.colorPrimaryBorder}` }}>
         <Paragraph style={{ margin: 0 }}>
           <Text strong>{t('registry.npmHint')}</Text>
@@ -303,18 +283,51 @@ function NpmTab() {
 // ─── Page ────────────────────────────────────────────────────────────────────
 export default function RegistryPage() {
   const { t } = useTranslation();
+  const qc = useQueryClient();
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
+  const [activeTab, setActiveTab] = useState<'pypi' | 'npm'>('pypi');
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
   return (
     <div>
-      {/* UI-03/UI-08：页头标准化 */}
+      {/* UI-03/UI-08：页头标准化，操作按钮与主 CTA 统一收进 PageHeader.extra 右侧 */}
       <PageHeader
         title={t('registry.title')}
         description={t('registry.description')}
+        extra={
+          <>
+            <Button
+              icon={<ReloadOutlined aria-hidden />}
+              onClick={() => void qc.invalidateQueries({ queryKey: ['registry', activeTab] })}
+            >
+              {t('registry.refresh')}
+            </Button>
+            {activeTab === 'pypi' ? (
+              isAdmin ? (
+                <Button type="primary" icon={<UploadOutlined aria-hidden />} onClick={() => setUploadOpen(true)}>
+                  {t('registry.upload')}
+                </Button>
+              ) : (
+                <Tooltip title={t('registry.upload.adminOnly')}>
+                  <Button icon={<UploadOutlined aria-hidden />} disabled>
+                    {t('registry.upload')}
+                  </Button>
+                </Tooltip>
+              )
+            ) : (
+              <Button type="primary" icon={<CodeOutlined aria-hidden />} onClick={() => setPublishOpen(true)}>
+                {t('registry.publish')}
+              </Button>
+            )}
+          </>
+        }
       />
       <Tabs
-        defaultActiveKey="pypi"
+        activeKey={activeTab}
+        onChange={(k) => setActiveTab(k as 'pypi' | 'npm')}
         items={[
-          { key: 'pypi', label: t('registry.tab.pypi'), children: <PypiTab /> },
-          { key: 'npm', label: t('registry.tab.npm'), children: <NpmTab /> },
+          { key: 'pypi', label: t('registry.tab.pypi'), children: <PypiTab uploadOpen={uploadOpen} setUploadOpen={setUploadOpen} /> },
+          { key: 'npm', label: t('registry.tab.npm'), children: <NpmTab publishOpen={publishOpen} setPublishOpen={setPublishOpen} /> },
         ]}
       />
     </div>

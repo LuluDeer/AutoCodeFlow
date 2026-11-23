@@ -258,12 +258,12 @@ export default function TaskFormTriggerSection({
                 // 宽屏仍一行三列，字段与校验语义不变。
                 <div
                   key={field.key}
-                  style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}
+                  style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}
                 >
                   <div style={{ flex: '1 1 180px', minWidth: 0 }}>
                     <Form.Item
                       name={[field.name, 'start']}
-                      noStyle
+                      style={{ marginBottom: 0 }}
                       rules={[
                         { required: true, message: t('taskForm.window.startRequired') },
                         { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: t('taskForm.window.cronFormat') },
@@ -276,7 +276,7 @@ export default function TaskFormTriggerSection({
                   <div style={{ flex: '1 1 180px', minWidth: 0 }}>
                     <Form.Item
                       name={[field.name, 'end']}
-                      noStyle
+                      style={{ marginBottom: 0 }}
                       rules={[
                         { required: true, message: t('taskForm.window.endRequired') },
                         { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: t('taskForm.window.cronFormat') },

@@ -142,25 +142,25 @@ export default function ExecutionsTab({
   } as const;
   const execColumns = [
     {
-      title: t('taskDetail.col.status'), dataIndex: 'status', width: 90,
+      title: t('taskDetail.col.status'), dataIndex: 'status', width: 116,
       render: (s: string) => <Badge status={EXECUTION_BADGE_STATUS[s] ?? 'default'} text={statusLabels[s] || s} />,
     },
     {
-      title: t('taskDetail.col.trigger'), dataIndex: 'triggerType', width: 80,
+      title: t('taskDetail.col.trigger'), dataIndex: 'triggerType', width: 108,
       ...hideOnMobile,
       // UX-06：此前渲染裸枚举（cron / fixed_rate / manual）。
-      render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{triggerLabel(v, t) || '-'}</Text>,
+      render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{triggerLabel(v, t) || '—'}</Text>,
     },
     {
       title: t('taskDetail.col.executor'), dataIndex: 'executorAddress', width: 140, ellipsis: true,
       responsive: ['md'] as import('antd/es/_util/responsiveObserver').Breakpoint[],
       // ADR-017 阶段 3（决策 §7）：主显可读名（员工给机器起的名字），地址降为
       // tooltip 副信息——地址仍是**诊断身份**（「到底哪台」），故不删除。
-      // 解析不到名字时如实只显示地址（绝不编造），都没有则 '-'。
+      // 解析不到名字时如实只显示地址（绝不编造），都没有则 '—'。
       render: (v: string, r: TaskExecution) => {
         const name = nameOf(r);
         const fallback = v || null;
-        if (!name && !fallback) return <Text type="secondary">-</Text>;
+        if (!name && !fallback) return <Text type="secondary">—</Text>;
         return (
           <Tooltip title={fallback ?? name ?? ''}>
             <Text style={{ fontSize: 11, fontFamily: name ? undefined : 'monospace' }}>
@@ -176,16 +176,16 @@ export default function ExecutionsTab({
         <Tooltip title={formatDateTime(v)}>
           <Text style={{ fontSize: 12 }}>{formatRelativeTime(v, t)}</Text>
         </Tooltip>
-      ) : '-',
+      ) : '—',
     },
     {
       title: t('taskDetail.col.duration'), dataIndex: 'duration', width: 80,
       ...hideOnMobile,
-      render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v, t)}</Text> : '-',
+      render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v, t)}</Text> : '—',
     },
     {
       title: t('taskDetail.col.error'), dataIndex: 'errorMessage', ellipsis: true, minWidth: 330,
-      render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-',
+      render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '—',
     },
     {
       title: '', key: 'actions', width: 100,

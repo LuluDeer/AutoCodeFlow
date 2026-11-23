@@ -9,9 +9,10 @@
  * 会误导，缩水声明见 PLAN-CLAIMS）。
  */
 import { Typography } from 'antd';
-import { ThunderboltOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { formatRelativeTime } from '../../utils/timeFormat';
+import { CHART_COLORS } from '../../theme/tokens';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../../i18n';
 // UX-03：failureCountColor 挪至 ./color-tokens（react-refresh 收敛：组件文件
@@ -81,14 +82,25 @@ export default function FailureTopList({ failures, topN = 5, onOpenTask }: Failu
     return (
       <div
         data-testid="failure-top-empty"
-        style={{ textAlign: 'center', padding: '24px 0', color: 'var(--chart-axis-text)', fontSize: 12 }}
+        style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          textAlign: 'center',
+          padding: '24px 0',
+          color: 'var(--chart-axis-text)',
+          fontSize: 12,
+        }}
       >
-        {t('failureTop.empty')}
+        <CheckCircleOutlined style={{ fontSize: 28, color: CHART_COLORS.success, marginBottom: 8 }} />
+        <div>{t('failureTop.empty')}</div>
       </div>
     );
   }
   return (
-    <div data-testid="failure-top-list" style={{ display: 'flex', flexDirection: 'column', gap: ROW_GAP }}>
+    <div data-testid="failure-top-list" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: ROW_GAP }}>
       {top.map((item, idx) => (
         <div
           key={item.taskId}

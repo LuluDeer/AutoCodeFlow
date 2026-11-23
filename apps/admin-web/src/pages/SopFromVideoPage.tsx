@@ -301,7 +301,7 @@ export default function SopFromVideoPage() {
         <Col xs={24} lg={9}>
           <Card title={t('sopFromVideo.step.upload')}>
             {!session ? (
-              <Space direction="vertical" style={{ width: '100%' }} size={12}>
+              <Space orientation="vertical" style={{ width: '100%' }} size={12}>
                 <Select
                   style={{ width: '100%' }}
                   placeholder={t('sopFromVideo.model.placeholder')}
@@ -338,7 +338,7 @@ export default function SopFromVideoPage() {
                 <Typography.Text type="secondary">{t('sopFromVideo.draft.frontMatter')}</Typography.Text>
               </Space>
             ) : (
-              <Space direction="vertical" style={{ width: '100%' }} size={8}>
+              <Space orientation="vertical" style={{ width: '100%' }} size={8}>
                 <Typography.Text type="secondary">
                   {t('sopFromVideo.chat.videos', { n: session.media.length })}
                 </Typography.Text>
@@ -386,7 +386,7 @@ export default function SopFromVideoPage() {
                 {t('sopFromVideo.chat.beforeStart')}
               </Typography.Paragraph>
             ) : (
-              <Space direction="vertical" style={{ width: '100%' }} size={12}>
+              <Space orientation="vertical" style={{ width: '100%' }} size={12}>
                 <ChatTranscript
                   messages={session.messages}
                   streaming={sending}
