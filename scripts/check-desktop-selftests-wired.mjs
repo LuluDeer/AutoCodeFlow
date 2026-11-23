@@ -54,7 +54,7 @@
  *   --root    ：只给 selftest 用：把 fixture 树当仓库根（默认 process.cwd()）。
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
@@ -67,10 +67,14 @@ export const SRC_REL = "apps/executor-desktop/src/main";
 export const PKG_REL = "apps/executor-desktop/package.json";
 export const BUNDLER_REL = "apps/executor-desktop/scripts/bundle-preload.cjs";
 export const CI_REL = ".github/workflows/ci.yml";
+export const RENDERER_SRC_REL = "apps/executor-desktop/src/renderer";
+export const RENDERER_ENTRY_REL = `${RENDERER_SRC_REL}/renderer.selftest.mjs`;
 
 /** 扫描面下界（2026-10-29 实测：src/main 下 48 个 *.selftest.ts、test:main 列 48 项）。只增不减。 */
 export const MIN_SELFTESTS = 20;
 export const MIN_LISTED = 20;
+/** renderer 侧扫描面下界（2026-11-23 实测：9 个 *.selftest.mjs，入口自身除外）。只增不减。 */
+export const MIN_RENDERER_SELFTESTS = 5;
 
 /** 剥掉 YAML 注释（整行 + 行内 ` #…`）：注释掉的 `if:` / `run:` 都不能算接线。 */
 export function stripYamlComments(text) {
@@ -107,6 +111,46 @@ function walk(dir, out) {
   return out;
 }
 
+/** 递归收集 renderer 子树下的 `*.selftest.mjs`（入口自身除外），返回相对 renderer 根目录的 posix 短名。 */
+function walkRenderer(rootDir, dir, out) {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) walkRenderer(rootDir, p, out);
+    else if (e.name.endsWith(".selftest.mjs")) {
+      const rel = relative(rootDir, p).replace(/\\/g, "/");
+      if (rel !== "renderer.selftest.mjs") out.push(rel);
+    }
+  }
+  return out;
+}
+
+/**
+ * 从 renderer 入口源码里解析被接线的 selftest 说明符。
+ * 两种形态都要认：① 直连 `await import('./x.selftest.mjs')` / 静态 `import ... from './x'`；
+ * ② for 循环数组字面量 `for (const p of ['./a.mjs', './b.mjs']) await import(p)`。
+ * 只收 `.selftest.mjs` 结尾的说明符 —— 入口里还 import 了大量 `.ts` 源文件，不算接线面。
+ */
+export function parseRendererWired(entrySrc) {
+  const specs = new Set();
+  const directRe = /(?:await\s+import|import)\(\s*['"]([^'"]+)['"]\s*\)/g;
+  let m;
+  while ((m = directRe.exec(entrySrc))) specs.add(m[1]);
+  const staticRe = /import\s+(?:[^'"]+?\s+from\s*)?['"]([^'"]+\.selftest\.mjs)['"]/g;
+  while ((m = staticRe.exec(entrySrc))) specs.add(m[1]);
+  const forRe = /for\s*\(\s*(?:const|let|var)\s+\w+\s+of\s*\[([^\]]*)\]/g;
+  while ((m = forRe.exec(entrySrc))) {
+    const strRe = /['"]([^'"]+)['"]/g;
+    let s;
+    while ((s = strRe.exec(m[1]))) specs.add(s[1]);
+  }
+  return [...specs].filter((s) => s.endsWith(".selftest.mjs"));
+}
+
+/** 说明符归一为相对 renderer 目录的 posix 短名（剥 `./`、反斜杠转正斜杠）。 */
+export function normalizeRendererSpec(spec) {
+  return String(spec).replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
 /**
  * 判据本体。返回 `{ structure, problems, counts }`：
  *   · structure = 结构性（事实源读不到 / 清单解析不到 / 扫描面塌了）——「判据本身不可信」；
@@ -115,7 +159,7 @@ function walk(dir, out) {
 export function check({ root = process.cwd() } = {}) {
   const structure = [];
   const problems = [];
-  const counts = { files: 0, listed: 0, pushJobs: [] };
+  const counts = { files: 0, listed: 0, pushJobs: [], rendererFiles: 0 };
 
   // ── 事实源：package.json ────────────────────────────────────────────────
   let pkg = null;
@@ -145,7 +189,7 @@ export function check({ root = process.cwd() } = {}) {
   } else {
     const abs = walk(srcDir, []);
     // 相对 SRC 的短名（去掉 .ts），用于与 dist-selftest/… 对齐
-    for (const f of abs) shortFiles.push(f.slice(f.indexOf(SRC_REL) + SRC_REL.length + 1));
+    for (const f of abs) shortFiles.push(relative(srcDir, f).replace(/\\/g, "/"));
     counts.files = shortFiles.length;
     if (shortFiles.length === 0) {
       structure.push(`一个 selftest 都没扫到：${SRC_REL} —— 路径或后缀变了。`);
@@ -244,6 +288,50 @@ export function check({ root = process.cwd() } = {}) {
     }
   }
 
+  // ── ⑥ renderer 侧 selftest 接线（R-UX 实证）─────────────────────────────
+  // 背景：入口 `renderer.selftest.mjs` 尾部用「for 循环数组 + 4 条直连 await import」
+  // 加载 9 组 renderer 纯逻辑 selftest。此前本守卫只盯 src/main：新增 renderer
+  // selftest 忘记接线、或删掉某条 import，main 侧判据不会红，CI 照样绿。
+  const testRenderer = pkg.scripts?.["test:renderer"];
+  if (typeof testRenderer !== "string") {
+    structure.push(`${PKG_REL} 里没有 \`test:renderer\` 脚本 —— renderer selftest 入口清单来源消失了（不是「都接好了」）。`);
+  }
+  const rendererDir = join(root, RENDERER_SRC_REL);
+  const entryAbs = join(root, RENDERER_ENTRY_REL);
+  let rendererFiles = [];
+  if (!existsSync(rendererDir)) {
+    structure.push(`读不到目录 ${RENDERER_SRC_REL} —— renderer 扫描面为 0（不是「renderer selftest 都没了」）。`);
+  } else {
+    rendererFiles = walkRenderer(rendererDir, rendererDir, []);
+    counts.rendererFiles = rendererFiles.length;
+    if (rendererFiles.length === 0) {
+      structure.push(`一个 renderer selftest 都没扫到：${RENDERER_SRC_REL} —— 路径或后缀变了。`);
+    } else if (rendererFiles.length < MIN_RENDERER_SELFTESTS) {
+      structure.push(
+        `只扫到 ${rendererFiles.length} 个 renderer *.selftest.mjs（下界 ${MIN_RENDERER_SELFTESTS}）—— 子树改名或大面积排除，判据不可信。`,
+      );
+    }
+  }
+  let wiredSpecs = [];
+  if (!existsSync(entryAbs)) {
+    structure.push(`读不到 renderer 入口 ${RENDERER_ENTRY_REL} —— 无法核对 renderer selftest 接线（不是「都接好了」）。`);
+  } else if (rendererFiles.length > 0) {
+    wiredSpecs = parseRendererWired(readFileSync(entryAbs, "utf8")).map(normalizeRendererSpec);
+  }
+  const rendererFileSet = new Set(rendererFiles);
+  const wiredSet = new Set(wiredSpecs);
+  const rendererNotWired = rendererFiles.filter((f) => !wiredSet.has(f)).sort();
+  const rendererNoSource = wiredSpecs.filter((w) => !rendererFileSet.has(w)).sort();
+  if (rendererNotWired.length > 0) {
+    problems.push({ kind: "renderer-not-wired", items: rendererNotWired });
+  }
+  if (rendererNoSource.length > 0) {
+    problems.push({ kind: "renderer-no-source", items: rendererNoSource });
+  }
+  if (typeof testRenderer === "string" && !/node\s+[^\s&|;]*renderer\.selftest\.mjs(?![\w.-])/.test(testRenderer)) {
+    problems.push({ kind: "renderer-entry-not-run", items: [] });
+  }
+
   return { structure, problems, counts };
 }
 
@@ -267,7 +355,11 @@ const CASES = [
 ];
 const BUNDLER = "// fixture：preload 自包含打包器\n";
 
-const desktopPkg = ({ listed = CASES, buildMain = "tsc -p tsconfig.json && node scripts/bundle-preload.cjs" } = {}) => ({
+const desktopPkg = ({
+  listed = CASES,
+  buildMain = "tsc -p tsconfig.json && node scripts/bundle-preload.cjs",
+  testRenderer = "node src/renderer/renderer.selftest.mjs",
+} = {}) => ({
   name: "fixture-desktop",
   private: true,
   scripts: {
@@ -275,8 +367,33 @@ const desktopPkg = ({ listed = CASES, buildMain = "tsc -p tsconfig.json && node 
     "test:main":
       "npm run build:agent-worker && tsc -p tsconfig.selftest.json && " +
       listed.map((f) => `node dist-selftest/${f}.js`).join(" && "),
+    "test:renderer": testRenderer,
   },
 });
+
+// fixture renderer 事实源：9 组纯逻辑 selftest（前 5 个走 for 循环数组，后 4 个直连 import），
+// 与真实入口 renderer.selftest.mjs 尾部的接线形态同构。
+const RENDERER_ARRAY = [
+  "pages/config/pure-logic.selftest.mjs",
+  "pages/config/io-result.selftest.mjs",
+  "pages/config/io-layer.selftest.mjs",
+  "pages/config/config-source.selftest.mjs",
+  "pages/config/writer-layer.selftest.mjs",
+];
+const RENDERER_DIRECT = [
+  "pages/apps/apps-helpers.selftest.mjs",
+  "pages/config/agent-matrix.selftest.mjs",
+  "pages/history/history-nav.selftest.mjs",
+  "pages/status/status-helpers.selftest.mjs",
+];
+const RENDERER_CASES = [...RENDERER_ARRAY, ...RENDERER_DIRECT];
+
+/** 按「数组 + 直连」两种形态拼 fixture 入口源码（反证用例可分别裁掉一边）。 */
+function rendererEntrySrc({ array = RENDERER_ARRAY, direct = RENDERER_DIRECT } = {}) {
+  const arr = array.map((f) => `'./${f}'`).join(", ");
+  const directLines = direct.map((f) => `await import('./${f}');`).join("\n");
+  return `for (const p of [${arr}]) await import(p);\n${directLines}\n`;
+}
 
 /** 一段最小 ci.yml：push job（desktop-selftests）+ PR 门控 job（desktop-linux-bundle）。 */
 const ciYaml = ({ pushStep = "npm run test:main", pushIf = null, dropPushJob = false, extra = [] } = {}) =>
@@ -307,13 +424,22 @@ const ciYaml = ({ pushStep = "npm run test:main", pushIf = null, dropPushJob = f
     "",
   ].join("\n");
 
-function desktopTree({ selftests = CASES, pkg, ci, drop = [] } = {}) {
+function desktopTree({
+  selftests = CASES,
+  rendererSelftests = RENDERER_CASES,
+  rendererEntry,
+  pkg,
+  ci,
+  drop = [],
+} = {}) {
   const files = {
     [PKG_REL]: pkg ?? desktopPkg(),
     [CI_REL]: ci ?? ciYaml(),
     [BUNDLER_REL]: BUNDLER,
+    [RENDERER_ENTRY_REL]: rendererEntry ?? rendererEntrySrc(),
   };
   for (const f of selftests) files[`${SRC_REL}/${f}.ts`] = "export const ok = true;\n";
+  for (const f of rendererSelftests) files[`${RENDERER_SRC_REL}/${f}`] = "export const ok = true;\n";
   for (const d of drop) delete files[d];
   return files;
 }
@@ -347,7 +473,7 @@ export function selftest() {
   subprocess("① 干净树：24 项全部在 test:main、build:main 已接打包、有 push job → 绿", desktopTree(), {
     code: 0,
     contains: [
-      `desktop 脚本接线一致：${CASES.length} 个 selftest 全部在 test:main 中且都有源文件`,
+      `desktop 脚本接线一致：${CASES.length} 个 main selftest 全部在 test:main 中且都有源文件`,
       "build:main 已接 preload 自包含打包",
       "push 触发 job：desktop-selftests",
     ],
@@ -492,6 +618,93 @@ export function selftest() {
     { code: 1, contains: ["没有任何 `npm run typecheck:renderer`"], absent: ["脚本接线一致"] },
   );
 
+  // ── 判据⑥ 的用例：renderer 侧 selftest 接线 ──────────────────────────────
+  subprocess("⑰ 正例：renderer 9 组全部被入口加载、test:renderer 执行入口 → 绿", desktopTree(), {
+    code: 0,
+    contains: [
+      `${CASES.length} 个 main selftest 全部在 test:main 中且都有源文件`,
+      `${RENDERER_CASES.length} 个 selftest 全部被入口加载`,
+    ],
+    absent: ["结构错误", "没有被 renderer.selftest.mjs 接线", "没有源文件"],
+  });
+
+  subprocess(
+    "⑱ 【反证·直连 import】删掉 apps-helpers 那条直连 await import → 红并点名",
+    desktopTree({
+      rendererEntry: rendererEntrySrc({
+        direct: RENDERER_DIRECT.filter((f) => f !== "pages/apps/apps-helpers.selftest.mjs"),
+      }),
+    }),
+    {
+      code: 1,
+      contains: [
+        "1 个 renderer selftest **没有被 renderer.selftest.mjs 接线**",
+        "src/renderer/pages/apps/apps-helpers.selftest.mjs",
+      ],
+      absent: ["全部被入口加载"],
+    },
+  );
+
+  subprocess(
+    "⑲ 【反证·for 数组】for 循环数组删掉 writer-layer 一项 → 红并点名",
+    desktopTree({
+      rendererEntry: rendererEntrySrc({
+        array: RENDERER_ARRAY.filter((f) => f !== "pages/config/writer-layer.selftest.mjs"),
+      }),
+    }),
+    {
+      code: 1,
+      contains: ["writer-layer.selftest.mjs"],
+      absent: ["全部被入口加载"],
+    },
+  );
+
+  subprocess(
+    "⑳ 【反证·孤儿】fixture 放一个未接线的 renderer selftest → 红",
+    desktopTree({
+      rendererSelftests: [...RENDERER_CASES, "pages/ghost/orphan.selftest.mjs"],
+    }),
+    {
+      code: 1,
+      contains: ["orphan.selftest.mjs"],
+      absent: ["全部被入口加载"],
+    },
+  );
+
+  subprocess(
+    "㉑ 【反证·入口未执行】test:renderer 不跑 renderer.selftest.mjs → 红",
+    desktopTree({ pkg: desktopPkg({ testRenderer: "echo renderer-selftest" }) }),
+    {
+      code: 1,
+      contains: ["test:renderer", "没有执行 renderer.selftest.mjs 入口"],
+      absent: ["全部被入口加载"],
+    },
+  );
+
+  subprocess(
+    "㉒ 【反证·接线无源】入口接线了一个不存在的 selftest → 红",
+    desktopTree({
+      rendererEntry: rendererEntrySrc({
+        direct: [...RENDERER_DIRECT, "pages/ghost/missing.selftest.mjs"],
+      }),
+    }),
+    {
+      code: 1,
+      contains: ["missing.selftest.mjs", "没有源文件"],
+      absent: ["全部被入口加载"],
+    },
+  );
+
+  subprocess(
+    "㉓ 【结构红】renderer 入口文件整个缺失 → 结构红且不崩栈",
+    desktopTree({ drop: [RENDERER_ENTRY_REL] }),
+    {
+      code: 1,
+      contains: ["结构错误", `读不到 renderer 入口 ${RENDERER_ENTRY_REL}`],
+      absent: ["脚本接线一致", "Error:", "\n    at "],
+    },
+  );
+
   const failed = reportCases(cases, { title: "check-desktop-selftests-wired selftest" });
   if (failed > 0) process.exit(1);
 }
@@ -540,6 +753,17 @@ if (isMain) {
           console.error("  `:report` 恒 exit 0 ⇒ 门禁永远绿 ⇒ 那 11k 行重新失明，");
           console.error("  而且**不会有任何测试变红**（report 模式永远绿）。");
           console.error("  修法：改回 `npm run typecheck:renderer`。");
+        } else if (p.kind === "renderer-not-wired") {
+          console.error("✖ " + p.items.length + " 个 renderer selftest **没有被 renderer.selftest.mjs 接线**：");
+          for (const f of p.items) console.error("  · src/renderer/" + f);
+          console.error("  修法：在入口尾部的 for 循环数组或直连 await import 里补上对应说明符。");
+        } else if (p.kind === "renderer-no-source") {
+          console.error("✖ renderer.selftest.mjs 接线了 " + p.items.length + " 个**没有源文件**的 renderer selftest：");
+          for (const f of p.items) console.error("  · " + f);
+          console.error("  修法：删掉入口里失效的 import，或补回源文件。");
+        } else if (p.kind === "renderer-entry-not-run") {
+          console.error("✖ `test:renderer` 没有执行 renderer.selftest.mjs 入口。");
+          console.error("  修法：test:renderer = \"node src/renderer/renderer.selftest.mjs\"。");
         } else if (p.kind === "no-push-job") {
           console.error("✖ 没有任何**随 push 运行**的 CI job 执行 `npm run test:main`。");
           console.error("  现状：test:main 只挂在 pull_request / workflow_dispatch / schedule 门控的 job 上，");
@@ -557,8 +781,10 @@ if (isMain) {
     console.log(
       "✔ desktop 脚本接线一致：" +
         counts.files +
-        " 个 selftest 全部在 test:main 中且都有源文件；build:main 已接 preload 自包含打包；" +
-        "push 触发 job：" + counts.pushJobs.join(", ") + "。",
+        " 个 main selftest 全部在 test:main 中且都有源文件；build:main 已接 preload 自包含打包；" +
+        "renderer " +
+        counts.rendererFiles +
+        " 个 selftest 全部被入口加载；push 触发 job：" + counts.pushJobs.join(", ") + "。",
     );
   }
 }
