@@ -103,7 +103,7 @@
  *   node scripts/check-size-caps.mjs [--report] [--selftest] [--root <dir>]
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
@@ -1442,6 +1442,14 @@ export function check({ root = process.cwd() } = {}) {
 
 // ── CLI ────────────────────────────────────────────────────────────────
 const SELF = fileURLToPath(import.meta.url);
+const HERE = dirname(SELF);
+/**
+ * 缺省根按**脚本自身位置**锚定（`<repo>/scripts/` 上一级 = 仓根），不回落 `process.cwd()`：
+ * 从子目录（如 apps/admin-web）不带 `--root` 误跑时，旧实现会把子目录当仓库根 ⇒ 基线读不到、
+ * 扫描面塌空。先例：`scripts/guards-repo-report.mjs` 的 `REPO_ROOT = resolve(HERE, "..")`。
+ * `--root` 显式覆盖仍然优先；导出的 `check({ root })` 既有语义不变。
+ */
+const DEFAULT_ROOT = resolve(HERE, "..");
 
 function argValue(argv, flag) {
   const eq = argv.find((a) => a.startsWith(`${flag}=`));
@@ -2429,6 +2437,36 @@ function runSelftest() {
     },
   });
 
+  // ㊲ 默认根锚定：cwd 落在 fixture 子目录、不带 --root 时，根按脚本自身位置推出。
+  // 把守卫与三个共用件镜像进 fixture 的 scripts/ 树：子进程 import.meta.url 落在 fixture 内，
+  // 默认根才能从 fixture 脚本位置推出（跑真仓库副本无法证明「根 = fixture」）。
+  // 反证口径：旧实现回落 process.cwd() ⇒ 根落到子目录、基线读不到 ⇒ 结构红（见反证记录）。
+  cases.push({
+    name: "㊲ 默认根：cwd 在子目录、不带 --root 也按脚本位置定仓库根（不回落 cwd）",
+    fn: () => {
+      const tree = baseTree();
+      const libDir = join(HERE, "lib");
+      tree["scripts/check-size-caps.mjs"] = readFileSync(SELF, "utf8");
+      tree["scripts/lib/guard-selftest.mjs"] = readFileSync(join(libDir, "guard-selftest.mjs"), "utf8");
+      tree["scripts/lib/ratchet-baseline.mjs"] = readFileSync(join(libDir, "ratchet-baseline.mjs"), "utf8");
+      tree["scripts/lib/agent-coverage.mjs"] = readFileSync(join(libDir, "agent-coverage.mjs"), "utf8");
+      const repo = makeFixtureRepo(tree, { prefix: "size-caps-selftest-" });
+      try {
+        const entry = join(repo.dir, "scripts", "check-size-caps.mjs");
+        const subdir = join(repo.dir, "apps", "fixture", "src");
+        expectExit(runGuard(entry, { cwd: subdir }), {
+          code: 0,
+          contains: ["体量上限自检通过"],
+          absent: ["结构错误", "超出体量上限"],
+          withinMs: 20_000,
+          label: "默认根子目录定根",
+        });
+      } finally {
+        repo.cleanup();
+      }
+    },
+  });
+
   const failed = reportCases(cases, { title: "check-size-caps selftest" });
   if (failed > 0) process.exit(1);
 }
@@ -2437,7 +2475,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "
   if (process.argv.includes("--selftest")) {
     runSelftest();
   } else {
-    runCli(resolve(argValue(process.argv, "--root") ?? process.cwd()), {
+    runCli(resolve(argValue(process.argv, "--root") ?? DEFAULT_ROOT), {
       report: process.argv.includes("--report"),
     });
   }
