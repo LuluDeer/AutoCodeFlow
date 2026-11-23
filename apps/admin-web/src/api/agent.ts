@@ -141,8 +141,8 @@ export const agentApi = {
     pageSize?: number;
     stalled?: number | string;
     stalledMinutes?: number | string;
-  }) =>
-    client.get('/agent/sessions', { params }) as Promise<{
+  }, signal?: AbortSignal) =>
+    client.get('/agent/sessions', { params, ...(signal ? { signal } : {}) }) as Promise<{
       items: AgentSession[];
       total: number;
     }>,
@@ -181,8 +181,8 @@ export const agentApi = {
    * ⚠️ `degraded` 必须一起拿：某个观测量读失败时后端会返回 `stalled: false`，
    * 但那个判定**不完整** ⇒ 前端要显示「未知」而不是「正常」（防假事实）。
    */
-  queueStall: () =>
-    client.get('/agent/sessions/queue-stall') as Promise<{
+  queueStall: (signal?: AbortSignal) =>
+    client.get('/agent/sessions/queue-stall', signal ? { signal } : undefined) as Promise<{
       stalled: boolean;
       reason: string | null;
       pendingJobs: number;
@@ -213,8 +213,8 @@ export const agentApi = {
       suppressedBy: 'queue-stall' | null;
       degraded: boolean;
     }>,
-  backloggedCount: () =>
-    client.get('/agent/sessions/backlogged') as Promise<{
+  backloggedCount: (signal?: AbortSignal) =>
+    client.get('/agent/sessions/backlogged', signal ? { signal } : undefined) as Promise<{
       sessionIds: string[];
       count: number;
       probed: number;
@@ -285,8 +285,11 @@ export const agentApi = {
    *   本身不可知，那件事由 `degraded` 表达（两者各自只说自己的事，不互相顶替）；
    * - `degraded` = 任一子查询失败（HTTP 仍 200）；整体不可用时后端给 503。
    */
-  listPendingApprovals: (limit?: number) =>
-    client.get('/agent/approvals/pending', { params: limit ? { limit } : undefined }) as Promise<AgentPendingApprovalsResponse>,
+  listPendingApprovals: (limit?: number, signal?: AbortSignal) =>
+    client.get('/agent/approvals/pending', {
+      params: limit ? { limit } : undefined,
+      ...(signal ? { signal } : {}),
+    }) as Promise<AgentPendingApprovalsResponse>,
   /**
    * R278/U1：**收件箱计数一次拿全**（取代 5 个分散请求：deployments / waiting /
    * stalled / backlogged / queue-stall 各发一次）。
@@ -312,9 +315,10 @@ export const agentApi = {
    * ⚠️ `since` 是后端新增的**可选** query：缺省 = 不筛（旧行为不变）；本模块总是显式传，
    * 因为收件箱只关心「今天要处理的」窗口，窗口外的东西在会话列表里查得到。
    */
-  listFailedSessions: (params?: { since?: string; page?: number; pageSize?: number }) =>
+  listFailedSessions: (params?: { since?: string; page?: number; pageSize?: number }, signal?: AbortSignal) =>
     client.get('/agent/sessions', {
       params: { status: 'failed', ...(params ?? {}) },
+      ...(signal ? { signal } : {}),
     }) as Promise<{ items: AgentSession[]; total: number }>,
   /**
    * R311：TTFV 授权写入（POST /agent/telemetry/consent）。

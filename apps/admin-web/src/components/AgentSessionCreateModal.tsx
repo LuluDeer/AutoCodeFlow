@@ -5,7 +5,7 @@ import { agentApi } from '../api/agent';
 import { useModalA11y } from '../hooks/useModalA11y';
 import { agentKindLabel } from '../utils/agent-label';
 import { message } from '../utils/toast';
-import { showApiError } from '../utils/error';
+import { getErrMsg, showApiError } from '../utils/error';
 
 interface Props {
   open: boolean;
@@ -66,6 +66,7 @@ export default function AgentSessionCreateModal({ open, onClose, onCreated }: Pr
   const advancedRef = useRef<HTMLDetailsElement>(null);
   const [draft, setDraft] = useState(EMPTY_DRAFT);
   const [error, setError] = useState<ValidationError | 'request' | null>(null);
+  const [requestErr, setRequestErr] = useState<unknown>(null);
   const [creating, setCreating] = useState(false);
   const inFlight = useRef(false);
   useEffect(() => () => { inFlight.current = false; }, []);
@@ -73,6 +74,7 @@ export default function AgentSessionCreateModal({ open, onClose, onCreated }: Pr
   function change(field: keyof Draft, value: string) {
     setDraft(prev => ({ ...prev, [field]: value }));
     setError(null);
+    setRequestErr(null);
   }
 
   async function submit() {
@@ -97,6 +99,7 @@ export default function AgentSessionCreateModal({ open, onClose, onCreated }: Pr
       if (!inFlight.current) return;
       // 后端错误码/消息经 showApiError 透出（拦截器已弹过的按标去重）；原位 Alert 保留通用兜底与草稿。
       showApiError(err, t('agents.createFailed'));
+      setRequestErr(err);
       setError('request');
       return;
     } finally {
@@ -111,13 +114,19 @@ export default function AgentSessionCreateModal({ open, onClose, onCreated }: Pr
     onCreated(id);
   }
 
+  const requestFallback = t('agents.createFailed');
   const errorMessage = error && {
     invalidContext: t('agents.createInvalidContext'),
     invalidQuestion: t('agents.createInvalidQuestion'),
     conflict: t('agents.createQuestionConflict'),
     missingGoal: t('agents.createGoalRequired'),
-    request: t('agents.createFailed'),
+    request: requestFallback,
   }[error];
+  // 原位 Alert 副文案：透出后端结构化错误 code/message（getErrMsg 三级降级）；
+  // 通用兜底标题保留，草稿不丢。toast 去重仍由 showApiError 负责，不在此重复弹。
+  const requestDetail = error === 'request' && requestErr != null
+    ? getErrMsg(requestErr, requestFallback)
+    : undefined;
   const questionInvalid = error === 'missingGoal';
   const contextInvalid = error !== null && error !== 'request' && !questionInvalid;
   return (
@@ -191,7 +200,17 @@ export default function AgentSessionCreateModal({ open, onClose, onCreated }: Pr
             </Form.Item>
           </details>
         </Form>
-        {errorMessage && <Alert id={FIELD.error} role="alert" type="error" showIcon title={errorMessage} style={{ marginTop: 16 }} />}
+        {errorMessage && (
+          <Alert
+            id={FIELD.error}
+            role="alert"
+            type="error"
+            showIcon
+            title={errorMessage}
+            description={requestDetail}
+            style={{ marginTop: 16 }}
+          />
+        )}
       </div>
     </Modal>
   );

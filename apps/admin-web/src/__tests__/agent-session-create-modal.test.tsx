@@ -221,4 +221,24 @@ describe('AgentSessionCreateModal', () => {
     expect(vi.mocked(agentApi.create).mock.calls).toEqual([[body], [body]]);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it('UX-C1：后端结构化错误在原位 Alert 透出 message，草稿保留且不双 toast', async () => {
+    vi.mocked(agentApi.create).mockRejectedValueOnce({
+      errorCode: 'AGENT_SESSION_CONFLICT',
+      message: '同上下文已存在进行中会话',
+    });
+    renderModal();
+    fill(QUESTION, '分析失败日志');
+    submit();
+
+    const alert = await screen.findByRole('alert');
+    // 通用兜底标题保留，后端原因进 Alert 副文案。
+    expect(alert.textContent).toContain('已保留输入');
+    expect(alert.textContent).toContain('同上下文已存在进行中会话');
+    // toast 仍走 showApiError 去重口径，不重复弹通用兜底。
+    expect(message.error).toHaveBeenCalledWith('同上下文已存在进行中会话');
+    expect(message.error).not.toHaveBeenCalledWith('创建失败，已保留输入。请重试。');
+    // 草稿不丢。
+    expect(screen.getByLabelText<HTMLTextAreaElement>(QUESTION).value).toBe('分析失败日志');
+  });
 });

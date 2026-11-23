@@ -322,6 +322,40 @@ describe('InboxPage 待办收件箱', () => {
     expect(screen.getByText('NEW')).toBeTruthy();
   }, 15_000);
 
+  // UX-H1 互补侧：序号守卫丢晚到响应，AbortController 在新 reload / 卸载时直接
+  // 中止在途 HTTP 读。本用例钉住两轮 signal 的 abort 副作用（旧 signal 被 abort、
+  // 新 signal 未中止、卸载中止最后一轮）。
+  it('H1：新 reload 中止上一轮在途 signal；卸载中止最后一轮', async () => {
+    const signals: AbortSignal[] = [];
+    const resolvers: Array<(v: InboxSections) => void> = [];
+    vi.mocked(loadInbox).mockImplementation((signal?: AbortSignal) => {
+      signals.push(signal as AbortSignal);
+      return new Promise<InboxSections>((resolve) => { resolvers.push(resolve); });
+    });
+    const { unmount } = renderPage();
+
+    await waitFor(() => expect(signals).toHaveLength(1));
+    const first = signals[0];
+    expect(first?.aborted).toBe(false);
+
+    // 首请求先落地（刷新按钮 loading 态不响应点击，与竞态用例同款前置）。
+    resolvers[0](readySections({}));
+    await screen.findByText('当前没有待你处理的事项');
+    // 等 loading 复位的渲染 flush 到 DOM，避免点击落在按钮 loading 态上被抑制。
+    await act(async () => { await Promise.resolve(); });
+
+    // 手动刷新 → 第 2 轮：旧 controller 必须 abort，新 signal 仍未中止。
+    fireEvent.click(screen.getByRole('button', { name: /刷\s*新/ }));
+    await waitFor(() => expect(signals).toHaveLength(2));
+    expect(first?.aborted).toBe(true);
+    const second = signals[1];
+    expect(second?.aborted).toBe(false);
+
+    // 卸载 → 中止最后一轮在途请求。
+    unmount();
+    expect(second?.aborted).toBe(true);
+  });
+
   it.each([
     ['agentWaiting', 'ready', { ok: false, reason: '会话已在别处终止' }],
     ['backlogged', 'queued', { ok: true }],

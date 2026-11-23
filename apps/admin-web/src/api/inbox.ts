@@ -361,17 +361,17 @@ function pendingApprovalOf(row: AgentPendingApprovalRow): AgentApproval {
  * 「读到了但是降级」两种不同事实（前者 SECTION error 态，后者 total:null + degraded）。
  * 这个结构是**本文件内部的读结果信封**、不映射任何合同 DTO，故刻意不导出。
  */
-function readPendingApprovals(): Promise<{ ok: true; value: AgentPendingApprovalsResponse } | { ok: false; error: unknown }> {
-  return agentApi.listPendingApprovals(SECTION_PAGE_SIZE).then(
+function readPendingApprovals(signal?: AbortSignal): Promise<{ ok: true; value: AgentPendingApprovalsResponse } | { ok: false; error: unknown }> {
+  return agentApi.listPendingApprovals(SECTION_PAGE_SIZE, signal).then(
     (value) => ({ ok: true as const, value }),
     (error) => ({ ok: false as const, error }),
   );
 }
 
-function readWaitingSessions(): Promise<
+function readWaitingSessions(signal?: AbortSignal): Promise<
   { ok: true; value: { items: AgentSession[]; total: number } } | { ok: false; error: unknown }
 > {
-  return agentApi.list({ status: 'waiting_input', page: 1, pageSize: SECTION_PAGE_SIZE }).then(
+  return agentApi.list({ status: 'waiting_input', page: 1, pageSize: SECTION_PAGE_SIZE }, signal).then(
     (value) => ({ ok: true as const, value }),
     (error) => ({ ok: false as const, error }),
   );
@@ -386,11 +386,11 @@ function readWaitingSessions(): Promise<
  * ⚠️ `canResume` 的前提是「**确定**没有待批单」。审批单被截断 / 降级 / 总数未知时
  * 无法断言某会话没有待批单 ⇒ 一律不给「接管/恢复」（未知不等于没有）。
  */
-async function loadAgentWaiting(): Promise<{ approvals: InboxSectionState; sessions: InboxSectionState }> {
+async function loadAgentWaiting(signal?: AbortSignal): Promise<{ approvals: InboxSectionState; sessions: InboxSectionState }> {
   // 两个源各自独立失败：一个挂不拖垮另一个（既有「小节互相隔离」纪律）。
   const [pending, sessionsRes] = await Promise.all([
-    readPendingApprovals(),
-    readWaitingSessions(),
+    readPendingApprovals(signal),
+    readWaitingSessions(signal),
   ]);
 
   // ── 审批单小节 ──
@@ -551,17 +551,17 @@ async function readInboxCounts(
  *
  * `aborted` 两侧都不计入：那是人主动停的，不是待办。
  */
-async function loadAgentFailures(): Promise<InboxSectionState> {
+async function loadAgentFailures(signal?: AbortSignal): Promise<InboxSectionState> {
   // ⚠️ 顺序是**刻意**的（一次串行换一条诚实）：计数先回来，才知道配置的窗口是几小时。
   // 若并行发两路、行固定用默认 24h，而配置是 48h，则「计数 5 / 行 2」里混进了
   // **两种**原因（预算耗尽 + 窗口差）；下方 budgetExcluded 告警会把它们一律说成
   // 「预算耗尽」——一条数字对、结论错的假事实。宁可多一次往返。
-  const { counts, windowHours } = await readInboxCounts();
+  const { counts, windowHours } = await readInboxCounts(signal);
   const rows = await agentApi.listFailedSessions({
     since: failedWindowSince(windowHours),
     page: 1,
     pageSize: SECTION_PAGE_SIZE,
-  });
+  }, signal);
   const items = (rows?.items ?? []).map((s) => ({
     id: `fail-${s.id}`,
     section: 'agentFailures' as const,
@@ -806,8 +806,8 @@ async function readSopBlockedTotal(signal?: AbortSignal): Promise<number | null>
 }
 
 /** 7. 卡住会话（running 且久无进展）。 */
-async function loadStalled(): Promise<{ items: InboxItem[]; total: number | null; returned: number; truncated: boolean }> {
-  const res = await agentApi.list({ stalled: 1, page: 1, pageSize: SECTION_PAGE_SIZE });
+async function loadStalled(signal?: AbortSignal): Promise<{ items: InboxItem[]; total: number | null; returned: number; truncated: boolean }> {
+  const res = await agentApi.list({ stalled: 1, page: 1, pageSize: SECTION_PAGE_SIZE }, signal);
   const items = (res?.items ?? []).map((s) => ({
     id: `stal-${s.id}`,
     section: 'stalled' as const,
@@ -838,18 +838,18 @@ async function loadStalled(): Promise<{ items: InboxItem[]; total: number | null
  * 现在三件事都如实落进 state：`total`（下界/总数）、`probed`（探了多少）、
  * `truncated`（探针是否触顶），措辞由 `describeBacklogCount` 唯一决定。
  */
-async function loadBacklogged(): Promise<{
+async function loadBacklogged(signal?: AbortSignal): Promise<{
   items: InboxItem[];
   truncated: boolean;
   probed: number | null;
   total: number | null;
   returned: number;
 }> {
-  const backlog = await agentApi.backloggedCount();
+  const backlog = await agentApi.backloggedCount(signal);
   const ids = backlog?.sessionIds ?? [];
   let pending: AgentSession[];
   try {
-    const pendingRes = await agentApi.list({ status: 'pending', page: 1, pageSize: 200 });
+    const pendingRes = await agentApi.list({ status: 'pending', page: 1, pageSize: 200 }, signal);
     pending = pendingRes?.items ?? [];
   } catch {
     pending = [];
@@ -894,8 +894,8 @@ export interface QueueStallSnapshot {
   workersKnown: boolean;
 }
 
-async function loadQueueStall(): Promise<QueueStallSnapshot | null> {
-  return agentApi.queueStall();
+async function loadQueueStall(signal?: AbortSignal): Promise<QueueStallSnapshot | null> {
+  return agentApi.queueStall(signal);
 }
 
 /** 10. 最近失败（只读跳转）。 */
@@ -921,26 +921,26 @@ export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
       ({ items, ...meta }) => READY('deployments', items, meta),
       (error) => ERROR('deployments', error),
     ),
-    loadAgentWaiting().catch((error: unknown) => ({
+    loadAgentWaiting(signal).catch((error: unknown) => ({
       approvals: ERROR('agentApprovals', error),
       sessions: ERROR('agentWaiting', error),
     })),
     // R279：新小节独立装载——失败**只**让它自己是 error 态，不拖垮其余小节。
-    loadAgentFailures().catch((error: unknown) => ERROR('agentFailures', error)),
+    loadAgentFailures(signal).catch((error: unknown) => ERROR('agentFailures', error)),
     // R280：同理。**503（服务未装配）也走这里** ⇒ error 态 + 重试，绝不渲染成空列表。
     loadSopClarifications(signal).catch((error: unknown) => ERROR('sopClarifications', error)),
     // R286：同理。**503（服务未装配）也走这里** ⇒ error 态 + 重试。
     // 关键：503 读成「读不到」，绝不读成「0 条阻塞工单」——那会把「没读到」演成好消息。
     loadSopBlocked(signal).catch((error: unknown) => ERROR('sopBlocked', error)),
-    loadStalled().then(
+    loadStalled(signal).then(
       ({ items, ...meta }) => READY('stalled', items, meta),
       (error) => ERROR('stalled', error),
     ),
-    loadBacklogged().then(
+    loadBacklogged(signal).then(
       ({ items, ...meta }) => READY('backlogged', items, meta),
       (error) => ERROR('backlogged', error),
     ),
-    loadQueueStall().then(
+    loadQueueStall(signal).then(
       (snapshot): StallResult => ({ snapshot }),
       (error): StallResult => ({ error }),
     ),

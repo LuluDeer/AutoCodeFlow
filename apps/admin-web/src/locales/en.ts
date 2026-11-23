@@ -230,6 +230,9 @@ export default {
   'dashboard.northStar.promotion.notEligible': 'Promotion criteria not met',
   'dashboard.northStar.promotion.detail': '{{weeks}} weeks / {{installs}} active installs',
   'dashboard.northStar.promotion.note': 'Meeting the criteria only permits promotion; ops must still verify consent coverage. Dual-caliber display stays until promoted.',
+  'dashboard.northStar.promotion.reason.SAMPLE_WEEKS_SHORT': 'Sample period {{weeks}} weeks < {{minWeeks}} weeks',
+  'dashboard.northStar.promotion.reason.ACTIVE_INSTALL_WEEKS_SHORT': 'Active-install weeks total {{installs}} < {{minActiveInstallWeeks}}',
+  'dashboard.northStar.promotion.reason.OPS_PREREQ_COVERAGE': 'Ops prerequisite (not verified by script): telemetry/status coverage must be full with count>0',
 
   // CRON-DESC-01: human-readable description for common 5-field cron
   // expressions (utils/cron-desc.ts); unsupported shapes yield null and the

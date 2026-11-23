@@ -402,6 +402,13 @@
             "type": "boolean",
             "x-i18n-en": "Whether both numeric thresholds are met (excludes ops prerequisite coverage=full)"
           },
+          "reasonDetails": {
+            "description": "Structured reasons: stable code + verbatim text, parallel to the legacy reasons[] array",
+            "items": {
+              "$ref": "#/components/schemas/AgentNorthStarPromotionReasonDto"
+            },
+            "type": "array"
+          },
           "reasons": {
             "description": "未达标逐条说明 + 运营前置提示（脚本不验证 coverage）",
             "items": {
@@ -421,10 +428,28 @@
         },
         "required": [
           "eligible",
+          "reasonDetails",
           "reasons",
           "weeks",
           "activeInstallWeeks",
           "thresholds"
+        ],
+        "type": "object"
+      },
+      "AgentNorthStarPromotionReasonDto": {
+        "properties": {
+          "code": {
+            "description": "Stable promotion-reason category code; coloring and localization must key off this, not the text",
+            "type": "string"
+          },
+          "text": {
+            "description": "Human-readable reason text verbatim from the backend; fallback display when the code is unknown to the frontend",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "text"
         ],
         "type": "object"
       },

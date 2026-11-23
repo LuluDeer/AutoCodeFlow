@@ -4,6 +4,7 @@ import { ErrorCode } from "../../../../common/errors/error-codes";
 import {
   BUSINESS_CONFIRMED_SQL,
   BUSINESS_RESULTS_PROXY_SQL,
+  NORTH_STAR_PROMOTION_REASON_CODES,
   NorthStarMetricsService,
   PROXY_CALIBER_WARNING,
   STRICT_CALIBER_WARNING,
@@ -226,6 +227,13 @@ describe("NorthStarMetricsService · report", () => {
     expect(
       r.promotionEligibility.reasons.some((s) => s.includes("脚本不验证")),
     ).toBe(true);
+    // UX-F1：结构化 reasonDetails 与 legacy reasons 一一对应，code 稳定可判。
+    const details = r.promotionEligibility.reasonDetails;
+    expect(details).toHaveLength(1);
+    expect(details[0].code).toBe(
+      NORTH_STAR_PROMOTION_REASON_CODES.OPS_PREREQ_COVERAGE,
+    );
+    expect(details[0].text).toBe(r.promotionEligibility.reasons[0]);
   });
 
   it("升主不达标（样本期）：3 周 × 5 install ⇒ eligible=false + 周不足说明", async () => {
@@ -237,6 +245,14 @@ describe("NorthStarMetricsService · report", () => {
         s.includes("样本期 3 周 < 4 周"),
       ),
     ).toBe(true);
+    expect(
+      r.promotionEligibility.reasonDetails.some(
+        (d) => d.code === NORTH_STAR_PROMOTION_REASON_CODES.SAMPLE_WEEKS_SHORT,
+      ),
+    ).toBe(true);
+    expect(
+      r.promotionEligibility.reasonDetails.map((d) => d.text),
+    ).toEqual(r.promotionEligibility.reasons);
   });
 
   it("升主不达标（sample_size）：4 周 × 4 install = 16 ⇒ eligible=false + install 不足说明", async () => {
@@ -248,5 +264,15 @@ describe("NorthStarMetricsService · report", () => {
         s.includes("活跃 install 周合计 16 < 20"),
       ),
     ).toBe(true);
+    expect(
+      r.promotionEligibility.reasonDetails.some(
+        (d) =>
+          d.code ===
+          NORTH_STAR_PROMOTION_REASON_CODES.ACTIVE_INSTALL_WEEKS_SHORT,
+      ),
+    ).toBe(true);
+    expect(
+      r.promotionEligibility.reasonDetails.map((d) => d.text),
+    ).toEqual(r.promotionEligibility.reasons);
   });
 });

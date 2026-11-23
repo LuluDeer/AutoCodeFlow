@@ -146,6 +146,26 @@ describe('任务详情 → Agent 只读诊断', () => {
     expect(http.post.mock.calls[1]).toEqual(http.post.mock.calls[0]);
   });
 
+  it('UX-C1：后端结构化错误在原位 Alert 透出 message，问题草稿保留', async () => {
+    const errorSpy = vi.spyOn(message, 'error').mockImplementation(() => undefined as never);
+    http.post.mockRejectedValueOnce({
+      errorCode: 'OPS_WATCH_SCOPE_CONFLICT',
+      message: '范围会话与当前任务冲突',
+    });
+    renderPage();
+    const { dialog, field, confirm } = await openDialog();
+    fireEvent.change(field, { target: { value: '排查昨天的失败记录' } });
+    fireEvent.click(confirm);
+    const alert = await dialog.findByRole('alert');
+    // 通用兜底标题保留，后端原因进 Alert 副文案。
+    expect(alert.textContent).toContain('可以重试');
+    expect(alert.textContent).toContain('范围会话与当前任务冲突');
+    expect(errorSpy).toHaveBeenCalledWith('范围会话与当前任务冲突');
+    expect(field.value).toBe('排查昨天的失败记录');
+    expect(confirm.disabled).toBe(false);
+    errorSpy.mockRestore();
+  });
+
   it('普通用户看不到入口，确认前降权也不会创建', async () => {
     setRole('user');
     renderPage();

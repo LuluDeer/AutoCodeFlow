@@ -27,15 +27,20 @@ const mockedMetrics = vi.mocked(metricsApi, true);
 const GUARD = '⚠️ 有产物/有证据 ≠ 被业务确认，代理值勿当严格值';
 
 /** R448 升主判据 fixture（与脚本 computePromotionEligibility 同形状）。 */
-const promotion = (eligible: boolean, weeks: number, installs: number) => ({
-  eligible,
-  reasons: eligible
-    ? ['运营前置（脚本不验证）：telemetry/status 的 coverage 须为 full 且 count>0']
-    : [`样本期 ${weeks} 周 < 4 周`, `活跃 install 周合计 ${installs} < 20`, '运营前置（脚本不验证）：telemetry/status 的 coverage 须为 full 且 count>0'],
-  weeks,
-  activeInstallWeeks: installs,
-  thresholds: { minWeeks: 4, minActiveInstallWeeks: 20 },
-});
+const OPS_TEXT = '运营前置（脚本不验证）：telemetry/status 的 coverage 须为 full 且 count>0';
+const promotion = (eligible: boolean, weeks: number, installs: number) => {
+  const reasons = eligible
+    ? [OPS_TEXT]
+    : [`样本期 ${weeks} 周 < 4 周`, `活跃 install 周合计 ${installs} < 20`, OPS_TEXT];
+  const reasonDetails = eligible
+    ? [{ code: 'OPS_PREREQ_COVERAGE', text: OPS_TEXT }]
+    : [
+        { code: 'SAMPLE_WEEKS_SHORT', text: `样本期 ${weeks} 周 < 4 周` },
+        { code: 'ACTIVE_INSTALL_WEEKS_SHORT', text: `活跃 install 周合计 ${installs} < 20` },
+        { code: 'OPS_PREREQ_COVERAGE', text: OPS_TEXT },
+      ];
+  return { eligible, reasons, reasonDetails, weeks, activeInstallWeeks: installs, thresholds: { minWeeks: 4, minActiveInstallWeeks: 20 } };
+};
 
 const fullReport: NorthStarReport = {
   as_of: '2026-11-20T10:30:00.000Z',
@@ -184,5 +189,66 @@ describe('R328 北极星双口径看板卡片', () => {
     const reasons = screen.getByTestId('north-star-promotion-reasons').textContent ?? '';
     expect(reasons).toContain('样本期 3 周 < 4 周');
     expect(reasons).toContain('coverage');
+  });
+
+  // ── UX-F1：着色/本地化按后端稳定 code 判定，不再在人话文案里匹配英文子串 ──
+  it('⑦ 按 code 着色：运营前置码标 warning，阈值码走 secondary', async () => {
+    mockedMetrics.getNorthStar.mockResolvedValue({ ...fullReport, promotionEligibility: promotion(false, 2, 5) });
+
+    renderCard();
+
+    const box = await screen.findByTestId('north-star-promotion-reasons');
+    const warnings = box.querySelectorAll('.ant-typography-warning');
+    const secondary = box.querySelectorAll('.ant-typography-secondary');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.textContent).toContain('coverage');
+    // secondary = 2 条阈值原因 + 1 条 note 说明（同容器内）。
+    expect(secondary).toHaveLength(3);
+    // 阈值码按 i18n 键插值渲染（周数/下限来自判据字段，不解析文案）。
+    expect(box.textContent).toContain('样本期 2 周 < 4 周');
+  });
+
+  it('⑧ 反证：文案含 coverage 但码非运营前置 ⇒ 不标 warning；未知码回落后端原文', async () => {
+    mockedMetrics.getNorthStar.mockResolvedValue({
+      ...fullReport,
+      promotionEligibility: {
+        eligible: false,
+        reasons: ['未来新增判据 coverage 提示'],
+        reasonDetails: [{ code: 'FUTURE_NEW_CODE', text: '未来新增判据 coverage 提示' }],
+        weeks: 2,
+        activeInstallWeeks: 5,
+        thresholds: { minWeeks: 4, minActiveInstallWeeks: 20 },
+      },
+    });
+
+    renderCard();
+
+    const box = await screen.findByTestId('north-star-promotion-reasons');
+    // 子串匹配移除后：文本里有 coverage 也不得被误判成运营前置 warning。
+    expect(box.querySelectorAll('.ant-typography-warning')).toHaveLength(0);
+    // 未登记的 code 不裸渲染码值，回落到后端 text 原文。
+    expect(box.textContent).toContain('未来新增判据 coverage 提示');
+    expect(box.textContent).not.toContain('FUTURE_NEW_CODE');
+  });
+
+  it('⑨ 旧后端回落：未下发 reasonDetails 时按 legacy reasons 原文直出，普通弱化色', async () => {
+    const pe = promotion(false, 2, 5);
+    const legacyPe = {
+      eligible: pe.eligible,
+      reasons: pe.reasons,
+      weeks: pe.weeks,
+      activeInstallWeeks: pe.activeInstallWeeks,
+      thresholds: pe.thresholds,
+    };
+    mockedMetrics.getNorthStar.mockResolvedValue({
+      ...fullReport,
+      promotionEligibility: legacyPe as NorthStarReport['promotionEligibility'],
+    });
+
+    renderCard();
+
+    const box = await screen.findByTestId('north-star-promotion-reasons');
+    expect(box.textContent).toContain('样本期 2 周 < 4 周');
+    expect(box.querySelectorAll('.ant-typography-warning')).toHaveLength(0);
   });
 });

@@ -31,11 +31,64 @@ import '../../i18n';
 const { Text } = Typography;
 
 /**
- * 升主原因高亮的匹配标记：后端「运营前置（telemetry coverage=full）」原因句含英文
- * 子串 `coverage`。⚠️ 这是文案子串耦合——后端改措辞会静默降级；待 reasons 改为
- * 结构化类别码后应按字段判定（UX-F1）。
+ * 后端升主原因类别码（与 admin-api `NORTH_STAR_PROMOTION_REASON_CODES` 对齐）。
+ * UX-F1：着色 / 本地化按稳定 code 判定，不再在人话文案里匹配英文子串。
  */
-const COVERAGE_REASON_MARKER = 'coverage';
+const REASON_CODE = {
+  SAMPLE_WEEKS_SHORT: 'SAMPLE_WEEKS_SHORT',
+  ACTIVE_INSTALL_WEEKS_SHORT: 'ACTIVE_INSTALL_WEEKS_SHORT',
+  OPS_PREREQ_COVERAGE: 'OPS_PREREQ_COVERAGE',
+} as const;
+
+type PromotionEligibility = NonNullable<NorthStarReport['promotionEligibility']>;
+
+/** code → 本地化文案；未登记的码回落后端原文 text（不裸渲染码值）。 */
+function reasonLabel(
+  pe: PromotionEligibility,
+  detail: { code: string; text: string },
+  t: ReturnType<typeof useTranslation>['t'],
+): string {
+  switch (detail.code) {
+    case REASON_CODE.SAMPLE_WEEKS_SHORT:
+      return t('dashboard.northStar.promotion.reason.SAMPLE_WEEKS_SHORT', {
+        weeks: pe.weeks,
+        minWeeks: pe.thresholds?.minWeeks,
+      });
+    case REASON_CODE.ACTIVE_INSTALL_WEEKS_SHORT:
+      return t('dashboard.northStar.promotion.reason.ACTIVE_INSTALL_WEEKS_SHORT', {
+        installs: pe.activeInstallWeeks,
+        minActiveInstallWeeks: pe.thresholds?.minActiveInstallWeeks,
+      });
+    case REASON_CODE.OPS_PREREQ_COVERAGE:
+      return t('dashboard.northStar.promotion.reason.OPS_PREREQ_COVERAGE');
+    default:
+      return detail.text;
+  }
+}
+
+/** 单条原因的视图模型：本地化文案 + 着色口径。 */
+interface PromotionReasonView {
+  label: string;
+  tone: 'warning' | 'secondary';
+}
+
+/**
+ * 结构化 reasons 视图模型。优先消费后端 `reasonDetails`（code + text）；
+ * 旧后端未下发该字段时回落 legacy `reasons` 人话数组（普通弱化色、原文直出）。
+ */
+function buildPromotionReasons(
+  pe: PromotionEligibility,
+  t: ReturnType<typeof useTranslation>['t'],
+): PromotionReasonView[] {
+  const details = pe.reasonDetails ?? [];
+  if (details.length > 0) {
+    return details.map((detail) => ({
+      label: reasonLabel(pe, detail, t),
+      tone: detail.code === REASON_CODE.OPS_PREREQ_COVERAGE ? 'warning' : 'secondary',
+    }));
+  }
+  return (pe.reasons ?? []).map((text) => ({ label: text, tone: 'secondary' as const }));
+}
 
 /** 后端 as_of 是 ISO 字符串；按界面语言本地化，非法值回退原文（不吞信息）。 */
 function formatAsOf(value: string | undefined, locale: string): string {
@@ -235,13 +288,13 @@ export default function NorthStarCard() {
             </Text>
           </div>
           <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }} data-testid="north-star-promotion-reasons">
-            {data.promotionEligibility.reasons.map((reason, idx) => (
+            {buildPromotionReasons(data.promotionEligibility, t).map((reason, idx) => (
               <Text
                 key={idx}
-                type={reason.includes(COVERAGE_REASON_MARKER) ? 'warning' : 'secondary'}
+                type={reason.tone}
                 style={{ fontSize: 11 }}
               >
-                {reason}
+                {reason.label}
               </Text>
             ))}
             <Text type="secondary" style={{ fontSize: 11 }}>{t('dashboard.northStar.promotion.note')}</Text>

@@ -94,6 +94,31 @@ export const PROMOTION_THRESHOLDS = { minWeeks: 4, minActiveInstallWeeks: 20 };
 const PROMOTION_OPS_PREREQ =
   "运营前置（脚本不验证）：telemetry/status 的 coverage 须为 full 且 count>0";
 
+/**
+ * R448 升主判据原因类别码（结构化标记）。
+ *
+ * 前端着色 / 本地化必须按 `code` 判定，不再在人话文案里匹配英文子串（UX-F1：
+ * 旧实现靠 `reason.includes('coverage')` 高亮，后端改措辞即静默降级）。
+ * 码值是稳定契约，人话 `text` 可随措辞调整；新增类别码时在此枚举追加。
+ */
+export const NORTH_STAR_PROMOTION_REASON_CODES = {
+  /** 样本期周数不足阈值。 */
+  SAMPLE_WEEKS_SHORT: "SAMPLE_WEEKS_SHORT",
+  /** 活跃 install 周合计不足阈值。 */
+  ACTIVE_INSTALL_WEEKS_SHORT: "ACTIVE_INSTALL_WEEKS_SHORT",
+  /** 运营前置：telemetry 授权覆盖需 full 且 count>0（脚本不验证）。 */
+  OPS_PREREQ_COVERAGE: "OPS_PREREQ_COVERAGE",
+} as const;
+
+export type NorthStarPromotionReasonCode =
+  (typeof NORTH_STAR_PROMOTION_REASON_CODES)[keyof typeof NORTH_STAR_PROMOTION_REASON_CODES];
+
+/** 单条升主原因：类别码 + 人话文本并存（向后兼容：旧消费方继续读 `reasons`）。 */
+export interface NorthStarPromotionReason {
+  code: NorthStarPromotionReasonCode;
+  text: string;
+}
+
 export function computePromotionEligibility(
   strictWeeks: { active_installs: number }[],
 ) {
@@ -103,17 +128,29 @@ export function computePromotionEligibility(
     0,
   );
   const { minWeeks, minActiveInstallWeeks } = PROMOTION_THRESHOLDS;
-  const reasons: string[] = [];
-  if (weeks < minWeeks) reasons.push(`样本期 ${weeks} 周 < ${minWeeks} 周`);
-  if (activeInstallWeeks < minActiveInstallWeeks) {
-    reasons.push(
-      `活跃 install 周合计 ${activeInstallWeeks} < ${minActiveInstallWeeks}`,
-    );
+  const reasonDetails: NorthStarPromotionReason[] = [];
+  if (weeks < minWeeks) {
+    reasonDetails.push({
+      code: NORTH_STAR_PROMOTION_REASON_CODES.SAMPLE_WEEKS_SHORT,
+      text: `样本期 ${weeks} 周 < ${minWeeks} 周`,
+    });
   }
-  reasons.push(PROMOTION_OPS_PREREQ);
+  if (activeInstallWeeks < minActiveInstallWeeks) {
+    reasonDetails.push({
+      code: NORTH_STAR_PROMOTION_REASON_CODES.ACTIVE_INSTALL_WEEKS_SHORT,
+      text: `活跃 install 周合计 ${activeInstallWeeks} < ${minActiveInstallWeeks}`,
+    });
+  }
+  reasonDetails.push({
+    code: NORTH_STAR_PROMOTION_REASON_CODES.OPS_PREREQ_COVERAGE,
+    text: PROMOTION_OPS_PREREQ,
+  });
+  // 向后兼容：`reasons` 仍是人话字符串数组，既有消费方（侧车对账、旧前端）不受影响。
+  const reasons = reasonDetails.map((r) => r.text);
   return {
     eligible: weeks >= minWeeks && activeInstallWeeks >= minActiveInstallWeeks,
     reasons,
+    reasonDetails,
     weeks,
     activeInstallWeeks,
     thresholds: { ...PROMOTION_THRESHOLDS },

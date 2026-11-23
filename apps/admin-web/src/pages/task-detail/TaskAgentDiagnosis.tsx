@@ -7,7 +7,7 @@ import { agentApi } from '../../api/agent';
 import { useModalA11y } from '../../hooks/useModalA11y';
 import { isAdminUser, useAuthStore } from '../../store/auth';
 import { agentSessionUrl } from '../../utils/agentSessionUrl';
-import { showApiError } from '../../utils/error';
+import { getErrMsg, showApiError } from '../../utils/error';
 
 const QUESTION_ID = 'task-agent-diagnosis-question';
 const TARGET_ID = 'task-agent-diagnosis-target';
@@ -17,6 +17,7 @@ export default function TaskAgentDiagnosis({ taskId, taskName }: { taskId: strin
   const navigate = useNavigate();
   const [draft, setDraft] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'creating' | 'failed'>('idle');
+  const [requestErr, setRequestErr] = useState<unknown>(null);
   const inFlight = useRef(false);
   // A task/role change unmounts this action. A late response must not take over the new page.
   useEffect(() => () => { inFlight.current = false; }, []);
@@ -24,6 +25,11 @@ export default function TaskAgentDiagnosis({ taskId, taskName }: { taskId: strin
   const target = t('taskDetail.agentTarget', { taskId });
   const question = draft?.trim();
   const creating = status === 'creating';
+  const requestFallback = t('taskDetail.agentCreateFailed');
+  // 原位 Alert 副文案：透出后端结构化错误 code/message；通用兜底标题与草稿问题保留。
+  const requestDetail = status === 'failed' && requestErr != null
+    ? getErrMsg(requestErr, requestFallback)
+    : undefined;
 
   async function confirm() {
     if (!question || inFlight.current || !isAdminUser(useAuthStore.getState().user)) return;
@@ -43,6 +49,7 @@ export default function TaskAgentDiagnosis({ taskId, taskName }: { taskId: strin
         inFlight.current = false;
         // 后端错误码/消息经 showApiError 透出；原位 Alert 保留通用兜底与草稿问题。
         showApiError(err, t('taskDetail.agentCreateFailed'));
+        setRequestErr(err);
         setStatus('failed');
       }
       return;
@@ -59,6 +66,7 @@ export default function TaskAgentDiagnosis({ taskId, taskName }: { taskId: strin
         disabled={creating}
         onClick={() => {
           setStatus('idle');
+          setRequestErr(null);
           setDraft(t('taskDetail.agentDefaultQuestion'));
         }}
       >
@@ -90,10 +98,13 @@ export default function TaskAgentDiagnosis({ taskId, taskName }: { taskId: strin
                 value={draft ?? ''} disabled={creating} onChange={(event) => {
                   setDraft(event.target.value);
                   setStatus('idle');
+                  setRequestErr(null);
                 }} />
             </Form.Item>
           </Form>
-          {status === 'failed' && <Alert role="alert" type="error" showIcon title={t('taskDetail.agentCreateFailed')} />}
+          {status === 'failed' && (
+            <Alert role="alert" type="error" showIcon title={requestFallback} description={requestDetail} />
+          )}
         </div>
       </Modal>
     </>

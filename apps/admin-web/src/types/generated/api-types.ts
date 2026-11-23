@@ -4460,11 +4460,19 @@ export interface components {
             activeInstallWeeks: number;
             /** @description 两数值阈值是否均满足（不含运营前置 coverage=full） */
             eligible: boolean;
+            /** @description Structured reasons: stable code + verbatim text, parallel to the legacy reasons[] array */
+            reasonDetails: components["schemas"]["AgentNorthStarPromotionReasonDto"][];
             /** @description 未达标逐条说明 + 运营前置提示（脚本不验证 coverage） */
             reasons: string[];
             thresholds: components["schemas"]["AgentNorthStarPromotionThresholdsDto"];
             /** @description 严格值周数 */
             weeks: number;
+        };
+        AgentNorthStarPromotionReasonDto: {
+            /** @description Stable promotion-reason category code; coloring and localization must key off this, not the text */
+            code: string;
+            /** @description Human-readable reason text verbatim from the backend; fallback display when the code is unknown to the frontend */
+            text: string;
         };
         AgentNorthStarPromotionThresholdsDto: {
             /** @description 活跃 install 周合计下限 */
@@ -5102,7 +5110,7 @@ export interface components {
              * @description 是否对所有 RUNNING 状态的部署触发滚动升级
              * @default false
              */
-            triggerDeploy?: boolean;
+            triggerDeploy: boolean;
             /** @description 新版本号，例如 1.2.3 */
             version: string;
         };
@@ -5580,7 +5588,7 @@ export interface components {
              * @description DEP-04：新部署派发前是否需要第二人审批
              * @default false
              */
-            approvalRequired?: boolean;
+            approvalRequired: boolean;
             /** @description 应用描述 */
             description?: string;
             entrypoint?: string;
@@ -5616,7 +5624,7 @@ export interface components {
              * @default daemon
              * @enum {string}
              */
-            runMode?: "once" | "daemon" | "scheduled";
+            runMode: "once" | "daemon" | "scheduled";
             /** @description 启动命令覆盖（留空则使用 manifest 的 entrypoint） */
             startCommand?: string;
         };
@@ -5643,7 +5651,7 @@ export interface components {
              * @description 同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）
              * @default 1
              */
-            maxConcurrentPerDevice?: number;
+            maxConcurrentPerDevice: number;
             /** @description 互斥组名（唯一），如 ziniao-browser */
             name: string;
             /**
@@ -5651,7 +5659,7 @@ export interface components {
              * @default device
              * @enum {string}
              */
-            scope?: "device" | "global";
+            scope: "device" | "global";
         };
         CreateProjectDto: {
             /** @description 项目描述 */
@@ -5833,7 +5841,7 @@ export interface components {
              * @default user
              * @enum {string}
              */
-            role?: "admin" | "user";
+            role: "admin" | "user";
             /** @example admin */
             username: string;
         };
@@ -7752,7 +7760,7 @@ export interface components {
              * @default info
              * @enum {string}
              */
-            level?: "info" | "warning" | "error" | "critical";
+            level: "info" | "warning" | "error" | "critical";
             taskId?: string;
             taskName?: string;
             title?: string;
@@ -8725,7 +8733,7 @@ export interface components {
              * @description DEP-04：新部署派发前是否需要第二人审批
              * @default false
              */
-            approvalRequired?: boolean;
+            approvalRequired: boolean;
             /** @description 应用描述 */
             description?: string;
             entrypoint?: string;
@@ -8796,7 +8804,7 @@ export interface components {
              * @description 同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）
              * @default 1
              */
-            maxConcurrentPerDevice?: number;
+            maxConcurrentPerDevice: number;
             /** @description 互斥组名（唯一），如 ziniao-browser */
             name?: string;
             /**
@@ -8804,7 +8812,7 @@ export interface components {
              * @default device
              * @enum {string}
              */
-            scope?: "device" | "global";
+            scope: "device" | "global";
         };
         UpdateProjectDto: {
             /** @description 项目描述 */
@@ -8968,7 +8976,7 @@ export interface components {
              * @default user
              * @enum {string}
              */
-            role?: "admin" | "user";
+            role: "admin" | "user";
             /** @example admin */
             username?: string;
         };
@@ -9031,11 +9039,11 @@ export interface components {
         UpsertConfigDto: {
             description?: string;
             /** @default false */
-            isSecret?: boolean;
+            isSecret: boolean;
             key: string;
             value?: string;
             /** @default string */
-            valueType?: string;
+            valueType: string;
         };
         UpsertProjectMemberDto: {
             /**

@@ -236,6 +236,9 @@ export default {
   'dashboard.northStar.promotion.notEligible': '未达升主条件',
   'dashboard.northStar.promotion.detail': '样本 {{weeks}} 周 / 活跃安装 {{installs}}',
   'dashboard.northStar.promotion.note': '条件满足仅表示可升主；运营还需确认授权覆盖完整，当前仍双口径并列',
+  'dashboard.northStar.promotion.reason.SAMPLE_WEEKS_SHORT': '样本期 {{weeks}} 周 < {{minWeeks}} 周',
+  'dashboard.northStar.promotion.reason.ACTIVE_INSTALL_WEEKS_SHORT': '活跃 install 周合计 {{installs}} < {{minActiveInstallWeeks}}',
+  'dashboard.northStar.promotion.reason.OPS_PREREQ_COVERAGE': '运营前置（脚本不验证）：telemetry/status 的 coverage 须为 full 且 count>0',
 
   // CRON-DESC-01：常用 5 段 Cron 表达式的人类可读描述（utils/cron-desc.ts；
   // 超出子集的表达式不产出描述，回退只显示原始表达式）

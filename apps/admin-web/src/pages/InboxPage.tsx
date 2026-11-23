@@ -11,7 +11,7 @@
  *   禁用无权限按钮；
  * - 最近失败只读跳转，不在本页处置。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -409,17 +409,25 @@ export default function InboxPage() {
   const [rejectReason, setRejectReason] = useState('');
 
   const guard = useRaceGuard();
+  // UX-H1：AbortController 与序号守卫互补——序号守卫丢「晚到的旧响应」，
+  // AbortController 在新 reload / 卸载时直接中止在途 HTTP 读，避免旧请求占连接、
+  // 晚到抛取消错误。每轮 reload 换新 controller，旧 controller 先 abort。
+  const abortRef = useRef<AbortController | null>(null);
   const reload = useCallback(async () => {
     // UX-H1：并发两次拉取（手动刷新 / 动作后自动 reload / 小节重试）时，慢的旧响应
     // 后到不得覆盖新 sections。序号判据与 useAssignableExecutors、SopsPage detailSeq 同款。
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     const seq = guard.next();
     setLoading(true);
     try {
-      const next = await loadInbox();
+      const next = await loadInbox(controller.signal);
       if (!guard.isLatest(seq)) return;
       setSections(next);
     } catch (err) {
-      if (!guard.isLatest(seq)) return;
+      // 已被新 reload 取代 / 卸载中止：不弹错误、不写 sections。
+      if (!guard.isLatest(seq) || controller.signal.aborted) return;
       showApiError(err);
     } finally {
       if (guard.isLatest(seq)) setLoading(false);
@@ -429,6 +437,11 @@ export default function InboxPage() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // 卸载时中止在途请求，避免组件卸载后回调写状态 / 抛取消错误。
+  useEffect(() => () => {
+    abortRef.current?.abort();
+  }, []);
 
   // ── 写动作 ────────────────────────────────────────────────────────────────
 

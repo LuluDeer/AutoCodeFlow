@@ -76,6 +76,24 @@ export class AgentNorthStarPromotionThresholdsDto {
   minActiveInstallWeeks: number;
 }
 
+/**
+ * R448 升主判据单条原因：稳定类别码 + 人话文本并存。
+ * 前端着色 / 本地化按 `code` 判定；`text` 是后端原文，作为未知码的回落展示。
+ */
+export class AgentNorthStarPromotionReasonDto {
+  @ApiProperty({
+    description:
+      "Stable promotion-reason category code; coloring and localization must key off this, not the text",
+  })
+  code: string;
+
+  @ApiProperty({
+    description:
+      "Human-readable reason text verbatim from the backend; fallback display when the code is unknown to the frontend",
+  })
+  text: string;
+}
+
 /** R448 升主判据（可计算，与脚本 computePromotionEligibility 同口径）。 */
 export class AgentNorthStarPromotionDto {
   @ApiProperty({
@@ -88,6 +106,13 @@ export class AgentNorthStarPromotionDto {
     description: "未达标逐条说明 + 运营前置提示（脚本不验证 coverage）",
   })
   reasons: string[];
+
+  @ApiProperty({
+    type: [AgentNorthStarPromotionReasonDto],
+    description:
+      "Structured reasons: stable code + verbatim text, parallel to the legacy reasons[] array",
+  })
+  reasonDetails: AgentNorthStarPromotionReasonDto[];
 
   @ApiProperty({ description: "严格值周数" })
   weeks: number;
