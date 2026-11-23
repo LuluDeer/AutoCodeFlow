@@ -370,7 +370,7 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
 
   const cols: ColumnsType<ConfigHistory> = [
     { title: t('sysSettings.history.col.time'), dataIndex: 'createdAt', width: 170,
-      render: (v: string) => v ? formatDateTime(v) : '-' },
+      render: (v: string) => v ? formatDateTime(v) : '—' },
     { title: t('sysSettings.history.col.operator'), dataIndex: 'username', width: 100, render: (v: string) => v ?? t('sysSettings.history.system') },
     { title: t('sysSettings.history.col.action'), dataIndex: 'action', width: 70,
       render: (v: ConfigHistory['action']) => v === 'create' ? t('sysSettings.history.action.create')

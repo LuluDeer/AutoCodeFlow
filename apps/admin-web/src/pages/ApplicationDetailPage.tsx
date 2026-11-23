@@ -677,7 +677,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
             // 可读名，解析不到如实回落地址。
             render: (v: string | null) => {
               const name = nameOf({ executorAddress: v });
-              if (!name) return v || '-';
+              if (!name) return v || '—';
               return (
                 <Tooltip title={v ?? undefined}>
                   <span>{name}</span>
@@ -926,7 +926,7 @@ function DeploymentEventsTable({ app }: { app: Application }) {
       ellipsis: true,
       render: (v: string | null, r: AppDeploymentEventRow) => {
         const name = nameOf({ executorId: r.executorId, executorAddress: v });
-        if (!name) return v || '-';
+        if (!name) return v || '—';
         return (
           <Tooltip title={v ?? undefined}>
             <span>{name}</span>
@@ -1161,7 +1161,7 @@ function ReleasesTab({ app }: { app: Application }) {
       // 注：AppReleaseRow 没有 executorId，只能按 address 匹配。
       render: (v: string | null) => {
         const name = nameOf({ executorAddress: v });
-        if (!name) return v || '-';
+        if (!name) return v || '—';
         return (
           <Tooltip title={v ?? undefined}>
             <span>{name}</span>

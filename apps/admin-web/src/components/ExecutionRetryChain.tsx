@@ -126,7 +126,7 @@ export default function ExecutionRetryChain({ taskId, data, taskMaxRetry, retryC
                 </Link>
               )}
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {link.triggerType ? triggerLabels[link.triggerType] ?? link.triggerType : '-'}
+                {link.triggerType ? triggerLabels[link.triggerType] ?? link.triggerType : '—'}
                 {/* ADR-017 阶段 3（决策 §7）：执行器显示可读名（id 优先、地址回落），
                     与执行详情卡/列表页同口径。地址是诊断身份，作为 tooltip 保留。 */}
                 {nameOf(link) ?? link.executorAddress

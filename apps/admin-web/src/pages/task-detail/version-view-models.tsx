@@ -115,7 +115,7 @@ export function buildVersionColumns(deps: VersionColumnsDeps) {
         <Tooltip title={formatDateTime(v)}>
           <Text style={{ fontSize: 12 }}>{formatRelativeTime(v, t)}</Text>
         </Tooltip>
-      ) : '-',
+      ) : '—',
     },
     {
       title: t('taskDetail.version.col.creator'),

@@ -168,6 +168,6 @@ describe('中台执行器列接线守卫（源码）', () => {
     const nameOfCalls = detailSrc.match(/nameOf\(\{ executorAddress: v \}\)/g) ?? [];
     expect(nameOfCalls.length).toBe(2);
     // 解析不到时必须如实回落地址（而不是显示空白/'未知'）
-    expect(detailSrc).toMatch(/if \(!name\) return v \|\| '-';/);
+    expect(detailSrc).toMatch(/if \(!name\) return v \|\| '—';/);
   });
 });

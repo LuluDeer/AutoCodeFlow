@@ -254,7 +254,7 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
       title: t('eventSub.deadLetter.col.time'), dataIndex: 'createdAt', width: 160,
       onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
       onCell: () => ({ className: 'ui09-hide-mobile' }),
-      render: (v: string) => (v ? formatDateTime(v) : '-'),
+      render: (v: string) => (v ? formatDateTime(v) : '—'),
     },
     {
       title: t('eventSub.deadLetter.col.action'), key: 'action', width: 90, fixed: 'right' as const,

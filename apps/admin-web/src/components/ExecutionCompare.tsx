@@ -17,12 +17,12 @@ const HIGHLIGHT_KEYS = new Set(['params', 'exitCode', 'duration', 'failureReason
 
 function formatCompareValue(key: string, val: unknown): string {
   if (key === 'startTime' || key === 'endTime') {
-    return val ? formatDateTime(String(val)) : '-';
+    return val ? formatDateTime(String(val)) : '—';
   }
   if (key === 'duration' && typeof val === 'number') {
     return formatDurationShort(val);
   }
-  if (val === null || val === undefined || val === '') return '-';
+  if (val === null || val === undefined || val === '') return '—';
   if (typeof val === 'object') return JSON.stringify(val, null, 2);
   return String(val);
 }
@@ -92,13 +92,13 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
           const val = exec?.[record.key as keyof TaskExecution];
           if (record.key === 'status') {
             const color = val === 'success' ? 'green' : val === 'failed' ? 'red' : 'default';
-            return <Tag color={color}>{String(val ?? '-')}</Tag>;
+            return <Tag color={color}>{String(val ?? '—')}</Tag>;
           }
           // P2-3：失败分类显示本地化标签（未知值在 failureReasonLabel 内回退原 token），
           // 差异高亮仍由下方统一逻辑按原始值集合计算。
           let display: string;
           if (record.key === 'failureReason') {
-            display = failureReasonLabel(typeof val === 'string' ? val : null, t) || '-';
+            display = failureReasonLabel(typeof val === 'string' ? val : null, t) || '—';
           } else {
             display = formatCompareValue(record.key, val);
           }
@@ -191,8 +191,8 @@ export default function ExecutionCompare({ executions }: ExecutionCompareProps) 
       return <Tag color={color}>{v}</Tag>;
     }},
     { title: t('execCompare.table.triggerType'), dataIndex: 'triggerType', key: 'triggerType' },
-    { title: t('execCompare.table.startTime'), dataIndex: 'startTime', key: 'startTime', render: (v: string) => v ? formatDateTime(v) : '-' },
-    { title: t('execCompare.table.duration'), dataIndex: 'duration', key: 'duration', render: (v: number) => v ?? '-' },
+    { title: t('execCompare.table.startTime'), dataIndex: 'startTime', key: 'startTime', render: (v: string) => v ? formatDateTime(v) : '—' },
+    { title: t('execCompare.table.duration'), dataIndex: 'duration', key: 'duration', render: (v: number) => v ?? '—' },
   ];
 
   const rowSelection = {
