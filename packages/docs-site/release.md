@@ -79,7 +79,7 @@ release-please 打 tag 使用 `secrets.RELEASE_PLEASE_TOKEN || github.token`。G
 cd apps/executor-desktop
 # 1) bump apps/executor-desktop/package.json 到新版本
 # 2) 提交后打独立 tag
-git tag desktop-v1.12.0 && git push origin desktop-v1.12.0
+git tag desktop-v1.12.1 && git push origin desktop-v1.12.1
 # 3) GitHub Actions → release-desktop.yml → 守卫 + 三平台出包 + 上传
 ```
 
