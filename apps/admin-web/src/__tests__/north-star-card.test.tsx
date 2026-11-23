@@ -141,6 +141,22 @@ describe('R328 北极星双口径看板卡片', () => {
     expect(screen.queryByTestId('north-star-confirmed')).toBeNull();
   });
 
+  // UX-D1：拦截器 reject 的是响应信封对象——错误行必须用 getErrMsg 取后端 message，
+  // 不得 String(error) 得到 [object Object]，也不得复用 warnings 栏的「口径护栏」标题。
+  it('④b 错误信封：透出后端 message，不出现 [object Object]，不挂护栏标题', async () => {
+    mockedMetrics.getNorthStar.mockRejectedValue({
+      errorCode: 'NORTH_STAR_UPSTREAM_TIMEOUT',
+      message: '指标上游超时：metrics 服务 504',
+    });
+
+    renderCard();
+
+    const block = await screen.findByTestId('north-star-read-failed');
+    expect(block.textContent).toContain('指标上游超时：metrics 服务 504');
+    expect(block.textContent).not.toContain('[object Object]');
+    expect(block.textContent).not.toContain('口径护栏');
+  });
+
   // ── R448/R449 升主判据展示（数值阈值达标/未达标 + 运营前置提示）──
   it('⑤ 升主达标：显示已达 Tag + 周数/install 明细 + 运营前置提示', async () => {
     mockedMetrics.getNorthStar.mockResolvedValue({ ...fullReport, promotionEligibility: promotion(true, 4, 20) });

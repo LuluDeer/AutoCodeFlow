@@ -3878,6 +3878,7 @@ export default {
   'sops.assignmentCancel.ok': 'Assignment cancelled',
   'sops.assignmentCancel.fail': 'Failed to cancel assignment',
   'sops.assignmentCancel.targetTag': 'Focused',
+  'sops.assignmentDeepLinkMissing': 'The assignment targeted by the deep link is not in the current list (it may be terminal or archived); below are all assignments listed for this SOP.',
   'sops.reassignEscalatedHint': 'This assignment ended via escalation — takeover replies are no longer delivered to the executor; re-assign to recover',
   'sops.escalatedNotDelivered': 'Assignment is terminal; replies are not delivered — re-assign to recover',
   'sops.replyNotDelivered': 'Replied, but the assignment is terminal (the executor already closed it out after escalation) — the reply will not be delivered; re-assign to recover',
@@ -4055,6 +4056,7 @@ export default {
   'agents.kind.sopReview': 'SOP review',
   'agents.kind.appScaffold': 'App scaffold',
   'agents.kind.chat': 'Chat',
+  'agents.unnamedSession': '(Untitled session)',
   // Tool call result statuses (boundary gate / circuit breaker / approval trail)
   'agents.toolStatus.ok': 'OK',
   'agents.toolStatus.denied': 'Denied',

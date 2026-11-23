@@ -385,6 +385,29 @@ describe('R289 B：深链定位边界与安全降级', () => {
     expect(row.getAttribute('data-highlighted')).toBeNull();
     expect(document.querySelectorAll('[data-highlighted="true"]')).toHaveLength(0);
   });
+
+  it('G1：合法 UUID 但不在当前指派列表 → 指派 Tab 顶部呈现「目标指派不存在」中性提示，无残留高亮', async () => {
+    const missingId = '7c2e1b90-bbbb-4bcd-9ef0-000000000099';
+    const state: MockBackendState = {
+      sops: [makeSop()],
+      assignmentsBySop: { [SOP_ID]: [makeAssignment({ id: ASG_BLOCKED_ID, status: 'blocked' })] },
+      clarificationsByAsg: {},
+    };
+    installHttpBackend(state);
+
+    render(
+      <MemoryRouter initialEntries={[`/sops?sop=${SOP_ID}&assignment=${missingId}`]}>
+        <SopsPage />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(document.getElementById(`sop-assignment-${ASG_BLOCKED_ID}`)).toBeTruthy();
+    });
+    const alert = await screen.findByTestId('sop-assignment-deeplink-missing');
+    expect(alert.textContent).toContain('深链指向的指派工单在当前列表中不存在');
+    expect(document.querySelectorAll('[data-highlighted="true"]')).toHaveLength(0);
+  });
 });
 
 describe('R289 C：七态按钮门控与澄清答复隐藏', () => {

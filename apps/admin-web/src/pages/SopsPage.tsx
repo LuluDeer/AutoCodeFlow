@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
+  Alert,
   Button,
   Card,
   Drawer,
@@ -202,6 +203,8 @@ export default function SopsPage() {
   const [media, setMedia] = useState<Record<string, SopMedia[]>>({});
   // R289：深链高亮指派
   const [highlightedAssignmentId, setHighlightedAssignmentId] = useState<string | null>(null);
+  // 深链带了 assignment 但当前 SOP 的指派列表里找不到（已终态/已归档/链接过期）⇒ 顶部中性提示。
+  const [assignmentLinkMissing, setAssignmentLinkMissing] = useState(false);
 
   // B-14：silent 轮询不闪 loading（定时器每 15s 触发，spinner 抖动是纯噪音）
   // UX-05（对齐 ExecutorPackagesPage/TaskTemplatesPage 先例）：首次/手动加载失败
@@ -264,6 +267,7 @@ export default function SopsPage() {
     setClarifications({});
     setMedia({});
     setHighlightedAssignmentId(null);
+    setAssignmentLinkMissing(false);
     setDetailLoading(true);
     setDetailError(null);
     try {
@@ -273,9 +277,12 @@ export default function SopsPage() {
       setAssignments(asg);
       if (targetAssignmentId && asg.some((a) => a.id === targetAssignmentId)) {
         setHighlightedAssignmentId(targetAssignmentId);
+        setAssignmentLinkMissing(false);
         scrollToSectionWhenReady(assignmentRowDomId(targetAssignmentId));
       } else {
         setHighlightedAssignmentId(null);
+        // 深链目标不在当前指派列表：不静默——给一条中性提示，避免误以为列表漏载。
+        setAssignmentLinkMissing(!!targetAssignmentId);
       }
       const clars: Record<string, SopClarification[]> = {};
       const med: Record<string, SopMedia[]> = {};
@@ -348,8 +355,10 @@ export default function SopsPage() {
       setAssignTarget(null);
       if (detail) await openDetail(detail);
       void load();
-    } catch {
-      message.error(t('sops.assignFailed'));
+    } catch (err: unknown) {
+      // 能力不满足 / 版本不存在 / 未发布等后端口径经 showApiError 透出（有 errorCode
+      // 走本地化字典，无码回落后端 message）；拦截器已弹过的会按标去重，不再双 toast。
+      showApiError(err, t('sops.assignFailed'));
     } finally {
       setAssigning(false);
     }
@@ -419,8 +428,8 @@ export default function SopsPage() {
       dispatchInboxRefresh();
       if (detail) await openDetail(detail, 'assignments', highlightedAssignmentId);
       void load();
-    } catch {
-      message.error(t('sops.replyFailed'));
+    } catch (err: unknown) {
+      showApiError(err, t('sops.replyFailed'));
     } finally {
       setReplying(false);
     }
@@ -882,6 +891,15 @@ export default function SopsPage() {
                       </Button>
                       <Text type="secondary">{t('sops.assignHint')}</Text>
                     </Space>
+                    {assignmentLinkMissing && (
+                      <Alert
+                        type="info"
+                        showIcon
+                        style={{ marginBottom: 8 }}
+                        title={t('sops.assignmentDeepLinkMissing')}
+                        data-testid="sop-assignment-deeplink-missing"
+                      />
+                    )}
                     <Table<SopAssignment>
                       rowKey="id"
                       columns={assignmentColumns}

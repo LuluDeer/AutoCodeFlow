@@ -247,9 +247,14 @@ export default function TelemetrySettings() {
             >
               <Switch
                 checked={enabled}
-                disabled={isLoading}
+                // UX-J1：Popconfirm 待确认期间禁用，避免二次点击翻转待确认方向
+                // （确认载荷与首次点击意图相反）。
+                disabled={isLoading || pendingOptIn !== null}
                 loading={submitting}
-                onChange={(next) => { setPendingOptIn(next); }}
+                onChange={(next) => {
+                  if (pendingOptIn !== null) return;
+                  setPendingOptIn(next);
+                }}
                 aria-label={t('sysSettings.telemetry.switch')}
               />
             </Popconfirm>

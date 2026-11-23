@@ -414,7 +414,8 @@ async function loadAgentWaiting(): Promise<{ approvals: InboxSectionState; sessi
       return {
         id: `apr-${row.approvalKey}`,
         section: 'agentApprovals' as const,
-        title: row.sessionTitle || row.sessionId,
+        // 标题缺失留空串，由页面层回落「未命名会话」文案；**绝不退回 sessionId**（uuid 不可读）。
+        title: row.sessionTitle ?? '',
         subtitle: row.toolName,
         waitingSince: row.createdAt ?? null,
         detailUrl: agentSessionUrl(row.sessionId, { tab: 'approvals', approvalKey: row.approvalKey }),
@@ -433,7 +434,8 @@ async function loadAgentWaiting(): Promise<{ approvals: InboxSectionState; sessi
     const items = (list?.items ?? []).map((s) => ({
       id: `ses-${s.id}`,
       section: 'agentWaiting' as const,
-      title: s.title || s.id,
+      // 标题缺失留空串，由页面层回落类型标签/未命名文案；**绝不退回 sessionId**。
+      title: s.title ?? '',
       subtitle: s.waitingFor || s.createdBy || s.kind,
       waitingSince: s.createdAt ?? null,
       detailUrl: agentSessionUrl(s.id, {
@@ -973,15 +975,23 @@ export async function loadInbox(signal?: AbortSignal): Promise<InboxSections> {
   };
 }
 
+/**
+ * R211：计数类读失败（`degradedCounts`）⇒ 在排队数**可能更大**。
+ * 用 `+` 表达「这是下界」，而不是让运营把 `pendingJobs=3` 当成「一共就 3 条」
+ * （与 R395 的 backlog `3+` 同款口径）。
+ */
+export function queueStallPendingLabel(snapshot: QueueStallSnapshot): string {
+  return snapshot.degradedCounts ? `${snapshot.pendingJobs}+` : `${snapshot.pendingJobs}`;
+}
+
 function queueStallBannerItem(snapshot: QueueStallSnapshot): InboxItem {
-  // R211：计数类读失败 ⇒ 在排队数**可能更大**。用 `+` 表达「这是下界」，而不是
-  // 让运营把 `pendingJobs=3` 当成「一共就 3 条」（与 R395 的 backlog `3+` 同款口径）。
-  const pending = snapshot.degradedCounts ? `${snapshot.pendingJobs}+` : `${snapshot.pendingJobs}`;
   return {
     id: 'queue-stall-banner',
     section: 'queueStall',
-    title: snapshot.reason ?? 'queue-stall',
-    subtitle: `pendingJobs=${pending}`,
+    // 横幅由页面直接读 `snapshot` 渲染；这里不把后端 reason 枚举代码写进标题
+    // （那是内部 token，不是给人看的文案）。
+    title: '',
+    subtitle: `pendingJobs=${queueStallPendingLabel(snapshot)}`,
     waitingSince: null,
     detailUrl: '/agent-sessions',
   };

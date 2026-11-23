@@ -24,10 +24,18 @@ import { GlobalOutlined, StarFilled, WarningOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { NorthStarReport } from '../../api/metrics';
 import { useNorthStarReport } from '../../api/queries';
+import { getErrMsg } from '../../utils/error';
 // UI-10：i18n 模块副作用完成初始化；树内用 useTranslation 读 key。
 import '../../i18n';
 
 const { Text } = Typography;
+
+/**
+ * 升主原因高亮的匹配标记：后端「运营前置（telemetry coverage=full）」原因句含英文
+ * 子串 `coverage`。⚠️ 这是文案子串耦合——后端改措辞会静默降级；待 reasons 改为
+ * 结构化类别码后应按字段判定（UX-F1）。
+ */
+const COVERAGE_REASON_MARKER = 'coverage';
 
 /** 后端 as_of 是 ISO 字符串；按界面语言本地化，非法值回退原文（不吞信息）。 */
 function formatAsOf(value: string | undefined, locale: string): string {
@@ -135,9 +143,9 @@ export default function NorthStarCard() {
           <Text type="danger" style={{ fontSize: 12 }}>{t('dashboard.northStar.readFailed')}</Text>
           <Button size="small" onClick={() => void refetch()}>{t('dashboard.refresh')}</Button>
           {error ? (
-            <Tooltip title={String(error)}>
-              <Text type="secondary" style={{ fontSize: 11 }}>{t('dashboard.northStar.warning')}</Text>
-            </Tooltip>
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              {getErrMsg(error, t('dashboard.northStar.readFailed'))}
+            </Text>
           ) : null}
         </div>
       </CardShell>
@@ -230,7 +238,7 @@ export default function NorthStarCard() {
             {data.promotionEligibility.reasons.map((reason, idx) => (
               <Text
                 key={idx}
-                type={reason.includes('coverage') ? 'warning' : 'secondary'}
+                type={reason.includes(COVERAGE_REASON_MARKER) ? 'warning' : 'secondary'}
                 style={{ fontSize: 11 }}
               >
                 {reason}

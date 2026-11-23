@@ -192,6 +192,19 @@ describe('R311 TTFV 授权设置', () => {
     expect(agentApi.telemetryConsent).not.toHaveBeenCalled();
   });
 
+  // UX-J1：Popconfirm 打开期间二次点击 Switch 不得翻转待确认方向——否则确认载荷
+  // 与首次点击意图相反（隐私授权方向错了）。待确认期间 Switch 应禁用。
+  it('J1：待确认期间二次点击 Switch 不翻转待确认方向、Switch 禁用', async () => {
+    renderTelemetry();
+    await waitFor(() => expect((screen.getByRole('switch') as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('switch')); // ON → 待确认撤销
+    expect(await screen.findByText('确认撤销匿名统计授权？')).toBeTruthy();
+    fireEvent.click(screen.getByRole('switch')); // 二次点击
+    expect((screen.getByRole('switch') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText('确认参与匿名统计？')).toBeNull();
+    expect(screen.getByText('确认撤销匿名统计授权？')).toBeTruthy();
+  });
+
   it('mutation 成功后 invalidate status query 并重取', async () => {
     renderTelemetry();
     await screen.findByText('inst-alpha');

@@ -35,7 +35,8 @@ import InboxFilterBar, { type InboxFilterMode } from '../components/inbox/InboxF
 import { Modal as ConfirmModal } from '../utils/modal';
 import { message } from '../utils/toast';
 import { showApiError } from '../utils/error';
-import { agentApprovalStatusLabel } from '../utils/agent-label';
+import { useRaceGuard } from '../utils/raceGuard';
+import { agentApprovalStatusLabel, agentKindLabel } from '../utils/agent-label';
 import { formatRelativeTime } from '../utils/timeFormat';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import {
@@ -54,6 +55,7 @@ import {
   isSelfDeployment,
   blockedHours,
   loadInbox,
+  queueStallPendingLabel,
   sortInboxItemsByWaitingSince,
   type InboxItem,
   type InboxSectionKey,
@@ -132,6 +134,14 @@ function inboxTitleText(item: InboxItem, t: ReturnType<typeof useTranslation>['t
   // **绝不退回 uuid**——一串十六进制对运营没有任何信息量，还会被误读成「已定位」。
   if (item.section === 'sopBlocked' && !item.title.trim()) {
     return t('inbox.sopBlocked.unnamed');
+  }
+  // 会话标题缺失：审批行类型不可知 ⇒ 「未命名会话」；等待会话行先回落类型标签，仍为空再回落未命名。
+  // 与 AgentSessionsPage 同口径：不退回 sessionId。
+  if (item.section === 'agentApprovals' && !item.title.trim()) {
+    return t('agents.unnamedSession');
+  }
+  if (item.section === 'agentWaiting' && !item.title.trim()) {
+    return agentKindLabel(item.session?.kind, t) || t('agents.unnamedSession');
   }
   return item.title;
 }
@@ -231,15 +241,17 @@ function InboxRowActions({
               {t('inbox.action.approve')}
             </Button>
           </Tooltip>
-          <Button
-            size="small"
-            danger
-            disabled={writeDisabled}
-            loading={rowActing && actingAction === 'reject'}
-            onClick={() => onReject(item)}
-          >
-            {t('inbox.action.reject')}
-          </Button>
+          <Tooltip title={self ? t('inbox.selfApprovalHint') : undefined}>
+            <Button
+              size="small"
+              danger
+              disabled={writeDisabled}
+              loading={rowActing && actingAction === 'reject'}
+              onClick={() => onReject(item)}
+            >
+              {t('inbox.action.reject')}
+            </Button>
+          </Tooltip>
           {item.detailUrl && (
             <Link to={item.detailUrl} style={{ fontSize: 12 }}>
               {t('inbox.action.viewDetail')}
@@ -396,17 +408,23 @@ export default function InboxPage() {
   const [rejectTarget, setRejectTarget] = useState<InboxItem | null>(null);
   const [rejectReason, setRejectReason] = useState('');
 
+  const guard = useRaceGuard();
   const reload = useCallback(async () => {
+    // UX-H1：并发两次拉取（手动刷新 / 动作后自动 reload / 小节重试）时，慢的旧响应
+    // 后到不得覆盖新 sections。序号判据与 useAssignableExecutors、SopsPage detailSeq 同款。
+    const seq = guard.next();
     setLoading(true);
     try {
       const next = await loadInbox();
+      if (!guard.isLatest(seq)) return;
       setSections(next);
     } catch (err) {
+      if (!guard.isLatest(seq)) return;
       showApiError(err);
     } finally {
-      setLoading(false);
+      if (guard.isLatest(seq)) setLoading(false);
     }
-  }, []);
+  }, [guard]);
 
   useEffect(() => {
     void reload();
@@ -561,9 +579,20 @@ export default function InboxPage() {
               title={queueStall.stalled ? t('inbox.queueStall.stalled') : t('inbox.queueStall.ok')}
               description={
                 <div>
-                  {queueStall.reason && <Paragraph style={{ margin: '4px 0' }}>{queueStall.reason}</Paragraph>}
+                  {queueStall.stalled && (
+                    <Paragraph style={{ margin: '4px 0' }}>
+                      {/* R211：reason 是后端枚举代码（paused / no-worker），必须走 i18n 映射；
+                          workersKnown=false 时不得断言「没有 worker」，与 QueueStallBadge 同口径。 */}
+                      {queueStall.reason === 'paused'
+                        ? t('agents.queueStall.pausedHint', { pending: queueStall.pendingJobs })
+                        : queueStall.workersKnown !== false
+                          ? t('agents.queueStall.noWorkerHint', { pending: queueStall.pendingJobs })
+                          : t('agents.queueStall.workerUnknownHint', { pending: queueStall.pendingJobs })}
+                    </Paragraph>
+                  )}
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    {t('inbox.queueStall.pendingJobs', { n: queueStall.pendingJobs })}
+                    {t('inbox.queueStall.pendingJobs', { n: queueStallPendingLabel(queueStall) })}
+                    {queueStall.degradedCounts ? ` · ${t('agents.queueStall.countsPartialHint')}` : ''}
                     {queueStall.degraded ? ` · ${t('inbox.queueStall.degraded')}` : ''}
                   </Text>
                   <div style={{ marginTop: 8 }}>

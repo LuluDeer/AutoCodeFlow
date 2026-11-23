@@ -9,13 +9,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { Modal } from 'antd';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import '../i18n';
 import InboxPage from '../pages/InboxPage';
 import { loadInbox, deploymentsApi, agentApi, INBOX_REFRESH_EVENT } from '../api/inbox';
 import { client } from '../api/client';
 import { message } from '../utils/toast';
 import { useAuthStore } from '../store/auth';
-import type { InboxSections, InboxItem } from '../api/inbox';
+import type { InboxSections, InboxItem, QueueStallSnapshot } from '../api/inbox';
 
 // spy 保留真实聚合与第二人规则；纯页面测试可单独覆盖 loadInbox。
 vi.mock('../api/inbox', { spy: true });
@@ -113,15 +115,19 @@ const session = (id: string, status: string) => ({ id, status, title: id });
 // - `unknown` 换成「审批单读不到」的降级形态（degraded + total:null），
 //   保留原用例「读取失败不隐藏已知审批、也不假报空态」的判据面；
 // - `approvalReadFails` 参数保留（签名不动），返回 true 时整体报错（等价旧语义）。
-function mockAgentInbox(opts: { allFail?: boolean | (() => boolean); unreadable?: (id: string) => boolean } = {}) {
+function mockAgentInbox(opts: { allFail?: boolean | (() => boolean); unreadable?: (id: string) => boolean; stall?: Partial<QueueStallSnapshot> } = {}) {
   // `allFail` 允许传函数：测试里「先失败、重试后成功」需要**每次请求时**重新求值。
   const allFailNow = (): boolean => (typeof opts.allFail === 'function' ? opts.allFail() : opts.allFail ?? false);
   const unreadable = opts.unreadable ?? (() => false);
+  const stallBody: QueueStallSnapshot = {
+    stalled: true, reason: null, pendingJobs: 2, degraded: false, degradedCounts: false, workersKnown: true,
+    ...opts.stall,
+  };
   return vi.spyOn(client, 'get').mockImplementation(async (url, config) => {
     if (url === '/app-deployments/approvals/pending') return { data: [], total: 0 };
     if (url === '/metrics/failures') return [];
     if (url === '/agent/sessions/backlogged') return { sessionIds: ['queued', 'id-only'], probed: 2, truncated: false };
-    if (url === '/agent/sessions/queue-stall') return { stalled: true, pendingJobs: 2 };
+    if (url === '/agent/sessions/queue-stall') return stallBody;
     if (url === '/agent/sessions') {
       const params = config?.params as { stalled?: number; status?: string } | undefined;
       const items = params?.stalled ? [session('running', 'running')]
@@ -280,6 +286,42 @@ describe('InboxPage 待办收件箱', () => {
     await waitFor(() => expect(vi.mocked(loadInbox)).toHaveBeenCalledTimes(2));
   });
 
+  // UX-H1：reload 无序号/Abort 守卫时，并发两次拉取、旧响应后到会覆盖新 sections。
+  // 场景：手动刷新（旧 seq）与错误小节重试（新 seq）并发；新响应先到，旧响应晚到
+  // ⇒ 有守卫必须丢弃旧响应，界面保持 NEW。
+  it('H1：并发两次 reload，旧响应后到不得覆盖新 sections（序号竞态守卫）', async () => {
+    const v1: InboxSections = {
+      ...readySections({ deployments: [depItem({ title: 'V1' })] }),
+      agentApprovals: { key: 'agentApprovals', status: 'error', items: [], error: new Error('boom') },
+    };
+    const resolvers: Array<(v: InboxSections) => void> = [];
+    vi.mocked(loadInbox).mockImplementation(
+      () => new Promise<InboxSections>((resolve) => { resolvers.push(resolve); }),
+    );
+    renderPage();
+    resolvers[0](v1);
+    await screen.findByText('V1');
+
+    // 刷新按钮 → 第 2 次请求（旧 seq，悬而未决）
+    fireEvent.click(screen.getByRole('button', { name: /刷\s*新/ }));
+    await waitFor(() => expect(loadInbox).toHaveBeenCalledTimes(2));
+
+    // 错误小节重试 → 第 3 次请求（最新 seq，悬而未决）；重试按钮不受 loading 禁用
+    const retry = await screen.findByRole('button', { name: /重\s*试/ });
+    fireEvent.click(retry);
+    await waitFor(() => expect(loadInbox).toHaveBeenCalledTimes(3));
+
+    // 新 seq（第 3 次）先落地 → NEW
+    resolvers[2](readySections({ deployments: [depItem({ title: 'NEW' })] }));
+    await screen.findByText('NEW');
+
+    // 旧 seq（第 2 次）晚落地 → 有守卫必须被丢弃，不得把 NEW 覆盖回 OLD
+    resolvers[1](readySections({ deployments: [depItem({ title: 'OLD' })] }));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByText('OLD')).toBeNull();
+    expect(screen.getByText('NEW')).toBeTruthy();
+  }, 15_000);
+
   it.each([
     ['agentWaiting', 'ready', { ok: false, reason: '会话已在别处终止' }],
     ['backlogged', 'queued', { ok: true }],
@@ -356,5 +398,88 @@ describe('InboxPage 待办收件箱', () => {
     const rejectBtn = screen.getByRole('button', { name: /拒\s*绝/ });
     expect((approveBtn as HTMLButtonElement).disabled).toBe(true);
     expect((rejectBtn as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // ── UX-A1/A2：停摆横幅 reason 走 i18n 映射；degradedCounts 下界 +；workersKnown 限定语 ──
+  it('A1：reason=paused 映射「暂停」文案，不透出枚举代码 paused', async () => {
+    mockAgentInbox({ stall: { reason: 'paused', pendingJobs: 3, workersKnown: true, degradedCounts: false } });
+    renderPage();
+    const banner = await screen.findByTestId('inbox-section-queueStall');
+    expect(banner.textContent).toContain('暂停');
+    expect(banner.textContent).toContain('3');
+    expect(banner.textContent).not.toContain('paused');
+  });
+
+  it('A1：reason=no-worker 且 worker 已知 → 「没有 worker 注册」，不透出 no-worker', async () => {
+    mockAgentInbox({ stall: { reason: 'no-worker', pendingJobs: 5, workersKnown: true, degradedCounts: false } });
+    renderPage();
+    const banner = await screen.findByTestId('inbox-section-queueStall');
+    expect(banner.textContent).toContain('没有 worker 注册');
+    expect(banner.textContent).not.toContain('no-worker');
+  });
+
+  it('A2：workersKnown=false → 「没读到 worker」限定语，不得断言没有 worker', async () => {
+    mockAgentInbox({ stall: { reason: 'no-worker', pendingJobs: 5, workersKnown: false, degradedCounts: false } });
+    renderPage();
+    const banner = await screen.findByTestId('inbox-section-queueStall');
+    expect(banner.textContent).toContain('没读到');
+    expect(banner.textContent).not.toContain('没有 worker 注册');
+  });
+
+  it('A2：degradedCounts=true → 等待任务数带 + 下界标记并附「可能不止这些」', async () => {
+    mockAgentInbox({ stall: { reason: 'paused', pendingJobs: 3, workersKnown: true, degradedCounts: true } });
+    renderPage();
+    const banner = await screen.findByTestId('inbox-section-queueStall');
+    expect(banner.textContent).toContain('3+');
+    expect(banner.textContent).toContain('可能不止这些');
+  });
+
+  // ── UX-E1：标题缺失回落未命名/类型标签，绝不退回 sessionId ──
+  it('E1：审批行标题缺失回落「（未命名会话）」，行内不出现 sessionId', async () => {
+    const unnamed: InboxItem = {
+      id: 'apr-x', section: 'agentApprovals', title: '', subtitle: 'shell',
+      waitingSince: '2026-01-01T00:00:00Z', detailUrl: '/agent-sessions?session=sess-abc',
+      session: { id: 'sess-abc', status: 'pending', title: null, kind: 'chat' } as never,
+    };
+    vi.mocked(loadInbox).mockResolvedValue(readySections({ agentApprovals: [unnamed] }));
+    renderPage();
+    const row = await screen.findByTestId('inbox-row-agentApprovals');
+    expect(row.textContent).toContain('（未命名会话）');
+    expect(row.textContent).not.toContain('sess-abc');
+  });
+
+  it('E1：等待会话行标题缺失、类型未知 → 回落「（未命名会话）」', async () => {
+    const noKind: InboxItem = {
+      id: 'ses-x1', section: 'agentWaiting', title: '', subtitle: 'waiting',
+      waitingSince: '2026-01-01T00:00:00Z', detailUrl: '/agent-sessions?session=ses-x1',
+      session: { id: 'ses-x1', status: 'waiting_input', title: null, kind: '' } as never,
+    };
+    vi.mocked(loadInbox).mockResolvedValue(readySections({ agentWaiting: [noKind] }));
+    renderPage();
+    const row = await screen.findByTestId('inbox-row-agentWaiting');
+    expect(row.textContent).toContain('（未命名会话）');
+    expect(row.textContent).not.toContain('ses-x1');
+  });
+
+  it('E1：等待会话行标题缺失但类型已知 → 先回落类型标签', async () => {
+    const withKind: InboxItem = {
+      id: 'ses-x2', section: 'agentWaiting', title: '', subtitle: 'waiting',
+      waitingSince: '2026-01-01T00:00:00Z', detailUrl: '/agent-sessions?session=ses-x2',
+      session: { id: 'ses-x2', status: 'waiting_input', title: null, kind: 'chat' } as never,
+    };
+    vi.mocked(loadInbox).mockResolvedValue(readySections({ agentWaiting: [withKind] }));
+    renderPage();
+    const row = await screen.findByTestId('inbox-row-agentWaiting');
+    expect(row.textContent).toContain('人工对话');
+    expect(row.textContent).not.toContain('ses-x2');
+  });
+
+  // ── UX-I1：本人自审的拒绝按钮与批准按钮同款挂第二人规则 Tooltip ──
+  it('I1：拒绝按钮分支同样引用 selfApprovalHint Tooltip（与批准按钮成对）', () => {
+    // antd Tooltip 内容在 jsdom 懒挂载（hover 时序 + portal），逐字断言不稳定；
+    // 按仓内 QueueStallBadge 先例直接钉渲染决策：两条 selfApprovalHint 引用（批准 + 拒绝）。
+    const src = readFileSync(join(__dirname, '..', 'pages', 'InboxPage.tsx'), 'utf8');
+    const hints = src.match(/selfApprovalHint/g) ?? [];
+    expect(hints).toHaveLength(2);
   });
 });

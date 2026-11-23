@@ -47,15 +47,29 @@ export interface SopDeepLinkTarget {
   initialTab: 'contract' | 'assignments';
 }
 
+/**
+ * 指派工单 id 是 UUID（后端 `@IsUUID()`）。深链参数先做形状校验：
+ * 非法/残缺值直接忽略，不带着坏 id 去拉详情、也不静默留空高亮。
+ */
+const ASSIGNMENT_UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function normalizeAssignmentId(raw: string | null): string | null {
+  if (!raw || !ASSIGNMENT_UUID_SHAPE.test(raw)) return null;
+  return raw;
+}
+
 /** 解析 `/sops?sop=<sopId>&assignment=<assignmentId>` 查询参数。 */
 export function resolveSopDeepLink(searchParams: URLSearchParams): SopDeepLinkTarget {
   const sopId = searchParams.get('sop')?.trim() || null;
-  const assignmentId = searchParams.get('assignment')?.trim() || null;
+  const rawAssignment = searchParams.get('assignment')?.trim() || null;
+  // 形状校验只作用于「高亮/定位用的 id」；页签仍按参数是否存在切换到指派 Tab
+  // （非法 id 静默降级停在指派 Tab、不高亮，是 R289 B 既有契约）。
+  const assignmentId = normalizeAssignmentId(rawAssignment);
   return {
     sopId,
     assignmentId,
-    key: sopId ? `${sopId}::${assignmentId ?? ''}` : null,
-    initialTab: assignmentId ? 'assignments' : 'contract',
+    key: sopId ? `${sopId}::${assignmentId ?? rawAssignment ?? ''}` : null,
+    initialTab: rawAssignment ? 'assignments' : 'contract',
   };
 }
 

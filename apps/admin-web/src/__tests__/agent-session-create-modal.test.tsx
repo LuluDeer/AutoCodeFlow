@@ -5,9 +5,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import '../i18n';
 import { agentApi } from '../api/agent';
 import AgentSessionCreateModal from '../components/AgentSessionCreateModal';
+import { message } from '../utils/toast';
 
 vi.mock('../api/agent', () => ({ agentApi: { create: vi.fn() } }));
-vi.mock('../utils/toast', () => ({ message: { success: vi.fn() } }));
+vi.mock('../utils/toast', () => ({ message: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() } }));
 
 const QUESTION = '问题或目标';
 const CONTEXT = '上下文（JSON 对象，可选）';
@@ -205,6 +206,9 @@ describe('AgentSessionCreateModal', () => {
     expect(agentApi.create).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();
     await act(async () => reject(new Error('network failure')));
+    // UX-C1：后端错误经 showApiError 透出（err.message 透传），不再只留通用兜底 Alert。
+    expect(message.error).toHaveBeenCalledWith('network failure');
+    expect(message.error).not.toHaveBeenCalledWith('创建失败，已保留输入。请重试。');
     expect(screen.getByRole('alert').textContent).toContain('已保留输入');
     expect(onCreated).not.toHaveBeenCalled();
     expect(screen.getByLabelText<HTMLInputElement>('标题').value).toBe('日报');

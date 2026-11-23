@@ -6,6 +6,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import type { agentApi } from '../api/agent';
 import TaskDetailPage from '../pages/TaskDetailPage';
 import { useAuthStore } from '../store/auth';
+import { message } from '../utils/toast';
 
 // Exercise the real task page, agentApi.create and router; replace only the HTTP boundary.
 const http = vi.hoisted(() => ({
@@ -127,12 +128,15 @@ describe('任务详情 → Agent 只读诊断', () => {
   });
 
   it('创建失败时保留当前任务与问题，允许原样重试', async () => {
+    const errorSpy = vi.spyOn(message, 'error').mockImplementation(() => undefined as never);
     http.post.mockRejectedValueOnce(new Error('network unavailable'));
     const router = renderPage();
     const { dialog, field, confirm } = await openDialog();
     fireEvent.change(field, { target: { value: '排查昨天的失败记录' } });
     fireEvent.click(confirm);
     expect((await dialog.findByRole('alert')).textContent).toContain('可以重试');
+    // UX-C1：后端错误经 showApiError 透出（err.message 透传），不再只留通用兜底 Alert。
+    expect(errorSpy).toHaveBeenCalledWith('network unavailable');
     expect(field.value).toBe('排查昨天的失败记录');
     expect(confirm.disabled).toBe(false);
     expect(router.state.location.pathname).toBe(TASK_PATH);

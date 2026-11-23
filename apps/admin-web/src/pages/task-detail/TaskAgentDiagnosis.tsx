@@ -7,6 +7,7 @@ import { agentApi } from '../../api/agent';
 import { useModalA11y } from '../../hooks/useModalA11y';
 import { isAdminUser, useAuthStore } from '../../store/auth';
 import { agentSessionUrl } from '../../utils/agentSessionUrl';
+import { showApiError } from '../../utils/error';
 
 const QUESTION_ID = 'task-agent-diagnosis-question';
 const TARGET_ID = 'task-agent-diagnosis-target';
@@ -37,9 +38,11 @@ export default function TaskAgentDiagnosis({ taskId, taskName }: { taskId: strin
         context: { taskId, question: `${target}\n${question}` },
         scope: { tasks: [taskId] },
       });
-    } catch {
+    } catch (err: unknown) {
       if (inFlight.current) {
         inFlight.current = false;
+        // 后端错误码/消息经 showApiError 透出；原位 Alert 保留通用兜底与草稿问题。
+        showApiError(err, t('taskDetail.agentCreateFailed'));
         setStatus('failed');
       }
       return;

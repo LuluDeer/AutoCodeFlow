@@ -3866,6 +3866,7 @@ export default {
   'sops.assignmentCancel.ok': '指派已取消',
   'sops.assignmentCancel.fail': '取消指派失败',
   'sops.assignmentCancel.targetTag': '已定位',
+  'sops.assignmentDeepLinkMissing': '深链指向的指派工单在当前列表中不存在（可能已终态或归档）；以下为该 SOP 在列的全部指派。',
   'sops.reassignEscalatedHint': '该指派已按升级终结——接管答复不会再投递给执行器；重派可恢复',
   'sops.escalatedNotDelivered': '指派已终结，答复不会投递；重派可恢复',
   'sops.replyNotDelivered': '已答复，但该指派已终结（执行器已按升级收尾）——答复不会投递，重派可恢复',
@@ -4043,6 +4044,7 @@ export default {
   'agents.kind.sopReview': 'SOP 复核',
   'agents.kind.appScaffold': '应用脚手架',
   'agents.kind.chat': '人工对话',
+  'agents.unnamedSession': '（未命名会话）',
   // 工具调用结果状态（边界闸门/熔断/审批留痕）
   'agents.toolStatus.ok': '成功',
   'agents.toolStatus.denied': '已拒绝',

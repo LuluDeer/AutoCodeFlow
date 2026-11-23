@@ -5,6 +5,7 @@ import { agentApi } from '../api/agent';
 import { useModalA11y } from '../hooks/useModalA11y';
 import { agentKindLabel } from '../utils/agent-label';
 import { message } from '../utils/toast';
+import { showApiError } from '../utils/error';
 
 interface Props {
   open: boolean;
@@ -92,8 +93,11 @@ export default function AgentSessionCreateModal({ open, onClose, onCreated }: Pr
     try {
       ({ id } = await agentApi.create(result.body));
       if (!inFlight.current) return; // Left the page while creating: don't open its drawer now.
-    } catch {
-      if (inFlight.current) setError('request');
+    } catch (err: unknown) {
+      if (!inFlight.current) return;
+      // 后端错误码/消息经 showApiError 透出（拦截器已弹过的按标去重）；原位 Alert 保留通用兜底与草稿。
+      showApiError(err, t('agents.createFailed'));
+      setError('request');
       return;
     } finally {
       if (inFlight.current) {

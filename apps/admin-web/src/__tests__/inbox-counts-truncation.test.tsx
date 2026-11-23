@@ -131,7 +131,7 @@ describe('R278/U1 徽标双口径：审批单 ≠ 会话', () => {
 });
 
 describe('R278 会话无标题：不退化成 uuid', () => {
-  it('sessionTitle:null ⇒ 行标题回落 sessionId，但**不**伪造成标题语义', async () => {
+  it('sessionTitle:null ⇒ 行标题留空串由页面层回落未命名文案，**不**退回 uuid 当标题', async () => {
     const pending = vi.spyOn(agentApi, 'listPendingApprovals').mockResolvedValue({
       items: [{
         approvalKey: 'k1', sessionId: 'sess-abc', sessionTitle: null, toolName: 'shell',
@@ -150,9 +150,11 @@ describe('R278 会话无标题：不退化成 uuid', () => {
     expect(pending).toHaveBeenCalledTimes(1);
     expect(sections.agentApprovals.items).toHaveLength(1);
     // 契约要求 sessionTitle 为 null 时**不**退回 uuid 当作「标题」：会话对象里
-    // title 仍是 null（未知），行标题只做「没有标题时的可定位回落」。
+    // title 仍是 null（未知）；loader 层标题留空串，由页面层回落「未命名会话」文案。
+    // sessionId 仍保留在 detailUrl 供深链定位，不丢失可定位性。
     expect(sections.agentApprovals.items[0].session?.title).toBeNull();
-    expect(sections.agentApprovals.items[0].title).toBe('sess-abc');
+    expect(sections.agentApprovals.items[0].title).toBe('');
+    expect(sections.agentApprovals.items[0].detailUrl).toContain('sess-abc');
   });
 
   it('会话标题存在时行标题用它（不回落 id）', async () => {
