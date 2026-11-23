@@ -185,7 +185,7 @@ describe('AgentSessionsPage 错误态与空态（UI-16）', () => {
     renderPage('/agent-sessions?kind=incident&page=3');
     expect(await screen.findByText('没有匹配的会话')).toBeTruthy();
 
-    fireEvent.click(screen.getByText('清除筛选'));
+    fireEvent.click(screen.getAllByText('清除筛选')[0]);
     await waitFor(() => {
       expect(agentApi.list).toHaveBeenLastCalledWith({
         kind: undefined,

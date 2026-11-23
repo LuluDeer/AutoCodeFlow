@@ -87,24 +87,47 @@ describe('UX-09：焦点环不得再用色板外的硬编码蓝', () => {
     expect(m![1]).not.toContain('--color-ring');
   });
 
-  it('skip-link 背景取 --color-accent，前景取深色（不是白字）', () => {
+  it('skip-link 背景取 --color-accent，前景取双主题恒深色 --color-on-accent（防暗色退化为白字绿底）', () => {
     const clean = stripCssComments(FOCUS_CSS);
     const bg = /background:\s*var\(--color-accent[^;]*;/.exec(clean);
     expect(bg, 'skip-link 背景未令牌化').toBeTruthy();
-    // #22C55E 上白字仅 2.28:1；必须用深色文字
     const color = /\.a11y-skip-link\s*\{[\s\S]*?color:\s*([^;]+);/.exec(clean);
     expect(color, '找不到 skip-link 的 color').toBeTruthy();
-    expect(color![1]).toContain('--color-primary');
+    expect(color![1]).toContain('--color-on-accent');
+    expect(color![1]).not.toContain('--color-primary');
+  });
+
+  it('焦点环放宽为全局 :focus-visible（覆盖 LoginPage 与 Portal 弹层，保留 #main-content 豁免）', () => {
+    const clean = stripCssComments(FOCUS_CSS);
+    expect(clean).toMatch(/(^|\n):focus-visible\s*\{/);
+    expect(clean).not.toMatch(/\.autoflow-layout\s+:focus-visible\s*\{/);
+    expect(clean).toMatch(/#main-content:focus-visible\s*\{[\s\S]*?outline:\s*none/);
   });
 });
 
 describe('UX-09：选色依据必须是可执行的对比度断言（不是注释里的承诺）', () => {
   const lightRing = tokenIn(CSS, ':root', '--color-focus-ring');
   const darkRing = tokenIn(CSS, "html[data-theme='dark']", '--color-focus-ring');
+  const lightOnAccent = tokenIn(CSS, ':root', '--color-on-accent');
+  const darkOnAccent = tokenIn(CSS, "html[data-theme='dark']", '--color-on-accent');
+  const accent = tokenIn(CSS, ':root', '--color-accent');
 
-  it('双主题都定义了 --color-focus-ring', () => {
+  it('双主题都定义了 --color-focus-ring 与 --color-on-accent', () => {
     expect(lightRing, ':root 缺 --color-focus-ring').toBeTruthy();
     expect(darkRing, "html[data-theme='dark'] 缺 --color-focus-ring").toBeTruthy();
+    expect(lightOnAccent, ':root 缺 --color-on-accent').toBeTruthy();
+    expect(darkOnAccent, "html[data-theme='dark'] 缺 --color-on-accent").toBeTruthy();
+  });
+
+  it('skip-link 前景 --color-on-accent 在亮/暗双主题对 --color-accent 对比度均 ≥4.5:1', () => {
+    expect(accent).toBe('#22c55e');
+    for (const [mode, fg] of [
+      ['light', lightOnAccent],
+      ['dark', darkOnAccent],
+    ] as const) {
+      const r = contrast(fg!, accent!);
+      expect(r, `${mode} 主题 skip-link ${fg} on ${accent} 仅 ${r.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
+    }
   });
 
   it('亮面焦点环对所有亮面底色 ≥3:1（WCAG 2.2 SC 1.4.11）', () => {

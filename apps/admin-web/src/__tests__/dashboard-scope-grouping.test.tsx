@@ -171,11 +171,9 @@ describe('DashboardPage — P2-1 指标口径分离', () => {
     renderPage();
     await waitFor(() => expect(screen.getByTestId('failure-top-list')).toBeTruthy(), { timeout: 5000 });
 
-    // 8 张随项目卡（任务总数/今日执行/运行中/成功率/平均耗时/趋势/失败Top/最近失败）
-    // + 项目分区标题内 1 枚图例徽章。
-    expect(screen.getAllByTestId('scope-badge-project')).toHaveLength(9);
-    // 3 张全局卡（在线执行器/执行器资源/调度延迟）+ 全局分区标题内 1 枚图例徽章。
-    expect(screen.getAllByTestId('scope-badge-global')).toHaveLength(4);
+    // 仅保留分区头 ScopeSectionHeader 的项目/全局徽章（去噪移除子卡片重复徽章）。
+    expect(screen.getAllByTestId('scope-badge-project')).toHaveLength(1);
+    expect(screen.getAllByTestId('scope-badge-global')).toHaveLength(1);
   });
 
   it('选中具体项目：随项目请求带 projectId，全局请求不带 projectId', async () => {

@@ -332,7 +332,9 @@ describe('UI-09 第三轮 AppDeploymentPage 375px 产物', () => {
   it('部署表：次要列（运行模式/部署时间）th/td 双端挂 ui09-hide-mobile，scroll.x 兜底保留', async () => {
     renderWithProviders(<AppDeploymentPage applicationId="app-1" />);
     await screen.findByText('运行中');
-    expect(tableScrollWidth()).toBe(720);
+    // 列宽调整（status 100→116、runtime 渲染优化）后 scroll.x 同步 720→795；
+    // 仍然逐字钉死具体数值，防止横滚兜底被悄悄回退。
+    expect(tableScrollWidth()).toBe(795);
     const ths = hideMobileCells('.ant-table-thead th');
     expect(ths.map((th) => th.textContent)).toEqual(['运行模式', '部署时间']);
     const tds = hideMobileCells('.ant-table-tbody td');

@@ -352,20 +352,31 @@ describe('UI-09 R3 AgentSessionsPage 375px 产物', () => {
     expect(reload!.getAttribute('aria-hidden')).toBe('true');
   });
 
-  it('桌面端回归：表格保留、页头内筛选 Select 恢复 160px 固定宽', async () => {
+  it('桌面端回归：表格保留、筛选栏脱离页头后两个 Select 固定 180px', async () => {
     stubMatchMedia(false);
     renderPage(<AgentSessionsPage />, '/agent-sessions');
     expect(await screen.findByText('session-s-run')).toBeTruthy();
     expect(document.querySelector('.ant-table')).not.toBeNull();
     expect(document.querySelectorAll('.ant-card').length).toBe(0);
-    // 只断言页头内的两个筛选 Select（桌面表格的分页 size-changer 也是
-    // .ant-select 但无内联宽度，须从作用域剔除）
     const header = document.querySelector('[data-testid="page-header"]') as HTMLElement;
-    const headerSelects = header.querySelectorAll('.ant-select');
-    expect(headerSelects.length).toBe(2);
-    headerSelects.forEach((s) => {
-      expect((s as HTMLElement).style.width).toBe('160px');
+    // UX 收口：筛选 Select 已从页头下沉到独立筛选栏（页头之后的兄弟节点）。
+    expect(header.querySelectorAll('.ant-select').length).toBe(0);
+    const filterBar = header.nextElementSibling as HTMLElement | null;
+    expect(filterBar).not.toBeNull();
+    // 只断言筛选栏内的两个筛选 Select（桌面表格的分页 size-changer 也是
+    // .ant-select 但无内联宽度，且不在筛选栏作用域内，须从作用域剔除）
+    const filterSelects = filterBar!.querySelectorAll('.ant-select');
+    expect(filterSelects.length).toBe(2);
+    // 160→180：修英文筛选项截断；固定宽度必须逐节点钉住，不许放宽为存在性断言。
+    filterSelects.forEach((s) => {
+      expect((s as HTMLElement).style.width).toBe('180px');
     });
+    // 具体 DOM：筛选栏内两个 Select 的 placeholder 对应类型/状态两个维度。
+    // antd 6 的占位节点类是 .ant-select-placeholder（旧版 selection-placeholder 已改）。
+    expect(
+      Array.from(filterBar!.querySelectorAll('.ant-select-placeholder'))
+        .map((p) => p.textContent),
+    ).toEqual(['按类型筛选', '按状态筛选']);
   });
 });
 

@@ -130,6 +130,20 @@ describe('buildAntdTheme — antd algorithm 映射（UI-01 验收）', () => {
     expect(buildAntdTheme('light').token?.colorPrimary).toBe('#22C55E');
     expect(buildAntdTheme('dark').token?.colorPrimary).toBe('#22C55E');
   });
+
+  it('colorInfo 回归语义蓝、colorLink 与高频组件选中态均达 AA 对比度', () => {
+    const light = buildAntdTheme('light');
+    const dark = buildAntdTheme('dark');
+    expect(light.token?.colorInfo).toBe('#2563EB');
+    expect(dark.token?.colorInfo).toBe('#60A5FA');
+    expect(light.token?.colorLink).toBe('#15803d');
+    expect(dark.token?.colorLink).toBe('#4ade80');
+    expect(light.components?.Menu?.itemSelectedColor).toBe('#15803d');
+    expect(dark.components?.Menu?.itemSelectedColor).toBe('#4ade80');
+    expect(light.components?.Radio?.buttonSolidCheckedBg).toBe('#15803d');
+    expect(light.components?.Tabs?.itemSelectedColor).toBe('#15803d');
+    expect(dark.components?.Tabs?.itemSelectedColor).toBe('#4ade80');
+  });
 });
 
 describe('ThemedProviders + 切换按钮接线', () => {
