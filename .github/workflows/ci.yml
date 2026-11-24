@@ -74,7 +74,7 @@ jobs:
             exit 1
           fi
           # ② push 触发器必须仍指向 develop（防有人改了触发器却没更新文档）
-          if ! grep -Eq '^[[:space:]]+branches:\[[[:space:]]*develop[[:space:]]*\]' .github/workflows/ci.yml; then
+          if ! grep -Eq '^[[:space:]]+branches:[[:space:]]*\[[[:space:]]*develop[[:space:]]*\]' .github/workflows/ci.yml; then
             echo "::error::ci.yml 的 push.branches 不再包含 develop——与 CONTRIBUTING.md 的 develop-centric 工作流冲突。"
             exit 1
           fi
