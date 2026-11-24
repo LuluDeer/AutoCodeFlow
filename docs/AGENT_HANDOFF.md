@@ -1,7 +1,7 @@
 # AutoCodeFlow Agent Handoff
 
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 15 轮 · 同族两守卫假绿收口）
-> 当前分支 `develop` = `4c531991`；**本次交接 41 文件未提交**（第 5-14 轮 39 + 第 15 轮新增 `check-api-error-format.mjs`/`check-agent-event-causation.mjs`，见下方十一段，未 commit/未 push）。三路 diff 审阅无阻断、CI 关键 job + 桌面两侧全绿、三个进程内自检守卫假绿均已收口，具备提交条件。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> 当前分支 `develop` = `3d8b0155`（第 5-15 轮累积 41 文件已按主题分 6 组提交：`8684c1eb` 跨应用定位链路 / `e8676b4e` 后端与执行器四缺陷 / `b49111c0` 桌面运维与 lint / `3a2e6eb5` 跨端字段漂移+配对修正 / `3f94d3dd` 守卫体系与接线 / `3d8b0155` 文档权威）；工作树干净，**领先 origin/develop 6 提交、未 push**。见下方各轮段。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
 
 ## 本轮（2026-11-25 · 第 15 轮）：收口第 14 轮审计登记的两个同族守卫假绿（api-error-format / agent-event-causation）
 
