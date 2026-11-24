@@ -1,7 +1,32 @@
 # AutoCodeFlow Agent Handoff
 
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 16 轮 · 提交态完整性审计 + 剩余 3 个守卫假绿收口）
-> 当前分支 `develop` = `4b7f8508`（第 5-19 轮累积已按主题分 11 组提交：`8684c1eb`…`46c26b45` 见前轮 + `4b7f8508` Jest flag 修复与守卫）。工作树干净，**领先 origin/develop 15 提交、未 push**。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> 当前分支 `develop` = `1bfce27d`（第 5-20 轮累积已按主题分 12 组提交：`8684c1eb`…`4b7f8508` Jest flag 修复与守卫 + `1bfce27d` R19 交接）。工作树干净，**领先 origin/develop 16 提交、未 push**。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 20 轮）：CI 全分片复演补全 + 工具 flag / script 名实核查（无净新缺口）
+
+**方向来源**：objective 续轮。沿第 19 轮"CI 命令真实性"方法论，派两路审计（shell 外部工具 flag 真实性 / package.json script 名实一致性）——**两路 agent 均失败退出、零产出**。按 R151 纪律：不采信、不代写失败 agent 的报告，由主会话亲自做等价机械核查，并如实记录失败。
+
+**主控机械核查（等价覆盖，均无意发现）**：
+- 外部工具 flag：`node --check` 在 Node 26.13.1 `--help` 明确支持（`-c, --check`），脚本里 `check-examples-code`/`check-live-probes-intact` 的用法合法；`git --version` 2.53.0、`ls-remote` 无异常用法；`pg_dump`/`systemctl`/`uv` 等调用点无新可疑 flag（R08/CIR/pg-restore 已覆盖的排除）。
+- script 名实：根 package.json 46 个 `//` 说明键、129 个 `check:*` 命令；机械比对"说明声称含 --selftest 但命令无"仅命中 `check:docs`——它是已知别名（`check:docs`=`test:docs`，后者命令含各 selftest），说明键本身也写明此别名，非缺口；无 echo/true 幽灵 script；`test:guards:chain` 129 段无重复；两个"孤儿说明键"（`//guards-ci-parity`/`//selftest-wiring`）是描述接线判据的 meta 键、非对应命令，属正常设计。
+- **结论：无净新缺口**，不制造改动。
+
+**CI admin-api-test 全分片复演（提交前最后一块证据）**：第 13 轮只跑了 `--maxWorkers=2`（CI 实际用 4 分片），本轮按 CI 精确口径串行跑全部 4 片（避免并发 OOM）：
+| 分片 | 结果 |
+|---|---|
+| shard 1/4 | 128 suites / 2824 tests，EXIT 0 |
+| shard 2/4 | 127 passed + 1 skipped（128 of 128），EXIT 0 |
+| shard 3/4 | 127 passed + 1 skipped（128 of 128），EXIT 0 |
+| shard 4/4 | 128 suites passed，EXIT 0 |
+
+至此本会话触及的所有 app/package 的 CI 口径命令（全量单测 / typecheck / 4 分片 / e2e / 守卫链）均有串行真跑证据，无新增失败。
+
+**验收级别**：真实进程内全量分片单测（CI 命令口径）+ 主控静态机械核查；无代码改动，不涉浏览器/真机。遗留缺陷 0。本轮无代码变更、仅交接记录待提交。
+
+**可用路径 / 发布前置**：分支 `develop` 仍为 `1bfce27d`，本轮交接记录待提交，**未 push**。所有 CI 口径证据齐备。
+
+---
 
 ## 本轮（2026-11-25 · 第 19 轮）：清理 CI 静默无效的 Jest 重试 flag + 新增 CLI flag 有效性守卫
 
