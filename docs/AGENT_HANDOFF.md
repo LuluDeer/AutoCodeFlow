@@ -1,7 +1,32 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 4 轮第一批 · R5 体验升级）
-> 当前分支 `develop` = `d1ecdcc3`（第 4 轮 5 批已提交：`12501899`/`77a9d179`/`947ca87e`/`d8a63768`/`d1ecdcc3`）；**第 4 轮第一批（R5）产出落工作树，未提交、未 push**——16 个路径，含 1 处基线重签（renderer.selftest 1686→1737）。第三轮/R5 之前均为已收口历史。接手先 `git status` 核对、`npm run check:size-caps` 验基线。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 4 轮第二批 · R5 体验升级续）
+> 当前分支 `develop` = `58430ee7`（第 4 轮 9 批已提交：`12501899`/`77a9d179`/`947ca87e`/`d8a63768`/`d1ecdcc3` + 第一批 `ef6597d9`/`b616dc43`/`6d0d838c`/`58430ee7`）；**第 4 轮第二批（R5 续）产出落工作树，未提交、未 push**——27 个路径，含 2 处基线重签（i18n 1650→1668、renderer.selftest 1737→1798）。更早轮次均为已收口历史。接手先 `git status` 核对、`npm run check:size-caps` 验基线。
+
+## 本轮（2026-11-24 · 第 4 轮第二批 R5）：配置面/应用面/无障碍 8 项升级（3 切片 + 独立验收）
+
+**编排方式**：沿用第一批 R5 审计的 19 项清单，本批取剩余中写域可互斥的 8 项（2 P2 Ctrl+S/亮色对比度 + 6 P2/P3）→ 3 切片并行（G-A 桌面配置面 5 项独占 renderer.selftest / G-B 桌面应用面 2 项 / G-C 中台无障碍 3 项）→ 主会话重签 2 处基线 → 独立只读验收（verify-g：diff 边界 + 12 门禁 + 反证抽查）→ 全绿，1 处 P2 声明漏记 3 个 G-A 伴生 selftest 路径（内容正确、已接线、无门禁影响）由主控在交接段补全。G-C 施工中额外发现并修复同页审计漏掉的第 4 处 smooth（TaskFormPage:697），属正确补全。
+
+| 切片 | 交付 | 关键文件 |
+|---|---|---|
+| G-A 桌面配置面（5 项） | Ctrl+S 确认条打开时 noop（SavePlanInput.confirmOpen + confirmOpenRef 键盘闸同源）；权限矩阵 5 处可见文本走 agentValueLabel 双语、原枚举退 data-raw-enum；ConfigSearchBox 补 combobox 三属性 + option tabIndex=-1（不重做 D-C 的 aria-selected）；配置页 smooth 按 reduced-motion 降级；日志导航按钮 20→28px | `config/save-plan.ts`、`config/use-config-writer.ts`、`ConfigPage.tsx`、`config/AgentPermissionMatrix.tsx`、`config/ConfigSearchBox.tsx`、`renderer/utils/scroll-reduced.ts`(新)、`styles/pages.css`、`renderer.selftest.mjs`；伴生判据 `config/{pure-logic,agent-matrix,writer-layer}.selftest.mjs`（**验收补记的 3 个路径**） |
+| G-B 桌面应用面（2 项） | deleteActionInfo 四态单一口径（current>unknown>running>allowed，entry=null 按 group 推断，复用 runningActionGate）供抽屉/表格菜单共用，消除表格一律"当前版本不可删"的谎报；复制部署定位（appId/deploymentId/version，http(s) 白名单 + /api 去尾 + URI 编码 + 非法 base 不拼域名）+ 中台部署指引，走既有 writeClipboardText 无新 IPC | `pages/apps/apps-helpers.ts`、`pages/AppsPage.tsx`、`renderer/i18n.ts`（+9 键×双语）、`apps-helpers.selftest.mjs` |
+| G-C 中台无障碍（3 项） | 4 处显式 smooth 按 reduced-motion 降级（含审计漏的第 4 处 TaskFormPage:697）；ExecutorHeatBars/FailureTopList 的 Space 分支先 preventDefault；亮色 antd 组件级 alias 覆盖 Switch/Checkbox/Badge 取既有 PRIMARY_BUTTON 深绿档（#15803d 系白底 5.02:1 ≥3:1，暗色不覆盖、主 token 与 tokens.ts 不动）；成功状态点补 role=img + aria-label 复用 execList.status.online | `utils/scroll-reduced.ts`(新)、`scroll-when-ready.ts`、`ApplicationDetailPage.tsx`、`useTaskFormValidation.ts`、`TaskFormPage.tsx`、`components/dashboard/{ExecutorHeatBars,FailureTopList}.tsx`、`theme/ThemeProviders.tsx`、`ExecutorPackagesPage.tsx`、`__tests__/{motion-reduced-ux,theme.store}.test.tsx` |
+
+**验收证据（独立验收方 verify-g 实测）**：
+- **12/12 门禁 exit 0**：size-caps（97 条目）、desktop-selftests-wired（64 main + 10 renderer）、user-facing-language、error-i18n、mutation-residue（25 文件配对）；admin-web tsc -b / lint:i18n（3457 键 zh/en 各 3893）/ vitest 2 文件 30 例；desktop typecheck:renderer / test:renderer / tsc -p tsconfig / test:main。验收全程只读，测试前后工作树一致。
+- 反证有牙（各切片已演练并还原）：confirmOpen 闸 / combobox role / deleteActionInfo unknown 态 / Space preventDefault / Badge 对比度回退，均红→绿；验收方只读复核 4 类关键反证全部命中。
+- 基线诚实：`i18n.ts` 1668、`renderer.selftest.mjs` 1798（fn13/最长 loadTsModule:14/密度 17.2），只改这两条 maxLines+ceiling.nonCommentLines + why 实测理由；branchDensity 17.2>16.5 属比值伪影（脚本对 <20 比值明确豁免），非放宽；Terminal 大体量文件 executor.controller.ts 1222=ceiling 未破顶。
+- **验收定级**：G-A 闸/selftest、G-B 纯函数、G-C 对比度/Space 均为单测/内存替身；combobox 语义、i18n 键集、Badge aria-label 为静态探查；**P0/P1=0**。无真实浏览器/读屏/滚动真机验证（不越级上报）。
+
+**写域声明澄清（验收 P2）**：`config/{pure-logic,agent-matrix,writer-layer}.selftest.mjs` 三个 G-A 伴生判据文件（confirmOpen 入参同步 / 双语标签锚点 / 键盘闸同步）在派发清单逐字路径中漏记，但均为接线同步、未触生产文件，已由门禁与验收确认无误——补记在此，不回退。
+
+**未覆盖边界 / 后续候选（如实）**：
+- 真机/浏览器待补：ConfirmBar 悬停 Ctrl+S 视觉与焦点归还；ConfigSearchBox combobox 真读屏播报；Space 键真实滚动抑制；antd 亮色三控件最终像素颜色；复制部署定位在中台确实能定位到版本；四态删除 tooltip 真机 hover。
+- R5 剩余 6 项（导航/通知链，写域高度重叠，留下一批集中处理）：端口检查按 bind host 且不拦下一步（P2）、通知点击落具体执行（P2）、Agent 权限矩阵外的运行时长冻结（P3）、历史详情深链接收 executionId（P3）、Agent 指派 ID 首窗出口（P3）、托盘 Agent 状态比较字段（P3）；另桌面旅程的看版本后部署定位已由 G-B 复制定位闭环。
+- **未提交、未 push**——27 路径待分批提交（建议 G-A / G-B / G-C / 基线 4 批）。
+
+---
 
 ## 本轮（2026-11-24 · 第 4 轮第一批 R5）：用户旅程 + 无障碍审计驱动的 5 项体验升级（3 切片 + 独立验收）
 
