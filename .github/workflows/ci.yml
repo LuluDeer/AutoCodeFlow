@@ -1185,6 +1185,10 @@ jobs:
       # openapi/生成物，web 与 CLI 手写响应接口会静默丢弃恢复后的应用状态；显式跨端对拍。
       - name: UpdatedApp parity (admin-web / acf-cli)
         run: npm run check:updatedapp-parity
+      # demo-headless-agent 的 workDir 清理契约是零依赖静态断言；此前只在头注里借
+      # 演示脚本的理由豁免，两边都没真跑。判据：失败路径/尾部 catch 必须先清理再 exit。
+      - name: Demo headless agent workDir cleanup selftest
+        run: npm run check:demo-headless-agent-selftest
       - name: Protocol three-way check (real execution on both sides)
         run: |
           node scripts/check-protocol-three-way.mjs --selftest

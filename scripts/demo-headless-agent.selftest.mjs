@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * demo-headless-agent 的 workDir 清理契约自检（纯静态、离线、零依赖）。
+ * demo-headless-agent 的 workDir 清理契约自检（零依赖静态文本契约自检）。
  *
- * 为什么不接 npm 门禁链：本文件守的是 `demo:headless-agent` —— 一个 真机
- * 演示脚本（要跑起来的 admin-api + LLM 才能走完），它刻意不进本地
- * test:guards 链；本自检只断言它的源码文本契约，随 demo 直接 node 运行：
+ * 只 import node:assert/fs/path/url：断言 `demo:headless-agent` 演示脚本源码里的
+ * 清理锚点，不连 DB、不拉起完整演示栈。已两面真接线：本地 test:guards:chain
+ * 的 `check:demo-headless-agent-selftest` 与 CI 的 check-migrations job 都执行它；
+ * node 直接运行亦可：
  *   node scripts/demo-headless-agent.selftest.mjs
  *
  * 反证（有牙）：删掉任一处 cleanupOnFailure() 调用、或 helper 里的 rmSync、
