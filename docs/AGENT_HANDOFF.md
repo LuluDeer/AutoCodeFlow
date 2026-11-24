@@ -1,7 +1,25 @@
 # AutoCodeFlow Agent Handoff
 
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 16 轮 · 提交态完整性审计 + 剩余 3 个守卫假绿收口）
-> 当前分支 `develop` = `fc00ab2d`（第 5-16 轮累积 44 文件已按主题分 7 组提交：前 6 组 `8684c1eb`…`57734736` 见 R16 + `fc00ab2d` 第 16 轮 3 守卫黑盒化）。工作树干净，**领先 origin/develop 8 提交、未 push**。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> 当前分支 `develop` = `15193004`（第 5-17 轮累积已按主题分 9 组提交：`8684c1eb`…`d720a702` 见前轮 + `0cb84fa5` live-probes 黑盒 + `15193004` demo 清理）。工作树干净，**领先 origin/develop 11 提交、未 push**。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 17 轮）：第 7 个守卫假绿（live-probes）+ demo 临时目录泄漏
+
+**方向来源**：objective 续轮。第 16 轮留两个边界：upgrade-notes 空根 TypeError 与 live-probes 假绿。主控核实前者为**误报**（`doc.match` 在 `else` 非 null 分支，不存在空根崩溃），不制造改动；后者派 agent 实证确证。另派一路 examples/deploy 脚本审计，找到一个真实资源泄漏。
+
+**缺口①（守卫假绿，第 7 个同款）**：`check-live-probes-intact` 的 `--selftest`（:166-206）进程内直调 `checkLiveProbesIntact(dir)`，main 退出码（:219/:223/:229）零覆盖。/tmp 副本实测：把 :223 `process.exit(1)` 改 `exit(0)` → selftest 仍 5/5 全绿，而真 CLI 对坏夹具打印「✘ 真机探针清单不完整」却 exit 0（原版 exit 1）。审计进一步实证 `check()`（:90-140）完全自包含（所有路径基于 root、`node --check` 真跑夹具、无真仓库固定路径/无 env），可安全黑盒化。
+- **修法**：新建 `scripts/check-live-probes-intact.selftest.mjs`（独立文件，照 `check-brand-drift.selftest.mjs`）——4 例真子进程 CLI（`--root` 空格分离，main :209-210 只认空格）：完整夹具 exit 0 / 删探针 exit 1+报错 / 缺 package.json exit 1 / 无 --root 真仓库基线 exit 0。`package.json` 的 `check:live-probes-intact` 前插新 selftest（chain 已含该 script 未动）；`ci.yml` 原直接调脚本的 step 改为 `npm run check:live-probes-intact`，使 CI 真跑到新 selftest（判据③两面都跑）。反证改 exit 码 → 新黑盒 2/4 转红而旧进程内仍 5/5（复现假绿），还原 sha256 一致、守卫本体零 diff。
+
+**缺口②（demo 资源泄漏）**：`scripts/demo-headless-agent.mjs:202` 的 `fs.mkdtempSync('/tmp/acf-headless-agent-')` 全文无 rmSync/finally/trap，所有失败路径（assign 无 id throw、轮询超时 throw、终态非 completed exit 1、API/LLM .catch exit 1）都留孤儿目录，且早期失败连 workDir 路径都不打印（打印仅在终态分支）。测试只 `node --check` 语法，无守卫覆盖运行时清理。
+- **修法**：模块级 `demoWorkDir` + `cleanupOnFailure()`（rmSync recursive/force），在终态非 completed 的 `process.exit(1)` 前与尾部 `.catch` 的 exit 前调用（throw 自动汇入 .catch）；**成功路径不清理**（保留 :265 打印供用户查看 Agent 工作区/journal 是既定设计）；.catch 失败时打印被清理路径。新增 `demo-headless-agent.selftest.mjs`：6 条精确锚点文本契约（声明早于 IIFE、helper rmSync 参数、mkdtemp 后登记、两处 exit 前清理、成功路径无清理）。反证删清理/删 rmSync → 转红；真子进程 mock transport 运行时验证：失败路径目录 `EXISTS=false`、成功路径 `EXISTS=true`。
+
+**验收（主控独立复跑 + 全链）**：live-probes 新黑盒 4/4、npm script 0、守卫主跑 0、demo selftest 6/6、`node --check` 两脚本 0；`check:guards-wired` 0、`check:selftests-wired` 0、`check-mutation-residue` 0、`test:docs` 0、**全守卫链 `test:guards:chain` CHAIN_EXIT=0**。验收级别：真子进程 CLI 黑盒 + mock transport 运行时替身 + 全链进程内真跑；未达真机 demo（真实 admin-api+LLM），如实标注。遗留缺陷 0。
+
+**边界/候选（如实）**：第 16 轮 review 报的 `check-upgrade-notes` 空根 TypeError 经主控核实为**误报**（doc.match 在非 null 分支）；live-probes 判据仍只查静态可用性、不连真 Redis/PG/cron（守卫生设计如此）；本轮 5 文件待提交。
+
+**可用路径 / 发布前置**：本轮 5 文件（live-probes 黑盒 3 + demo 清理 2）为纯本地改动，待分批提交，**未 push**。全链绿、假绿第 7 个已收口、资源泄漏已修，提交前证据齐备。
+
+---
 
 ## 本轮（2026-11-25 · 第 16 轮）：提交态完整性审计 + 剩余 3 个守卫假绿收口
 
