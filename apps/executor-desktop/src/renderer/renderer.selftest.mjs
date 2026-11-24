@@ -2498,4 +2498,37 @@ await import('./pages/status/status-helpers.selftest.mjs');
   }
 }
 
+// ── P1-1b：历史页日志查看器关闭后焦点必须归还触发按钮 ─────────────────
+// 真机实证：HistoryPage 曾用 `if (viewingLog) return <ExecutionLogOverlay/>`
+// 把整页替换成 overlay，触发按钮被 React 卸载；LogViewer 的 returnFocusRef
+// 捕获的是旧节点，微任务 focus() 落在 !isConnected 节点上 → activeElement
+// 掉到 BODY。状态页骨架常驻所以同路径正常。判据钉三端：
+//  ① 历史页不得再用 viewingLog 做 early return 卸载整页；
+//  ② overlay 必须与 .history-page 骨架同树渲染（portal 到 body，视觉仍是真全屏）；
+//  ③ LogViewer 关闭归还逻辑与触发按钮接线必须保留（防止"删掉归还"冒充修好）。
+{
+  const historySrc = pages[2];
+  const earlyReturn = /if\s*\(\s*viewingLog\s*\)\s*\{[\s\S]{0,900}?return\s*\(?\s*<ExecutionLogOverlay/.test(historySrc);
+  if (earlyReturn) {
+    throw new Error('P1-1b: HistoryPage 不得用 viewingLog early return 替换整页（触发按钮被卸载 → 关闭查看器后焦点掉到 BODY）');
+  }
+  const rootIdx = historySrc.indexOf('<div className="history-page">');
+  const overlayIdx = historySrc.indexOf('<ExecutionLogOverlay');
+  if (rootIdx === -1 || overlayIdx === -1 || overlayIdx < rootIdx) {
+    throw new Error('P1-1b: ExecutionLogOverlay 必须与 .history-page 骨架同树渲染（触发按钮需在开合期间保持挂载）');
+  }
+  if (!/\{viewingLog\s*&&\s*\(/.test(historySrc) && !/\{viewingLog\s*\?\s*\(/.test(historySrc)) {
+    throw new Error('P1-1b: overlay 必须由 viewingLog 条件渲染（不能常驻挂载）');
+  }
+  if (!historySrc.includes('onClick={() => setViewingLog(run)}') ||
+      !historySrc.includes("aria-label={t('status.viewLogs')}")) {
+    throw new Error('P1-1b: 历史页「查看日志」触发按钮接线丢失');
+  }
+  const logViewerFocus = readFileSync(resolve(root, 'components', 'LogViewer.tsx'), 'utf8');
+  if (!logViewerFocus.includes('returnFocusRef') || !logViewerFocus.includes('queueMicrotask') ||
+      !logViewerFocus.includes('.focus()')) {
+    throw new Error('P1-1b: LogViewer 关闭焦点归还逻辑缺失');
+  }
+}
+
 console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit (theme sync sendSync whitelist), R7-B config-io layer, R-UX apps/config/history/status pure-logic selftests, T1/T2/T3/T4 read-failure honesty guards passed');

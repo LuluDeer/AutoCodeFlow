@@ -448,7 +448,7 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
 export default function HistoryPage({ active }: { active: boolean }) {
   const [records, setRecords] = useState<ExecRecord[]>([]);
   // T2：面板可见且有 running 行时每秒推进，时长不再冻结到 60s 兜底刷新。
-  // 必须在 viewingLog 的提前 return 之前调用（React hooks 规则）。
+  // 必须在任何条件分支之前调用（React hooks 规则）。
   const nowMs = useNowTicker(active, records);
   const [loading, setLoading] = useState(true);
   const [viewingLog, setViewingLog] = useState<ExecRecord | null>(null);
@@ -867,27 +867,12 @@ export default function HistoryPage({ active }: { active: boolean }) {
     ? siblingRuns.findIndex((r) => r.executionId === viewingLog.executionId)
     : -1;
 
-  if (viewingLog) {
-    // 真全屏：共享 LogViewer 渲染 .log-fullscreen（position:fixed），覆盖
-    // Tab 栏——不再是面板内假全屏浮层（UX 审计 B-06）。
-    // key=executionId：切换邻次执行时整条数据链路重建（行缓冲/游标/轮询复位）。
-    const idx = viewingIndex;
-    return (
-      <ExecutionLogOverlay
-        key={viewingLog.executionId}
-        record={viewingLog}
-        onClose={() => setViewingLog(null)}
-        nav={siblingRuns.length > 1 && idx >= 0 ? {
-          index: idx,
-          count: siblingRuns.length,
-          onPrev: () => setViewingLog(siblingRuns[idx - 1] ?? viewingLog),
-          onNext: () => setViewingLog(siblingRuns[idx + 1] ?? viewingLog),
-        } : undefined}
-        onRevealLog={() => { void handleRevealLog(viewingLog.executionId); }}
-      />
-    );
-  }
-
+  // P1-1b：查看器打开期间**不得**用 early return 把整页换成 overlay——那会
+  // 卸载「查看日志」触发按钮，LogViewer 关闭时 returnFocusRef 指向已失联节点，
+  // 焦点掉到 BODY（真机复现）。改为与页面骨架同树条件渲染：共享 LogViewer
+  // 本身 createPortal 到 document.body，视觉仍是覆盖 Tab 栏的真全屏（UX 审计
+  // B-06），App 的 .app inert 也不会波及 portal 子树。
+  // key=executionId：切换邻次执行时整条数据链路重建（行缓冲/游标/轮询复位）。
   const hasFilters = q.length > 0 || statusFilter !== 'all' || taskFilter !== '';
   const filterBar = (
     <div className="history-filters" ref={filtersRef}>
@@ -1156,6 +1141,21 @@ export default function HistoryPage({ active }: { active: boolean }) {
             t={t}
           />
         </div>
+      )}
+
+      {viewingLog && (
+        <ExecutionLogOverlay
+          key={viewingLog.executionId}
+          record={viewingLog}
+          onClose={() => setViewingLog(null)}
+          nav={siblingRuns.length > 1 && viewingIndex >= 0 ? {
+            index: viewingIndex,
+            count: siblingRuns.length,
+            onPrev: () => setViewingLog(siblingRuns[viewingIndex - 1] ?? viewingLog),
+            onNext: () => setViewingLog(siblingRuns[viewingIndex + 1] ?? viewingLog),
+          } : undefined}
+          onRevealLog={() => { void handleRevealLog(viewingLog.executionId); }}
+        />
       )}
     </div>
   );

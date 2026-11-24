@@ -1,7 +1,29 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 4 轮最后批 · R5 全收口）
-> 当前分支 `develop` = `4c918367`（第 4 轮 13 批已提交：第4轮主批 5 + R5 第一批 4 + R5 第二批 4）；**第 4 轮最后批（R5 导航/通知链）产出落工作树，未提交、未 push**——约 21 个路径，含 4 处基线重签（main-index.selftest 427→477、i18n 1668→1670、StatusWindow 943→951/函数体 809→829、renderer.selftest 1798→1836）。**这是 R5 审计 19 项的最后一批，至此 R5 全收口。** 更早轮次均为已收口历史。接手先 `git status` 核对、`npm run check:size-caps` 验基线。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 4 轮 · 真机验收补验 + 焦点归还返修）
+> 当前分支 `develop` = `731abf69`（第 4 轮 16 批已提交：第4轮主批 5 + R5 三批 4+4+3）；**真机补验发现 1 个 P1 缺陷已返修，产出落工作树未提交、未 push**——2 个源码文件 + 基线重签（renderer.selftest 1836→1860）+ .gitignore（真机 harness 目录）+ 本交接段。真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-24 · 真机验收补验）：图形环境打通 + 双端真机 15 项补验 + 1 个 P1 缺陷返修
+
+**图形环境（关键，推翻此前误判）**：系统有 Chrome 158 + Xwayland `:0` + playwright chromium-1254，只是 `XAUTHORITY` 未导出到 shell。真机验收前置：
+```bash
+export XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.PTRAZ3 DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000
+```
+实测：`xdpyinfo` exit 0、有头 Chrome 启动 OK、Electron `_electron.launch(dist/main/index.js)` OK。**注意**：桌面 `dist/` 是旧产物（11-23），验前必须 `npm run build:main && npm run build:renderer` 重建；中台走 smoke config 的独立 outDir 自动新构建。真机 harness 落 `apps/{admin-web,executor-desktop}/e2e/.real-verify/`（已 gitignore），证据落 `artifacts/real-verify/`（gitignored）。
+
+**编排**：两路真机验收并行（verify-desktop-real Electron / verify-web-real Chrome）→ 桌面发现 1 P1（历史页日志查看器关闭后焦点掉 BODY，状态页正常）→ 专项返修 agent 根因修复 + 真机复验 → 主会话重签基线。中台 8/8 全过无缺陷。
+
+**中台真机（verify-web-real，最高级别=浏览器真机，8/8 pass）**：亮色 Switch/Checkbox/Badge 实测 #15803d 系（白底 5.02:1 ≥3:1，非 #22C55E）+ 状态点 role=img aria-label=在线；reduced-motion 逐帧（reduce 一步到位 vs no-preference 15+ 中间帧）；暗色两图 Tooltip bg #1A1E2F + rate 带 %；Space 防滚（defaultPrevented=true, scrollY 364 不变）；AI 分析跳 report Tab + AI 文本可见；读失败三卡无假绿；SOP 保存 `?sop=` 深链自动展开抽屉。截图 1440×900，JSON fatalErrors=[]。降级未覆盖：复制部署定位串的跨应用串联（桌面复制→中台 URL）。
+
+**桌面真机（verify-desktop-real，Electron 有头，除 1 P1 外全 PASS）**：托盘停止二次确认（降级：点不到原生托盘菜单，改触发 click handler + patch dialog，active 弹框/取消不落 stop/确认落 stop）、向导端口按 bind host 拦下一步（真占用端口→disabled+title 原因）、通知深链落执行（降级：走 openHistory(deepLink) 同路径，目标行选中+滚动）、运行时长 1s 刷新（0.55s 内 <1m→1m）、暗色首帧无 #1c1f26 色带、日志导航按钮 28×28px。
+
+**P1 缺陷与返修（fix-focus-return）**：历史页打开全屏日志查看器时 `HistoryPage.tsx:870` 的 `if (viewingLog) return <overlay/>` 卸载整页 → 触发按钮失联 → `LogViewer.tsx` 关闭时 `returnFocusRef.focus()` 无效 → `activeElement=BODY`。修复方案 (a)：改为在 `.history-page` 骨架内同树条件渲染 overlay（portal 保证仍全屏、背景 inert 不波及），触发按钮开合期间持续挂载；LogViewer/StatusWindow 未改。真机复验 `activeTag` BODY→BUTTON、节点级 `sameTriggerNode=true`、`connected=true`，状态页无回归；renderer.selftest 加 P1-1b 守卫（先红后绿）。截图/JSON 在 `artifacts/real-verify/p1-1b-focus-return-fixed*`。
+
+**返修验收**：typecheck:renderer 0 / test:renderer 0 / build:main+renderer 0 / wired 0 / mutation-residue 0；基线按实测重签 `renderer.selftest 1836→1860`（+24 守卫行，why 写真机复验证据），size-caps 0。真机级 P0/P1/P2=0（返修后）。
+
+**未提交、未 push**——返修 2 源码文件 + 基线 + .gitignore + 交接段待提交（建议 1 批）。真机 harness/证据均本地 gitignored，不入库。
+
+---
 
 ## 本轮（2026-11-24 · 第 4 轮最后批 R5）：导航/通知链 6 项收口（2 切片 + 跨契约 + 独立验收）
 
