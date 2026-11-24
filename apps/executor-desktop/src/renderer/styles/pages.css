@@ -543,6 +543,11 @@
 .log-fs-nav {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  /* 上一条/下一条匹配：14px 图标 + 3px padding 只有 20px，低于 24px 命中目标；
+     取小号控件令牌（28px）与 .btn-sm 同高，视觉图标尺寸不变。 */
+  min-width: var(--control-h-sm);
+  min-height: var(--control-h-sm);
   background: transparent;
   border: none;
   color: var(--text3);

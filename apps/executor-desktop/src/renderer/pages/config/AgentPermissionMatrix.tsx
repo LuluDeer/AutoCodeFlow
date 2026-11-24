@@ -47,11 +47,11 @@ export default function AgentPermissionMatrix({
       <div className="cfgx-matrix-row">
         <span className="cfgx-matrix-cap">{t('cfg.agent.profileLabel')}</span>
         <span className="cfgx-matrix-values">
-          <span title={agentValueLabel(localPreset, 'minimal')}>
-            <em>{t('cfgx.agent.localSetting')}</em>{localPreset}
+          <span data-raw-enum={localPreset}>
+            <em>{t('cfgx.agent.localSetting')}</em>{agentValueLabel(localPreset, 'minimal')}
           </span>
-          <span title={agentValueLabel(savedPreset, 'minimal')}>
-            <em>{t('cfgx.agent.effective')}</em>{savedPreset}
+          <span data-raw-enum={savedPreset}>
+            <em>{t('cfgx.agent.effective')}</em>{agentValueLabel(savedPreset, 'minimal')}
           </span>
         </span>
       </div>
@@ -62,13 +62,13 @@ export default function AgentPermissionMatrix({
           <div className="cfgx-matrix-row" key={axis}>
             <span className="cfgx-matrix-cap">{t(labelKey)}</span>
             <span className="cfgx-matrix-values">
-              <span title={agentValueLabel(local.value)}>
+              <span data-raw-enum={local.value}>
                 <em>{t('cfgx.agent.localSetting')}</em>
-                {local.value}{local.inherited ? presetSuffix : ''}
+                {agentValueLabel(local.value)}{local.inherited ? presetSuffix : ''}
               </span>
-              <span title={agentValueLabel(effective.value)}>
+              <span data-raw-enum={effective.value}>
                 <em>{t('cfgx.agent.effective')}</em>
-                {effective.value}
+                {agentValueLabel(effective.value)}
               </span>
             </span>
           </div>

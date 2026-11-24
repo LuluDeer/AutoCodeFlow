@@ -63,6 +63,9 @@ export default function ConfigSearchBox<Id extends string>({
           value={query}
           placeholder={t('cfgx.search.placeholder')}
           aria-label={t('cfgx.search.placeholder')}
+          role="combobox"
+          aria-expanded={term !== ''}
+          aria-autocomplete="list"
           aria-controls={listboxId}
           aria-activedescendant={safeIndex >= 0 ? optionIdOf(safeIndex) : undefined}
           onChange={(e) => onQueryChange(e.target.value)}
@@ -97,6 +100,7 @@ export default function ConfigSearchBox<Id extends string>({
                 id={optionIdOf(index)}
                 className={`cfgx-search-result${index === safeIndex ? ' is-active' : ''}`}
                 role="option"
+                tabIndex={-1}
                 aria-selected={index === safeIndex}
                 title={result.label}
                 onMouseEnter={() => setActiveIndex(index)}

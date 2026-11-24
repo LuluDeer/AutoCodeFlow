@@ -142,7 +142,10 @@ const reloads = [];
 const savedWrites = [];
 const baselineWrites = [];
 const sectionSwitches = [];
+// 稳定身份：与 requestSaveRef 同款，键盘 effect 的 deps 不应因测试重建而重挂。
+const confirmRefFalse = { current: false };
 let pyEnvCalls = 0;
+let statusCalls = 0;
 let saveReply = { ok: true };
 let statusReply = { running: false };
 const timers = [];
@@ -150,7 +153,7 @@ const timers = [];
 const fakeWindow = {
   electronAPI: {
     saveConfig: async (cfg) => { saveCalls.push(cfg); return saveReply; },
-    getStatus: async () => statusReply,
+    getStatus: async () => { statusCalls += 1; return statusReply; },
   },
   location: { reload: () => { reloads.push(true); } },
   addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn); },
@@ -171,6 +174,7 @@ const mkDeps = (over = {}) => ({
   form: { uiLanguage: 'zh', executorPort: 8002 },
   savedForm: { uiLanguage: 'zh', executorPort: 8002 },
   isDirty: true,
+  confirmOpenRef: confirmRefFalse,
   setSavedForm: (cfg) => { baselineWrites.push(cfg); },
   setSaved: (v) => { savedWrites.push(v); },
   refreshPyEnv: () => { pyEnvCalls += 1; },
@@ -315,6 +319,38 @@ try {
     await flush();
     eq(saveCalls.length, 0, '不脏时 Ctrl+S 不得触发保存（既有闸门）');
   }
+
+  // ③-7 确认条已开：requestSave 直调与 Ctrl+S 必须共用同一道闸（T1）。
+  {
+    react.reset();
+    listeners.keydown.length = 0;
+    saveCalls.length = 0;
+    statusCalls = 0;
+    statusReply = { running: true };
+    const ref = { current: async () => {} };
+    const openRef = { current: true };
+    const dirtyDeps = {
+      requestSaveRef: ref,
+      confirmOpenRef: openRef,
+      form: { uiLanguage: 'zh', executorPort: 9999 },
+      savedForm: { uiLanguage: 'zh', executorPort: 8002 },
+    };
+    const opened = render(mkDeps(dirtyDeps));
+    ref.current = opened.requestSave;
+    await opened.requestSave();
+    await flush();
+    eq(statusCalls, 0, '确认条开着时 requestSave 不得再次探执行器状态（否则 saveImpact 会被重置）');
+    eq(saveCalls.length, 0, '确认条开着时 requestSave 不得重复写盘');
+    listeners.keydown[0]({
+      ctrlKey: true, metaKey: false, altKey: false, shiftKey: false,
+      key: 's', preventDefault: () => {},
+    });
+    await flush();
+    eq(statusCalls, 0, '确认条开着时 Ctrl+S 不得重探状态（键盘与按钮同闸）');
+    eq(saveCalls.length, 0, '确认条开着时 Ctrl+S 不得重复写盘');
+    eq(render(mkDeps(dirtyDeps)).saveImpact, null, '确认条开着时重入不得改写已有 saveImpact 档位');
+    statusReply = { running: false };
+  }
 } finally {
   globalThis.setTimeout = realSetTimeout;
   if (realWindow === undefined) delete globalThis.window; else globalThis.window = realWindow;
@@ -342,14 +378,18 @@ for (const [file, src, anchors] of [
     'saveImpact', 'saving', 'saveError',
     // Ctrl+S 的出口：按钮与确认弹窗都接在这两个函数上。
     'requestSave', 'void save()',
+    // T1：页面把确认条开合接进写路径（按钮 disabled 与键盘闸同源）。
+    'confirmOpenRef.current = saveImpact !== null',
     // ref 的**唯一写点**（下面 ⑥ 还会用计数钉住）。
     'requestSaveRef.current = requestSave',
   ]],
   ['pages/config/use-config-writer.ts', hookCode, [
     'classifySaveResult', 'saveConfig', 'restartRequiredFieldsDiffer',
     'requestSaveRef.current()',
+    'isDirty && !confirmOpenRef.current',
+    'confirmOpen, needsRestart',
   ]],
-  ['pages/config/save-plan.ts', planCode, ['classifySaveResult', 'result.ok === false']],
+  ['pages/config/save-plan.ts', planCode, ['classifySaveResult', 'result.ok === false', 'if (input.confirmOpen) return \'noop\'']],
 ]) {
   for (const anchor of anchors) {
     check(src.includes(anchor),

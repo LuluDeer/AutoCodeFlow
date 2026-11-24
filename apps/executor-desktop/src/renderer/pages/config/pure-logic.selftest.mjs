@@ -139,7 +139,7 @@ eq([...dirtySectionsOf({ port: 9 }, { port: 1 }, SECTIONS_F, SECTION_KEYS_F)], [
 check(dirtySectionsOf({}, {}, SECTIONS_F, SECTION_KEYS_F) instanceof Set, '返回值是 Set（页面用 .size/.has）');
 
 // ── ⑥ savePlan：requestSave 的真值表 ────────────────────────────────────
-const gate = (over) => planSave({ isDirty: true, saving: false, checkingSaveImpact: false, needsRestart: true, status: 'unprobed', ...over });
+const gate = (over) => planSave({ isDirty: true, saving: false, checkingSaveImpact: false, confirmOpen: false, needsRestart: true, status: 'unprobed', ...over });
 
 check(gate({ isDirty: false }) === 'noop', '不脏 → noop（不弹确认、不落盘）');
 check(gate({ saving: true }) === 'noop', '保存进行中 → noop（防重复提交）');
@@ -156,6 +156,13 @@ check(gate({ status: 'unavailable' }) === 'confirm-unknown',
 check(gate({ needsRestart: false, status: 'unavailable' }) === 'save',
   '状态不可得但不需要重启 → 仍直接存（不因探测失败阻断无害保存）');
 check(gate({ isDirty: false, status: 'running' }) === 'noop', 'noop 优先于一切状态');
+// 确认条已开：Ctrl+S/按钮重入必须整段 noop，不得重新探状态或重置 saveImpact。
+check(gate({ confirmOpen: true }) === 'noop', '确认条已开 → noop（不重探状态）');
+check(gate({ confirmOpen: true, status: 'unprobed' }) === 'noop', '确认条开 + unprobed → 仍 noop（不动 probe）');
+check(gate({ confirmOpen: true, status: 'running' }) === 'noop', '确认条开 + running → noop（不换成 confirm-running）');
+check(gate({ confirmOpen: true, status: 'stopped' }) === 'noop', '确认条开 + stopped → noop（不绕过确认直接存）');
+check(gate({ confirmOpen: true, needsRestart: false }) === 'noop', '确认条开 + 无重启需求 → 仍 noop（确认闸最高优先级）');
+check(gate({ confirmOpen: true, isDirty: false, saving: true }) === 'noop', '确认条开与脏/存闸并存 → noop');
 
 // ── ⑦ saveStatusOf：唯一有副作用那一步的降级语义 ─────────────────────────
 eq(await saveStatusOf(undefined), 'unavailable', '旧版 preload 无该通道 → unavailable');

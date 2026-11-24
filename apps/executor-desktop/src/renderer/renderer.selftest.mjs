@@ -2387,4 +2387,70 @@ await import('./pages/status/status-helpers.selftest.mjs');
   }
 }
 
+// ── 第 5 轮：配置搜索 combobox / JS reduced-motion / 日志命中按钮命中区 ────
+{
+  const searchSrc = readFileSync(resolve(root, 'pages', 'config', 'ConfigSearchBox.tsx'), 'utf8');
+  const inputTag = /<input\b[\s\S]*?\/>/.exec(searchSrc)?.[0] ?? '';
+  const optionTag = /<button\b[\s\S]*?>/.exec(searchSrc)?.[0] ?? '';
+  for (const anchor of [
+    'role="combobox"',
+    "aria-expanded={term !== ''}",
+    'aria-autocomplete="list"',
+    'aria-controls={listboxId}',
+    'aria-activedescendant={safeIndex >= 0 ? optionIdOf(safeIndex) : undefined}',
+  ]) {
+    if (!inputTag.includes(anchor)) throw new Error(`T3: 搜索框 input 缺 combobox 语义 ${anchor}`);
+  }
+  for (const anchor of ['role="option"', 'tabIndex={-1}', 'aria-selected={index === safeIndex}', 'id={optionIdOf(index)}']) {
+    if (!optionTag.includes(anchor)) throw new Error(`T3: 搜索结果 option 缺锚点 ${anchor}（tabIndex=-1 防焦点陷进 option）`);
+  }
+  // T4：JS 显式 smooth 会盖掉 base.css 的 prefers-reduced-motion 兜底。
+  const smoothHits = pages.filter((src) => /behavior:\s*['"]smooth['"]/.test(src));
+  if (smoothHits.length !== 0) throw new Error('T4: 渲染层仍有裸 behavior:"smooth"（应走 prefersReducedMotion() 判据）');
+  const motionSrc = readFileSync(resolve(root, 'utils', 'scroll-reduced.ts'), 'utf8');
+  for (const anchor of ['prefers-reduced-motion: reduce', 'matchMedia', 'return false']) {
+    if (!motionSrc.includes(anchor)) throw new Error(`T4: prefersReducedMotion 工具缺 ${anchor}`);
+  }
+  const { prefersReducedMotion } = await import('./utils/scroll-reduced.ts');
+  const prevWindow = globalThis.window;
+  try {
+    globalThis.window = { matchMedia: (q) => ({ matches: q === '(prefers-reduced-motion: reduce)' }) };
+    if (prefersReducedMotion() !== true) throw new Error('T4: 系统要求减少动效时必须返回 true');
+    globalThis.window = { matchMedia: () => ({ matches: false }) };
+    if (prefersReducedMotion() !== false) throw new Error('T4: 未要求减少动效时必须返回 false');
+    globalThis.window = {};
+    if (prefersReducedMotion() !== false) throw new Error('T4: 无 matchMedia 环境必须回退 false');
+  } finally {
+    if (prevWindow === undefined) delete globalThis.window; else globalThis.window = prevWindow;
+  }
+  if (!config.includes("behavior: prefersReducedMotion() ? 'auto' : 'smooth'")) {
+    throw new Error('T4: 配置页滚动未接 prefersReducedMotion() 判据');
+  }
+
+  // T5：上一条/下一条匹配按钮的实际命中区 ≥24px（14px 图标 + 3px padding 只有 20px）。
+  const pagesCss = cssByFile.get('pages.css');
+  const navBlock = /\.log-fs-nav\s*\{([^}]*)\}/s.exec(pagesCss)?.[1] ?? '';
+  const tokenPx = (name) => {
+    const hit = new RegExp(`--${name}:\\s*([\\d.]+)px`).exec(css);
+    return hit ? Number.parseFloat(hit[1]) : NaN;
+  };
+  const pxOf = (decl) => {
+    const varHit = /min-width:\s*var\(--([\w-]+)\)/.exec(decl);
+    if (varHit) return tokenPx(varHit[1]);
+    const pxHit = /min-width:\s*([\d.]+)px/.exec(decl);
+    return pxHit ? Number.parseFloat(pxHit[1]) : NaN;
+  };
+  const navMin = pxOf(navBlock);
+  if (!(navMin >= 24)) throw new Error(`T5: .log-fs-nav min-width=${navMin}px < 24px（令牌 --control-h-sm=${tokenPx('control-h-sm')}px）`);
+  if (!/min-height:\s*(?:var\(--control-h-sm\)|[\d.]+px)/.test(navBlock)) {
+    throw new Error('T5: .log-fs-nav 缺 min-height 命中区');
+  }
+  for (const anchor of ['align-items: center', 'justify-content: center']) {
+    if (!navBlock.includes(anchor)) throw new Error(`T5: .log-fs-nav 缺 ${anchor}（图标需双向居中）`);
+  }
+  if (!/\.log-fs-nav \.icon \{[^}]*width:\s*14px[^}]*height:\s*14px/s.test(pagesCss)) {
+    throw new Error('T5: 视觉图标尺寸应保持 14px，不得随命中区放大');
+  }
+}
+
 console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit (theme sync sendSync whitelist), R7-B config-io layer, R-UX apps/config/history/status pure-logic selftests, T1/T2/T3/T4 read-failure honesty guards passed');

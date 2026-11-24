@@ -68,6 +68,8 @@ import { useConfigWriter } from './config/use-config-writer';
 // 本页只留 hook 调用点（见下方「配置源层」）与两处 JSX 接线（错误行 / 同步提示）。
 import { listText } from './config/config-source';
 import { useConfigSource } from './config/use-config-source';
+// T4：JS 显式 behavior 绕过 CSS 的 reduced-motion 兜底，调用点先问系统偏好。
+import { prefersReducedMotion } from '../utils/scroll-reduced';
 
 
 /** python_task_multiversion：设置页诊断面（实际生效的 uv / 池，见主进程 IPC）。 */
@@ -511,7 +513,7 @@ export default function ConfigPage() {
     setPendingField(null);
     const target = document.querySelector(`[data-cfgx-field="${field}"]`);
     if (target instanceof HTMLElement) {
-      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      target.scrollIntoView({ block: 'center', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
       const ctrl = target.querySelector<HTMLElement>('input, select, textarea, button');
       ctrl?.focus({ preventScroll: true });
       target.classList.remove('cfgx-row-flash');
@@ -544,13 +546,16 @@ export default function ConfigPage() {
   // 初值只服务于"首次渲染、监听器尚未可能被触发"的那一瞬（渲染期紧接着就被
   // 赋值成真正的 requestSave）——留空实现在于让类型不必带 null 分支。
   const requestSaveRef = useRef<() => Promise<void>>(async () => {});
+  // T1：确认条开合由页面写入 ref，hook 在事件体内读最新值（避免解构语句内 TDZ）。
+  const confirmOpenRef = useRef(false);
   const {
     saving, checkingSaveImpact, saveImpact, saveError,
     setSaveImpact, setSaveError, save, requestSave,
   } = useConfigWriter({
-    t, form, savedForm, isDirty,
+    t, form, savedForm, isDirty, confirmOpenRef,
     setSavedForm, setSaved, refreshPyEnv, requestSaveRef, languageChangeReloadsUi, onSwitchSection,
   });
+  confirmOpenRef.current = saveImpact !== null;
   requestSaveRef.current = requestSave;
 
   async function test() {
@@ -697,8 +702,8 @@ export default function ConfigPage() {
         </div>
         <div className="cfgx-effective-item">
           <dt>{t('cfgx.effective.agent')}</dt>
-          <dd title={agentValueLabel(savedForm.agentPermissionProfile, 'minimal')}>
-            {String(savedForm.agentPermissionProfile || 'minimal')}
+          <dd data-raw-enum={String(savedForm.agentPermissionProfile || 'minimal')}>
+            {agentValueLabel(savedForm.agentPermissionProfile, 'minimal')}
           </dd>
         </div>
       </dl>

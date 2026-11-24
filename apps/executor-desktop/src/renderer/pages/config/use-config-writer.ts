@@ -91,6 +91,13 @@ export interface ConfigWriterDeps {
   savedForm: Record<string, unknown>;
   /** 是否脏（页面派生量；`requestSave` 的 noop 闸 + 键盘闸都用它）。 */
   isDirty: boolean;
+  /**
+   * 保存影响确认条是否已开：页面在 useConfigWriter(...) 返回后把
+   * `saveImpact !== null` 写进这个 ref（同样的 ref 写点唯一纪律见 requestSaveRef）。
+   * 用 ref 而非布尔入参，是因为 saveImpact 由本 hook 返回，布尔入参会落在
+   * 页面解构语句内部、形成渲染期 TDZ。事件体内读 `.current` 才是最新值。
+   */
+  confirmOpenRef: { current: boolean };
   /** 保存成功后把基线推进到本次提交的草稿。 */
   setSavedForm: (cfg: Record<string, unknown>) => void;
   /**
@@ -128,7 +135,7 @@ export interface ConfigWriter {
 
 export function useConfigWriter(deps: ConfigWriterDeps): ConfigWriter {
   const {
-    t, form, savedForm, isDirty,
+    t, form, savedForm, isDirty, confirmOpenRef,
     setSavedForm, setSaved, refreshPyEnv, requestSaveRef, languageChangeReloadsUi, onSwitchSection,
   } = deps;
 
@@ -189,7 +196,8 @@ export function useConfigWriter(deps: ConfigWriterDeps): ConfigWriter {
     // 不需要动执行器。此前只要执行器在跑就一律弹"保存会立即重启执行器"，
     // 与本进程真实的 finalizeConfigSave 判据不一致，属于虚惊。
     const needsRestart = restartRequiredFieldsDiffer(savedForm, form);
-    const gate = planSave({ isDirty, saving, checkingSaveImpact, needsRestart, status: 'unprobed' });
+    const confirmOpen = confirmOpenRef.current;
+    const gate = planSave({ isDirty, saving, checkingSaveImpact, confirmOpen, needsRestart, status: 'unprobed' });
     if (gate === 'noop') return;
     setSaveImpact(null);
     if (gate === 'save') {
@@ -200,7 +208,7 @@ export function useConfigWriter(deps: ConfigWriterDeps): ConfigWriter {
     try {
       // 状态无法确认时保守提示，不把运行中的任务当作空闲任务处理。
       const status: SaveStatus = await saveStatusOf(window.electronAPI.getStatus);
-      const plan = planSave({ isDirty: true, saving: false, checkingSaveImpact: false, needsRestart: true, status });
+      const plan = planSave({ isDirty: true, saving: false, checkingSaveImpact: false, confirmOpen, needsRestart: true, status });
       if (plan === 'save') await save();
       else setSaveImpact(plan === 'confirm-running' ? 'running' : 'unknown');
     } catch {
@@ -219,7 +227,8 @@ export function useConfigWriter(deps: ConfigWriterDeps): ConfigWriter {
       const modifier = e.ctrlKey || e.metaKey;
       if (modifier && !e.altKey && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
-        if (isDirty) void requestSaveRef.current();
+        // 与底部按钮共用 confirmOpen 闸：确认条开着时 Ctrl+S 不得重入 requestSave。
+        if (isDirty && !confirmOpenRef.current) void requestSaveRef.current();
         return;
       }
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && /^[1-5]$/.test(e.key)) {
@@ -229,8 +238,8 @@ export function useConfigWriter(deps: ConfigWriterDeps): ConfigWriter {
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-    // 三个依赖里只有 `isDirty` 会变（另两个由页面保证身份稳定）⇒ 重挂时机
-    // 与拆分前 `[isDirty]` 完全一致。
+    // 依赖里只有 `isDirty` 会变；确认条开合由 ref 在事件体内读最新值
+    //（与 requestSaveRef 同款：不把 ref 当 effect deps，避免无谓重挂）。
   }, [isDirty, requestSaveRef, onSwitchSection]);
 
   return {

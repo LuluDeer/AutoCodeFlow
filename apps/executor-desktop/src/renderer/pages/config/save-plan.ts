@@ -21,15 +21,20 @@ export type SavePlanInput = {
   isDirty: boolean;
   saving: boolean;
   checkingSaveImpact: boolean;
+  /** 保存影响确认条是否已打开（页面从 saveImpact !== null 派生；键盘/按钮同一闸）。 */
+  confirmOpen: boolean;
   needsRestart: boolean;
   status: SaveStatus;
 };
 
 /**
- * 真值表。优先级：先看能不能动（脏/在存/正在判定 → noop），再看重启需求
- * （不需要重启就与运行状态无关 → 直接存），最后看状态。
+ * 真值表。优先级：先看能不能动（确认条已开 / 脏 / 在存 / 正在判定 → noop），
+ * 再看重启需求（不需要重启就与运行状态无关 → 直接存），最后看状态。
  */
 export function planSave(input: SavePlanInput): SavePlan {
+  // 确认条开着时再按 Ctrl+S 不能重新探状态——那会 reset saveImpact 并把
+  // 用户已经看到的「会中断任务」提示换成另一档，等于确认条被键盘偷偷重开。
+  if (input.confirmOpen) return 'noop';
   if (!input.isDirty || input.saving || input.checkingSaveImpact) return 'noop';
   // 不需要重启的保存与执行器是否在跑无关——这正是"改语言也被提示会重启"的修法。
   if (!input.needsRestart) return 'save';
