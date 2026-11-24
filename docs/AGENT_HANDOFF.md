@@ -1,7 +1,28 @@
 # AutoCodeFlow Agent Handoff
 
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 16 轮 · 提交态完整性审计 + 剩余 3 个守卫假绿收口）
-> 当前分支 `develop` = `15193004`（第 5-17 轮累积已按主题分 9 组提交：`8684c1eb`…`d720a702` 见前轮 + `0cb84fa5` live-probes 黑盒 + `15193004` demo 清理）。工作树干净，**领先 origin/develop 11 提交、未 push**。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> 当前分支 `develop` = `084822c3`（第 5-18 轮累积已按主题分 10 组提交：`8684c1eb`…`4d517407` 见前轮 + `084822c3` 孤儿自检接线）。工作树干净，**领先 origin/develop 13 提交、未 push**。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 18 轮）：整体孤儿守卫/自检审计——收口自检"蒙混豁免"
+
+**方向来源**：objective 续轮。前几轮逐个审守卫假绿，本轮换**整体盲区**——找"存在但从不被任何门禁/CI 跑到"的孤儿守卫/自检（R02/R46/R175 先例）。
+
+**审计（只读脚本机械求差 + 逐个核实）**：约 105 个 `check-*.mjs`、226 个 `*.selftest.*`。
+- (a) `scripts/check-*.mjs` 无孤儿：scanGuards=99（守卫总 108）、disk−scan=0、checkGuardsWired 的 problems/selftestProblems/errors = 0/0/0；唯一豁免 `check-route-authz-matrix.mjs`（covered-elsewhere + mustProve，jest 分片已收）。
+- (c) apps/packages scripts 无孤儿（lhci-serve→lighthouserc、bundle-preload→build:main、i18n-scan→lint:i18n、verify-task-detail-ux→npm script 等均有真引用；ux-*/docs-screenshots/visual-1280 为真机人工走查、头注含用法）。
+- 本会话新增三自检复查：live-probes 黑盒（package.json:187→ci.yml:1431 真接线）、deploy-locator e2e（playwright config testMatch + test:e2e:deeplink script）、demo-headless 即下述孤儿。
+
+**真孤儿 1 个（我上一轮自己制造的）**：`demo-headless-agent.selftest.mjs` —— 自称"纯静态、离线、零依赖、只 import node: 内置"，却借头注里描述被守对象的"真机"关键词命中 `check-selftests-wired.mjs:75-78` 的 WHY_KEYWORDS 而判"头注已说明理由"豁免；全仓无 npm script 跑它、无 CI run、无守卫引用（`demo.selftest.sh` 只 `node --check` 主脚本）⇒ 上轮写的 6 条清理契约断言**永不自动执行**。主控复核：零依赖、29ms、6/6 绿，完全可接门禁。
+
+**修法**：改头注去掉误导性"不接门禁链/真机理由"，如实说明已两面接线；根 `package.json` 加 `check:demo-headless-agent-selftest` script 并追加到 `test:guards:chain` 末尾；`ci.yml` 的 check-migrations job 加一个 step（`npm run check:demo-headless-agent-selftest`，随 push 跑、无门控）。段数 127→128。
+
+**验收（主控独立复跑）**：demo selftest via npm 0（6/6）、`check:guards-wired` 0、`check:selftests-wired` 0（现报"已接线"而非"头注豁免"）、`check:workflow-yaml` 0、`guards-repo-matrix` 0（解析/执行 128 段、diff 空）、**全守卫链 `test:guards:chain` CHAIN_EXIT=0**（末段正是新接线的 demo selftest，证真跑）。反证在 `/tmp` 隔离副本改 `rmSync recursive:false` → selftest 转红、仓库本体零改。验收级别：静态审计 + 真子进程/门禁链真跑；无功能改动，不涉浏览器/真机。遗留缺陷 0。
+
+**方法论沉淀**：头注的"真机"关键词只能用于**确实需要真机**的自检（需 docker/PG/连跑/分钟级）；**零依赖秒级静态自检绝不能借被守对象的"真机"属性蒙混豁免**——判据"理由要留在被执行对象旁边"的前提是"被执行对象确实需要该环境"，本例违犯了它。
+
+**可用路径 / 发布前置**：本轮 3 文件（selftest 头注 + package.json + ci.yml）待提交，**未 push**。孤儿已收口、全链 0、128 段真接线，提交前证据齐备。
+
+---
 
 ## 本轮（2026-11-25 · 第 17 轮）：第 7 个守卫假绿（live-probes）+ demo 临时目录泄漏
 
