@@ -435,6 +435,15 @@ const ALLOWLIST = [
     reason: "错误码目录分片：值是 {status,zh,en} 对象（i18n 词典），不是 DB 列值域",
   },
   {
+    name: "NORTH_STAR_PROMOTION_REASON_CODES",
+    reason:
+      "升主判据的**原因类别码**（R192/D-2）：只在 API 响应 `reasonDetails[].code` 与前端着色/本地化键上流转，" +
+      "不落库（`agent-north-star.dto.ts` 的 reasonDetails 是即时计算的结果，无对应 PG enum 列）。" +
+      "它的跨端一致性由 `apps/admin-api/src/modules/agent/runtime/north-star-metrics.service.ts` 的推导 + " +
+      "`apps/admin-web` 的消费测试覆盖（前端遇到未知码回落展示文本）。⚠️ 新增码值时前端要同步识别，" +
+      "本豁免只声明「无 PG 列可比」，不替代那道前端契约。",
+  },
+  {
     name: "EXECUTOR_CODES",
     reason: "错误码目录分片（同上），值是 {status,zh,en} 对象",
   },
