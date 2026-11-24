@@ -9,7 +9,6 @@ import {
   And,
   ILike,
   LessThanOrEqual,
-  Like,
   MoreThanOrEqual,
   Repository,
   type FindOperator,
@@ -263,7 +262,8 @@ export class ArtifactsService {
     const keyword = query.q?.trim().slice(0, 100) || undefined;
 
     // ext：白名单后缀匹配。DTO @IsIn 已兜非法值，service 再判一次纵深防御；
-    // 白名单内只有 [a-z0-9]，后缀 LIKE 不带通配符注入面。
+    // 白名单内只有 [a-z0-9]，后缀 ILIKE 不带通配符注入面（大小写不敏感，
+    // 文件名原样入库故 REPORT.PNG 也要被 ext=png 命中）。
     const ext = query.ext?.trim().toLowerCase() || undefined;
     if (
       ext &&
@@ -309,7 +309,9 @@ export class ArtifactsService {
     // 同一列上的多个谓词用 And() 合取（q 模糊 + ext 后缀可同时生效）。
     const namePredicates: FindOperator<string>[] = [];
     if (keyword) namePredicates.push(ILike(`%${escapeLikePattern(keyword)}%`));
-    if (ext) namePredicates.push(Like(`%.${ext}`));
+    // ext 经上方 toLowerCase() 归一；产物文件名允许大写且原样入库（RE 含 A-Z），
+    // 故后缀谓词必须用 ILike（大小写不敏感），否则 REPORT.PNG / SCREENSHOT.PNG 被静默漏掉。
+    if (ext) namePredicates.push(ILike(`%.${ext}`));
     if (namePredicates.length === 1) where.name = namePredicates[0];
     else if (namePredicates.length > 1) where.name = And(...namePredicates);
 

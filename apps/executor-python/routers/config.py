@@ -215,6 +215,24 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
                 settings.admin_api_url = req.admin_api_url
                 updated_fields.append('admin_api_url')
                 logger.info(f'Hot-reloaded admin_api_url={req.admin_api_url}')
+                # Node parity (apps/executor-node/src/routes/config.ts:244-246):
+                # admin only pushes adminApiUrl; mirror it into the internal
+                # base when no explicit internal was supplied, otherwise
+                # get_admin_api_base_url() (external > internal > primary) keeps
+                # returning a stale ADMIN_API_URL_INTERNAL while we answer
+                # success:true. Explicit internal always wins. Python's
+                # ConfigReloadRequest has no adminApiUrls field (see the
+                # _KNOWN_CONFIG_FIELDS note above), so there is no second guard.
+                # updated_fields stays node-shaped: only the explicit
+                # adminApiUrl is reported; the derivation goes to the log,
+                # never as a fabricated internal update.
+                if req.admin_api_url_internal is None:
+                    settings.admin_api_url_internal = req.admin_api_url
+                    logger.info(
+                        'Derived admin_api_url_internal=%s from adminApiUrl '
+                        '(no explicit adminApiUrlInternal)',
+                        req.admin_api_url,
+                    )
             else:
                 ignored_fields.append('adminApiUrl(empty)')
                 logger.warning(

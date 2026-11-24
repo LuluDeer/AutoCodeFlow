@@ -297,12 +297,25 @@ describe("ArtifactsService.listArtifactRows（GET /artifacts 读面）", () => {
     expect(timeOp.type).toBe("moreThanOrEqual");
   });
 
-  it("ext 白名单内：name 后缀 LIKE '%.<ext>'", async () => {
+  it("ext 白名单内：name 后缀 ILIKE '%.<ext>'（小写文件名行为逐字不变）", async () => {
     findAndCount.mockResolvedValue([[mkRow({ name: "screenshot.png" })], 1]);
     await svc.listArtifactRows({ ext: "png", page: 1, pageSize: 20 });
     const { where } = findAndCount.mock.calls[0][0];
     const nameOp = asOp(where.name);
-    expect(nameOp.type).toBe("like");
+    expect(nameOp.type).toBe("ilike");
+    expect(nameOp.value).toBe("%.png");
+  });
+
+  it("ext 归一后必须用 ILike 操作符（旧 Like 实现下本断言转红）", async () => {
+    // 入口 @Transform 与 service 都会把 ext 归一为小写；产物文件名允许大写且原样入库
+    // （SAFE_ARTIFACT_NAME_RE 含 A-Z），所以后缀谓词必须是大小写不敏感的 ILike。
+    // 内存替身不执行 SQL，无法验证真实 PG 的大小写结果；这里钉住可观测事实：
+    // TypeORM FindOperator.type === "ilike"。旧的 Like 实现下该值为 "like"，断言即失败。
+    findAndCount.mockResolvedValue([[mkRow({ name: "SCREENSHOT.PNG" })], 1]);
+    await svc.listArtifactRows({ ext: "PNG", page: 1, pageSize: 20 });
+    const { where } = findAndCount.mock.calls[0][0];
+    const nameOp = asOp(where.name);
+    expect(nameOp.type).toBe("ilike");
     expect(nameOp.value).toBe("%.png");
   });
 
@@ -355,7 +368,7 @@ describe("ArtifactsService.listArtifactRows（GET /artifacts 读面）", () => {
     const nameOp = asOp(where.name);
     expect(nameOp.type).toBe("and");
     const namePreds = nameOp.value as { type: string; value: string }[];
-    expect(namePreds.map((p) => p.type).sort()).toEqual(["ilike", "like"]);
+    expect(namePreds.map((p) => p.type).sort()).toEqual(["ilike", "ilike"]);
     expect(asOp(where.createdAt).type).toBe("and");
   });
 });

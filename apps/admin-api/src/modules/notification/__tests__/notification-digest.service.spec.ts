@@ -465,6 +465,96 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
       expect(timers.has("t1")).toBe(true);
       expect(await redis.hget(`${DIGEST_KEY_PREFIX}t1`, "start")).toBeDefined();
     });
+
+    it("写入后复核 start：hsetnx=0 且 A-7 探测读到旧 start，写入前 DEL 重建孤儿窗 → 复核发现无 start 接管 flush（无丢失）", async () => {
+      const key = `${DIGEST_KEY_PREFIX}t1`;
+      // 预置实例 A 持有的健康窗（带旧 start），令 A-7 探测（第一次 hget）读到非空 start
+      await evalRedis.hset(key, "start", String(Date.now() - 60_000));
+
+      // hsetnx 返回 0：旧窗仍在，A-7 探测分支不挂 timer（需写入后复核收口）
+      const hsetnxSpy = jest
+        .spyOn(evalRedis, "hsetnx")
+        .mockImplementationOnce(async () => 0);
+
+      // 精确注入竞态：首笔 hincrby 之前插入一次 DEL（模拟 A 的 takeWindow 原子删窗）。
+      // 删窗后本批写入在已删 key 上重建「有 count/ctx、无 start」的孤儿窗。
+      const realHincrby = evalRedis.hincrby.bind(evalRedis);
+      let deleted = false;
+      const hincrbySpy = jest
+        .spyOn(evalRedis, "hincrby")
+        .mockImplementation(async (k, field, inc) => {
+          if (!deleted) {
+            deleted = true;
+            await evalRedis.del(k);
+          }
+          return realHincrby(k, field, inc);
+        });
+
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      await expect(
+        evalService.recordFailure(rec({ executionId: "e2" })),
+      ).resolves.toBe("aggregated");
+      const warnCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+      warnSpy.mockRestore();
+      hsetnxSpy.mockRestore();
+      hincrbySpy.mockRestore();
+
+      expect(deleted).toBe(true);
+      // 写入后复核发现 start 缺失 → 接管 flush 责任（有牙断言：删掉复核逻辑则此行为 false）
+      expect(
+        (evalService as unknown as { timers: Map<string, unknown> }).timers.has(
+          "t1",
+        ),
+      ).toBe(true);
+      expect(
+        warnCalls.some(
+          (m) =>
+            m.includes("no start field after write") &&
+            m.includes("adopting flush duty"),
+        ),
+      ).toBe(true);
+
+      // 该批失败被后续 flush 汇总（count 不丢），而非静默丢失
+      const state = await evalService.flush("t1");
+      expect(state).not.toBeNull();
+      expect(state!.count).toBe(1);
+      expect(state!.lastExecutionId).toBe("e2");
+    });
+
+    it("写入后复核 start 仍在（健康窗）→ 不重复挂 timer、不产生接管 warn", async () => {
+      // 第一条正常开窗挂 timer
+      await evalService.recordFailure(rec({ executionId: "e1" }));
+      const timers = (
+        evalService as unknown as { timers: Map<string, unknown> }
+      ).timers;
+      expect(timers.size).toBe(1);
+      const firstTimer = timers.get("t1");
+
+      // 第二条：hsetnx=0（健康窗已存在），A-7 探测与写入后复核都读到 start 仍在
+      const hgetSpy = jest.spyOn(evalRedis, "hget");
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      await expect(
+        evalService.recordFailure(rec({ executionId: "e2" })),
+      ).resolves.toBe("aggregated");
+      const orphanWarns = warnSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes("adopting flush duty"));
+      warnSpy.mockRestore();
+
+      // 未重建 timer（size 仍为 1、引用未变），且无接管 warn
+      expect(timers.size).toBe(1);
+      expect(timers.get("t1")).toBe(firstTimer);
+      expect(orphanWarns).toHaveLength(0);
+      // start 被读两次：A-7 探测一次 + 写入后复核一次
+      expect(
+        hgetSpy.mock.calls.filter((c) => c[1] === "start").length,
+      ).toBeGreaterThanOrEqual(2);
+      hgetSpy.mockRestore();
+    });
   });
 });
 

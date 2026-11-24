@@ -241,6 +241,22 @@ export class NotificationDigestService implements OnModuleDestroy {
       );
       await client.hset(key, "lastError", rec.errorSummary.slice(0, 500));
       await client.hset(key, "lastExecutionId", rec.executionId);
+
+      // 写入后复核 start（TOCTOU 收口）：A-7 的 hsetnx→hget 探测与首笔写入
+      // 之间存在竞态窗口——若本记录 A-7 探测读到旧 start（判健康、未挂 timer），
+      // 而实例 A 的 takeWindow DEL 恰落在该探测与本批写入之间，则本批写入会在
+      // 已删 key 上重建「有 count/ctx、无 start」的孤儿窗：无 timer、且 start
+      // 已不在，后续 record 的 A-7 探测再也接管不到 → 这批失败因调用方收到
+      // aggregated 跳过逐条直发、又无人汇总而静默丢失。写入完成后复核 start，
+      // 缺失即证明本批落在孤儿窗上，接管 flush 责任。scheduleFlush 自带
+      // timers.get 去重，多实例同抢无害。复核读失败沿用外层 catch → bypass。
+      const startAfterWrite = await client.hget(key, "start");
+      if (startAfterWrite === null || startAfterWrite === undefined) {
+        this.logger.warn(
+          `digest window for task ${rec.taskId} has no start field after write (orphan after racing flush during write) — adopting flush duty`,
+        );
+        this.scheduleFlush(rec.taskId, windowMs);
+      }
       return "aggregated";
     } catch (err: unknown) {
       this.logger.warn(

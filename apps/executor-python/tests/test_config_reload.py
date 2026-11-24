@@ -424,3 +424,67 @@ class TestEmptyAdminApiUrlIsIgnored:
         assert resp.json()['ignored_fields'] == []
         assert settings.admin_api_url == 'http://new:3105'
 
+
+# ---------------------------------------------------------------------------
+# Node parity: adminApiUrl-only reload must derive adminApiUrlInternal.
+#
+# admin payload (executor-config-fingerprint.util.ts:26-44) 只下发 adminApiUrl。
+# get_admin_api_base_url() 优先级 external > internal > primary；部署配了
+# ADMIN_API_URL_INTERNAL 时，旧实现只改 primary，base 仍打旧 internal，心跳/
+# 取件/回调继续走旧地址却对 admin 回 success:true。node 早在
+# routes/config.ts:244-246 做了缺省派生，这里把两端拓扑切换对齐。
+# ---------------------------------------------------------------------------
+class TestAdminApiUrlInternalDerivation:
+    def _pin(self, monkeypatch):
+        monkeypatch.setattr(settings, 'admin_api_url', 'http://old-admin:3105')
+        monkeypatch.setattr(settings, 'admin_api_url_internal', 'http://old-internal:3105')
+        monkeypatch.setattr(settings, 'admin_api_url_external', '')
+
+    def test_only_admin_api_url_derives_internal_base(self, auth_client, monkeypatch):
+        """有牙：修复前 base 仍取 old-internal → 本断言失败。"""
+        from admin_api import get_admin_api_base_url
+
+        self._pin(monkeypatch)
+
+        resp = auth_client.post('/api/config/reload', json={'adminApiUrl': 'http://new-admin:3105'})
+
+        assert resp.status_code == 200
+        # 与 node updatedFields 同口径：只报显式下发的 adminApiUrl，
+        # 派生体现在 config 值上，不伪造一次 internal 更新。
+        assert resp.json()['updated_fields'] == ['admin_api_url']
+        assert resp.json()['ignored_fields'] == []
+        assert settings.admin_api_url == 'http://new-admin:3105'
+        assert settings.admin_api_url_internal == 'http://new-admin:3105'
+        assert get_admin_api_base_url() == 'http://new-admin:3105'
+
+    def test_explicit_internal_is_not_overridden(self, auth_client, monkeypatch):
+        """控制组：显式下发 internal 时不做派生覆盖（node 同口径）。"""
+        from admin_api import get_admin_api_base_url
+
+        self._pin(monkeypatch)
+
+        resp = auth_client.post('/api/config/reload', json={
+            'adminApiUrl': 'http://new-admin:3105',
+            'adminApiUrlInternal': 'http://explicit-internal:3105',
+        })
+
+        assert resp.status_code == 200
+        assert resp.json()['updated_fields'] == ['admin_api_url', 'admin_api_url_internal']
+        assert settings.admin_api_url == 'http://new-admin:3105'
+        assert settings.admin_api_url_internal == 'http://explicit-internal:3105'
+        assert get_admin_api_base_url() == 'http://explicit-internal:3105'
+
+    def test_empty_admin_api_url_does_not_derive(self, auth_client, monkeypatch):
+        """边界：空值分支完全不进入派生，拓扑保持原样。"""
+        from admin_api import get_admin_api_base_url
+
+        self._pin(monkeypatch)
+
+        resp = auth_client.post('/api/config/reload', json={'adminApiUrl': '   '})
+
+        assert resp.status_code == 200
+        assert resp.json()['updated_fields'] == []
+        assert resp.json()['ignored_fields'] == ['adminApiUrl(empty)']
+        assert settings.admin_api_url_internal == 'http://old-internal:3105'
+        assert get_admin_api_base_url() == 'http://old-internal:3105'
+

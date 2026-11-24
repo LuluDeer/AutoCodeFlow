@@ -4655,6 +4655,36 @@ async def _run_uv(args: list[str], timeout_seconds: float, *, env: dict[str, str
             else:
                 truncated = True
 
+    # 非正常终止（超时 / 取消）的统一收尾。shield 让内部 gather 在外层被
+    # 取消时依旧存活，所以两个 task 都必须主动 cancel 并 gather 回收；uv
+    # 还会 spawn 下载/解包的孙进程，只 cancel 不算收尸——必须整树杀 + reap，
+    # 否则孤儿继续写共享 venv。取消与超时在资源泄漏上等价，两条分支共用
+    # 这一份，避免只改一处再次漂移。
+    drain_task = None
+    wait_task = None
+
+    async def _abort_and_reap() -> None:
+        nonlocal drain_task, wait_task
+        # 清理本身每一步都吞异常（含 CancelledError），绝不覆盖原始异常。
+        for task in (drain_task, wait_task):
+            if task is not None:
+                try:
+                    task.cancel()
+                except BaseException:  # noqa: BLE001 - best effort
+                    pass
+        try:
+            await asyncio.gather(drain_task, wait_task, return_exceptions=True)
+        except BaseException:
+            pass
+        try:
+            await _kill_process_tree(proc)
+        except BaseException:
+            pass
+        try:
+            await proc.wait()
+        except BaseException:  # noqa: BLE001 - reap 失败不掩盖原始取消/超时
+            pass
+
     try:
         drain_task = asyncio.ensure_future(_drain())
         wait_task = asyncio.ensure_future(proc.wait())
@@ -4666,20 +4696,10 @@ async def _run_uv(args: list[str], timeout_seconds: float, *, env: dict[str, str
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
-            drain_task.cancel()
-            wait_task.cancel()
-            try:
-                await asyncio.gather(drain_task, wait_task, return_exceptions=True)
-            except BaseException:
-                pass
-            await _kill_process_tree(proc)
-            try:
-                await proc.wait()
-            except Exception:
-                pass
+            await _abort_and_reap()
             raise
         except BaseException:
-            wait_task.cancel()
+            await _abort_and_reap()
             raise
     except asyncio.TimeoutError:
         raise
