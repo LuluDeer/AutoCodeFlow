@@ -59,7 +59,7 @@ import { resolveBundledUvPath, resolveInterpretersDir } from './executor-process
 import { classifyUvResolution } from './uv-paths';
 import { listLocalIPv4s } from './network-util';
 import { sanitizeConfigInput } from './config-sanitize';
-import { registerThemeHandlers } from './theme-bridge';
+import { parseThemeMode, registerThemeHandlers } from './theme-bridge';
 // P3-5：config:save 的 workDir 落盘前校验（纯决策层，注入 fs 可自检）。
 import { validateWorkDirForSave } from './config-recovery';
 // 拓展包「配置导入/导出 + 执行日志导出」：纯函数层（文件名/导入解析/掩码
@@ -595,6 +595,15 @@ const uvPathProbe = createUvPathProbe();
 export function registerIpcHandlers(): void {
   // ⑤ 主题双通道（apply 运行中镜像 / save 后端落盘）外提至 theme-bridge。
   registerThemeHandlers(ipcMain, { setResolvedTheme: (t) => windowManager.setResolvedTheme(t), saveThemeConfig: (t) => configStore.save({ theme: t }) });
+
+  // P3 首帧防闪：preload 在页面脚本执行前**同步**取一次 config.theme 快照。
+  // 只读三态、零参数、经 parseThemeMode 归一——不把整份 config（含 token 掩码等）
+  // 过桥；走已包 sender 闸的 ipcMain.on，与其余通道同一套来源校验。
+  // theme-init 把该值作为 localStorage 缺失时的 fallback，main.tsx 的 applyTheme
+  // 保持不变（两处 fallback 同源，不会在首帧后再翻一次色）。
+  ipcMain.on('theme:boot-snapshot', (event) => {
+    event.returnValue = parseThemeMode(configStore.get('theme'));
+  });
 
   // ── 剪贴板 ────────────────────────────────────────────
   // 复制统一走主进程 Electron clipboard：sandboxed renderer 的

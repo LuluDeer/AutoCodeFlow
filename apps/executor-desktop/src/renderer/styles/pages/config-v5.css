@@ -82,6 +82,15 @@ html[lang='en'] .cfg-nav { width: 208px; }
 }
 .cfgx-search-result:hover,
 .cfgx-search-result:focus-visible { background: var(--surface-2); color: var(--text); }
+/* 键盘 active（↑↓ 循环移动）与 focus 同款描边：输入框仍持有焦点，
+   aria-activedescendant 指向的 option 必须自己把"当前选中"画出来。 */
+.cfgx-search-result.is-active {
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: 0 0 0 2px var(--accent-muted);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
 .cfgx-search-result-main {
   display: flex;
   align-items: center;

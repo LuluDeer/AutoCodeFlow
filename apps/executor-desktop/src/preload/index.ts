@@ -4,9 +4,26 @@ import { contextBridge, ipcRenderer } from 'electron';
 // string / number / boolean 再投递（理由见 bridge-args.ts 文件头）。
 import { asBool, asLineNumber, asString, MAX_CLIPBOARD_ARG } from './bridge-args';
 
+/**
+ * P3 首帧主题防闪：页面脚本（theme-init）执行前，在 preload 阶段**同步**取一次
+ * 已加载的 config.theme 三态快照。主进程只回 light/dark/system 之一；这里再
+ * 按值域白名单收一次（非法值一律 null → theme-init 回落 system），绝不把整份
+ * 配置或任何 token 字段过桥。sendSync 只在启动期发生一次，不进热路径。
+ */
+const bootTheme: 'light' | 'dark' | 'system' | null = (() => {
+  try {
+    const raw = ipcRenderer.sendSync('theme:boot-snapshot');
+    return raw === 'light' || raw === 'dark' || raw === 'system' ? raw : null;
+  } catch {
+    return null;
+  }
+})();
+
 contextBridge.exposeInMainWorld('electronAPI', {
   // 配置
   getConfig: () => ipcRenderer.invoke('config:get'),
+  // ⑤ 首帧防闪同步快照（值域已收窄，theme-init 直接读；不是函数，不需要 IPC 往返）
+  bootTheme: bootTheme,
   saveConfig: (cfg: Record<string, unknown>) => ipcRenderer.invoke('config:save', cfg),
   saveAndCloseWizard: (cfg: Record<string, unknown>) =>
     ipcRenderer.invoke('config:save-and-close-wizard', cfg),

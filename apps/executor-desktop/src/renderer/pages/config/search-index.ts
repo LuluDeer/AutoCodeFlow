@@ -25,6 +25,26 @@ export function normalizeSearchTerm(query: string): string {
 /** 命中上限：左侧栏不是结果列表，超过 12 条用户只会滚不到底。 */
 export const MAX_SEARCH_RESULTS = 12;
 
+/**
+ * 搜索下拉的方向键循环位移（纯函数，供 ConfigSearchBox 与 selftest 共用）。
+ *
+ * - count<=0（无命中）：固定返回 -1，调用方据此不渲染 active 项、Enter 无动作；
+ * - current 越界 / 非整数（结果集刚变化）：down 归零、up 落到末项，
+ *   让按键永远能把焦点带回列表，而不是卡在 -1 或 NaN；
+ * - 合法区间内循环：末项 ↓ 回首项、首项 ↑ 回末项（不做"到边停住"的死端）。
+ */
+export function nextSearchIndex(
+  key: 'down' | 'up',
+  current: number,
+  count: number,
+): number {
+  if (!Number.isFinite(count) || count <= 0) return -1;
+  const size = Math.floor(count);
+  const at = Number.isFinite(current) ? Math.trunc(current) : -1;
+  if (at < 0 || at >= size) return key === 'down' ? 0 : size - 1;
+  return key === 'down' ? (at + 1) % size : (at - 1 + size) % size;
+}
+
 export function searchResultsOf<Id extends string>(input: {
   query: string;
   sections: ReadonlyArray<{ id: Id; labelKey: string }>;

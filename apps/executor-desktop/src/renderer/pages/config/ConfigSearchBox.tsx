@@ -1,6 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import Icon from '../../components/Icon';
-import type { SearchHit } from './search-index';
+import { nextSearchIndex, type SearchHit } from './search-index';
 
 type Translate = (key: string, ...args: (string | number | boolean)[]) => string;
 
@@ -28,6 +28,19 @@ export default function ConfigSearchBox<Id extends string>({
   t,
 }: ConfigSearchBoxProps<Id>) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+  // useId：同一页面可能有多个搜索框（向导重开/未来扩展），option id 不得撞名。
+  const idBase = useId();
+  const listboxId = `${idBase}-results`;
+  const optionIdOf = (index: number) => `${idBase}-result-${index}`;
+  // 结果集缩减时只做显示层 clamp，不写入 state：避免 effects 互相打架时把
+  // 用户刚按下的方向键索引又弹回去。下一次方向键从安全索引继续。
+  const safeIndex = results.length === 0 ? -1 : Math.min(Math.max(activeIndex, 0), results.length - 1);
+
+  useEffect(() => {
+    // 换词即回到首条；空词时 safeIndex 归 -1，Enter/aria 自动失效。
+    setActiveIndex(0);
+  }, [term]);
 
   useEffect(() => {
     if (term === '') return;
@@ -50,32 +63,43 @@ export default function ConfigSearchBox<Id extends string>({
           value={query}
           placeholder={t('cfgx.search.placeholder')}
           aria-label={t('cfgx.search.placeholder')}
+          aria-controls={listboxId}
+          aria-activedescendant={safeIndex >= 0 ? optionIdOf(safeIndex) : undefined}
           onChange={(e) => onQueryChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Escape') {
               onQueryChange('');
+              setActiveIndex(0);
               return;
             }
-            if (e.key === 'Enter' && results.length > 0) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              if (results.length === 0) return;
               e.preventDefault();
-              onPick(results[0]);
+              setActiveIndex(nextSearchIndex(e.key === 'ArrowDown' ? 'down' : 'up', safeIndex, results.length));
+              return;
+            }
+            if (e.key === 'Enter' && safeIndex >= 0) {
+              e.preventDefault();
+              onPick(results[safeIndex]);
             }
           }}
         />
       </div>
       {term !== '' && (
-        <div className="cfgx-search-results" role="listbox" aria-label={t('cfgx.search.placeholder')}>
+        <div className="cfgx-search-results" id={listboxId} role="listbox" aria-label={t('cfgx.search.placeholder')}>
           {results.length === 0 ? (
             <div className="cfgx-search-empty">{t('cfgx.search.empty')}</div>
           ) : (
-            results.map((result) => (
+            results.map((result, index) => (
               <button
                 type="button"
                 key={`${result.kind}:${result.id}`}
-                className="cfgx-search-result"
+                id={optionIdOf(index)}
+                className={`cfgx-search-result${index === safeIndex ? ' is-active' : ''}`}
                 role="option"
-                aria-selected="false"
+                aria-selected={index === safeIndex}
                 title={result.label}
+                onMouseEnter={() => setActiveIndex(index)}
                 onClick={() => onPick(result)}
               >
                 <span className="cfgx-search-result-main">

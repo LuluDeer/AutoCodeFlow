@@ -62,7 +62,7 @@ const { draftOrDisplay, commitFromDraft, settleDraft, withoutKey } = loadTsModul
 );
 const { sameConfigValue, anyFieldDiffer, changedEntriesOf, dirtySectionsOf } = await import('./dirty.ts');
 const { planSave, saveStatusOf } = await import('./save-plan.ts');
-const { normalizeSearchTerm, searchResultsOf, MAX_SEARCH_RESULTS } = await import('./search-index.ts');
+const { normalizeSearchTerm, nextSearchIndex, searchResultsOf, MAX_SEARCH_RESULTS } = await import('./search-index.ts');
 
 // ── ① numDraft：草稿优先的显示值 ─────────────────────────────────────────
 eq(draftOrDisplay({ port: '80' }, 'port', 8002, 8002), '80', '草稿优先于表单值（键入中不被回填）');
@@ -214,4 +214,36 @@ check(MAX_SEARCH_RESULTS === 12, '命中上限仍是 12（左侧栏不是结果�
   eq(ordered.map((h) => h.kind), ['section', 'field'], '命中顺序：分区在前、字段在后');
 }
 
-console.log(`ConfigPage 纯逻辑: ${checked} 条真行为断言通过（numDraft / dirty / savePlan / searchIndex）`);
+// ── ⑨ searchIndex：方向键循环位移（0/1/N + 边界 + 脏 current）───────────
+{
+  // 0 条：无下拉，Enter 不可用；两个方向都不得制造下标
+  eq(nextSearchIndex('down', -1, 0), -1, '0 条结果 → down 仍是 -1');
+  eq(nextSearchIndex('up', 0, 0), -1, '0 条结果 → up 仍是 -1');
+  eq(nextSearchIndex('down', 0, -3), -1, '负数 count（防御）同样按空集');
+
+  // 1 条：循环到自身（不跳 -1、不越界）
+  eq(nextSearchIndex('down', 0, 1), 0, '1 条结果 ↓ 留在 0');
+  eq(nextSearchIndex('up', 0, 1), 0, '1 条结果 ↑ 留在 0');
+
+  // N 条：普通前进/后退
+  eq(nextSearchIndex('down', 0, 3), 1, '3 条从 0 ↓ 到 1');
+  eq(nextSearchIndex('down', 1, 3), 2, '3 条从 1 ↓ 到 2');
+  eq(nextSearchIndex('up', 2, 3), 1, '3 条从 2 ↑ 到 1');
+  eq(nextSearchIndex('up', 1, 3), 0, '3 条从 1 ↑ 到 0');
+
+  // 循环边界：末↓首、首↑末，取模实现必须让首尾互通
+  eq(nextSearchIndex('down', 2, 3), 0, '末项 ↓ 回首项（循环边界）');
+  eq(nextSearchIndex('up', 0, 3), 2, '首项 ↑ 回末项（循环边界）');
+  eq(nextSearchIndex('down', 11, 12), 0, '命中上限 12 的末项 ↓ 回首项');
+  eq(nextSearchIndex('up', 0, 12), 11, '命中上限 12 的首项 ↑ 回末项');
+
+  // current 脏值（结果集刚收缩/清空后）必须能回到列表，不产生 NaN 下标
+  eq(nextSearchIndex('down', -1, 3), 0, '无选中态下 ↓ 从首项开始');
+  eq(nextSearchIndex('up', -1, 3), 2, '无选中态下 ↑ 从末项开始');
+  eq(nextSearchIndex('down', 99, 3), 0, '越界 current ↓ 归零');
+  eq(nextSearchIndex('up', 99, 3), 2, '越界 current ↑ 落末项');
+  eq(nextSearchIndex('down', NaN, 3), 0, 'NaN current ↓ 归零');
+  eq(nextSearchIndex('up', 1.9, 3), 0, '小数 current 先截断再位移');
+}
+
+console.log(`ConfigPage 纯逻辑: ${checked} 条真行为断言通过（numDraft / dirty / savePlan / searchIndex / searchNav）`);
