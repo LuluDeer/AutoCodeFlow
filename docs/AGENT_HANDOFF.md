@@ -1,11 +1,50 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-23（第 2 轮）
-> 当前分支 `develop` = `main` = `origin/main` = `de49cf9e`（v2.3.0 / desktop 1.12.1 准备版），本轮开工时已确认同步、无需合并。其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 3 轮 · 波1 收口）
+> 当前分支 `develop` = `39aacb85`（首轮 6 批 + 波1 4 批已提交，**未 push**）；`main` = `origin/main` = `de49cf9e` 保持不动，`stash@{0}`（用户 11-16 WIP）未动。波2（B1 引导 / B5 桌面含暗色补建）进行中。其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
+
+## 本轮（2026-11-24 · 第 3 轮）：波1 验证盲区闭环（暗色真机 parity / 真栈运行态 UX / 错误可行动性链）+ 独立验收 + 分批提交
+
+**编排方式**：三路写域互斥并行（A1 admin-web 暗色 / A2 WSL 真栈运行态 / A3 错误链跨 api+web）→ 独立集成验收（diff 复核 + 全量门禁 + 真浏览器 smoke + 真栈只读抽查）→ 分 3 批提交 → 验收发现的 P2 语言欠账小修第 4 批收口。期间 KAIROS 三次断连（前两次确证宿主内存耗尽），按「固化待命→恢复核对→唤醒续跑」模式零成果丢失。
+
+| 批次 | Commit | 内容 | 文件数 |
+|---|---|---|---|
+| ① A3 错误可行动性链 | `5fd48540` | F1：north-star `promotionEligibility` 新增 `reasonDetails:{code,text}[]`（SAMPLE_WEEKS_SHORT / ACTIVE_INSTALL_WEEKS_SHORT / OPS_PREREQ_COVERAGE），legacy reasons 保留兼容；前端 NorthStarCard 按 code 着色/i18n（switch 静态字面量），删 'coverage' 子串匹配。C1：两弹窗 Alert 经 `getErrMsg` 透后端原因。H1：InboxPage AbortController+useRaceGuard 互补，api/inbox.ts 七装载器 + agent.ts 五方法透传 signal。openapi.json 手改镜像 + api-types CLI 重生成（最小 fallout 修复仅 users.ts：生成器 7.13.0 把带 default 的 role 标必填，UpdateUserDto Partial 校正） | 18（+445/−81） |
+| ② A1 暗色 parity | `48cf3b14` | 新增 `playwright.dark.config.ts`（4179，vite dev）+ `e2e/dark-parity.spec.ts`（13 页 × 暗/浅 × 中英 **52 用例真机全过**）。实证修复 3 处暗色不可见硬编码底色：ChatTranscript 助手气泡 #fafafa→antd token、ApplicationDetailPage 离线徽章 token + ReleasesTab 补 `theme.useToken()` 作用域、TemplatePreviewModal pre 换 `--log-bg/--log-text`。harness 陷阱留痕：stub 路由须按 pathname 前缀 `/api/` 判定，`**/api/**` 会误截 `/src/api/queryClient.ts` 致全站空白 | 5（+377/−7） |
+| ③ A2 运行态诚实修复 | `88f69fd5` | D-1：无匹配执行器派发失败误归 script_error → 码表收录 NO_EXECUTOR_MATCHING_FILTERS，UNKNOWN+NO_MATCHING_EXECUTOR_PATTERN 先于 script_error 拦截（**刻意不映射 executor_offline**，免互斥组无限 WAITING 排队；UNKNOWN 与 script_error 重试语义等价），真栈 14 行 DB 复验全 unknown。D-3：`summarizeScriptFailure(errorMessage,logs,max=500)` 纯函数上提原始 throw（全文留 logs），真栈复验摘要 74 字符含原始消息 + 811 字符日志保留。D-2：ArtifactsPage pageSize 200→TASK_LIST_PAGE_SIZE(100) 对齐后端 @Max(100)。D-4：环境侧 .env.demo CORS 加转发器 origin（不入仓库） | 8（+353/−6） |
+| ④ P2 语言收口 | `39aacb85` | 验收发现 A3 DTO 3 条英文 @ApiProperty 描述触发 check-user-facing-language 新增欠账 → 改中文 + openapi-en-map 补 3 映射（1675→1678）+ openapi.json 镜像同步。复跑：north-star jest 12/12、api-i18n exit 0（1879 节点全有英文）、tsc 0、语言守卫新增命中 0 | 3（+15/−12） |
+
+**验收证据（独立验收方实测退出码；报告 `…\.sessions\38455867820709890\agents\s_000VybeZLu6\artifacts\wave1\acceptance-report-wave1-2026-11-24.md`，同目录 full-diff.patch / 三分片日志 / smoke 日志 / D 段 SQL）**：
+- admin-web vitest 三分片 `--shard=N/3 --maxWorkers=1`：**355 文件 / 2911 过 / 1 跳过**，三片 exit 0；`tsc -b` 0；`lint:i18n` 0（selftest 9/9，zh/en 各 3850 成对）。
+- 根守卫主跑全 0：size-caps（selftest 41/41）、desktop-wired（23/23）、mutation-residue（11/11）、web-type-drift（23/23）、field-drift（27/27）、api-i18n、response-schema（31/31）、failure-reasons（18/18）、install-script-sync、error-i18n、ssrf-parity。`source-size-baseline.json` 零 diff。
+- admin-api（**Node 24.21.0，`E:\software\codingSoft\nodejs\node.exe`**，--experimental-vm-modules，单 worker）：tsc 0；classify-failure + execution-summary 40 例、task.processor + executor.service 454 例全过。
+- 真浏览器 smoke：headless-shell-1254（系统 Chrome 157 + Playwright 驱动栈溢出，弃用），生产 build + preview(4177) 在空闲 ≥3GB + 堆 4096 下一次成功，**9/9 exit 0**。
+- 真栈只读抽查独立确认：8/8 healthy；D-1 最新 14 条离线失败行 reason=unknown（唯一 127 退出码行正确归 script_error）；D-3 摘要/全文口径吻合；sse-ticket 白名单 Origin 预检 204、非白名单 403。
+- 验收定级如实：smoke=浏览器真机级；admin-api jest=单测/内存替身级；真栈=真实进程只读观察；dark-parity 52 用例为实现方真机取证、验收仅静态复核。**Verdict：无 P0/P1。**
+
+**WSL 真栈环境留痕（系统级改动均有备份，接手必读）**：
+- 栈：WSL Ubuntu 内 docker 29.3.0 + compose v5.1.0（Windows 无 Docker Desktop），克隆 `~/acf-realstack`@c1e497c8 + A2 的 8 文件已同步（**A3/A1 改动未入栈**），`scripts/demo.sh --build` 起 acf-demo 8 服务。只动 acf-demo 项目容器；凭据只在 WSL `.env.demo`，不外传。
+- **已验证死路**：127.0.0.1 发布端口转发在此 WSL 失效（docker-proxy/内置代理断，网桥直连通）；mirrored 网络模式入站不通。现用 Python TCP 转发器绑 0.0.0.0:18088(UI)/13105(API)→容器网桥 IP，Windows 经 WSL eth0 NAT IP 访问 `http://172.21.45.131:18088` / `:13105`。**eth0 IP 重启会变**，需同步 `.env.demo` 的 ACF_DEMO_CORS；转发器 holder 常驻防回收（脚本副本 `C:\acf-evidence\`）。
+- 系统级改动：`C:\Users\12154\.wslconfig` 封顶 4GB/2CPU/2GB swap + NAT（原 mirrored；备份 `.bak-acf-20261123`、`.bak-acf-mirrored`）；WSL `/etc/wsl.conf` [boot] hook（备份 `.bak-acf`）→ `/usr/local/bin/acf-dockerd-boot.sh` 使 dockerd 跨会话自活；`/etc/docker/daemon.json` 4 个 CN mirrors + userland-proxy-path（备份 `.bak-acf-2`）。构建日志 `/tmp/acf-demo-build.log`。
+- 真栈证据：`…\agents\s_000VC4CQTOT\evidence\realstack-audit-report.md` + db/*.json + executions-export.csv + shots/7 PNG。dark-parity 证据：`apps/admin-web/test-results/dark-parity/`（52 PNG+52 JSON，gitignore 内）。
+
+**环境教训（本机内存纪律，用户明令）**：KAIROS 曾因 vitest 多 worker + rolldown 生产构建 + WSL docker 构建并发两次内存耗尽断连。纪律：重型前空闲 ≥2GB（`Get-CimInstance Win32_OperatingSystem`）；vitest 一律 `--maxWorkers=1`，全量 `--shard=N/3` 顺序；禁低内存 Windows 生产构建（rolldown 0xC0000409）；smoke build 需空闲 ≥3GB + `NODE_OPTIONS=--max-old-space-size=4096`；空闲 <1.5GB 或原生崩溃征兆立即暂停固化待命。另：Windows PATH 无 `python3`，check-failure-classifiers 硬编码 spawn python3 无环境覆盖，验收方用仓库外 shim（指向 C:\Python314）绕开，未入仓库。
+
+**遗留与后续候选（确证未修，非本轮回归）**：
+- executor-node alpine 镜像缺 bash 但 capabilities 声明 shell → shell 任务路由到它 exit 127（A2 真栈旁证，DB 行在案）。
+- D-2 任务量 >100 时 ArtifactsPage 任务名回退显示 id（待共享 listAll 分页 hook）。
+- 对账脚本不覆盖 promotionEligibility（比较面缺口）；openapi canonical 导出需真栈全量 AppModule，本轮手改镜像的漂移比对为静态 diff 仅供参考（273→274 schemas、232 paths 零增删、唯一新增 AgentNorthStarPromotionReasonDto）。
+- 语言守卫存量基线 3 条陈旧（application.ts:854/859、NotificationSettingsPage.tsx:790），守卫 exit 1 属存量预期；failure-classifiers 主跑 14 条 D-16 drift 全为本轮前存量噪声（消费点在 scripts/IDE 缓存(已 gitignore)/executor-node 生成物，mtime 11-14，本轮协议源文件零 diff）。
+
+**未覆盖边界（如实）**：① north-star-real-backend.spec 未对真栈跑（栈为旧码快照，A3 后端改动未入栈）；② SSE 逐帧载荷时序未存档（仅请求链 + UI 行级追加 5→5→7 快照）；Kill 201 + DB killed×3 已断言；③ 深节流/丢包/断连重连未测（仅 1.5s 延迟样本，低于重连阈值）；④ 桌面真机证据为实现方产出、验收只读抽查。
+
+**波2 进行中（本段提交时）**：B1 首次体验引导（admin-web，TTFV 北极星）与 B5 桌面五项 + 已批准的暗色分面补建（executor-desktop）并行；B2 效率 / B3 可视化 / B4 质感待 B1 后按序（locales 共享需串行）。波2 收口同样分批 commit + 交接段增量更新。纪律不变：严禁 push、main/stash 不动、持久化优先 localStorage 避免 DDL、不动发版/版本号。
+
+---
 
 ## 本轮（2026-11-23 · 第 2 轮）：体验优化自主推进（四切片并行 + 审计驱动修复轮 + 独立验收）
 
-**编排方式**：主控核实同步与种子候选 → 四路写域互斥并行（desktop-visual / guards / web-p3 / new-surface-audit）→ 审计确证项修复轮（复用审计 agent）→ 独立集成验收（diff 复核 + 全量门禁复跑 + 真浏览器 smoke + 桌面证据抽查）。全部产出落在工作树，**未提交、未 push**，HEAD 仍 `de49cf9e`，`stash@{0}`（用户 11-16 WIP）未动。
+**编排方式**：主控核实同步与种子候选 → 四路写域互斥并行（desktop-visual / guards / web-p3 / new-surface-audit）→ 审计确证项修复轮（复用审计 agent）→ 独立集成验收（diff 复核 + 全量门禁复跑 + 真浏览器 smoke + 桌面证据抽查）。全部产出落在工作树，**未提交、未 push**，HEAD 仍 `de49cf9e`，`stash@{0}`（用户 11-16 WIP）未动。（【2026-11-24 更新】本轮产出已随用户指令分 6 批提交：`f245aa36`/`a0ba710e`/`639ceffd`/`0d1a7056`/`5df0c764`/`c1e497c8`，下文「未提交」表述为写作时点状态。）
 
 | 切片 | 交付 | 关键文件 |
 |---|---|---|
