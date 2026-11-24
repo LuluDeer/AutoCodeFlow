@@ -2,6 +2,15 @@ import { Skeleton as AntSkeleton, Card } from 'antd';
 
 export type SkeletonVariant = 'table' | 'cards';
 
+/**
+ * UI-08 首屏骨架判据（共享纯函数）：初次加载（请求在途、无数据、未出错）→ 骨架；
+ * 翻页/刷新已有数据、请求出错、筛选无匹配等场景不走骨架（由各页空态/错误态承接）。
+ * 与各列表页内既有同名判据同口径，供新页面直接复用，避免再散落一份布尔表达式。
+ */
+export function shouldShowPageSkeleton(loading: boolean, error: unknown, count: number): boolean {
+  return loading && count === 0 && !error;
+}
+
 export interface PageSkeletonProps {
   /** 形态：table=列表页（多行条目）/ cards=卡片页（2 列卡片骨架） */
   variant?: SkeletonVariant;

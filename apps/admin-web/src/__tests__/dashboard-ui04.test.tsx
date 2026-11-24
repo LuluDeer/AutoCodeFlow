@@ -398,7 +398,14 @@ describe('DashboardPage — UI-04 五项', () => {
 
   describe('⑤ 空态引导', () => {
     it('totalTasks===0：显示 Empty 引导与「创建第一个任务」按钮并跳 /tasks/new', async () => {
-      mockAll({ summary: { ...summaryFixture, totalTasks: 0 } });
+      // B1 状态机：welcome 态需同时无任务/执行/成功——有成功执行即 completed，不再显示引导卡。
+      mockAll({
+        summary: {
+          ...summaryFixture,
+          totalTasks: 0,
+          executions: { total: 0, success: 0, failed: 0, running: 0 },
+        },
+      });
       renderPage();
       await waitFor(
         () => {

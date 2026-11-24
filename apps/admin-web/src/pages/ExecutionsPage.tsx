@@ -55,12 +55,30 @@ import { runtimeLabel, RUNTIME_T_KEYS } from '../utils/runtime-label';
 // 2026-10-23：失败原因聚合（本页已加载行，非全量——见 util 头注口径）
 import { aggregateFailureReasons } from '../utils/failure-reason-aggregate';
 import { failureReasonLabel } from '../utils/failure-reason-label';
-// §8.3 工单 10：行 id 是阶段 3 的稳定身份（同址多行时「名字+地址」不再唯一）。
-import { shortExecutorRowId } from '../utils/executorRowId';
 // R5 角色门控：ADMIN-only 操作统一以此判断（本轮：全量导出端点 @Roles(ADMIN)）。
 import { useAuthStore, isAdminUser } from '../store/auth';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
+import type { SavedView } from '../utils/savedViews';
+import { useColumnPrefs } from '../hooks/useColumnPrefs';
+import ColumnSettingsPopover from '../components/columns/ColumnSettingsPopover';
+import { useSavedViews, type SaveResult } from '../hooks/useSavedViews';
+import SavedViewsBar from '../components/views/SavedViewsBar';
+import { useBatchKill } from '../hooks/useBatchKill';
+import {
+  EXEC_COLUMN_REGISTRY,
+  EXEC_COLUMN_ACCESSOR,
+  execColumnOptions,
+} from './executions/execColumns';
+import {
+  snapshotExecFilters,
+  restoreExecFilters,
+  isExecViewFilters,
+  type ExecViewFilters,
+} from './executions/execViewFilters';
+import { reportBatchKillOutcome } from './executions/execBatchReport';
+import { buildExecColumns } from './executions/execTableColumns';
+import ExecutionsBatchKillButton from '../components/executions/ExecutionsBatchKillButton';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -243,6 +261,10 @@ export default function ExecutionsPage() {
   // FEAT-03: 多选对比——选中本页行后一键打开指标对比 modal
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [compareOpen, setCompareOpen] = useState(false);
+  // COLSET：列显隐 + 顺序偏好（信封持久化；本页无旧版列存量，直接新键）
+  const cols = useColumnPrefs('autoflow-executions-columns:v1', EXEC_COLUMN_REGISTRY);
+  // 保存筛选视图（快照当前筛选 / 分页口径；会话内激活态不持久化）
+  const execViews = useSavedViews<ExecViewFilters>('autoflow-executions-views:v1', isExecViewFilters);
   /**
    * §2.1「稳定翻页」开关——默认**关闭**。
    *
@@ -328,6 +350,53 @@ export default function ExecutionsPage() {
       setKillingId(null);
     }
   };
+
+  /**
+   * 批量终止：客户端顺序编排（后端无批量 kill 端点）。逐条调用既有单条端点，
+   * 进度 done/total 实时反馈；单项失败吸收进逐项报告，不中断后续；
+   * 全部失败 / 部分失败如实区分，绝不伪造整体成功。
+   */
+  const batchKill = useBatchKill({
+    getRows: () =>
+      selectedIds
+        .map((id) => executions.find((e) => e.id === id))
+        .filter((e): e is TaskExecution => Boolean(e))
+        .map((e) => ({ taskId: e.taskId, execId: e.id })),
+    kill: (taskId, execId) => tasksApi.killExecution(taskId, execId),
+    onSettled: (_results, summary) => {
+      reportBatchKillOutcome(summary, t);
+      if (summary.failed === 0) setSelectedIds([]);
+      void invalidateExecutionData(queryClient);
+      if (stablePaging) resetCursorStack(true);
+    },
+  });
+
+  /** 应用已保存视图：回填筛选 / 分页（时间区间由 ISO 串还原）并重置游标栈 */
+  const applyExecView = (view: SavedView<ExecViewFilters>) => {
+    restoreExecFilters(
+      {
+        setSearch,
+        setStatusFilter,
+        setExecutorFilter,
+        setRuntimeFilter,
+        setTriggerTypeFilter,
+        setTimeRange,
+        setPage,
+        setPageSize,
+      },
+      view.filters,
+    );
+    resetCursorStack(stablePaging);
+    execViews.activate(view.id);
+  };
+
+  const saveExecView = (name: string): SaveResult =>
+    execViews.save(
+      name,
+      snapshotExecFilters({
+        search, statusFilter, executorFilter, runtimeFilter, triggerTypeFilter, timeRange, page, pageSize,
+      }),
+    );
 
   // 搜索防抖：避免每击键发一次列表请求
   const debouncedSearch = useDebounce(search);
@@ -645,153 +714,18 @@ export default function ExecutionsPage() {
   };
 
   // UI-09：375px 可用性——关键列=任务/状态/开始时间/错误/操作（值班首查项），
-  // 触发方式/执行器/耗时为次要列窄屏收起（CSS 侧 .ui09-hide-mobile 双保险）；
-  // scroll.x 兜底横向滚动。onHeaderCell/onCell 挂类供媒体查询隐藏次要列。
-  const hideOnMobile = {
-    onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
-    onCell: () => ({ className: 'ui09-hide-mobile' }),
-  } as const;
-  const statusMap = STATUS_MAP(t); const columns = [
-    {
-      title: t('execs.col.task'),
-      dataIndex: 'taskName',
-      render: (name: string, r: TaskExecution) => (
-        // F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href，改 <Link>（键盘可达 + 真实 href）
-        // UI 打磨：长任务名单行 ellipsis，不再整列换行撑高行
-        <Link
-          to={`/tasks/${r.taskId}`}
-          title={name || r.taskId}
-          style={{ fontWeight: 500, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-        >
-          {name || r.taskId}
-        </Link>
-      ),
-    },
-    {
-      title: t('execs.col.status'),
-      dataIndex: 'status',
-      width: 118,
-      render: (s: string) => {
-        const cfg = statusMap[s] || { badge: 'default' as BadgeStatus, label: s };
-        return <Badge status={cfg.badge} text={cfg.label} style={{ whiteSpace: 'nowrap' }} />;
-      },
-    },
-    {
-      title: t('execs.col.trigger'),
-      dataIndex: 'triggerType',
-      width: 90,
-      ...hideOnMobile,
-      // P1-17：走唯一事实源 triggerLabel（已知值本地化、未知值回退原 token），
-      // 不再直接渲染 {v || '-'} 裸枚举。
-      render: (v: string) => {
-        const label = triggerLabel(v, t);
-        return <Text type="secondary" style={{ fontSize: 12 }}>{label || '—'}</Text>;
-      },
-    },
-    {
-      title: t('execs.col.executor'),
-      dataIndex: 'executorAddress',
-      width: 210,
-      ellipsis: true,
-      ...hideOnMobile,
-      // ADR-017 阶段 3（决策 §7）：主显可读名（员工给机器起的名字），地址降为
-      // tooltip 副信息——地址仍是**诊断身份**（「到底哪台」），故不删除。
-      // 解析不到名字时如实只显示地址（绝不编造），都没有则 '-'。
-      render: (v: string, r: TaskExecution) => {
-        const name = nameOf(r);
-        const fallback = v || null;
-        if (!name && !fallback) {
-          return <Text type="secondary" style={{ fontSize: 12 }}>—</Text>;
-        }
-        // §8.3 工单 10：名字旁标注**行 id 前 8 位**（tooltip 给地址与完整 id）。
-        // 同址多行时（pull 各自成行 / DHCP 复用同一 IP）名字与地址都可能相同，
-        // 只有行 id 能区分「同一个地址下的两台机器」。
-        const rowId = shortExecutorRowId(r.executorId);
-        const tooltip = [fallback, r.executorId ? `${t('execShared.rowId')}: ${r.executorId}` : null]
-          .filter(Boolean)
-          .join('\n');
-        return (
-          <Tooltip title={tooltip}>
-            <span style={{ fontSize: 12 }}>
-              {name ?? fallback}
-              {rowId && (
-                <Text type="secondary" style={{ fontSize: 11 }}>
-                  {' '}#{rowId}
-                </Text>
-              )}
-            </span>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: t('execs.col.startTime'),
-      dataIndex: 'startTime',
-      width: 130,
-      render: (v: string) => v ? (
-        <Tooltip title={formatDateTime(v)}>
-          <Text style={{ fontSize: 12 }}>{formatRelativeTime(v, t)}</Text>
-        </Tooltip>
-      ) : '—',
-    },
-    {
-      title: t('execs.col.duration'),
-      dataIndex: 'duration',
-      width: 90,
-      ...hideOnMobile,
-      // UI-08：时长如「32分46秒」窄列会折成两行，nowrap 保证单行可扫读
-      render: (v: number) => v != null ? <Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatDuration(v, t)}</Text> : '—',
-    },
-    {
-      title: t('execs.col.error'),
-      dataIndex: 'errorMessage',
-      minWidth: 160,
-      ellipsis: true,
-      render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12, display: 'block' }} ellipsis={{ tooltip: v }}>{v}</Text> : '—',
-    },
-    {
-      title: t('execs.col.action'),
-      key: 'action',
-      // 2026-10-23 实测修正（此前「终止」被裁掉一半）：操作列放**两个带图标+文字的
-      // link 按钮**，宽度由内容决定而不是估一个数——
-      //   中文「详情」≈66px + 间距 4 + 「终止」≈66px + 单元格左右内边距 32 = 168；
-      //   英文「Details」≈82px + 4 + 「Terminate」≈90 + 32 = 208。
-      // 原 width:135 在 running/waiting 行必然溢出（实测 td 1281..1416，
-      // 终止按钮 1367..1433 → 右边缘被裁 17px，表现为只看得见半个字）。
-      // 取 210 覆盖英文最宽形态；fixed right 保证横向滚动时常驻。
-      width: 210,
-      fixed: 'right' as const,
-      render: (_: unknown, r: TaskExecution) => (
-        <Space size={4} wrap={false}>
-          <Button
-            type="link" size="small" icon={<EyeOutlined />}
-            onClick={() => nav(`/tasks/${r.taskId}/executions/${r.id}`)}
-          >
-            {t('execs.action.detail')}
-          </Button>
-          {(r.status === 'running' || r.status === 'waiting') && (
-            // KILL-WAITING：互斥排队中的执行也走既有 killExecution——后端
-            // OPEN_EXECUTION_STATUSES 已把 WAITING 列为打开态（MUTEX-01），
-            // 前端此前只对 running 出按钮，排队中的执行只能等占用释放。
-            <Popconfirm
-              title={t('execs.killConfirm')}
-              description={r.status === 'waiting' ? t('execs.killConfirmWaitingDesc') : t('execs.killConfirmRunningDesc')}
-              onConfirm={() => handleKill(r)}
-              okText={t('execs.action.kill')} okButtonProps={{ danger: true }}
-            >
-              <Button
-                type="link" size="small" danger
-                icon={<StopOutlined />}
-                loading={killingId === r.id}
-              >
-                {t('execs.action.kill')}
-              </Button>
-            </Popconfirm>
-          )}
-        </Space>
-      ),
-    },
-  ];
+  const statusMap = STATUS_MAP(t);
+  const columns = buildExecColumns({ t, statusMap, nameOf, nav, onKill: handleKill, killingId });
+
+  // COLSET：显隐 + 顺序——按偏好序列重排可见列（列定义/列宽契约不变）
+  const visibleColumns = cols.orderedVisible
+    .map((key) =>
+      columns.find((c) => {
+        const col = c as { key?: string; dataIndex?: string };
+        return String(col.key ?? col.dataIndex ?? '') === EXEC_COLUMN_ACCESSOR[key];
+      }),
+    )
+    .filter((c): c is (typeof columns)[number] => Boolean(c));
 
   // 快捷区间（events/audit 页先例形态，2026-10-25 补齐）：执行记录的高频问法是
   // 「最近 1/24 小时出过什么执行」——此前只有手调时刻一途。预设按**时刻粒度**
@@ -827,6 +761,19 @@ export default function ExecutionsPage() {
         description={t('execs.description')}
         extra={
           <>
+            {/* COLSET：列设置入口（显隐 + 顺序 + 重置默认）。移动端卡片视图无列概念。 */}
+            {!isMobile && (
+              <ColumnSettingsPopover
+                buttonTestId="executions-column-settings"
+                buttonLabel={t('execs.columnSettings')}
+                options={execColumnOptions(t)}
+                prefs={cols.prefs}
+                hidden={cols.hidden}
+                onToggle={cols.toggle}
+                onMove={cols.move}
+                onReset={cols.reset}
+              />
+            )}
             {/* 审计 P2：导出当前筛选结果的当前页为 CSV（空页禁用，无可导内容）。
                 ⚠️ 语义**保持不变**：仍只导这一页。全量导出是右边那个独立按钮。 */}
             <Button
@@ -861,6 +808,19 @@ export default function ExecutionsPage() {
         }
       />
 
+      {/* 保存筛选视图：切换 / 保存 / 重命名 / 删除口径快照 */}
+      <Space style={{ marginBottom: 12 }} wrap>
+        <SavedViewsBar
+          views={execViews.views}
+          activeId={execViews.activeId}
+          onSave={saveExecView}
+          onRename={(id, name) => execViews.rename(id, name)}
+          onRemove={execViews.remove}
+          onApply={applyExecView}
+          onClearActive={() => execViews.activate(null)}
+        />
+      </Space>
+
       {/* UI-09：筛选区 wrap 堆叠（Space wrap 已有），输入/选择窄屏自适应宽度 */}
       <Space style={{ marginBottom: 16 }} wrap className="ui09-filter-bar">
         {selectedIds.length > 0 && (
@@ -878,6 +838,14 @@ export default function ExecutionsPage() {
           >
             {t('execs.compare', { count: selectedIds.length })}
           </Button>
+        )}
+        {selectedIds.length > 0 && (
+          <ExecutionsBatchKillButton
+            count={selectedIds.length}
+            busy={batchKill.busy}
+            progress={batchKill.progress}
+            onConfirm={() => void batchKill.run()}
+          />
         )}
         <Input
           placeholder={t('execs.searchPlaceholder')}
@@ -1011,10 +979,10 @@ export default function ExecutionsPage() {
             >
               {pageOutOfRange ? (
                 <Button type="link" size="small" onClick={() => setPage(1)}>{t('execs.backToFirstPage')}</Button>
+              ) : hasFilters ? (
+                <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
               ) : (
-                hasFilters && (
-                  <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
-                )
+                <Button type="link" size="small" onClick={() => nav('/tasks')}>{t('execs.guide.goToTasks')}</Button>
               )}
             </Empty>
           ) : (
@@ -1067,7 +1035,7 @@ export default function ExecutionsPage() {
       ) : (
       <Table
         rowKey="id"
-        columns={columns}
+        columns={visibleColumns}
         dataSource={executions}
         loading={loading}
         // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ scroll.x 横向滚动兜底
@@ -1111,10 +1079,10 @@ export default function ExecutionsPage() {
             >
               {pageOutOfRange ? (
                 <Button type="link" size="small" onClick={() => setPage(1)}>{t('execs.backToFirstPage')}</Button>
+              ) : hasFilters ? (
+                <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
               ) : (
-                hasFilters && (
-                  <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
-                )
+                <Button type="link" size="small" onClick={() => nav('/tasks')}>{t('execs.guide.goToTasks')}</Button>
               )}
             </Empty>
           ),

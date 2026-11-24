@@ -75,7 +75,7 @@ function BarTrack({ label, usage }: { label: string; usage: number | null }) {
             height: '100%',
             borderRadius: 4,
             background: color,
-            transition: 'width 0.3s ease, background 0.3s ease',
+            transition: 'width var(--motion-slow) var(--motion-easing), background var(--motion-slow) var(--motion-easing)',
           }}
         />
       </div>

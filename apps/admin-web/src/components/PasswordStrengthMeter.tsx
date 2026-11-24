@@ -80,7 +80,7 @@ export default function PasswordStrengthMeter({
               height: 4,
               borderRadius: 2,
               background: segment <= score ? color : token.colorSplit,
-              transition: 'background 0.2s',
+              transition: 'background var(--motion-normal) var(--motion-easing)',
             }}
           />
         ))}

@@ -1,13 +1,13 @@
 /**
- * COLSET-01 / P1-1：任务列表列设置（显隐过滤 + localStorage 持久化）。
+ * COLSET：任务列表列设置（显隐 + 顺序 + localStorage 信封持久化 + 重置默认）。
  *
  * 覆盖：
  *  1. 缺省核心六列：未配置时只渲染名称/状态/上次执行/下次执行/启用/操作 + 勾选列，
  *     触发方式/优先级/调度/运行时按 DEFAULT_HIDDEN_COLUMNS 收起，且不写持久化值；
- *  2. 勾选「调度」恢复显示 → 表头出现，隐藏键集合相应剔除；取消勾选再次隐藏；
+ *  2. 勾选「调度」恢复显示 → 表头出现，信封隐藏集合相应剔除；取消勾选再次隐藏；
  *  3. 持久化生效：重挂载后列保持隐藏/恢复；
- *  4. 脏值防御：非法 JSON / 含未知列键的存量 → 按缺省收起 / 剔除未知键处理；
- *  5. 防死面：仅剩最后一个可见列时其勾选框禁用。
+ *  4. 脏值防御：非法 JSON / 形状不符的存量 → 按缺省收起 / 剔除未知键处理；
+ *  5. 防死面：仅剩最后一个可见列时再点其勾选不生效（模型层拒绝隐藏）。
  *
  * 口径对齐 task-list-deep：mock api 层、QueryClientProvider + MemoryRouter；
  * 断言表头走 i18n 唯一事实源（i18n.t('taskList.col.*')）。
@@ -20,6 +20,9 @@ import TaskListPage from '../pages/TaskListPage';
 import { tasksApi, type Task } from '../api/tasks';
 import i18n from '../i18n';
 import { TASKLIST_COLUMNS_STORAGE_KEY } from '../utils/taskColumns';
+
+/** 新信封键（与 TaskListPage useColumnPrefs 调用一致） */
+const NEW_COLUMNS_KEY = 'autoflow-tasklist-columns:v1';
 
 vi.mock('../api/tasks', async () => {
   const actual = await vi.importActual<typeof import('../api/tasks')>('../api/tasks');
@@ -104,8 +107,16 @@ async function openColumnSettings() {
   });
 }
 
+/** 读新信封的隐藏集合（无存量 → null）；隐藏集合语义无序，比较前排序 */
+const storedHidden = (): string[] | null => {
+  const raw = localStorage.getItem(NEW_COLUMNS_KEY);
+  if (!raw) return null;
+  return (JSON.parse(raw).data.hidden as string[]).slice().sort();
+};
+
 beforeEach(() => {
   cleanup();
+  localStorage.removeItem(NEW_COLUMNS_KEY);
   localStorage.removeItem(TASKLIST_COLUMNS_STORAGE_KEY);
   vi.clearAllMocks();
   mockedTasks.list.mockResolvedValue({
@@ -118,6 +129,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  localStorage.removeItem(NEW_COLUMNS_KEY);
   localStorage.removeItem(TASKLIST_COLUMNS_STORAGE_KEY);
 });
 
@@ -125,7 +137,7 @@ describe('TaskListPage 列设置 — 缺省核心六列（P1-1 首屏治理）',
   it('未配置时不写存储；勾选列 + 核心六列渲染，四个辅助列收起', async () => {
     renderPage();
     await screen.findByText('备份任务');
-    expect(localStorage.getItem(TASKLIST_COLUMNS_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(NEW_COLUMNS_KEY)).toBeNull();
     const headers = headerTexts();
     expect(headers.length).toBe(7); // 勾选 1 + 核心数据 6
     for (const key of ['name', 'status', 'lastRun', 'nextRun', 'toggle', 'actions']) {
@@ -137,8 +149,8 @@ describe('TaskListPage 列设置 — 缺省核心六列（P1-1 首屏治理）',
   });
 });
 
-describe('TaskListPage 列设置 — 显隐过滤与持久化（COLSET-01）', () => {
-  it('勾选「调度」恢复显示 → 表头出现，隐藏键集合剔除 schedule；再取消勾选重新收起', async () => {
+describe('TaskListPage 列设置 — 显隐过滤与持久化（COLSET）', () => {
+  it('勾选「调度」恢复显示 → 表头出现，信封隐藏集合剔除 schedule；再取消勾选重新收起', async () => {
     renderPage();
     await screen.findByText('备份任务');
     expect(headerTexts()).not.toContain(col('schedule'));
@@ -150,7 +162,7 @@ describe('TaskListPage 列设置 — 显隐过滤与持久化（COLSET-01）', (
       expect(headerTexts()).toContain(col('schedule'));
     });
     // 缺省收起的其余三列仍隐藏；隐藏集合 = DEFAULT_HIDDEN_COLUMNS 剔除 schedule
-    expect(JSON.parse(localStorage.getItem(TASKLIST_COLUMNS_STORAGE_KEY) ?? '')).toEqual(['trigger', 'priority', 'runtime']);
+    expect(storedHidden()).toEqual(['priority', 'runtime', 'trigger']);
     expect(headerTexts()).not.toContain(col('runtime'));
     expect(headerTexts()).toContain(col('name'));
 
@@ -160,12 +172,19 @@ describe('TaskListPage 列设置 — 显隐过滤与持久化（COLSET-01）', (
     await waitFor(() => {
       expect(headerTexts()).not.toContain(col('schedule'));
     });
-    expect(JSON.parse(localStorage.getItem(TASKLIST_COLUMNS_STORAGE_KEY) ?? '')).toEqual(['trigger', 'priority', 'schedule', 'runtime']);
+    expect(storedHidden()).toEqual(['priority', 'runtime', 'schedule', 'trigger']);
   });
 
   it('持久化生效：重挂载后保持恢复显示的「调度」；取消勾选后回到缺省收起', async () => {
-    // 模拟已持久化的偏好：调度被手动恢复（隐藏集合缺省四列剔除 schedule）
-    localStorage.setItem(TASKLIST_COLUMNS_STORAGE_KEY, JSON.stringify(['trigger', 'priority', 'runtime']));
+    // 模拟已持久化的新信封：调度被手动恢复（隐藏集合缺省四列剔除 schedule）
+    localStorage.setItem(
+      NEW_COLUMNS_KEY,
+      JSON.stringify({
+        version: 1,
+        savedAt: 1,
+        data: { hidden: ['trigger', 'priority', 'runtime'], order: [] },
+      }),
+    );
     const first = renderPage();
     await screen.findByText('备份任务');
     expect(headerTexts()).toContain(col('schedule'));
@@ -181,18 +200,34 @@ describe('TaskListPage 列设置 — 显隐过滤与持久化（COLSET-01）', (
     expect(scheduleCheckbox2.checked).toBe(true);
     fireEvent.click(scheduleCheckbox2);
     await waitFor(() => expect(headerTexts()).not.toContain(col('schedule')));
-    expect(JSON.parse(localStorage.getItem(TASKLIST_COLUMNS_STORAGE_KEY) ?? '')).toEqual(['trigger', 'priority', 'schedule', 'runtime']);
+    expect(storedHidden()).toEqual(['priority', 'runtime', 'schedule', 'trigger']);
   });
 
-  it('脏值防御：非法 JSON 按缺省收起；未知列键剔除、合法键保留', async () => {
-    localStorage.setItem(TASKLIST_COLUMNS_STORAGE_KEY, 'not-json{{{');
+  it('脏值防御：非法 JSON / 形状不符按缺省收起；未知列键剔除、合法键保留', async () => {
+    localStorage.setItem(NEW_COLUMNS_KEY, 'not-json{{{');
     renderPage();
     await screen.findByText('备份任务');
     // 缺省收起的辅助列不可见
     expect(headerTexts()).not.toContain(col('schedule'));
     cleanup();
 
-    localStorage.setItem(TASKLIST_COLUMNS_STORAGE_KEY, JSON.stringify(['bogus-column', 'runtime']));
+    localStorage.setItem(
+      NEW_COLUMNS_KEY,
+      JSON.stringify({ version: 1, savedAt: 1, data: { hidden: 'x', order: [] } }),
+    );
+    renderPage();
+    await screen.findByText('备份任务');
+    expect(headerTexts()).not.toContain(col('schedule'));
+    cleanup();
+
+    localStorage.setItem(
+      NEW_COLUMNS_KEY,
+      JSON.stringify({
+        version: 1,
+        savedAt: 1,
+        data: { hidden: ['bogus-column', 'runtime'], order: [] },
+      }),
+    );
     renderPage();
     await screen.findByText('备份任务');
     // 未知键剔除；存量隐藏集以合法键为准（仅 runtime 隐藏），其余列按存量可见
@@ -201,22 +236,30 @@ describe('TaskListPage 列设置 — 显隐过滤与持久化（COLSET-01）', (
     expect(headerTexts()).toContain(col('name'));
   });
 
-  it('防死面：仅剩最后一个可见列时其勾选框禁用', async () => {
+  it('防死面：仅剩最后一个可见列时再点其勾选不生效（模型层拒绝隐藏）', async () => {
     localStorage.setItem(
-      TASKLIST_COLUMNS_STORAGE_KEY,
-      JSON.stringify(['status', 'trigger', 'priority', 'schedule', 'nextRun', 'lastRun', 'runtime', 'toggle', 'actions']),
+      NEW_COLUMNS_KEY,
+      JSON.stringify({
+        version: 1,
+        savedAt: 1,
+        data: {
+          hidden: ['status', 'trigger', 'priority', 'schedule', 'nextRun', 'lastRun', 'runtime', 'toggle', 'actions'],
+          order: [],
+        },
+      }),
     );
-    // 注：隐藏集合含全部非名称列 → 仅剩名称列可见，其勾选框禁用。
+    // 注：隐藏集合含全部非名称列 → 仅剩名称列可见。
     renderPage();
     await screen.findByText('备份任务');
     fireEvent.click(screen.getByTestId('tasklist-column-settings'));
     await waitFor(() => {
       const nameCheckbox = screen.getByRole('checkbox', { name: col('name') }) as HTMLInputElement;
       expect(nameCheckbox.checked).toBe(true);
-      expect(nameCheckbox.disabled).toBe(true);
     });
-    // 仍可恢复其他列（非唯一列不受禁用约束）
-    const runtimeCheckbox = screen.getByRole('checkbox', { name: col('runtime') }) as HTMLInputElement;
-    expect(runtimeCheckbox.disabled).toBe(false);
+    const nameCheckbox = screen.getByRole('checkbox', { name: col('name') }) as HTMLInputElement;
+    fireEvent.click(nameCheckbox);
+    // 模型层拒绝隐藏最后一列：勾选态保持，名称列仍在表头
+    expect(nameCheckbox.checked).toBe(true);
+    expect(headerTexts()).toContain(col('name'));
   });
 });

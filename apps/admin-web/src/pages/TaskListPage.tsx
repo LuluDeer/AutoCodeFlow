@@ -9,12 +9,10 @@ import { Table,
   Badge,
   Popconfirm,
   Tooltip,
-  Empty,
   Switch,
   Modal,
   Form,
   Alert,
-  Popover,
   Checkbox,
   theme,
   Card } from 'antd';
@@ -22,7 +20,7 @@ import { message } from '../utils/toast';
 import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
   DeleteOutlined, EyeOutlined, EditOutlined, ImportOutlined,
-  CheckSquareOutlined, FileTextOutlined, ColumnWidthOutlined,
+  CheckSquareOutlined, FileTextOutlined,
   LeftOutlined, RightOutlined,
 } from '@ant-design/icons';
 // PK-02（DEEP_REVIEW 0ef3bbe）：clone payload 经 Object.keys 删除 undefined 后
@@ -48,15 +46,26 @@ import { describeCron } from '../utils/cron-desc';
 import { buildTaskListColumns } from './task-list-columns';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级）
 import { useIsMobile } from '../hooks/useIsMobile';
-// COLSET-01：列显隐偏好（localStorage 持久化；只过滤显隐，列定义/列宽不动）
+// COLSET-01：列显隐 + 顺序偏好（localStorage 信封持久化；列定义/列宽不动）
 import {
   TASK_LIST_COLUMN_KEYS,
-  readHiddenColumns,
-  writeHiddenColumns,
+  TASK_COLUMN_REGISTRY,
+  TASKLIST_COLUMNS_STORAGE_KEY,
   type TaskColumnKey,
 } from '../utils/taskColumns';
+import type { SavedView } from '../utils/savedViews';
+import { useColumnPrefs } from '../hooks/useColumnPrefs';
+import ColumnSettingsPopover from '../components/columns/ColumnSettingsPopover';
+import { useSavedViews, type SaveResult } from '../hooks/useSavedViews';
+import SavedViewsBar from '../components/views/SavedViewsBar';
+import {
+  snapshotTaskFilters,
+  isTaskListViewFilters,
+  type TaskListViewFilters,
+} from './task-list/taskViewFilters';
 import ParamsEditor from '../components/ParamsEditor';
 import TaskImportModal from '../components/TaskImportModal';
+import TaskListVacuumEmpty from '../components/task-list/TaskListVacuumEmpty';
 import PageHeader from '../components/PageHeader';
 // UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
 import PageSkeleton from '../components/PageSkeleton';
@@ -172,8 +181,10 @@ export default function TaskListPage() {
   // P1-5：任务定义导入弹窗（上传 JSON / 粘贴定义 → 客户端校验 + 冲突预览 → 结果呈现）。
   const [importOpen, setImportOpen] = useState(false);
   const [batchLoading, setBatchLoading] = useState(false);
-  // COLSET-01：隐藏列集合（缺省空 = 全显，与既有渲染零行为差异；只过滤显隐不动列定义）
-  const [hiddenColumns, setHiddenColumns] = useState<TaskColumnKey[]>(() => readHiddenColumns());
+  // COLSET-01：列显隐 + 顺序偏好（信封持久化；旧版纯隐藏数组存量一次性迁移读取）
+  const cols = useColumnPrefs('autoflow-tasklist-columns:v1', TASK_COLUMN_REGISTRY, { legacyHiddenKey: TASKLIST_COLUMNS_STORAGE_KEY });
+  // 保存筛选视图（快照当前筛选 / 分页口径；会话内激活态不持久化）
+  const taskViews = useSavedViews<TaskListViewFilters>('autoflow-tasklist-views:v1', isTaskListViewFilters);
 
   const [page, setPage] = useState(() => {
     const p = Number(searchParams.get('page'));
@@ -656,21 +667,26 @@ export default function TaskListPage() {
     onDelete: handleDelete,
   });
 
-  // COLSET-01：显隐过滤——缺省（无隐藏列）直接复用原 columns 数组，零行为差异；
-  // 列宽/scroll.x 契约（task-list-deep 钉住）不受影响：隐藏只会减少已声明列宽合计。
-  // （columns 本就随 t() 每次渲染重建，无需 useMemo。）
-  const visibleColumns =
-    hiddenColumns.length === 0
-      ? columns
-      : columns.filter((c) => !hiddenColumns.includes(String(c.key) as TaskColumnKey));
-  const visibleColumnKeys = TASK_LIST_COLUMN_KEYS.filter((k) => !hiddenColumns.includes(k));
-  /** 勾选变化 → 反推隐藏集合并持久化（全部勾选 = 全显 = 存量默认行为） */
-  const handleColumnVisibilityChange = (checked: TaskColumnKey[]) => {
-    const checkedSet = new Set(checked);
-    const next = TASK_LIST_COLUMN_KEYS.filter((k) => !checkedSet.has(k));
-    setHiddenColumns(next);
-    writeHiddenColumns(next);
+  // COLSET-01：显隐 + 顺序——按偏好序列重排可见列（列定义/列宽契约不变）
+  const visibleColumns = cols.orderedVisible
+    .map((k) => columns.find((c) => String(c.key) === k))
+    .filter((c): c is (typeof columns)[number] => Boolean(c));
+
+  /** 应用已保存视图：回填筛选 / 分页并重置游标栈 */
+  const applyTaskView = (view: SavedView<TaskListViewFilters>) => {
+    const f = view.filters;
+    setSearch(f.q ?? '');
+    setStatusFilter(f.status);
+    setTriggerFilter(f.trigger);
+    setLastStatusFilter(f.lastStatus);
+    setPage(f.page);
+    setPageSize(f.pageSize);
+    resetCursorStack(stablePaging);
+    taskViews.activate(view.id);
   };
+
+  const saveTaskView = (name: string): SaveResult =>
+    taskViews.save(name, snapshotTaskFilters({ search, statusFilter, triggerFilter, lastStatusFilter, page, pageSize }));
 
   return (
     <div>
@@ -701,6 +717,19 @@ export default function TaskListPage() {
           </>
         }
       />
+
+      {/* 保存筛选视图：切换 / 保存 / 重命名 / 删除口径快照 */}
+      <Space style={{ marginBottom: 12 }} wrap>
+        <SavedViewsBar
+          views={taskViews.views}
+          activeId={taskViews.activeId}
+          onSave={saveTaskView}
+          onRename={(id, name) => taskViews.rename(id, name)}
+          onRemove={taskViews.remove}
+          onApply={applyTaskView}
+          onClearActive={() => taskViews.activate(null)}
+        />
+      </Space>
 
       {/* UI-09：筛选区 wrap 堆叠（Space wrap 已有），输入/选择窄屏自适应宽度 */}
       <Space style={{ marginBottom: 16 }} wrap className="ui09-filter-bar">
@@ -785,35 +814,18 @@ export default function TaskListPage() {
             {t('taskList.count', { count: total })}
           </Text>
         )}
-        {/* COLSET-01：列设置入口——Popover 内 Checkbox.Group 收纳低频列显隐。
-            移动端卡片视图无列概念，不渲染该入口。最后一个可见列不可取消勾选
-            （避免全部隐藏后的空表死面）。 */}
+        {/* COLSET-01：列设置入口（显隐 + 顺序 + 重置默认）。移动端卡片视图无列概念，不渲染。 */}
         {!isMobile && (
-          <Popover
-            trigger="click"
-            placement="bottomRight"
-            content={
-              <div style={{ maxWidth: 240 }}>
-                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-                  {t('taskList.columnSettings.desc')}
-                </Text>
-                <Checkbox.Group
-                  className="tasklist-column-options"
-                  value={visibleColumnKeys}
-                  onChange={(vals) => handleColumnVisibilityChange(vals as TaskColumnKey[])}
-                  options={TASK_LIST_COLUMN_KEYS.map((k) => ({
-                    value: k,
-                    label: t(COLUMN_LABEL_KEY[k]),
-                    disabled: visibleColumnKeys.length === 1 && visibleColumnKeys[0] === k,
-                  }))}
-                />
-              </div>
-            }
-          >
-            <Button icon={<ColumnWidthOutlined />} data-testid="tasklist-column-settings">
-              {t('taskList.columnSettings')}
-            </Button>
-          </Popover>
+          <ColumnSettingsPopover
+            buttonTestId="tasklist-column-settings"
+            buttonLabel={t('taskList.columnSettings')}
+            options={TASK_LIST_COLUMN_KEYS.map((k) => ({ key: k, label: t(COLUMN_LABEL_KEY[k]) }))}
+            prefs={cols.prefs}
+            hidden={cols.hidden}
+            onToggle={cols.toggle}
+            onMove={cols.move}
+            onReset={cols.reset}
+          />
         )}
         {/* §2.1：稳定翻页开关（默认关闭）。
             用 antd Switch——它本身就是 role="switch" + 原生 button 语义，
@@ -878,8 +890,8 @@ export default function TaskListPage() {
            调度（含 CRON-DESC-01 可读描述） → 下次/上次执行 → 启用开关 + 操作。
            批量操作依赖行选择，移动端不提供（桌面保留）。 */
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {tasks.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskList.empty.none')} />
+          {shouldShowSkeleton(loading, error, tasks.length) ? <PageSkeleton variant="cards" /> : tasks.length === 0 ? (
+            <TaskListVacuumEmpty filtered={hasFilters} onCreate={() => nav('/tasks/new')} hint />
           ) : (
             tasks.map((r) => {
               const cfg = statusConfig[r.status] || { badge: 'default' as BadgeStatus, label: r.status };
@@ -999,13 +1011,7 @@ export default function TaskListPage() {
           // UI-08：首屏（无数据未出错）以骨架屏替代 Spin；翻页/刷新仍走表格 loading
           emptyText: shouldShowSkeleton(loading, error, tasks.length)
             ? <PageSkeleton variant="table" />
-            : (hasFilters
-              ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskList.empty.noMatch')} />
-              : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskList.empty.none')}>
-                  <Button type="primary" onClick={() => nav('/tasks/new')}>{t('taskList.empty.createFirst')}</Button>
-                </Empty>
-              )),
+            : <TaskListVacuumEmpty filtered={hasFilters} onCreate={() => nav('/tasks/new')} />,
         }}
       />
       )}

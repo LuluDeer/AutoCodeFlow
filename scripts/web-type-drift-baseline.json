@@ -643,6 +643,20 @@
       "reason": "内部判别联合 {snapshot} | {error}，非 API 响应体，无后端 schema。",
       "owner": "arch-core",
       "review_by": "2026-12-15"
+    },
+    {
+      "file": "apps/admin-web/src/api/executionBatch.ts",
+      "name": "BatchKillRow",
+      "reason": "执行记录批量终止客户端顺序编排的行视图模型（taskId/execId）；后端无批量 kill 端点，仅单条 kill，OpenAPI 无对应 components['schemas']。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "file": "apps/admin-web/src/api/executionBatch.ts",
+      "name": "KillExecutionFn",
+      "reason": "批量终止编排注入的单条 kill 函数签名 (taskId, execId) => Promise<unknown>；纯前端编排回调类型，非 API 契约类型，后端无对应 schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     }
   ]
 }

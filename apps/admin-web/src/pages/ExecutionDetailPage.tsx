@@ -390,6 +390,8 @@ export default function ExecutionDetailPage() {
                   payload={reportPayload}
                   loadError={reportError}
                   loading={reportLoading}
+                  chainLength={retryChain.length}
+                  onShowRetry={() => handleTabChange('retry')}
                 />
               </>
             ),

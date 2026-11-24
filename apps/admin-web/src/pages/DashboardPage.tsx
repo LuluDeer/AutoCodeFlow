@@ -11,7 +11,7 @@ import {
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid,
+  AreaChart, Area, Line, XAxis, YAxis, CartesianGrid,
   Tooltip as RechartTooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import type { SchedulerMetricsResponse } from '../api/metrics';
@@ -36,9 +36,10 @@ import KpiSparkline, { buildSparklineData, recentDateKeys, SPARKLINE_HEIGHT } fr
 import FailureTopList from '../components/dashboard/FailureTopList';
 import AvgDurationCard from '../components/dashboard/AvgDurationCard';
 import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
+import { buildTrendSeries } from '../utils/trendSeries';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
 import NorthStarCard from '../components/dashboard/NorthStarCard';
-import DashboardEmptyGuide from '../components/dashboard/DashboardEmptyGuide';
+import DashboardOnboardingSection from '../components/onboarding/DashboardOnboardingSection';
 import { useMetricsStream, useMetricsStreamDegraded, type MetricsStreamStatus } from '../hooks/useMetricsStream';
 import { useProjectFilter } from '../hooks/useProjectFilter';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -321,7 +322,8 @@ export default function DashboardPage() {
   // 此前用中文「成功/失败」当 dataKey、靠 Legend formatter 映射，Tooltip
   // 仍是裸中文键，属权宜方案。
   // A6（第二轮审计）：趋势图按日期轴补零（见 buildTrendData 注释）。
-  const trendData = buildTrendData(trend, trendDays);
+  // B3-①：序列聚合下沉 utils/trendSeries.ts（含日成功率 rate，纯函数可单测）。
+  const trendData = buildTrendSeries(trend, trendDays);
 
   // UI-04 ①：三张 KPI 卡各自的 sparkline 序列（补零 7 天窗，形状稳定）
   const runSpark = buildSparklineData(sparkTrend, 7);
@@ -383,8 +385,15 @@ export default function DashboardPage() {
         <StateError error={dashboardError} title={t('dashboard.error.title')} onRetry={refetchAll} />
       )}
 
-      {/* UI-04 ⑤：空态引导——无任何任务时整页引导创建，替代空指标噪音 */}
-      <DashboardEmptyGuide totalTasks={s?.totalTasks} onCreateTask={() => nav('/tasks/new')} />
+      {/* B1 首体验引导：收口横幅 + 空态引导卡（状态机/持久化在 onboarding 组件内） */}
+      <DashboardOnboardingSection
+        totalTasks={s?.totalTasks}
+        executionCount={s?.executions?.total}
+        successCount={s?.executions?.success}
+        onCreateTask={() => nav('/tasks/new')}
+        onOpenTasks={() => nav('/tasks')}
+        onOpenExecutions={() => nav('/executions')}
+      />
 
       {/* P2-1 口径分组（随当前项目）：任务/执行类聚合，请求带 projectId，切项目数值变化。 */}
       <ScopeSectionHeader scope="project" testId="scope-group-project" />
@@ -527,11 +536,13 @@ export default function DashboardPage() {
           />
         }
       >
-        {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹；趋势图刷新态原样 */}
+        {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹；趋势图刷新态原样。
+            B3-①：执行量（左轴面积）+ 日成功率（右轴折线），聚合纯函数 utils/trendSeries.ts。 */}
         {trendLoading && !trend ? (
           // UI 打磨：骨架高度与图表区（200px）对齐，避免加载完成时卡片高度跳动
           <PageSkeleton variant="table" rows={2} style={{ height: 200 }} />
         ) : (
+        <>
         <ResponsiveContainer width="100%" height={200}>
             <AreaChart data={trendData} margin={{ top: 5, right: 16, left: 0, bottom: 0 }}>
               <defs>
@@ -544,18 +555,19 @@ export default function DashboardPage() {
                   <stop offset="95%" stopColor={CHART_COLORS.failed} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              {/* UI-02：网格/轴随双主题切换 */}
               <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid(isDark)} />
               <XAxis dataKey="date" tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
-              <YAxis tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} allowDecimals={false} />
+              <YAxis yAxisId="count" tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} allowDecimals={false} />
+              <YAxis yAxisId="rate" orientation="right" domain={[0, 100]} unit="%" width={48} tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
               <RechartTooltip />
-              {/* I18N-DATAKEY-01：Legend/Tooltip 直接消费 Area name（i18n），
-                  不再需要 formatter 映射中文 dataKey */}
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Area type="monotone" dataKey="success" name={t('dashboard.trend.success')} stroke={CHART_COLORS.success} fill="url(#gradSuccess)" strokeWidth={2} />
-              <Area type="monotone" dataKey="failed" name={t('dashboard.trend.failed')} stroke={CHART_COLORS.failed} fill="url(#gradFailed)" strokeWidth={2} />
+              <Area yAxisId="count" type="monotone" dataKey="success" name={t('dashboard.trend.success')} stroke={CHART_COLORS.success} fill="url(#gradSuccess)" strokeWidth={2} />
+              <Area yAxisId="count" type="monotone" dataKey="failed" name={t('dashboard.trend.failed')} stroke={CHART_COLORS.failed} fill="url(#gradFailed)" strokeWidth={2} />
+              <Line yAxisId="rate" type="monotone" dataKey="rate" name={t('dashboard.trend.rate')} stroke={CHART_COLORS.cpu} strokeWidth={2} dot={false} connectNulls={false} />
             </AreaChart>
           </ResponsiveContainer>
+          <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>{t('dashboard.trend.rateHint')}</Text>
+        </>
         )}
       </Card>
 

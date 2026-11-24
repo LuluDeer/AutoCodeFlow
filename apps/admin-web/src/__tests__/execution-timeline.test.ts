@@ -57,4 +57,38 @@ describe('buildExecutionTimeline (admin-web)', () => {
     expect(labels.started).toContain('running');
     expect(labels.finished).toContain('terminal');
   });
+
+  // B3-②：阶段耗时派生——started=排队等待(startTime−createdAt)，
+  // finished=运行耗时(endTime−startTime)；缺时刻/非法/回退一律 null。
+  it('B3-②：派生排队等待与运行耗时（相邻 DB 时间戳差值）', () => {
+    const tl = buildExecutionTimeline({
+      status: 'success',
+      createdAt: '2026-09-07T01:00:00.000Z',
+      startTime: '2026-09-07T01:00:05.000Z',
+      endTime: '2026-09-07T01:05:00.000Z',
+    });
+    expect(tl[0].durationMs).toBeUndefined();
+    expect(tl[1].durationMs).toBe(5000);
+    expect(tl[2].durationMs).toBe(295000);
+  });
+
+  it('B3-②：缺阶段时刻时该段耗时为 null，不猜数', () => {
+    const tl = buildExecutionTimeline({
+      status: 'running',
+      createdAt: '2026-09-07T08:00:00.000Z',
+      startTime: '2026-09-07T08:00:03.000Z',
+    });
+    expect(tl[1].durationMs).toBe(3000);
+    expect(tl[2].durationMs).toBeNull();
+  });
+
+  it('B3-②：非法时间戳与时钟回退不产出负耗时/NaN', () => {
+    const tl = buildExecutionTimeline({
+      createdAt: 'garbage',
+      startTime: '2026-09-07T08:00:03.000Z',
+      endTime: '2026-09-07T07:59:00.000Z',
+    });
+    expect(tl[1].durationMs).toBeNull();
+    expect(tl[2].durationMs).toBeNull();
+  });
 });

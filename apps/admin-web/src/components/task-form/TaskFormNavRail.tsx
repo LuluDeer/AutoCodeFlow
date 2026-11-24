@@ -140,7 +140,7 @@ export default function TaskFormNavRail({ anchorItems, announcement, completionP
             width: `${percent}%`,
             height: '100%',
             background: percent === 100 ? token.colorSuccess : token.colorPrimary,
-            transition: 'width 0.2s',
+            transition: 'width var(--motion-normal) var(--motion-easing)',
           }}
         />
       </div>

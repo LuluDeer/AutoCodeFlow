@@ -19,6 +19,13 @@ export interface TimelineEntry {
   /** 事件时刻；null = 未到达该阶段（UI 显示「—」） */
   at: string | null;
   detail?: string;
+  /**
+   * B3-②：阶段耗时（毫秒，前端由相邻 DB 时间戳派生，非后端列）。
+   * - started 段：排队等待 = startTime − createdAt；
+   * - finished 段：运行耗时 = endTime − startTime；
+   * - 缺时刻 / 非法 / 时钟回退 ⇒ null（UI 不显示耗时，不猜数）。
+   */
+  durationMs?: number | null;
 }
 
 /** 最小字段面：与后端 TaskExecution 序列化形状对齐 */
@@ -29,6 +36,12 @@ export interface TimelineSource {
   createdAt?: string | null;
   startTime?: string | null;
   endTime?: string | null;
+  /** B3-②：失败归类（终态段失败点高亮用；无归类为 null） */
+  failureReason?: string | null;
+  /** B3-②：原始错误信息（终态段失败点展开用） */
+  errorMessage?: string | null;
+  /** B3-②：链内重试序号（0 = 原始尝试），用于「第 N 次尝试」元信息 */
+  retryCount?: number | null;
 }
 
 /** 阶段文案工厂：传 t 时走调用方的 t；缺省回落 i18n 单例。 */
@@ -49,23 +62,43 @@ function toIsoOrNull(value: string | null | undefined): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-/** 执行行 → 三段时间线；绝不抛错，非法/缺失字段一律落 null 段。 */
+/**
+ * 相邻两时刻差值（毫秒）。任一缺失/非法、或后值早于前值（时钟回退/脏数据）
+ * ⇒ null，绝不产出负耗时或 NaN。
+ */
+function diffMs(fromIso: string | null, toIso: string | null): number | null {
+  if (!fromIso || !toIso) return null;
+  const a = new Date(fromIso).getTime();
+  const b = new Date(toIso).getTime();
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return null;
+  return b - a;
+}
+
+/**
+ * 执行行 → 三段时间线；绝不抛错，非法/缺失字段一律落 null 段。
+ * durationMs 为前端派生的相邻段耗时（见 TimelineEntry.durationMs 注释）。
+ */
 export function buildExecutionTimeline(e: TimelineSource): TimelineEntry[] {
+  const createdAt = toIsoOrNull(e.createdAt);
+  const startedAt = toIsoOrNull(e.startTime);
+  const finishedAt = toIsoOrNull(e.endTime);
   return [
     {
       phase: "created",
-      at: toIsoOrNull(e.createdAt),
+      at: createdAt,
       detail: e.triggerType ? `trigger=${e.triggerType}` : undefined,
     },
     {
       phase: "started",
-      at: toIsoOrNull(e.startTime),
+      at: startedAt,
       detail: e.executorAddress ? `executor=${e.executorAddress}` : undefined,
+      durationMs: diffMs(createdAt, startedAt),
     },
     {
       phase: "finished",
-      at: toIsoOrNull(e.endTime),
+      at: finishedAt,
       detail: e.status ? `status=${e.status}` : undefined,
+      durationMs: diffMs(startedAt, finishedAt),
     },
   ];
 }

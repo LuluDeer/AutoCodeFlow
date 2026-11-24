@@ -734,6 +734,18 @@
       "reason": "待处置（未配对）：StallResult 是内部判别联合 {snapshot} | {error}，非 API 响应体，无后端 schema。",
       "owner": "arch-core",
       "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/executionBatch.ts\tBatchKillRow",
+      "reason": "待处置（未配对）：BatchKillRow 是执行记录批量终止客户端顺序编排的行视图模型；后端无批量 kill 端点，OpenAPI 无同名 schema，无字段可比面。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/executionBatch.ts\tKillExecutionFn",
+      "reason": "待处置（未配对）：KillExecutionFn 是批量终止编排注入的单条 kill 函数签名（函数类型，非对象字面量体），纯前端编排回调类型，后端无对应 schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     }
   ]
 }

@@ -599,7 +599,7 @@ export default function MainLayout() {
             border: 'none',
             borderBottom: `1px solid ${token.colorBorderSecondary}`,
             cursor: 'pointer',
-            transition: 'padding 0.2s',
+            transition: 'padding var(--motion-normal) var(--motion-easing)',
           }}
         >
           {/* BRAND（2026-11-02）：标志位从「绿渐变方块 + 闪电」换成**狐狸**。
@@ -647,7 +647,7 @@ export default function MainLayout() {
             justifyContent: collapsed ? 'center' : 'flex-end',
             padding: collapsed ? 0 : '0 16px',
             borderTop: `1px solid ${token.colorBorderSecondary}`,
-            transition: 'all 0.2s',
+            transition: 'all var(--motion-normal) var(--motion-easing)',
           }}
         >
           <Tooltip title={collapsed ? t('nav.sider.expand') : t('nav.sider.collapse')} placement="right">
@@ -831,7 +831,7 @@ export default function MainLayout() {
                   borderRadius: 8,
                   border: 'none',
                   background: 'transparent',
-                  transition: 'background 0.2s',
+                  transition: 'background var(--motion-normal) var(--motion-easing)',
                 }}
                 className="user-dropdown-trigger"
                 data-testid="user-dropdown-trigger"

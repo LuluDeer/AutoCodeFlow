@@ -10,7 +10,7 @@
  * 3. 报告（execution_reports 当日聚合）：仅 report 行存在时渲染；
  *    null 为正常态（该表按日聚合、懒生成），显示提示行而非错误。
  */
-import { Alert, Card, Descriptions, Steps, Typography, theme } from 'antd';
+import { Alert, Button, Card, Descriptions, Space, Steps, Tag, Typography, theme } from 'antd';
 import {
   CheckCircleOutlined,
   ClockCircleOutlined,
@@ -24,6 +24,7 @@ import {
   TIMELINE_PHASE_LABELS,
   type TimelineSource,
 } from '../utils/execution-timeline';
+import { failureReasonLabel } from '../utils/failure-reason-label';
 import { formatDateTime, formatDuration } from '../utils/timeFormat';
 import type { ExecutionReportPayload } from '../api/execution-reports';
 
@@ -59,6 +60,10 @@ export interface ExecutionReportPanelProps {
   /** 加载失败信息（非致命：面板降级为时间线骨架仍可用） */
   loadError?: string | null;
   loading?: boolean;
+  /** B3-②：重试链长度（页页由 buildRetryChain 派生）；缺省不渲染链元信息 */
+  chainLength?: number;
+  /** B3-②：跳转重试链 Tab 回调（无回调则不渲染「查看重试链」入口） */
+  onShowRetry?: () => void;
 }
 
 /** 当前时间线进度（Steps current）：终态=2，运行中=1，pending=0 */
@@ -72,14 +77,26 @@ export default function ExecutionReportPanel({
   payload,
   loadError,
   loading,
+  chainLength,
+  onShowRetry,
 }: ExecutionReportPanelProps) {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：语义色/背景走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
-  const source: PanelSource = payload?.execution ?? {};
+  const raw = payload?.execution ?? {};
+  const source: PanelSource = raw;
   const entries = buildExecutionTimeline(source);
   const step = currentStep(source);
   const report = payload?.report ?? null;
+
+  // B3-②：失败点与重试链元信息——report 载荷携完整 execution 行（见后端
+  // getExecutionReport），字段可能缺省/类型漂移，这里防御式归一为字符串/数字。
+  const failureReason = typeof raw.failureReason === 'string' ? raw.failureReason : null;
+  const errorMessage = typeof raw.errorMessage === 'string' ? raw.errorMessage : null;
+  const retryCount = typeof raw.retryCount === 'number' ? raw.retryCount : null;
+  const attempt = (retryCount ?? 0) + 1;
+  const chainTotal = typeof chainLength === 'number' && chainLength > 0 ? chainLength : attempt;
+  const showChainMeta = typeof chainLength === 'number' && chainLength > 1;
 
   return (
     <div data-testid="execution-report-panel">
@@ -88,6 +105,25 @@ export default function ExecutionReportPanel({
         size="small"
         style={{ marginBottom: 16 }}
         loading={loading && !payload}
+        extra={
+          <Space size={8}>
+            {showChainMeta && (
+              <Text type="secondary" style={{ fontSize: 12 }} data-testid="timeline-attempt-meta">
+                {t('reportPanel.attemptMeta', { attempt, total: chainTotal })}
+              </Text>
+            )}
+            {onShowRetry && (
+              <Button
+                type="link"
+                size="small"
+                onClick={onShowRetry}
+                data-testid="timeline-view-retry"
+              >
+                {t('reportPanel.viewRetryChain')}
+              </Button>
+            )}
+          </Space>
+        }
       >
         {loadError && (
           <Alert
@@ -105,8 +141,11 @@ export default function ExecutionReportPanel({
           items={entries.map((e) => {
             const isTerminal = e.phase === 'finished';
             const mark = isTerminal ? terminalMark(source.status, token) : { icon: undefined as React.ReactNode, color: undefined as string | undefined };
+            const isBad = isTerminal && TERMINAL_BAD.has(source.status || '');
             return {
               title: TIMELINE_PHASE_LABELS(t)[e.phase],
+              // B3-②：失败终态段步骤级错误高亮（红），与图标颜色双编码
+              ...(isBad ? { status: 'error' as const } : {}),
               content: (
                 <span data-testid={`timeline-${e.phase}`}>
                   {e.at ? formatDateTime(e.at) : '—'}
@@ -115,6 +154,28 @@ export default function ExecutionReportPanel({
                       {e.detail}
                     </Text>
                   ) : null}
+                  {e.phase === 'started' && e.durationMs != null && (
+                    <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                      {t('timeline.queueWait')} {formatDuration(e.durationMs, t)}
+                    </Text>
+                  )}
+                  {e.phase === 'finished' && e.durationMs != null && (
+                    <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                      {t('timeline.runDuration')} {formatDuration(e.durationMs, t)}
+                    </Text>
+                  )}
+                  {isBad && (failureReason || errorMessage) && (
+                    <div data-testid="timeline-failure-point" style={{ marginTop: 4 }}>
+                      {failureReason && (
+                        <Tag color="volcano">{failureReasonLabel(failureReason, t)}</Tag>
+                      )}
+                      {errorMessage && (
+                        <Text type="danger" style={{ fontSize: 12, wordBreak: 'break-word' }}>
+                          {errorMessage}
+                        </Text>
+                      )}
+                    </div>
+                  )}
                 </span>
               ),
               ...(mark.color ? { icon: <span style={{ color: mark.color }}>{mark.icon}</span> } : {}),

@@ -183,7 +183,7 @@ export default function TaskFormExecutorSection({
                     padding: '10px 14px',
                     width: '100%',
                     background: executorMode === o.value ? token.colorPrimaryBg : token.colorBgContainer,
-                    transition: 'all 0.2s',
+                    transition: 'all var(--motion-normal) var(--motion-easing)',
                   }}
                 >
                   <Space>
