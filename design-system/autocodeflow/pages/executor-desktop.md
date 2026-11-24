@@ -130,10 +130,16 @@
 
 ## 7. 窗口红线（主进程侧，渲染层无法自查）
 
-`BrowserWindow.backgroundColor` 必须等于 `--bg` **`#f5f6f8`**（window-manager.ts 的
-status / wizard 两窗均已对齐）。教训：frameless + transparent 在部分 Windows 机器上
-整窗复合失败（WIN-DISPLAY / 1.4.3 Hotfix），改实心底色后，窗口底色与 CSS `--bg`
-不一致又会出现底色割裂/闪色——两者必须逐字相等。**V4 未触碰该值。**
+`BrowserWindow.backgroundColor` 必须等于 `--bg` **对应主题的值**（亮色 `#f5f6f8` /
+暗色 `#0f172a`；window-manager.ts 的 status / wizard 两窗均已对齐）。教训：frameless +
+transparent 在部分 Windows 机器上整窗复合失败（WIN-DISPLAY / 1.4.3 Hotfix），改实心底色后，
+窗口底色与 CSS `--bg` 不一致又会出现底色割裂/闪色——两者必须逐字相等。**V4 未触碰该值。**
+
+**2026-11-24 第 4 轮第一批（单源化）**：主进程底色常量收口到 `src/main/theme-colors.ts`
+（`WINDOW_BG_LIGHT='#f5f6f8'` / `WINDOW_BG_DARK='#0f172a'` + `windowBackground(theme)`），
+window-manager.ts 三处（setBackgroundColor、向导窗、主窗构造）统一走该函数；renderer.selftest.mjs
+有跨文件守卫比对主进程常量与 tokens.css 的亮/暗 `--bg`，值不等即红。此前 `WINDOW_BG_DARK`
+曾漂移成 `#1c1f26` 而注释仍称"已对齐"，导致暗色首帧出现色带——单源 + 守卫杜绝复发。
 
 ## 8. 演进状态
 

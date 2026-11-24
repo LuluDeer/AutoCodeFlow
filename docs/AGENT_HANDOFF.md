@@ -1,7 +1,33 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 4 轮 · 客户端+中台质感/可视化/细节）
-> 当前分支 `develop` = `54dd36aa`（已同步 origin/develop，win 侧波1/波2 提交全量在树）；**本轮产出全部落工作树，未提交、未 push**——38 个改动/新增文件，含 1 处基线重签。接手先 `git status` 核对、`npm run check:size-caps` 验基线。下面的第 3 轮及更早均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 4 轮第一批 · R5 体验升级）
+> 当前分支 `develop` = `d1ecdcc3`（第 4 轮 5 批已提交：`12501899`/`77a9d179`/`947ca87e`/`d8a63768`/`d1ecdcc3`）；**第 4 轮第一批（R5）产出落工作树，未提交、未 push**——16 个路径，含 1 处基线重签（renderer.selftest 1686→1737）。第三轮/R5 之前均为已收口历史。接手先 `git status` 核对、`npm run check:size-caps` 验基线。
+
+## 本轮（2026-11-24 · 第 4 轮第一批 R5）：用户旅程 + 无障碍审计驱动的 5 项体验升级（3 切片 + 独立验收）
+
+**编排方式**：三路只读审计（audit-web-r5 中台旅程 / audit-desktop-r5 桌面旅程 / audit-a11y-r5 跨端无障碍，CodeGraph 定位 + 逐行确证，共 19 项）→ 主控选出 5 项第一批（2 P1 + 3 P2）→ 3 切片写域互斥并行（E-A 托盘停止确认 / E-B 日志焦点圈闭+窗口底色 / E-C 中台 AI 分析+SOP 深链）→ 主会话重签基线（唯一 renderer.selftest 超线）→ 独立只读验收（verify-e：diff 边界 + 12 门禁 + 反证抽查）→ 全绿，1 处 P2 文档写域声明遗漏由主控在交接段澄清（内容正确、无门禁影响，不回退）。
+
+| 切片 | 交付 | 关键文件 |
+|---|---|---|
+| E-A 托盘停止确认（P1） | 托盘 stop 入口此前绕过状态页 `stopActionGate` 直接 kill；新增纯 gate `tray-stop-gate.ts`：active(online/pending)→confirm / inactive→stop / inFlight→ignore / confirmed:false→cancel，不读 running-count（避免 readdir 失败回落 0 谎报"无任务"）；入口走原生 `dialog.showMessageBox` 二次确认，取消/异常/null 均 fail-closed 不落 stop；zh/en 4 键成对 | `main/tray.ts`、`main/index.ts`、`main/tray-stop-gate.ts`(新)、`main/main-index.selftest.ts`、`main/ui-texts.ts` |
+| E-B 日志焦点圈闭（P1）+ 窗口底色（P2） | 全屏日志查看器补 `role=dialog`/`aria-modal`/`aria-labelledby` + portal 到 body + 开合计数发布；App 订阅计数给背景 `.app` 加/解 `inert`，Tab 无法逃到被遮挡控件；焦点归还改用 queueMicrotask 延后到 inert 移除后（portal/inert 避免自屏蔽）。暗色窗口底色常量漂移（`#1c1f26`≠CSS `--bg #0f172a`）收口到 `theme-colors.ts` 单源，window-manager 三处统一 + 跨文件一致性守卫 | `renderer/components/LogViewer.tsx`、`renderer/App.tsx`、`main/window-manager.ts`、`main/theme-colors.ts`(新)、`renderer/renderer.selftest.mjs` |
+| E-C 中台两项（P2） | AI 分析按钮成功后 `handleTabChange('report')` 与 refresh 同行（零净增行，结果落到当前视野，对齐同页失败卡 onJumpToReport）；视频转 SOP 保存接住 draft 返回的 id，`navigate('/sops?sop=<encoded id>')` 复用 SopsPage 已有深链 | `pages/ExecutionDetailPage.tsx`、`pages/SopFromVideoPage.tsx`、`__tests__/ai-analysis-jump.test.tsx`(新)、`__tests__/sop-from-video.test.tsx` |
+
+**验收证据（独立验收方 verify-e 实测）**：
+- **12/12 门禁 exit 0**：`check:size-caps`（97 条目）、`check:desktop-selftests-wired`（64 main + 10 renderer）、`check:user-facing-language`、`check:error-i18n`、`check:mutation-residue`（14 文件配对无高危）；admin-web `tsc -b`/`lint:i18n`（3457 键缺键 0）/vitest 3 文件 16 例；desktop `typecheck:renderer`/`test:renderer`/`tsc -p tsconfig`/`test:main`（main-index selftest 真跑）。
+- 反证有牙（各切片已演练并还原）：托盘 gate active 分支反转→test:main 红；dialog role 改 region / 底色改回旧值→test:renderer 红；去掉两条跳转接线→对应 vitest 红。验收方只读复核 4 类关键反证全部命中。
+- 基线诚实：`renderer.selftest.mjs` 实测 1737/fn11/L1316:14/密度 17，只改该条 maxLines+ceiling.nonCommentLines（1686→1737），why 写实测理由；无其它条目放宽。
+- **验收定级**：E-A=单测+静态、E-B=静态源码守卫、E-C=单测/内存替身（RTL+mock API）；**P0/P1=0**。托盘"真挡住"、日志"真圈闭"仅到代码/静态级，未做 Electron 真机与浏览器验证（不越级上报）。
+
+**写域声明澄清（验收 P2）**：`design-system/autocodeflow/pages/executor-desktop.md` §7 由主会话在集成阶段补充（窗口底色单源化的文档同步 + 第4轮令牌表同性质），未列入三切片声明写域——属主会话合法集成收口，内容经 doc 守卫 7/7 验证正确、无门禁影响，保留不回退。
+
+**未覆盖边界 / 后续候选（如实）**：
+- 真机路径待补：Electron 托盘点击→原生对话框（取消后进程仍活）；全屏日志查看器 Tab 20 次焦点恒在 dialog 内（`inert` 原生阻断、读屏 `aria-modal` 播报）；portal 后 CSS/拖拽区行为；多查看器 + ConfirmBar 同开 Esc 优先级。本机无 X server，未跑。
+- 中台端到端：AI 分析真后端落库后跳 report、SOP 草稿深链自动展开抽屉为既有逻辑，本批只验证参数生成与跳转，未 E2E 联调。
+- R5 剩余 14 项（P2×8 / P3×6）：桌面端口检查按 bind host、通知点击落执行、权限矩阵双语、Ctrl+S 重复触发、Agent ID 出口、运行时长冻结、历史深链、删除按钮标题；中台无；无障碍 JS smooth/Combobox/亮色控件对比度/Space 滚动/日志按钮 24px 等——滚动进入后续批次。
+- **未提交、未 push**——16 路径待分批提交（建议 E-A / E-B / E-C / 基线+文档 4 批）。
+
+---
 
 ## 本轮（2026-11-24 · 第 4 轮）：客户端 + 中台 质感/可视化/细节打磨（4 切片并行 + 独立验收 + 1 处 P1 返修）
 

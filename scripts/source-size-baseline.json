@@ -1579,10 +1579,10 @@
     "apps/executor-desktop/src/renderer/renderer.selftest.mjs": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1686,
-      "why": "2026-11-04 实测 nonCommentLines=946 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[946,1610],\"branchDensity\":[28.1,16.5]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | **R7-B（ConfigPage IO 层）改读实现新位置**：实现从 ConfigPage.tsx 搬到 `pages/config/use-config-io.ts` / `io-result.ts` 后，源码文本契约必须读实现真正所在的文件（STC-073 式改读）⇒ 本文件 +7 非注释行（2 行 readFileSync + 2 行 import + 取数面拼接）。**新增断言本身放进 `pages/config/io-layer.selftest.mjs`**（与实现在同目录），刻意不堆进本文件。实测 1610 → **1608**（净减 2：5.2 块里两条实现面断言随实现搬走）⇒ 按棘轮**下调**至 1608。 | 2026-11-24 第4轮：桌面四切片实现方将断言集中接线进本入口（D-A：T1/T2/T4 静态守卫 + V5 CSS 三文件纳入 css 数组 + 裸色断言 + R102-A1/C 的 sendSync 精确白名单；D-B/D-C 的 selftest 与样式判据亦由 D-A 统一接线）⇒ 实测 nonCommentLines=1686、fn=11、最长 loadTsModule@L1316:14、branchDensity=16.7（净降）。新增守卫必须接线（check:desktop-selftests-wired 硬要求），行数增长是接线的必要成本，按实测上调棘轮。",
+      "maxLines": 1737,
+      "why": "2026-11-04 实测 nonCommentLines=946 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[946,1610],\"branchDensity\":[28.1,16.5]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | **R7-B（ConfigPage IO 层）改读实现新位置**：实现从 ConfigPage.tsx 搬到 `pages/config/use-config-io.ts` / `io-result.ts` 后，源码文本契约必须读实现真正所在的文件（STC-073 式改读）⇒ 本文件 +7 非注释行（2 行 readFileSync + 2 行 import + 取数面拼接）。**新增断言本身放进 `pages/config/io-layer.selftest.mjs`**（与实现在同目录），刻意不堆进本文件。实测 1610 → **1608**（净减 2：5.2 块里两条实现面断言随实现搬走）⇒ 按棘轮**下调**至 1608。 | 2026-11-24 第4轮：桌面四切片实现方将断言集中接线进本入口（D-A：T1/T2/T4 静态守卫 + V5 CSS 三文件纳入 css 数组 + 裸色断言 + R102-A1/C 的 sendSync 精确白名单；D-B/D-C 的 selftest 与样式判据亦由 D-A 统一接线）⇒ 实测 nonCommentLines=1686、fn=11、最长 loadTsModule@L1316:14、branchDensity=16.7（净降）。新增守卫必须接线（check:desktop-selftests-wired 硬要求），行数增长是接线的必要成本，按实测上调棘轮。 | 2026-11-24 第4轮第一批（R5 修复）：E-B 新增两项静态守卫（全屏日志查看器 role=dialog/aria-modal/背景 inert 接线断言 + 暗色窗口底色常量与 tokens.css --bg 跨文件一致性断言）⇒ 实测 nonCommentLines=1737（+51）、fn=11、最长 loadTsModule:14、密度=17（净微升仍<20）。守卫接线为 check:desktop-selftests-wired 硬要求，按实测上调棘轮；分支密度上限未动。",
       "ceiling": {
-        "nonCommentLines": 1686,
+        "nonCommentLines": 1737,
         "functionLines": 14,
         "ctorParams": 0,
         "exports": 0,
