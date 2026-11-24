@@ -14,6 +14,8 @@ import {
   type DisplayLike,
   type SavedWindowState,
 } from './window-bounds';
+// 窗口底色单一事实源（与 tokens.css 的 --bg 对齐，selftest 跨文件守卫比对）。
+import { windowBackground } from './theme-colors';
 
 const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 
@@ -43,10 +45,6 @@ function resolveRendererV1Index(): string {
 export function resolveRendererIndex(): string {
   return resolveRendererV1Index();
 }
-
-/** 暗色 / 亮色窗口底色（与 tokens.css 的 --bg 对齐；frameless 窗口提前 show 无白闪）。 */
-const WINDOW_BG_LIGHT = '#f5f6f8';
-const WINDOW_BG_DARK = '#1c1f26';
 
 function statusWindowStatePath(): string {
   return path.join(app.getPath('userData'), 'status-window.json');
@@ -310,7 +308,7 @@ export class WindowManager {
    */
   setResolvedTheme(theme: 'light' | 'dark'): void {
     this.resolvedTheme = theme;
-    const bg = theme === 'dark' ? WINDOW_BG_DARK : WINDOW_BG_LIGHT;
+    const bg = windowBackground(theme);
     for (const win of [this.statusWindow, this.wizardWindow]) {
       if (win && !win.isDestroyed()) win.setBackgroundColor(bg);
     }
@@ -354,7 +352,7 @@ export class WindowManager {
       // Windows 机器上整窗复合失败（窗口 show() 了但屏幕上看不到——首个
       // 发布的 Windows 安装包被真用户报告的致命问题）。改实心背景色渲染，
       // 底色跟随已解析主题（⑤），与 tokens.css 的 --bg 对齐。
-      backgroundColor: this.resolvedTheme === 'dark' ? WINDOW_BG_DARK : WINDOW_BG_LIGHT,
+      backgroundColor: windowBackground(this.resolvedTheme),
       webPreferences: sharedWebPreferences(),
     });
 
@@ -436,7 +434,7 @@ export class WindowManager {
       // WIN-DISPLAY (1.4.3 Hotfix / N47): 同 wizard——去掉 transparent，
       // 改实心 backgroundColor，避免 Windows 部分机器透明窗口整窗不可见。
       // 底色跟随已解析主题（⑤），与 tokens.css 的 --bg 对齐。
-      backgroundColor: this.resolvedTheme === 'dark' ? WINDOW_BG_DARK : WINDOW_BG_LIGHT,
+      backgroundColor: windowBackground(this.resolvedTheme),
       // BUG-12: single hardened webPreferences source for every window.
       // sandbox defaults on (Electron ≥20), which also blocks the preload
       // from pulling full Node modules into the renderer bridge.

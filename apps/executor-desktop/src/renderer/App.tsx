@@ -1,9 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import StatusWindow from './pages/StatusWindow';
 import ConfigPage from './pages/ConfigPage';
 import HistoryPage from './pages/HistoryPage';
 import AppsPage from './pages/AppsPage';
 import Icon from './components/Icon';
+// P1：全屏日志查看器开合计数 —— 查看器本体 portal 到 document.body，
+// 背景根节点在本文件按计数加/除 inert，实现浏览器原生的焦点/交互圈闭。
+import { subscribeLogViewerCount } from './components/LogViewer';
 // BRAND（2026-11-02）：品牌位图片由品牌流水线生成（见 build-fox-assets.py），
 // 打包进渲染层后是 file:// 下可用的本地资源（CSP img-src 'self' 已放行）。
 import foxImg from './assets/acf-fox.png';
@@ -125,6 +128,17 @@ function MainWindow() {
   // C-04：主窗 X 首次关闭的一次性托盘驻留气泡（显隐仅由 state 控制；
   // 「是否提示过」以 localStorage 标记为准，见 readCloseTipShown）。
   const [showCloseTip, setShowCloseTip] = useState(false);
+
+  // P1 背景圈闭：全屏日志查看器打开期间给背景根节点加 inert——原生屏蔽整个
+  // 子树（Tab 不能越过覆盖层进入状态页/历史页控件，读屏也不会读到被遮挡内容）。
+  // 查看器经 portal 挂在 document.body，不在本节点内，不会被连带屏蔽。
+  const appRootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => subscribeLogViewerCount((count) => {
+    const el = appRootRef.current;
+    if (!el) return;
+    if (count > 0) el.setAttribute('inert', '');
+    else el.removeAttribute('inert');
+  }), []);
 
   useEffect(() => {
     const api = window.electronAPI;
@@ -266,7 +280,7 @@ function MainWindow() {
   }
 
   return (
-    <div className="app">
+    <div className="app" ref={appRootRef}>
       {/* 单行顶栏（≥900px）：brand + tabs + 窗控同排，纵向 90px→48px 让给日志工作区；
           窄窗（<900px）CSS 折行回两行。拖拽区 = brand 与 tabs 容器空白（按钮 no-drag）；
           双击空白区切换最大化（Windows 标题栏惯例，无边框下自行补上） */}

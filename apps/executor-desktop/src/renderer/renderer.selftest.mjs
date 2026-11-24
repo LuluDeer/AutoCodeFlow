@@ -2328,4 +2328,63 @@ await import('./pages/config/agent-matrix.selftest.mjs');
 await import('./pages/history/history-nav.selftest.mjs');
 await import('./pages/status/status-helpers.selftest.mjs');
 
+// ── P1 全屏日志查看器 dialog 语义 / 背景 inert + P2 主进程底色单源守卫 ────
+{
+  // P1：全屏查看器必须是可感知的模态对话框——role/aria-modal/标题关联三者缺一，
+  // 读屏不会播报「进入对话框」；背景 inert 必须两端都在（LogViewer 发开合计数、
+  // App 把计数落到 .app 根节点），否则 Tab 仍能越过覆盖层进入被遮挡控件。
+  const logViewerSrc = readFileSync(resolve(root, 'components', 'LogViewer.tsx'), 'utf8');
+  for (const anchor of [
+    'role="dialog"',
+    'aria-modal="true"',
+    'aria-labelledby={titleId}',
+    'const titleId = useId()',
+    'createPortal(',
+    'subscribeLogViewerCount',
+    'notifyViewerCount(true)',
+    'notifyViewerCount(false)',
+  ]) {
+    if (!logViewerSrc.includes(anchor)) {
+      throw new Error(`P1: 全屏日志查看器缺少 ${anchor}（dialog 语义 / 标题关联 / 背景 inert 计数接线）`);
+    }
+  }
+  for (const anchor of [
+    'subscribeLogViewerCount(',
+    "setAttribute('inert', '')",
+    "removeAttribute('inert')",
+    'ref={appRootRef}',
+  ]) {
+    if (!app.includes(anchor)) {
+      throw new Error(`P1: App.tsx 未把背景根节点 .app 的 inert 接上查看器开合（缺 ${anchor}）`);
+    }
+  }
+
+  // P2：主进程窗口底色常量必须与 tokens.css 的 --bg 逐字相等（亮/暗各一份），
+  // 且只有 theme-colors.ts 持字面量、window-manager.ts 三处全走 windowBackground()。
+  const themeColorsSrc = readFileSync(resolve(root, '..', 'main', 'theme-colors.ts'), 'utf8');
+  const tokensCss = cssByFile.get('tokens.css');
+  const lightConst = /WINDOW_BG_LIGHT\s*=\s*'(#[0-9a-fA-F]{3,8})'/.exec(themeColorsSrc);
+  const darkConst = /WINDOW_BG_DARK\s*=\s*'(#[0-9a-fA-F]{3,8})'/.exec(themeColorsSrc);
+  const lightToken = /:root\s*\{[\s\S]*?--bg:\s*(#[0-9a-fA-F]{3,8})\s*;/.exec(tokensCss);
+  const darkToken = /\[data-theme=['"]dark['"]\]\s*\{[\s\S]*?--bg:\s*(#[0-9a-fA-F]{3,8})\s*;/.exec(tokensCss);
+  if (!lightConst || !darkConst || !lightToken || !darkToken) {
+    throw new Error('P2: 无法解析 theme-colors.ts 常量或 tokens.css 亮/暗 --bg（守卫判据失效）');
+  }
+  const eqHex = (a, b) => a.toLowerCase() === b.toLowerCase();
+  if (!eqHex(lightConst[1], lightToken[1])) {
+    throw new Error(`P2: 亮色窗口底色 ${lightConst[1]} 与 tokens.css :root --bg ${lightToken[1]} 漂移`);
+  }
+  if (!eqHex(darkConst[1], darkToken[1])) {
+    throw new Error(`P2: 暗色窗口底色 ${darkConst[1]} 与 tokens.css [data-theme=dark] --bg ${darkToken[1]} 漂移`);
+  }
+  const wmSrc = readFileSync(resolve(root, '..', 'main', 'window-manager.ts'), 'utf8');
+  const wmCode = wmSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  if (!wmSrc.includes("from './theme-colors'") || (wmSrc.match(/windowBackground\(/g) ?? []).length < 3) {
+    throw new Error('P2: window-manager.ts 必须引用 theme-colors.ts，且底色三处（setBackgroundColor/向导窗/主窗）全走 windowBackground()');
+  }
+  if (/#(?:[0-9a-fA-F]{3,8})\b/i.test(wmCode)) {
+    throw new Error('P2: window-manager.ts 残留硬编码底色字面量（单真值源被绕过）');
+  }
+}
+
 console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit (theme sync sendSync whitelist), R7-B config-io layer, R-UX apps/config/history/status pure-logic selftests, T1/T2/T3/T4 read-failure honesty guards passed');

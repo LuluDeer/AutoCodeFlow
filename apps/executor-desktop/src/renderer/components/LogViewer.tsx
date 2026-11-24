@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Icon from './Icon';
 import LogLineList from './LogLineList';
 import { createCfgTexts, resolveRendererLocale } from '../i18n';
@@ -46,6 +47,28 @@ const viewerStack: symbol[] = [];
 
 function isTopOfViewerStack(self: symbol): boolean {
   return viewerStack[viewerStack.length - 1] === self;
+}
+
+/**
+ * P1 背景圈闭接线：查看器本体经 portal 挂在 document.body（不在背景根节点子树内），
+ * App 订阅开合计数后给背景根节点加/除 inert——浏览器原生屏蔽整个背景子树，
+ * Tab 无法越过全屏覆盖层进入状态页/历史页控件。多实例并存时按计数收发（后开者
+ * 关闭不会提前解除仍开着的查看器的背景 inert）。
+ */
+let openViewerCount = 0;
+type ViewerCountListener = (count: number) => void;
+const viewerCountListeners = new Set<ViewerCountListener>();
+
+/** App.tsx 用：订阅全屏查看器开合；返回取消订阅函数。 */
+export function subscribeLogViewerCount(listener: ViewerCountListener): () => void {
+  viewerCountListeners.add(listener);
+  listener(openViewerCount); // 立即同步当前值（App 可能晚于查看器挂载）
+  return () => { viewerCountListeners.delete(listener); };
+}
+
+function notifyViewerCount(open: boolean): void {
+  openViewerCount = Math.max(0, openViewerCount + (open ? 1 : -1));
+  for (const listener of viewerCountListeners) listener(openViewerCount);
 }
 
 export interface LogViewerProps {
@@ -115,6 +138,8 @@ export default function LogViewer({
   onOpenFileTitle,
   notice,
 }: LogViewerProps) {
+  // dialog 的无障碍名由标题节点承载；useId 保证多实例（状态页 + overlay）id 不撞。
+  const titleId = useId();
   const [query, setQuery] = useState('');
   const [levelFilter, setLevelFilter] = useState<ViewerLevelFilter>(initialLevelFilter);
   const [matchIdx, setMatchIdx] = useState(0);
@@ -209,16 +234,30 @@ export default function LogViewer({
     });
   }
 
+  // 焦点管理：打开即聚焦搜索框（Ctrl+F 的常驻版）；卸载时把焦点还给
+  // 触发按钮，避免焦点留在被浮层盖住的背景控件上（与历史页查看器同口径）。
+  // 本 effect 必须排在下面 viewerStack/inert effect 之前：inert 落到背景根节点时
+  // 会让当时聚焦的触发按钮失焦，先捕获才能正确归还。归还放到微任务，确保
+  // inert 已先移除（inert 子树里的 focus() 会被浏览器忽略）。
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    inputRef.current?.focus();
+    return () => { queueMicrotask(() => { returnFocusRef.current?.focus(); }); };
+  }, []);
+
   // Esc 关闭（P3-1：仅栈顶查看器响应，防双实例同时关闭）
   const viewerIdRef = useRef<symbol | null>(null);
   useEffect(() => {
     const id = Symbol('log-viewer');
     viewerIdRef.current = id;
     viewerStack.push(id);
+    notifyViewerCount(true);
     return () => {
       viewerIdRef.current = null;
       const idx = viewerStack.indexOf(id);
       if (idx >= 0) viewerStack.splice(idx, 1);
+      notifyViewerCount(false);
     };
   }, []);
   useEffect(() => {
@@ -230,15 +269,6 @@ export default function LogViewer({
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
-
-  // 焦点管理：打开即聚焦搜索框（Ctrl+F 的常驻版）；卸载时把焦点还给
-  // 触发按钮，避免焦点留在被浮层盖住的背景控件上（与历史页查看器同口径）。
-  const returnFocusRef = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    inputRef.current?.focus();
-    return () => { returnFocusRef.current?.focus(); };
-  }, []);
 
   // Ctrl+F 聚焦搜索（P3-1：仅栈顶查看器响应，防双实例抢焦点）
   useEffect(() => {
@@ -262,11 +292,13 @@ export default function LogViewer({
   if (showIssuesChip) levelChips.push(['issues', t('logviewer.levelIssues'), counts.issues]);
   levelChips.push(['warn', t('logviewer.levelWarn'), counts.warn], ['error', t('logviewer.levelError'), counts.error]);
 
-  return (
-    <div className="log-fullscreen">
+  // 传送到 document.body：背景根节点加 inert 后查看器本体必须留在 inert 子树之外，
+  // 否则连自己的搜索框/按钮都会被一起屏蔽。全屏 fixed 定位不依赖任何祖先容器。
+  return createPortal(
+    <div className="log-fullscreen" role="dialog" aria-modal="true" aria-labelledby={titleId}>
       {/* 顶栏 */}
       <div className="log-fs-bar">
-        <span className="log-fs-title">{title}</span>
+        <span className="log-fs-title" id={titleId}>{title}</span>
 
         {navTools && <div className="log-fs-navtools">{navTools}</div>}
 
@@ -400,6 +432,7 @@ export default function LogViewer({
         {/* 日志文件侧栏（节点由调用方注入，状态页 = LogFilesPanel） */}
         {showFiles && filesPanel}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
