@@ -173,9 +173,9 @@ beforeEach(() => {
     page: 1,
     pageSize: 200,
   } as never);
-  mockedApps.setCurrentVersion.mockResolvedValue({ ok: true, dispatched: false, version: '1.1.0', versionId: 'ver-2' });
+  mockedApps.setCurrentVersion.mockResolvedValue({ ok: true, dispatched: false, version: '1.1.0', versionId: 'ver-2', updatedApp: {} as never });
   mockedApps.deployVersion.mockResolvedValue({
-    ok: true, dispatched: true, version: '1.1.0', versionId: 'ver-2',
+    ok: true, dispatched: true, version: '1.1.0', versionId: 'ver-2', updatedApp: {} as never,
     upgraded: [], skipped: [],
   });
 });

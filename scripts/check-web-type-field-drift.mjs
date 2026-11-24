@@ -368,15 +368,33 @@ export function pairName(handName, generatedNames) {
     if (generatedNames.has(cand)) return cand;
   }
   // ③ 生成名剥后缀 == 手写名
-  for (const g of generatedNames) {
-    if (stripOneSuffix(g) === handName) return g;
-  }
   // ④ 双方各剥一层后相等
+  // 两段都可能命中**多个候选**（如 `SetCurrentVersionResult` 剥离后既匹配
+  // `SetCurrentVersionDto`（请求）又匹配 `SetCurrentVersionResponseDto`（响应））。
+  // 若"先命中即停"，Set 迭代序会把结果接口误配到请求 DTO —— 字段集不同概念，
+  // 于是手写侧新增的响应字段被误报成 `extra:*`（真实缺口被遮蔽）。收集全部候选
+  // 后按"响应类优先"裁决（响应/视图 > 请求/裸 Dto），与①②的精确匹配口径一致。
+  const collect = (pred) => [...generatedNames].filter(pred);
+  const pickResponseFirst = (cands) => {
+    if (cands.length === 0) return null;
+    if (cands.length === 1) return cands[0];
+    const isResponse = (n) => /Response|AdminView|ViewDto|View$/.test(n);
+    const responses = cands.filter(isResponse);
+    // 恰好一个响应类候选 ⇒ 确定性选中（真实案例：SetCurrentVersionResult 的
+    // 候选含裸 Dto 与 ResponseDto，只选后者）。多个响应类候选 ⇒ 语义歧义，
+    // 按守卫纪律「宁可漏配，不假配对」归未配对，绝不依赖 Set 迭代序随便取一个
+    // （否则生成名顺序变化会让本判据再次静默误配）。
+    if (responses.length === 1) return responses[0];
+    return null;
+  };
+  const step3 = collect((g) => stripOneSuffix(g) === handName);
+  const picked3 = pickResponseFirst(step3);
+  if (picked3) return picked3;
   const handStripped = stripOneSuffix(handName);
   if (handStripped) {
-    for (const g of generatedNames) {
-      if (stripOneSuffix(g) === handStripped) return g;
-    }
+    const step4 = collect((g) => stripOneSuffix(g) === handStripped);
+    const picked4 = pickResponseFirst(step4);
+    if (picked4) return picked4;
   }
   return null;
 }
@@ -1487,6 +1505,24 @@ export function selftest() {
         });
       } finally {
         cleanup();
+      }
+    },
+  });
+
+  cases.push({
+    name: "配对裁决：多响应类候选 ⇒ 不依赖 Set 序误配（确定性）",
+    fn: () => {
+      // 守卫纪律「宁可漏配，不假配对」：剥后缀后同时命中两个响应类候选时，
+      // 语义上无法判定哪个才是真正的响应体，必须归未配对（null），
+      // 不能靠 Set 迭代序随便取一个——否则生成名顺序一变就静默误配。
+      const twoResponses = new Set(["ConfigResponseDto", "ConfigViewDto", "ConfigDto"]);
+      if (pairName("ConfigResult", twoResponses) !== null) {
+        throw new Error("多响应类候选必须裁决为未配对，不得按迭代序任选一个");
+      }
+      // 正例控制组：恰好一个响应类候选（另一个是裸 Dto）⇒ 确定性选中响应类。
+      const oneResponse = new Set(["ConfigDto", "ConfigResponseDto"]);
+      if (pairName("ConfigResult", oneResponse) !== "ConfigResponseDto") {
+        throw new Error("单一响应类候选必须选中它（SetCurrentVersionResult 真实案例）");
       }
     },
   });

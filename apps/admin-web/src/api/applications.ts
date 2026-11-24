@@ -352,6 +352,8 @@ export interface SetCurrentVersionResult {
   dispatched: boolean;
   version: string;
   versionId: string;
+  /** 恢复后的应用行（已掩码）——生成派生，与后端 SetCurrentVersionResponseDto.updatedApp 同源 */
+  updatedApp: components['schemas']['SetCurrentVersionResponseDto']['updatedApp'];
 }
 
 /** R1 §4.2：POST /applications/:id/deploy-version 响应。 */
@@ -373,6 +375,8 @@ export interface DeployVersionResult {
     reason: 'no_deployment' | 'not_running' | 'upgrade_rejected';
     detail?: string | null;
   }>;
+  /** 恢复后的应用行（已掩码）——生成派生，与后端 DeployVersionResponseDto.updatedApp 同源 */
+  updatedApp: components['schemas']['DeployVersionResponseDto']['updatedApp'];
 }
 
 /** MUTEX-01：互斥组配置管理（读面全登录用户，写面 ADMIN）。 */

@@ -66,6 +66,35 @@ interface UpgradeAllResult {
 }
 
 /**
+ * set-current-version / deploy-version 响应里的 updatedApp：后端 ApplicationResponseDto
+ * 的结构等价最小面。CLI 无生成类型可派生，故逐字段对齐后端 DTO
+ * （application-response.dto.ts:25-125）；createdAt/updatedAt 虽在 DTO 声明为 Date，
+ * HTTP JSON 反序列化后是 ISO-8601 字符串（与 web 生成类型同口径）。
+ */
+interface UpdatedApp {
+  id: string;
+  name: string;
+  description: string | null;
+  version: string;
+  runtime: string;
+  status: string;
+  gitRepo: string | null;
+  gitBranch: string | null;
+  gitCommit: string | null;
+  manifest: Record<string, unknown> | null;
+  env: Record<string, string> | null;
+  entrypoint: string | null;
+  packageUrl: string | null;
+  approvalRequired: boolean;
+  projectId: string | null;
+  mutexGroupId: string | null;
+  ownerUserId: number | null;
+  createdAt: string;
+  updatedAt: string;
+  webhookSecret?: string | null;
+}
+
+/**
  * R1（部署模型评审 §4.2）：POST /applications/:id/set-current-version 响应——
  * 只按版本快照恢复应用当前字段，dispatched 恒 false（不下发任何设备）。
  */
@@ -74,6 +103,8 @@ interface SetCurrentVersionResult {
   dispatched: boolean;
   version: string;
   versionId: string;
+  /** 恢复后的应用行（已掩码）——后端 SetCurrentVersionResponseDto.updatedApp */
+  updatedApp: UpdatedApp;
 }
 
 /**
@@ -97,6 +128,8 @@ interface DeployVersionResult {
     reason: string;
     detail?: string | null;
   }>;
+  /** 恢复后的应用行（已掩码）——后端 DeployVersionResponseDto.updatedApp */
+  updatedApp: UpdatedApp;
 }
 
 function statusColor(s: string): string {
