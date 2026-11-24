@@ -1,7 +1,28 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 15 轮 · 同族两守卫假绿收口）
-> 当前分支 `develop` = `3d8b0155`（第 5-15 轮累积 41 文件已按主题分 6 组提交：`8684c1eb` 跨应用定位链路 / `e8676b4e` 后端与执行器四缺陷 / `b49111c0` 桌面运维与 lint / `3a2e6eb5` 跨端字段漂移+配对修正 / `3f94d3dd` 守卫体系与接线 / `3d8b0155` 文档权威）；工作树干净，**领先 origin/develop 6 提交、未 push**。见下方各轮段。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 16 轮 · 提交态完整性审计 + 剩余 3 个守卫假绿收口）
+> 当前分支 `develop` = `fc00ab2d`（第 5-16 轮累积 44 文件已按主题分 7 组提交：前 6 组 `8684c1eb`…`57734736` 见 R16 + `fc00ab2d` 第 16 轮 3 守卫黑盒化）。工作树干净，**领先 origin/develop 8 提交、未 push**。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 16 轮）：提交态完整性审计 + 剩余 3 个守卫假绿收口
+
+**方向来源**：objective 续轮（新增"分批提交"子指令已于上轮完成）。两个并行面：提交后中间态完整性、上轮机械扫出但一刀切放过的进程内 selftest 守卫。
+
+**提交态完整性审计（R470 先例，只读 worktree）**：对 7 个已提交 commit 逐个 `git worktree add --detach` 到 /tmp，跑零依赖守卫 + symlink node_modules 跑真实 `tsc --noEmit`（引用工程 tsconfig.app/node，非根 files:[] 空检查）。结果：7 个 commit 逐个守卫全绿、tsc 0、**无中间红**，可 bisect/revert；commit 4 上 `check-web-type-field-drift` 配对 52→53、基线漂移 58→55，实证"字段+配对修正+基线同 commit"设计意图；commit 5 上扫描面 106→108、两新 parity 守卫在位，实证"script+接线同 commit"。commit message 7/7 符合 conventional（对 release-please 友好）。7 个 worktree 已清理无残留。
+
+**9 个进程内 selftest 守卫逐个甄别（/tmp 副本改 exit 码实测）**：
+- 已是 CLI 黑盒（非缺口）：`check-runner-labels`（改坏 exit → 2/7 红）、`check-brand-drift`（→1/24 红）、`check-protocol-three-way`（replay spawn 真脚本 + 9 夹具 exitCode 断言，真跑两端不可黑盒化）。
+- 排除（非静态零依赖 / report-only）：`check-cross-end-consistency`（真跑三端、非零依赖）、`check-spec-coupling-surfaces`（report-only，无违规 exit 1 形态）、`check-live-probes-intact`（依赖真探针清单/环境）。
+- **确证 3 个新假绿**（改 `return 1`/`exit(1)`→0 后 selftest 仍全绿、CLI ✘ 却 exit 0）：`check-examples-code`（6 例）、`check-typecheck-covers-specs`（7 例）、`check-upgrade-notes`（6 例）——与已收口的 categories/api-error-format/agent-event-causation 完全同款。
+
+**修法（各单文件，写域互斥）**：三守卫 selftest 全改真子进程 CLI 黑盒 `runGuard(SELF, {args})` + `expectExit({code, contains, absent})`，保留夹具语义只改调用方式；按各自 main 的真实 `--root` 形态（examples/typecheck 用空格分离、upgrade-notes 用等号）传参。`check-examples-code` 的 COVERAGE_CASES 由 0→6（subprocess 调用点真实计数），接线校验通过。
+
+**验收（主控独立复跑 + 反证）**：三守卫 `--selftest` 6/6、7/7、6/6 全 0、主跑全 0；反证改坏 exit 码分别 5/6、5/7、5/6 转红、sha256 逐字还原；`check:guards-wired` 0、**全守卫链 `test:guards:chain` CHAIN_EXIT=0**。验收级别：真子进程 CLI 黑盒 + 全链进程内真跑，未达真机；遗留缺陷 0。
+
+**边界/候选（如实）**：`check-upgrade-notes` 的 `check()` 对完全空根（`doc===null`）有既有 `doc.match` TypeError（:126，6 夹具均含 doc 故不触发）——只读域既有缺陷，留候选不扩面；`check-live-probes-intact` 改坏 exit 仍 5/5 绿（依赖真环境，按指令排除），若后续可黑盒化再处理。
+
+**可用路径 / 发布前置**：本轮 3 个守卫改动（scripts/ 三文件）与交接段待提交（见提交记录），**未 push**。提交态完整性已验证可 bisect/revert，全链绿。
+
+---
 
 ## 本轮（2026-11-25 · 第 15 轮）：收口第 14 轮审计登记的两个同族守卫假绿（api-error-format / agent-event-causation）
 
