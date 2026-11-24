@@ -1,7 +1,25 @@
 # AutoCodeFlow Agent Handoff
 
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 16 轮 · 提交态完整性审计 + 剩余 3 个守卫假绿收口）
-> 当前分支 `develop` = `084822c3`（第 5-18 轮累积已按主题分 10 组提交：`8684c1eb`…`4d517407` 见前轮 + `084822c3` 孤儿自检接线）。工作树干净，**领先 origin/develop 13 提交、未 push**。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> 当前分支 `develop` = `4b7f8508`（第 5-19 轮累积已按主题分 11 组提交：`8684c1eb`…`46c26b45` 见前轮 + `4b7f8508` Jest flag 修复与守卫）。工作树干净，**领先 origin/develop 15 提交、未 push**。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 19 轮）：清理 CI 静默无效的 Jest 重试 flag + 新增 CLI flag 有效性守卫
+
+**方向来源**：objective 续轮。换角度审"CI 测试命令与实际工具能力是否一致"——交接多次出现"本地绿 CI 红"源于命令差异。另按 CI 口径复演 admin-api 分片 1/4（`jest --shard=1/4 --retryTimes=2`）0（128 suites/2824 tests），分片形态无异常。
+
+**缺口（实测确证）**：`--retryTimes=2` 在 Jest 30.5.2（钉锁版本）**根本不是 CLI 选项**——`npx jest --help | grep -i retry` 空，`npx jest --retryTimes=2 --listTests` EXIT 0 且无 unrecognized option 报错 ⇒ **静默忽略**。审计 /tmp 黑盒探针：fail-once 用例带该 flag 只执行 1 次就红（COUNT=1），改用 `jest.retryTimes(2)` 才真重试 2 次转绿。引用点：ci.yml:203/210（分片 job）、:276/280（coverage job）、scripts/coverage-snapshot.mjs:40/167/183。注释承诺的"两次重试兜底"从未生效，runner 抖动一次即红。
+
+**修法（零行为变化）**：删除两处 CI 命令 + coverage-snapshot args 里的无效 flag，注释改为诚实版——Jest 无该 CLI flag、此前静默无效；抖动靠分片隔离与有效内存参数（`--maxWorkers=2`/`--workerIdleMemoryLimit`，后者经 --showConfig 实证生效），flake 可观测性由 nightly flake-watch 承担，纪律"**有意不加 --retry**（retry 会把 flake 洗成看起来稳定）"。**不引入全局 `jest.retryTimes(2)`**——那会掩盖真实偶发缺陷，与本仓 flake 治理哲学冲突。
+
+**新守卫** `scripts/check-jest-cli-flags.mjs`（零依赖）：从 `jest --help` 只从选项声明行解析支持面（实测 107 项），白名单仅 `workerIdleMemoryLimit`（带生效证明 + 理由）；剥注释后扫 ci.yml 与 coverage-snapshot 里独立 `jest` token 之后的 flag，未知即红并点名 file:line；结构红（help 空/文件缺失/无 jest 命令/0 token）反永真；缺 jest 二进制 SKIP。`--selftest` 5 例真子进程夹具（真仓绿/假 flag 红/help 空结构红/无 jest 命令结构红/白名单+注释绿）。接线：package.json script + chain 末尾、ci.yml guards job step。中途自修两个自身问题（JSDoc `/* */` 提前闭合、`check-script-main-guard` 要求 main-guard），均由守卫体系拦下并修复。
+
+**验收（主控独立复跑 + 全链）**：新守卫 selftest 5/5、主跑 0（扫 12 flag / 107 支持面 / 0 无效）、npm script 0、`check:guards-wired` 0（108 守卫全接线、107 自检两面真跑）、workflow-yaml 0、actions-pinned 0、`guards-repo-matrix` 0（129/129 段，+1）、**全守卫链 `test:guards:chain` CHAIN_EXIT=0**。反证 `/tmp` 副本塞 `--not-a-jest-flag=1` → 守卫 exit 1 精确点名 ci.yml:214，还原绿。验收级别：静态审计 + 真子进程 CLI 黑盒 + 全链进程内真跑；未达 GitHub Actions 真机（本机 Jest 30.5.2 与 CI 同版本），如实标注。遗留缺陷 0。
+
+**边界**：pytest 的 `--reruns=2`（ci.yml:2031）属另一框架、未动；新守卫扫描面按任务限定为 ci.yml + coverage-snapshot，其它 workflow/package script 里的 jest 命令不在范围。
+
+**可用路径 / 发布前置**：本轮 4 文件（ci.yml / coverage-snapshot / package.json / 新守卫）待提交，**未 push**。无效 flag 已清、防回归守卫已立、全链 0、129 段真接线，提交前证据齐备。
+
+---
 
 ## 本轮（2026-11-25 · 第 18 轮）：整体孤儿守卫/自检审计——收口自检"蒙混豁免"
 
