@@ -75,6 +75,17 @@ async function api(pathname, { method = 'GET', token, auth, body } = {}) {
 
 const status = (text) => console.log(`→ ${text}`);
 
+// The mkdtemp work area lives at module scope so every failure path —
+// including the tail .catch — can remove it. Success intentionally keeps it:
+// the demo prints its path so the user can inspect the agent's workspace.
+let demoWorkDir = null;
+function cleanupOnFailure() {
+  if (demoWorkDir) {
+    fs.rmSync(demoWorkDir, { recursive: true, force: true });
+    demoWorkDir = null;
+  }
+}
+
 (async () => {
   if (!fs.existsSync(path.join(dist, 'agent-host.js'))) {
     console.error('✗ desktop selftest modules missing; run:');
@@ -200,6 +211,7 @@ const status = (text) => console.log(`→ ${text}`);
   }
 
   const workDir = fs.mkdtempSync(path.join('/tmp', 'acf-headless-agent-'));
+  demoWorkDir = workDir;
   const client = new CollabClient({ baseUrl: base, token: executorToken });
   const host = new AgentHost({
     address,
@@ -265,6 +277,7 @@ const status = (text) => console.log(`→ ${text}`);
       console.log(`  workDir: ${workDir}`);
       if (current !== 'completed') {
         console.log(`  assignment: ${JSON.stringify(detail?.assignment ?? detail).slice(0, 1200)}`);
+        cleanupOnFailure();
         process.exit(1);
       }
       console.log('✓ headless SOP assignment closed loop passed');
@@ -275,5 +288,7 @@ const status = (text) => console.log(`→ ${text}`);
   throw new Error('timeout waiting for assignment to finish');
 })().catch((err) => {
   console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+  if (demoWorkDir) console.error(`  cleaned workDir: ${demoWorkDir}`);
+  cleanupOnFailure();
   process.exit(1);
 });
