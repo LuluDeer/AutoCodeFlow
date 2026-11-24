@@ -209,23 +209,46 @@ export function spawnDetached(command: string, args: string[], opts: { cwd: stri
 export function killTree(pid: number): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve(false);
   if (process.platform === 'win32') {
-    return execFilePromise('taskkill', ['/pid', String(pid), '/T', '/F']);
+    return execFilePromise('taskkill', ['/pid', String(pid), '/T', '/F'], pid);
   }
   return killProcessGroup(pid);
 }
 
-function execFilePromise(cmd: string, args: string[]): Promise<boolean> {
+/**
+ * 与编码 / 语言无关的存活探测：信号 0 不发信号，只探进程是否存在。
+ * Windows 上 taskkill 的「找不到进程」报错按本地编码（中文区 GBK）输出，
+ * 经 execFile 按 utf8 解码成乱码，文案正则不可靠；ESRCH 才是跨语言的
+ * 「不存在」信号。EPERM 等权限错误不抛 ESRCH → 视为仍存活，交回退出码判定。
+ */
+export function pidExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+function execFilePromise(cmd: string, args: string[], pid: number): Promise<boolean> {
   return new Promise((resolve) => {
     execFile(cmd, args, { windowsHide: true, timeout: 5000 }, (err, _stdout, stderr) => {
       if (!err) {
         resolve(true);
         return;
       }
-      // 「进程不存在」是成功语义（树已自行退出）；其它失败（拒绝访问、
-      // taskkill 不可用、被超时杀掉）如实上报——超时路径的击杀失败绝不能
-      // 被静默当成「已终止」。
-      const msg = `${err instanceof Error ? err.message : String(err)} ${stderr ?? ''}`.toLowerCase();
-      resolve(/no process|not found|不存在|找不到|cannot find/.test(msg));
+      // 「进程不存在」是成功语义（树已自行退出）。先用与编码无关的存活探测
+      // 判定；探测确认不存在 → true。仍存活时再区分真实失败（拒绝访问、
+      // taskkill 不可用、被超时杀掉）——超时路径的击杀失败绝不能被静默
+      // 当成「已终止」。
+      if (!pidExists(pid)) {
+        resolve(true);
+        return;
+      }
+      const exitCode = (err as NodeJS.ErrnoException & { exitCode?: number }).exitCode;
+      // 退出码 128 = taskkill 找不到进程（本机实测）；英文 locale 文案正则兜底。
+      // 中文区 GBK 乱码不进正则匹配——靠上面的存活探测兜底，不靠猜编码。
+      const msg = `${err instanceof Error ? err.message : String(err)} ${stderr ?? ''} ${_stdout ?? ''}`.toLowerCase();
+      resolve(exitCode === 128 || /no process|not found|cannot find/.test(msg));
     });
   });
 }

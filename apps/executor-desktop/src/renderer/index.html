@@ -29,6 +29,8 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- ⑤ 暗色分面首帧防闪：先于 main.tsx 设定 data-theme（同源纯函数，无内联脚本）。 -->
+    <script type="module" src="./theme/theme-init.ts"></script>
     <script type="module" src="./main.tsx"></script>
   </body>
 </html>

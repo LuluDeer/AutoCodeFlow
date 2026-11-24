@@ -2,6 +2,8 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { UI_LANGUAGE_DEFAULT } from '../main/ui-language';
 import { resolveRendererLocale, setRendererLanguageSetting } from './i18n';
+// ⑤ 暗色分面：主题模式纯决策层（theme-init 首帧防闪，此处挂系统主题订阅）。
+import { applyThemeAttribute, parseThemeMode, readStoredModeOrFallback, resolveTheme } from './theme/theme-mode';
 // P3-2：错误消息剥 Electron/V8 包装前缀（本模块零依赖原则不受影响——
 // ipc-error.ts 也是纯常量模块，与 i18n 同类）。
 import { ipcErrorMessage } from './ipc-error';
@@ -42,9 +44,11 @@ import './styles/pages/history-v5.css';
 async function bootstrap(): Promise<void> {
   const container = document.getElementById('root')!;
 
+  let cfgTheme: unknown;
   try {
     const cfg = await window.electronAPI?.getConfig?.();
     setRendererLanguageSetting(cfg?.uiLanguage ?? UI_LANGUAGE_DEFAULT);
+    cfgTheme = cfg?.theme;
   } catch {
     setRendererLanguageSetting(UI_LANGUAGE_DEFAULT);
   }
@@ -53,6 +57,24 @@ async function bootstrap(): Promise<void> {
   // 静态写的是 zh-CN，选了英文后必须同步，否则页面语言属性与实际文案不符。
   const locale = resolveRendererLocale(() => navigator.language);
   document.documentElement.lang = locale === 'en' ? 'en' : 'zh-CN';
+
+  // ⑤ 主题：首帧已由 theme-init 设定 data-theme；这里挂系统暗色偏好订阅，
+  // 并把已解析主题经既有 IPC 镜像给主进程定窗口底色（避免边框/首绘残留亮色）。
+  let themeStorage: Storage | null = null;
+  try {
+    themeStorage = window.localStorage;
+  } catch {
+    themeStorage = null;
+  }
+  const themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+  const applyTheme = (): void => {
+    const mode = readStoredModeOrFallback(themeStorage, parseThemeMode(cfgTheme));
+    const resolved = resolveTheme(mode, themeMedia.matches);
+    applyThemeAttribute(document.documentElement, resolved);
+    window.electronAPI?.applyTheme?.(resolved);
+  };
+  applyTheme();
+  themeMedia.addEventListener('change', applyTheme);
 
   const [{ default: App }, { default: ErrorBoundary }] = await Promise.all([
     import('./App'),

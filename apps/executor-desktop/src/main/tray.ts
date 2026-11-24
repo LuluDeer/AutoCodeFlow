@@ -9,6 +9,8 @@ import log from './logger';
 export class TrayManager {
   private tray: Tray | null = null;
   private currentStatus: ExecutorStatus = 'stopped';
+  /** 运行中任务数（来自 meta 目录扫描，0 = 不展示活动行）。 */
+  private runningCount = 0;
   private agentStatus: AgentStatusSnapshot = {
     enabled: false,
     polling: false,
@@ -109,6 +111,18 @@ export class TrayManager {
     this.rebuildMenu();
   }
 
+  /**
+   * 注入当前运行中任务数（① 托盘实时活动）。同源 meta 扫描驱动；
+   * 计数未变化时不重建菜单 / 提示，避免 fs.watch 突发事件刷爆原生菜单。
+   */
+  setRunningCount(count: number): void {
+    const next = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+    if (this.runningCount === next) return;
+    this.runningCount = next;
+    this.updateTooltip();
+    this.rebuildMenu();
+  }
+
   /** Agent 只改菜单和提示；托盘图标仍专指执行器连接状态。 */
   setAgentStatus(status: AgentStatusSnapshot): void {
     if (
@@ -128,8 +142,9 @@ export class TrayManager {
     // 必须同语言（双语收尾：agent-status-view 标签已入 tray-texts 双语表）。
     const locale = this.locale();
     const t = this.texts(locale);
+    const activity = this.runningCount > 0 ? t.activitySuffix(this.runningCount) : '';
     this.tray?.setToolTip(
-      `${t.tooltip[this.currentStatus]}${t.agentSuffix(agentActivityLabel(this.agentStatus, locale))}`,
+      `${t.tooltip[this.currentStatus]}${activity}${t.agentSuffix(agentActivityLabel(this.agentStatus, locale))}`,
     );
   }
 
@@ -151,6 +166,9 @@ export class TrayManager {
             separator,
           ]),
       { label: `${t.statusPrefix}: ${t.statusLabel[status]}`, enabled: false },
+      ...(this.runningCount > 0
+        ? [{ label: t.activityLine(this.runningCount), enabled: false } as Electron.MenuItemConstructorOptions]
+        : []),
       { label: t.agentLine(agentActivityLabel(this.agentStatus, locale)), enabled: false },
       {
         label: t.agentProcessedLine(

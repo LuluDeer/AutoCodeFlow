@@ -62,6 +62,10 @@ export interface TrayTexts {
   agentLine: (activity: string) => string;
   /** tooltip 的 Agent 尾段（zh：`；Agent：…`，en：`; Agent: …`）。 */
   agentSuffix: (activity: string) => string;
+  /** 托盘菜单「运行中任务数」行（n > 0 时才出现）。 */
+  activityLine: (running: number) => string;
+  /** tooltip 的运行中任务尾段（接在执行器状态之后、Agent 段之前）。 */
+  activitySuffix: (running: number) => string;
   /** Agent 处理统计行。 */
   agentProcessedLine: (processed: number, lastOutcome: string) => string;
   startExecutor: string;
@@ -114,6 +118,8 @@ export const TRAY_TEXTS: Record<TrayLocale, TrayTexts> = {
     },
     agentLine: (activity) => `Agent：${activity}`,
     agentSuffix: (activity) => `；Agent：${activity}`,
+    activityLine: (running) => `运行中 ${running} 个任务`,
+    activitySuffix: (running) => `；运行中 ${running} 个任务`,
     agentProcessedLine: (processed, lastOutcome) =>
       `Agent 已处理 ${processed} 个指派；最近结果：${lastOutcome}`,
     startExecutor: '启动执行器',
@@ -161,6 +167,8 @@ export const TRAY_TEXTS: Record<TrayLocale, TrayTexts> = {
     },
     agentLine: (activity) => `Agent: ${activity}`,
     agentSuffix: (activity) => `; Agent: ${activity}`,
+    activityLine: (running) => `Running: ${running} task(s)`,
+    activitySuffix: (running) => `; Running: ${running} task(s)`,
     agentProcessedLine: (processed, lastOutcome) =>
       `Agent processed ${processed} assignments; last outcome: ${lastOutcome}`,
     startExecutor: 'Start Executor',

@@ -417,6 +417,16 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.gen.uiLanguageEn': 'English',
     'cfg.gen.uiLanguageAuto': '跟随系统',
     'cfg.gen.uiLanguageHint': '保存后界面自动重载以应用新语言；托盘菜单立即同步。',
+    // ⑤ 暗色分面：主题三态（light/dark/system，默认跟随系统；localStorage 持久化）
+    'cfg.gen.themeLabel': '外观主题',
+    'cfg.gen.themeLight': '浅色',
+    'cfg.gen.themeDark': '深色',
+    'cfg.gen.themeSystem': '跟随系统',
+    // ③ 通知静默时段（跨夜区间；仅在开关开启后生效）
+    'cfg.gen.quietHoursTitle': '静默时段',
+    'cfg.gen.quietHoursDesc': '该时段内不弹出任务完成 / 失败与执行器离线通知',
+    'cfg.gen.quietStart': '开始',
+    'cfg.gen.quietEnd': '结束',
     'cfg.gen.groupLog': '日志',
     'cfg.gen.nameLabel': '执行器名称',
     'cfg.gen.nameHint': '在管理平台中显示的唯一名称，建议使用机器名或角色命名',
@@ -1277,6 +1287,16 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.gen.uiLanguageEn': 'English',
     'cfg.gen.uiLanguageAuto': 'Follow system language',
     'cfg.gen.uiLanguageHint': 'The interface reloads automatically after saving to apply the new language; the tray menu switches right away.',
+    // ⑤ Dark facet: theme tri-state (light/dark/system, follows system by default; persisted in localStorage)
+    'cfg.gen.themeLabel': 'Theme',
+    'cfg.gen.themeLight': 'Light',
+    'cfg.gen.themeDark': 'Dark',
+    'cfg.gen.themeSystem': 'Follow system',
+    // ③ Notification quiet hours (overnight interval; only applies when enabled)
+    'cfg.gen.quietHoursTitle': 'Quiet hours',
+    'cfg.gen.quietHoursDesc': 'Suppress task success / failure and executor offline notifications during this period',
+    'cfg.gen.quietStart': 'Start',
+    'cfg.gen.quietEnd': 'End',
     'cfg.gen.groupLog': 'Logging',
     'cfg.gen.nameLabel': 'Executor name',
     'cfg.gen.nameHint': 'Unique name shown in the admin platform; use the machine name or a role-based name',

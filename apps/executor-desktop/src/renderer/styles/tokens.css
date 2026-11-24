@@ -234,3 +234,81 @@
   --color-success: var(--accent);
   --color-danger: var(--red);
 }
+
+/* ── 暗色分面（⑤）──────────────────────────────────────────────────────
+   由 <html data-theme="dark"> 选中（theme-init 首帧设定，main.tsx 订阅系统主题）。
+   别名层（--bg2/--bg3/--text-1/--surface-hover 等）引用上面的基础令牌，随本块
+   自动翻转；此处只覆盖基础色与语义色。深底语义色整体提亮一档以保住 AA 对比。 */
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --color-primary: #4ade80;
+  --color-on-primary: #052e16;
+  --color-secondary: #1e293b;
+  --color-accent: #4ade80;
+  --color-background: #0f172a;
+  --color-foreground: #f1f5f9;
+  --color-muted: #334155;
+  --color-border: #334155;
+  --color-destructive: #f87171;
+  --color-ring: #4ade80;
+
+  --bg: #0f172a;
+  --surface-0: #1e293b;
+  --surface-1: #1e293b;
+  --surface-2: #273449;
+  --surface-3: #334155;
+  --input-bg: #1e293b;
+  --input-bg-hover: #273449;
+  --bg-glass: rgb(15 23 42 / 0.85);
+
+  --border: #334155;
+  --border-strong: #475569;
+  --border-light: #3f4c63;
+  --border-focus: rgb(74 222 128 / 0.45);
+
+  --text: #f1f5f9;
+  --text2: #cbd5e1;
+  --text3: #94a3b8;
+  --text4: #64748b;
+
+  --log-bg: #16202e;
+
+  --accent: #4ade80;
+  --accent-hover: #22c55e;
+  --accent-muted: rgb(74 222 128 / 0.14);
+  --accent-border: rgb(74 222 128 / 0.35);
+
+  --green: #4ade80;
+  --green-bg: rgb(74 222 128 / 0.14);
+  --green-border: rgb(74 222 128 / 0.35);
+
+  --red: #f87171;
+  --red-hover: #ef4444;
+  --red-bg: rgb(248 113 113 / 0.14);
+  --red-border: rgb(248 113 113 / 0.32);
+  --red-text: #fca5a5;
+
+  --yellow: #fbbf24;
+  --yellow-hover: #f59e0b;
+  --yellow-bg: rgb(251 191 36 / 0.14);
+  --yellow-border: rgb(251 191 36 / 0.32);
+  --yellow-text: #fcd34d;
+
+  --blue: #60a5fa;
+  --blue-bg: rgb(96 165 250 / 0.14);
+  --blue-border: rgb(96 165 250 / 0.32);
+  --blue-text: #93c5fd;
+
+  --purple: #c084fc;
+  --purple-bg: rgb(192 132 252 / 0.14);
+  --purple-border: rgb(192 132 252 / 0.32);
+  --purple-text: #d8b4fe;
+
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4), 0 1px 3px rgb(0 0 0 / 0.5);
+  --shadow-md: 0 2px 6px -1px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 12px 24px -6px rgb(0 0 0 / 0.55), 0 4px 10px -4px rgb(0 0 0 / 0.4);
+  --shadow-xl: 0 24px 48px -12px rgb(0 0 0 / 0.6), 0 8px 16px -8px rgb(0 0 0 / 0.45);
+  --shadow-window: 0 24px 64px rgb(0 0 0 / 0.6), 0 8px 24px rgb(0 0 0 / 0.45);
+}

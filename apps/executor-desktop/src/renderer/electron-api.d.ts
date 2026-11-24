@@ -91,6 +91,10 @@ interface ElectronApiBridge {
   toggleMaximizeWindow: () => Promise<any>;
   onWindowMaximizeChange: (cb: (maximized: boolean) => void) => () => void;
   closeWindow: () => Promise<any>;
+  // ⑤ 暗色分面：上报已解析主题，主进程镜像到窗口底色。
+  applyTheme: (theme: 'light' | 'dark') => Promise<{ ok: boolean; theme: 'light' | 'dark' }>;
+  // ⑤ 主题后端镜像：三态模式落盘 config.theme。
+  saveTheme: (mode: 'light' | 'dark' | 'system') => Promise<{ ok: boolean; theme: 'light' | 'dark' | 'system' }>;
 
   // ── 历史 ──
   getHistory: () => Promise<any>;

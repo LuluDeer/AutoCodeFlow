@@ -25,6 +25,11 @@ export interface AppConfig {
   autoStartExecutor: boolean;
   /** DSK-04：系统通知开关（任务终态/执行器离线时弹系统通知）。 */
   notifyEnabled: boolean;
+  /** 静默时段总开关（默认关；开启后静默时段内不弹任务/离线通知）。 */
+  notifyQuietHoursEnabled?: boolean;
+  /** 静默时段起止时刻（HH:MM 24h，跨夜语义见 notifier-rules.inQuietHours）。 */
+  notifyQuietStart?: string;
+  notifyQuietEnd?: string;
   logLevel: 'info' | 'debug' | 'error';
 
   /**
@@ -49,6 +54,8 @@ export interface AppConfig {
    * 语言显示，不需要迁移。
    */
   uiLanguage?: UiLanguage;
+  /** ⑤ 外观主题三态（light/dark/system，默认 system）。后端镜像键；UI 真相源是渲染层 localStorage `acf-theme-mode`。 */
+  theme?: 'light' | 'dark' | 'system';
 
   /**
    * python_task_multiversion：uv 多版本解释器支持（全部可选）。
@@ -141,6 +148,10 @@ const defaults = {
   autoStartExecutor: true,
   // DSK-04：系统通知默认开启（用户可在设置页关闭）
   notifyEnabled: true,
+  // 静默时段默认关闭；起止 22:00 → 次日 08:00（跨夜），仅在开关开启后生效。
+  notifyQuietHoursEnabled: false,
+  notifyQuietStart: '22:00',
+  notifyQuietEnd: '08:00',
   logLevel: 'info',
   // i18n-DESK-01：界面语言默认 **'auto'（跟随系统语言）**，系统语言无法判定或
   // 不属于中英时落到 UI_LANGUAGE_DEFAULT（英文）。产品要求原文：「默认是英文，
@@ -149,6 +160,8 @@ const defaults = {
   // 冲突；'auto' + 英文兜底同时满足两个诉求。
   // 旧配置文件中**已经显式存过** uiLanguage 的用户不受影响（显式值优先）。
   uiLanguage: 'auto',
+  // ⑤ 外观主题默认跟随系统；旧配置缺键由 defaults 补齐，升级后行为不变。
+  theme: 'system',
   // python_task_multiversion：可选，缺省即"用内置默认值"。
   // 显式给 default '' 而不是 required——旧配置文件缺这些键时 electron-store
   // 会补默认值，保证升级后读配置不炸。

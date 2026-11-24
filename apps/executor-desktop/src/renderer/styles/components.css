@@ -33,7 +33,7 @@
   transition: background var(--transition-fast), border-color var(--transition-fast),
     box-shadow var(--transition-fast), transform var(--transition-fast);
 }
-.btn:hover { background: #f8f9fb; border-color: var(--border-light); }
+.btn:hover { background: var(--surface-2); border-color: var(--border-light); }
 .btn:active { transform: translateY(0.5px); background: var(--surface-2); }
 /* disabled 一律灰底灰字诚实降级，不用 opacity——透明度会把实底主钮沤成灰绿 */
 .btn:disabled {
@@ -50,7 +50,7 @@
    明亮风不叠渐变与彩色投影，靠实底与字重承载分量。 */
 .btn-primary,
 .btn-success {
-  background: #15803d;
+  background: var(--accent);
   border-color: transparent;
   color: #ffffff;
   font-weight: 600;
@@ -58,11 +58,11 @@
 }
 .btn-primary:hover,
 .btn-success:hover {
-  background: #166531;
+  background: var(--accent-hover);
   border-color: transparent;
 }
 .btn-primary:active,
-.btn-success:active { background: #14532d; }
+.btn-success:active { background: var(--accent-hover); }
 .btn-primary:disabled,
 .btn-success:disabled {
   background: var(--surface-2);
@@ -72,13 +72,13 @@
 }
 
 .btn-danger {
-  background: #dc2626;
+  background: var(--red);
   border-color: transparent;
   color: #fff;
   font-weight: 600;
   box-shadow: var(--shadow-sm);
 }
-.btn-danger:hover { background: #b91c1c; border-color: transparent; }
+.btn-danger:hover { background: var(--red-hover); border-color: transparent; }
 .btn-danger:disabled {
   background: var(--surface-2);
   color: var(--text3);
@@ -448,7 +448,7 @@ select.input {
 /* ── 日志查看器（通用）──────────────────────────────────────────────── */
 .log-viewer {
   background: var(--log-bg);
-  color: #2b3444;
+  color: var(--text2);
   font-family: var(--font-mono);
   font-size: 12.5px;
   line-height: 1.75;
@@ -527,7 +527,7 @@ select.input {
   flex: 0 0 56px;
   /* --text3 在 hover 行底色（rgba(15,23,42,.045) 叠白 = #edeef1）上只有
      4.45:1；行号作次要信息再压暗半档到 5.0:1，观感几乎不变。 */
-  color: #5b6679;
+  color: var(--text3);
   text-align: right;
   user-select: none;
   font-variant-numeric: tabular-nums;
@@ -617,8 +617,8 @@ select.input {
 
 /* 搜索命中标记 */
 .log-mark {
-  background: #fde68a;
-  color: #78350f;
+  background: var(--yellow-bg);
+  color: var(--yellow-text);
   border-radius: 2px;
   padding: 0 1px;
 }
@@ -865,3 +865,9 @@ select.input {
  *   .ll-error 由 FormattedLogText 的 `ll-${level.toLowerCase()}` 拼接生成，
  *   级别串来自日志行解析（INFO/WARN/ERROR/DEBUG）。
  * ---------------------------------------------------------------------- */
+
+/* ⑤ 暗色分面：实底主钮在深底亮品牌色上改用深色字（基础块白字字面量由样式守卫钉死，暗色覆盖独立成规则）。 */
+[data-theme='dark'] .btn-primary,
+[data-theme='dark'] .btn-success,
+[data-theme='dark'] .btn-danger { color: var(--color-on-primary); }
+

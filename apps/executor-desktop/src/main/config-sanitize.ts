@@ -41,6 +41,8 @@
 // P2-2：agentAllowedDomains 的条目字形闸。domain-allowlist 是零依赖纯模块，
 // 保住本文件「裸 node 可测（不拉 electron / conf）」的纪律。
 import { filterAllowlistDomains } from './agent/domain-allowlist';
+// 静默时段 HH:MM 解析闸与 notifier-rules 同源（同一格式判定，避免两处漂移）。
+import { parseHhmmMinutes } from './notifier-rules';
 
 /** 数值字段的区间与默认值（与 config-store.ts 的 defaults 对齐）。 */
 export interface NumberFieldRule {
@@ -83,6 +85,8 @@ export const BOOLEAN_FIELDS: readonly string[] = [
   'autoStart',
   'autoStartExecutor',
   'notifyEnabled',
+  // 静默时段总开关（默认关，见 config-store defaults）。
+  'notifyQuietHoursEnabled',
   // ARCH-33：pull 回连模式开关。非布尔丢弃而非强转——`'false'` 是真值串，
   // 强转会把它变成 true，等于用户关掉 pull 却反而打开了。
   'pullMode',
@@ -145,12 +149,32 @@ export const ENUM_FIELDS: readonly EnumFieldRule[] = [
   // 默认值**：非法值（手改 config.json 写成 'fr' / '' / 数字）必须归一化成
   // 'en'，而不是 ''——'' 不是合法语言，判定层还得再猜一次；且产品要求默认英文。
   { key: 'uiLanguage', values: ['zh', 'en', 'auto'], fallback: 'en' },
+  // ⑤ 外观主题三态（light/dark/system，默认 system 跟随系统）。非法值归一
+  // 为 'system'——'' 不是合法主题，判定层还得再猜一次；与 uiLanguage 同款
+  // 封闭枚举纪律。渲染层 localStorage 是 UI 真相源，此键是主进程重启后
+  // 首窗底色的后端镜像（主进程读不到 renderer localStorage）。
+  { key: 'theme', values: ['light', 'dark', 'system'], fallback: 'system' },
 ];
 
 /** P7a：字符串数组成员（白名单清单）——非数组清空、非字符串条目剔除、条数封顶。 */
 export const STRING_LIST_FIELDS: readonly { key: string; max: number }[] = [
   { key: 'agentAllowedApps', max: 32 },
   { key: 'agentAllowedDomains', max: 64 },
+];
+
+/**
+ * 静默时段起止时刻（HH:MM 24h）。非法 / 非字符串归一化为字段默认时刻——
+ * 与枚举字段同款「写成确定合法值」语义，不把坏值留在盘上让下游再猜。
+ */
+export interface TimeFieldRule {
+  key: string;
+  /** 非法值回落的默认 HH:MM。 */
+  fallback: string;
+}
+
+export const TIME_FIELDS: readonly TimeFieldRule[] = [
+  { key: 'notifyQuietStart', fallback: '22:00' },
+  { key: 'notifyQuietEnd', fallback: '08:00' },
 ];
 
 /**
@@ -166,6 +190,7 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set<string>([
   ...BOOLEAN_FIELDS,
   ...ENUM_FIELDS.map((r) => r.key),
   ...STRING_LIST_FIELDS.map((r) => r.key),
+  ...TIME_FIELDS.map((r) => r.key),
   // 密钥（走 save() 的独立加密/掩码分支）与工作目录（sanitize 有专门的
   // "空白 = 不修改"规则），都不属于上面的形状字段表：
   'executorToken',
@@ -275,6 +300,13 @@ export function sanitizeConfigInput(
     out[rule.key] = rule.key === 'agentAllowedDomains'
       ? filterAllowlistDomains(cleaned).valid
       : cleaned;
+  }
+
+  // 静默时段时刻：HH:MM 闸，非法值回落字段默认时刻（不丢键，语义确定）。
+  for (const rule of TIME_FIELDS) {
+    if (!(rule.key in out)) continue;
+    const raw = out[rule.key];
+    out[rule.key] = parseHhmmMinutes(raw) !== null ? String(raw).trim() : rule.fallback;
   }
 
   // 密钥字段：非字符串时**丢弃**（ConfigStore.save 里 executorToken 走独立的

@@ -2231,7 +2231,7 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
 // （numDraft / dirty / savePlan / searchIndex），逐条钉边界与真值表格子。
 // R7-B/R7-C 五个 config selftest（纯逻辑 / IO 结果归一 / IO 取数面 / 配置源 / 写路径）
 // 合并为单行串行加载：维持 nonCommentLines 棘轮 1608，逐条说明见 git 历史。
-for (const p of ['./pages/config/pure-logic.selftest.mjs', './pages/config/io-result.selftest.mjs', './pages/config/io-layer.selftest.mjs', './pages/config/config-source.selftest.mjs', './pages/config/writer-layer.selftest.mjs']) await import(p);
+for (const p of ['./pages/config/pure-logic.selftest.mjs', './pages/config/io-result.selftest.mjs', './pages/config/io-layer.selftest.mjs', './pages/config/config-source.selftest.mjs', './pages/config/writer-layer.selftest.mjs', './theme/theme-mode.selftest.mjs']) await import(p);
 // R-UX：apps/config/history/status 四组纯逻辑 selftest 接线（真执行，非文本存在性守卫）。
 await import('./pages/apps/apps-helpers.selftest.mjs');
 await import('./pages/config/agent-matrix.selftest.mjs');

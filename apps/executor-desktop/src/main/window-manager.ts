@@ -1,10 +1,19 @@
-import { BrowserWindow, app, screen, session } from 'electron';
+import { BrowserWindow, app, screen, session, nativeTheme } from 'electron';
 import * as path from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import log from './logger';
 // R106：导航白名单判定（纯函数，selftest 直接驱动）。
 import { isAllowedNavigation } from './navigation-policy';
 import { pathToFileURL } from 'url';
+// 窗口位置/尺寸/显示器记忆的纯决策层（解析、钳位、可见性判定，selftest 驱动）。
+import {
+  centerInArea,
+  intersectsAnyDisplay,
+  parseSavedState,
+  resolveRestoreBounds,
+  type DisplayLike,
+  type SavedWindowState,
+} from './window-bounds';
 
 const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 
@@ -35,35 +44,51 @@ export function resolveRendererIndex(): string {
   return resolveRendererV1Index();
 }
 
-type SavedWindowSize = { width: number; height: number; maximized: boolean };
+/** 暗色 / 亮色窗口底色（与 tokens.css 的 --bg 对齐；frameless 窗口提前 show 无白闪）。 */
+const WINDOW_BG_LIGHT = '#f5f6f8';
+const WINDOW_BG_DARK = '#1c1f26';
 
 function statusWindowStatePath(): string {
   return path.join(app.getPath('userData'), 'status-window.json');
 }
 
-function readStatusWindowSize(): SavedWindowSize | null {
+/** 读取落盘的窗口状态（兼容旧形状；损坏 / 缺尺寸返回 null）。 */
+function readSavedState(): SavedWindowState | null {
   try {
-    const value: unknown = JSON.parse(readFileSync(statusWindowStatePath(), 'utf8'));
-    if (!value || typeof value !== 'object') return null;
-    const state = value as Partial<SavedWindowSize>;
-    if (!Number.isFinite(state.width) || !Number.isFinite(state.height)) return null;
-    return { width: state.width!, height: state.height!, maximized: state.maximized === true };
+    return parseSavedState(JSON.parse(readFileSync(statusWindowStatePath(), 'utf8')));
   } catch {
     return null;
   }
 }
 
-function saveStatusWindowSize(win: BrowserWindow): void {
+/** 把当前窗口的位置 / 尺寸 / 所在显示器落盘（最大化时只记标志，不记铺满 bounds）。 */
+function persistWindowState(win: BrowserWindow): void {
   try {
-    const { width, height } = win.getNormalBounds();
+    const maximized = win.isMaximized();
+    const bounds = win.getNormalBounds();
+    let displayId: string | null = null;
+    try {
+      const center = { x: bounds.x + Math.round(bounds.width / 2), y: bounds.y + Math.round(bounds.height / 2) };
+      displayId = String(screen.getDisplayNearestPoint(center).id);
+    } catch {
+      displayId = null;
+    }
     writeFileSync(statusWindowStatePath(), JSON.stringify({
-      width,
-      height,
-      maximized: win.isMaximized(),
-    } satisfies SavedWindowSize));
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+      displayId,
+      maximized,
+    }));
   } catch (error) {
-    log.warn('Could not save status window size:', error);
+    log.warn('Could not save status window state:', error);
   }
+}
+
+/** 当前全部显示器的纯形状列表（window-bounds 纯函数消费，便于测例注入）。 */
+function currentDisplays(): DisplayLike[] {
+  return screen.getAllDisplays().map((d) => ({ id: String(d.id), workArea: d.workArea }));
 }
 
 /**
@@ -274,6 +299,22 @@ export class WindowManager {
   // 永远不会创建（e2e n10 用例1 / 冒烟「按工作区放大」实证）。closeWizard
   // 置位本标志，focusOrOpenStatus 对「正在关闭的向导」不再聚焦让路。
   private wizardClosing = false;
+  /** 渲染层上报的已解析主题（亮色 / 暗色），决定新窗与既有窗的底色。 */
+  private resolvedTheme: 'light' | 'dark' = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+  /** move/resize 落盘防抖定时器（避免拖动过程中高频写盘）。 */
+  private persistTimer: NodeJS.Timeout | null = null;
+
+  /**
+   * 镜像渲染层解析出的主题到窗口底色（⑤ 暗色分面）。新窗构造时读同一字段；
+   * 既有窗立即 setBackgroundColor，避免切换主题后边框 / 首绘残留亮色底。
+   */
+  setResolvedTheme(theme: 'light' | 'dark'): void {
+    this.resolvedTheme = theme;
+    const bg = theme === 'dark' ? WINDOW_BG_DARK : WINDOW_BG_LIGHT;
+    for (const win of [this.statusWindow, this.wizardWindow]) {
+      if (win && !win.isDestroyed()) win.setBackgroundColor(bg);
+    }
+  }
 
   openWizard(): void {
     // D-02：窗口创建前确保 session 权限闸门已装（幂等；见 installSessionPermissionPolicy）。
@@ -312,8 +353,8 @@ export class WindowManager {
       // WIN-DISPLAY (1.4.3 Hotfix / N47): transparent+frameless 窗口在部分
       // Windows 机器上整窗复合失败（窗口 show() 了但屏幕上看不到——首个
       // 发布的 Windows 安装包被真用户报告的致命问题）。改实心背景色渲染，
-      // backgroundColor 与 app.css 的 --bg (#f5f6f8，明亮风基线) 对齐，UI 视觉不变。
-      backgroundColor: '#f5f6f8',
+      // 底色跟随已解析主题（⑤），与 tokens.css 的 --bg 对齐。
+      backgroundColor: this.resolvedTheme === 'dark' ? WINDOW_BG_DARK : WINDOW_BG_LIGHT,
       webPreferences: sharedWebPreferences(),
     });
 
@@ -361,19 +402,32 @@ export class WindowManager {
     // D-02：同上——两条窗口创建路径都必须先装权限闸门，不能只挂一处。
     installSessionPermissionPolicy();
     const workArea = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
-    const saved = readStatusWindowSize();
+    const displays = currentDisplays();
+    const saved = readSavedState();
+    // ② 窗口状态记忆：优先恢复上次位置 / 尺寸 / 所在显示器；保存时所在屏已
+    // 断开或坐标跑出可见区时，纯决策层回落主屏工作区居中（window-bounds）。
+    const restored = saved ? resolveRestoreBounds(saved, displays) : null;
     // 首次打开以工作区 84% × 88% 为基准；高密度应用/任务/日志有足够宽度。
-    // 用户手动调整后记住常规尺寸；换显示器时再钳进当前工作区。
     const minWidth = Math.min(760, workArea.width);
     const minHeight = Math.min(560, workArea.height);
     const fit = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.round(value)));
-    const winW = fit(saved?.width ?? Math.min(workArea.width * 0.84, 2200), minWidth, workArea.width);
-    const winH = fit(saved?.height ?? Math.min(workArea.height * 0.88, 1200), minHeight, workArea.height);
+    const winW = fit(
+      restored?.width ?? Math.min(workArea.width * 0.84, 2200),
+      minWidth,
+      workArea.width,
+    );
+    const winH = fit(
+      restored?.height ?? Math.min(workArea.height * 0.88, 1200),
+      minHeight,
+      workArea.height,
+    );
+    const fallback = centerInArea(workArea, winW, winH);
+    const bounds = restored ?? fallback;
     this.statusWindow = new BrowserWindow({
-      width: winW,
-      height: winH,
-      x: Math.round(workArea.x + (workArea.width - winW) / 2),
-      y: Math.round(workArea.y + (workArea.height - winH) / 2),
+      width: bounds.width,
+      height: bounds.height,
+      x: bounds.x,
+      y: bounds.y,
       minWidth,
       minHeight,
       show: false,
@@ -381,8 +435,8 @@ export class WindowManager {
       resizable: true,
       // WIN-DISPLAY (1.4.3 Hotfix / N47): 同 wizard——去掉 transparent，
       // 改实心 backgroundColor，避免 Windows 部分机器透明窗口整窗不可见。
-      // #f5f6f8 与 app.css 的 --bg（明亮风基线）对齐。
-      backgroundColor: '#f5f6f8',
+      // 底色跟随已解析主题（⑤），与 tokens.css 的 --bg 对齐。
+      backgroundColor: this.resolvedTheme === 'dark' ? WINDOW_BG_DARK : WINDOW_BG_LIGHT,
       // BUG-12: single hardened webPreferences source for every window.
       // sandbox defaults on (Electron ≥20), which also blocks the preload
       // from pulling full Node modules into the renderer bridge.
@@ -393,7 +447,28 @@ export class WindowManager {
     showWhenReady(win, saved?.maximized === true);
     win.on('maximize', () => win.webContents.send('window:maximize-change', true));
     win.on('unmaximize', () => win.webContents.send('window:maximize-change', false));
-    win.on('close', () => { if (!win.isDestroyed()) saveStatusWindowSize(win); });
+    win.on('close', () => { if (!win.isDestroyed()) persistWindowState(win); });
+    // 拖动 / 缩放防抖落盘（400ms）；关闭时再补一次全量持久化。
+    const schedulePersist = () => {
+      if (this.persistTimer) clearTimeout(this.persistTimer);
+      this.persistTimer = setTimeout(() => {
+        this.persistTimer = null;
+        if (!win.isDestroyed()) persistWindowState(win);
+      }, 400);
+      this.persistTimer.unref?.();
+    };
+    win.on('move', schedulePersist);
+    win.on('resize', schedulePersist);
+    // ④ 多显示器稳健性：拔屏 / 改缩放分辨率后，若窗口整体落到黑屏区域，
+    // 重新钳回主屏工作区可见范围（纯可见性判定在 window-bounds）。
+    screen.on('display-metrics-changed', () => {
+      if (win.isDestroyed()) return;
+      const rect = win.getNormalBounds();
+      if (!intersectsAnyDisplay(rect, currentDisplays())) {
+        const primary = screen.getPrimaryDisplay().workArea;
+        win.setBounds(centerInArea(primary, Math.min(rect.width, primary.width), Math.min(rect.height, primary.height)));
+      }
+    });
     // SEC-DSK-01：导航/弹窗/webview 守卫（每个窗口都必须挂）
     hardenWindow(this.statusWindow);
     loadPage(this.statusWindow, 'status');

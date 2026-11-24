@@ -508,3 +508,8 @@ html[lang='en'] .cfg-nav { width: 208px; }
   .cfg-scroll-inner { max-width: 1800px; }
   .cfg-footer-inner { max-width: calc(1800px - 64px); }
 }
+
+/* ③ 静默时段：起止双时间选择器并排 */
+.cfg-time-row { display: flex; align-items: center; gap: var(--space-2); }
+.cfg-time-row .input { min-width: 0; }
+

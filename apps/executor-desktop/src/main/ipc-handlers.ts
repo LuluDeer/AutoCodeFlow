@@ -59,6 +59,7 @@ import { resolveBundledUvPath, resolveInterpretersDir } from './executor-process
 import { classifyUvResolution } from './uv-paths';
 import { listLocalIPv4s } from './network-util';
 import { sanitizeConfigInput } from './config-sanitize';
+import { registerThemeHandlers } from './theme-bridge';
 // P3-5：config:save 的 workDir 落盘前校验（纯决策层，注入 fs 可自检）。
 import { validateWorkDirForSave } from './config-recovery';
 // 拓展包「配置导入/导出 + 执行日志导出」：纯函数层（文件名/导入解析/掩码
@@ -592,6 +593,9 @@ async function finalizeConfigSave(
 const uvPathProbe = createUvPathProbe();
 
 export function registerIpcHandlers(): void {
+  // ⑤ 主题双通道（apply 运行中镜像 / save 后端落盘）外提至 theme-bridge。
+  registerThemeHandlers(ipcMain, { setResolvedTheme: (t) => windowManager.setResolvedTheme(t), saveThemeConfig: (t) => configStore.save({ theme: t }) });
+
   // ── 剪贴板 ────────────────────────────────────────────
   // 复制统一走主进程 Electron clipboard：sandboxed renderer 的
   // navigator.clipboard 在非安全上下文 / 权限受限时可能为 undefined 或
@@ -1557,6 +1561,7 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.fromWebContents(event.sender);
     win?.close();
   });
+
 
   // 与 executor-process 构造子进程 env 时的对外地址兜底同源（network-util），
   // 避免一处改了网卡筛选规则、另一处漂移。

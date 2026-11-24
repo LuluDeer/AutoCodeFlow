@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, dialog, powerMonitor } from 'electron';
+import { app, BrowserWindow, Menu, dialog, powerMonitor, nativeTheme } from 'electron';
 import { ConfigStore } from './config-store';
 import { ExecutorProcess } from './executor-process';
 import { AgentWorkerHandle } from './agent-worker-process';
@@ -17,6 +17,8 @@ import { setAutoLaunchEnabled } from './autolaunch';
 import { initUpdater, setUpdateAvailableNotifier, checkForUpdatesUserInitiated } from './updater';
 import { Notifier } from './notifier';
 import { HistoryWatcher, metaDirFor } from './history-watcher';
+import { scanRunningCount } from './running-count';
+import { resolveStoredTheme } from './theme-bridge';
 import { createCrashGuard } from './crash-guard';
 import { resolveTrayLocale } from './tray-texts';
 import { UI_LANGUAGE_DEFAULT } from './ui-language';
@@ -91,6 +93,11 @@ export const executorProcess = new ExecutorProcess();
 export const heartbeat = new HeartbeatMonitor();
 export const trayManager = new TrayManager();
 export const windowManager = new WindowManager();
+// ⑤ 启动首窗底色：读后端镜像 config.theme 解析；system 跟随 nativeTheme 偏好兜底，
+// 避免显式浅/暗用户重启后首窗边框/首绘闪错色。运行中切换走 theme:apply IPC 即时更新。
+windowManager.setResolvedTheme(
+  resolveStoredTheme(configStore.get('theme'), nativeTheme.shouldUseDarkColors),
+);
 // DSK-04：系统通知（任务终态 / 执行器离线）
 export const notifier = new Notifier();
 
@@ -106,7 +113,27 @@ function broadcastHistoryChanged(): void {
     }
   }
 }
-export const historyWatcher = new HistoryWatcher({ onChange: broadcastHistoryChanged });
+
+/**
+ * ① 托盘实时活动计数：复用既有 meta 目录通道（与 history:get / notifier 同源），
+ * 扫描当前 running 记录数注入托盘。数据源是本地落盘 meta，不轮询后端、不新增
+ * IPC。任何扫描异常只落日志，不影响托盘 / 执行器主链。
+ */
+function refreshRunningCount(): void {
+  try {
+    const workDir = configStore.get('workDir');
+    trayManager.setRunningCount(scanRunningCount(metaDirFor(workDir)));
+  } catch (err) {
+    log.warn(`refresh running count failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export const historyWatcher = new HistoryWatcher({
+  onChange: () => {
+    broadcastHistoryChanged();
+    refreshRunningCount();
+  },
+});
 
 app.on('second-instance', () => {
   // P3-3：未配置态与托盘「打开配置」（B-14）同语义——用户再次启动应用时
@@ -214,12 +241,14 @@ app.whenReady().then(async () => {
   executorProcess.setStatusCallback((status) => {
     trayManager.setStatus(status);
     notifier.onExecutorStatus(status);
+    refreshRunningCount();
   });
 
   // 心跳结果 → 同步托盘图标 + 系统通知
   heartbeat.setCallback((status) => {
     trayManager.setStatus(status);
     notifier.onExecutorStatus(status);
+    refreshRunningCount();
   });
 
   // 初始化托盘
@@ -239,9 +268,15 @@ app.whenReady().then(async () => {
   setUpdateAvailableNotifier((version, previouslyDownloaded) =>
     notifier.notifyUpdate(version, previouslyDownloaded));
   notifier.setEnabled(configStore.get('notifyEnabled'));
+  notifier.setQuietHours({
+    enabled: configStore.get('notifyQuietHoursEnabled') === true,
+    start: String(configStore.get('notifyQuietStart') ?? '22:00'),
+    end: String(configStore.get('notifyQuietEnd') ?? '08:00'),
+  });
   const workDir = configStore.get('workDir');
   notifier.startMetaPolling(workDir ? path.join(workDir, 'meta') : null);
   historyWatcher.start(metaDirFor(workDir));
+  refreshRunningCount();
 
   // 注册所有 IPC handlers
   registerIpcHandlers();
@@ -336,9 +371,15 @@ function setTrayAgentStatusPolling(active: boolean): void {
 // 之外的模块知识。
 export function syncNotifierWithConfig(): void {
   notifier.setEnabled(configStore.get('notifyEnabled'));
+  notifier.setQuietHours({
+    enabled: configStore.get('notifyQuietHoursEnabled') === true,
+    start: String(configStore.get('notifyQuietStart') ?? '22:00'),
+    end: String(configStore.get('notifyQuietEnd') ?? '08:00'),
+  });
   const workDir = configStore.get('workDir');
   notifier.startMetaPolling(workDir ? path.join(workDir, 'meta') : null);
   historyWatcher.start(metaDirFor(workDir));
+  refreshRunningCount();
 }
 
 // ── P7b：Agent 托管接线（agent-collab 轮询循环）────────────────────────

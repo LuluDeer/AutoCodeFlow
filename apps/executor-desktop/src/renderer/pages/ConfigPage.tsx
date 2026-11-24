@@ -17,6 +17,14 @@ import {
 // 与托盘 tray-texts 同范式）；语言判定见 i18n.ts 的 resolveRendererLocale
 //（i18n-DESK-01：用户设置优先，'auto' 才按 navigator.language 判定）。
 import { createCfgTexts, resolveRendererLocale, type RendererLocale } from '../i18n';
+// ⑤ 暗色分面：主题模式纯决策层（localStorage 持久化 + 已解析主题镜像主进程）。
+import {
+  applyThemeAttribute,
+  readStoredMode,
+  resolveTheme,
+  writeStoredMode,
+  type ThemeMode,
+} from '../theme/theme-mode';
 // i18n-DESK-01：「界面语言」下拉的合法取值与默认值——与主进程
 // config-sanitize.ts 的 ENUM_FIELDS / config-store defaults 同源同一份常量，
 // 避免三处各写一遍 zh/en/auto 清单而漂移。
@@ -78,6 +86,15 @@ type PythonEnvStatus = {
   pypiConfigured: boolean;
 };
 
+/** 读取 localStorage（隐私模式 / 禁用存储时返回 null，主题回落 system 不报错）。 */
+function safeThemeStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 function Toggle({ id, label, checked, onChange }: {
   id: string;
   label: string;
@@ -136,7 +153,7 @@ const SECTION_KEYS: Record<SectionId, string[]> = {
   network: ['executorHost', 'executorPort', 'executorAddressPublic', 'pullMode'],
   python: ['uvPath', 'uvPythonInstallMirror', 'uvPythonInstallDir', 'pypiRegistryUrl', 'interpreterDownloadTimeoutMs'],
   agent: ['agentEnabled', 'agentPermissionProfile', 'agentCodeExecution', 'agentHostAccess', 'agentTaskExecution', 'agentAllowedApps', 'agentAllowedDomains'],
-  about: ['logLevel', 'autoStartExecutor', 'notifyEnabled', 'uiLanguage'],
+  about: ['logLevel', 'autoStartExecutor', 'notifyEnabled', 'notifyQuietHoursEnabled', 'notifyQuietStart', 'notifyQuietEnd', 'uiLanguage'],
 };
 
 // UI V5：左侧导航按「基础 / 运行时 / 系统」分组，组内保持原有 5 个分区顺序。
@@ -209,6 +226,9 @@ const FIELD_LABEL_KEYS: Array<[string, string]> = [
   ['uiLanguage', 'cfg.gen.uiLanguageLabel'],
   ['autoStartExecutor', 'cfg.gen.autoRunTitle'],
   ['notifyEnabled', 'cfg.gen.notifyTitle'],
+  ['notifyQuietHoursEnabled', 'cfg.gen.quietHoursTitle'],
+  ['notifyQuietStart', 'cfg.gen.quietStart'],
+  ['notifyQuietEnd', 'cfg.gen.quietEnd'],
 ];
 
 /** 改动清单取值格式化：密钥一律掩码（改动清单不能变成密钥泄露面），数组
@@ -276,6 +296,8 @@ export default function ConfigPage() {
   // DSK-04：开机自启走独立 IPC（autolaunch:get/set，即时生效，不经保存按钮），
   // 与托盘菜单的「开机自启」复选框同源（setAutoLaunch 后主进程会 rebuildMenu）。
   const [autoLaunch, setAutoLaunch] = useState(false);
+  // ⑤ 主题模式：渲染层 localStorage 偏好（不经后端 config 保存链路），切换即生效。
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => readStoredMode(safeThemeStorage()));
   // DSK-05 / 拓展包 / 5.2：检查更新、配置导出导入、诊断报告导出的 state 与
   // 写路径已归 pages/config/use-config-io.ts（R7-B 第一刀，见下方 hook 调用点）。
   // autoLaunch 的真值留在页面：它由 loadConfig() 首屏播种（读路径）。
@@ -425,6 +447,17 @@ export default function ConfigPage() {
 
   function setFieldError(key: string, message: string): void {
     setFieldErrors((prev) => (prev[key] === message ? prev : { ...prev, [key]: message }));
+  }
+
+  // ⑤ 主题切换：持久化模式 → 解析已解析主题 → 写 <html> 分面 → 镜像主进程窗口底色。
+  function applyThemeMode(mode: ThemeMode): void {
+    writeStoredMode(mode, safeThemeStorage());
+    const resolved = resolveTheme(mode, window.matchMedia('(prefers-color-scheme: dark)').matches);
+    applyThemeAttribute(document.documentElement, resolved);
+    window.electronAPI?.applyTheme?.(resolved);
+    // 后端镜像落盘 config.theme（不经保存按钮 / 执行器重启决策），重启后首窗底色不闪错。
+    window.electronAPI?.saveTheme?.(mode);
+    setThemeMode(mode);
   }
 
   function clearFieldError(key: string): void {
@@ -1383,6 +1416,16 @@ export default function ConfigPage() {
                       <option value="auto">{t('cfg.gen.uiLanguageAuto')}</option>
                     </select>
                   </SettingRow>
+                  {/* ⑤ 外观主题：三态，默认跟随系统；localStorage 持久化，切换即生效（不经保存链路）。 */}
+                  <SettingRow label={t('cfg.gen.themeLabel')} field="themeMode">
+                    <select aria-label={t('cfg.gen.themeLabel')} className="input"
+                      value={themeMode}
+                      onChange={(e) => applyThemeMode(e.target.value as ThemeMode)}>
+                      <option value="light">{t('cfg.gen.themeLight')}</option>
+                      <option value="dark">{t('cfg.gen.themeDark')}</option>
+                      <option value="system">{t('cfg.gen.themeSystem')}</option>
+                    </select>
+                  </SettingRow>
                 </div>
 
                 <div className="cfgx-group">
@@ -1439,6 +1482,37 @@ export default function ConfigPage() {
                   >
                     <Toggle id="notifyEnabled" label={t('cfg.gen.notifyTitle')} checked={form.notifyEnabled !== false}
                       onChange={(v) => set('notifyEnabled', v)} />
+                  </SettingRow>
+
+                  {/* ③ 静默时段：开关默认关；起止双时间选择器，跨夜区间由规则层判定。 */}
+                  <SettingRow
+                    label={t('cfg.gen.quietHoursTitle')}
+                    field="notifyQuietHoursEnabled"
+                    hint={t('cfg.gen.quietHoursDesc')}
+                  >
+                    <Toggle id="notifyQuietHoursEnabled" label={t('cfg.gen.quietHoursTitle')}
+                      checked={form.notifyQuietHoursEnabled === true}
+                      onChange={(v) => set('notifyQuietHoursEnabled', v)} />
+                  </SettingRow>
+                  <SettingRow label={t('cfg.gen.quietHoursTitle')} field="notifyQuietStart">
+                    <div className="cfg-time-row">
+                      <input
+                        type="time"
+                        aria-label={t('cfg.gen.quietStart')}
+                        className="input"
+                        disabled={form.notifyQuietHoursEnabled !== true}
+                        value={String(form.notifyQuietStart ?? '22:00')}
+                        onChange={(e) => set('notifyQuietStart', e.target.value)}
+                      />
+                      <input
+                        type="time"
+                        aria-label={t('cfg.gen.quietEnd')}
+                        className="input"
+                        disabled={form.notifyQuietHoursEnabled !== true}
+                        value={String(form.notifyQuietEnd ?? '08:00')}
+                        onChange={(e) => set('notifyQuietEnd', e.target.value)}
+                      />
+                    </div>
                   </SettingRow>
                 </div>
               </div>

@@ -71,6 +71,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('window:maximize-change', handler);
   },
   closeWindow: () => ipcRenderer.invoke('window:close'),
+  // ⑤ 暗色分面：渲染层上报已解析主题（light/dark），主进程镜像到窗口底色。
+  applyTheme: (theme: 'light' | 'dark') => ipcRenderer.invoke('theme:apply', asString(theme)),
+  // ⑤ 主题后端镜像：三态模式落盘 config.theme（不经执行器重启决策）。
+  saveTheme: (mode: string) => ipcRenderer.invoke('theme:save', asString(mode)),
 
   // 历史记录 & 日志文件读取
   getHistory: () => ipcRenderer.invoke('history:get'),

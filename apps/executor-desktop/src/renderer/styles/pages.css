@@ -1935,7 +1935,7 @@ html[lang='en'] .health-panel-title { font-size: var(--fs-sm); }
   -webkit-app-region: no-drag;
   transition: background var(--transition-fast), color var(--transition-fast);
 }
-.wizard-close-btn:hover { background: var(--red); color: #fff; }
+.wizard-close-btn:hover { background: var(--red); color: var(--color-on-primary); }
 
 /* 进度行：段条 + 步骤名两行；「第 N / 5 步」与**步骤名**同一基线（此前
    align-items:flex-start 让标签贴着段条顶端，与下方文字错位一格）。 */

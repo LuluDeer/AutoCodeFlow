@@ -16,6 +16,7 @@ import {
   inFlightTreeCount,
   killInFlightTreesSync,
   killTree,
+  pidExists,
   spawnDetached,
   spawnWithTreeTimeout,
   sweepStaleTrialTrees,
@@ -48,6 +49,11 @@ async function main(): Promise<void> {
 
   console.log('-- 1. 语义 --');
   {
+    // 存活探测与编码 / 语言无关：不存在 PID 判 false，当前进程判 true。
+    // Windows 中文区 taskkill 报错是 GBK 编码，文案正则会失配——成功语义必须
+    // 走 ESRCH 探测，不能靠解码 taskkill  stderr。
+    check('pidExists(不存在 pid) = false', pidExists(99999999) === false);
+    check('pidExists(当前进程) = true', pidExists(process.pid) === true);
     const ok = await killTree(99999999);
     check('不存在的 pid → true（已死即成功语义，不因 ESRCH 失败）', ok === true);
     const bad = await killTree(0);

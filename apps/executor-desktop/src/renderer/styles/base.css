@@ -31,7 +31,7 @@ body {
 /* 文本选中色 */
 ::selection {
   background: rgb(22 163 74 / 0.20);
-  color: #14532d;
+  color: var(--accent-hover);
 }
 
 button, input, select, textarea { font-family: inherit; }
@@ -65,13 +65,13 @@ textarea:focus-visible,
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: #c7cedb;
+  background: var(--border-strong);
   border-radius: 8px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #aeb7c8;
+  background: var(--text4);
   background-clip: padding-box;
 }
 

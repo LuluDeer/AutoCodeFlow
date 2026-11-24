@@ -24,6 +24,8 @@ export interface TaskTerminalEvent {
   executionId: string;
   taskName: string;
   status: 'success' | 'failed';
+  /** 平台任务 id（可选）；通知合并键优先用它，缺失回落 executionId。 */
+  taskId?: string;
 }
 
 /** 执行器状态字面量（与 executor-process.ExecutorStatus 同形；此处自定义
@@ -68,7 +70,8 @@ export function summarizeExecMeta(raw: unknown): TaskTerminalEvent | null {
   if (!isValidExecutionId(meta.executionId)) return null;
   const executionId = meta.executionId as string;
   const taskName = sanitizeNotifyText(meta.taskName, TASK_NAME_MAX_LEN) ?? executionId;
-  return { executionId, taskName, status };
+  const taskId = typeof meta.taskId === 'string' && isValidExecutionId(meta.taskId) ? meta.taskId : undefined;
+  return taskId ? { executionId, taskName, status, taskId } : { executionId, taskName, status };
 }
 
 /**
@@ -194,6 +197,72 @@ export function shouldNotifyExecutorStatus(
 ): boolean {
   if (next !== 'offline') return false;
   return prev !== undefined && prev !== 'offline' && prev !== 'stopped';
+}
+
+/**
+ * 同类通知合并窗口（ms）：同一任务（同 taskId / 回落 executionId + 终态）
+ * 在该窗口内的连续终态通知合并到同一条原生通知上更新正文，而不是连弹多条。
+ * 窗口写死 5s（产品裁决），不暴露成可配置项。
+ */
+export const NOTIFY_COALESCE_WINDOW_MS = 5_000;
+
+/** HH:MM（24h）格式闸；分钟数解析失败返回 null（fail-open：坏时间不静默吞通知）。 */
+const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+/** 解析 `HH:MM` 为当日分钟数（0–1439）；非法 / 非字符串返回 null。 */
+export function parseHhmmMinutes(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const m = HHMM_RE.exec(value.trim());
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+/**
+ * 当前时刻是否落在静默时段内。
+ *
+ *  - 起止任一非法 → false（fail-open：宁可多报，不把坏配置变成静默吞通知）；
+ *  - 起止相等 → 空区间，false；
+ *  - start < end：白天区间 `[start, end)`；
+ *  - start > end：跨夜区间（昨晚 start 之后 或 今天 end 之前）。
+ * 判定只用本地时的 时:分，不跨日期比较。
+ */
+export function inQuietHours(now: Date, start: unknown, end: unknown): boolean {
+  const startMin = parseHhmmMinutes(start);
+  const endMin = parseHhmmMinutes(end);
+  if (startMin === null || endMin === null) return false;
+  if (startMin === endMin) return false;
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  if (startMin < endMin) return nowMin >= startMin && nowMin < endMin;
+  return nowMin >= startMin || nowMin < endMin;
+}
+
+/**
+ * 距上次同 key 通知是否仍在合并窗口内（可复用同一条原生通知更新）。
+ * `lastAtMs` 缺省 / 负间隔一律不复用。
+ */
+export function shouldReuseCoalesce(
+  lastAtMs: number,
+  nowMs: number,
+  windowMs: number = NOTIFY_COALESCE_WINDOW_MS,
+): boolean {
+  const delta = nowMs - lastAtMs;
+  return delta >= 0 && delta <= windowMs;
+}
+
+/**
+ * 合并键：同一任务 + 同一终态视为同类。taskId 优先（同一任务的多次执行），
+ * 缺省回落 executionId；都缺省退化成纯终态键（极端容错，不抛错）。
+ */
+export function notifyCoalesceKey(input: {
+  taskId?: unknown;
+  executionId?: unknown;
+  status: unknown;
+}): string {
+  const id =
+    typeof input.taskId === 'string' && input.taskId.trim() !== '' ? input.taskId.trim()
+    : typeof input.executionId === 'string' && input.executionId.trim() !== '' ? input.executionId.trim()
+    : '';
+  return `${String(input.status ?? '')}:${id}`;
 }
 
 /**

@@ -18,9 +18,13 @@ import * as path from 'path';
 import log from './logger';
 import {
   ExecutorStatusLike,
+  NOTIFY_COALESCE_WINDOW_MS,
   decideScan,
+  inQuietHours,
+  notifyCoalesceKey,
   pruneSeenByLiveFiles,
   shouldNotifyExecutorStatus,
+  shouldReuseCoalesce,
 } from './notifier-rules';
 // F-27（UIUX 审计 2026-10-25）：通知文案双语——语言判定与托盘/渲染层同一来源
 // （ui-language.ts），文案表在 ui-texts.ts（扁平点号键，zh/en 对齐有 selftest）。
@@ -108,6 +112,15 @@ export class Notifier {
   private knownFiles: Map<string, number> = new Map();
   /** 上次见到的执行器状态（离线通知的转移判断输入）。 */
   private lastExecutorStatus: ExecutorStatusLike | undefined;
+  /** 静默时段配置（默认关；起止 HH:MM，跨夜语义在 notifier-rules.inQuietHours）。 */
+  private quietHoursEnabled = false;
+  private quietStart = '22:00';
+  private quietEnd = '08:00';
+  /**
+   * 同类通知合并桶：coalesceKey → 仍在 5s 窗口内的原生通知。窗口内同类终态
+   * 复用同一条通知更新标题/正文，不连弹；超窗条目在下次 notify 时懒清。
+   */
+  private coalesced: Map<string, { notification: Notification; lastAt: number }> = new Map();
   private onOpenStatus: (() => void) | null = null;
   /** C-03：任务终态通知的点击路由目标（缺省回落状态窗口）。 */
   private onOpenHistory: (() => void) | null = null;
@@ -143,6 +156,13 @@ export class Notifier {
     return this.enabled;
   }
 
+  /** 同步静默时段配置（config-store 启动注入 + 保存后刷新；坏时刻由消毒层兜底）。 */
+  setQuietHours(cfg: { enabled: boolean; start: string; end: string }): void {
+    this.quietHoursEnabled = cfg.enabled === true;
+    this.quietStart = cfg.start;
+    this.quietEnd = cfg.end;
+  }
+
   /**
    * 启动 meta 目录轮询。metaDir 为空（未配置 workDir）时不启动——没有
    * 事件源就没有通知。
@@ -170,6 +190,7 @@ export class Notifier {
     // 误拦新实例的重复通知判断）。
     this.knownFiles = new Map();
     this.seenStatus = new Map();
+    this.coalesced = new Map();
     // NETOPT-F P2-1: 停止后首扫标记复位——下次 start 的首轮重新静默追平。
     this.firstScanDone = false;
   }
@@ -277,7 +298,13 @@ export class Notifier {
           body += ` · ${uiText(locale, 'notify.task.exitCodeSuffix', { code: exitCode })}`;
         }
       }
-      this.notify(title, body, 'history');
+      // 同类 5s 合并：同一任务（回落 executionId）+ 同一终态在窗口内复用通知。
+      const coalesceKey = notifyCoalesceKey({
+        taskId: c.event.taskId,
+        executionId: c.event.executionId,
+        status: c.event.status,
+      });
+      this.notify(title, body, 'history', coalesceKey);
     }
     } finally {
       this.scanning = false;
@@ -287,15 +314,40 @@ export class Notifier {
     }
   }
 
-  /** 弹系统通知。开关关闭 / 系统不支持 / 权限缺失时静默跳过。
+  /** 弹系统通知。开关关闭 / 静默时段 / 系统不支持 / 权限缺失时静默跳过。
    *  target 决定点击路由（C-03）：'history' 打开历史窗口（任务终态通知，
-   *  回调缺省回落状态窗口）；'status' 聚焦状态窗口（离线等状态类通知）。 */
-  private notify(title: string, body: string, target: NotifyTarget = 'status'): void {
+   *  回调缺省回落状态窗口）；'status' 聚焦状态窗口（离线等状态类通知）。
+   *  coalesceKey 给出时，5s 窗口内同类通知复用同一条原生通知更新正文。 */
+  private notify(
+    title: string,
+    body: string,
+    target: NotifyTarget = 'status',
+    coalesceKey?: string,
+  ): void {
     if (!this.enabled) return;
+    // 静默时段：任务终态 / 离线 / 更新提示一并抑制（坏时刻 fail-open，见规则层）。
+    if (this.quietHoursEnabled && inQuietHours(new Date(), this.quietStart, this.quietEnd)) {
+      log.debug(`notify suppressed by quiet hours: ${title}`);
+      return;
+    }
+    const nowMs = Date.now();
+    this.pruneCoalesced(nowMs);
     try {
       if (!Notification.isSupported()) {
         log.debug(`notify skipped (not supported): ${title}`);
         return;
+      }
+      // 同类合并：窗口内已有同 key 通知 → 更新标题/正文与时间戳，不另弹一条。
+      if (coalesceKey) {
+        const existing = this.coalesced.get(coalesceKey);
+        if (existing && shouldReuseCoalesce(existing.lastAt, nowMs)) {
+          existing.notification.title = title;
+          existing.notification.body = body;
+          existing.lastAt = nowMs;
+          existing.notification.show();
+          log.info(`notify coalesced: ${title} — ${body}`);
+          return;
+        }
       }
       const n = new Notification({ title, body, silent: false });
       n.on('click', () => {
@@ -306,10 +358,20 @@ export class Notifier {
         this.onOpenStatus?.();
       });
       n.show();
+      if (coalesceKey) {
+        this.coalesced.set(coalesceKey, { notification: n, lastAt: nowMs });
+      }
       log.info(`notify: ${title} — ${body}`);
     } catch (err: unknown) {
       // Linux 无 libnotify / Windows 通知服务异常等——只落日志
       log.warn(`notify failed: ${(err instanceof Error ? err.message : undefined) ?? err}`);
+    }
+  }
+
+  /** 清出已超出合并窗口的桶条目（懒清，避免长时间挂机后 Map 无界增长）。 */
+  private pruneCoalesced(nowMs: number): void {
+    for (const [key, entry] of this.coalesced) {
+      if (nowMs - entry.lastAt > NOTIFY_COALESCE_WINDOW_MS) this.coalesced.delete(key);
     }
   }
 }

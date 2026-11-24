@@ -18,6 +18,11 @@ import {
   initialHeartbeatHysteresisState,
   OFFLINE_CONSECUTIVE_FAILURES,
   OFFLINE_SILENCE_MS,
+  inQuietHours,
+  parseHhmmMinutes,
+  shouldReuseCoalesce,
+  notifyCoalesceKey,
+  NOTIFY_COALESCE_WINDOW_MS,
 } from './notifier-rules';
 
 function main(): void {
@@ -228,6 +233,42 @@ function main(): void {
     assert.equal(pruned.has('live-1'), true, 'live file keeps seen entry');
     assert.equal(pruned.has('dead-1'), false, 'deleted meta prunes seen entry');
     assert.equal(pruned.size, 1, 'only live entries retained');
+  }
+
+  // ── 静默时段（HH:MM，跨夜 / 白天区间 / fail-open）─────────────
+  {
+    const at = (h: number, m: number) => new Date(2026, 10, 24, h, m, 0);
+    assert.equal(parseHhmmMinutes('08:30'), 510, '08:30 → 510');
+    assert.equal(parseHhmmMinutes('22:00'), 1320, '22:00 → 1320');
+    assert.equal(parseHhmmMinutes(' 07:05 '), 425, '空白裁剪后解析');
+    for (const bad of ['25:00', '12:60', 'abc', '', 42, null, undefined, {}]) {
+      assert.equal(parseHhmmMinutes(bad), null, `非法时刻 ${String(bad)} → null`);
+    }
+    // 白天区间 [08:00, 18:00)
+    assert.equal(inQuietHours(at(12, 0), '08:00', '18:00'), true, '白天区间内静默');
+    assert.equal(inQuietHours(at(7, 59), '08:00', '18:00'), false, '区间开始前不报静默');
+    assert.equal(inQuietHours(at(18, 0), '08:00', '18:00'), false, '区间右端点半开不静默');
+    // 跨夜区间 22:00 → 次日 08:00
+    assert.equal(inQuietHours(at(23, 30), '22:00', '08:00'), true, '跨夜前段静默');
+    assert.equal(inQuietHours(at(3, 0), '22:00', '08:00'), true, '跨夜后段静默');
+    assert.equal(inQuietHours(at(12, 0), '22:00', '08:00'), false, '跨夜区间白天不静默');
+    assert.equal(inQuietHours(at(8, 0), '22:00', '08:00'), false, '跨夜右端点不静默');
+    // 坏配置 fail-open：不静默吞通知
+    assert.equal(inQuietHours(at(3, 0), '25:99', '08:00'), false, '非法起点 fail-open');
+    assert.equal(inQuietHours(at(3, 0), 'abc', null), false, '非法终点 fail-open');
+    assert.equal(inQuietHours(at(12, 0), '08:00', '08:00'), false, '起止相等为空区间');
+  }
+
+  // ── 同类通知合并窗口 ──────────────────────────────────────
+  {
+    assert.equal(shouldReuseCoalesce(0, 4_000, NOTIFY_COALESCE_WINDOW_MS), true, '窗口内复用');
+    assert.equal(shouldReuseCoalesce(0, NOTIFY_COALESCE_WINDOW_MS + 1, NOTIFY_COALESCE_WINDOW_MS), false, '超窗不复用');
+    assert.equal(shouldReuseCoalesce(1_000, 500, NOTIFY_COALESCE_WINDOW_MS), false, '负间隔不复用');
+    assert.equal(shouldReuseCoalesce(0, 5_000), true, '默认窗口 5s 边界包含');
+    assert.equal(notifyCoalesceKey({ taskId: 't1', executionId: 'e1', status: 'success' }), 'success:t1', 'taskId 优先');
+    assert.equal(notifyCoalesceKey({ executionId: 'e9', status: 'failed' }), 'failed:e9', '回落 executionId');
+    assert.equal(notifyCoalesceKey({ status: 'running' }), 'running:', '双缺省退化为终态键');
+    assert.equal(notifyCoalesceKey({ taskId: '  t2  ', status: 'success' }), 'success:t2', 'id 去空白');
   }
 
   console.log('notifier-rules selftest: all assertions passed');
