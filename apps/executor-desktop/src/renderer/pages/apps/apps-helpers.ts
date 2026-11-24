@@ -201,7 +201,9 @@ export function deleteActionInfo(
  * 三字段缺一不可但都可以缺省（旧部署没有 version / 尚未发布没有 deploymentId），
  * 缺字段统一用破折号占位，绝不拼出 `undefined` / `null` 字面量。
  * 第二行是中台应用页 URL：base 只接受 http(s)，去掉 /api 后缀与尾斜杠，
- * appId 做 URI 编码；base 缺失或非法时只返回定位字段，不硬编码任何域名。
+ * appId 做 URI 编码；合法 base 且 deploymentId/version 为非空、非占位值时追加
+ * `deploymentId`/`version` query key（值 encodeURIComponent），缺字段则不拼占位垃圾；
+ * base 缺失或非法时只返回定位字段，不硬编码任何域名。
  */
 export function formatDeployLocator(
   entry: Pick<AppEntry, 'appId' | 'deploymentId' | 'version'>,
@@ -209,16 +211,25 @@ export function formatDeployLocator(
 ): string {
   const field = (value: string | null | undefined) =>
     typeof value === 'string' && value.trim() ? value.trim() : '—';
+  const cleanedDeploymentId = field(entry.deploymentId);
+  const cleanedVersion = field(entry.version);
   const lines = [
     `appId=${field(entry.appId)}`,
-    `deploymentId=${field(entry.deploymentId)}`,
-    `version=${field(entry.version)}`,
+    `deploymentId=${cleanedDeploymentId}`,
+    `version=${cleanedVersion}`,
   ];
   const base = typeof consoleBaseUrl === 'string'
     ? consoleBaseUrl.trim().replace(/\/+$/, '').replace(/\/api$/i, '')
     : '';
   if (/^https?:\/\//i.test(base)) {
-    lines.push(`${base}/applications/${encodeURIComponent(entry.appId || '')}?tab=releases`);
+    const query = ['tab=releases'];
+    if (cleanedDeploymentId !== '—') {
+      query.push(`deploymentId=${encodeURIComponent(cleanedDeploymentId)}`);
+    }
+    if (cleanedVersion !== '—') {
+      query.push(`version=${encodeURIComponent(cleanedVersion)}`);
+    }
+    lines.push(`${base}/applications/${encodeURIComponent(entry.appId || '')}?${query.join('&')}`);
   }
   return lines.join('\n');
 }

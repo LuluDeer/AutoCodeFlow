@@ -139,18 +139,33 @@ eq(
 // T2：部署定位串——三字段齐全 / 缺字段 / 非法 baseURL 不硬编码域名。
 eq(
   formatDeployLocator({ appId: 'app-1', deploymentId: 'dep-1', version: '1.0.0' }, 'http://console.local:3000/api/'),
-  'appId=app-1\ndeploymentId=dep-1\nversion=1.0.0\nhttp://console.local:3000/applications/app-1?tab=releases',
-  '定位串拼 appId/deploymentId/version 与中台应用页 URL（去尾斜杠与 /api）',
+  'appId=app-1\ndeploymentId=dep-1\nversion=1.0.0\nhttp://console.local:3000/applications/app-1?tab=releases&deploymentId=dep-1&version=1.0.0',
+  '定位串拼 appId/deploymentId/version 与中台应用页 URL（去尾斜杠与 /api，齐全字段带两参）',
 );
 eq(
-  formatDeployLocator({ appId: 'app-1', deploymentId: 'dep-1', version: null }),
-  'appId=app-1\ndeploymentId=dep-1\nversion=—',
-  '缺 version 用破折号占位，无 baseURL 时不拼 URL',
+  formatDeployLocator({ appId: 'app-1', deploymentId: 'dep-1', version: null }, 'http://console.local:3000/api'),
+  'appId=app-1\ndeploymentId=dep-1\nversion=—\nhttp://console.local:3000/applications/app-1?tab=releases&deploymentId=dep-1',
+  '缺 version 用破折号占位且 URL 不拼 version 参（保留去 /api 与去尾斜杠路径）',
 );
 eq(
-  formatDeployLocator({ appId: 'app-2', deploymentId: '', version: '' }, 'not-a-url'),
-  'appId=app-2\ndeploymentId=—\nversion=—',
-  '缺 deploymentId/version 与非法 baseURL 都不拼出 undefined/null/域名',
+  formatDeployLocator({ appId: 'app-2', deploymentId: '  ', version: 'v-2' }, 'http://console.local:3000'),
+  'appId=app-2\ndeploymentId=—\nversion=v-2\nhttp://console.local:3000/applications/app-2?tab=releases&version=v-2',
+  '缺 deploymentId 只带 version；二者均缺时保持旧行为 ?tab=releases（本用例覆盖只带 version 分支）',
+);
+eq(
+  formatDeployLocator({ appId: 'app-2', deploymentId: '', version: '   ' }, 'http://console.local:3000'),
+  'appId=app-2\ndeploymentId=—\nversion=—\nhttp://console.local:3000/applications/app-2?tab=releases',
+  'deploymentId/version 均缺（空串/空白）时保持旧行为只到 ?tab=releases，绝不拼占位参数',
+);
+eq(
+  formatDeployLocator({ appId: 'app-2', deploymentId: 'dep-x', version: 'v-x' }, 'not-a-url'),
+  'appId=app-2\ndeploymentId=dep-x\nversion=v-x',
+  '非法 baseURL 即使字段齐全也不拼 URL、不硬编码域名',
+);
+eq(
+  formatDeployLocator({ appId: 'app/3', deploymentId: 'dep 1', version: 'v/1.0' }, 'https://console.local:3000/api'),
+  'appId=app/3\ndeploymentId=dep 1\nversion=v/1.0\nhttps://console.local:3000/applications/app%2F3?tab=releases&deploymentId=dep%201&version=v%2F1.0',
+  'URL 中 appId 与两参均 encodeURIComponent（定位字段保留原始清理值）',
 );
 
 eq(sortAriaOf('name', 'app'), 'ascending', 'name 排序映射 aria-sort');

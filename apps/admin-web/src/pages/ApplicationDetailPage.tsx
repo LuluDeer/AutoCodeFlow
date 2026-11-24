@@ -50,6 +50,8 @@ import AppDeploymentPage from './AppDeploymentPage';
 // 真空态/截断态的区分都在新文件里，页面只留调用与状态。
 import DeployToDevicesModal from './application-detail/DeployToDevicesModal';
 import { useDeployModalData } from './application-detail/useDeployModalData';
+import { resolveDeployLocator, findDeployLocatorMatch, getVersionKey, deployRowProps, deploymentRowDomId, type DeployLocatorTarget } from './application-detail/deploy-deeplink';
+import { scrollToSectionWhenReady } from '../utils/scroll-when-ready';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { getErrMsg, isFormValidationError, isNotFoundError, showApiError } from '../utils/error';
@@ -548,8 +550,6 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
   const checkedExecutors = deployModal.checked;
   const setCheckedExecutors = deployModal.setChecked;
   const [deploying, setDeploying] = useState(false);
-
-  const getVersionKey = (record: VersionRecord) => record.id ?? record.deploymentId ?? `${record.version ?? 'unknown'}-${record.commit ?? 'none'}-${record.createdAt ?? record.deployedAt ?? 'unknown'}`;
 
   const fetchVersions = useCallback(async () => {
     setLoading(true);
@@ -1063,7 +1063,7 @@ function DeploymentEventsTable({ app }: { app: Application }) {
   );
 }
 
-function ReleasesTab({ app }: { app: Application }) {
+function ReleasesTab({ app, locator }: { app: Application; locator: DeployLocatorTarget }) {
   const [rows, setRows] = useState<AppReleaseRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -1116,7 +1116,8 @@ function ReleasesTab({ app }: { app: Application }) {
   }, [app.id, raceGuard]);
 
   useEffect(() => { fetchReleases(1); }, [fetchReleases]);
-
+  const hitKey = findDeployLocatorMatch(rows, locator);
+  useEffect(() => { if (!loading && hitKey) scrollToSectionWhenReady(deploymentRowDomId(hitKey)); }, [loading, hitKey]);
   const columns = [
     {
       title: t('appDetail.col.version'), dataIndex: 'version', width: 150,
@@ -1298,20 +1299,13 @@ function ReleasesTab({ app }: { app: Application }) {
               )}
             </div>
           )}
-          action={(
-            <Button
-              size="small"
-              data-testid="truncated-goto-events"
-              onClick={() => document.getElementById('app-deployment-events')?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth' })}
-            >
-              {t('appDetail.releases.truncated.gotoEvents')}
-            </Button>
-          )}
+          action={<Button size="small" data-testid="truncated-goto-events" onClick={() => document.getElementById('app-deployment-events')?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth' })}>{t('appDetail.releases.truncated.gotoEvents')}</Button>}
         />
       )}
       <Card variant="borderless" extra={<Button icon={<ReloadOutlined />} size="small" onClick={() => fetchReleases(page)}>{t('appDetail.refresh')}</Button>}>
         <Table<AppReleaseRow>
         rowKey={(r) => r.id ?? r.latestDeploymentId ?? `${r.version ?? 'unknown'}-${r.createdAt ?? 'none'}`}
+        onRow={(r) => deployRowProps(r, hitKey, token.colorWarningBg)}
         columns={columns}
         dataSource={rows}
         loading={loading}
@@ -1319,14 +1313,8 @@ function ReleasesTab({ app }: { app: Application }) {
         // UI 打磨：固定列合计 740 + devices 210 + executor 弹性列最小宽，补 scroll.x
         scroll={{ x: 1130 }}
         data-testid="releases-table"
-        pagination={{
-          current: page,
-          pageSize: 20,
-          total,
-          showTotal: (n) => t('appDetail.count', { count: n }),
-          onChange: (p) => fetchReleases(p),
-        }}
-          locale={{ emptyText: t('appDetail.releases.empty') }}
+        pagination={{ current: page, pageSize: 20, total, showTotal: (n) => t('appDetail.count', { count: n }), onChange: (p) => fetchReleases(p) }}
+        locale={{ emptyText: t('appDetail.releases.empty') }}
         />
       </Card>
       {/* R4（§4.1A）：事件流区块（不可变动作追溯）——锚点 id 供截断告警条跳转 */}
@@ -1370,6 +1358,7 @@ export default function ApplicationDetailPage() {
 
   // P3-③：无效 tab 深链（?tab=history 等）归一化到默认 Tab，不再渲染空白内容区
   const activeTab = normalizeTabKey(searchParams.get('tab'));
+  const deployLocator = resolveDeployLocator(searchParams);
 
   // NETOPT-7④（2026-09-20）：两个应用详情间导航（同路由 :id 组件不重挂）时新旧
   // fetchApp 并发——旧 id 的响应晚到会 setApp(旧应用)；旧 id 的 404 晚到会
@@ -1479,7 +1468,7 @@ export default function ApplicationDetailPage() {
           {
             key: 'releases',
             label: <span><HistoryOutlined /> {t('appDetail.tab.releases')}</span>,
-            children: <ReleasesTab app={app} />,
+            children: <ReleasesTab app={app} locator={deployLocator} />,
           },
           {
             key: 'settings',
