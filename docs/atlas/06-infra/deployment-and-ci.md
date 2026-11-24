@@ -21,7 +21,7 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production --build
 
 | Workflow | 触发 | 作用 |
 |---|---|---|
-| `ci.yml` | push/PR（main、develop）、手动、cron | 40 个 job 的全量质量门禁（下表） |
+| `ci.yml` | push/PR（main、develop）、手动、cron | 41 个 job 的全量质量门禁（下表） |
 | `release.yml` | `push tags v*` | `version-guard`（6 处核对）→ npm 3 包（`@autocodeflow/sdk`、`@autocodeflow/cli`、`autocodeflow-mcp-server`）+ PyPI（`autoflow-sdk`，OIDC）发布 → `demote-sdk-release` |
 | `release-desktop.yml` | `push tags desktop-v*` | 桌面端安装包（NSIS/dmg/AppImage/deb + `latest*.yml` + `SHA256SUMS.txt`）三平台构建与 GitHub Release `latest` 发布，与平台 4 包发布解耦 |
 | `release-please.yml` | push main | 汇总 conventional commits → 单一 root 条目（`.`）开/更新 Release PR（自动广播 4 包 + 文档版本 + 根 `CHANGELOG.md`），合并后自动打 `v*` tag |
@@ -35,10 +35,11 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production --build
 ## CI 面板（.github/workflows/ci.yml）
 
 - 触发：push/PR 到 `main`、`develop`；`workflow_dispatch`；定时 `schedule`（nightly 迁移漂移/长程演练——schedule 触发时常规 push/PR 套件按 `if: github.event_name != 'schedule'` 旁路，仅跑 schedule 专项检查）。
-- 并发组：`ci-${{ github.ref }}`，同分支旧跑自动取消。共 **40 个 job**：
+- 并发组：`ci-${{ github.ref }}`，同分支旧跑自动取消。共 **41 个 job**：
 
 | 分组 | Job（要点） |
 |---|---|
+| 分支拓扑 | `branch-topology-guard`（PR/schedule 事件下验远端 develop 存在 + ci.yml `push.branches` 含 develop，防 auto-delete 误删 develop 导致 push 触发器与 coverage 门静默失效；2026-11-24） |
 | 镜像闸 | `docker-multiarch-build`：admin-api / executor-node / executor-python 三镜像 matrix，`linux/amd64+arm64` **只 build 不 push**（BUG-20） |
 | admin-api | `admin-api-test`（PG16+Redis7 services；typecheck+lint+jest coverage+迁移+e2e `--runInBand`）；`admin-api-migrations`（空库全链 146 个迁移 + 二跑幂等守卫 + 每次触发均执行 revert drill 与副作用断言；schedule 轮追加实体/迁移漂移检查） |
 | Node 包 | `executor-node-test`、`acf-cli-test`、`mcp-server-test`、`autocodeflow-node-sdk-test`（coverage）、`admin-web-build`（lint+build） |
