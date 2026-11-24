@@ -269,8 +269,11 @@ if (!wizardNoComments.includes('autoStartExecutor: typeof cfg.autoStartExecutor'
 if (/executorHost: '0\.0\.0\.0'/.test(wizardNoComments)) {
   throw new Error("F-23: Wizard finish() 不得无条件硬编码 executorHost:'0.0.0.0'（重跑会静默降级用户的回环监听）");
 }
-if (!wizardNoComments.includes("typeof wizardCfg?.executorHost === 'string' && wizardCfg.executorHost")) {
-  throw new Error('F-23: Wizard finish() 必须沿用挂载时读到的 executorHost（首次安装才回落默认）');
+// R5-T1（impl-h-b）：finish() 的 executorHost 与端口探针/完成页摘要同源走
+// wizardBindHost 归一，旧的 typeof 内联三元已退役（重跑回落默认值会踩用户配置）。
+if (!wizardNoComments.includes('const bindHost = wizardBindHost(wizardCfg?.executorHost)') ||
+    !wizardNoComments.includes('executorHost: bindHost')) {
+  throw new Error('F-23/R5-T1: Wizard finish() 必须沿用挂载时读到的 executorHost（经 wizardBindHost 同源）');
 }
 
 // ── UIUX F-24（2026-10-25 审计）：历史页日志行 id 用文件全局行号 ──────────
@@ -1211,11 +1214,12 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
   if (!appsPage.includes('log-empty-hint')) {
     throw new Error('报障回归：无应用日志时未说明原因（用户会以为日志丢了）');
   }
-  // 跨 Tab 跳转必须经白名单校验（与托盘路径同款），否则可渲染未知 Tab
-  if (!tabSwitch.includes('TAB_SWITCH_EVENT')) {
-    throw new Error('报障回归：跨 Tab 跳转事件常量缺失');
+  // 跨 Tab 跳转必须经白名单校验（与托盘路径同款），否则可渲染未知 Tab。
+  // R5：白名单从 App 内联的 TAB_ORDER 三元收进 tab-switch.ts 的归一函数，两页共用。
+  if (!tabSwitch.includes('TAB_WHITELIST') || !tabSwitch.includes('normalizeTabSwitchDetail')) {
+    throw new Error('报障回归：跨 Tab 跳转白名单归一函数缺失');
   }
-  if (!/\(TAB_ORDER as string\[\]\)\.includes\(t\)/.test(app)) {
+  if (!app.includes('normalizeTabSwitchDetail(')) {
     throw new Error('报障回归：跨 Tab 跳转未做白名单校验（可渲染未知 Tab）');
   }
 
@@ -1477,8 +1481,8 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
   if (!preloadSrc.includes('checkPort: (port: number, host?: string)')) {
     throw new Error('B-8: preload 未透传 checkPort 的 host 参数');
   }
-  if (!wizardNoCommentsForAudit.includes("checkPort(form.executorPort, '0.0.0.0')")) {
-    throw new Error('B-8: Wizard 未把表单 executorHost 传给端口检测（与实际 bind 脱钩）');
+  if (!wizardNoCommentsForAudit.includes('checkPort(form.executorPort, bindHost)')) {
+    throw new Error('B-8/R5-T1: Wizard 端口检测必须按真实 bind host（与 finish() 同源）');
   }
 
   // B-9：主进程启动判定失败时向导必须保持打开并页内展示（error 字段）。
@@ -2322,6 +2326,10 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
 // R7-B/R7-C 五个 config selftest（纯逻辑 / IO 结果归一 / IO 取数面 / 配置源 / 写路径）
 // 合并为单行串行加载：维持 nonCommentLines 棘轮 1608，逐条说明见 git 历史。
 for (const p of ['./pages/config/pure-logic.selftest.mjs', './pages/config/io-result.selftest.mjs', './pages/config/io-layer.selftest.mjs', './pages/config/config-source.selftest.mjs', './pages/config/writer-layer.selftest.mjs', './theme/theme-mode.selftest.mjs']) await import(p);
+// R5 收口：impl-h-b 的端口绑定纯函数 selftest 按其独占写域落盘，由本入口统一接线。
+await import('./pages/wizard/wizard-bind-host.selftest.mjs');
+// R5 收口：T2 共享 ticker 的 running-only / 1s 节奏纯判定。
+await import('./time-tick.selftest.mjs');
 // R-UX：apps/config/history/status 四组纯逻辑 selftest 接线（真执行，非文本存在性守卫）。
 await import('./pages/apps/apps-helpers.selftest.mjs');
 await import('./pages/config/agent-matrix.selftest.mjs');
@@ -2450,6 +2458,43 @@ await import('./pages/status/status-helpers.selftest.mjs');
   }
   if (!/\.log-fs-nav \.icon \{[^}]*width:\s*14px[^}]*height:\s*14px/s.test(pagesCss)) {
     throw new Error('T5: 视觉图标尺寸应保持 14px，不得随命中区放大');
+  }
+}
+
+// ── R5 导航/通知链四项（T1-T4）接线守卫 ─────────────────────────────
+{
+  const srcOf = (p) => readFileSync(resolve(root, p), 'utf8');
+  const tabSwitchSrc = srcOf('tab-switch.ts');
+  const appSrc = srcOf('App.tsx');
+  const historySrc = srcOf('pages/HistoryPage.tsx');
+  const statusSrc = srcOf('pages/StatusWindow.tsx');
+  const tickSrc = srcOf('time-tick.ts');
+  const notifierMain = srcOf('../main/notifier.ts');
+  const wmMain = srcOf('../main/window-manager.ts');
+  const preloadSrc = srcOf('../preload/index.ts');
+  const anchors = [
+    [tabSwitchSrc, 'normalizeTabSwitchDetail', 'T1/T3 白名单归一函数缺失'],
+    [tabSwitchSrc, 'historyExecutionId', 'T1/T3 执行 ID 字段缺失'],
+    [tabSwitchSrc, 'historyTaskQuery', 'T3 任务检索字段缺失'],
+    [notifierMain, 'existing.deepLink = deepLink', 'T1 合并桶未保留最新事件深链'],
+    [notifierMain, 'this.onOpenHistory(payload ?? undefined)', 'T1 点击回调未带载荷'],
+    [wmMain, "win.webContents.send('switch-tab', payload)", 'T1 switch-tab 未透传白名单载荷'],
+    [preloadSrc, 'cb(normalizeSwitchTabPayload(raw))', 'T1 preload 未二次白名单归一'],
+    [appSrc, 'window.dispatchEvent(new CustomEvent(TAB_SWITCH_EVENT, { detail }))', 'T1 App 未把 IPC 载荷转成 DOM CustomEvent'],
+    [historySrc, 'historyDeepLinkFromDetail(', 'T3 HistoryPage 未消费深链'],
+    [historySrc, 'data-execution-id={run.executionId}', 'T3 台账行缺深链滚动锚点'],
+    [historySrc, "target.scrollIntoView({ block: 'center' })", 'T3 命中后未滚到目标行'],
+    [historySrc, 'useNowTicker(active, records)', 'T2 HistoryPage 未接共享 ticker'],
+    [statusSrc, 'useNowTicker(active, allRecords)', 'T2 StatusWindow 未接共享 ticker'],
+    [statusSrc, "formatRunningDuration(task.since, formatRunningMs", 'T2 活动条时长未吃推进的 now'],
+    [statusSrc, 'historyExecutionId: record.executionId', 'T3 最近失败入口未带执行深链'],
+    [statusSrc, 'data-agent-assignment-id={shortAssignmentId(agentStatus.lastAssignmentId)}', 'T4 状态卡缺 Agent 指派 ID 锚点'],
+    [statusSrc, 'display={shortAssignmentId(agentStatus.lastAssignmentId)}', 'T4 状态卡短 ID 未接复制通道'],
+    [tickSrc, 'shouldTickRunning', 'T2 running-only 纯判定缺失'],
+    [tickSrc, 'document.hidden', 'T2 ticker 缺隐藏窗口门控'],
+  ];
+  for (const [code, anchor, msg] of anchors) {
+    if (!code.includes(anchor)) throw new Error('R5-T1/T2/T3/T4: ' + msg + '（缺 ' + anchor + '）');
   }
 }
 

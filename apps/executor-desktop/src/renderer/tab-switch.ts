@@ -33,16 +33,72 @@ export type SwitchableTab = 'status' | 'config' | 'history' | 'apps';
 export type HistoryStatusFilter = 'success' | 'failed' | 'running';
 
 /**
+ * T1/T3 共用的历史深链白名单字段。
+ *
+ * 任务终态通知点击（T1）与状态页「最近失败」/详情面板「同任务」（T3）都要求
+ * 切到历史页后**落到具体执行**，而不是让用户再搜一遍。字段故意收窄到四枚：
+ * 执行 ID、任务检索串、状态过滤、Tab 本身；meta 里的 errorMessage / token /
+ * 绝对路径等敏感字段一律不进载荷（与 notifier-rules.ts 的安全口径一致）。
+ */
+export interface HistoryDeepLinkFields {
+  historyExecutionId?: string;
+  historyTaskQuery?: string;
+  historyStatusFilter?: HistoryStatusFilter;
+}
+
+export interface TabSwitchDetail extends HistoryDeepLinkFields {
+  tab: SwitchableTab;
+}
+
+const TAB_WHITELIST: readonly SwitchableTab[] = ['status', 'config', 'history', 'apps'];
+const STATUS_FILTER_WHITELIST: readonly HistoryStatusFilter[] = ['success', 'failed', 'running'];
+const DEEP_LINK_FIELD_MAX = 256;
+
+function readDetailString(raw: Record<string, unknown>, key: string): string | undefined {
+  const value = raw[key];
+  return typeof value === 'string' && value.trim() !== '' && value.length <= DEEP_LINK_FIELD_MAX
+    ? value.trim()
+    : undefined;
+}
+
+/**
+ * 白名单归一：字符串 tab 保持向后兼容；对象形态只保留 `TabSwitchDetail` 的四类
+ * 键，任何未知键（含 `__proto__` / errorMessage / filePath）都被剥掉。非法 tab
+ * 返回 null（调用方不切换，避免所有面板被 hidden）。
+ */
+export function normalizeTabSwitchDetail(raw: unknown): TabSwitchDetail | null {
+  const obj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
+  const tab = typeof raw === 'string' ? raw : obj?.tab;
+  if (typeof tab !== 'string' || !(TAB_WHITELIST as readonly string[]).includes(tab)) return null;
+  const detail: TabSwitchDetail = { tab: tab as SwitchableTab };
+  if (!obj) return detail;
+  const executionId = readDetailString(obj, 'historyExecutionId');
+  const query = readDetailString(obj, 'historyTaskQuery');
+  const status = obj.historyStatusFilter;
+  if (executionId) detail.historyExecutionId = executionId;
+  if (query) detail.historyTaskQuery = query;
+  if ((STATUS_FILTER_WHITELIST as readonly string[]).includes(String(status))) {
+    detail.historyStatusFilter = status as HistoryStatusFilter;
+  }
+  return detail;
+}
+
+/**
  * 请求切换到某个 Tab。
  *
- * historyStatusFilter 可选：仅对 history Tab 有意义，随事件带出（detail 为
- * 对象形态；纯字符串形态保留向后兼容——App/页面侧两种都认）。
- *
+ * history 参数既兼容旧的 `HistoryStatusFilter` 字符串，也接受深链对象
+ * `{ historyExecutionId, historyTaskQuery, historyStatusFilter }`（T1/T3）。detail
+ * 一律经 normalizeTabSwitchDetail 归一后才 dispatch——白名单外的字段不进事件。
  * 静默失败：事件无人监听（如单页测试渲染）时不该抛错打断用户操作。
  */
-export function requestTabSwitch(tab: SwitchableTab, historyStatusFilter?: HistoryStatusFilter): void {
+export function requestTabSwitch(
+  tab: SwitchableTab,
+  history?: HistoryStatusFilter | Omit<HistoryDeepLinkFields, 'tab'>,
+): void {
   try {
-    const detail = historyStatusFilter ? { tab, historyStatusFilter } : tab;
+    const extra = typeof history === 'string' ? { historyStatusFilter: history } : history ?? {};
+    const detail = normalizeTabSwitchDetail({ tab, ...extra });
+    if (!detail) return;
     window.dispatchEvent(new CustomEvent(TAB_SWITCH_EVENT, { detail }));
   } catch {
     /* CustomEvent 不可用（极端环境）：忽略，不阻断调用方 */

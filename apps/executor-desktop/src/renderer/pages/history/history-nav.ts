@@ -1,6 +1,8 @@
 /**
- * 历史台账纯逻辑辅助：键盘上下导航、日期分桶、耗时/状态/错误摘要计算。
+ * 历史台账纯逻辑辅助：键盘上下导航、日期分桶、耗时/状态/错误摘要计算、
+ * T1/T3 深链载荷的归一与命中解析。
  */
+import type { HistoryDeepLinkFields, HistoryStatusFilter } from '../../tab-switch';
 
 export interface HistoryRecordLike {
   executionId: string;
@@ -75,3 +77,86 @@ export function rowErrorSummary(
   if (run.status === 'failed' && run.exitCode !== undefined) return formatExitCode(run.exitCode);
   return '';
 }
+
+/** 深链消费结果（页面据此 setSelectedId / setQuery 并滚到目标行）。 */
+export interface HistoryDeepLinkTarget {
+  executionId?: string;
+  query?: string;
+  statusFilter?: HistoryStatusFilter;
+}
+
+const HISTORY_LINK_MAX = 256;
+
+/**
+ * T3：深链字段的本地白名单归一（与 tab-switch.ts 的 normalizeTabSwitchDetail
+ * 完全同口径）。刻意不 import 那个模块：本文件被裸 Node selftest 直接以
+ * `history-nav.ts` 加载，而 vite/tsc 的解析不带扩展名——运行时跨文件 import
+ * 会让两边解析规则打架。两份纯函数在 history-nav.selftest.mjs 里对齐断言。
+ */
+function normalizeHistoryDetail(raw: unknown): HistoryDeepLinkFields & { tab?: string } | null {
+  const obj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
+  const tab = typeof raw === 'string' ? raw : obj?.tab;
+  if (tab !== 'history') return null;
+  if (!obj) return { tab };
+  const detail: HistoryDeepLinkFields & { tab?: string } = { tab };
+  const field = (key: string): string | undefined => {
+    const value = obj[key];
+    return typeof value === 'string' && value.trim() !== '' && value.length <= HISTORY_LINK_MAX
+      ? value.trim()
+      : undefined;
+  };
+  const id = field('historyExecutionId');
+  const query = field('historyTaskQuery');
+  const status = obj.historyStatusFilter;
+  if (id) detail.historyExecutionId = id;
+  if (query) detail.historyTaskQuery = query;
+  if (status === 'success' || status === 'failed' || status === 'running') {
+    detail.historyStatusFilter = status;
+  }
+  return detail;
+}
+
+/**
+ * T3：从 switch-tab 的 CustomEvent detail 提取深链意图。非 history 意图返回空对象。
+ */
+export function historyDeepLinkFromDetail(raw: unknown): HistoryDeepLinkTarget {
+  const detail = normalizeHistoryDetail(raw);
+  if (!detail) return {};
+  const target: HistoryDeepLinkTarget = {};
+  if (detail.historyStatusFilter) target.statusFilter = detail.historyStatusFilter;
+  if (detail.historyExecutionId) target.executionId = detail.historyExecutionId;
+  if (detail.historyTaskQuery) target.query = detail.historyTaskQuery;
+  return target;
+}
+
+/**
+ * T1/T3：把深链落到当前记录集。
+ *  · 执行 ID 命中（或数据尚未到达）→ 直接选中该行；
+ *  · 仅带任务检索串 → 先精确匹配 taskName/taskId/executionId，再退化为子串
+ *    匹配，命中则选中并返回查询串（搜索框同步显示线索）；
+ *  · 都没命中 → 只回传查询串让搜索框呈现，不瞎选一行。
+ */
+export function resolveHistoryDeepLink(
+  records: ReadonlyArray<HistoryRecordLike>,
+  target: HistoryDeepLinkTarget,
+): Pick<HistoryDeepLinkTarget, 'executionId' | 'query'> {
+  const id = target.executionId;
+  if (id && (records.length === 0 || records.some((r) => r.executionId === id))) {
+    return { executionId: id };
+  }
+  const query = target.query?.trim();
+  if (query) {
+    const lower = query.toLowerCase();
+    const exact = records.find((r) =>
+      [r.taskName, r.taskId, r.executionId].some((v) => typeof v === 'string' && v.toLowerCase() === lower));
+    const partial = records.find((r) =>
+      [r.taskName, r.taskId, r.executionId, r.errorMessage].some((v) => typeof v === 'string' && v.toLowerCase().includes(lower)));
+    const hit = exact ?? partial;
+    if (hit) return { executionId: hit.executionId, query };
+    return { query };
+  }
+  return {};
+}
+
+/** 保留类型再导出，页面无需分别 import 两份白名单定义。 */
+export type { HistoryDeepLinkFields };

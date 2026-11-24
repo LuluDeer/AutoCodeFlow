@@ -12,6 +12,7 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
+  normalizeHistoryNotificationLink,
   advanceHeartbeatHysteresis,
   initialHeartbeatHysteresisState,
   OFFLINE_CONSECUTIVE_FAILURES,
@@ -36,6 +37,62 @@ function trayStopSelftest(): void {
   assert.ok(read('ui-texts.ts').includes("'dialog.trayStop.accept'"));
 }
 trayStopSelftest();
+
+/**
+ * T1：任务终态通知点击 → 历史页具体执行的注入链。
+ * 行为面由 normalizeHistoryNotificationLink 真执行断言（白名单剥未知字段），
+ * 接线面钉住 index → notifier → window-manager → preload 四段锚点。
+ */
+function notificationHistoryLinkSelftest(): void {
+  const link = normalizeHistoryNotificationLink({
+    executionId: 'exec-1',
+    taskId: 'task-9',
+    taskName: '日报同步',
+    status: 'failed',
+    token: 'SECRET',
+    errorMessage: '/private/path',
+    filePath: '/etc/passwd',
+  });
+  assert.deepStrictEqual(link, {
+    tab: 'history',
+    historyExecutionId: 'exec-1',
+    historyTaskQuery: '日报同步',
+    historyStatusFilter: 'failed',
+  }, 'T1 载荷只保留白名单字段：taskId 回落为检索串，敏感字段一律剥掉');
+  assert.deepStrictEqual(
+    normalizeHistoryNotificationLink({ executionId: 'exec-2', taskId: 'task-2', status: 'success' }),
+    { tab: 'history', historyExecutionId: 'exec-2', historyTaskQuery: 'task-2', historyStatusFilter: 'success' },
+    'T1 无任务名时 taskId 回落为检索串',
+  );
+  assert.deepStrictEqual(
+    normalizeHistoryNotificationLink({ executionId: 'e', status: 'bogus' }),
+    { tab: 'history', historyExecutionId: 'e' },
+    'T1 非法状态被剥，深链仍可用',
+  );
+  assert.strictEqual(normalizeHistoryNotificationLink({ token: 'SECRET' }), null, 'T1 无任何安全字段时不生成深链');
+  assert.strictEqual(normalizeHistoryNotificationLink(null), null, 'T1 空载荷不生成深链');
+  assert.deepStrictEqual(
+    normalizeHistoryNotificationLink(link),
+    link,
+    'T1 归一必须幂等（window-manager 会二次归一同一载荷）',
+  );
+
+  const index = read('index.ts');
+  const notifier = read('notifier.ts');
+  const wm = read('window-manager.ts');
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload', 'index.ts'), 'utf-8');
+  assert.ok(
+    index.includes('notifier.onOpenHistoryCallback = (payload) => windowManager.openHistory(payload)'),
+    'T1: index.ts 必须把通知点击载荷透传给窗口管理器',
+  );
+  assert.ok(notifier.includes('existing.deepLink = deepLink'), 'T1: 合并桶必须随最新事件更新深链');
+  assert.ok(notifier.includes('this.onOpenHistory(payload ?? undefined)'), 'T1: 点击回调必须带白名单载荷');
+  assert.ok(notifier.includes('normalizeHistoryNotificationLink({'), 'T1: 事件字段必须过主进程白名单');
+  assert.ok(wm.includes('normalizeHistoryNotificationLink(deepLink)'), 'T1: 窗口管理器必须再归一一次载荷');
+  assert.ok(wm.includes("win.webContents.send('switch-tab', payload)"), 'T1: 深链走既有 switch-tab 通道');
+  assert.ok(preload.includes('cb(normalizeSwitchTabPayload(raw))'), 'T1: preload 必须二次白名单透传载荷');
+}
+notificationHistoryLinkSelftest();
 
 function main(): void {
   const indexSrc = read('index.ts');

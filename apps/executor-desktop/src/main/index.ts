@@ -280,7 +280,7 @@ app.whenReady().then(async () => {
   // 终态通知开历史窗、离线等状态通知聚焦状态窗）；轮询 workDir/meta 捕获
   // 任务终态（executor-node writeExecMeta 落盘）。
   notifier.onOpenStatusCallback = () => windowManager.focusOrOpenStatus();
-  notifier.onOpenHistoryCallback = () => windowManager.openHistory();
+  notifier.onOpenHistoryCallback = (payload) => windowManager.openHistory(payload);
   // F-27（UIUX 审计 2026-10-25）：通知文案随设置页 uiLanguage 走（同托盘
   // getUiLanguage 的注入先例——每次构造通知实时读，保存语言后无需重启）。
   notifier.getUiLanguage = () => savedUiLanguage();

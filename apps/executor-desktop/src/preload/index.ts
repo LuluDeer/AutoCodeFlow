@@ -19,6 +19,45 @@ const bootTheme: 'light' | 'dark' | 'system' | null = (() => {
   }
 })();
 
+/** T1/T3：switch-tab 载荷二次白名单。主进程已归一一次，桥上再收一次形状：
+ *  只放 tab + 三枚 history* 字段；未知键、超长串、非法值一律掉，字符串 tab
+ *  保持旧形态（托盘菜单仍走纯字符串）。不新增 IPC channel。 */
+const SWITCH_TAB_VALUES = ['status', 'config', 'history', 'apps'];
+const SWITCH_TAB_FILTERS = ['success', 'failed', 'running'];
+const SWITCH_TAB_FIELD_MAX = 256;
+
+function switchTabField(raw: Record<string, unknown>, key: string): string | undefined {
+  const value = raw[key];
+  return typeof value === 'string' && value.trim() !== '' && value.length <= SWITCH_TAB_FIELD_MAX
+    ? value.trim()
+    : undefined;
+}
+
+function normalizeSwitchTabPayload(raw: unknown): string | {
+  tab: string;
+  historyExecutionId?: string;
+  historyTaskQuery?: string;
+  historyStatusFilter?: string;
+} {
+  const obj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
+  const tab = typeof raw === 'string' ? raw : obj?.tab;
+  if (typeof tab !== 'string' || !SWITCH_TAB_VALUES.includes(tab)) return '';
+  if (!obj) return tab;
+  const payload: {
+    tab: string;
+    historyExecutionId?: string;
+    historyTaskQuery?: string;
+    historyStatusFilter?: string;
+  } = { tab };
+  const id = switchTabField(obj, 'historyExecutionId');
+  const query = switchTabField(obj, 'historyTaskQuery');
+  const status = obj.historyStatusFilter;
+  if (id) payload.historyExecutionId = id;
+  if (query) payload.historyTaskQuery = query;
+  if (SWITCH_TAB_FILTERS.includes(String(status))) payload.historyStatusFilter = String(status);
+  return Object.keys(payload).length > 1 ? payload : tab;
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   // 配置
   getConfig: () => ipcRenderer.invoke('config:get'),
@@ -179,9 +218,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('executor:status-change', handler);
   },
 
-  // 主进程请求切换 tab（托盘菜单）
-  onSwitchTab: (cb: (tab: string) => void) => {
-    const handler = (_: Electron.IpcRendererEvent, tab: string) => cb(tab);
+  // 主进程请求切换 tab（托盘菜单 / 任务通知点击）
+  // T1/T3：对象载荷只透传白名单字段，App 转 DOM CustomEvent 给 HistoryPage。
+  onSwitchTab: (cb: (payload: string | {
+    tab: string;
+    historyExecutionId?: string;
+    historyTaskQuery?: string;
+    historyStatusFilter?: string;
+  }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, raw: unknown) => cb(normalizeSwitchTabPayload(raw));
     ipcRenderer.on('switch-tab', handler);
     return () => ipcRenderer.removeListener('switch-tab', handler);
   },

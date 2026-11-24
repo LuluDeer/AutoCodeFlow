@@ -16,6 +16,8 @@ import {
 } from './window-bounds';
 // 窗口底色单一事实源（与 tokens.css 的 --bg 对齐，selftest 跨文件守卫比对）。
 import { windowBackground } from './theme-colors';
+// T1：通知点击的可选深链载荷。主进程侧只认白名单字段，不把 meta 原文过桥。
+import { normalizeHistoryNotificationLink } from './notifier-rules';
 
 const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 
@@ -486,15 +488,19 @@ export class WindowManager {
     }
   }
 
-  openHistory(): void {
+  /** T1：无载荷时保持旧行为（纯字符串 'history'）；任务通知点击时带白名单
+   *  深链对象，App 收到后转 DOM CustomEvent，HistoryPage 落具体执行。 */
+  openHistory(deepLink?: unknown): void {
+    const normalized = deepLink ? normalizeHistoryNotificationLink(deepLink) : null;
+    const payload: unknown = normalized ?? 'history';
     const isNew = !this.statusWindow || this.statusWindow.isDestroyed();
     this.focusOrOpenStatus();
     const win = this.statusWindow;
     if (!win) return;
     if (isNew) {
-      win.once('ready-to-show', () => win.webContents.send('switch-tab', 'history'));
+      win.once('ready-to-show', () => win.webContents.send('switch-tab', payload));
     } else {
-      win.webContents.send('switch-tab', 'history');
+      win.webContents.send('switch-tab', payload);
     }
   }
 

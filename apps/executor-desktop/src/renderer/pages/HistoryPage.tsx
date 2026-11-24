@@ -15,13 +15,17 @@ import HistoryDetailPanel from './history/HistoryDetailPanel';
 import {
   dateBucketOf,
   formatDuration,
+  historyDeepLinkFromDetail,
   isStaleRunning,
   nextHistoryIndex,
+  resolveHistoryDeepLink,
   rowErrorSummary,
   startOf,
   statusTone,
   taskKeyOf,
 } from './history/history-nav';
+import { formatRunningDuration, formatRunningMs } from './status/status-helpers';
+import { useNowTicker } from '../time-tick';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
@@ -94,11 +98,17 @@ function taskLabelOf(r: ExecRecord): string {
   return r.taskName || t('historyx.taskFilter.unnamed');
 }
 
-/** 行的时长文案：终态算差值，running 显示「已运行 X」，其余 —。 */
-function runDurationText(run: ExecRecord): string {
+/** 行的时长文案：终态算差值；running 用推进的 now（T2 共享 ticker），
+ *  格式化复用 status-helpers 的 formatRunningDuration/formatRunningMs。 */
+function runDurationText(run: ExecRecord, nowMs: number): string {
   if (run.endTime !== undefined) return formatDuration(run.endTime - run.startTime);
   if (run.status === 'running' && startOf(run) > 0) {
-    return t('history.run.runningFor', formatDuration(Date.now() - startOf(run)));
+    return formatRunningDuration(
+      startOf(run),
+      formatRunningMs,
+      (d) => t('history.run.runningFor', d),
+      nowMs,
+    ) ?? '—';
   }
   return '—';
 }
@@ -437,6 +447,9 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
 // ────────────────────────────────────────────────────────────
 export default function HistoryPage({ active }: { active: boolean }) {
   const [records, setRecords] = useState<ExecRecord[]>([]);
+  // T2：面板可见且有 running 行时每秒推进，时长不再冻结到 60s 兜底刷新。
+  // 必须在 viewingLog 的提前 return 之前调用（React hooks 规则）。
+  const nowMs = useNowTicker(active, records);
   const [loading, setLoading] = useState(true);
   const [viewingLog, setViewingLog] = useState<ExecRecord | null>(null);
   // D 修正：原实现 catch 静默返回空列表——IPC 失败会显示成「暂无执行记录」，
@@ -473,6 +486,9 @@ export default function HistoryPage({ active }: { active: boolean }) {
   const closeBtnRef = useRef<HTMLButtonElement>(null);
   const lastRowRef = useRef<HTMLElement | null>(null);
   const prevSelectedRef = useRef<string | null>(null);
+  // T1/T3：深链命中后待滚动到的执行 ID（数据可能晚于通知点击到达，保留到
+  // 目标行真正渲染出来为止）。
+  const pendingDeepLinkRef = useRef<string | null>(null);
   // 首次加载自动选中最近一条执行（保留历史变量名，语义由「自动展开首组」变为
   // 「自动选中最近一条」——台账没有组可展开）。
   const autoExpanded = useRef(false);
@@ -588,21 +604,30 @@ export default function HistoryPage({ active }: { active: boolean }) {
     return () => document.removeEventListener('keydown', handler);
   }, [active, viewingLog]);
 
-  // V4 后续优化（2）：状态页「最近失败」等入口请求切历史页时附带状态过滤——
-  // 与 App 的切页监听共用同一事件流，对象形态 detail 在此消费过滤字段。
+  // V4 后续优化（2）+ T1/T3：状态页「最近失败」/任务通知点击切历史页时附带
+  // 状态过滤与深链字段；与 App 的切页监听共用同一事件流，白名单归一后在此消费。
   useEffect(() => {
     const onSwitch = (e: Event) => {
-      const raw: unknown = (e as CustomEvent).detail;
-      if (raw && typeof raw === 'object' && (raw as { tab?: unknown }).tab === 'history') {
-        const f = (raw as { historyStatusFilter?: unknown }).historyStatusFilter;
-        if (f === 'success' || f === 'failed' || f === 'running') {
-          setStatusFilter(f);
-        }
+      const link = historyDeepLinkFromDetail((e as CustomEvent).detail);
+      if (link.statusFilter) setStatusFilter(link.statusFilter);
+      if (!link.executionId && !link.query) return;
+      const hit = resolveHistoryDeepLink(records, link);
+      if (hit.executionId) {
+        // 命中具体执行：清掉可能把目标行藏起来的筛选，选中并排队滚动。
+        setStatusFilter('all');
+        setTaskFilter('');
+        setQuery(hit.query ?? '');
+        setSelectedId(hit.executionId);
+        pendingDeepLinkRef.current = hit.executionId;
+      } else if (hit.query !== undefined) {
+        setStatusFilter('all');
+        setTaskFilter('');
+        setQuery(hit.query);
       }
     };
     window.addEventListener(TAB_SWITCH_EVENT, onSwitch);
     return () => window.removeEventListener(TAB_SWITCH_EVENT, onSwitch);
-  }, []);
+  }, [records]);
 
   async function handleClear() {
     try {
@@ -708,6 +733,9 @@ export default function HistoryPage({ active }: { active: boolean }) {
 
   // 选中目标被清除（清除全部/重新加载后记录消失）时收起详情。
   useEffect(() => {
+    // 深链目标可能还没随 records 到达（通知点击早于首屏加载）——不能把刚设的
+    // 目标当成「记录里不存在」清掉。
+    if (pendingDeepLinkRef.current === selectedId) return;
     if (selectedId && records.length > 0 && !records.some((r) => r.executionId === selectedId)) {
       setSelectedId(null);
     }
@@ -727,6 +755,18 @@ export default function HistoryPage({ active }: { active: boolean }) {
       ?.scrollTo({ top: 0 });
     if (newlyOpened && isNarrow) closeBtnRef.current?.focus();
   }, [selectedId, isNarrow]);
+
+  // T1/T3：深链命中后滚到目标行（数据晚到也能补滚）。用 dataset 精确定位，
+  // 不拼 CSS selector，避免执行 ID 中的特殊字符被当成选择器语法。
+  useEffect(() => {
+    const id = pendingDeepLinkRef.current;
+    if (!id) return;
+    const rows = layoutRef.current?.querySelectorAll<HTMLElement>('[data-execution-id]');
+    const target = rows ? Array.from(rows).find((el) => el.dataset.executionId === id) : null;
+    if (!target) return;
+    target.scrollIntoView({ block: 'center' });
+    pendingDeepLinkRef.current = null;
+  }, [ledger, selectedId]);
 
   useEffect(() => {
     const mq = window.matchMedia(DETAIL_NARROW_QUERY);
@@ -895,7 +935,6 @@ export default function HistoryPage({ active }: { active: boolean }) {
     </div>
   );
 
-  const nowMs = Date.now();
 
   return (
     <div className="history-page">
@@ -1027,6 +1066,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
                   )}
                   <div
                     className={`history-run-row ${statusTone(run.status)}${isOpen ? ' is-selected' : ''}`}
+                    data-execution-id={run.executionId}
                   >
                     <button
                       type="button"
@@ -1056,7 +1096,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
                           {formatTime(run.startTime)}
                         </span>
                         <span className={`historyx-run-dur${staleRunning ? ' history-run-dur-stale' : ''}`} title={staleRunning ? t('history.run.staleTitle') : undefined}>
-                          {runDurationText(run)}
+                          {runDurationText(run, nowMs)}
                         </span>
                       </span>
                     </button>
@@ -1107,7 +1147,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
             statusText={statusText}
             taskLabelOf={taskLabelOf}
             formatTime={formatTime}
-            runDurationText={runDurationText}
+            runDurationText={(run) => runDurationText(run, nowMs)}
             onClose={closeDetail}
             onViewLog={setViewingLog}
             onRevealLog={(id) => { void handleRevealLog(id); }}

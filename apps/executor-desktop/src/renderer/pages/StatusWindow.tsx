@@ -15,6 +15,7 @@ import { createCfgTexts, resolveRendererLocale } from '../i18n';
 import { concurrencyGauge } from '../concurrency-gauge';
 import RunningTaskChip from './status/RunningTaskChip';
 import { formatCopyLiveText, formatFailureTime, formatFailureTitle, formatRunningDuration, formatRunningMs, formatRunningTaskTitle, stopActionGate, useStatusCtrlF } from './status/status-helpers';
+import { useNowTicker } from '../time-tick';
 
 const locale = resolveRendererLocale(() => navigator.language);
 const t = createCfgTexts(locale);
@@ -52,9 +53,15 @@ const STATUS_DESC: Record<Status, string> = {
   stopped: t('status.desc.stopped'),
 };
 
-function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
+/** T4：状态卡只展示短 ID（首 8 + 末 4），复制仍走 CopyValue 的完整值通道。 */
+function shortAssignmentId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+}
+
+function CopyValue({ value, mono = true, display }: { value: string; mono?: boolean; display?: string }) {
   // 复制走主进程 Electron clipboard（非安全上下文/权限受限时 navigator.clipboard
   // 会 reject 甚至为 undefined）；成功/失败都给用户明确反馈。
+  // display 只改可见文本（Agent ID 状态卡用短 ID），copy() 始终复制完整 value。
   const [state, setState] = useState<'idle' | 'copied' | 'error'>('idle');
   // P3-3：失败原因文案——超 1MiB（preload 诚实拒绝 error:'tooLarge'）与
   // 一般失败分开表述。
@@ -82,9 +89,10 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
         setState('error');
       });
   }
+  const shown = display ?? value;
   return (
     <div className="copy-row">
-      <span className={`copy-val${mono ? '' : ' copy-val-plain'}`} title={value && value !== '—' ? value : undefined}>{value || '—'}</span>
+      <span className={`copy-val${mono ? '' : ' copy-val-plain'}`} title={value && value !== '—' ? value : undefined}>{shown || '—'}</span>
       {value && value !== '—' && (
         <button
           type="button"
@@ -391,6 +399,8 @@ export default function StatusWindow({ active }: { active: boolean }) {
   // null = 尚未读到 / 读取失败（概览整条不渲染）。概览从它派生（useMemo），
   // C-01 停止确认的「运行中」计数也取自同一份——不为确认条二次发 getHistory。
   const [allRecords, setAllRecords] = useState<TodaySummaryRecord[] | null>(null);
+  // T2：面板可见且存在 running 行时每秒推进，活动条时长不再冻结到 60s 刷新。
+  const nowMs = useNowTicker(active, allRecords);
   const todaySummary = useMemo(
     () => (allRecords === null ? null : summarizeToday(allRecords)),
     [allRecords],
@@ -958,7 +968,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
                   <span className="today-summary-running">
                     <Icon name="play" className="today-summary-runicon" />
                     {todaySummary.runningTasks.slice(0, 2).map((task) => (
-                      <RunningTaskChip key={task.id} name={task.name} duration={formatRunningDuration(task.since, formatRunningMs, (d) => t('status.runningFor', d))} />
+                      <RunningTaskChip key={task.id} name={task.name} duration={formatRunningDuration(task.since, formatRunningMs, (d) => t('status.runningFor', d), nowMs)} />
                     ))}
                     {todaySummary.runningTasks.length > 2 && (
                       <span className="today-summary-task">+{todaySummary.runningTasks.length - 2}</span>
@@ -1103,6 +1113,20 @@ export default function StatusWindow({ active }: { active: boolean }) {
                 <span>{t('status.agentProcessed', agentStatus?.processed ?? '—')}</span>
                 <span>{t('status.agentLastResult', agentStatus ? agentOutcomeLabel(agentStatus.lastOutcome, locale) : '—')}</span>
                 {agentStatus?.lastEffectiveProfile && <span>{t('status.agentLastProfile', agentStatus.lastEffectiveProfile)}</span>}
+                {/* T4：Agent 已上报的指派 ID 不再只留在内存里——状态卡给短 ID +
+                    既有 CopyValue 复制完整值通道（不新增 IPC / i18n 键）。 */}
+                {agentStatus?.lastAssignmentId && (
+                  <div
+                    className="overview-agent-assignment"
+                    data-agent-assignment-id={shortAssignmentId(agentStatus.lastAssignmentId)}
+                  >
+                    <span>{t('historyx.detail.execId')}</span>
+                    <CopyValue
+                      value={agentStatus.lastAssignmentId}
+                      display={shortAssignmentId(agentStatus.lastAssignmentId)}
+                    />
+                  </div>
+                )}
                 {/* 未启用不是错误态而是入口态：给出开启路径（2026-10 指引升级） */}
                 {agentStatus && !agentStatus.enabled && (
                   <span className="overview-agent-hint">{t('status.agentEnableHint')}</span>
@@ -1126,7 +1150,11 @@ export default function StatusWindow({ active }: { active: boolean }) {
                         type="button"
                         className="rail-failure-item"
                         title={formatFailureTitle(record, t('status.unnamedTask'), t('status.viewHistory'))}
-                        onClick={() => requestTabSwitch('history', 'failed')}
+                        onClick={() => requestTabSwitch('history', {
+                          historyStatusFilter: 'failed',
+                          historyExecutionId: record.executionId,
+                          historyTaskQuery: record.taskName,
+                        })}
                       >
                         <span className="rail-failure-time">{formatFailureTime(record.startTime)}</span>
                         <span className="rail-failure-name">{record.taskName || t('status.unnamedTask')}</span>

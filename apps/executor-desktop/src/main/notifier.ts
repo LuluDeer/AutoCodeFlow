@@ -22,6 +22,7 @@ import {
   decideScan,
   inQuietHours,
   notifyCoalesceKey,
+  normalizeHistoryNotificationLink,
   pruneSeenByLiveFiles,
   shouldNotifyExecutorStatus,
   shouldReuseCoalesce,
@@ -40,6 +41,9 @@ export const META_POLL_INTERVAL_MS = 4_000;
 /** 通知点击路由目标（C-03）：'history' = 任务终态通知开历史窗口；
  *  'status' = 状态类通知（离线等）聚焦状态窗口。 */
 type NotifyTarget = 'status' | 'history';
+
+/** T1：点击任务通知时带给窗口管理器的深链载荷（已经主进程白名单归一）。 */
+type HistoryOpenPayload = ReturnType<typeof normalizeHistoryNotificationLink>;
 
 /**
  * C-03：从定稿 meta（executor-node writeExecMeta 的 merge 产物）提取任务
@@ -120,10 +124,11 @@ export class Notifier {
    * 同类通知合并桶：coalesceKey → 仍在 5s 窗口内的原生通知。窗口内同类终态
    * 复用同一条通知更新标题/正文，不连弹；超窗条目在下次 notify 时懒清。
    */
-  private coalesced: Map<string, { notification: Notification; lastAt: number }> = new Map();
+  private coalesced: Map<string, { notification: Notification; lastAt: number; deepLink: HistoryOpenPayload }> = new Map();
   private onOpenStatus: (() => void) | null = null;
-  /** C-03：任务终态通知的点击路由目标（缺省回落状态窗口）。 */
-  private onOpenHistory: (() => void) | null = null;
+  /** C-03 / T1：任务终态通知的点击路由目标（缺省回落状态窗口）。载荷为
+   *  executionId/taskId/taskName/status 归一后的深链对象，null 表示只切 Tab。 */
+  private onOpenHistory: ((payload?: HistoryOpenPayload) => void) | null = null;
   /**
    * F-27：已落盘的界面语言设置（uiLanguage）读取回调，由 index.ts 注入（同
    * tray.ts getUiLanguage 的注入方式——notifier 不能 import index.ts 的
@@ -142,8 +147,8 @@ export class Notifier {
     this.onOpenStatus = cb;
   }
 
-  /** 注入「点击任务通知 → 打开历史窗口」回调（index.ts 里接 windowManager）。 */
-  set onOpenHistoryCallback(cb: (() => void) | null) {
+  /** 注入「点击任务通知 → 打开历史窗口并落到具体执行」回调（index.ts 接 windowManager）。 */
+  set onOpenHistoryCallback(cb: ((payload?: HistoryOpenPayload) => void) | null) {
     this.onOpenHistory = cb;
   }
 
@@ -304,7 +309,15 @@ export class Notifier {
         executionId: c.event.executionId,
         status: c.event.status,
       });
-      this.notify(title, body, 'history', coalesceKey);
+      // T1：合并桶随事件保留深链字段（只取四个安全元数据，走主进程白名单归一）。
+      // 点击时读桶里**最新一次**事件的载荷，不沿用第一次弹窗时的闭包。
+      const deepLink = normalizeHistoryNotificationLink({
+        executionId: c.event.executionId,
+        taskId: c.event.taskId,
+        taskName: c.event.taskName,
+        status: c.event.status,
+      });
+      this.notify(title, body, 'history', coalesceKey, deepLink);
     }
     } finally {
       this.scanning = false;
@@ -317,12 +330,14 @@ export class Notifier {
   /** 弹系统通知。开关关闭 / 静默时段 / 系统不支持 / 权限缺失时静默跳过。
    *  target 决定点击路由（C-03）：'history' 打开历史窗口（任务终态通知，
    *  回调缺省回落状态窗口）；'status' 聚焦状态窗口（离线等状态类通知）。
-   *  coalesceKey 给出时，5s 窗口内同类通知复用同一条原生通知更新正文。 */
+   *  coalesceKey 给出时，5s 窗口内同类通知复用同一条原生通知更新正文；
+   *  deepLink 随合并桶保留，点击时带给渲染层落到具体执行（T1）。 */
   private notify(
     title: string,
     body: string,
     target: NotifyTarget = 'status',
     coalesceKey?: string,
+    deepLink: HistoryOpenPayload = null,
   ): void {
     if (!this.enabled) return;
     // 静默时段：任务终态 / 离线 / 更新提示一并抑制（坏时刻 fail-open，见规则层）。
@@ -344,6 +359,8 @@ export class Notifier {
           existing.notification.title = title;
           existing.notification.body = body;
           existing.lastAt = nowMs;
+          // 合并桶保留最新事件的深链：点击必须落到用户刚看到的那次执行。
+          existing.deepLink = deepLink;
           existing.notification.show();
           log.info(`notify coalesced: ${title} — ${body}`);
           return;
@@ -352,14 +369,16 @@ export class Notifier {
       const n = new Notification({ title, body, silent: false });
       n.on('click', () => {
         if (target === 'history' && this.onOpenHistory) {
-          this.onOpenHistory();
+          // 点击事件可能发生在合并窗口内多次更新之后——从桶里现取最新载荷。
+          const payload = (coalesceKey ? this.coalesced.get(coalesceKey)?.deepLink : null) ?? deepLink;
+          this.onOpenHistory(payload ?? undefined);
           return;
         }
         this.onOpenStatus?.();
       });
       n.show();
       if (coalesceKey) {
-        this.coalesced.set(coalesceKey, { notification: n, lastAt: nowMs });
+        this.coalesced.set(coalesceKey, { notification: n, lastAt: nowMs, deepLink });
       }
       log.info(`notify: ${title} — ${body}`);
     } catch (err: unknown) {

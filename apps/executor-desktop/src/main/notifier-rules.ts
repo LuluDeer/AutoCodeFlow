@@ -266,6 +266,53 @@ export function notifyCoalesceKey(input: {
 }
 
 /**
+ * T1：任务通知的点击深链白名单（主进程侧）。事件只提供 executionId / taskId /
+ * taskName / status 四个安全元数据字段；这里再收一次形状和长度，映射成
+ * switch-tab 载荷的 history* 字段。**幂等**：window-manager 会对已经归一过的
+ * history* 载荷再调一次（双道白名单），因此两种形态都要认。未知字段
+ * （errorMessage / token / 路径等）根本不读；无有效字段时返回 null。
+ */
+export interface HistoryNotificationLink {
+  executionId?: string;
+  taskId?: string;
+  taskName?: string;
+  status?: 'success' | 'failed' | 'running';
+}
+
+export interface HistorySwitchPayload {
+  tab: 'history';
+  historyExecutionId?: string;
+  historyTaskQuery?: string;
+  historyStatusFilter?: 'success' | 'failed' | 'running';
+}
+
+const HISTORY_LINK_FIELD_MAX = 256;
+
+export function normalizeHistoryNotificationLink(raw: unknown): HistorySwitchPayload | null {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const src = raw as Record<string, unknown>;
+  const field = (key: string): string | undefined => {
+    const value = src[key];
+    return typeof value === 'string' && value.trim() !== '' && value.length <= HISTORY_LINK_FIELD_MAX
+      ? value.trim()
+      : undefined;
+  };
+  // 原始事件字段优先；已是 history* 载荷时原样收窄（window-manager 二次归一）。
+  const executionId = field('executionId') ?? field('historyExecutionId');
+  const taskId = field('taskId');
+  const taskName = field('taskName') ?? field('historyTaskQuery');
+  const rawStatus = src.status ?? src.historyStatusFilter;
+  const status = ['success', 'failed', 'running'].includes(String(rawStatus))
+    ? rawStatus as 'success' | 'failed' | 'running'
+    : undefined;
+  const payload: HistorySwitchPayload = { tab: 'history' };
+  if (executionId) payload.historyExecutionId = executionId;
+  if (taskName || taskId) payload.historyTaskQuery = taskName ?? taskId;
+  if (status) payload.historyStatusFilter = status;
+  return Object.keys(payload).length > 1 ? payload : null;
+}
+
+/**
  * NETOPT-G P1-5（离线误报迟滞）：把「执行器是否真的掉线」从单点快照升级为
  * 带迟滞的判定。
  *

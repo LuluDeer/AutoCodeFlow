@@ -10,7 +10,7 @@ import { subscribeLogViewerCount } from './components/LogViewer';
 // BRAND（2026-11-02）：品牌位图片由品牌流水线生成（见 build-fox-assets.py），
 // 打包进渲染层后是 file:// 下可用的本地资源（CSP img-src 'self' 已放行）。
 import foxImg from './assets/acf-fox.png';
-import { TAB_SWITCH_EVENT } from './tab-switch';
+import { TAB_SWITCH_EVENT, normalizeTabSwitchDetail } from './tab-switch';
 // V4-5（I-07 门面四件第一件）：Tab 标题 / titlebar / 关窗提示 / 加载占位走
 // 双语表（zh 值与原硬编码逐字一致，zh 系统渲染零变化）。
 import { createCfgTexts, resolveRendererLocale } from './i18n';
@@ -192,13 +192,17 @@ function MainWindow() {
     }
   }, [tab]);
 
-  // Listen for main-process tab-switch requests (tray menu)
+  // Listen for main-process tab-switch requests (tray menu / T1 任务通知点击)
   useEffect(() => {
     const api = window.electronAPI;
     if (typeof api?.onSwitchTab === 'function') {
-      // 白名单校验：主进程传来非法 tab 时不切换，避免所有面板被隐藏
-      const unsub = api.onSwitchTab((t: string) => {
-        if ((TAB_ORDER as string[]).includes(t)) setTab(t as Tab);
+      // 主进程/桥已归一一次，这里再按同一白名单收一次：非法 tab 不切。
+      // T1/T3：对象载荷转成 DOM CustomEvent（全局唯一 Tab 事件流），HistoryPage
+      // 的同一监听据此落到具体执行；纯字符串形态仍走同路径，不新增 IPC。
+      const unsub = api.onSwitchTab((payload: unknown) => {
+        const detail = normalizeTabSwitchDetail(payload);
+        if (!detail) return;
+        window.dispatchEvent(new CustomEvent(TAB_SWITCH_EVENT, { detail }));
       });
       return () => unsub?.();
     }
@@ -223,15 +227,8 @@ function MainWindow() {
   // HistoryPage 自行监听同一事件消费），纯字符串形态保持兼容。
   useEffect(() => {
     const onSwitch = (e: Event) => {
-      const raw: unknown = (e as CustomEvent).detail;
-      const t = typeof raw === 'string'
-        ? raw
-        : raw && typeof raw === 'object' && typeof (raw as { tab?: unknown }).tab === 'string'
-          ? (raw as { tab: string }).tab
-          : undefined;
-      if (typeof t === 'string' && (TAB_ORDER as string[]).includes(t)) {
-        setTab(t as Tab);
-      }
+      const detail = normalizeTabSwitchDetail((e as CustomEvent).detail);
+      if (detail) setTab(detail.tab);
     };
     window.addEventListener(TAB_SWITCH_EVENT, onSwitch);
     return () => window.removeEventListener(TAB_SWITCH_EVENT, onSwitch);
