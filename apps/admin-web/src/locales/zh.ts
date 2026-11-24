@@ -207,6 +207,7 @@ export default {
   'dashboard.trend.failed': '失败',
   'dashboard.trend.rate': '成功率',
   'dashboard.trend.rateHint': '成功率 = 成功 ÷（成功+失败+超时）；取消/已终止不计入分母，按创建日分桶，当日无样本不画线。',
+  'dashboard.trend.tooltip.countUnit': '次',
   'dashboard.executors': '执行器资源',
   'dashboard.executors.all': '全部',
   'dashboard.schedulerLatency': '调度延迟',
@@ -217,6 +218,9 @@ export default {
   'dashboard.recentFailures': '最近失败',
   'dashboard.recentFailures.all': '全部记录',
   'dashboard.noFailures': '近期无失败记录',
+  // T1（P1）：读失败 ≠ 无失败。三张卡的失败态统一复用 dashboard.error 的语义，
+  // 文案自带「点刷新重试」提示，不新造错误体系。
+  'dashboard.recentFailures.readFailed': '读取失败——近期失败记录无法确认，请点刷新重试',
   'dashboard.unknownError': '未知错误',
 
   // R328：北极星双口径看板（严格值主 / 近似值参考，绝不混用）。
@@ -3407,6 +3411,7 @@ export default {
   'onboarding.complete.subtitle': '后续可在仪表盘追踪执行量、成功率与调度健康度',
   'onboarding.dismiss': '不再提示本次引导',
   'failureTop.empty': '近期无失败任务',
+  'failureTop.readFailed': '读取失败——近期失败任务无法确认，请点刷新重试',
   'failureTop.count': '{{count}} 次',
   'failureTop.unknown': '未知错误',
   'schedLatency.p99.tooltip': '定时触发 fire→入队延迟的 P99（桶插值估算，仅 fixed_rate/cron 任务计入）',
@@ -3416,6 +3421,7 @@ export default {
   'schedLatency.noSamples': '暂无定时触发样本（仅 fixed_rate/cron 任务计入）',
   'kpiSpark.empty': '暂无数据',
   'heatBars.empty': '暂无执行器',
+  'heatBars.readFailed': '读取失败——无法确认执行器资源状态，请点刷新重试',
   'heatBars.cpuLabel': 'CPU',
   'heatBars.memLabel': '内存',
   // R67：这个数字是**已占槽位**（含 E-01 pull 取件预留），不是「实际在跑任务数」。

@@ -886,7 +886,7 @@ export default function ExecutorDetailPage() {
                 {/* 左轴：CPU/内存百分比；右轴：并发任务数（独立量纲） */}
                 <YAxis yAxisId="pct" domain={[0, 100]} width={36} tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
                 <YAxis yAxisId="cnt" orientation="right" allowDecimals={false} width={36} tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
-                <RechartTooltip labelFormatter={(label) => trendTooltipLabel(String(label))} labelStyle={{ fontSize: 12 }} />
+                <RechartTooltip contentStyle={CHART_COLORS.tooltip(isDark)} labelFormatter={(label) => trendTooltipLabel(String(label))} labelStyle={{ fontSize: 12 }} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Line yAxisId="pct" type="monotone" dataKey="cpuUsage" name={t('executorDetail.trend.cpu')} stroke={CHART_COLORS.cpu} strokeWidth={1.5} dot={trendDot} connectNulls />
                 <Line yAxisId="pct" type="monotone" dataKey="memUsage" name={t('executorDetail.trend.mem')} stroke={CHART_COLORS.memory} strokeWidth={1.5} dot={trendDot} connectNulls />

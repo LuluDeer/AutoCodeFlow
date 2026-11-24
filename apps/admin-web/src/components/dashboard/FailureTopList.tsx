@@ -9,7 +9,7 @@
  * 会误导，缩水声明见 PLAN-CLAIMS）。
  */
 import { Typography } from 'antd';
-import { CheckCircleOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { formatRelativeTime } from '../../utils/timeFormat';
 import { CHART_COLORS } from '../../theme/tokens';
@@ -70,14 +70,38 @@ interface FailureTopListProps {
   failures: Parameters<typeof aggregateFailureTop>[0];
   topN?: number;
   onOpenTask: (taskId: string) => void;
+  /** READ-HONESTY：榜单数据源读失败。此时空态是「没读到」，绝不能冒充「近期无失败」的绿色健康态。 */
+  readFailed?: boolean;
 }
 
 /** 榜单行高（紧凑榜） */
 const ROW_GAP = 8;
 
-export default function FailureTopList({ failures, topN = 5, onOpenTask }: FailureTopListProps) {
+export default function FailureTopList({ failures, topN = 5, onOpenTask, readFailed = false }: FailureTopListProps) {
   const { t } = useTranslation();
   const top = aggregateFailureTop(failures, topN, t('failureTop.unknown'));
+  // READ-HONESTY：读失败优先于空数组判定——「0 条」与「没读到」是两件事，
+  // 后者必须说读取失败并给出重试提示，不渲染绿色对勾健康态。
+  if (readFailed) {
+    return (
+      <div
+        data-testid="failure-top-read-failed"
+        style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          textAlign: 'center',
+          padding: '24px 0',
+          fontSize: 12,
+        }}
+      >
+        <CloseCircleOutlined style={{ fontSize: 28, color: CHART_COLORS.failed, marginBottom: 8 }} />
+        <Text type="danger">{t('failureTop.readFailed')}</Text>
+      </div>
+    );
+  }
   if (top.length === 0) {
     return (
       <div

@@ -1,19 +1,14 @@
 import { useState, type ReactNode } from 'react';
 import {
   Row, Col, Card, Statistic, Badge, Typography,
-  Segmented, Progress, Tag, Space, Tooltip, Button, Alert,
+  Segmented, Tag, Tooltip, Button,
 } from 'antd';
 import {
-  CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined,
-  ClockCircleOutlined, RocketOutlined, ApiOutlined, ReloadOutlined,
-  WarningOutlined, MinusCircleOutlined, ProjectOutlined, GlobalOutlined,
+  CheckCircleOutlined, ApiOutlined, ReloadOutlined,
+  WarningOutlined, ProjectOutlined, GlobalOutlined,
 } from '@ant-design/icons';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import {
-  AreaChart, Area, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip as RechartTooltip, Legend, ResponsiveContainer,
-} from 'recharts';
 import type { SchedulerMetricsResponse } from '../api/metrics';
 import {
   useMetricsSummary,
@@ -23,19 +18,17 @@ import {
   useSchedulerMetrics,
   useSchedulerStats,
 } from '../api/queries';
-import { formatDuration } from '../utils/timeFormat';
-// python_task_multiversion（P2-3）：失败分类标签读面唯一事实源，
-// ExecutionCompare 共用，避免再出现"详情页有标签、Dashboard 露裸枚举"的漂移。
-import { failureReasonLabel } from '../utils/failure-reason-label';
-import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS, SEMANTIC_COLORS } from '../theme/tokens';
+import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
-import KpiSparkline, { buildSparklineData, recentDateKeys, SPARKLINE_HEIGHT } from '../components/dashboard/KpiSparkline';
+import { SPARKLINE_HEIGHT } from '../components/dashboard/KpiSparkline';
 import FailureTopList from '../components/dashboard/FailureTopList';
-import AvgDurationCard from '../components/dashboard/AvgDurationCard';
 import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
+import RecentFailuresCard from '../components/dashboard/RecentFailuresCard';
+import KpiRow from '../components/dashboard/KpiRow';
+import TrendChart from '../components/dashboard/TrendChart';
 import { buildTrendSeries } from '../utils/trendSeries';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
 import NorthStarCard from '../components/dashboard/NorthStarCard';
@@ -139,34 +132,6 @@ export function streamStatusBadge(status: MetricsStreamStatus): { color: string;
     default:
       return { color: SEMANTIC_COLORS.neutral, labelKey: 'dashboard.stream.connecting' };
   }
-}
-
-/**
- * A6（第二轮审计）：主趋势图序列构建——按「最近 days 天含今日」的完整日期轴
- * 补零。getDailyTrend 只返回**有执行的日**的行，此前直接 map 渲染会在零执行
- * 日出现断点（折线从上周五直接跳到今天，看起来像数据缺失而非「零执行」）。
- * 思路与 KpiSparkline.buildSparklineData 同源（recentDateKeys 生成日期轴 +
- * Map 查表补零）；纯函数导出供测试锚定。
- */
-export function buildTrendData(
-  trend: { date: string; success: number; failed: number; timeout?: number }[] | undefined,
-  days: number,
-): { date: string; success: number; failed: number }[] {
-  const byDate = new Map(
-    (trend ?? []).map(d => [String(d.date).slice(0, 10), d]),
-  );
-  return recentDateKeys(days).map(key => {
-    const row = byDate.get(key);
-    return {
-      date: key.slice(5),
-      success: row?.success ?? 0,
-      // A-10（审计趋势口径）：TIMEOUT 并入失败曲线——告警口径为
-      // failed|timeout（alerts.yml AUTOFLOW_EXECUTION_FAILURE_RATE_HIGH/
-      // _STORM 的 status=~"failed|timeout"），此前超时被丢弃，超时风暴时
-      // 失败曲线平稳而告警齐鸣。后端 /metrics/trend 已透出 timeout 键。
-      failed: (row?.failed ?? 0) + (row?.timeout ?? 0),
-    };
-  });
 }
 
 /**
@@ -285,15 +250,6 @@ export default function DashboardPage() {
   }
   const s = summary as unknown as DashboardSummary | undefined;
   const g = globalSummary as unknown as DashboardSummary | undefined;
-  const successRate = s?.successRate ?? 0;
-  const totalExec = s?.executions?.total ?? 0;
-  const runningCount = s?.executions?.running ?? 0;
-  // METRIC-01：图例补「其他状态」行——successRate 分母（total）含超时/已终止/
-  // 运行中，图例此前只展示成功/失败两数，73.33% 与 11+1 在 UI 上对不上。
-  // 其他 = total − 成功 − 失败（后端未单列 timeout/cancelled，差值即为其和）。
-  const execSuccess = s?.executions?.success ?? 0;
-  const execFailed = s?.executions?.failed ?? 0;
-  const execOther = Math.max(totalExec - execSuccess - execFailed, 0);
 
   // UI-16：任一指标读请求失败即整页错误块（互斥/并存均可，取首个非空）。
   // R171（P2-3）：六路（含两路调度）都算——此前调度两路不在其中，失败时整页
@@ -307,8 +263,6 @@ export default function DashboardPage() {
     void refetchFailures(); void refetchSchedMetrics(); void refetchSchedStats();
   };
 
-  const failureList = (failures ?? []).slice(0, 8);
-
   // P1-2：跳执行列表的深链保留当前项目上下文（?project=），与既有筛选参数并存。
   const executionsHref = (status?: string) => {
     const params = new URLSearchParams();
@@ -321,13 +275,9 @@ export default function DashboardPage() {
   // I18N-DATAKEY-01：dataKey 用稳定英文键，展示名由 Area name 走 i18n——
   // 此前用中文「成功/失败」当 dataKey、靠 Legend formatter 映射，Tooltip
   // 仍是裸中文键，属权宜方案。
-  // A6（第二轮审计）：趋势图按日期轴补零（见 buildTrendData 注释）。
+  // A6（第二轮审计）：趋势图按日期轴补零（序列构建在 utils/trendSeries.ts）。
   // B3-①：序列聚合下沉 utils/trendSeries.ts（含日成功率 rate，纯函数可单测）。
   const trendData = buildTrendSeries(trend, trendDays);
-
-  // UI-04 ①：三张 KPI 卡各自的 sparkline 序列（补零 7 天窗，形状稳定）
-  const runSpark = buildSparklineData(sparkTrend, 7);
-  const sparkHasData = runSpark.some(p => p.value > 0);
 
   const schedMetrics = schedulerMetrics as SchedulerMetricsResponse | undefined;
 
@@ -398,126 +348,16 @@ export default function DashboardPage() {
       {/* P2-1 口径分组（随当前项目）：任务/执行类聚合，请求带 projectId，切项目数值变化。 */}
       <ScopeSectionHeader scope="project" testId="scope-group-project" />
 
-      {/* KPI 卡片——UI-02：卡片底色接入 CSS 变量（双主题），强调色取 token 语义面。
-          UI-08：首屏（无数据加载中）以骨架形态替代 Spin 包裹，刷新态仍原样 */}
-      {/* UI-09：KPI 卡 xs={12} 两列并排时内容宽仅 ~144px——十位数统计值按
-          28px 字号会溢出卡片（实测 1,234,567,890 顶出右边界），窄屏由
-          .ui09-kpi-stat 媒体查询降字号兜底（见 index.css） */}
-      {summaryLoading && !s ? (
-        // UI 打磨：KPI 行首屏骨架用 cards 变体（3 张随项目卡），与真实布局同形，
-        // 此前 table 行骨架在加载完成瞬间明显跳动
-        <PageSkeleton variant="cards" rows={3} />
-      ) : (
-        <Row gutter={[16, 16]} align="stretch">
-          <Col xs={12} sm={8}>
-            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
-              <Statistic
-                className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.tasks')}</Text>}
-                value={s?.totalTasks ?? '—'}
-                prefix={<RocketOutlined style={{ color: CHART_COLORS.cpu }} />}
-                styles={{ content: { color: CHART_COLORS.cpu, fontSize: 28 } }}
-              />
-              <KpiFootnote>
-                {/* 2026-10-23 口径修正：此前直接写「调度中 N」（N = 内存里的
-                    timers.size + cronTasks.size）。它与左边的「任务总数」是两个
-                    坐标系——前者是**运行期已注册的定时器**，后者是 DB 行数，
-                    暂停/失败补偿/启动窗口都会让两者不等（实测：任务 3、调度中 2）。
-                    同一张卡里并排两个数却没有一句解释，读起来就是矛盾。
-                    现改词为「已注册调度」并加 tooltip 说明差异来源。 */}
-                {schedulerStats ? (
-                  <Tooltip title={t('dashboard.kpi.scheduledHint')}>
-                    <span>
-                      {t('dashboard.kpi.scheduled', { count: schedulerStats.totalScheduledTasks })}
-                      {isScoped ? ` · ${t('projectCtx.globalScope')}` : ''}
-                    </span>
-                  </Tooltip>
-                ) : ' '}
-              </KpiFootnote>
-            </Card>
-          </Col>
-          {/* UI-04 ①：24h 执行量 + sparkline（随项目） */}
-          <Col xs={12} sm={8}>
-            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
-              <Statistic
-                className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.todayRuns')}</Text>}
-                value={s?.todayRuns ?? totalExec}
-                prefix={<ThunderboltOutlined style={{ color: CHART_COLORS.success }} />}
-                styles={{ content: { color: CHART_COLORS.success, fontSize: 28 } }}
-              />
-              <KpiSparkline color={CHART_COLORS.success} hasData={sparkHasData} data={runSpark} />
-            </Card>
-          </Col>
-          {/* UI-04 ①：运行中 + sparkline（随项目） */}
-          <Col xs={12} sm={8}>
-            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
-              <Statistic
-                className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.running')}</Text>}
-                value={runningCount}
-                prefix={<ClockCircleOutlined style={{ color: CHART_COLORS.concurrent }} />}
-                styles={{ content: { color: runningCount > 0 ? CHART_COLORS.concurrent : 'var(--chart-axis-text)', fontSize: 28 } }}
-                suffix={
-                  runningCount > 0
-                    ? <Badge status="processing" style={{ marginLeft: 6 }} />
-                    : undefined
-                }
-              />
-              <KpiSparkline color={CHART_COLORS.concurrent} hasData={sparkHasData} data={runSpark} />
-            </Card>
-          </Col>
-        </Row>
-      )}
-
-      {/* 成功率 + 平均耗时（UI 打磨：两卡等高，右卡内容垂直居中消化空白） */}
-      <Row gutter={[16, 16]} align="stretch">
-        <Col xs={24} md={12}>
-          <Card
-            size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.successRate')}</Text>}
-            style={{ height: '100%' }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-              <Tooltip title={t('dashboard.successRateHint')}>
-                <Progress
-                  type="circle"
-                  percent={Math.round(successRate * 100) / 100}
-                  size={80}
-                  strokeColor={successRate >= 95 ? CHART_COLORS.success : successRate >= 80 ? CHART_COLORS.concurrent : CHART_COLORS.failed}
-                  format={p => <span style={{ fontSize: 14, fontWeight: 600 }}>{p}%</span>}
-                />
-              </Tooltip>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                  <CheckCircleOutlined style={{ color: CHART_COLORS.success }} />
-                  <Text>{t('dashboard.success', { count: execSuccess })}</Text>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <CloseCircleOutlined style={{ color: CHART_COLORS.failed }} />
-                  <Text>{t('dashboard.failed', { count: execFailed })}</Text>
-                </div>
-                {execOther > 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                    <Tooltip title={t('dashboard.other.tooltip')}>
-                      <MinusCircleOutlined style={{ color: 'var(--chart-axis-text)' }} />
-                    </Tooltip>
-                    <Text type="secondary">{t('dashboard.other', { count: execOther })}</Text>
-                  </div>
-                )}
-              </div>
-            </div>
-            <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
-              {t('dashboard.successRateHint')}
-            </Text>
-            {/* UI-04 ①：成功率随执行量趋势（同一 sparkline 序列，失败率高时观感即成功率走势） */}
-            <KpiSparkline color={CHART_COLORS.cpu} hasData={sparkHasData} data={runSpark} />
-          </Card>
-        </Col>
-        <Col xs={24} md={12}>
-          <AvgDurationCard avgDurationMs={s?.avgDurationMs} todayRuns={s?.todayRuns ?? totalExec} runningCount={runningCount} sparkHasData={sparkHasData} sparkData={runSpark} />
-        </Col>
-      </Row>
+      {/* T2（P1）：整个 KPI 区外提——读失败显示 `—`，不渲染 0% 红环；
+          页面本体只留一行调用（零余量棘轮要求净减行）。 */}
+      <KpiRow
+        summary={s}
+        summaryLoading={summaryLoading}
+        summaryError={summaryError}
+        isScoped={isScoped}
+        schedulerStats={schedulerStats}
+        sparkTrend={sparkTrend}
+      />
 
       {/* 趋势图 */}
       <Card
@@ -542,32 +382,11 @@ export default function DashboardPage() {
           // UI 打磨：骨架高度与图表区（200px）对齐，避免加载完成时卡片高度跳动
           <PageSkeleton variant="table" rows={2} style={{ height: 200 }} />
         ) : (
-        <>
-        <ResponsiveContainer width="100%" height={200}>
-            <AreaChart data={trendData} margin={{ top: 5, right: 16, left: 0, bottom: 0 }}>
-              <defs>
-                <linearGradient id="gradSuccess" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={CHART_COLORS.success} stopOpacity={0.25} />
-                  <stop offset="95%" stopColor={CHART_COLORS.success} stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="gradFailed" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={CHART_COLORS.failed} stopOpacity={0.25} />
-                  <stop offset="95%" stopColor={CHART_COLORS.failed} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid(isDark)} />
-              <XAxis dataKey="date" tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
-              <YAxis yAxisId="count" tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} allowDecimals={false} />
-              <YAxis yAxisId="rate" orientation="right" domain={[0, 100]} unit="%" width={48} tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
-              <RechartTooltip />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Area yAxisId="count" type="monotone" dataKey="success" name={t('dashboard.trend.success')} stroke={CHART_COLORS.success} fill="url(#gradSuccess)" strokeWidth={2} />
-              <Area yAxisId="count" type="monotone" dataKey="failed" name={t('dashboard.trend.failed')} stroke={CHART_COLORS.failed} fill="url(#gradFailed)" strokeWidth={2} />
-              <Line yAxisId="rate" type="monotone" dataKey="rate" name={t('dashboard.trend.rate')} stroke={CHART_COLORS.cpu} strokeWidth={2} dot={false} connectNulls={false} />
-            </AreaChart>
-          </ResponsiveContainer>
-          <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>{t('dashboard.trend.rateHint')}</Text>
-        </>
+          <>
+            {/* T3（P2）：整块图表外提；Tooltip 走 CHART_COLORS.tooltip(isDark) + 单位格式化 */}
+            <TrendChart trendData={trendData} isDark={isDark} t={t} />
+            <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>{t('dashboard.trend.rateHint')}</Text>
+          </>
         )}
       </Card>
 
@@ -585,7 +404,7 @@ export default function DashboardPage() {
             {failLoading && !failures ? (
               <PageSkeleton variant="table" rows={2} />
             ) : (
-              <FailureTopList failures={failures} onOpenTask={id => nav(`/tasks/${id}`)} />
+              <FailureTopList failures={failures} readFailed={!!failError} onOpenTask={id => nav(`/tasks/${id}`)} />
             )}
           </Card>
         </Col>
@@ -596,79 +415,8 @@ export default function DashboardPage() {
             style={{ height: '100%' }}
             extra={<Link to={executionsHref() /* R281-DEEPLINK-01：此处**刻意**不带 status——「全部记录」承诺的是全部，改成 failed,timeout 会把「全部」变成「全部失败」，属另一个（更坏的）谎报。详见模块级注释 */} style={{ fontSize: 12 }}>{t('dashboard.recentFailures.all')}</Link>}
           >
-            {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
-            {failLoading && !failures ? (
-              <PageSkeleton variant="table" rows={2} />
-            ) : (
-            <>
-              {failureList.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '24px 0' }}>
-                  <CheckCircleOutlined style={{ fontSize: 28, color: CHART_COLORS.success }} />
-                  <div style={{ marginTop: 8 }}>
-                    <Text type="secondary">{t('dashboard.noFailures')}</Text>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {failureList.map(f => (
-                    <Alert
-                      key={f.id}
-                      type="error"
-                      showIcon={false}
-                      style={{ padding: '6px 10px', borderRadius: 6 }}
-                      title={
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            {/* U6: 直接链到执行详情页，失败溯源一步到位 */}
-                            {/* F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href，改 <Link>（键盘可达 + 真实 href） */}
-                            <Link
-                              to={`/tasks/${f.taskId}/executions/${f.id}`}
-                              style={{ fontSize: 12, fontWeight: 500, display: 'block' }}
-                            >
-                              {f.taskName}
-                            </Link>
-                            <Tooltip title={f.errorMessage}>
-                              <Text
-                                type="secondary"
-                                style={{ fontSize: 11, display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                              >
-                                {f.errorMessage || t('dashboard.unknownError')}
-                              </Text>
-                            </Tooltip>
-                            {/* U6: 消费后端 failureReason + exitCode */}
-                            {(f.failureReason || f.exitCode != null) && (
-                              <Space size={4} style={{ marginTop: 2 }}>
-                                {f.failureReason && (
-                                  <Tooltip title={f.failureReason}>
-                                    <Tag color="volcano" style={{ fontSize: 10, lineHeight: '16px', marginInlineEnd: 0 }}>
-                                      {/* 此前直接渲染**原始枚举**并按 12 字符截断，于是
-                                          `interpreter_unavailable` 显示成 `interpreter_…`
-                                          ——既不是中文也不是英文，用户看不出是什么失败。
-                                          改为查 i18n 标签（键与 ExecutionDetailPage 的
-                                          FAILURE_REASON_MAP 同一族）；未知值仍回退原始
-                                          token（宁可露出 `some_new_reason` 也不显示
-                                          "未知原因"把可诊断信息抹掉），此时才截断。 */}
-                                      {failureReasonLabel(f.failureReason, t)}
-                                    </Tag>
-                                  </Tooltip>
-                                )}
-                                {f.exitCode != null && (
-                                  <Tag style={{ fontSize: 10, lineHeight: '16px', marginInlineEnd: 0 }}>exit {f.exitCode}</Tag>
-                                )}
-                              </Space>
-                            )}
-                          </div>
-                          <Text type="secondary" style={{ fontSize: 11, marginLeft: 8, whiteSpace: 'nowrap' }}>
-                            {formatDuration(f.duration, t)}
-                          </Text>
-                        </div>
-                      }
-                    />
-                  ))}
-                </div>
-              )}
-            </>
-            )}
+            {/* T1（P1）：空态/读失败/明细三态外提；父页面只留一行组件调用 */}
+            <RecentFailuresCard failures={failures} failError={failError} onOpenExecution={(id, taskId) => nav(`/tasks/${taskId}/executions/${id}`)} />
           </Card>
         </Col>
       </Row>
@@ -704,7 +452,7 @@ export default function DashboardPage() {
             {execLoading && !executorStats ? (
               <PageSkeleton variant="table" rows={2} />
             ) : (
-              <ExecutorHeatBars executors={executorStats ?? []} onOpenExecutor={id => nav(`/executors/${id}`)} />
+              <ExecutorHeatBars executors={executorStats ?? []} readFailed={!!execError} onOpenExecutor={id => nav(`/executors/${id}`)} />
             )}
           </Card>
         </Col>

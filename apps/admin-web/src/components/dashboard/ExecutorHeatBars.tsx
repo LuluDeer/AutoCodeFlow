@@ -9,13 +9,14 @@
  * 交互：点击行跳执行器详情 /executors/:id。
  */
 import { Tooltip, Typography } from 'antd';
-import { ApiOutlined } from '@ant-design/icons';
+import { ApiOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../../i18n';
 // UI-03：色阶阈值常量与 heatColor 挪至 ./color-tokens（react-refresh 收敛：
 // 组件文件仅保留组件导出；色阶纯函数零 React 依赖，外部消费方仅色阶测试）。
 import { heatColor } from './color-tokens';
+import { CHART_COLORS } from '../../theme/tokens';
 
 const { Text } = Typography;
 
@@ -47,6 +48,8 @@ export interface ExecutorHeatRow {
 interface ExecutorHeatBarsProps {
   executors: ExecutorHeatRow[];
   onOpenExecutor: (id: string) => void;
+  /** READ-HONESTY：机队数据源读失败。空数组 = 确实没有执行器，读失败 = 未知，二者不可混。 */
+  readFailed?: boolean;
 }
 
 function BarTrack({ label, usage }: { label: string; usage: number | null }) {
@@ -87,8 +90,19 @@ function BarTrack({ label, usage }: { label: string; usage: number | null }) {
 }
 
 /** 执行器资源热力条列表（每执行器一行：名称 + CPU 条 + 内存条） */
-export default function ExecutorHeatBars({ executors, onOpenExecutor }: ExecutorHeatBarsProps) {
+export default function ExecutorHeatBars({ executors, onOpenExecutor, readFailed = false }: ExecutorHeatBarsProps) {
   const { t } = useTranslation();
+  if (readFailed) {
+    return (
+      <div
+        data-testid="executor-heat-read-failed"
+        style={{ textAlign: 'center', padding: '24px 0', color: 'var(--chart-axis-text)', fontSize: 12 }}
+      >
+        <CloseCircleOutlined style={{ fontSize: 28, color: CHART_COLORS.failed, marginBottom: 8 }} />
+        <div><Text type="danger">{t('heatBars.readFailed')}</Text></div>
+      </div>
+    );
+  }
   if (executors.length === 0) {
     return (
       <div

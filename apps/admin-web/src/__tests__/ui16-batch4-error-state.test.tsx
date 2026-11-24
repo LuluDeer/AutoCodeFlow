@@ -201,6 +201,30 @@ describe('UI-16 第四批：P2 页面读请求错误态', () => {
     expect(screen.getByText('AI 服务不可用')).toBeTruthy();
   });
 
+  it('DashboardPage：failError/execError 时三张卡显示读取失败，不冒充健康空态', async () => {
+    vi.mocked(metricsApi.getSummary).mockResolvedValue({
+      totalTasks: 2, todayRuns: 3, successRate: 100, avgDurationMs: 100,
+      totalExecutors: 1, onlineExecutors: 1,
+      executions: { total: 3, success: 3, failed: 0, running: 0 },
+    } as never);
+    vi.mocked(metricsApi.getDailyTrend).mockResolvedValue([] as never);
+    vi.mocked(metricsApi.getRecentFailures).mockRejectedValue(new Error('失败列表服务不可用'));
+    vi.mocked(metricsApi.getExecutorStats).mockRejectedValue(new Error('机队服务不可用'));
+    vi.mocked(metricsApi.getSchedulerMetrics).mockResolvedValue({} as never);
+
+    renderPage(<DashboardPage />);
+
+    expect(await screen.findByTestId('failure-top-read-failed')).toBeTruthy();
+    expect(screen.getByTestId('recent-failures-read-failed')).toBeTruthy();
+    expect(screen.getByTestId('executor-heat-read-failed')).toBeTruthy();
+    // 旧行为：三个卡片都会走到「空数组」分支 => 假绿/假空
+    expect(screen.queryByText('近期无失败任务')).toBeNull();
+    expect(screen.queryByText('近期无失败记录')).toBeNull();
+    expect(screen.queryByText('暂无执行器')).toBeNull();
+    // 错误文案与页内 StateError 同时存在（重试出口未被某张卡吞掉）
+    expect(screen.getByTestId('state-error')).toBeTruthy();
+  });
+
   it('DashboardPage：任一指标失败展示错误块，重试重新请求', async () => {
     vi.mocked(metricsApi.getSummary)
       .mockRejectedValueOnce(new Error('指标服务不可用'))

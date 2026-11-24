@@ -24,7 +24,7 @@
  * ③ 控制组：两路都成功 ⇒ 健康 Tag + 样本数 + **没有**错误块（证明①②不是恒显示的假绿）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cloneElement } from 'react';
@@ -201,5 +201,65 @@ describe('R171 P2-3：调度两路读失败的可区分性', () => {
     expect(await screen.findByText(/样本 15 次/)).toBeTruthy();
     expect(screen.queryByTestId('state-error')).toBeNull();
     expect(screen.queryByText(/调度器健康：未知/)).toBeNull();
+  });
+});
+
+/**
+ * T1（P1）：此前 failError/execError 两路只进 dashboardError，卡片本体仍以
+ * 「空数组」渲染成绿色健康态——「没读到」被说成「没有失败 / 没有执行器」。
+ * 本组钉住三卡各自的 readFailed 分支与控制组（真 0 成功率不能被吞）。
+ */
+describe('T1/T2 P1：failError / execError / summaryError 的读失败诚实性', () => {
+  it('④ failError ⇒ 失败 Top 与最近失败卡显示读取失败，不渲染绿色健康空态', async () => {
+    mockHealthy();
+    mockedMetrics.getRecentFailures.mockRejectedValue(new Error('failures 502'));
+
+    renderPage();
+
+    expect(await screen.findByTestId('failure-top-read-failed')).toBeTruthy();
+    expect(screen.getByTestId('recent-failures-read-failed')).toBeTruthy();
+    expect(screen.queryByTestId('failure-top-empty')).toBeNull();
+    expect(screen.queryByText('近期无失败任务')).toBeNull();
+    expect(screen.queryByText('近期无失败记录')).toBeNull();
+    // 重试提示随文案一起出现（不新开按钮，避免与页头刷新重复）
+    expect(screen.getAllByText(/请点刷新重试/).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('⑤ execError ⇒ 执行器热力条显示读取失败，不冒充「暂无执行器」', async () => {
+    mockHealthy();
+    mockedMetrics.getExecutorStats.mockRejectedValue(new Error('executors 502'));
+
+    renderPage();
+
+    expect(await screen.findByTestId('executor-heat-read-failed')).toBeTruthy();
+    expect(screen.queryByTestId('executor-heat-empty')).toBeNull();
+    expect(screen.getByText(/请点刷新重试/)).toBeTruthy();
+  });
+
+  it('⑥ summaryError ⇒ KPI 显示 —，不渲染 0% 红色环', async () => {
+    mockHealthy();
+    mockedMetrics.getSummary.mockRejectedValue(new Error('summary 502'));
+
+    renderPage();
+
+    expect(await screen.findByTestId('kpi-today-runs')).toBeTruthy();
+    expect(screen.getByTestId('kpi-today-runs').textContent).toContain('—');
+    expect(screen.getByTestId('kpi-running').textContent).toContain('—');
+    expect(screen.getByTestId('kpi-success-rate').textContent).toContain('—');
+    expect(screen.getByTestId('kpi-success-rate').querySelector('.ant-progress')).toBeNull();
+    expect(screen.getByTestId('kpi-success-rate').textContent).not.toContain('0%');
+  });
+
+  it('⑦ 控制组：summary 读成功但 successRate=0 ⇒ 仍显示 0% 与进度环（真 0 不被吞）', async () => {
+    mockHealthy();
+    mockedMetrics.getSummary.mockResolvedValue({ ...summaryFixture, successRate: 0 } as never);
+
+    renderPage();
+
+    expect(await screen.findByTestId('kpi-success-rate')).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByTestId('kpi-success-rate').textContent).toContain('0%');
+    });
+    expect(screen.getByTestId('kpi-success-rate').querySelector('.ant-progress')).not.toBeNull();
   });
 });

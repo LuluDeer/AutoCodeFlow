@@ -127,6 +127,17 @@ export const CHART_COLORS = {
   concurrent: SEMANTIC_COLORS.warning,
   grid: (isDark: boolean) => (isDark ? SEMANTIC_COLORS.gridDark : SEMANTIC_COLORS.gridLight),
   axisText: (isDark: boolean) => (isDark ? '#94A3B8' : '#475569'),
+  /**
+   * T3（P2）：Recharts Tooltip 内容样式工厂——暗色面不再是白底黑字（recharts
+   * 默认 `#fff` / `#ccc`），亮色面也不刺眼。三色全部取自本文件的主题面令牌：
+   * 容器背景 / 边框 / 文字（文字与 axisText 同源 = 两个主题面的 textSecondary），
+   * 不新造 hex，跟随 MASTER.md 色板单点演进。
+   */
+  tooltip: (isDark: boolean) => ({
+    backgroundColor: isDark ? DARK_TOKENS.container : LIGHT_TOKENS.container,
+    borderColor: isDark ? DARK_TOKENS.border : LIGHT_TOKENS.border,
+    color: isDark ? DARK_TOKENS.textSecondary : LIGHT_TOKENS.textSecondary,
+  }),
 } as const;
 
 /**

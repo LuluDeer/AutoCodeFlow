@@ -200,6 +200,7 @@ export default {
   'dashboard.trend.failed': 'Failed',
   'dashboard.trend.rate': 'Success rate',
   'dashboard.trend.rateHint': 'Rate = success ÷ (success + failed + timeout); cancelled/killed are excluded; bucketed by creation day, no line on sample-free days.',
+  'dashboard.trend.tooltip.countUnit': 'runs',
   'dashboard.executors': 'Executor resources',
   'dashboard.executors.all': 'All',
   'dashboard.schedulerLatency': 'Scheduler latency',
@@ -210,6 +211,9 @@ export default {
   'dashboard.recentFailures': 'Recent failures',
   'dashboard.recentFailures.all': 'All records',
   'dashboard.noFailures': 'No recent failures',
+  // T1 (P1): a read failure is not "no failures". All three cards reuse the
+  // dashboard.error semantics and carry a "hit refresh to retry" hint.
+  'dashboard.recentFailures.readFailed': 'Read failed — recent failure records are unknown; hit refresh to retry',
   'dashboard.unknownError': 'Unknown error',
 
   // R328: North Star two-metric board (strict = primary, proxy = reference; never mixed).
@@ -3411,6 +3415,7 @@ export default {
   'onboarding.complete.subtitle': 'Track execution volume, success rate, and scheduling health from the dashboard',
   'onboarding.dismiss': 'Dismiss this guide',
   'failureTop.empty': 'No recent failed tasks',
+  'failureTop.readFailed': 'Read failed — failing tasks are unknown; hit refresh to retry',
   'failureTop.count': '{{count}} time(s)',
   'failureTop.unknown': 'Unknown error',
   'schedLatency.p99.tooltip': 'P99 of trigger fire→enqueue latency (bucket-interpolated; only fixed_rate/cron tasks counted)',
@@ -3420,6 +3425,7 @@ export default {
   'schedLatency.noSamples': 'No scheduled trigger samples yet (only fixed_rate/cron tasks counted)',
   'kpiSpark.empty': 'No data',
   'heatBars.empty': 'No executors',
+  'heatBars.readFailed': 'Read failed — executor resource status is unknown; hit refresh to retry',
   'heatBars.cpuLabel': 'CPU',
   'heatBars.memLabel': 'Memory',
   // R67: this number is OCCUPIED slots (incl. the E-01 pull reservation), not the number
