@@ -1,7 +1,28 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 4 轮第二批 · R5 体验升级续）
-> 当前分支 `develop` = `58430ee7`（第 4 轮 9 批已提交：`12501899`/`77a9d179`/`947ca87e`/`d8a63768`/`d1ecdcc3` + 第一批 `ef6597d9`/`b616dc43`/`6d0d838c`/`58430ee7`）；**第 4 轮第二批（R5 续）产出落工作树，未提交、未 push**——27 个路径，含 2 处基线重签（i18n 1650→1668、renderer.selftest 1737→1798）。更早轮次均为已收口历史。接手先 `git status` 核对、`npm run check:size-caps` 验基线。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 4 轮最后批 · R5 全收口）
+> 当前分支 `develop` = `4c918367`（第 4 轮 13 批已提交：第4轮主批 5 + R5 第一批 4 + R5 第二批 4）；**第 4 轮最后批（R5 导航/通知链）产出落工作树，未提交、未 push**——约 21 个路径，含 4 处基线重签（main-index.selftest 427→477、i18n 1668→1670、StatusWindow 943→951/函数体 809→829、renderer.selftest 1798→1836）。**这是 R5 审计 19 项的最后一批，至此 R5 全收口。** 更早轮次均为已收口历史。接手先 `git status` 核对、`npm run check:size-caps` 验基线。
+
+## 本轮（2026-11-24 · 第 4 轮最后批 R5）：导航/通知链 6 项收口（2 切片 + 跨契约 + 独立验收）
+
+**编排方式**：R5 剩余 6 项写域是一张连通图（StatusWindow—HistoryPage—App/notifier，且 StatusWindow—tray—i18n），按"谁独占共享文件"切 2 片写域互斥并行（H-A 导航/通知链 4 项独占 renderer.selftest/StatusWindow/HistoryPage/App/主进程通知；H-B 向导端口+托盘 Agent 状态 2 项独占 i18n/Wizard/tray/agent-status-view）→ 2 次跨契约（H-B 请 H-A 接 wizard-bind-host.selftest + 更新两处旧锚点，H-A 落地；H-A 无新增 i18n 需求）→ 主会话重签 4 条基线 → 独立只读验收（verify-h）。
+
+| 切片 | 交付 | 关键文件 |
+|---|---|---|
+| H-A 导航/通知链（4 项） | 通知终态点击落到具体执行：合并桶留 executionId/taskId/taskName/status 元数据→window-manager→preload→App CustomEvent→HistoryPage 选中+滚动（白名单剥 __proto__/token 等毒字段，无 sendSync/新 IPC）；运行时长 1s 刷新（time-tick.ts useNowTicker 三门控，复用 formatRunningMs）；历史详情深链接收 executionId/taskQuery（requestTabSwitch detail 扩白名单，ID 命中优先+任务名回落+数据未到 pending）；Agent ID 首窗出口（状态卡短 ID 首8末4 + CopyValue 复制，锚点 data-agent-assignment-id） | `renderer/tab-switch.ts`、`main/{notifier,notifier-rules,index,window-manager}.ts`、`preload/index.ts`、`renderer/App.tsx`、`renderer/pages/HistoryPage.tsx`、`renderer/pages/StatusWindow.tsx`、`renderer/time-tick.ts`(新)、`renderer/pages/history/history-nav.ts`、`main/main-index.selftest.ts`、`renderer/renderer.selftest.mjs` |
+| H-B 向导端口+托盘状态（2 项） | 端口检查按真实 bind host：wizardBindHost(savedHost) 纯函数（非空沿用/空脏回落 0.0.0.0），checkPort 与 finish 同源，canNext 在 portResult.available=false 时拦下一步，完成页加 bind host 摘要；托盘 Agent 状态签名（agentStatusSignature 7 字段 NUL 连接），lastAssignmentId/lastEffectiveProfile 变化触发重绘 | `renderer/pages/Wizard.tsx`、`renderer/pages/wizard/wizard-bind-host.ts`(新)+selftest(新)、`renderer/i18n.ts`(+1 键)、`main/{tray,agent-status-view}.ts`、`agent-status-view.selftest.ts` |
+
+**验收证据（独立验收方 verify-h 实测）**：
+- **9/9 门禁 exit 0**：size-caps（97 条目棘轮未松）、desktop-selftests-wired（renderer 12/12 + main 64）、user-facing-language、error-i18n、mutation-residue；desktop typecheck:renderer / test:renderer（含 wizard-bind-host/time-tick/history-nav 三组）、tsc -p tsconfig / test:main（含 main-index/agent-status-view/notifier-rules selftest）。验收全程只读，测试前后工作树一致。
+- 反证有牙（已演练并还原）：normalizeTabSwitchDetail 改回透传→history-nav.selftest 红（毒字段 __proto__/token/filePath 未被剥）；wizardBindHost 强制回落、agentStatusSignature 去 lastAssignmentId 均红→绿。验收方只读复核三道白名单逐字剥字段、`{}.polluted===undefined`、无 sendSync/新 IPC 新增。
+- 基线诚实：`main-index.selftest 477`、`i18n 1670`、`StatusWindow 951/最长 StatusWindow@L383:829`、`renderer.selftest 1836` 与 `--report` 实测逐字一致，只改这 4 条 maxLines+ceiling+why，无阈值放宽。
+- **验收定级**：T1/T2/T3/H-B 两项为单测/内存替身（纯函数真执行），T4 状态卡为静态探查；整批最高为单测/内存替身，**P0/P1/P2=0**。未做浏览器/真机（通知点击→历史滚动、向导端口 UI 拦截、托盘重绘），如实标注不越级。
+
+**覆盖边界（非缺陷）**：T1 端到端点击链与 T4 显示效果依赖文本锚点守卫；Chromium 二进制/XWayland 缺席使 browser 真机 smoke 未跑（selftest 内部跳过、整体仍 exit 0）。R5 审计 19 项至此**全部收口**（第一批 5 + 第二批 8 + 最后批 6）。后续若有新目标，从 `docs/AGENT_HANDOFF.md` 历史段的「不建议动」清单与未覆盖边界继续。
+
+**未提交、未 push**——约 21 路径待分批提交（H-A / H-B / 基线 3 批）。
+
+---
 
 ## 本轮（2026-11-24 · 第 4 轮第二批 R5）：配置面/应用面/无障碍 8 项升级（3 切片 + 独立验收）
 
