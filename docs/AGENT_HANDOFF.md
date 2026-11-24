@@ -5,7 +5,7 @@
 
 ## 本轮（2026-11-24）：恢复 develop-centric 分支拓扑（撤销自动删分支误配）
 
-**问题**：11-22 治理开了仓库级 `delete_branch_on_merge=true`，该设置无差别删除 PR 的 head 分支——develop 作为 develop→main PR 的 head 被自动删（PR #205/#206 合并后各删一次）。后果：ci.yml 的 `push: branches:[develop]` 触发器永久失效，全部 CI 只能靠 PR/schedule；`admin-api-coverage` 门控含 `github.ref == 'refs/heads/develop'`，PR 路径下 skipped，覆盖率门只剩 nightly 兜底。这不是设计变更，是与 [CONTRIBUTING.md](../../CONTRIBUTING.md) §二 / [docs/development.md](development.md) §352 的 develop-centric 约定直接冲突的配置错误。
+**问题**：11-22 治理开了仓库级 `delete_branch_on_merge=true`，该设置无差别删除 PR 的 head 分支——develop 作为 develop→main PR 的 head 被自动删（PR #205/#206 合并后各删一次）。后果：ci.yml 的 `push: branches:[develop]` 触发器永久失效，全部 CI 只能靠 PR/schedule；`admin-api-coverage` 门控含 `github.ref == 'refs/heads/develop'`，PR 路径下 skipped，覆盖率门只剩 nightly 兜底。这不是设计变更，是与 [CONTRIBUTING.md](../CONTRIBUTING.md) §二 / [docs/development.md](development.md) §352 的 develop-centric 约定直接冲突的配置错误。
 
 **治理（方案 A）**：
 1. **止血**：从 main（`de49cf9e`）重建 `origin/develop`（纯快进、零风险）。push 立即触发 CI run `45315103515`，实证 `admin-api-coverage` 从 skipped 变 in_progress。
