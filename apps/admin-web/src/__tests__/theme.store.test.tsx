@@ -146,6 +146,61 @@ describe('buildAntdTheme — antd algorithm 映射（UI-01 验收）', () => {
   });
 });
 
+describe('T3 — 亮色控件非文本对比度（WCAG 1.4.11 ≥3:1）', () => {
+  // 与 primary-button-contrast.ux.test.ts 同一 WCAG 相对亮度算法。
+  function relLuminance(hex: string): number {
+    const c = hex.replace('#', '');
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(c.slice(i, i + 2), 16) / 255);
+    const f = (v: number) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  }
+  function contrast(a: string, b: string): number {
+    const [x, y] = [relLuminance(a), relLuminance(b)].sort((p, q) => q - p);
+    return (x + 0.05) / (y + 0.05);
+  }
+
+  it('Switch / Checkbox / Badge 组件级亮色覆盖：白底与布局底均 ≥3:1', () => {
+    const light = buildAntdTheme('light');
+    // 主 token 保持品牌色（不新造 hex、不动 tokens.ts）——仅组件级覆盖生效
+    expect(light.token?.colorPrimary).toBe('#22C55E');
+    expect(light.token?.colorSuccess).toBe('#22C55E');
+    const cases: [string, string | undefined][] = [
+      ['Switch.colorPrimary', light.components?.Switch?.colorPrimary],
+      ['Checkbox.colorPrimary', light.components?.Checkbox?.colorPrimary],
+      ['Badge.colorSuccess', light.components?.Badge?.colorSuccess],
+    ];
+    for (const [name, color] of cases) {
+      expect(color, `${name} 缺少组件级覆盖`).toBeTruthy();
+      for (const [surface, bg] of [['白底', '#FFFFFF'], ['布局底', '#F8FAFC']] as const) {
+        const r = contrast(color!, bg);
+        expect(r, `${name} ${color} / ${surface} 仅 ${r.toFixed(2)}:1`).toBeGreaterThanOrEqual(3);
+      }
+    }
+  });
+
+  it('交互态 hover / active 一并加深（默认派生 #45D174 白底不达标）', () => {
+    const light = buildAntdTheme('light');
+    for (const name of ['colorPrimaryHover', 'colorPrimaryActive'] as const) {
+      const color = light.components?.Switch?.[name];
+      expect(color, `Switch.${name} 未覆盖`).toBeTruthy();
+      expect(contrast(color!, '#FFFFFF')).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it('暗色面已达标，不做组件级覆盖（品牌色在深底保持原样）', () => {
+    const dark = buildAntdTheme('dark');
+    expect(dark.components?.Switch).toEqual({});
+    expect(dark.components?.Checkbox).toEqual({});
+    expect(dark.components?.Badge).toEqual({});
+  });
+
+  it('反例存档：亮色品牌绿当控件状态色低于 3:1', () => {
+    expect(contrast('#22c55e', '#ffffff')).toBeLessThan(3);
+    expect(contrast('#22c55e', '#f8fafc')).toBeLessThan(3);
+    expect(contrast('#15803d', '#ffffff')).toBeGreaterThanOrEqual(3);
+  });
+});
+
 describe('ThemedProviders + 切换按钮接线', () => {
   it('渲染在 ThemedProviders 内的按钮点击循环三态并同步 data-theme（wireThemeSync 接线）', async () => {
     // jsdom 未实现 matchMedia——补桩（system 态解析需要）

@@ -130,7 +130,12 @@ export default function ExecutorHeatBars({ executors, onOpenExecutor, readFailed
           })}
           onClick={() => onOpenExecutor(ex.id)}
           onKeyDown={e => {
-            if (e.key === 'Enter' || e.key === ' ') onOpenExecutor(ex.id);
+            if (e.key === 'Enter' || e.key === ' ') {
+              // T2（P3）：Space 默认滚动页面（role=button 不自带按钮默认行为），
+              // 与 TaskDependencyGraph 的键盘导航同款先阻止默认再触发。
+              if (e.key === ' ') e.preventDefault();
+              onOpenExecutor(ex.id);
+            }
           }}
           style={{
             display: 'flex',

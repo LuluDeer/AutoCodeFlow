@@ -20,11 +20,10 @@ import { Form,
   Result,
   Modal } from 'antd';
 import { message } from '../utils/toast';
+import { prefersReducedMotion } from '../utils/scroll-reduced';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
 import { Modal as confirmModal } from '../utils/modal';
-import {
-  ThunderboltOutlined, ArrowLeftOutlined, SaveOutlined, ReloadOutlined,
-} from '@ant-design/icons';
+import { ThunderboltOutlined, ArrowLeftOutlined, SaveOutlined, ReloadOutlined } from '@ant-design/icons';
 // （APP-SELECT-01 的 Link/空态引导随应用选择器一起迁入 TaskFormBasicSection。）
 import { useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -695,7 +694,7 @@ export default function TaskFormPage() {
   const scrollToSection = (id: string) => {
     // jsdom 无布局引擎，Element.scrollIntoView 未实现——守卫后调用，
     // 真浏览器生效；测试环境静默跳过（纯定位增强，无业务语义）。
-    document.getElementById(id)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    document.getElementById(id)?.scrollIntoView?.({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
   };
 
   // FEAT-13（R7 刀 1）：openSaveAsTemplate / handleTemplateConfirm 已整段迁入

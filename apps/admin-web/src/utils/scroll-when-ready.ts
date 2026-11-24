@@ -11,7 +11,12 @@
  *
  * 无 rAF 的环境（旧 jsdom 等）退化为立即尝试一次，与原同步滚动路径等价。
  * `doc` 参数供测试注入假 document（手动 rAF 队列逐帧确定性推进）。
+ *
+ * T1：显式平滑滚动绕过 CSS reduced-motion 兜底，按系统偏好
+ * 降级为 `auto`（偏好读取沿用注入的 doc.defaultView）。
  */
+import { prefersReducedMotion } from './scroll-reduced';
+
 export function scrollToSectionWhenReady(
   id: string,
   doc: Document = document,
@@ -23,7 +28,10 @@ export function scrollToSectionWhenReady(
   // jsdom 无布局引擎，Element.scrollIntoView 未实现——可选调用守卫后调用，
   // 真浏览器生效；测试环境静默跳过（与 TaskFormPage 原 scrollToSection 同款）。
   const tryScroll = () => {
-    doc.getElementById(id)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    doc.getElementById(id)?.scrollIntoView?.({
+      behavior: prefersReducedMotion(view) ? 'auto' : 'smooth',
+      block: 'start',
+    });
   };
   if (typeof raf !== 'function') {
     tryScroll();

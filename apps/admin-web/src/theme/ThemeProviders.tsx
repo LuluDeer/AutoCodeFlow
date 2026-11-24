@@ -47,6 +47,18 @@ export function buildAntdTheme(resolved: 'light' | 'dark'): ThemeConfig {
   const linkColor = SEMANTIC_TEXT.link[resolved];
   const linkHover = isDark ? '#86efac' : '#166534';
   const infoColor = SEMANTIC_TEXT.info[resolved];
+  // T3（P2，WCAG 1.4.11）：亮色品牌绿 #22C55E 在白底 2.28:1 / 布局底 2.18:1，
+  // Switch 开轨、Checkbox 勾选、Badge 纯色状态点都低于非文本 3:1。主 token
+  // 不动（品牌色相保留），只在组件级 alias 覆盖为既有 PRIMARY_BUTTON 深绿档；
+  // hover/active 一并替换（默认派生的 #45D174 白底仅 ~1.9:1）。
+  // 暗色面 #20AA53/#4ADE80 已达标，不覆盖。
+  const controlColorOverride = isDark
+    ? {}
+    : {
+        colorPrimary: PRIMARY_BUTTON.bg,
+        colorPrimaryHover: PRIMARY_BUTTON.hoverBg,
+        colorPrimaryActive: PRIMARY_BUTTON.activeBg,
+      };
   return {
     algorithm: isDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
     token: {
@@ -115,6 +127,10 @@ export function buildAntdTheme(resolved: 'light' | 'dark'): ThemeConfig {
         defaultBg: isDark ? DESIGN_TOKENS.secondary : LIGHT_TOKENS.muted,
         defaultColor: face.text,
       },
+      // T3：组件级 alias 覆盖（仅控件，不改全局 colorPrimary/colorSuccess）
+      Switch: { ...controlColorOverride },
+      Checkbox: { ...controlColorOverride },
+      Badge: isDark ? {} : { colorSuccess: PRIMARY_BUTTON.bg },
       Pagination: {
         itemActiveColor: linkColor,
         itemActiveColorHover: linkHover,

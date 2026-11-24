@@ -85,6 +85,7 @@ import type { FormInstance } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { message } from '../../utils/toast';
 import { showApiError } from '../../utils/error';
+import { prefersReducedMotion } from '../../utils/scroll-reduced';
 import { findInvalidSecretKeys } from '../../utils/secretKeyPolicy';
 import type { ExecutorMode } from '../executor-mode';
 import '../../i18n';
@@ -188,7 +189,7 @@ export function useTaskFormValidation({
           // 段 A 自己滚到字段级，故 section 返回 null（不叠分区滚动）。
           const namePath = fields[0]?.name;
           if (namePath && namePath.length > 0) {
-            form.scrollToField(namePath, { behavior: 'smooth', block: 'center' });
+            form.scrollToField(namePath, { behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
           }
           return { blocked: true, gate: 'form', section: null, announcement: failureText };
         }

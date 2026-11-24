@@ -950,7 +950,7 @@ export default function ExecutorPackagesPage() {
                           >
                             <Space size="small">
                               <Text strong>{ex.name}</Text>
-                              <Badge status="success" />
+                              <Badge status="success" role="img" aria-label={t('execList.status.online')} />
                               <Text type="secondary" style={{ fontSize: 12 }}>{ex.address}</Text>
                             </Space>
                           </Checkbox>
