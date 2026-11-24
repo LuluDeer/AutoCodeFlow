@@ -68,6 +68,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+import { expectExit, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 // R160：覆盖计数出口。**必须在任何 require/依赖之前**打印（本文件若因缺依赖崩掉，
 // 「崩了」与「零用例」必须能被哨兵分开看）。helper = 本文件真实的用例注册函数名
 // （`push(name, fn)` = 本文件 selftest 里注册一条用例的那个函数）。
@@ -658,34 +659,48 @@ function copyRealTree() {
 
 function runSelftest() {
   const cases = [];
-  const push = (name, fn) => {
-    try {
-      fn();
-      cases.push({ name, ok: true, why: "" });
-    } catch (err) {
-      cases.push({ name, ok: false, why: err instanceof Error ? err.message : String(err) });
-    }
-  };
+  // `push` 必须与 printCoverageBanner(import.meta.url, "push") 的第二参逐字同名：
+  // 覆盖哨兵按这个函数名在源码里数用例数（本文件登记 helper=push / floor=5）。
+  const push = (name, fn) => cases.push({ name, fn });
   const expect = (cond, msg) => {
     if (!cond) throw new Error(msg);
   };
 
-  push("① 真实树：判据通过（含「待接线」如实打印，不算违规）", () => {
-    const r = judge(ROOT);
-    expect(
-      r.ok,
-      `真实树应通过，实际违规 ${r.issues.length} 条：\n  ${r.issues.join("\n  ")}`,
-    );
-    expect(r.stats.sites >= MIN_SITES, `站点数 ${r.stats.sites} < 下界 ${MIN_SITES}`);
-    expect(r.stats.kinds >= 6, `kind 闭集只有 ${r.stats.kinds} 个`);
-    // 零「待接线」：六条规则全部在真实写入点落地（`--strict` 与主跑等价）。
-    // 这条断言是「不许再往表里塞 pending」的闸——真要加 pending，必须连这句一起改，
-    // 而改动会被 review 看见。
-    expect(r.pending.length === 0, `真实树仍有 ${r.pending.length} 处「待接线」`);
-    expect(judge(ROOT, { strict: true }).ok, "--strict 下应零违规（零待接线）");
+  /**
+   * R-黑盒：起**真子进程**跑本脚本 CLI（`--root <dir>` 空格分离 + `--strict` 开关），
+   * 把 main() 的参数解析与退出码 0/1 本身纳入断言面。旧版所有用例进程内直调
+   * judge()：把 main() 的 `return 1` 改成 `return 0` 后，CLI 打印 ✘ 却 EXIT 0，
+   * CI 转绿而旧 selftest 仍全绿——下面这些 CLI 用例关闭这一族假绿缺口。
+   */
+  const runCli = (args, expectations) =>
+    expectExit(runGuard(SELF, { args: args.map(String) }), expectations);
+  const OK = "✔ A2 因果边守卫通过";
+  const NG = "✖ A2 因果边守卫未通过";
+
+  push("① 真实树：CLI 主跑 exit 0（含零 pending 闸；--strict 同为 0）", () => {
+    const r = runCli([], {
+      code: 0,
+      contains: [OK, "判据计数：站点", "待接线 0 ·", "0 处待接线", "运行期断言在位"],
+      absent: [NG, "⚠ 待接线", "【违规】"],
+      label: "① CLI 主跑（真树）",
+    });
+    const counted = /判据计数：站点 (\d+).*?kind 闭集 (\d+)/.exec(r.stdout);
+    expect(counted, `CLI 没打印判据计数：${r.stdout}`);
+    expect(Number(counted[1]) >= MIN_SITES, `站点数 ${counted[1]} < 下界 ${MIN_SITES}`);
+    expect(Number(counted[2]) >= 6, `kind 闭集只有 ${counted[2]} 个`);
+    // 零「待接线」闸：主跑必须打印「0 处待接线」且不得出现 ⚠ 段（上面 absent 已钉）。
+    // 真要往表里塞 pending，必须连这两处断言一起改，而改动会被 review 看见。
+    runCli(["--strict"], {
+      code: 0,
+      contains: [OK, "0 处待接线"],
+      absent: [NG, "【违规】"],
+      label: "① CLI --strict（真树）",
+    });
   });
 
-  push("② 正例控制组：一个**该传且传了**的写入点 ⇒ 判据不误杀（不是永假）", () => {
+  // 进程内保留：`exemptions: []` 是**判据函数的进程内参数**，CLI 没有 --exemptions flag；
+  // 控制组必须在零豁免下自证合规（不能借真实树的豁免过关），故这一例只能直调 judge()。
+  push("② 正例控制组：一个**该传且传了**的写入点 ⇒ 判据不误杀（进程内：CLI 无 --exemptions）", () => {
     // `exemptions: []`：控制组必须**自带完整合规**，不能借真实树的豁免过关。
     const dir = makeFixtureRepo({ kindLine: `"tool_call_recorded"` });
     try {
@@ -697,18 +712,26 @@ function runSelftest() {
     }
   });
 
-  push("③ 反例：把 causedBySeq 去掉 ⇒ 红（不是永真）", () => {
+  push("③ 反例：把 causedBySeq 去掉 ⇒ 红（零豁免判据 + CLI --root exit 1）", () => {
     const dir = makeFixtureRepo({
       kindLine: `"tool_call_recorded"`,
       causedBySeqLine: null,
     });
     try {
+      // 进程内半例：零豁免下判据必须判红并点名 kind（CLI 无 --exemptions，不能整例搬走）。
       const r = judge(dir, { exemptions: [] });
       expect(!r.ok, "去掉 causedBySeq 后判据仍然通过");
       expect(
         r.issues.some((i) => i.includes("tool_call_recorded")),
         `违规文本没有点名 kind：${r.issues.join(" / ")}`,
       );
+      // 黑盒半例：同一个坏夹具经 main() 的 --root 空格分离解析，退出码必须是 1。
+      runCli(["--root", dir], {
+        code: 1,
+        contains: [NG, "【违规】", "tool_call_recorded"],
+        absent: [OK],
+        label: "③ CLI --root 坏夹具",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -725,12 +748,12 @@ function runSelftest() {
       );
       expect(next !== src, "副本里没找到 tool_call_recorded 的 causedBySeq（正则失配）");
       writeFileSync(file, next);
-      const r = judge(dir);
-      expect(!r.ok, "删掉一处的 causedBySeq 后判据仍然通过（守卫没牙）");
-      expect(
-        r.issues.some((i) => i.includes("tool_call_recorded")),
-        `违规文本没有点名 tool_call_recorded：${r.issues.join(" / ")}`,
-      );
+      runCli(["--root", dir], {
+        code: 1,
+        contains: [NG, "【违规】", "tool_call_recorded"],
+        absent: [OK],
+        label: "④ CLI --root 删 causedBySeq 副本",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -744,12 +767,12 @@ function runSelftest() {
       const next = src.replace("causedBySeq,\n          payload: {", "causedBySeq: null,\n          payload: {");
       expect(next !== src, "副本里没找到控制器写入点的 causedBySeq（正则失配）");
       writeFileSync(file, next);
-      const r = judge(dir);
-      expect(!r.ok, "写死 null 后判据仍然通过");
-      expect(
-        r.issues.some((i) => i.includes("写死")),
-        `违规文本没有指出「写死 null」：${r.issues.join(" / ")}`,
-      );
+      runCli(["--root", dir], {
+        code: 1,
+        contains: [NG, "【违规】", "写死"],
+        absent: [OK],
+        label: "⑤ CLI --root 写死 null 副本",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -758,12 +781,12 @@ function runSelftest() {
   push("⑥ 结构红：空仓库（找不到写入点）⇒ 红，不是绿", () => {
     const dir = mkdtempSync(join(tmpdir(), "acf-causation-empty-"));
     try {
-      const r = judge(dir);
-      expect(!r.ok, "空目录被判成通过（判据瞎了）");
-      expect(
-        r.issues.some((i) => i.includes("扫描面塌陷") || i.includes("找不到")),
-        `没有结构红文本：${r.issues.join(" / ")}`,
-      );
+      runCli(["--root", dir], {
+        code: 1,
+        contains: [NG, "【违规】", "扫描面塌陷"],
+        absent: [OK],
+        label: "⑥ CLI --root 空仓库",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -773,12 +796,12 @@ function runSelftest() {
     const dir = copyRealTree();
     try {
       writeFileSync(join(dir, ENTITY_REL), "export const NOTHING = 1;\n");
-      const r = judge(dir);
-      expect(!r.ok, "闭集读不到却仍然通过");
-      expect(
-        r.issues.some((i) => i.includes("AGENT_EVENT_KINDS")),
-        `没有点名闭集：${r.issues.join(" / ")}`,
-      );
+      runCli(["--root", dir], {
+        code: 1,
+        contains: [NG, "【违规】", "AGENT_EVENT_KINDS"],
+        absent: [OK],
+        label: "⑦ CLI --root 闭集缺失",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -790,18 +813,20 @@ function runSelftest() {
       const file = join(dir, ENTITY_REL);
       const src = readFileSync(file, "utf8");
       writeFileSync(file, src.replace(`"approval_decided",`, `"approval_decided",\n  "brand_new_kind",`));
-      const r = judge(dir);
-      expect(!r.ok, "新增 kind 未登记规则却仍然通过");
-      expect(
-        r.issues.some((i) => i.includes("brand_new_kind")),
-        `没有点名新 kind：${r.issues.join(" / ")}`,
-      );
+      runCli(["--root", dir], {
+        code: 1,
+        contains: [NG, "【违规】", "brand_new_kind"],
+        absent: [OK],
+        label: "⑧ CLI --root 新 kind 未登记",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  push("⑨ 陈旧豁免 ⇒ 红（白名单必须回收）", () => {
+  // 进程内保留：`extraExempt` 是**判据函数的进程内参数**，CLI 没有对应 flag（也不该有：
+  // 白名单只能由文件内的 EXEMPTIONS 表提供）。陈旧白名单这一例只能直调 judge() 注入。
+  push("⑨ 陈旧豁免 ⇒ 红（白名单必须回收；进程内：CLI 无 --extraExempt）", () => {
     const r = judge(ROOT, {
       extraExempt: [
         {
@@ -825,12 +850,12 @@ function runSelftest() {
       const file = join(dir, PROJECTION_REL);
       const src = readFileSync(file, "utf8");
       writeFileSync(file, src.replace(/causation_invalid/g, "removed"));
-      const r = judge(dir);
-      expect(!r.ok, "运行期断言被删却仍然通过");
-      expect(
-        r.issues.some((i) => i.includes("causation_invalid")),
-        `没有点名缺少的断言：${r.issues.join(" / ")}`,
-      );
+      runCli(["--root", dir], {
+        code: 1,
+        contains: [NG, "【违规】", "causation_invalid"],
+        absent: [OK],
+        label: "⑩ CLI --root 运行期断言缺失",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -841,29 +866,20 @@ function runSelftest() {
     try {
       const file = join(dir, CONFIG_SERVICE_REL);
       writeFileSync(file, readFileSync(file, "utf8").replace(/enrichApprovalDecidedCausation/g, "removed"));
-      const r = judge(dir);
-      expect(!r.ok, "补齐逻辑被删却仍然通过");
-      expect(
-        r.issues.some((i) => i.includes("理由与事实不符")),
-        `没有「理由与事实不符」文本：${r.issues.join(" / ")}`,
-      );
+      runCli(["--root", dir], {
+        code: 1,
+        contains: [NG, "【违规】", "理由与事实不符"],
+        absent: [OK],
+        label: "⑪ CLI --root proof 标记缺失",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  console.log("check-agent-event-causation · --selftest");
+  console.log("check-agent-event-causation · --selftest（真子进程 CLI 黑盒）");
   console.log("");
-  let failed = 0;
-  for (const c of cases) {
-    console.log(`${c.ok ? "✔" : "✖"} ${c.name}`);
-    if (!c.ok) {
-      failed += 1;
-      console.log(`    ${c.why.split("\n").join("\n    ")}`);
-    }
-  }
-  console.log("");
-  console.log(`自检：${cases.length - failed}/${cases.length} 通过`);
+  const failed = reportCases(cases, { title: "check-agent-event-causation selftest" });
   return failed === 0 ? 0 : 1;
 }
 

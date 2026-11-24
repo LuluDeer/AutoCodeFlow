@@ -32,8 +32,11 @@
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
+/** 本脚本自身的绝对路径 —— 黑盒 selftest 用 runGuard(SELF, ...) 起真子进程。 */
+const SELF = fileURLToPath(import.meta.url);
+const HERE = dirname(SELF);
 
 export const FILTER_REL = "apps/admin-api/src/common/filters/http-exception.filter.ts";
 export const DOC_REL = "docs/api-reference.md";
@@ -155,18 +158,38 @@ export function check({ root }) {
 }
 
 // ── selftest ────────────────────────────────────────────────────────────────
+/**
+ * R-黑盒化：本守卫的 selftest 此前**全部进程内直调** `check()` / `parse*Keys()`，
+ * main 的退出码、`--root` 解析、以及结构红 / problems 红两条 `process.exit(1)`
+ * 分支一条都没覆盖 —— 把任一 `process.exit(1)` 改成 `process.exit(0)`，CLI 照样
+ * 打印 ✘ 却 EXIT 0、CI 转绿，而旧 selftest 仍 6/6 全绿（与
+ * `check-categories-single-source` 同款假绿缺口）。现在每条用例都起**真子进程**
+ * 跑本脚本 CLI：`runGuard(SELF, { args: ["--root", dir] })` + `expectExit`，
+ * 「退出码 0/1 + stdout/stderr 文本」本身成为断言面。
+ *
+ * ⚠️ 本守卫 main 的 `--root` 是**空格分离形态**（`argv.indexOf("--root")` +
+ * `argv[rootIdx+1]`），不是 `--root=<dir>`，夹具一律用 `args: ["--root", dir]`。
+ *
+ * 六个夹具场景与旧版逐条对应（一致 / 文档缺字段 / 文档多字段 / 标题漂移结构红 /
+ * 过滤器正则失效结构红 / 嵌套对象不算顶层键），语义不变，只改「怎么调」。
+ */
 function selftest() {
   const cases = [];
-  const ok = (name, fn) => {
-    try {
-      fn();
-      cases.push({ name, pass: true });
-    } catch (e) {
-      cases.push({ name, pass: false, err: String(e && e.message) });
-    }
-  };
-  const assert = (cond, msg) => {
-    if (!cond) throw new Error(msg);
+  const push = (name, fn) => cases.push({ name, fn });
+
+  /** 起一个真子进程跑本脚本 CLI，断言退出码 + stdout/stderr 观测文本。 */
+  const subprocess = (name, files, expectations) => {
+    push(name, () => {
+      const repo = makeFixtureRepo(files, { prefix: "api-error-format-selftest-" });
+      try {
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+          ...expectations,
+          label: name,
+        });
+      } finally {
+        repo.cleanup();
+      }
+    });
   };
 
   const FILTER_OK = `response.status(status).json({
@@ -193,59 +216,70 @@ function selftest() {
 \`\`\`
 `;
 
-  ok("① 两侧一致 ⇒ 无问题", () => {
-    const r = {
-      problems: [],
-      structure: [],
-    };
-    const codeKeys = parseFilterKeys(FILTER_OK);
-    const docKeys = parseDocKeys(DOC_OK);
-    assert(codeKeys && codeKeys.length === 7, `codeKeys=${JSON.stringify(codeKeys)}`);
-    assert(docKeys && docKeys.length === 7, `docKeys=${JSON.stringify(docKeys)}`);
-    assert(r.problems.length === 0, "should be clean");
-  });
+  // 与旧版逐条对应的四个变异夹具（判据语义不变，只改成写进临时仓库树）。
+  const docMissing = DOC_OK.replace('  "errorCode": "X",\n', "");
+  const docExtra = DOC_OK.replace('  "path": "/p"', '  "path": "/p",\n  "traceId": "bogus"');
+  const docRenamed = DOC_OK.replace(DOC_HEADING, "**错误响应：**");
+  const filterNoJson = "export const x = 1;";
+  const filterNested = FILTER_OK.replace("params,", "params: { inner: 1 },");
 
-  ok("② 文档缺 errorCode ⇒ 能被识别为「缺」", () => {
-    const docMissing = DOC_OK.replace('  "errorCode": "X",\n', "");
-    const codeKeys = parseFilterKeys(FILTER_OK);
-    const docKeys = parseDocKeys(docMissing);
-    assert(docKeys && !docKeys.includes("errorCode"), `docKeys=${JSON.stringify(docKeys)}`);
-    assert(codeKeys.includes("errorCode"), "code should have it");
-  });
-
-  ok("③ 文档多写不存在字段 ⇒ 能被识别为「多」", () => {
-    const docExtra = DOC_OK.replace('  "path": "/p"', '  "path": "/p",\n  "traceId": "bogus"');
-    const codeKeys = parseFilterKeys(FILTER_OK);
-    const docKeys = parseDocKeys(docExtra);
-    assert(docKeys.includes("traceId"), `docKeys=${JSON.stringify(docKeys)}`);
-    assert(!codeKeys.includes("traceId"), "code must not have it");
-  });
-
-  ok("④ 标题被改 ⇒ 解析出 null（结构红的来源，不是「一致」）", () => {
-    const renamed = DOC_OK.replace(DOC_HEADING, "**错误响应：**");
-    assert(parseDocKeys(renamed) === null, "should be null when heading drifts");
-  });
-
-  ok("⑤ 过滤器里没有 response.status(...).json ⇒ 解析出 null（不静默）", () => {
-    assert(parseFilterKeys("export const x = 1;") === null, "should be null");
-  });
-
-  ok("⑥ 嵌套对象不算顶层键（params 的内容不该被当成响应字段）", () => {
-    const nested = FILTER_OK.replace("params,", "params: { inner: 1 },");
-    const keys = parseFilterKeys(nested);
-    assert(!keys.includes("inner"), `keys=${JSON.stringify(keys)}`);
-  });
-
-  const failed = cases.filter((c) => !c.pass);
-  for (const c of cases) {
-    console.log(`  ${c.pass ? "✔" : "✘"} ${c.name}${c.pass ? "" : ` —— ${c.err}`}`);
-  }
-  console.log(
-    failed.length === 0
-      ? `\n✔ check-api-error-format selftest 通过：${cases.length}/${cases.length} 条用例`
-      : `\n✖ check-api-error-format selftest 失败：${failed.length}/${cases.length} 条未按预期`,
+  subprocess(
+    "① 两侧一致 ⇒ CLI exit 0 + ✔（正例控制组，无假红）",
+    { [FILTER_REL]: FILTER_OK, [DOC_REL]: DOC_OK },
+    {
+      code: 0,
+      contains: ["✔ API 错误响应格式", "COVERAGE_CASES: 6"],
+      absent: ["✖ API 错误响应格式"],
+    },
   );
-  return failed.length === 0 ? 0 : 1;
+  subprocess(
+    "② 文档缺 errorCode ⇒ CLI exit 1 + 报「缺字段 errorCode」（problems 红分支）",
+    { [FILTER_REL]: FILTER_OK, [DOC_REL]: docMissing },
+    {
+      code: 1,
+      contains: ["✖ API 错误响应格式与文档不一致", '缺字段 `errorCode`'],
+      absent: ["✔ API 错误响应格式"],
+    },
+  );
+  subprocess(
+    "③ 文档多写 traceId ⇒ CLI exit 1 + 报「不产出这个字段」（problems 红分支）",
+    { [FILTER_REL]: FILTER_OK, [DOC_REL]: docExtra },
+    {
+      code: 1,
+      contains: ["✖ API 错误响应格式与文档不一致", "traceId", "不产出这个字段"],
+      absent: ["✔ API 错误响应格式"],
+    },
+  );
+  subprocess(
+    "④ 标题被改 ⇒ CLI exit 1 + 报解析出 0 个字段（结构红分支）",
+    { [FILTER_REL]: FILTER_OK, [DOC_REL]: docRenamed },
+    {
+      code: 1,
+      contains: ["✖ API 错误响应格式守卫结构错误", "解析出 0 个字段"],
+      absent: ["✔ API 错误响应格式"],
+    },
+  );
+  subprocess(
+    "⑤ 过滤器无 response.status(...).json ⇒ CLI exit 1 + 报解析出 0 个响应字段（结构红分支）",
+    { [FILTER_REL]: filterNoJson, [DOC_REL]: DOC_OK },
+    {
+      code: 1,
+      contains: ["✖ API 错误响应格式守卫结构错误", "解析出 0 个响应字段"],
+      absent: ["✔ API 错误响应格式"],
+    },
+  );
+  subprocess(
+    "⑥ 嵌套对象不算顶层键 ⇒ CLI exit 0 + ✔（inner 未混入字段表）",
+    { [FILTER_REL]: filterNested, [DOC_REL]: DOC_OK },
+    {
+      code: 0,
+      contains: ["✔ API 错误响应格式"],
+      absent: ["✖ API 错误响应格式", "inner"],
+    },
+  );
+
+  const failed = reportCases(cases, { title: "check-api-error-format selftest" });
+  return failed === 0 ? 0 : 1;
 }
 
 // ── main ───────────────────────────────────────────────────────────────────

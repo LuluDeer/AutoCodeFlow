@@ -478,7 +478,9 @@ const ADR_OK = `# ADR-099 · 示例
 ## 6. 明确不做
 明确不做正文。
 `;
-const ADR_README_OK = "| [ADR-099](adr-099-demo.md) | 示例 |\n";
+// 索引带第三列「状态」，与 ADR_OK 的 `状态：Proposed` 同口径（正例控制组）。
+const ADR_README_OK =
+  "| ADR | 标题 | 状态 |\n|---|---|---|\n| [ADR-099](adr-099-demo.md) | 示例 | Proposed |\n";
 
 /** 必需项（与 check-docs 的 REQUIRED_SECTIONS 同源）—— 夹具必须逐条覆盖。 */
 const ADR_REQUIRED_SECTIONS = ["动机", "方案", "影响面", "回滚", "分步计划", "明确不做"];
@@ -523,6 +525,44 @@ const ADR_REQUIRED_SECTIONS = ["动机", "方案", "影响面", "回滚", "分�
     const errors = checkAdrStructure(dir);
     assert.equal(errors.length > 0, true, "删索引行后仍然绿 ⇒ 判据没牙");
     assert.match(errors.join("\n"), /索引行出现 0 次|README/, "报错没有点名索引");
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+// 值一致性：走**真子进程 + --root 夹具**，不止测 errors 数组（报告面/退出码也得对）。
+// 正文 Accepted + 索引 Proposed 曾实测假绿（只查状态行存在、只数索引行次数），这里钉死。
+{
+  const name = "ADR 状态值一致性反例：正文 Accepted + 索引 Proposed ⇒ exit 1 且点名两值";
+  try {
+    const dir = fixture({
+      "docs/adr/README.md": ADR_README_OK,
+      "docs/adr/adr-099-demo.md": ADR_OK.replace("状态：Proposed", "状态：Accepted（夹具）"),
+    });
+    const { code, out } = runCli([`--root=${dir}`, "--only=adr-structure"]);
+    assert.equal(code, 1, "值不一致却 exit 0 —— 假绿没关掉");
+    assert.match(out, /Accepted/, "报错没有点名正文值 Accepted");
+    assert.match(out, /Proposed/, "报错没有点名索引值 Proposed");
+    assert.match(out, /adr-099-demo\.md:\d+/, "报错没有给出正文 文件:行");
+    assert.match(out, /docs\/adr\/README\.md:\d+/, "报错没有给出索引 文件:行");
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+{
+  const name = "ADR 状态值一致性正例控制组：正文/索引都 Proposed ⇒ exit 0";
+  try {
+    const dir = fixture({
+      "docs/adr/README.md": ADR_README_OK,
+      "docs/adr/adr-099-demo.md": ADR_OK,
+    });
+    const { code, out } = runCli([`--root=${dir}`, "--only=adr-structure"]);
+    const lines = out.trimEnd().split("\n").filter((l) => l.trim());
+    assert.equal(code, 0, `一致夹具不该红：${out}`);
+    assert.match(lines.at(-1), /^✔ 判据全过：1\/1 项/);
     passed += 1;
   } catch (err) {
     failures.push([name, err]);

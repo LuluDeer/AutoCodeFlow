@@ -404,6 +404,18 @@ export function checkReadmeSync(root = REPO_ROOT) {
 
 
 /**
+ * ADR 状态 base token：只取值的第一个 ASCII 词（Accepted / Proposed / Superseded）。
+ * `Accepted（已落地）`、`Proposed（步骤 1/2 已落地）`、`Superseded by ADR-XXX` 一律归一到 base，
+ * 括号补充说明与 "by ADR-XXX" 都不参与比较 —— 两处写法可不同，语义必须相同。
+ * 解析不出（缺列 / 写法不认识 / 空串）返回 null，由调用方按结构红处理，绝不静默跳过。
+ */
+function adrStatusBase(raw) {
+  const m = /^\s*([A-Za-z]+)/.exec(raw ?? "");
+  const token = m?.[1] ?? null;
+  return token !== null && /^(Accepted|Proposed|Superseded)$/.test(token) ? token : null;
+}
+
+/**
  * R60（2026-11-05）：**ADR 结构断言**（来源：`docs/adr/adr-031-replay-decision-hoist.md` 附录 A 的六条）。
  *
  * 为什么抽成通用判据而不是只查 ADR-031：附录 A 的六条其实是**任何 ADR 的最低要求**
@@ -443,8 +455,15 @@ export function checkAdrStructure(root = REPO_ROOT) {
         errors.push(`${rel} 缺少「## …${key}…」小节 —— ADR 的最低结构要求（附录 A 第 2 条）`);
       }
     }
-    if (!/^状态：\S+/m.test(text)) {
-      errors.push(`${rel} 缺少 \`状态：<Proposed|Accepted|…>\` 行（附录 A 第 3 条）`);
+    const lines = text.split("\n");
+    // 状态行：不止验"存在"，还要抽出 base token 供下面与索引列比对。
+    const statusIdx = lines.findIndex((l) => /^状态：\S+/.test(l));
+    const bodyStatus = statusIdx >= 0 ? adrStatusBase(lines[statusIdx].slice(lines[statusIdx].indexOf("：") + 1)) : null;
+    if (bodyStatus === null) {
+      errors.push(
+        `${rel}${statusIdx >= 0 ? `:${statusIdx + 1}` : ""} 缺少/无法解析 \`状态：<Proposed|Accepted|…>\` 行` +
+          `（附录 A 第 3 条；base token 必须是 Accepted / Proposed / Superseded）`,
+      );
     }
     const anchors = (text.match(/[\w-]+\.(?:ts|mjs|py):\d+/g) ?? []).length;
     if (anchors < 3) {
@@ -457,6 +476,25 @@ export function checkAdrStructure(root = REPO_ROOT) {
       const hit = idxText.split(needle).length - 1;
       if (hit !== 1) {
         errors.push(`docs/adr/README.md 里 ${id.toUpperCase()} 的索引行出现 ${hit} 次（要求恰好 1 次，附录 A 第 5 条）`);
+      } else {
+        // 值一致性：正文状态行 vs 索引表**第三列**，两侧都抽 base token。
+        const idxLines = idxText.split("\n");
+        const idxLineNo = idxLines.findIndex((l) => l.includes(needle)) + 1;
+        const cells = idxLines[idxLineNo - 1].split("|").map((c) => c.trim());
+        // 形如 `| [ADR-099](f.md) | 标题 | Proposed |`：split("|") 后 ADR 格再后两格就是状态格。
+        const statusCell = cells[cells.findIndex((c) => c.includes(needle)) + 2];
+        const idxStatus = adrStatusBase(statusCell);
+        if (idxStatus === null) {
+          errors.push(
+            `docs/adr/README.md:${idxLineNo} 解析不到 ${id.toUpperCase()} 索引行第三列的状态 base token` +
+              `（Accepted / Proposed / Superseded）—— 状态列缺失或写法不认识，按结构红处理`,
+          );
+        } else if (bodyStatus !== null && bodyStatus !== idxStatus) {
+          errors.push(
+            `${rel}:${statusIdx + 1} 正文状态 \`${bodyStatus}\` 与 docs/adr/README.md:${idxLineNo} 索引状态 \`${idxStatus}\` 不一致` +
+              `（base token 比对，括号补充说明不参与）—— 两处必须同步`,
+          );
+        }
       }
     }
   }

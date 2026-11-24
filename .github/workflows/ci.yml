@@ -1177,6 +1177,14 @@ jobs:
       # 这里放一份是为了让「这个守卫存在」在 CI 里可见）
       - name: Mutation residue scan
         run: npm run check:mutation-residue
+      # config reload 的 adminApiUrl→internal 派生跨端对拍：两端必须在 internal 未显式给时
+      # 同步派生，否则 get_admin_api_base_url() 仍返回旧 internal，热更 success:true 而拓扑静默不变。
+      - name: Config reload adminApiUrl internal parity
+        run: npm run check:config-reload-parity
+      # 后端 set-current-version / deploy-version 的 @ApiProperty 必填 updatedApp 若只落在
+      # openapi/生成物，web 与 CLI 手写响应接口会静默丢弃恢复后的应用状态；显式跨端对拍。
+      - name: UpdatedApp parity (admin-web / acf-cli)
+        run: npm run check:updatedapp-parity
       - name: Protocol three-way check (real execution on both sides)
         run: |
           node scripts/check-protocol-three-way.mjs --selftest
@@ -1822,7 +1830,11 @@ jobs:
         run: npm run gen:protocol:classifiers
       - name: Fail on generated-artifact drift
         run: |
-          git diff --exit-code --             apps/executor-node/src/generated             apps/executor-python/generated             packages/contract-fixtures/generated
+          # gen:protocol 还写 apps/admin-api/src/generated（protocol-categories.ts /
+          # protocol-metadata-addresses.ts）；漏掉则改 protocol.json 的分类/元数据段
+          # 而忘记提交 admin 产物时 CI 全绿，运行时用旧分类映射（静默契约漂移）。
+          # 与本地 check:protocol-sync（package.json:224）的路径面保持一致。
+          git diff --exit-code --             apps/executor-node/src/generated             apps/executor-python/generated             apps/admin-api/src/generated             packages/contract-fixtures/generated
 
   # ── BUG-18：私服 npm/PyPI 契约闸（零依赖 node 脚本，无需 npm ci）──────
   # live 模式（临时 PyPI uvicorn + 一次性 Verdaccio 容器）需 docker 与镜像，

@@ -179,8 +179,12 @@ export const E2E_GROUP_DECL_RE = /^(?:test\.)?describe(?:\.(?:serial|parallel))?
  */
 export const E2E_TOTAL_ROW_RE = /^\|\s*\*\*合计（入口口径）\*\*\s*\|\s*\*\*(\d+)\*\*\s*\|\s*\*\*(\d+)\*\*\s*\|/gm;
 
-/** `apps/` 下不是应用的两个目录（测试产物）。 */
-export const NON_APP_DIRS = new Set([".pytest-tmp", "test-results"]);
+/**
+ * `apps/` 下不是应用的目录（测试/真机产物，均 gitignored）。
+ * `artifacts` 是第 4 轮真机验收落证据的目录（apps/artifacts/real-verify/），
+ * 本地有而 CI clean checkout 无；不计入应用数，否则同一提交本地判 8 / CI 判 7。
+ */
+export const NON_APP_DIRS = new Set([".pytest-tmp", "test-results", "artifacts"]);
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
