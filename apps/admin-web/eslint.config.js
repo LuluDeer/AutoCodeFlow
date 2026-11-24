@@ -5,7 +5,10 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-  { ignores: ['dist'] },
+  // dist 是构建产物；e2e/.real-verify/ 是第 4 轮真机验收的一次性 harness
+  // （已被 .gitignore 排除、CI clean checkout 不存在）。让 eslint 扫它只会把
+  // 不入库的临时脚本的 lint 错误带进本地全链，与 CI 判定不一致——故一并忽略。
+  { ignores: ['dist', 'e2e/.real-verify/'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],

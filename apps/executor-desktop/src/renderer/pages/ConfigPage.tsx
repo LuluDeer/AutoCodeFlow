@@ -430,13 +430,17 @@ export default function ConfigPage() {
 
   // P7b：进入 Agent 组时拉托管状态（旧版 preload 未暴露该通道时静默降级
   // 为不显示状态行——同 getAutoLaunch 先例，不影响其余设置项）。
+  // 竞态守卫（同 refreshPyEnv）：切走分区 / saved 翻转会重发请求；旧响应晚
+  // 到时 cancelled 已置位，不得覆盖新状态卡。catch 仍静默降级，不弹错。
   useEffect(() => {
     if (active !== 'agent') return;
     if (typeof (window as unknown as { electronAPI?: { getAgentStatus?: () => Promise<{ enabled: boolean; working: boolean; processed: number; lastOutcome: string | null; lastEffectiveProfile: string | null }> } }).electronAPI?.getAgentStatus !== 'function') return;
+    let cancelled = false;
     (window as unknown as { electronAPI: { getAgentStatus: () => Promise<{ enabled: boolean; working: boolean; processed: number; lastOutcome: string | null; lastEffectiveProfile: string | null }> } })
       .electronAPI.getAgentStatus()
-      .then(setAgentStatus)
-      .catch(() => undefined);
+      .then((s) => { if (!cancelled) setAgentStatus(s); })
+      .catch(() => { if (!cancelled) return undefined; });
+    return () => { cancelled = true; };
   }, [active, saved]);
 
   function set(key: string, value: unknown) {
@@ -447,9 +451,7 @@ export default function ConfigPage() {
     setFieldErrors((prev) => withoutKey(prev, key));
   }
 
-  function setFieldError(key: string, message: string): void {
-    setFieldErrors((prev) => (prev[key] === message ? prev : { ...prev, [key]: message }));
-  }
+  function setFieldError(key: string, message: string): void { setFieldErrors((prev) => (prev[key] === message ? prev : { ...prev, [key]: message })); }
 
   // ⑤ 主题切换：持久化模式 → 解析已解析主题 → 写 <html> 分面 → 镜像主进程窗口底色。
   function applyThemeMode(mode: ThemeMode): void {

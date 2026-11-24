@@ -784,6 +784,23 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
   }
 }
 
+// ── AGENT-STATE-RACE：agent 状态 effect 必须有取消守卫（竞态）──────────────
+// 进入 Agent 分区发请求 A；切走分区或保存（saved 翻转）发请求 B；A 晚返回时用
+// 旧快照覆盖新状态卡（working/processed/lastOutcome/lastEffectiveProfile），
+// 「保存后立即可见启停是否生效」落空。与紧邻 refreshPyEnv 同构：effect 内
+// cancelled 标志 + 成功/失败分支守卫 + cleanup；静默降级（不弹错）语义不变。
+// 断言串刻意不含花括号：findFunctions 的裸括号配平会把它们算进相邻箭头函数体。
+{
+  const cp = pages[1]; // ConfigPage.tsx
+  const at = cp.indexOf("if (active !== 'agent') return;");
+  if (at === -1) throw new Error('AGENT-STATE-RACE: 找不到 agent 状态 effect');
+  const fx = cp.slice(at, cp.indexOf('[active, saved]', at));
+  if (!fx.includes('let cancelled = false;')) throw new Error('AGENT-STATE-RACE: 缺 cancelled 标志');
+  if (!fx.includes('if (!cancelled) setAgentStatus(s);')) throw new Error('AGENT-STATE-RACE: setAgentStatus 未被 if (!cancelled) 包裹');
+  if (!fx.includes('if (!cancelled) return undefined;')) throw new Error('AGENT-STATE-RACE: catch 分支缺 cancelled 守卫（静默降级须保留）');
+  if (!fx.includes('return () =>') || !fx.includes('cancelled = true;')) throw new Error('AGENT-STATE-RACE: 缺 cleanup return（旧响应无法作废）');
+}
+
 // ── NETOPT-7⑤：首屏配置读取必须兜住 IPC reject ─────────────────────────
 //
 // getConfig() 走主进程 configStore.getAllMasked()——配置文件损坏/schema 校验
@@ -2509,26 +2526,16 @@ await import('./pages/status/status-helpers.selftest.mjs');
 {
   const historySrc = pages[2];
   const earlyReturn = /if\s*\(\s*viewingLog\s*\)\s*\{[\s\S]{0,900}?return\s*\(?\s*<ExecutionLogOverlay/.test(historySrc);
-  if (earlyReturn) {
-    throw new Error('P1-1b: HistoryPage 不得用 viewingLog early return 替换整页（触发按钮被卸载 → 关闭查看器后焦点掉到 BODY）');
-  }
+  if (earlyReturn) throw new Error('P1-1b: HistoryPage 不得用 viewingLog early return 替换整页（触发按钮被卸载 → 关闭查看器后焦点掉到 BODY）');
   const rootIdx = historySrc.indexOf('<div className="history-page">');
   const overlayIdx = historySrc.indexOf('<ExecutionLogOverlay');
-  if (rootIdx === -1 || overlayIdx === -1 || overlayIdx < rootIdx) {
-    throw new Error('P1-1b: ExecutionLogOverlay 必须与 .history-page 骨架同树渲染（触发按钮需在开合期间保持挂载）');
-  }
+  if (rootIdx === -1 || overlayIdx === -1 || overlayIdx < rootIdx) throw new Error('P1-1b: ExecutionLogOverlay 必须与 .history-page 骨架同树渲染（触发按钮需在开合期间保持挂载）');
   if (!/\{viewingLog\s*&&\s*\(/.test(historySrc) && !/\{viewingLog\s*\?\s*\(/.test(historySrc)) {
     throw new Error('P1-1b: overlay 必须由 viewingLog 条件渲染（不能常驻挂载）');
   }
-  if (!historySrc.includes('onClick={() => setViewingLog(run)}') ||
-      !historySrc.includes("aria-label={t('status.viewLogs')}")) {
-    throw new Error('P1-1b: 历史页「查看日志」触发按钮接线丢失');
-  }
+  if (!historySrc.includes('onClick={() => setViewingLog(run)}') || !historySrc.includes("aria-label={t('status.viewLogs')}")) throw new Error('P1-1b: 历史页「查看日志」触发按钮接线丢失');
   const logViewerFocus = readFileSync(resolve(root, 'components', 'LogViewer.tsx'), 'utf8');
-  if (!logViewerFocus.includes('returnFocusRef') || !logViewerFocus.includes('queueMicrotask') ||
-      !logViewerFocus.includes('.focus()')) {
-    throw new Error('P1-1b: LogViewer 关闭焦点归还逻辑缺失');
-  }
+  if (!logViewerFocus.includes('returnFocusRef') || !logViewerFocus.includes('queueMicrotask') || !logViewerFocus.includes('.focus()')) throw new Error('P1-1b: LogViewer 关闭焦点归还逻辑缺失');
 }
 
 console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit (theme sync sendSync whitelist), R7-B config-io layer, R-UX apps/config/history/status pure-logic selftests, T1/T2/T3/T4 read-failure honesty guards passed');

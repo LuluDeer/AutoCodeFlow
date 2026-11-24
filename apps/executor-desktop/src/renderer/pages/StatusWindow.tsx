@@ -14,7 +14,7 @@ import { createCfgTexts, resolveRendererLocale } from '../i18n';
 // 都只在一处），抽到 concurrency-gauge.ts 由 test:renderer 真执行断言。
 import { concurrencyGauge } from '../concurrency-gauge';
 import RunningTaskChip from './status/RunningTaskChip';
-import { formatCopyLiveText, formatFailureTime, formatFailureTitle, formatRunningDuration, formatRunningMs, formatRunningTaskTitle, stopActionGate, useStatusCtrlF } from './status/status-helpers';
+import { formatCopyLiveText, formatFailureTime, formatFailureTitle, formatRunningDuration, formatRunningMs, stopActionGate, useStatusCtrlF } from './status/status-helpers';
 import { useNowTicker } from '../time-tick';
 
 const locale = resolveRendererLocale(() => navigator.language);
