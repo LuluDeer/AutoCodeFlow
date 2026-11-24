@@ -1,7 +1,7 @@
 # AutoCodeFlow Agent Handoff
 
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 4 轮 · 真机验收补验 + 焦点归还返修）
-> 当前分支 `develop` = `731abf69`（第 4 轮 16 批已提交：第4轮主批 5 + R5 三批 4+4+3）；**真机补验发现 1 个 P1 缺陷已返修，产出落工作树未提交、未 push**——2 个源码文件 + 基线重签（renderer.selftest 1836→1860）+ .gitignore（真机 harness 目录）+ 本交接段。真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> 当前分支 `develop` = `da235178`（第 4 轮 17 批已提交：第4轮主批 5 + R5 三批 4+4+3 + 真机返修 1）；工作树干净，**未 push**。真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
 
 ## 本轮（2026-11-24 · 真机验收补验）：图形环境打通 + 双端真机 15 项补验 + 1 个 P1 缺陷返修
 
@@ -17,11 +17,13 @@ export XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.PTRAZ3 DISPLAY=:0 XDG_RUNT
 
 **桌面真机（verify-desktop-real，Electron 有头，除 1 P1 外全 PASS）**：托盘停止二次确认（降级：点不到原生托盘菜单，改触发 click handler + patch dialog，active 弹框/取消不落 stop/确认落 stop）、向导端口按 bind host 拦下一步（真占用端口→disabled+title 原因）、通知深链落执行（降级：走 openHistory(deepLink) 同路径，目标行选中+滚动）、运行时长 1s 刷新（0.55s 内 <1m→1m）、暗色首帧无 #1c1f26 色带、日志导航按钮 28×28px。
 
+**白屏观察的量化归因（非缺陷，避免后续重复排查）**：向导保存后状态首页曾观察到"空底色窗约半分钟"。verify-desktop-real 连跑 3 次量化：主进程点「完成并启动」→`Status window opened` 仅 8–9ms、showWhenReady 兜底 3s，应用逻辑零延迟；渲染层脚本起跑→DOMContentLoaded→首帧内容仅 24–69ms（一旦执行瞬间出内容）。但 `performance.domContentLoaded` 稳定在保存后 **28.2/28.5/28.3s**（responseEnd 仅 12ms，HTML 秒到、脚本拖 28s）。结论：卡点是**本机 Xwayland 无窗口管理器**下 Chromium `ready-to-show` 依赖的合成器 first-paint 信号迟到约 28–30s，3s 兜底才 show 出空窗——真机环境税，非产品代码（源码无任何 28s 故意等待；最长相关仅 showWhenReady 3s / updater 30s 周期，无关）。真实桌面（正常 WM/原生 X11/Wayland）first-paint 正常、几秒出内容。**真机验收建议把「首窗就绪」等待放宽到 40s**；若要消除该环境现象可加 IPC 驱动显式 show（需改生产代码，本批不做）。诊断脚本 `diag-whitescreen{,2,3,4}.cjs` 在 gitignored 的 `.real-verify/`。
+
 **P1 缺陷与返修（fix-focus-return）**：历史页打开全屏日志查看器时 `HistoryPage.tsx:870` 的 `if (viewingLog) return <overlay/>` 卸载整页 → 触发按钮失联 → `LogViewer.tsx` 关闭时 `returnFocusRef.focus()` 无效 → `activeElement=BODY`。修复方案 (a)：改为在 `.history-page` 骨架内同树条件渲染 overlay（portal 保证仍全屏、背景 inert 不波及），触发按钮开合期间持续挂载；LogViewer/StatusWindow 未改。真机复验 `activeTag` BODY→BUTTON、节点级 `sameTriggerNode=true`、`connected=true`，状态页无回归；renderer.selftest 加 P1-1b 守卫（先红后绿）。截图/JSON 在 `artifacts/real-verify/p1-1b-focus-return-fixed*`。
 
 **返修验收**：typecheck:renderer 0 / test:renderer 0 / build:main+renderer 0 / wired 0 / mutation-residue 0；基线按实测重签 `renderer.selftest 1836→1860`（+24 守卫行，why 写真机复验证据），size-caps 0。真机级 P0/P1/P2=0（返修后）。
 
-**未提交、未 push**——返修 2 源码文件 + 基线 + .gitignore + 交接段待提交（建议 1 批）。真机 harness/证据均本地 gitignored，不入库。
+**本批已提交** `da235178`（返修 2 源码文件 + 基线 1836→1860 + .gitignore 真机 harness 目录 + 真机验收交接段）；本次追加白屏归因段后一并补提交。真机 harness/证据均本地 gitignored，不入库。**未 push**。
 
 ---
 
