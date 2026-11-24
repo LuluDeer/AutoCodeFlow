@@ -228,7 +228,7 @@ export default function SopFromVideoPage() {
     }
     setSaving(true);
     try {
-      await sopsApi.draft({
+      const created = await sopsApi.draft({
         slug: values.slug,
         title: values.title,
         frontMatterYaml: values.frontMatterYaml,
@@ -236,7 +236,7 @@ export default function SopFromVideoPage() {
       });
       await aiApi.markSopSessionSaved(session.id).catch(() => undefined);
       message.success(t('sopFromVideo.saved'));
-      navigate('/sops');
+      navigate(`/sops?sop=${encodeURIComponent(created.id)}`);
     } catch (err) {
       showApiError(err);
     } finally {

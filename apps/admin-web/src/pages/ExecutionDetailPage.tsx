@@ -290,7 +290,7 @@ export default function ExecutionDetailPage() {
                   try {
                     await tasksApi.analyzeExecution(taskId!, execId!);
                     message.success(t('execDetail.aiAnalyzeDone'));
-                    refresh();
+                    refresh(); handleTabChange('report');
                   } catch (err: unknown) {
                     showApiError(err, t('execDetail.aiAnalyzeFail'));
                   } finally {

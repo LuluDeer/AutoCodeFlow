@@ -14,6 +14,12 @@ import { filterProvidersForPurpose } from '../pages/settings/ai-provider-filter'
 import { aiApi } from '../api/ai';
 import { sopsApi } from '../api/sops';
 
+const { navigateMock } = vi.hoisted(() => ({ navigateMock: vi.fn() }));
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router-dom')>();
+  return { ...actual, useNavigate: () => navigateMock };
+});
+
 vi.mock('../api/ai', () => ({
   aiApi: {
     listProviders: vi.fn(),
@@ -206,6 +212,27 @@ describe("SopFromVideoPage —— 会话式编写", () => {
     );
     // 保存成功后标记会话（不自动发布）
     await waitFor(() => expect(aiApi.markSopSessionSaved).toHaveBeenCalledWith('sess-1'));
+    expect(navigateMock).toHaveBeenCalledWith('/sops?sop=sop-1');
+  });
+
+  it("保存草稿后用返回 id 接深链，特殊字符按 URL 规则编码", async () => {
+    const specialId = 'sop/1?x=2&y=3';
+    vi.mocked(aiApi.getSopSession).mockResolvedValue(draftedSession as never);
+    vi.mocked(sopsApi.draft).mockResolvedValue({ id: specialId } as never);
+
+    render(
+      <MemoryRouter initialEntries={['/sops/from-video?session=sess-1']}>
+        <SopFromVideoPage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByText('保存为草稿'));
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith(
+        `/sops?sop=${encodeURIComponent(specialId)}`,
+      ),
+    );
+    expect(aiApi.markSopSessionSaved).toHaveBeenCalledWith('sess-1');
   });
 
   it("URL 带 session 时续跑（刷新/换设备不丢上下文）", async () => {
