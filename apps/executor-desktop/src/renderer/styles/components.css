@@ -52,7 +52,7 @@
 .btn-success {
   background: var(--accent);
   border-color: transparent;
-  color: #ffffff;
+  color: var(--color-on-primary);
   font-weight: 600;
   box-shadow: var(--shadow-sm);
 }
@@ -74,7 +74,7 @@
 .btn-danger {
   background: var(--red);
   border-color: transparent;
-  color: #fff;
+  color: var(--color-on-primary);
   font-weight: 600;
   box-shadow: var(--shadow-sm);
 }
@@ -100,7 +100,7 @@
   background: var(--red-bg);
   box-shadow: none;
 }
-.btn-outline-danger:hover { color: var(--red-hover); border-color: var(--red); background: rgb(220 38 38 / 0.14); }
+.btn-outline-danger:hover { color: var(--red-hover); border-color: var(--red); background: color-mix(in srgb, var(--red) 18%, var(--surface-0)); }
 .btn-danger-ghost:disabled,
 .btn-outline-danger:disabled {
   background: var(--surface-2);
@@ -418,7 +418,7 @@ select.input {
   position: absolute;
   inset: 0;
   transform: translateX(-100%);
-  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.65), transparent);
+  background: linear-gradient(90deg, transparent, var(--skeleton-shimmer), transparent);
   animation: shimmer 1.4s infinite;
 }
 .skeleton-group { padding: 14px 16px; }
@@ -658,8 +658,8 @@ select.input {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgb(16 24 40 / 0.2);
+  background: var(--color-on-primary);
+  box-shadow: var(--shadow-xs);
   transition: transform var(--transition-normal);
   pointer-events: none;
 }

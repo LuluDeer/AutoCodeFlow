@@ -210,7 +210,7 @@ textarea:focus-visible,
 }
 .titlebar-control-icon { width: 15px; height: 15px; }
 .titlebar-btn:hover { background: var(--surface-2); color: var(--text); }
-.titlebar-btn-close:hover { background: var(--red); color: #fff; }
+.titlebar-btn-close:hover { background: var(--red); color: var(--color-on-primary); }
 .titlebar-btn:focus-visible { outline-offset: -3px; border-radius: 0; }
 
 /* 窄窗：brand+窗控一行，tabs 独占次行（与旧两行结构同观感） */

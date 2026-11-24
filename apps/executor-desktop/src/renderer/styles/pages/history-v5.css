@@ -90,20 +90,23 @@
 }
 .history-run-row:hover { background: var(--surface-2); }
 
-/* 选中态与状态色解耦：失败/运行行保留红/蓝左条与强化状态浅底，不覆写为绿条。 */
+/* 选中态与状态色解耦：失败/运行行保留红/蓝左条与强化状态浅底，不覆写为绿条。
+   常态沿用主题化的 *-bg 令牌；hover/selected 用令牌色与 surface-0 现场合成，
+   固定比例在亮/暗两档都保证 selected > hover > 常态，修掉暗色下「选中反而更暗」
+   的反向层次。目标 Electron 45 / Chromium 134 支持 color-mix。 */
 .history-run-row.is-failed {
   background: var(--red-bg);
   box-shadow: inset 3px 0 0 var(--red);
 }
 .history-run-row.is-failed:hover {
-  background: rgb(220 38 38 / 0.11);
+  background: color-mix(in srgb, var(--red) 18%, var(--surface-0));
 }
 .history-run-row.is-running {
   background: var(--blue-bg);
   box-shadow: inset 3px 0 0 var(--blue);
 }
 .history-run-row.is-running:hover {
-  background: rgb(37 99 235 / 0.11);
+  background: color-mix(in srgb, var(--blue) 18%, var(--surface-0));
 }
 .history-run-row.is-selected,
 .history-run-row.is-selected:hover {
@@ -112,12 +115,12 @@
 }
 .history-run-row.is-failed.is-selected,
 .history-run-row.is-failed.is-selected:hover {
-  background: rgb(220 38 38 / 0.14);
+  background: color-mix(in srgb, var(--red) 26%, var(--surface-0));
   box-shadow: inset 3px 0 0 var(--red), inset 0 0 0 1px var(--red-border);
 }
 .history-run-row.is-running.is-selected,
 .history-run-row.is-running.is-selected:hover {
-  background: rgb(37 99 235 / 0.14);
+  background: color-mix(in srgb, var(--blue) 26%, var(--surface-0));
   box-shadow: inset 3px 0 0 var(--blue), inset 0 0 0 1px var(--blue-border);
 }
 
@@ -563,7 +566,7 @@
     left: 0;
     z-index: 44;
     display: block;
-    background: rgb(16 24 40 / 0.28);
+    background: var(--backdrop-bg);
   }
   .historyx-detail {
     position: fixed;

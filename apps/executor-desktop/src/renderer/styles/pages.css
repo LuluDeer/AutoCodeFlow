@@ -250,6 +250,8 @@
 .today-summary-gauge.is-over .today-summary-gauge-bar::-webkit-progress-value { background: var(--red); }
 .today-summary-gauge.is-full .today-summary-gauge-bar::-moz-progress-bar,
 .today-summary-gauge.is-over .today-summary-gauge-bar::-moz-progress-bar { background: var(--red); }
+/* 并发上限未知（D-A T3）：「N/—」不是告警，去掉默认蓝字，改中性次级字色。 */
+.today-summary-gauge.is-unknown .today-summary-gauge-num { color: var(--text3); }
 .today-summary-gauge-tag {
   flex: none;
   padding: 1px 6px;
@@ -2290,7 +2292,7 @@ html[lang='en'] .confirm-key { width: 148px; }
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(to bottom, var(--log-bg) 0%, rgb(247 248 250 / 0%) 100%);
+  background: linear-gradient(to bottom, var(--log-bg) 0%, var(--log-fade-end) 100%);
 }
 
 /* ==========================================================================

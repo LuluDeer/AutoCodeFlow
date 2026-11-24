@@ -203,6 +203,10 @@ html[lang='en'] .appx-cell-actions { width: 192px; }
 .appx-dot-running { background: var(--blue); box-shadow: 0 0 0 3px var(--blue-bg); }
 .appx-dot-scheduled { background: var(--yellow); box-shadow: 0 0 0 3px var(--yellow-bg); }
 .appx-dot-stopped { background: var(--text4); box-shadow: 0 0 0 3px var(--surface-2); }
+/* 运行状态未知（D-A T1）：不能拿「已停止」的灰态冒充结论，用中性弱化的文字色
+   与点色表示「读不到状态」，既不与蓝/琥珀撞义，也不谎报停止。 */
+.appx-status-unknown { color: var(--text3); }
+.appx-dot-unknown { background: var(--text3); box-shadow: 0 0 0 3px var(--surface-2); }
 
 .appx-log-state { color: var(--text3); font-size: var(--fs-sm); }
 .appx-log-state-present { color: var(--text2); }
@@ -575,7 +579,7 @@ html[lang='en'] .appx-cell-actions { width: 192px; }
     left: 0;
     z-index: 44;
     display: block;
-    background: rgb(16 24 40 / 0.28);
+    background: var(--backdrop-bg);
   }
 }
 
