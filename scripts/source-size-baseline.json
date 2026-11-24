@@ -918,24 +918,6 @@
         ]
       }
     },
-    "apps/admin-web/src/pages/DashboardPage.tsx": {
-      "owner": "guard-smith",
-      "review_by": "2026-12-15",
-      "maxLines": 554,
-      "why": "2026-11-04 实测 functionLines=479 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | **2026-11-15 本轮重签（+10 非注释行 / 函数体 +24）**：P1-2 项目上下文过滤贯通指标查询（878812db，Dashboard 卡片/趋势按当前项目上下文收口，+38/−10）。ceiling.nonCommentLines 497→507、functionLines 479→503、密度 19.1→19.9（仍 <20 阈值，比值记录口径）。 | **2026-11-16 P2-1 指标口径分离重签（+43 非注释行 / 函数体 +1）**：指标区拆「随当前项目」「全局口径（机队/调度）」两组分区标题 + 逐卡口径徽章（ScopeBadge/ScopeSectionHeader 本地组件，文字+图标双编码，全局卡 hover 说明口径）；summary 拆随项目/全局两路查询——在线执行器计数改走不带 projectId 的全局 summary 键（后端 executorRepo.count 无项目条件），其余随项目卡按 projectId 收口。实测 nonCommentLines 507→550、functionLines 503→504、exports 3、ctorParams 0 未变，branchDensity 19.9→18.7（净降，<20 阈值豁免记录口径）。 | **2026-11-21 R328 重签（+4 非注释行 / 函数体 +4，PM 批准）**：北极星双口径看板接线——在全局口径分组末尾新增一行 `<NorthStarCard/>` 渲染 + import。卡片本体是独立组件（不进本文件体量），本文件仅 +1 import +1 渲染行 + 空行/缩进。实测 nonCommentLines 550→554、functionLines 504→508；exports/ctorParams/branchDensity 未变。这是产品可见交付的必要接线，非放任增长；回滚值 550/504。",
-      "ceiling": {
-        "nonCommentLines": 554,
-        "functionLines": 508,
-        "ctorParams": 0,
-        "exports": 3,
-        "branchDensity": 18.7
-      },
-      "firstRun": {
-        "bad": [
-          "functionLines"
-        ]
-      }
-    },
     "apps/admin-web/src/pages/ExecutionDetailPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
@@ -1430,11 +1412,11 @@
     "apps/executor-desktop/src/main/ipc-handlers.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1235,
-      "why": "2026-11-04 实测 nonCommentLines=1233、functionLines=971 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-24 B5 桌面体验升级：新增 theme:apply/theme:save 主题双通道接线；解析与消毒逻辑已外提 theme-bridge.ts（配 theme-bridge.selftest.ts），本文件仅留单行注册调用 ⇒ 实测 nonCommentLines=1235、functionLines=975，按实测上调棘轮。",
+      "maxLines": 1238,
+      "why": "2026-11-04 实测 nonCommentLines=1233、functionLines=971 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-24 B5 桌面体验升级：新增 theme:apply/theme:save 主题双通道接线；解析与消毒逻辑已外提 theme-bridge.ts（配 theme-bridge.selftest.ts），本文件仅留单行注册调用 ⇒ 实测 nonCommentLines=1235、functionLines=975，按实测上调棘轮。 | 2026-11-24 第4轮 D-C 首帧主题防闪：新增 ipcMain.on('theme:boot-snapshot') 同步快照通道（零参数、parseThemeMode 消毒、只读 config.theme），供 preload 首帧取色 ⇒ 实测 nonCommentLines=1238、functionLines=984、exports=6、branchDensity=23.8（净降），按实测上调棘轮；解析逻辑未内联，仍单一事实源 theme-bridge。",
       "ceiling": {
-        "nonCommentLines": 1235,
-        "functionLines": 975,
+        "nonCommentLines": 1238,
+        "functionLines": 984,
         "ctorParams": 0,
         "exports": 6,
         "branchDensity": 25.1
@@ -1503,10 +1485,10 @@
     "apps/executor-desktop/src/renderer/i18n.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1640,
-      "why": "2026-11-04 实测 nonCommentLines=1624 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"functionLines\":[8,10]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-24 B5：新增主题三态 + 静默时段共 8 个键 zh/en 成对（16 行必需双语文案，不可压）⇒ 实测 nonCommentLines=1640，按实测上调棘轮。",
+      "maxLines": 1650,
+      "why": "2026-11-04 实测 nonCommentLines=1624 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"functionLines\":[8,10]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-24 B5：新增主题三态 + 静默时段共 8 个键 zh/en 成对（16 行必需双语文案，不可压）⇒ 实测 nonCommentLines=1640，按实测上调棘轮。 | 2026-11-24 第4轮 D-A 运行态诚实性：新增 appx.runningUnknown* 4 键 + status.stopConfirmUnknownDesc 双语（10 行必需双语文案，不可压）⇒ 实测 nonCommentLines=1650，按实测上调棘轮；functionLines/exports/密度未变。",
       "ceiling": {
-        "nonCommentLines": 1640,
+        "nonCommentLines": 1650,
         "functionLines": 10,
         "ctorParams": 0,
         "exports": 10,
@@ -1579,10 +1561,10 @@
       "owner": "guard-smith",
       "review_by": "2026-12-15",
       "maxLines": 943,
-      "why": "2026-11-04 实测 nonCommentLines=943、functionLines=807 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[24.5,24.4]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "why": "2026-11-04 实测 nonCommentLines=943、functionLines=807 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[24.5,24.4]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-24 第4轮 D-A：T2 停止确认三路门禁（historyUnknown/running/empty）内联于 StatusWindow 组件函数体 +2 行、T3 并发未知态标签加 gauge.known 守卫 ⇒ 最长函数体 807→809，按实测上调 functionLines 棘轮；门禁纯函数 stopActionGate 已外提 status-helpers.ts，仅两行分支接线留在本文件。",
       "ceiling": {
         "nonCommentLines": 943,
-        "functionLines": 807,
+        "functionLines": 809,
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 24.4
@@ -1597,10 +1579,10 @@
     "apps/executor-desktop/src/renderer/renderer.selftest.mjs": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1608,
-      "why": "2026-11-04 实测 nonCommentLines=946 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[946,1610],\"branchDensity\":[28.1,16.5]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | **R7-B（ConfigPage IO 层）改读实现新位置**：实现从 ConfigPage.tsx 搬到 `pages/config/use-config-io.ts` / `io-result.ts` 后，源码文本契约必须读实现真正所在的文件（STC-073 式改读）⇒ 本文件 +7 非注释行（2 行 readFileSync + 2 行 import + 取数面拼接）。**新增断言本身放进 `pages/config/io-layer.selftest.mjs`**（与实现在同目录），刻意不堆进本文件。实测 1610 → **1608**（净减 2：5.2 块里两条实现面断言随实现搬走）⇒ 按棘轮**下调**至 1608。",
+      "maxLines": 1686,
+      "why": "2026-11-04 实测 nonCommentLines=946 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[946,1610],\"branchDensity\":[28.1,16.5]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | **R7-B（ConfigPage IO 层）改读实现新位置**：实现从 ConfigPage.tsx 搬到 `pages/config/use-config-io.ts` / `io-result.ts` 后，源码文本契约必须读实现真正所在的文件（STC-073 式改读）⇒ 本文件 +7 非注释行（2 行 readFileSync + 2 行 import + 取数面拼接）。**新增断言本身放进 `pages/config/io-layer.selftest.mjs`**（与实现在同目录），刻意不堆进本文件。实测 1610 → **1608**（净减 2：5.2 块里两条实现面断言随实现搬走）⇒ 按棘轮**下调**至 1608。 | 2026-11-24 第4轮：桌面四切片实现方将断言集中接线进本入口（D-A：T1/T2/T4 静态守卫 + V5 CSS 三文件纳入 css 数组 + 裸色断言 + R102-A1/C 的 sendSync 精确白名单；D-B/D-C 的 selftest 与样式判据亦由 D-A 统一接线）⇒ 实测 nonCommentLines=1686、fn=11、最长 loadTsModule@L1316:14、branchDensity=16.7（净降）。新增守卫必须接线（check:desktop-selftests-wired 硬要求），行数增长是接线的必要成本，按实测上调棘轮。",
       "ceiling": {
-        "nonCommentLines": 1608,
+        "nonCommentLines": 1686,
         "functionLines": 14,
         "ctorParams": 0,
         "exports": 0,
@@ -1872,7 +1854,7 @@
     }
   ],
   "$ratchet": {
-    "maxEntries": 98,
+    "maxEntries": 97,
     "note": "**条目上限 = 记录式棘轮**（与实际条目数**严格相等**）。为什么不是静态常量：静态常量只做上界检查、从不随条目减少而下调 ⇒ 合法删掉一条后可以**免费加另一条**，总数永远停在同一个数、棘轮永不收紧。⇒ 删条目必须同批下调本值；加条目必须显式上调（可见的、需要理由的评审动作）。`check-size-caps.mjs` 的 `MAX_BASELINE_ENTRIES` 保留为**绝对上界**，本值不得超过它。"
   }
 }

@@ -1,7 +1,35 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 3 轮 · 波2 收口）
-> 当前分支 `develop` = `f1346d65`（首轮 6 批 + 波1 4 批 + docs + 波2 2 批已提交，**未 push**）；`main` = `origin/main` = `de49cf9e` 保持不动，`stash@{0}`（用户 11-16 WIP）未动。两波体验优化均已收口。其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 4 轮 · 客户端+中台质感/可视化/细节）
+> 当前分支 `develop` = `54dd36aa`（已同步 origin/develop，win 侧波1/波2 提交全量在树）；**本轮产出全部落工作树，未提交、未 push**——38 个改动/新增文件，含 1 处基线重签。接手先 `git status` 核对、`npm run check:size-caps` 验基线。下面的第 3 轮及更早均为已收口历史。
+
+## 本轮（2026-11-24 · 第 4 轮）：客户端 + 中台 质感/可视化/细节打磨（4 切片并行 + 独立验收 + 1 处 P1 返修）
+
+**编排方式**：两路只读审计（audit-web / audit-desktop，CodeGraph 定位 + 逐行确证，共 12 条）→ 按写域互斥切 4 片并行实现（D-A 桌面运行态诚实性 / D-B 暗色令牌 CSS / D-C 设置搜索+首帧主题 / W-A 中台 Dashboard）→ 3 次契约裁决（config-v5.css 归属 D-C、base.css:213 单行归属 D-B、基线由主会话统一重签）→ 独立只读验收（verify-gate：diff 边界 + 全量门禁 + 反证抽查）→ 验收发现 1 处 P1（变异标记残留）由主会话返修 → 全门禁复跑全绿。
+
+| 切片 | 交付 | 关键文件 |
+|---|---|---|
+| D-A 桌面运行态诚实性 | 应用页 `getRunningApps` reject 不再谎报「全部停止」：`runningUnknown` + `runningActionGate` 纯函数 + alert/重试 + 删除/卸载禁用；历史页 `getHistory` reject 时停止执行器走三路确认门禁 `stopActionGate(records===null)→'unknown'`；并发上限未知不再染红（`state:'unknown'` + `gauge.known &&` 标签守卫）；短任务 `<60s` 显示 `<1m` | `AppsPage.tsx`、`StatusWindow.tsx`、`concurrency-gauge.ts`、`pages/apps/apps-helpers.ts`、`pages/status/status-helpers.ts`、`i18n.ts`（+5 双语键）、`renderer.selftest.mjs` |
+| D-B 暗色令牌 | 新增 3 枚主题感知令牌 `--backdrop-bg`/`--skeleton-shimmer`/`--log-fade-end`（亮/暗成对）；V5 状态行 hover/selected 改 `color-mix(in srgb, var(--red\|blue) N%, var(--surface-0))`（选中比常态更亮，暗色层级不再反转）；骨架扫光/日志渐隐/抽屉遮罩改令牌；base.css:213 `#fff`→`var(--color-on-primary)` | `styles/tokens.css`、`styles/pages/{history-v5,apps-v5,pages}.css`、`components.css`、`base.css`、`design-system/autocodeflow/pages/executor-desktop.md`（§3 令牌表同步） |
+| D-C 设置体验 | 配置搜索下拉 ↑↓ 循环导航 + `activeIndex` + `aria-selected`/`aria-activedescendant`（`nextSearchIndex` 纯函数，Enter 取 `results[safeIndex]`）；首帧主题防闪——`ipcMain.on('theme:boot-snapshot')` 零参数/`parseThemeMode` 消毒同步快照 → preload `sendSync`（全仓唯一白名单）→ theme-init 作 localStorage 缺失 fallback（不改 main.tsx） | `ConfigSearchBox.tsx`、`config/search-index.ts`、`ipc-handlers.ts`、`preload/index.ts`、`theme/theme-init.ts`、`config-v5.css`、`theme-bridge.selftest.ts` |
+| W-A 中台 Dashboard | 三卡读失败假绿修复（`readFailed` prop 优先于空数组判定，danger 文案+重试，不渲染绿色对勾）；KPI 读失败全 `—`（不外渲染红 0%）；Tooltip 双主题 `CHART_COLORS.tooltip(isDark)` + 单位 formatter；删 `buildTrendData` 死代码 + 测试锚到真实 `buildTrendSeries`；**DashboardPage 728→476 行**（3 组件外提：RecentFailuresCard/KpiRow/TrendChart） | `pages/DashboardPage.tsx`、`components/dashboard/{FailureTopList,ExecutorHeatBars,RecentFailuresCard,KpiRow,TrendChart}.tsx`、`pages/ExecutorDetailPage.tsx`、`theme/tokens.ts`、`locales/{zh,en}.ts`、4 测试文件 |
+
+**验收证据（独立验收方 verify-gate 实测 + 主会话返修复核）**：
+- 全门禁 exit 0：`check:size-caps`（97 条目）、`check:desktop-selftests-wired`（64 main + 10 renderer 全接线）、`check:user-facing-language`、`check:error-i18n`、`check:mutation-residue`（30 文件配对）；admin-web `tsc -b` 0 + `lint:i18n` 0（zh/en 各 3893 键）；桌面 `typecheck:renderer` 0 + `test:renderer` 0 + **`test:main` 42s 全链 0**；docs 守卫 7/7。
+- 变异演练有牙（4 切片各一处，均红→还原绿）：`stopActionGate` null 分支、`nextSearchIndex` 循环、`readFailed` 分支、`buildTrendSeries` 锚点；验收方只读抽查 4 切片关键反证全部命中（读失败判定在空判定前、max<=0→unknown、sendSync 白名单字面量、token 亮暗成对、消毒零参数 IPC）。
+- 基线重签诚实：DashboardPage 条目**整条删除**（外提后 334<600 阈值，守卫要求删条目而非降 ceiling）、`$ratchet.maxEntries` 98→97；桌面 4 文件按实测上调（ipc 1238/984、i18n 1650、StatusWindow 函数体 809、renderer.selftest 1686），branchDensity 上限未动。
+- **验收 1 处 P1 已返修**：`pure-logic.selftest.mjs:234` 注释含「变异演练」字样触发 `check:mutation-residue` 红 → 主会话改中性措辞「取模实现必须让首尾互通」→ 门禁 exit 0、selftest 仍 0。最终全门禁 sweep 全绿。
+
+**验收分级（如实）**：基线/写域/token/契约=静态探查；4 切片门禁逻辑=单测/内存替身（真 selftest/vitest 断言）；门禁套件整体=真实进程内集成。**浏览器/真机未执行**——桌面 `audit:metrics` 因本机无 X server/`.Xauthority` 无法启动 Electron，中台 Tooltip 暗色仅由 `contentStyle` 断言证明（recharts 真实子项样式继承未验）；首帧防闪无录屏像素取证。定级 **P0/P1 = 0（返修后）**。
+
+**未覆盖边界 / 后续候选（如实）**：
+- P2 存量（非本轮回归，未动）：`KpiRow.tsx:97` 任务数卡读失败仍显示 `s?.totalTasks ?? '—'` 而非强制 `—`——改前即如此且页级 StateError 在，若要严格统一需单独评审。
+- 真机路径待补：`data-theme=dark` 1280px 打开历史/应用抽屉核对选中行层次与遮罩、暗色骨架扫光/日志渐隐肉眼确认；配置搜索键盘真机（↑↓→Enter）；首帧主题清 localStorage + 写 config.theme=dark 录屏；中台 Tooltip hover 暗色。
+- `color-mix` 依赖 Electron 45 / Chromium 134+（目标运行时已支持）；更老运行时需回退 `*-bg` 令牌方案。
+- 审计清单里未实现的 P3（不扩面）：none；审计「不建议动」项（R281 深链、heatBars.occupied、NorthStar 中文原文、dailySuccessRate null 口径、已收口波1/波2 九类）全部保持。
+- **未提交、未 push**——工作树 38 文件待分批提交（建议：桌面 3 片 / 中台 1 片 / 基线+文档 1 批）。
+
+---
 
 ## 本轮（2026-11-24 · 第 3 轮续）：波2 体验上限五切片（引导/效率/可视化/质感/桌面含暗色补建）+ 统一验收 + 返修闭环 + 分批提交
 
