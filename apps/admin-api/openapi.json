@@ -403,11 +403,12 @@
             "x-i18n-en": "Whether both numeric thresholds are met (excludes ops prerequisite coverage=full)"
           },
           "reasonDetails": {
-            "description": "Structured reasons: stable code + verbatim text, parallel to the legacy reasons[] array",
+            "description": "结构化原因：稳定类别码 + 原文文本，与既有 reasons 数组一一对应",
             "items": {
               "$ref": "#/components/schemas/AgentNorthStarPromotionReasonDto"
             },
-            "type": "array"
+            "type": "array",
+            "x-i18n-en": "Structured reasons: stable code + verbatim text, parallel to the legacy reasons[] array"
           },
           "reasons": {
             "description": "未达标逐条说明 + 运营前置提示（脚本不验证 coverage）",
@@ -439,12 +440,14 @@
       "AgentNorthStarPromotionReasonDto": {
         "properties": {
           "code": {
-            "description": "Stable promotion-reason category code; coloring and localization must key off this, not the text",
-            "type": "string"
+            "description": "稳定的升主原因类别码；前端着色与本地化按此码判定，不解析文本",
+            "type": "string",
+            "x-i18n-en": "Stable promotion-reason category code; coloring and localization must key off this, not the text"
           },
           "text": {
-            "description": "Human-readable reason text verbatim from the backend; fallback display when the code is unknown to the frontend",
-            "type": "string"
+            "description": "后端原文人话原因；前端遇未知码时回落展示",
+            "type": "string",
+            "x-i18n-en": "Human-readable reason text verbatim from the backend; fallback display when the code is unknown to the frontend"
           }
         },
         "required": [

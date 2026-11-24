@@ -83,14 +83,11 @@ export class AgentNorthStarPromotionThresholdsDto {
 export class AgentNorthStarPromotionReasonDto {
   @ApiProperty({
     description:
-      "Stable promotion-reason category code; coloring and localization must key off this, not the text",
+      "稳定的升主原因类别码；前端着色与本地化按此码判定，不解析文本",
   })
   code: string;
 
-  @ApiProperty({
-    description:
-      "Human-readable reason text verbatim from the backend; fallback display when the code is unknown to the frontend",
-  })
+  @ApiProperty({ description: "后端原文人话原因；前端遇未知码时回落展示" })
   text: string;
 }
 
@@ -110,7 +107,7 @@ export class AgentNorthStarPromotionDto {
   @ApiProperty({
     type: [AgentNorthStarPromotionReasonDto],
     description:
-      "Structured reasons: stable code + verbatim text, parallel to the legacy reasons[] array",
+      "结构化原因：稳定类别码 + 原文文本，与既有 reasons 数组一一对应",
   })
   reasonDetails: AgentNorthStarPromotionReasonDto[];
 
