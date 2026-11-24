@@ -200,14 +200,18 @@ jobs:
       - run: npm run lint
         working-directory: apps/admin-api
       # U-2：jest 按文件哈希分片，4 片并行。覆盖率门不在此（见 admin-api-coverage）。
-      # U-3：--retryTimes=2（jest-circus）给偶发时序/资源抖动用例两次重试机会，
-      # 重试后仍红才红（playwright e2e 已有 retries:1，单元侧此前无重试机制）。
+      # U-3（诚实修正）：此前这里写过 `--retryTimes=2`（jest-circus），以为能给偶发
+      # 时序/资源抖动两次重试机会。实测 Jest 30.5.2 根本没有这个 CLI flag（--help 无、
+      # --showConfig 无、带它跑 EXIT 0 且无 unrecognized option）⇒ 一直被静默忽略、
+      # 从未生效，已删，行为零变化。本仓纪律是「有意不加 --retry」（重试会把 flake
+      # 洗成「看起来稳定」）：抖动靠分片隔离控制，flake 可观测性由 nightly flake-watch
+      # 承担，不靠重试掩盖（playwright e2e 的 retries:1 是另一层，不在本单元侧）。
       # ESM-1：@nestjs/common 等依赖已是 ESM-only（"type":"module"），jest 的
       # require(esm) 路径由 vm.SourceTextModule 门控，必须带 --experimental-vm-modules
       # 才置位（否则 39 个 suite 在 import 处直接 ERR_REQUIRE_ESM 全红）。
       # 原先此处裸调 `npx jest` 绕过了 package.json 脚本里已有的该 flag，故显式带上。
       - name: Unit tests (shard ${{ matrix.shard }}/4)
-        run: npx --node-options=--experimental-vm-modules jest --shard=${{ matrix.shard }}/4 --retryTimes=2
+        run: npx --node-options=--experimental-vm-modules jest --shard=${{ matrix.shard }}/4
         working-directory: apps/admin-api
 
   # 覆盖率门：全量跑一遍 + coverageThreshold（这是分片化之后唯一不变的全局口径）。
@@ -270,14 +274,19 @@ jobs:
       # run 37345065125），砍 workers 后单 worker 又触 Node 默认 ~2GB 堆顶
       # （Jest worker OOM，run 37349952892）——两者需同调。--experimental-vm-modules
       # 从 npm test 的 --node-options 搬到 env（ESM-1），避开与 NODE_OPTIONS 的合并歧义。
-      # CIR-01（2026-10-29 审计）：这是全文件唯一没有重试的 jest 运行，而它
-      # 又是唯一执行 coverageThreshold 的 job。一次共享 runner 抖动就会把
-      # develop 染红，等真掉覆盖率时人们会先怀疑是抖——假红的闸等于没有闸。
-      # --retryTimes=2 与分片 job 同款（coverage 与 retryTimes 兼容）。
+      # CIR-01（2026-10-29 审计，诚实修正）：这是唯一执行 coverageThreshold 的 job，
+      # 共享 runner 抖动曾让人担心把 develop 染红——「真掉覆盖率时先怀疑是抖」，
+      # 假红的闸等于没有闸。此前想用 `--retryTimes=2` 与分片 job 同款兜底，但
+      # Jest 30.5.2 根本没有该 CLI flag：--help 查不到、带它跑 EXIT 0 且静默忽略、
+      # --showConfig 里也没有任何 retry 痕迹 ⇒ 从未生效。已与分片命令一并删除，
+      # 实际行为零变化。抖动控制靠分片隔离 + `--maxWorkers=2` /
+      # `--workerIdleMemoryLimit` 这些**真生效**的参数；flake 的可观测性由 nightly
+      # flake-watch 承担。本仓纪律「有意不加 --retry」——全局重试会把真实偶发缺陷
+      # 洗成「看起来稳定」，与本仓 flake 治理哲学冲突。
       # 已知残差：PR 事件下 github.ref = refs/pull/N/merge，永远不等于
       # refs/heads/develop，所以 PR 上仍不跑覆盖率门（见审计 CIR-01 ②：
       # 分片 + json reporter + nyc merge 的合并方案，成本压到不增加第 5 遍）。
-      - run: npx jest --coverage --maxWorkers=2 --workerIdleMemoryLimit=1536MB --retryTimes=2
+      - run: npx jest --coverage --maxWorkers=2 --workerIdleMemoryLimit=1536MB
         working-directory: apps/admin-api
         env:
           NODE_OPTIONS: --max-old-space-size=4096 --experimental-vm-modules
@@ -1102,6 +1111,16 @@ jobs:
       # ②针对性层（点名「未加引号的值含冒号+空格」的行并给出可直接照抄的修法）。
       - name: Workflow files are parseable YAML
         run: npm run check:workflow-yaml
+      # JEST-FLAG（静默无效 flag 守卫）：Jest 会把不认识的 `--xxx` 静默忽略（EXIT 0、
+      # 不报 unrecognized option），`--retryTimes=2` 就是这样长期写在 CI 命令里却从未生效。
+      # 本守卫从 `jest --help` 解析真实支持的长选项面，加带理由的白名单（如
+      # workerIdleMemoryLimit：配置期权、--showConfig 实测生效但未列入 help），扫 ci.yml 与
+      # coverage-snapshot.mjs 里 jest 命令的 `--flag=` / `--flag ` token：未支持且未登记
+      # 即点名 file:line 判红；扫描面/help 解析塌了也判红（反永真）。零依赖、秒级；
+      # --selftest 用真子进程 + 临时夹具自检。找不到 admin-api 的 jest 二进制时优雅 SKIP，
+      # 不让未装该端依赖的守卫 job 稳定红。
+      - name: Jest CLI flags are real (no silently-ignored flags)
+        run: npm run check:jest-cli-flags
       # A8-①：治「不在发布线的包谁也不管」。实测：version.txt=2.1.0，而
       # packages/autocodeflow-{ai,db,http,notify} 的 pyproject 停在 0.3.2（tag *-v0.3.2 真实存在），
       # 且不在 release.yml 的 version-guard / publish 矩阵里 —— 于是「版本一致性」这一整类

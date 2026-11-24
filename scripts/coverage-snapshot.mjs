@@ -36,8 +36,12 @@
  * ② **admin-api 还必须带 `--node-options=--experimental-vm-modules`**（与它 `package.json` 的 `test`/`test:cov`
  *    脚本同款）：spec 里 import 了 ESM-only 的包，缺这个 node 选项 ⇒ jest 把 ESM 当 CommonJS ⇒ 全部套件红
  *    （实测 `createRequireEsmError`）。**这不是可选加速项，是能不能跑起来的开关。**
- *    另加 CI 同款的内存三件套（`--max-old-space-size=4096` / `--workerIdleMemoryLimit=1536MB` /
- *    `--retryTimes=2`）：本机 swap 已满，实测缺它们会 **2 个套件 OOM 崩 + 1 个套件断言红**。
+ *    另加 CI 同款的内存参数（`--max-old-space-size=4096` / `--workerIdleMemoryLimit=1536MB`）：
+ *    本机 swap 已满，实测缺它们会 **2 个套件 OOM 崩 + 1 个套件断言红**。
+ *    此前还写过 `--retryTimes=2`，但 Jest 30.5.2 没有这个 CLI flag（--help / --showConfig
+ *    均无、带它跑 EXIT 0 且静默忽略）⇒ 从未生效，已从本数组与 CI 命令中删除，行为零变化。
+ *    偶发抖动靠分片隔离 + 上述真生效参数控制；flake 可观测性由 nightly flake-watch 承担，
+ *    不用重试掩盖（本仓纪律「有意不加 --retry」：重试会把 flake 洗成「看起来稳定」）。
  * ③ **选步必须确定**：`docs/health-baseline.json` 里有**两个**含 "admin-api" 的 step：
  *    ① `admin-api 全量（默认环境，\`npm test -- --maxWorkers=2\`）` ← 本端要写的就是它
  *    ② `admin-api 全量（\`SELFTEST_SKIP_ENV_FILE=1\`，夹具干净态）` ← **另一套环境变量**下的另一条测量
@@ -163,13 +167,15 @@ export const ENDS = {
   // 少了这个 node 选项 jest 会把 ESM 语法当 CommonJS 直接报错 ⇒ **全部套件失败**（实测：
   // `createRequireEsmError`，1 个套件就红）。这不是「可选加速项」，是能不能跑起来的开关。
   //
-  // ⚠ **内存三件套必须与 CI 一致**（`--max-old-space-size=4096` / `--workerIdleMemoryLimit=1536MB`
-  // / `--retryTimes=2`）：本机 swap 已 100% 满（8G 全用），插桩后 worker 堆涨 ⇒ 实测
+  // ⚠ **内存参数必须与 CI 一致**（`--max-old-space-size=4096` / `--workerIdleMemoryLimit=1536MB`）：
+  // 本机 swap 已 100% 满（8G 全用），插桩后 worker 堆涨 ⇒ 实测
   // **2 个套件 "Jest worker ran out of memory and crashed"**（`executor-register-columns.collaborator`
   // / `create-projects.migration`）+ 1 个套件断言红（`health.service.spec.ts` 的「healthy path」
   // 期望 healthy 实得 degraded —— 堆水位检查算出的 `heapUsedPercent` 越过 85% 的 degraded 阈值）。
-  // CI（`.github/workflows/ci.yml` 的 admin-api-coverage job）跑的就是这三个参数 ⇒ 本脚本与 CI 同口径，
-  // 不自造一套「本地更宽松」的参数（那会得到一个 CI 复现不了的数字）。
+  // 此前数组里还有 `--retryTimes=2`；Jest 30.5.2 无此 CLI flag（--help 无 / --showConfig 无 /
+  // 带它 EXIT 0 静默忽略）⇒ 从未生效，已从本数组与 CI 命令一并删除，行为零变化。
+  // CI（`.github/workflows/ci.yml` 的 admin-api-coverage job）跑的就是这些真生效参数 ⇒
+  // 本脚本与 CI 同口径，不自造一套「本地更宽松」的参数（那会得到一个 CI 复现不了的数字）。
   "admin-api": {
     cwdRel: "apps/admin-api",
     cmd: "npx",
@@ -180,7 +186,6 @@ export const ENDS = {
       "--coverageReporters=json-summary",
       "--maxWorkers=2",
       "--workerIdleMemoryLimit=1536MB",
-      "--retryTimes=2",
     ],
     summaryRel: "coverage/coverage-summary.json",
     metric: "total.lines.pct",
