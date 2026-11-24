@@ -40,6 +40,11 @@ export const UI_TEXTS: Record<UiLocale, Record<string, string>> = {
     'dialog.confirm.cancel': '取消',
     'dialog.confirm.continue': '继续',
     'dialog.confirm.message': '确定要{action}吗？',
+    // P1-TRAY-STOP：托盘 stop 的 active 二次确认（按钮 [取消, 停止执行器]）
+    'dialog.trayStop.title': '停止执行器',
+    'dialog.trayStop.accept': '停止执行器',
+    'dialog.trayStop.message': '确定要停止执行器吗？',
+    'dialog.trayStop.detail': '执行器当前处于活动状态，停止会中断正在运行的任务。',
     // 重启执行器征询（confirmExecutorRestart；按钮顺序 = [重启, 暂不重启]）
     'dialog.restart.accept': '重启执行器',
     'dialog.restart.defer': '暂不重启',
@@ -69,6 +74,11 @@ export const UI_TEXTS: Record<UiLocale, Record<string, string>> = {
     'dialog.confirm.cancel': 'Cancel',
     'dialog.confirm.continue': 'Continue',
     'dialog.confirm.message': 'Are you sure you want to {action}?',
+    // P1-TRAY-STOP: native active-stop confirmation (buttons [Cancel, Stop executor])
+    'dialog.trayStop.title': 'Stop executor',
+    'dialog.trayStop.accept': 'Stop executor',
+    'dialog.trayStop.message': 'Stop the executor?',
+    'dialog.trayStop.detail': 'The executor is active. Stopping it will interrupt running tasks.',
     'dialog.restart.accept': 'Restart executor',
     'dialog.restart.defer': 'Restart later',
     'dialog.restart.message': 'Configuration saved — the executor must restart for the changes to take effect',

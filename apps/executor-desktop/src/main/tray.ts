@@ -4,6 +4,7 @@ import { existsSync } from 'fs';
 import { ExecutorStatus } from './executor-process';
 import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from './agent-status-view';
 import { TRAY_TEXTS, resolveTrayLocale, traySupportsClick, type TrayLocale, type TrayTexts } from './tray-texts';
+import { isTrayStopActive, trayStopGate } from './tray-stop-gate';
 import log from './logger';
 
 export class TrayManager {
@@ -24,6 +25,8 @@ export class TrayManager {
   // 这些回调由 index.ts 注入，避免循环引用
   onStart: (() => Promise<void>) | null = null;
   onStop: (() => Promise<void>) | null = null;
+  /** P1-TRAY-STOP：active 时的原生二次确认，由 index.ts 与 stop 入口同处注入。 */
+  confirmStop: (() => Promise<boolean>) | null = null;
   onOpenStatus: (() => void) | null = null;
   onOpenConfig: (() => void) | null = null;
   onOpenHistory: (() => void) | null = null;
@@ -50,26 +53,35 @@ export class TrayManager {
   // 互斥，不动 menu 重建路径（保守口径，见清单约束）。
   private startStopInFlight = false;
 
-  /** B7：start/stop 点击入口的在飞互斥（回调自身吞错落日志，见 index.ts）。 */
+  /** B7 / P1-TRAY-STOP：启停点击在飞互斥 + 托盘 stop 的 active 二次确认。 */
   private runStartStop(kind: 'start' | 'stop'): void {
     if (this.startStopInFlight) return;
     const cb = kind === 'start' ? this.onStart : this.onStop;
     if (!cb) return;
+    const gate = kind === 'stop'
+      ? trayStopGate(this.currentStatus, { inFlight: this.startStopInFlight })
+      : null;
     this.startStopInFlight = true;
-    try {
-      const result = cb();
-      if (result instanceof Promise) {
-        // 同步抛出 / Promise reject 都不得悬挂互斥标志（catch 先行，避免
-        // unhandled rejection 漏给全局兜底——那会退出整个应用）。
-        void result
-          .catch(() => undefined)
-          .finally(() => { this.startStopInFlight = false; });
-      } else {
+    void (async () => {
+      try {
+        if (gate === 'confirm') {
+          let confirmed = false;
+          try {
+            confirmed = (await this.confirmStop?.()) ?? false;
+          } catch (err) {
+            log.warn(`tray stop confirm failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          // 确认取消 / 确认通道故障一律不落 stop；inFlight 在 confirmed 分支
+          // 之后判定，二次确认期间持有的互斥标志不会把确认结果误吞。
+          if (trayStopGate(this.currentStatus, { inFlight: this.startStopInFlight, confirmed }) !== 'stop') return;
+        }
+        await cb();
+      } catch (err) {
+        log.warn(`tray ${kind} failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
         this.startStopInFlight = false;
       }
-    } catch {
-      this.startStopInFlight = false;
-    }
+    })();
   }
 
   /**
@@ -152,7 +164,7 @@ export class TrayManager {
     const locale = this.locale();
     const t = this.texts(locale);
     const status = this.currentStatus;
-    const isActive = status === 'online' || status === 'pending';
+    const isActive = isTrayStopActive(status);
     const autoLaunchEnabled = this.getAutoLaunch?.() ?? false;
     const separator: Electron.MenuItemConstructorOptions = { type: 'separator' };
 

@@ -21,7 +21,8 @@ import { scanRunningCount } from './running-count';
 import { resolveStoredTheme } from './theme-bridge';
 import { createCrashGuard } from './crash-guard';
 import { resolveTrayLocale } from './tray-texts';
-import { UI_LANGUAGE_DEFAULT } from './ui-language';
+import { resolveUiLanguage, UI_LANGUAGE_DEFAULT } from './ui-language';
+import { uiText } from './ui-texts';
 import * as path from 'path';
 import log, { applyLogLevel, initLogCleanup } from './logger';
 
@@ -194,6 +195,27 @@ app.whenReady().then(async () => {
     // 四条统一收敛到 startHeartbeat()（同源读取端口 + adminApiUrl），
     // 避免"五处调用点各自传参、漏一个就静默退化"。
     startHeartbeat();
+  };
+  // P1-TRAY-STOP：与状态页 stopActionGate 三路确认对齐——托盘 stop 在 active
+  // 时走原生模态确认。复用 ipc-handlers 的 showMessageBox 模式（无窗口也弹、
+  // cancelId=0）与 ui-texts 双语文案；取消时 TrayManager 不落 stop。
+  trayManager.confirmStop = async () => {
+    const locale = resolveUiLanguage(() => app.getLocale(), savedUiLanguage());
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+    const options = {
+      type: 'warning' as const,
+      buttons: [uiText(locale, 'dialog.confirm.cancel'), uiText(locale, 'dialog.trayStop.accept')],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: uiText(locale, 'dialog.trayStop.title'),
+      message: uiText(locale, 'dialog.trayStop.message'),
+      detail: uiText(locale, 'dialog.trayStop.detail'),
+    };
+    const result = win
+      ? await dialog.showMessageBox(win, options)
+      : await dialog.showMessageBox(options);
+    return result.response === 1;
   };
   trayManager.onStop = async () => {
     heartbeat.stop();

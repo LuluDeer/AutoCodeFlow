@@ -16,10 +16,26 @@ import {
   initialHeartbeatHysteresisState,
   OFFLINE_CONSECUTIVE_FAILURES,
 } from './notifier-rules';
+import { trayStopGate } from './tray-stop-gate';
 
 function read(rel: string): string {
   return fs.readFileSync(path.join(__dirname, '..', 'src', 'main', rel), 'utf-8');
 }
+
+/** P1-TRAY-STOP：托盘 stop 纯闸门的行为面 + 三处接线锚点。 */
+function trayStopSelftest(): void {
+  assert.strictEqual(trayStopGate('online'), 'confirm');
+  assert.strictEqual(trayStopGate('pending'), 'confirm');
+  assert.strictEqual(trayStopGate('offline'), 'stop');
+  assert.strictEqual(trayStopGate('stopped'), 'stop');
+  assert.strictEqual(trayStopGate('online', { inFlight: true }), 'ignore');
+  assert.strictEqual(trayStopGate('online', { confirmed: false }), 'cancel');
+  assert.strictEqual(trayStopGate('online', { confirmed: true }), 'stop');
+  assert.ok(read('tray.ts').includes('trayStopGate(this.currentStatus'));
+  assert.ok(read('index.ts').includes('trayManager.confirmStop'));
+  assert.ok(read('ui-texts.ts').includes("'dialog.trayStop.accept'"));
+}
+trayStopSelftest();
 
 function main(): void {
   const indexSrc = read('index.ts');
@@ -38,11 +54,7 @@ function main(): void {
     const storeIdx = indexCode.indexOf('new ConfigStore()');
     assert.ok(lockIdx >= 0, 'B-7: index.ts 必须请求单实例锁');
     assert.ok(storeIdx >= 0, 'B-7: index.ts 必须构造 ConfigStore');
-    assert.ok(
-      lockIdx < storeIdx,
-      'B-7: 单实例锁必须先于 ConfigStore 构造——否则第二实例会先跑 token 加密' +
-        '迁移等写盘副作用、与第一实例竞争同一配置文件，然后才默默退出',
-    );
+    assert.ok(lockIdx < storeIdx, 'B-7: 单实例锁必须先于 ConfigStore 构造——否则第二实例会先跑 token 加密迁移等写盘副作用、与第一实例竞争同一配置文件，然后才默默退出');
     // userData 覆盖（e2e 隔离）也必须在锁之前（锁文件按 userData 路径落）
     const setPathIdx = indexCode.indexOf("app.setPath('userData'");
     assert.ok(setPathIdx >= 0 && setPathIdx < lockIdx, 'B-7: userData 覆盖必须先于抢锁');
@@ -50,21 +62,11 @@ function main(): void {
 
   // ── B-1①：全局崩溃兜底接线 ────────────────────────────────────────
   {
-    assert.ok(
-      indexCode.includes("process.on('uncaughtException'") &&
-        indexCode.includes("process.on('unhandledRejection'"),
-      'B-1①: index.ts 必须注册 uncaughtException / unhandledRejection 兜底',
-    );
+    assert.ok(indexCode.includes("process.on('uncaughtException'") && indexCode.includes("process.on('unhandledRejection'"), 'B-1①: index.ts 必须注册 uncaughtException / unhandledRejection 兜底');
     const guardIdx = indexCode.indexOf('crashGuard.handle(');
     const storeIdx = indexCode.indexOf('new ConfigStore()');
-    assert.ok(
-      guardIdx >= 0 && guardIdx < storeIdx,
-      'B-1①: 崩溃兜底必须先于业务初始化注册（覆盖 ConfigStore 构造期的崩溃窗口）',
-    );
-    assert.ok(
-      indexCode.includes('createCrashGuard(') && indexCode.includes('isQuitting: () => isQuitting'),
-      'B-1①: 兜底必须接 createCrashGuard 且感知既有退出流程（isQuitting）',
-    );
+    assert.ok(guardIdx >= 0 && guardIdx < storeIdx, 'B-1①: 崩溃兜底必须先于业务初始化注册（覆盖 ConfigStore 构造期的崩溃窗口）');
+    assert.ok(indexCode.includes('createCrashGuard(') && indexCode.includes('isQuitting: () => isQuitting'), 'B-1①: 兜底必须接 createCrashGuard 且感知既有退出流程（isQuitting）');
   }
 
   // ── B-2：powerMonitor resume 重置迟滞锚点 ─────────────────────────
