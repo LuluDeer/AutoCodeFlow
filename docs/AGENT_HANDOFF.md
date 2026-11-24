@@ -1,7 +1,242 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 4 轮 · 真机验收补验 + 焦点归还返修）
-> 当前分支 `develop` = `da235178`（第 4 轮 17 批已提交：第4轮主批 5 + R5 三批 4+4+3 + 真机返修 1）；工作树干净，**未 push**。真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 15 轮 · 同族两守卫假绿收口）
+> 当前分支 `develop` = `4c531991`；**本次交接 41 文件未提交**（第 5-14 轮 39 + 第 15 轮新增 `check-api-error-format.mjs`/`check-agent-event-causation.mjs`，见下方十一段，未 commit/未 push）。三路 diff 审阅无阻断、CI 关键 job + 桌面两侧全绿、三个进程内自检守卫假绿均已收口，具备提交条件。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 15 轮）：收口第 14 轮审计登记的两个同族守卫假绿（api-error-format / agent-event-causation）
+
+**方向来源**：objective 续轮。第 14 轮审计在收口 `check-categories-single-source` 黑盒化时附带登记两个**同款形态**未黑盒守卫，本轮兑现——均为 selftest 进程内直调判据函数（`check()`/`judge()`）、CLI `main()` 退出码与 `--root` 解析零覆盖，反证都是"把 `exit(1)`/`return 1` 改 0 → CLI 打印 ✘ 却 EXIT 0、CI 转绿而 selftest 全绿"。
+
+**api-error-format**：6 例 selftest 改为 `runGuard(SELF, {args:["--root", dir]})` + `expectExit({code, contains, absent})`，保留六个夹具场景（一致/缺 errorCode/多写 traceId/标题结构红/过滤器结构红/嵌套对象），只改调用方式；main 与 check()/parseKeys() 零改动。反证两条 `process.exit(1)` 分支各自转红（结构红→④⑤红、problems 红→②③红）、CLI 输出"✘ 却退出码 0（期望 1）"，sha256 还原一致。
+
+**agent-event-causation**：11 例中 9 例黑盒化（10 次真子进程 CLI：真树主跑+`--strict`/坏夹具 `--root`→1/删 causedBySeq/写死 null/空仓库/闭集缺失/新 kind 未登记/运行期断言缺失/proof 标记缺失），保留 2 例进程内（② `exemptions:[]` 零豁免正例、⑨ `extraExempt` 陈旧白名单——CLI 无对应 flag，源码注明理由）。反证两条：改 `return 1`→0 → 8 例 CLI 红而纯进程内 ②⑨ 仍绿（恰好复现旧版假绿）、改 `--root` 为等号形态 → CLI exit 2；sha256 还原一致、`--strict` 仍 0。
+
+**验收（主控独立复跑，真实退出码）**：两守卫 `--selftest` 6/6 与 11/11 均 0、主跑 0（causation 另 `--strict` 0）、`check:guards-wired` 0（107 守卫全接线）、**全守卫链 `test:guards:chain` CHAIN_EXIT=0**。验收级别：真子进程 CLI 黑盒（高于真实进程内集成），未达浏览器/真机；遗留缺陷 0。
+
+**候选（机械扫出、未做）**：仍有 9 个守卫 selftest 无 `runGuard/expectExit`（`check-brand-drift`/`check-cross-end-consistency`/`check-examples-code`/`check-live-probes-intact`/`check-protocol-three-way`/`check-runner-labels`/`check-spec-coupling-surfaces`/`check-typecheck-covers-specs`/`check-upgrade-notes`），但多数需真跑三端/报告模式或本来就该进程内（如 protocol-three-way 真跑两端、spec-coupling report-only），**不能一刀切黑盒化**；本轮只做审计确证的两处，其余留候选不制造 churn。
+
+**可用路径 / 发布前置**：41 文件纯本地改动，**未 commit、未 push**。三路 diff 审阅无阻断、CI 关键 job + 桌面两侧全绿、全链 0、三个进程内自检假绿均已收口，提交前证据齐备；提交等用户明确指令。
+
+---
+
+## 本轮（2026-11-25 · 第 14 轮）：桌面 CI 证据补全 + categories 守卫假绿收口
+
+**方向来源**：objective 续轮。第 13 轮 CI 复演漏了桌面两侧（本会话改了 ConfigPage/StatusWindow/apps-helpers/renderer.selftest）；另派一路文档/测试基础设施审计，找到一处真实假绿。
+
+**桌面 CI 证据补全（无代码改动）**：按 CI job 口径串行复演 `npm run test:main`（44 条 selftest 全跑，含 agent-worker-paths/protocol/process、diag-probes 等）**EXIT 0**、`npm run test:renderer`（含本会话改的 `apps-helpers selftest passed`、AGENT-STATE-RACE 所在的 renderer selftest 全绿）**EXIT 0**。补上第 13 轮遗漏的桌面证据；至此本会话触及的所有 app/package 均有 CI 口径全量验证。
+
+**缺口（守卫假绿，实测确认）**：`scripts/check-categories-single-source.mjs` 的 `--selftest` 4 例全在进程内直调 `check()`（:278/284/296/305），从不经 CLI `main()`——`main()` 的退出码（:361 `return 1`）与 `--root=` 解析零覆盖。审计在 `/tmp` 副本实测：把 `return 1` 改 `return 0` → 真树类别硬编码时 `check()` 仍报错、CLI 仍打印 `✘`，但**退出码 0、CI 转绿**，而 selftest 仍 4/4 全绿。现有四守卫（guards-wired/selftests-wired/guard-liveness/覆盖计数）都不检"selftest 是否黑盒跑 CLI"，全绿。
+
+**修法（单文件）**：4 例改为真子进程 CLI 黑盒——`runGuard(SELF, {args:[\`--root=${dir}\`]})` + `expectExit({code, contains, absent})`（照 `check-docs.selftest.mjs:455-470`），保留 4 个夹具语义（正常/空树/order 空/非 JSON），只改"怎么调"。用 `--root=<dir>` 等号形态（main 只解析 `startsWith("--root=")`）。main() 与主跑逻辑零改动。
+
+**验收（主控独立复跑，真实退出码）**：
+- categories `--selftest` 0（4/4 黑盒例）、主跑 0（3 端 7 类别与契约逐字一致）、`check:guards-wired` 0（107 守卫全接线）、`check-mutation-residue` 0（19 文件配对）、**全守卫链 `test:guards:chain` CHAIN_EXIT=0**。
+- 反证精准：改 `return 1`→`return 0` → selftest 转红 EXIT 1（3/4 失败，正例①仍绿——只打中退出码路径）、CLI 输出 `✘ 退出码 0（期望 1）`；还原后 4/4 绿、sha256 还原校验一致。
+- **验收级别**：真子进程 CLI 黑盒（spawnSync 断言退出码 + stdout/stderr）+ 全链进程内真跑；未达真机。遗留缺陷 0。
+- 同族未黑盒者（审计附带发现、未做）：`check-api-error-format`、`check-agent-event-causation`——留后续候选，本轮只做最确证的一处。
+
+**可用路径 / 发布前置**：39 文件纯本地改动，**未 commit、未 push**。三路 diff 审阅无阻断、CI 关键 job + 桌面两侧全绿、全链 0、假绿已收口，提交前证据齐备；提交等用户明确指令。
+
+---
+
+## 本轮（2026-11-25 · 第 13 轮）：CI 口径关键 job 串行复演（提交前最强证据，无代码改动）
+
+**方向来源**：objective 续轮。前几轮已跑全守卫链（0）、全量单测（并发 flake、单跑全绿）、diff 审阅（无阻断），但**尚未按 CI 真实口径整体复演这批 38 文件触及的关键 job**——R477 先例表明这是消除"本地绿 CI 红"风险的最强证据。本轮做这件事。
+
+**环境纪律（实测踩坑）**：首轮并发跑 admin-api + admin-web 两个重套件 → admin-web 被 SIGKILL、admin-api `--runInBand` 单进程堆耗尽 EXIT=134（`Ineffective mark-compacts near heap limit`，跑 5 分钟、无断言失败）。确认是已知环境限制（并发 OOM / `--runInBand` 单进程累积泄漏），非代码回归。改为**严格串行 + 仓库既有正确口径** `--maxWorkers=2`，全部转绿。残留检查：无残留 jest/vitest 进程，`test-results` 是 gitignored 既有 harness。
+
+**CI 口径串行复演（全部真实退出码）**：
+| job | 命令 | 结果 |
+|---|---|---|
+| admin-api | `npm test -- --maxWorkers=2 --silent` | **EXIT 0**，510 suites passed（2 skipped）/ 8624 tests passed（6 skipped） |
+| admin-web | `npx vitest run` | **EXIT 0**，366 files / 3018 passed（1 skipped） |
+| executor-node | `npx jest --maxWorkers=2` | **EXIT 0**，64 suites / 1875 passed（13 skipped） |
+| acf-cli | `npx vitest run` | **EXIT 0**，16 files / 466 passed |
+| node-sdk | `npx jest` | **EXIT 0**，6 suites / 151 passed |
+| typecheck:all | `npm run typecheck:all` | **EXIT 0**（api/specs/node/cli/mcp/node-sdk/desktop/web 8 端） |
+| CI 配置三守卫 | workflow-yaml / actions-pinned / runner-labels | 全 **EXIT 0** |
+
+本会话改动的 executor-python（config 派生 / uv 取消）已在第 7/9/11 轮按 CI 口径 `test:python` 全量验证（6377 passed / 87.31%），本轮不重复。
+
+**验收级别**：真实进程内全量单测 + 类型检查（CI 命令口径串行复演），**未真跑 GitHub Actions**（CI 环境 PG16 vs 本机 18、分片并行 orchestration 差异），如实标注。遗留缺陷 0。**结论**：38 文件在 CI 关键命令口径下全绿，处于可提交态。
+
+**可用路径 / 发布前置**：38 文件纯本地改动，**未 commit、未 push**。全守卫链 0、diff 审阅无阻断、CI 口径关键 job 串行全绿，提交前证据齐备；提交等用户明确指令。
+
+---
+
+## 本轮（2026-11-24 · 第 12 轮）：收口审阅 P2——配对判据确定性（守卫自身的假绿回归风险）
+
+**方向来源**：objective 续轮。第 11 轮三路 diff 审阅无 P0/P1，但守卫审阅点出一条**真正值得收口**的 P2：`check-web-type-field-drift.mjs` 的 `pickResponseFirst`（第 10 轮为修 updatedApp 误配而加）在多个响应类候选间仍用 `cands.find` 按 Set 迭代序取首个——当前数据正确，但生成名顺序一变就会让"响应类优先"判据重新静默误配（假绿回归）。这正是保护本会话刚修的字段漂移的守卫，值得确定性化。
+
+**修法**：`pickResponseFirst` 改为——0 候选返回 null、1 候选直接选中、多候选中**恰好一个响应类**才选中（真实案例 `SetCurrentVersionResult` 的候选含裸 Dto 与 ResponseDto，只选后者）、**多个响应类 ⇒ 返回 null 归未配对**。与守卫头注纪律"宁可漏配，不假配对"一致，绝不依赖 Set 迭代序。真实配对读数不变（配对 53 处、基线冻结 55 处）。
+
+**selftest 有牙**：加一条直接断言——`pairName('ConfigResult', {ConfigResponseDto, ConfigViewDto, ConfigDto})` 必须为 null（多响应类不误配），且 `{ConfigDto, ConfigResponseDto}` 单一响应类时必须选中后者（正例控制组）。selftest 27→28/28 全绿；反证把裁决改回 `responses.find(()=>true)` → 新用例红（1/28 未按预期）、sha256 逐字还原后复绿。
+
+**验证**：field-drift selftest 28/28 0 + 主跑 0（配对 53/基线 55 不变）；全守卫链 `npm run test:guards:chain` → **CHAIN_EXIT=0**。文件数仍 38（仅改一个已有脚本）。验收级别：静态 + 守卫 selftest 真子进程 + 全链进程内真跑；无功能改动，不涉浏览器/真机。遗留缺陷 0。
+
+**可用路径 / 发布前置**：38 文件纯本地改动，**未 commit、未 push**，全链绿、审阅无阻断、判据确定性已收口，具备提交条件；提交等用户明确指令。
+
+---
+
+## 本轮（2026-11-24 · 第 11 轮）：累积 38 文件整体 diff 审阅收口（提交前最后一道闸）
+
+**方向来源**：objective 续轮。前六轮每片各自验收通过，但 AGENTS §4.3 明确要求主 agent 集成时审阅**最终 diff** 而非采信"各切片自测通过"——38 文件（634+/115-）从未整体审阅。本轮做这件事，不新增功能切片。
+
+**编排**：派 3 路独立只读 diff 审阅 agent 按域审（后端+python / 前端+e2e+桌面 / 守卫+CI接线+文档），主会话并行做机械扫描（冲突标记 / 临时反证残留 / ALLOW）与跨切片契约核查（桌面 query key↔中台消费、config reload 两端条件、updatedApp 四处字段、三守卫 CI 接线）。
+
+**审阅结论**：三路均 **无 P0/P1 阻断**，可提交。机械扫描干净（无冲突标记、无 COUNTERPROOF/TEMP 残留；命中的 `Accepted`/`Proposed` 是 ADR 状态描述的正常文字）。跨切面一致（桌面 `deploymentId`/`version` 与中台逐字对齐；config reload node `internal===undefined` ↔ python `is None` 对应，python 无 `adminApiUrls` 是协议既定且 parity 脚本显式承认；updatedApp 后端 2 DTO + web 2 接口 + CLI 2 接口齐备；三新守卫 CI step + chain 接线在位）。逐文件审阅确认等价压缩真等价（ConfigPage / renderer.selftest / ApplicationDetailPage 的折叠均为纯格式）。
+
+**审阅发现的 P2 与处置**：
+- 已修 3 处（主会话，集成期）：① `artifacts.service.ts:265` 注释"后缀 LIKE"与实际 ILike 漂移 → 改 ILIKE 并说明大写文件名；② `execute.py` `_abort_and_reap` 的 `proc.wait()` 用 `except Exception` 但注释称"含 CancelledError" → 改 `except BaseException` 与"不掩盖原异常"一致；③ 交接文档第 10 轮"CI 与本地判据一致"不精确 → 改为如实"CI 四目录（含 contract-fixtures）/ 本地三目录，CI 更严无假绿"，行号 224→225。
+- 记录不改（低风险设计口径/触发面窄）：notification 复核重挂延后一窗口（不丢数据）；config 派生少 `adminApiUrls` 守卫（python 无该字段、注释已显式承认）；`getVersionKey` 迁移新增 `latestDeploymentId/sourceDeploymentId` 回退、CLI `UpdatedApp` 19 字段逐字段对齐已核；`pickResponseFirst` 多响应候选仍按 Set 序取首（当前数据正确）；`check-updatedapp-parity` 未进 coverage 登记（selftest 真断言在、非假绿）；ADR base token 只取首个（括号内状态翻转不参与比对，设计口径）。
+- 前端 3 个低风险点（滚动重定位、`commit`/`gitCommit` fallback 差异、UUID nibble 不校验）均不影响正确路径，记后续清理。
+
+**验证**：含 P2 修正的全守卫链 `npm run test:guards:chain` → **CHAIN_EXIT=0**（三次全链确认连续绿）；两处 P2 修正各自测试复跑绿（artifacts jest 23/23、uv cancel pytest 2/2、py_compile 0）；`test:docs` 0；文件数仍 38（无新增/删除，仅改 3 个已有文件）。
+
+**验收级别**：静态审阅 + 全守卫链进程内真跑（本轮无新功能，不涉浏览器/真机）。**Verdict：无 P0/P1/P2 阻断，38 文件处于可提交态**；剩余 P2 为低风险设计口径，已如实记入上方各轮段与候选，不扩面。
+
+**可用路径 / 发布前置**：38 文件纯本地改动，**未 commit、未 push**。全守卫链绿、整体 diff 审阅通过，提交前门禁齐备；提交等用户明确指令。
+
+---
+
+## 本轮（2026-11-24 · 第 10 轮）：新域审计（packages/CI/契约）→ 字段漂移 + CI 漏检 + 全量单测 flake 定性
+
+**编排**：objective 续轮。前几轮审计集中在 apps/ 源码，本轮换三个**新域**——packages 消费端、CI/release 配置、跨端契约漂移。packages 审计诚实报"无净新缺口"（CLI flag / MCP schema / SDK 状态机 / python lib 逐一列出覆盖证据），不制造 churn；CI 与契约各报一个净新缺口。另做一次全量单测跨轮回归并定性失败。
+
+**缺口①（CI protocol-drift 假绿）**：`ci.yml` 的 `executor-protocol-drift` job「Fail on generated-artifact drift」`git diff --exit-code` 只列 node/python/contract-fixtures 三个产物目录，但 `gen:protocol`（`generate-executor-protocol.mjs:655/691`）还写 `apps/admin-api/src/generated/{protocol-categories,protocol-metadata-addresses}.ts`（文件确实存在）；本地 `check:protocol-sync`（package.json:224）含该目录，CI 漏了——改 protocol.json 分类/元数据段却漏提交 admin 产物时 CI 全绿、运行时用旧映射。修法：CI diff 路径补 `apps/admin-api/src/generated`（补齐后 CI 覆盖 node/python/admin/contract-fixtures 四目录，本地 `check:protocol-sync` 为 node/python/admin 三目录——CI 多覆盖 contract-fixtures，方向是 CI 更严、无假绿；行号实为 package.json:225）。workflow-yaml / guards-wired 均 0。
+
+**缺口②（updatedApp 跨端字段漂移）**：后端 `app-deployment-response.dto.ts:381/459` 两个响应 DTO 必填 `updatedApp: ApplicationResponseDto`，openapi/生成物都有；但 web 手写 `applications.ts:349/358` 两接口与 CLI `apps.ts:72/84` 两接口都缺该字段 ⇒ 消费方读不到恢复后的应用行。根因之一：`check-web-type-field-drift.mjs` 的 `pairName` 规则③④"先命中即停"把 `SetCurrentVersionResult` 误配到**请求** DTO `SetCurrentVersionDto`（而非 ResponseDto），字段集不同概念，真实缺口被 `extra:*` 噪声遮蔽，基线 `:95/101/107` 误冻三条 extra。
+- **修复**：web 两接口用生成派生 `components['schemas']['SetCurrentVersionResponseDto'|'DeployVersionResponseDto']['updatedApp']`；CLI 新建与后端 DTO 逐字段对齐的 `UpdatedApp` interface 并补两接口字段（**保持必填**，不改 optional 弱化语义）；新守卫 `scripts/check-updatedapp-parity.mjs`（零依赖，6 处对拍 + 6 例真子进程 selftest + `--root` 夹具，反永真：注释伪造/后端 DTO 缺字段/文件搬走均红）；接线 package.json script + chain 末尾 + ci.yml step。
+- **集成期修复（主会话）**：`pairName` 规则③④改为"收集全部候选后响应类优先"（ResponseDto/AdminView/View > 裸 Dto）；删除基线三条误冻的 `extra:dispatched/ok/version`（配对修正后它们是 ResponseDto 真实字段，陈旧豁免必须回收）；补 4 处测试夹具（`application-detail.test.tsx` / `application-detail-deploy-truncation.test.tsx` 的 mock 结果对象加 `updatedApp: {} as never`）——补必填字段的必然涟漪，不放宽断言。
+
+**全量单测 flake 定性（非回归）**：`npm run test:unit` 全量 4 suites/6 tests failed（`executor-node` 的 auth/execute/execute.traceparent/execute.python-multiversion），失败形态全是 `Exceeded timeout of 5000ms`（28-40s，并发 CPU 争抢）。**逐个单跑全绿**：auth 38/38、execute 159/159、traceparent 4/4、python-multiversion 67/67，EXIT 均 0 ⇒ 确证负载型 flake，非本轮回归。按仓库既有纪律不调断言、不改 timeout。
+
+**集成期附带修复（主会话）**：
+- 第 9 轮 artifact 切片改 `Like→ILike` 后残留未使用的 `Like` import（`artifacts.service.ts:12`），全链 `lint:api` 红 ⇒ 删除该 import，lint:api 0。
+- 本轮 ci.yml 两处改动（protocol 路径 + updatedapp step）与第 7 轮 config-reload step 共存，diff 核对无互相覆盖。
+
+**验收（主控独立复跑，真实退出码）**：
+- **全守卫链 `npm run test:guards:chain` → CHAIN_EXIT=0**（多轮累积改动整体回归通过，final 一次）。
+- web `npx tsc -b` 0、CLI `npx tsc --noEmit` 0、`check:updatedapp-parity` selftest 6/6 + 主跑 6/6 齐备 0、`check-web-type-field-drift.mjs` 0 + selftest 27/27、`check:workflow-yaml` 0、`check:guards-wired` 0、`lint:api` 0。
+- 反证有牙且还原：新守卫删 web `updatedApp` → 红；pairName 修前字段漂移被 `extra:*` 遮蔽、修后指向 ResponseDto 暴露真字段；单跑 4 suite 全绿证 flake。
+- **验收级别**：静态探查 + 单测/内存替身 + 全守卫链进程内真跑；**未达**真 GH Actions（CI 配置静态验证）、真 PG（字段运行时读取）。遗留 P0/P1/P2 = 0。
+
+**候选（未做）**：packages/CI/web 三域本轮审计均无其它净新缺口；全量单测负载 flake 的根因（并发预算）属环境/工具层，按既有纪律不逐条改 timeout。
+
+**可用路径 / 发布前置**：本次 38 文件为纯本地改动，**未 commit、未 push**。全守卫链 0、全量单测仅负载 flake（单跑全绿），具备提交前门禁条件；提交等用户明确指令。
+
+---
+
+## 本轮（2026-11-24 · 第 9 轮）：三路不同域审计 → 两个净新缺口 + 全守卫链 126 段转绿
+
+**编排**：objective 续轮。派 3 路只读审计（web 读失败诚实性 / admin-api 较少审模块 / python 运行路径），各带严格排除清单。web 审计诚实报"无净新缺口"并列出每个候选的覆盖证据（UI-16-B 已系统性清零）——不制造 churn；api 与 python 各报一个净新缺口。主会话裁决做两个 + 顺手消除两处挡住本地全链的既有 lint error，切 2 个写域互斥切片并行。
+
+**缺口①（产物 ext 过滤大小写敏感）**：`artifacts.service.ts:312` 用 `Like(\`%.${ext}\`)`（大小写敏感），而同 where 的 q 用 `ILike`（:311）；入口 dto `@Transform` + service 都把 ext 归一为小写，但文件名允许大写且原样入库（`REPORT.PNG`）⇒ `?ext=png` 静默漏匹配、200 空列表，调用方无法区分"无匹配"与"口径漏匹配"。修法：`:312` `Like`→`ILike`（一行，小写行为不变）。测试用既有 `asOp` 探针钉 `FindOperator.type === "ilike"`（内存替身不执行 SQL，如实只钉操作符、不声称验证真 PG 结果），补 `ext:"PNG"` + `SCREENSHOT.PNG` 用例；既有小写/组合用例断言同步 `"like"`→`"ilike"`。反证：改回 `Like` → 3 failed（type `"like"`）、还原 23/23 绿。
+
+**缺口②（uv 取消分支进程树泄漏）**：`execute.py:4681-4683` `_run_uv` 的 `except BaseException` 仅 `wait_task.cancel(); raise`，无树杀、未 cancel `drain_task`；同函数 TimeoutError 分支（:4668-4680）却 cancel 双 task + gather 回收 + `_kill_process_tree(proc)` + `proc.wait()`。触发：停机/worker-flush 超时取消后台 task → `CancelledError` 命中该分支；`shield` 使内部 gather 不被取消，uv 及孙进程（下载/解包）成孤儿继续写共享 venv，且 `proc` 未登记 `entry.proc`，`kill_running_task_processes()` 与 run_task finally 都触不到。修法：抽局部 `_abort_and_reap()`（cancel 双 task + gather 回收 + 树杀 + reap，每步吞异常不掩盖原异常），TimeoutError 与 BaseException 两分支共用，消除重复又防再漂移。新测试 `test_run_uv_cancel_tree.py` 2 例（cancel / timeout-control）断言树杀恰一次、drain_task 被 cancel、双 task done 无 pending、异常原样传播。反证：BaseException 分支改回旧形 → cancel 用例红、timeout-control 仍绿（精准打中缺口分支）、sha256 还原一致。
+
+**集成卫生（主会话，非功能切片）**：全守卫链首跑 `lint:web` 红——`apps/admin-web/e2e/.real-verify/real-verify.spec.ts:386` 未使用变量（该文件被 `.gitignore:224` 忽略、第 4 轮真机 harness 遗留、CI clean checkout 无）。修法：`apps/admin-web/eslint.config.js` 的 `ignores` 从 `['dist']` 加 `'e2e/.real-verify/'`（本地/CI 一致，不掩盖入库代码）。`lint:desktop` 红——`StatusWindow.tsx:17` 残留未使用的 `formatRunningTaskTitle` import（blame 指向既有提交 125018991、真使用者是 `RunningTaskChip.tsx`，非本轮 diff）；从 import 列表删掉该符号，零行为变化。
+
+**验收（主控独立复跑，真实退出码）**：
+- **`npm run test:guards:chain` → CHAIN_EXIT=0（全 126 段）**——5 轮累积 31 文件改动的完整集成回归通过，这是本轮最重要的收口证据。
+- 两切片：artifacts jest 23/23 0；python `pytest test_run_uv_cancel_tree.py + test_exec_02_launcher.py --no-cov` 0（14 passed）；`py_compile` 0；admin-api `tsc --noEmit` 0 / `typecheck:specs` 0。
+- 反证均有牙且还原：artifact 改回 `Like` → 3 failed；uv 取消分支改回旧形 → 1 failed（timeout-control 仍绿）。sha256/diff 核验无残留。
+- `check-mutation-residue` 0、`check-size-caps` 0、真浏览器深链 e2e 跨轮复查 4/4 0。
+- **验收级别**：最高**单测/内存替身**（jest + mock findAndCount、fake proc + 记录式树杀）+ 全守卫链进程内真跑。**未达**真 PG（ILIKE 对大写扩展名的实际返回未实测）、真 uv 孙进程/共享 venv 副作用、浏览器真机。遗留 P0/P1/P2 = 0。
+- **web 审计结论（如实）**：该域无净新缺口，UI-16-B 及多轮审计已系统性清零；唯一边缘竞态 `ExecutorDetailPage:555-559` 删除影响面无序号守卫，窗口极窄、后果仅弹窗内数字，不满足用户可见门槛，明确不改。
+
+**候选（未做）**：如上 `ExecutorDetailPage` 边缘竞态；uv 真进程取消压测；artifact 真 PG 大写扩展名对拍（需真库环境）。
+
+**可用路径 / 发布前置**：本次 31 文件为纯本地改动，**未 commit、未 push**。全守卫链 126 段已绿，具备提交前门禁条件；提交与否等用户明确指令。
+
+---
+
+## 本轮（2026-11-24 · 第 8 轮）：兑现第 7 轮审计留下的低优先候选——桌面 agent 状态 effect 竞态守卫
+
+**方向来源**：objective 续轮。第 7 轮桌面审计找到一个竞态缺口但价值低于两个 P1，记为候选；本轮兑现。证据扎实——同文件 `refreshPyEnv`（`ConfigPage.tsx:413-424`）三样俱全（`let cancelled` / `if(!cancelled)` 包裹 setState / cleanup return），紧邻的 agent 状态 effect 却三者皆无，同类拉取口径不一致。
+
+**缺口**：agent 状态 effect（原 :428-440）`.then(setAgentStatus).catch(()=>undefined)` 直接写 state、无取消守卫、依赖 `[active, saved]`。切走 Agent 分区或连续保存会重发请求，旧响应晚到覆盖新状态卡的 working/processed/lastOutcome/lastEffectiveProfile，注释"保存后立即可见启停是否生效"落空。静态确认；真复现需浏览器注入慢 IPC。
+
+**修法（与 refreshPyEnv 同构）**：effect 内 `let cancelled=false`，`.then(s => { if(!cancelled) setAgentStatus(s) })`，`.catch(() => { if(!cancelled) return undefined })`（保留静默降级、不弹错），返回 `() => { cancelled=true }`；早退 typeof 守卫与依赖不变。`renderer.selftest.mjs` 加 AGENT-STATE-RACE 文本守卫块（4 断言：cancelled 标志 / then 守卫 / catch 守卫 / cleanup）。**两文件都在 size-caps 基线**（ConfigPage nonCommentLines 1347/ceiling 1364、selftest 1860/1860）——用等价压缩抵消（ConfigPage 合 2 行 setFieldError、selftest 合 10 行 P1-1b if-throw），实测两文件 nonCommentLines **净增 0**，未改基线、无 `ALLOW`。踩坑并已修复：断言串含孤立 `}` 被括号配平算进相邻函数致幻影 functionLines 红，改写为无花括号断言串后恢复。
+
+**验收（主控独立复跑，真实退出码）**：
+- **先红后绿**：新断言入、源码未改时 `npm run test:renderer` EXIT 1（`AGENT-STATE-RACE: 缺 cancelled 标志`）；改后 EXIT 0。
+- `npm run test:renderer` 0（含既有 EXP-06/UX走查/T4 断言未放宽）、`npx tsc -p tsconfig.json --noEmit` 0、`node scripts/check-size-caps.mjs` 0（2320 文件）、`node scripts/check-mutation-residue.mjs` 0（11 文件配对）。
+- 反证：临时删掉新守卫 → selftest EXIT 1 命中 cancelled 断言；还原复绿、measure 回到 1347/1860。
+- **验收级别**：**静态文本契约守卫 + tsc + size-caps**（低于浏览器真机）。未做浏览器注入慢 IPC 的真复现——形态与已实测的 refreshPyEnv cleanup 同构，且真机成本高、边际价值低，留候选不越级上报。遗留 P0/P1/P2 = 0。
+
+**候选（真机级，未做）**：浏览器注入慢 IPC + 快速切分区/保存，真复现"旧响应覆盖新状态卡"并取证；具备第 4 轮 XAUTHORITY 环境时可补，当前仅静态守卫覆盖。
+
+---
+
+## 本轮（2026-11-24 · 第 7 轮）：自己找方向——三路不同域审计 → 两个净新缺陷 + 一条跨端守卫（3 切片并行 + 独立验收）
+
+**编排**：objective 续轮，换域避免边际 churn。派 3 路只读审计（后端并发 / 执行器跨端 / 桌面核心），各自带严格"已修勿重复报"排除清单。后端审计找到 P1 告警丢失、执行器审计找到 P1 拓扑错配，桌面审计找到一个竞态缺口（价值较低，本轮不做，已留候选）。主会话裁决做前两个 + 一条防漂移守卫，切 3 个写域互斥切片并行，外加 1 路独立只读验收审 diff/反证。
+
+**缺口①（P1，通知聚合静默丢告警）**：`notification-digest.service.ts:196-244` `recordFailure` 的 A-7 孤儿窗探测（`:217 hget("start")`）与后续 6 个 await 写命令非原子。跨实例同 taskId：实例 A 开窗挂 timer 并在窗满 `takeWindow`（Lua HGETALL+DEL）删窗；实例 B `hsetnx` 返回 0（旧窗仍在）→ `hget("start")` 读到**旧 start 非空**判健康不挂 timer → A 的 DEL 落在 B 的 hget 与写入之间 → B 在已删 key 上重建"有 count/ctx、无 start"孤儿窗，无 timer 且 A-7 探测再也接管不到 → 这批失败因调用方收到 `aggregated` 跳过逐条直发（`execution-events.listener.ts:112`）、又不汇总 ⇒ **静默丢失**。A-7 只覆盖反方向（hsetnx 后删窗→hget 见 null）。
+- **修法（最小侵入）**：6 个写命令后、return 前补一次 `hget("start")`；缺失则 `scheduleFlush` 接管 + warn（`:253-259`）。复用现有 `hget`/`scheduleFlush`（`timers.get` 去重、幂等），复核读抛错落外层 catch → bypass 逐条直发。未动 listener/takeWindow/protocol。
+- **测试**：spec A-7 describe 加 2 例——有牙用例（hsetnx 返 0、预置旧 start、hincrby 前注入 del、复核读 null → 断言 `timers.has` true + warn + flush 汇总 count）+ 控制组（健康窗复核仍在 → 不重复挂 timer）。反证：移除接管动作 → `timers.has` false 转红、还原复绿。
+
+**缺口②（P1，python 拓扑切换失效）**：node `routes/config.ts:242-249` 在只下发 `adminApiUrl` 且 internal/adminApiUrls 未给时派生 `adminApiUrlInternal = adminApiUrl` 并重建客户端；python `routers/config.py:206-228` 只分别赋值无派生。而 `admin_api.py:14-23` base 优先级 `external > internal > admin_api_url` ⇒ 部署配了 `ADMIN_API_URL_INTERNAL` 时，admin 只发 `adminApiUrl` 的 reload 在 node 正确切换、python 继续打旧地址却回 `success:true`（pull 模式 `/config/reload`，admin payload `executor-config-fingerprint.util.ts:26-44` 确实只发 adminApiUrl）。
+- **修法**：`config.py:218-235` 在 admin_api_url 非空分支内补 `settings.admin_api_url_internal = req.admin_api_url`（条件：`req.admin_api_url_internal is None`；python 侧无 `admin_api_urls` 字段，协议本就 ignored）；`updated_fields` 仍只 push `admin_api_url`（对齐 node）。测试 3 例：单发派生使 base 变新地址 / 显式 internal 保留 / 空值不派生。反证：派生条件改恒假 → 断言 old-internal 失败、还原复绿。
+
+**守卫③（防再漂移）**：新建 `scripts/check-config-reload-parity.mjs`（零依赖，`--selftest` 5 例 + `--root` 夹具 + 结构红反永真）：从两端源码解析派生赋值及其条件分支（剥注释），两侧都有才绿，任一侧缺/派生滑出分支/文件搬走 ⇒ 红并点名侧+file:line。接线：根 `package.json` 加 `check:config-reload-parity` + `test:guards:chain` 末尾追加（链 125→126），**`.github/workflows/ci.yml` 加 step**（主会话授权集成期极小接线——`check:guards-wired` 判据①只认 workflow run 段，chain 不是 CI 入口）。反证：夹具删任一侧派生 → 对应红、还原绿。
+
+**集成期附带修复（主会话，非切片写域）**：全矩阵首跑 `[25/126] check:atlas-counts` 红——根因 `scripts/check-atlas-counts.mjs:183` 的 `NON_APP_DIRS` 只排除 `.pytest-tmp`/`test-results`，未排除第 4 轮真机验收新产生、gitignored 的 `apps/artifacts/`（证据落 `apps/artifacts/real-verify/`），同一提交本地判 8 应用 / CI clean checkout 判 7。修法：把 `artifacts` 加入 NON_APP_DIRS 并注释来源；修后主跑 0（7 应用一致）、selftest 44/44。
+
+**验收（主控 + 独立验收双轨，真实退出码）**：
+- `check-config-reload-parity` 主跑 0 / selftest 5/5 0；`check:guards-wired` 0（106 守卫全接线）；workflow-yaml / actions-pinned / runner-labels 全 0；矩阵 126 段（+1）。
+- `npm run test:python` 0（6377 passed / 87.31% ≥86%）；`check-docs` 0；admin-api `npm test -- --runInBand notification-digest.service.spec.ts` 0（24/24）；digest `tsc --noEmit` 0 / eslint 0。
+- `node scripts/check-atlas-counts.mjs` 0 + selftest 44/44；`check-mutation-residue` 0、`check-size-caps` 0。
+- **反证均有牙且逐字节还原**：python 派生恒假 → old-internal 断言红；TOCTOU 移除接管 → `timers.has` false 红；跨端守卫删单侧派生 → 点名缺失侧红；全部 sha256/git diff 核验还原、无残留。
+- **验收级别**：最高**单测/内存替身**（FakeRedis + Python monkeypatch + 静态守卫 CLI 黑盒）；**未达**真 Redis 跨实例 EVAL 时序、真 PG/Redis 进程内集成、浏览器。遗留 P0/P1/P2 = 0。
+- **本地环境红灯（非本轮、CI 不受影响）**：`npm run lint:web` 本地 1 error —— `apps/admin-web/e2e/.real-verify/real-verify.spec.ts:386` `storeKey` 未使用；该文件被 `.gitignore:224` 忽略、mtime 19:48（本会话前），是第 4 轮真机 harness 遗留，CI clean checkout 无此文件。另 3 条 warning 为既有 fast-refresh/hooks 提示。**不要为清这个本地 error 去改 gitignored harness**（改了不入库、无意义）。
+
+**候选（本轮审计发现、未做）**：桌面 `ConfigPage.tsx:433-440` agent 状态 effect 无竞态守卫（异步 `.then` 无 cancelled 标志、紧邻 `refreshPyEnv:413-424` 三样俱全），快速切分区/保存时旧响应可覆盖新状态卡；修法照 refreshPyEnv 加取消守卫，验收需浏览器注入慢 IPC。本轮价值低于两个 P1，留后续。
+
+**可用路径 / 发布前置**：本次 23 文件为纯本地改动（第 7 轮 8 = python 2 + TOCTOU 2 + 新守卫 1 + package.json + ci.yml + check-atlas-counts + 本交接），**未 commit、未 push**。CI 接线（ci.yml +4 行 step）已随本轮落盘但同样未提交。接手若推 CI，注意真实 CI 无 `.real-verify/` 与 `apps/artifacts/`，lint:web 与 atlas-counts 都与本地干净态一致。
+
+---
+
+## 本轮（2026-11-24 · 第 6 轮）：把第 5 轮部署深链链路的验收升级到真浏览器级（单测 → 浏览器真机）
+
+**方向来源**：objective「自己找方向」续轮；第 5 轮交接明确登记"未覆盖：真实浏览器下高亮/滚动视觉、桌面复制→中台打开全链真机（仅静态 key 对齐 + 两侧单测）"——这是 AGENTS §4.4 要求升级的高置信度缺口，非 churn。
+
+**交付**：新增两个自包含验收入口（**不改任何已有源码/权威 config**）：
+- `apps/admin-web/playwright.deeplink.config.ts`：仿 `playwright.appversions.config.ts`，端口 4179、outDir `node_modules/.cache/deeplink-dist`、自带 build+preview、系统 chrome 通道（`PLAYWRIGHT_CHROMIUM_CHANNEL`）、`VITE_API_URL_INTERNAL=/api`、`reuseExistingServer:false`。
+- `apps/admin-web/e2e/deploy-locator-deeplink.spec.ts`：4 条真浏览器路径——(a) deploymentId 优先于 version（UUID 命中行有 `.app-release-deploy-hit` + `id^=app-release-deploy-`，其它行无）；(b) 仅 version 命中；(c) 非法 deploymentId 中性降级不崩；(d) 无深链控制组。每例收 `pageerror` 断言为空。mock 复用 `application-versions.spec.ts` 范式（通配兜底 + LIFO 具体路由，规避顶栏轮询 `.filter` 崩溃），releases 行按真实 `AppReleaseRow` shape 造 3 版本。
+- 主会话集成期加 npm script `apps/admin-web/package.json:19` `test:e2e:deeplink`（极小接线例外）。
+
+**验收（主控独立复跑，不采信 agent 自述）**：
+- `PLAYWRIGHT_CHROMIUM_CHANNEL=chrome npx playwright test --config=playwright.deeplink.config.ts --reporter=line` → **EXIT 0，4 passed（24.0s），0 failed**，pageerror=[]；证实走系统 Chrome 158.0.8127.88（非 bundled 158.0.8127.18、非 jsdom）。headless 运行（base config `headless:true`，免 Xwayland auth 依赖）。
+- `node scripts/check-guards-wired.mjs` → **0**（105 守卫全接线，新 script 未破坏判据）；`npx tsc -b` → **0**（新文件不在 tsconfig include，另对两新文件跑 strict noEmit → 0）。
+- **验收级别升级**：第 5 轮最高"单测/内存替身"→ 本轮**浏览器真机**（AGENTS §4.4 四级中的最高级）。第 5 轮"未覆盖真实浏览器视觉"缺口已闭合；仍未覆盖：滚动落点/高亮背景色的像素级取证、version='—'/编码空格/分页第 2 页命中、桌面复制→中台打开的**端到端真机链接**（本轮从中台 URL 入口起，桌面生成本身仍靠单测）、真实后端（全 mock）。遗留 P0/P1/P2 = 0。
+
+---
+
+## 本轮（2026-11-24 · 第 5 轮）：自己找方向——跨应用部署定位链路闭环 + ADR 状态假绿补牙 + 文档权威同步（4 切片并行 + 独立验收）
+
+**编排**：主会话按 AGENTS §4 先派 3 路只读审计定题（audit-cross-app 找到真实链路缺口 / audit-guard-gap 实测 ADR 状态假绿 / audit-docs-authority 找到文档权威失真），再切 4 个写域互斥切片并行实现（桌面定位串 / 中台深链 / ADR 守卫 / 文档权威），外加 1 路独立只读验收全程审 diff + 反证。主会话集成后亲自复跑两端类型/测试与全局门禁。
+
+**缺口①（用户可见，核心）**：桌面 `formatDeployLocator`（`apps-helpers.ts:206`）注释声称"复制后…即可精确定位这份部署"，实际 URL 仅 `${base}/applications/${appId}?tab=releases`，**不带 deploymentId/version**；中台 `ApplicationDetailPage` 只消费 `?tab=`（`normalizeTabKey`），ReleasesTab 无任何行级定位。审计确认这是真实断裂，非"降级已覆盖"。
+- **桌面切片**：URL 追加 `&deploymentId=<enc>&version=<enc>`（key 固定，encodeURIComponent，仅非"—"有效字段才拼，缺字段保旧行为）；`apps-helpers.selftest.mjs` T2 从 3 断言扩到 6（齐全/缺 version/缺 deploymentId/双缺/非法 base/编码路径）。
+- **中台切片**：新建 `pages/application-detail/deploy-deeplink.ts`（纯函数：`resolveDeployLocator` 保守 UUID + version 形状校验、`findDeployLocatorMatch` deploymentId 优先 version 兜底、`getVersionKey` 外提兼容 `latestDeploymentId`/`sourceDeploymentId`、`deployRowProps` 锚点+高亮），`ApplicationDetailPage.tsx` 接线命中行 `scrollToSectionWhenReady` + 高亮（复用 `sop-deeplink` 先例）。**size-caps 顶格文件处理**：页面 1499→1488 行（净 −11，nonComment 1237→1228、fnLines/branchDensity 均降），等价压缩 JSX 属性抵消新增行，**基线零改、无 `ALLOW:` 豁免**。新建 `__tests__/application-detail-deploy-deeplink.test.tsx` 6 例（两解析 + deploymentId 命中 + version-only + 非法降级 + 无深链控制组）。
+- **契约**：`?tab=releases&deploymentId=<uuid>&version=<v>`，两 agent 双向对齐逐字一致。
+
+**缺口②（守卫假绿）**：`check-docs.mjs` 的 `checkAdrStructure` 此前只用 `/^状态：\S+/m` 判状态行"存在"，索引只数行出现次数，从不比值——CLI 实测构造"正文 Accepted + 索引 Proposed"夹具仍 `✔ 判据全过`、`EXIT=0`。而 `4c531991` 正批量回写 024/031/034/035 状态，正是高漂移编辑面。修复：新增 `adrStatusBase()` 抽 base token（Accepted/Proposed/Superseded，括号补充与 `Superseded by ADR-XXX` 尾巴不参与），正文 vs 索引第三列不等即红并点名两值 + 两处 `file:line`，解析失败结构红，`num<31` 祖父条款保留；`check-docs.selftest.mjs` 加不一致红/一致绿两例（真子进程 + 临时 `--root` 夹具）。
+
+**缺口③（文档权威）**：`PROJECT-STATUS.md` 的"autonomous 可落地的产品工作已穷尽"被第 4 轮真机返修直接证伪、HEAD 停在 R475/11-22；`ROADMAP.md` 日期滞后；ADR-024 整体 Proposed 掩盖了 §321-334"不依赖 A/B/C/D、无论选哪个都值得做"的流式导出端点，ADR-031 步骤 3/5 被误归为外部阻塞。修复：状态/日期同步到 HEAD=`4c531991`（UTC 今日口径，无双日期 workaround），"已穷尽"改为"主体收口但留有自主项"，ADR-024/031 分别单列"自主可落地"声明（**整体状态与索引列保持原样且两处一致**，确保新守卫不红）。
+
+**验收（主控 + 独立验收双轨，全部真实退出码）**：
+- 桌面 `npm run test:renderer` **0**（renderer selftest）；中台 `npx tsc -b` **0** + `npx vitest run` 4 文件 37 例 **0**。
+- 全局 `node scripts/check-size-caps.mjs` **0**（基线 97 条目、ALLOW 4）、`node scripts/check-mutation-residue.mjs` **0**（5 文件生产+测试配对）、`npm run test:docs` **0**、`node scripts/check-guards-wired.mjs` **0**（105 守卫全接线）。
+- ADR 守卫 `node scripts/docs/check-docs.selftest.mjs` **0**（45/45）+ 主跑 **0**（7/7）。
+- **反证均有牙且逐字节还原**：桌面 URL 改回不带参数 → selftest exit 1；中台命中条件改恒假 → 2 failed exit 1（另独立验收发现并修复了中台一处 import 路径错 `../api/applications`→`../../api/applications`，修复后 tsc 0，属验收中新发现、非遗留）；ADR 不一致夹具 → exit 1 且点名两值与 file:line。所有临时改动经 sha256/git diff 核验还原、无残留。
+- **验收级别**：**单测/内存替身**（vitest jsdom + mock 仓储、renderer selftest、真子进程 CLI 黑盒）为最高级；**未达**浏览器/真机与真实进程内集成。未覆盖：真实浏览器下高亮/滚动视觉、真 PG/Nest 端到端命中、桌面复制→中台打开的全链真机（仅静态 key 对齐 + 两侧各自单测）。遗留 **P0/P1/P2 = 0**。
+
+**可用路径 / 发布前置**：本次 10 文件为纯本地改动（桌面 2 + 中台 3 + ADR 守卫 2 + 文档 4，其中部分交叉计数），**未 commit、未 push**。下一步若做浏览器/真机补验：按交接第 4 段的 `XAUTHORITY` 前置导出，走"桌面应用页复制部署定位 → 中台 `/applications/:id?tab=releases&deploymentId=&version=` → releases 行高亮/滚动"路径（当前仅单测覆盖，未真机取证）。
+
+---
 
 ## 本轮（2026-11-24 · 真机验收补验）：图形环境打通 + 双端真机 15 项补验 + 1 个 P1 缺陷返修
 

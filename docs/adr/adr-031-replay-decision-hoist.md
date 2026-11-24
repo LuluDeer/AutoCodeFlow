@@ -5,6 +5,7 @@
 - 基线提交：`c535085d`（本文所有 `文件:行号` 在此时点逐行核对过；行号会随重构漂移，判据见附录 A 的锚点数下限）
 - 落地进度：**步骤 1 已完成**（R60）：characterization test 先红（3 failed）→ 最小修复 → 反向验证（回退修复 ⇒ 3 failed）→ 定向 7 suites / 210 passed。§1.3 的两条静态推断**已被实测证实**（旧实现在「已批准调用被新 id 重提」时确实用不存在的 id 发起更新）。
 - 落地进度：**步骤 2 已完成**（R63）：`opts.replayApproved` **已收进 `ToolCallContext`**（新增零依赖模块 `apps/admin-api/src/modules/agent/tools/tool-call-context.ts`：`ToolCallContext` / `ReplayDeclaration` / `buildToolCallContext` / `replayDriftMessage`）。`execute` 第 4 参改为 `declaration: ReplayDeclaration`，入口按**真实入参**构造**一次**上下文，调用方只能声明意图（`replayDeclared`）、**无法伪造身份**。判据：新用例在旧实现下 exit 1（TS2353：上下文对象在旧签名里不存在）→ 实现后 5 suites / 200 passed、`tsc --noEmit` exit 0；反向验证（`replayDeclared` 恒置 false ⇒ 那条 warn 断言红）exit 1。步骤 3–5 未做。
+- **未决项（步骤 3/5）**：步骤 3（消灭决策 ②、`in_flight` 改读同一判据）与步骤 5（收口、`persist` 14 处收敛）在状态行标为「纯体量重构、另立项」，至今未实施；**这两步属自主可落地代码工作，非外部输入阻塞**（不依赖合规/法务/产品决策，只取决于排期与 Lead 立项）。本 ADR 不虚构其已完成。
 - 落地进度：**步骤 4 第二部分（R99）**：`execute` **578 → 503**、`tool-executor.service.ts` **843 → 771**，行为零变更。
   本刀只搬**纯格式化**：`execute` 里同一形状的「未执行落库行」重复了 **8 处**（每处 10–13 行、逐个手写 9 个字段）⇒ 抽成零副作用的纯构造器
   `apps/admin-api/src/modules/agent/tools/tool-call-row.util.ts` 的 `deniedRow` / `awaitingRow` / `tierOf`（**只算「这一行长什么样」，不写库**），
