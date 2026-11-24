@@ -56,7 +56,7 @@ function reply(route: Route, data: unknown, status = 200) {
 }
 
 /** 良性空态封套：列表页空数组 + total；详情对象给最小可渲染字段。 */
-function stubData(pathname: string, method: string): unknown {
+function stubData(pathname: string): unknown {
   // 认证 / 会话
   if (pathname === '/api/auth/profile') return STUB_PROFILE;
   if (pathname === '/api/auth/oidc/status') return { enabled: false };
@@ -190,7 +190,7 @@ const test = base.extend<{ parityErrors: string[] }>({
       if (req.method() === 'OPTIONS') {
         return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*' } });
       }
-      return reply(route, stubData(pathname, req.method()));
+      return reply(route, stubData(pathname));
     });
     await use(errors);
   }, { auto: true }],

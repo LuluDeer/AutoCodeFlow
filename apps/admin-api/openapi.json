@@ -429,8 +429,8 @@
         },
         "required": [
           "eligible",
-          "reasonDetails",
           "reasons",
+          "reasonDetails",
           "weeks",
           "activeInstallWeeks",
           "thresholds"

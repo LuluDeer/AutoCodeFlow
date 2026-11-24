@@ -124,11 +124,16 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       // → updater:cancel-download（electron-updater 6.x 原生 CancellationToken
       // 中断在途下载）；对应主进程 handler 已落地。
       //
+      // 波2 B5（桌面体验升级）再补 2 个：applyTheme / saveTheme。
+      // 深色三态（light/dark/system）的渲染层立即应用与持久化通道，
+      // handler 见 main/ipc-handlers.ts 的 registerThemeHandlers（theme:apply / theme:save）。
+      //
       // 教训：本地 `dist/` 是**上一次 build 的产物**，直接跑 e2e 会漏掉「新增但
       // 未重建」的通道（本地 41 vs CI 44 vs 实际 48）。改动 preload 后必须
       // `npm run build` 再跑本用例，否则白名单会以过期运行时为准。
       expect(channels).toEqual(
         [
+          'applyTheme',
           'cancelUpdateDownload',
           'checkForUpdate', 'checkPort', 'clearHistory', 'closeWindow', 'deleteAppRelease',
           'downloadUpdate', 'exportConfig', 'exportDiagnosticReport', 'exportExecLog', 'getAgentStatus', 'getAutoLaunch',
@@ -140,7 +145,7 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
           'onWindowMaximizeChange',
           'onUpdateError', 'onUpdateProgress', 'openAppFolder', 'openLogFile',
           'openReleaseFolder', 'openTaskLogFolder', 'openWizard', 'readAppLog', 'readLog', 'revealExecLog',
-          'saveAndCloseWizard', 'saveConfig', 'setAutoLaunch', 'startExecutor',
+          'saveAndCloseWizard', 'saveConfig', 'saveTheme', 'setAutoLaunch', 'startExecutor',
           'stopExecutor', 'testConnection', 'testInterpreterSource', 'toggleMaximizeWindow', 'uninstallApp', 'writeClipboardText',
         ].sort(),
       );

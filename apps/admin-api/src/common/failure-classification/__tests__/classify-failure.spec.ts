@@ -278,7 +278,8 @@ describe("classifyFailure（失败归因唯一入口）", () => {
       expect(
         classifyFailure({
           errorMessage: "进程以退出码 1 结束",
-          logs: "Error: demo intentional failure: check failureReason & error message\n" +
+          logs:
+            "Error: demo intentional failure: check failureReason & error message\n" +
             "    at Object.<anonymous> (glue_script.js:2:7)",
           exitCode: 1,
         }),

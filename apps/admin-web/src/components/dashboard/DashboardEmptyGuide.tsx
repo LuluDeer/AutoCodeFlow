@@ -17,6 +17,9 @@ import {
   type UseOnboardingGuideResult,
 } from '../../hooks/useOnboardingGuide';
 import OnboardingGuideCard, { type GuideStep } from '../onboarding/OnboardingGuideCard';
+// BRAND（2026-11-02）：空态是狐狸的产品形象位——由本文件显式持有 `<BrandFox>`，
+// 品牌守卫（scripts/check-brand-drift.mjs 判据⑥）在此逐字锚定，避免回退静默。
+import BrandFox from '../BrandFox';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../../i18n';
 
@@ -80,6 +83,7 @@ export default function DashboardEmptyGuide({
         onCta={handlers[active.step]}
         onDismiss={active.dismiss}
         ctaTestId={active.step === 'welcome' ? 'dashboard-empty-guide-create' : undefined}
+        illustration={<BrandFox size={96} style={{ marginBottom: 8 }} />}
       />
     </div>
   );

@@ -250,9 +250,9 @@ describe("NorthStarMetricsService · report", () => {
         (d) => d.code === NORTH_STAR_PROMOTION_REASON_CODES.SAMPLE_WEEKS_SHORT,
       ),
     ).toBe(true);
-    expect(
-      r.promotionEligibility.reasonDetails.map((d) => d.text),
-    ).toEqual(r.promotionEligibility.reasons);
+    expect(r.promotionEligibility.reasonDetails.map((d) => d.text)).toEqual(
+      r.promotionEligibility.reasons,
+    );
   });
 
   it("升主不达标（sample_size）：4 周 × 4 install = 16 ⇒ eligible=false + install 不足说明", async () => {
@@ -271,8 +271,8 @@ describe("NorthStarMetricsService · report", () => {
           NORTH_STAR_PROMOTION_REASON_CODES.ACTIVE_INSTALL_WEEKS_SHORT,
       ),
     ).toBe(true);
-    expect(
-      r.promotionEligibility.reasonDetails.map((d) => d.text),
-    ).toEqual(r.promotionEligibility.reasons);
+    expect(r.promotionEligibility.reasonDetails.map((d) => d.text)).toEqual(
+      r.promotionEligibility.reasons,
+    );
   });
 });

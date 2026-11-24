@@ -60,6 +60,11 @@ export interface OnboardingGuideCardProps {
   onDismiss: () => void;
   /** CTA 按钮 testid（welcome 态沿用既有 `dashboard-empty-guide-create` 锚点）。 */
   ctaTestId?: string;
+  /**
+   * 品牌形象位（默认狐狸）。调用方显式传入时由调用方持有品牌判据，
+   * 便于「空态」这类形象位在自己的文件里被品牌守卫逐字锚定。
+   */
+  illustration?: ReactNode;
 }
 
 export default function OnboardingGuideCard({
@@ -67,6 +72,7 @@ export default function OnboardingGuideCard({
   onCta,
   onDismiss,
   ctaTestId = 'onboarding-guide-cta',
+  illustration,
 }: OnboardingGuideCardProps) {
   const { t } = useTranslation();
   const activeIndex = STEP_INDEX[step];
@@ -115,7 +121,7 @@ export default function OnboardingGuideCard({
         style={{ position: 'absolute', top: 8, right: 8 }}
       />
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, maxWidth: 480, padding: '0 16px' }}>
-        <BrandFox size={96} style={{ marginBottom: 8 }} />
+        {illustration ?? <BrandFox size={96} style={{ marginBottom: 8 }} />}
         <Text strong style={{ fontSize: 14 }}>{title}</Text>
         <Text type="secondary" style={{ fontSize: 12, textAlign: 'center' }}>{subtitle}</Text>
         <Button

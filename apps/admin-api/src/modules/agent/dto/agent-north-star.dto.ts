@@ -82,8 +82,7 @@ export class AgentNorthStarPromotionThresholdsDto {
  */
 export class AgentNorthStarPromotionReasonDto {
   @ApiProperty({
-    description:
-      "稳定的升主原因类别码；前端着色与本地化按此码判定，不解析文本",
+    description: "稳定的升主原因类别码；前端着色与本地化按此码判定，不解析文本",
   })
   code: string;
 

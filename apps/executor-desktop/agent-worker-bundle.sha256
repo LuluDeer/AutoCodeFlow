@@ -51,7 +51,7 @@ b89b1970c7bcd0d9bb1abc59d5474279380a84104d07eb3ed2dcc6b15b9c656e  index.js
 #   都是 worker 的 bundle 输入（src/main/agent/**），按维护规则同 commit 重打回填。
 #   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），41 个输入文件（该摘要
 #   按既有口径包含 src/main/agent/**/*.selftest.ts——本轮的 selftest 改动也要一并回填）。
-source-digest: 2baf5cccc65948a62fb5cf5b4d5838e1c50c140d62a22daaf4633fe622ecce67
+source-digest: 80edbcd8fe940ca8268d55fae3f8f8b6b0a9327e30c8638d3bc3943e3bb63ed5
 #   2026-11-02 OSS 对照调研 R7：agent runtime 改了三处（事件正文进 payload、sanitize 抽成
 #     agent-sanitize.util、tool-executor 改薄转发）⇒ 41 个 bundle 输入文件的语义摘要变了，重打并回填。
 35f80fccee3276d59d3a442bea11256825a13ddb660d2eda0f6aa7acf84ababa  index.js
@@ -89,4 +89,9 @@ source-digest: 2baf5cccc65948a62fb5cf5b4d5838e1c50c140d62a22daaf4633fe622ecce67
 #   仅依赖变更、worker 输入源码零改动，source-digest 不变（2baf5cccc…，41 个输入文件）。
 #   esbuild 0.28.2 字节确定，本机 Linux（node 26）重打 ebe1651f…（CI run 45016314971
 #   desktop-bundle-drift 报的 actual，逐字节一致）。
-ebe1651fe7a2306d6a7ca1326fd61b016170fce9a77ec0e40ef35869d80c50aa  index.js
+# 2026-11-24 回填（波2 B5 桌面体验升级：kill-tree 进程树清理加固）：
+#   src/main/agent/kill-tree.ts 与 kill-tree.selftest.ts 改了 worker bundle 输入
+#   （41 个输入文件），语义摘要 2baf5cccc… → 80edbcd8…，按维护规则同 commit 重打。
+#   本机 Windows（node 22 / esbuild 同仓锁版）重打 ebe1651f… → 95dbaefe…
+#   （dist/index.js 无绝对路径，esbuild 同输入同版本字节确定）。
+95dbaefee31d2491275b746877709fec6ad22acafffc477ab07c70d6171bb6d5  dist/index.js

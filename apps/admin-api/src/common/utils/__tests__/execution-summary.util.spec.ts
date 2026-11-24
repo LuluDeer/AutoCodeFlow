@@ -30,7 +30,7 @@ const NODE_FRAGILE_LOGS = [
 const PYTHON_TRACEBACK_LOGS = [
   "Traceback (most recent call last):",
   '  File "/data/tasks/x/run.py", line 4, in <module>',
-  "    raise ValueError(\"配置项 db_host 不能为空\")",
+  '    raise ValueError("配置项 db_host 不能为空")',
   "ValueError: 配置项 db_host 不能为空",
 ].join("\n");
 
@@ -51,9 +51,7 @@ describe("summarizeScriptFailure — D-3 骨架文案上提", () => {
       "进程以退出码 1 结束",
       PYTHON_TRACEBACK_LOGS,
     );
-    expect(summary).toBe(
-      "配置项 db_host 不能为空（进程以退出码 1 结束）",
-    );
+    expect(summary).toBe("配置项 db_host 不能为空（进程以退出码 1 结束）");
   });
 
   it("信号终止骨架同样上提 logs 里的异常行", () => {
