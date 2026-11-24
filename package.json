@@ -184,7 +184,7 @@
     "lint:all": "npm run lint:api && npm run lint:web && npm run lint:node && npm run lint:cli && npm run lint:mcp && npm run lint:node-sdk && npm run lint:desktop",
     "check:lint-gates": "node scripts/check-lint-gates.mjs --selftest && node scripts/check-lint-gates.mjs",
     "check:typecheck-covers-specs": "node scripts/check-typecheck-covers-specs.mjs --selftest && node scripts/check-typecheck-covers-specs.mjs",
-    "check:live-probes-intact": "node scripts/check-live-probes-intact.mjs --selftest && node scripts/check-live-probes-intact.mjs",
+    "check:live-probes-intact": "node scripts/check-live-probes-intact.selftest.mjs && node scripts/check-live-probes-intact.mjs --selftest && node scripts/check-live-probes-intact.mjs",
     "check:throttler-whitelist": "node scripts/check-throttler-whitelist.mjs --selftest && node scripts/check-throttler-whitelist.mjs",
     "check:password-policy-sync": "node scripts/check-password-policy-sync.mjs --selftest && node scripts/check-password-policy-sync.mjs",
     "gen:vscode-launch": "node scripts/gen-vscode-launch.mjs",
