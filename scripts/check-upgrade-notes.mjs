@@ -22,10 +22,12 @@
  *      且 `main.ts` 真的调用了 `executorPostureWarning(`（否则「启动期可操作告警」
  *      只活在文档里 ⇒ 又一条「写了没人跑」）。
  *
- * ## 自检（有牙）
+ * ## 自检（黑盒 CLI，有牙）
  *
- * `--selftest` 在临时目录里造**两份** fixture（缺段 / 完整），断言「缺段必红、完整必绿」，
- * 并额外造「main.ts 没接线」的负例 ⇒ 三个方向都证明判据有本事失败。
+ * `--selftest` 在临时目录里造 6 份 fixture（完整 / 缺段 / 症状模糊 / §9 矛盾 / 没接线 / 缺模块），
+ * 每条都起**真子进程**跑本脚本 CLI（`runGuard(SELF, { args: [`--root=<夹具>`] })` + `expectExit`），
+ * 断言退出码 0/1 与关键输出。正例控制组必须 exit 0，五条判据反例必须 exit 1 —— 把 `main()`
+ * 的失败 `return 1` 与 `--root=` 解析纳入覆盖面，堵住「判据算对了但退出码恒 0、CI 假绿」的缺口。
  *
  * 用法：`node scripts/check-upgrade-notes.mjs [--selftest] [--root=<dir>]`
  */
@@ -35,8 +37,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { expectExit, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SELF = fileURLToPath(import.meta.url);
+const HERE = path.dirname(SELF);
 export const REPO_ROOT = path.resolve(HERE, "..");
 
 export const UPGRADING_REL = "docs/UPGRADING.md";
@@ -176,92 +180,106 @@ const GOOD_DOC = `# 升级指南
 const GOOD_POSTURE = "export function executorPostureWarning(env = process.env) { return null; }\n";
 const GOOD_MAIN = 'const w = executorPostureWarning();\nif (w) logger.warn(w);\n';
 
+/**
+ * 黑盒自检：每条用例起真子进程跑本脚本 CLI，断言退出码 + 输出面。
+ *
+ * `--root` 形态：main 只认 `--root=<dir>`（等号形态），故夹具一律用该形态传入；
+ * 6 例全部走 CLI，无进程内直调 `check()` 的例外 —— 因此 `main()` 的失败 `return 1`
+ * 是每条反例的硬断言面（改 0 必红）。
+ */
 function selftest() {
-  let passed = 0;
-  const failures = [];
-  const test = (name, fn) => {
-    try {
-      fn();
-      passed++;
-      console.log(`  ✔ ${name}`);
-    } catch (err) {
-      failures.push([name, err]);
-      console.log(`  ✘ ${name}\n      ${String(err.message).split("\n")[0]}`);
-    }
+  const cases = [];
+
+  /** 起一个真子进程跑本脚本 CLI，断言退出码 + 观测文本。 */
+  const subprocess = (name, files, expectations) => {
+    cases.push({
+      name,
+      fn: () => {
+        const dir = fixture(files);
+        try {
+          expectExit(runGuard(SELF, { args: [`--root=${dir}`] }), {
+            ...expectations,
+            label: name,
+          });
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      },
+    });
   };
-  const assert = (cond, msg) => {
-    if (!cond) throw new Error(msg);
-  };
 
-  console.log("check-upgrade-notes selftest：");
+  subprocess(
+    "正例：完整升级段 + 告警接线 ⇒ CLI exit 0（无假红）",
+    { doc: GOOD_DOC, posture: GOOD_POSTURE, main: GOOD_MAIN },
+    {
+      code: 0,
+      contains: ["✔ 升级公告判据通过"],
+      absent: ["✘ 升级公告判据"],
+    },
+  );
 
-  test("正例：完整升级段 + 告警接线 ⇒ 绿", () => {
-    const dir = fixture({ doc: GOOD_DOC, posture: GOOD_POSTURE, main: GOOD_MAIN });
-    try {
-      assert(check(dir).length === 0, `应绿，实际：${check(dir).join(" | ")}`);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  subprocess(
+    "反例①：缺「执行器出站姿态」段 ⇒ CLI exit 1 + 报缺段",
+    { doc: "# 升级指南\n\n没有任何姿态说明\n", posture: GOOD_POSTURE, main: GOOD_MAIN },
+    {
+      code: 1,
+      contains: [SECTION_MARKER],
+      absent: ["✔ 升级公告判据通过"],
+    },
+  );
 
-  test("反例①：缺「执行器出站姿态」段 ⇒ 红", () => {
-    const dir = fixture({ doc: "# 升级指南\n\n没有任何姿态说明\n", posture: GOOD_POSTURE, main: GOOD_MAIN });
-    try {
-      const errs = check(dir);
-      assert(errs.some((e) => e.includes(SECTION_MARKER)), "缺段却没红");
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  subprocess(
+    "反例②：症状不是实测行（只写「可能失败」）⇒ CLI exit 1 + 报症状",
+    {
+      doc: GOOD_DOC.replace(`status=failed ${SYMPTOM_FAILURE_REASON}`, "可能失败"),
+      posture: GOOD_POSTURE,
+      main: GOOD_MAIN,
+    },
+    {
+      code: 1,
+      contains: [SYMPTOM_FAILURE_REASON],
+      absent: ["✔ 升级公告判据通过"],
+    },
+  );
 
-  test("反例②：症状不是实测行（只写「可能失败」）⇒ 红", () => {
-    const doc = GOOD_DOC.replace(`status=failed ${SYMPTOM_FAILURE_REASON}`, "可能失败");
-    const dir = fixture({ doc, posture: GOOD_POSTURE, main: GOOD_MAIN });
-    try {
-      const errs = check(dir);
-      assert(errs.some((e) => e.includes(SYMPTOM_FAILURE_REASON)), "模糊症状没红");
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  subprocess(
+    "反例③：§9 仍写「破坏性变更 — 无」⇒ CLI exit 1 + 报矛盾",
+    {
+      doc: GOOD_DOC.replace(
+        "| 破坏性变更 | **有 1 条**（执行器出站姿态，见 §11） |",
+        "| 破坏性变更 | **无** |",
+      ),
+      posture: GOOD_POSTURE,
+      main: GOOD_MAIN,
+    },
+    {
+      code: 1,
+      contains: ["§9"],
+      absent: ["✔ 升级公告判据通过"],
+    },
+  );
 
-  test("反例③：§9 仍写「破坏性变更 — 无」⇒ 红（口径自相矛盾）", () => {
-    const doc = GOOD_DOC.replace("| 破坏性变更 | **有 1 条**（执行器出站姿态，见 §11） |", "| 破坏性变更 | **无** |");
-    const dir = fixture({ doc, posture: GOOD_POSTURE, main: GOOD_MAIN });
-    try {
-      const errs = check(dir);
-      assert(errs.some((e) => e.includes("§9")), "§9 矛盾没红");
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  subprocess(
+    "反例④：告警函数没被 main.ts 调用 ⇒ CLI exit 1 + 报没接线",
+    { doc: GOOD_DOC, posture: GOOD_POSTURE, main: "// nothing\n" },
+    {
+      code: 1,
+      contains: ["executorPostureWarning("],
+      absent: ["✔ 升级公告判据通过"],
+    },
+  );
 
-  test("反例④：告警函数没被 main.ts 调用 ⇒ 红（「写了没人跑」）", () => {
-    const dir = fixture({ doc: GOOD_DOC, posture: GOOD_POSTURE, main: "// nothing\n" });
-    try {
-      const errs = check(dir);
-      assert(errs.some((e) => e.includes("executorPostureWarning(")), "没接线却没红");
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  subprocess(
+    "反例⑤：告警模块缺失 ⇒ CLI exit 1 + 报模块缺失",
+    { doc: GOOD_DOC, posture: null, main: GOOD_MAIN },
+    {
+      code: 1,
+      contains: [POSTURE_TS_REL],
+      absent: ["✔ 升级公告判据通过"],
+    },
+  );
 
-  test("反例⑤：告警模块缺失 ⇒ 红", () => {
-    const dir = fixture({ doc: GOOD_DOC, posture: null, main: GOOD_MAIN });
-    try {
-      const errs = check(dir);
-      assert(errs.some((e) => e.includes(POSTURE_TS_REL)), "缺模块却没红");
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  console.log(`\n自检结果：${passed} 通过，${failures.length} 失败`);
-  if (failures.length) {
-    for (const [name, err] of failures) console.error(`\n[${name}]\n${err.stack}`);
-    return 1;
-  }
-  return 0;
+  return reportCases(cases, { title: "check-upgrade-notes selftest" }) === 0 ? 0 : 1;
 }
 
 function main(argv) {

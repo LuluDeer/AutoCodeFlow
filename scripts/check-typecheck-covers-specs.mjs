@@ -44,7 +44,8 @@ import { fileURLToPath } from "node:url";
 // 「崩了」与「零用例」必须能被哨兵分开看（`scripts/lib/agent-coverage.mjs` 头注同款纪律）。
 printCoverageBanner(import.meta.url, "checkCase");
 
-const HERE = dirname(fileURLToPath(import.meta.url));
+const SELF = fileURLToPath(import.meta.url);
+const HERE = dirname(SELF);
 export const DEFAULT_ROOT = resolve(HERE, "..");
 
 const SCRIPT_NAME = "typecheck:specs";
@@ -210,59 +211,103 @@ async function main() {
   const root = rootArgIdx >= 0 ? resolve(argv[rootArgIdx + 1]) : DEFAULT_ROOT;
 
   if (argv.includes("--selftest")) {
-    const { mkdtempSync, writeFileSync, mkdirSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    let failed = 0;
+    // R-黑盒化：每条用例都起**真子进程**跑本脚本 CLI（`runGuard(SELF, …)` + `expectExit`），
+    // 不再进程内直调 `checkTypecheckCoversSpecs()`。旧版完全跳过 `main()` 的退出码与
+    // `--root` 解析：把 main 的 `process.exit(1)` 改成 `exit(0)`，7/7 selftest 仍全绿、
+    // CLI 打印 ✘ 却 exit 0 ⇒ CI 转绿。黑盒后「退出码 0/1」与观测文本本身成为断言面。
+    // 本守卫 main 只认 `--root <dir>`（空格形态：`argv.indexOf("--root")` 取下一项），
+    // `--root=<dir>` 会落到 DEFAULT_ROOT ⇒ 夹具失效；`-r` 不支持。
+    const { expectExit, makeFixtureRepo, reportCases, runGuard } = await import(
+      "./lib/guard-selftest.mjs"
+    );
+    const cases = [];
 
-    /** 一条自检用例：造 fixture → 跑判据 → 断言 ok 与期望一致。 */
-    const checkCase = (label, opts, expectOk) => {
-      const dir = mkdtempSync(join(tmpdir(), "r224-"));
-      mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
-      const scripts = {};
-      if (opts.withScript !== false) {
-        scripts[SCRIPT_NAME] =
-          opts.useSpecConfig === false
-            ? "cd apps/admin-api && npx tsc --noEmit -p tsconfig.json"
-            : `cd apps/admin-api && npx tsc -p ${SPEC_TSCONFIG} --noEmit`;
-      }
-      scripts["typecheck:api"] = "cd apps/admin-api && npx tsc --noEmit -p tsconfig.json";
-      scripts["typecheck:all"] =
-        (opts.inAll === false
-          ? "npm run typecheck:api"
-          : `npm run typecheck:api && npm run ${SCRIPT_NAME}`) +
-        (opts.extraChain ?? "");
-      writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts }, null, 2));
-      writeFileSync(
-        join(dir, ".github", "workflows", "ci.yml"),
-        opts.inCi === false
-          ? "jobs:\n  x:\n    steps:\n      - run: echo hi\n"
-          : `jobs:\n  x:\n    steps:\n      - run: npm run ${SCRIPT_NAME}\n`,
-      );
-      // R225：需要造子项目时按 opts.projects 生成（用于第 ⑤ 条判据的反例）。
-      for (const [proj, projScripts] of Object.entries(opts.projects ?? {})) {
-        mkdirSync(join(dir, proj), { recursive: true });
-        writeFileSync(
-          join(dir, proj, "package.json"),
-          JSON.stringify({ name: proj, scripts: projScripts }, null, 2),
-        );
-      }
-      const r = checkTypecheckCoversSpecs(dir);
-      const pass = r.ok === expectOk;
-      console.log(`${pass ? "✔" : "✘"} ${label}（ok=${r.ok}，期望 ${expectOk}）`);
-      if (!pass) {
-        failed += 1;
-        for (const f of r.failures) console.log(`    · ${f}`);
-      }
+    /**
+     * 一条自检用例：造 fixture repo → 跑真子进程 CLI → 断言退出码 + 观测文本。
+     *
+     * 保留原有 7 条夹具场景与判据语义（`expectOk` 就是判据的 ok 期望）；
+     * `needle` 是每条反例对应的具体失败片段，让红是「因为对的理由红」。
+     */
+    const checkCase = (label, opts, expectOk, needle) => {
+      cases.push({
+        name: label,
+        fn: () => {
+          const scripts = {};
+          if (opts.withScript !== false) {
+            scripts[SCRIPT_NAME] =
+              opts.useSpecConfig === false
+                ? "cd apps/admin-api && npx tsc --noEmit -p tsconfig.json"
+                : `cd apps/admin-api && npx tsc -p ${SPEC_TSCONFIG} --noEmit`;
+          }
+          scripts["typecheck:api"] = "cd apps/admin-api && npx tsc --noEmit -p tsconfig.json";
+          scripts["typecheck:all"] =
+            (opts.inAll === false
+              ? "npm run typecheck:api"
+              : `npm run typecheck:api && npm run ${SCRIPT_NAME}`) +
+            (opts.extraChain ?? "");
+          const files = {
+            "package.json": { scripts },
+            ".github/workflows/ci.yml":
+              opts.inCi === false
+                ? "jobs:\n  x:\n    steps:\n      - run: echo hi\n"
+                : `jobs:\n  x:\n    steps:\n      - run: npm run ${SCRIPT_NAME}\n`,
+          };
+          // R225：需要造子项目时按 opts.projects 生成（用于第 ⑤ 条判据的反例）。
+          for (const [proj, projScripts] of Object.entries(opts.projects ?? {})) {
+            files[`${proj}/package.json`] = { name: proj, scripts: projScripts };
+          }
+          const repo = makeFixtureRepo(files, { prefix: "r224-" });
+          try {
+            expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+              code: expectOk ? 0 : 1,
+              contains: [
+                expectOk
+                  ? "✔ `typecheck:all` 覆盖 spec 层"
+                  : "✘ `typecheck:all` 没有覆盖 spec 层",
+                ...(needle ? [needle] : []),
+              ],
+              absent: [
+                expectOk
+                  ? "✘ `typecheck:all` 没有覆盖 spec 层"
+                  : "✔ `typecheck:all` 覆盖 spec 层",
+              ],
+              label,
+            });
+          } finally {
+            repo.cleanup();
+          }
+        },
+      });
     };
 
-    checkCase("正例：四项齐备 ⇒ 绿", {}, true);
-    checkCase("反例①：缺 typecheck:specs 脚本 ⇒ 红", { withScript: false }, false);
-    checkCase("反例②：typecheck:all 没串它 ⇒ 红", { inAll: false }, false);
-    checkCase("反例③：脚本不用 tsconfig.spec.json ⇒ 红", { useSpecConfig: false }, false);
-    checkCase("反例④：CI 里没有它 ⇒ 红", { inCi: false }, false);
+    checkCase("正例：四项齐备 ⇒ CLI exit 0（绿）", {}, true);
+    checkCase(
+      "反例①：缺 typecheck:specs 脚本 ⇒ CLI exit 1（红）",
+      { withScript: false },
+      false,
+      "缺 `typecheck:specs`",
+    );
+    checkCase(
+      "反例②：typecheck:all 没串它 ⇒ CLI exit 1（红）",
+      { inAll: false },
+      false,
+      "链里**没有**",
+    );
+    checkCase(
+      "反例③：脚本不用 tsconfig.spec.json ⇒ CLI exit 1（红）",
+      { useSpecConfig: false },
+      false,
+      "必须显式用",
+    );
+    checkCase(
+      "反例④：CI 里没有它 ⇒ CLI exit 1（红）",
+      { inCi: false },
+      false,
+      "里没有任何一步跑",
+    );
     // R225 的两条：第 ⑤ 条判据（子项目 typecheck 必须被展开覆盖）
     checkCase(
-      "反例⑤：子项目定义了 typecheck:renderer 但链里没有 ⇒ 红",
+      "反例⑤：子项目定义了 typecheck:renderer 但链里没有 ⇒ CLI exit 1（红）",
       {
         projects: {
           "apps/executor-desktop": {
@@ -272,9 +317,10 @@ async function main() {
         },
       },
       false,
+      "展开后**没有**覆盖它",
     );
     checkCase(
-      "正例（R225）：子项目的两个 typecheck 都在链里 ⇒ 绿",
+      "正例（R225）：子项目的两个 typecheck 都在链里 ⇒ CLI exit 0（绿）",
       {
         projects: {
           "apps/executor-desktop": {
@@ -288,10 +334,9 @@ async function main() {
       true,
     );
 
-    const total = 7;
-    console.log(
-      `\n${failed === 0 ? "✔" : "✘"} check-typecheck-covers-specs selftest：${total - failed}/${total} 通过`,
-    );
+    const failed = reportCases(cases, {
+      title: "check-typecheck-covers-specs selftest（真子进程 CLI 黑盒）",
+    });
     process.exit(failed === 0 ? 0 : 1);
   }
 

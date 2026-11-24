@@ -23,7 +23,11 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 printCoverageBanner(import.meta.url, "subprocess");
+
+/** 本脚本自身的绝对路径 —— 黑盒 selftest 用 runGuard(SELF, ...) 起真子进程。 */
+const SELF = fileURLToPath(import.meta.url);
 
 export const EXAMPLES_REL = "examples";
 export const MIN_JSON = 7;
@@ -59,7 +63,7 @@ function field(jsonText, key) {
 }
 
 /**
- * 纯判据函数（selftest 直接喂坏样本）。
+ * 纯判据函数（保留导出；selftest 已改为真子进程 CLI 黑盒，不再进程内直调）。
  * inputs = { jsonFiles:[{rel,text}], jsFiles:[rel], fileExists:(rel)=>bool, syntaxOk:(rel)=>bool, root }
  */
 export function evaluate(inputs) {
@@ -123,37 +127,123 @@ export function check({ root = process.cwd() } = {}) {
   });
 }
 
-/** 内置 selftest：用内存坏样本直接打 evaluate 的判据，不碰文件系统。 */
+/**
+ * 内置 selftest（R-黑盒化）：每条用例都起**真子进程**跑本脚本 CLI
+ * （`runGuard(SELF, ...)` + `expectExit`），不再进程内直调 `evaluate()`。
+ *
+ * 为什么必须黑盒：旧版只在内存里喂 `evaluate()` 假样本，`main()` 的失败
+ * `return 1` 零覆盖 —— 把它改成 `return 0`，CLI 照样打印 ✘ 却 exit 0、CI 转绿，
+ * 而旧 selftest 6/6 仍全绿（同族 categories / api-error-format /
+ * agent-event-causation 已收口）。黑盒后「exit 0/1 + stdout/stderr」本身是断言面。
+ *
+ * ⚠️ 本守卫 main 的 `--root` 是**空格分离形态**（`argValue(argv, "--root")` →
+ * `argv[i+1]`），不是 `--root=<dir>`，夹具一律用 `args: ["--root", dir]`。
+ *
+ * 六个夹具场景与旧版逐条对应（正常 / entrypoint 缺失 / runtime 不符 /
+ * js 语法错 / json 数归零 / js 数归零），语义不变，只改「怎么调」。
+ */
 export function selftest() {
-  const goodJson = (entry, rt) => ({ rel: "ex/task.example.json", text: JSON.stringify({ entrypoint: entry, runtime: rt }) });
-  const base = (over = {}) => ({
-    jsonFiles: Array.from({ length: MIN_JSON }, (_, i) => goodJson(`ex${i}/main.js`, "node")),
-    jsFiles: Array.from({ length: MIN_JS }, (_, i) => `ex${i}/main.js`),
-    fileExists: () => true,
-    syntaxOk: () => true,
-    ...over,
+  const cases = [];
+  const push = (name, fn) => cases.push({ name, fn });
+
+  const N = Math.max(MIN_JSON, MIN_JS);
+  const GOOD_JS = "module.exports = 1;\n";
+  /** 健康夹具：N 个示例目录，每个都有 task.example.json + 真实 .js，runtime=node。 */
+  const healthy = () => {
+    const files = {};
+    for (let i = 0; i < N; i++) {
+      files[`examples/ex${i}/task.example.json`] = JSON.stringify({
+        entrypoint: `examples/ex${i}/main.js`,
+        runtime: "node",
+      });
+      files[`examples/ex${i}/main.js`] = GOOD_JS;
+    }
+    return files;
+  };
+
+  /** 起一个真子进程跑本脚本 CLI，断言退出码 + stdout/stderr 观测文本。 */
+  const subprocess = (name, files, expectations) => {
+    push(name, () => {
+      const repo = makeFixtureRepo(files, { prefix: "examples-code-selftest-" });
+      try {
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+          ...expectations,
+          label: name,
+        });
+      } finally {
+        repo.cleanup();
+      }
+    });
+  };
+
+  subprocess("正常样本全绿 ⇒ CLI exit 0（正例控制组）", healthy(), {
+    code: 0,
+    contains: ["✔ examples 代码/配置一致"],
+    absent: ["✗ examples 代码/配置一致性失败", "结构红"],
   });
-  const cases = [
-    ["正常样本全绿", () => evaluate(base()), true],
-    ["entrypoint 文件不存在转红", () => evaluate(base({ fileExists: (rel) => !rel.includes("ex0/") })), false],
-    ["runtime 与扩展名不符转红", () => {
-      const jf = base().jsonFiles.map((x, i) => i === 0 ? goodJson("ex0/main.js", "python") : x);
-      return evaluate(base({ jsonFiles: jf }));
-    }, false],
-    ["js 语法错转红", () => evaluate(base({ syntaxOk: (rel) => !rel.includes("ex0/") })), false],
-    ["反假绿：json 数归零转红", () => evaluate(base({ jsonFiles: [] })), false],
-    ["反假绿：js 数归零转红", () => evaluate(base({ jsFiles: [] })), false],
-  ];
-  let pass = 0;
-  for (const [name, fn, wantOk] of cases) {
-    let got;
-    try { got = fn(); } catch (e) { got = { ok: false, problems: [e.message] }; }
-    const ok = got.ok === wantOk;
-    console.log(`  ${ok ? "✓" : "✘"} ${name}${ok ? "" : ` — 期望 ok=${wantOk} 实得 ${got.ok}: ${got.problems.join(";")}`}`);
-    if (ok) pass++;
+
+  subprocess(
+    "entrypoint 文件不存在转红 ⇒ CLI exit 1 + 点名缺失路径",
+    {
+      ...healthy(),
+      "examples/ex0/task.example.json": JSON.stringify({ entrypoint: "examples/ex0/missing.js", runtime: "node" }),
+    },
+    {
+      code: 1,
+      contains: ["✗ examples 代码/配置一致性失败", "entrypoint 指向的文件不存在", "examples/ex0/missing.js"],
+      absent: ["✔ examples 代码/配置一致"],
+    },
+  );
+
+  subprocess(
+    "runtime 与扩展名不符转红 ⇒ CLI exit 1 + 点名 runtime/扩展名",
+    {
+      ...healthy(),
+      "examples/ex0/task.example.json": JSON.stringify({ entrypoint: "examples/ex0/main.js", runtime: "python" }),
+    },
+    {
+      code: 1,
+      contains: ["✗ examples 代码/配置一致性失败", "runtime=python 要求 .py"],
+      absent: ["✔ examples 代码/配置一致"],
+    },
+  );
+
+  subprocess(
+    "js 语法错转红 ⇒ CLI exit 1 + 报 node --check 失败",
+    { ...healthy(), "examples/ex0/main.js": "function ( {\n" },
+    {
+      code: 1,
+      contains: ["✗ examples 代码/配置一致性失败", "examples/ex0/main.js", "node --check 语法失败"],
+      absent: ["✔ examples 代码/配置一致"],
+    },
+  );
+
+  // 反假绿①：没有 task.example.json（.js 仍在）⇒ 扫到 0 份配置必须结构红。
+  const noJson = {};
+  for (let i = 0; i < N; i++) noJson[`examples/ex${i}/main.js`] = GOOD_JS;
+  subprocess("反假绿：json 数归零转红 ⇒ CLI exit 1", noJson, {
+    code: 1,
+    contains: ["✗ examples 代码/配置一致性失败", "task.example.json 只扫到 0 份", "结构红"],
+    absent: ["✔ examples 代码/配置一致"],
+  });
+
+  // 反假绿②：没有任何 .js（配置改用 python/.py 保持 entrypoint 真存在）⇒ 扫到 0 个 .js 必须结构红。
+  const noJs = {};
+  for (let i = 0; i < N; i++) {
+    noJs[`examples/ex${i}/task.example.json`] = JSON.stringify({
+      entrypoint: `examples/ex${i}/main.py`,
+      runtime: "python",
+    });
+    noJs[`examples/ex${i}/main.py`] = "print('ok')\n";
   }
-  console.log(`\nSELFTEST ${pass}/${cases.length} 通过` + (pass === cases.length ? "（全部符合预期）" : "（有用例不通过）"));
-  return pass === cases.length;
+  subprocess("反假绿：js 数归零转红 ⇒ CLI exit 1", noJs, {
+    code: 1,
+    contains: ["✗ examples 代码/配置一致性失败", "示例 .js 只扫到 0 个", "结构红"],
+    absent: ["✔ examples 代码/配置一致"],
+  });
+
+  const failed = reportCases(cases, { title: "check-examples-code selftest" });
+  return failed === 0;
 }
 
 function argValue(argv, flag) {
