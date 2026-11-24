@@ -50,6 +50,36 @@ permissions:
   contents: read
 
 jobs:
+  # ── 分支拓扑守卫（2026-11-24）：防「develop 被自动删分支配置误删」──────────
+  # 背景：项目是 develop-centric（CONTRIBUTING.md §二 / docs/development.md 352），
+  # develop 是长期集成分支、定期合 main。仓库却开了 delete_branch_on_merge=true，
+  # 该设置**仓库级无差别**——develop 作为 PR head 合并后被 GitHub 自动删除，
+  # 导致 ci.yml 的 push.branches:[develop] 触发器永久失效、coverage job 静默跳过。
+  # 治理：给 develop 加分支保护「不允许删除」（GitHub 文档：保护规则可阻止自动删）。
+  # 本 job 是防复发闸——develop 被删/被误配时当场红，而不是靠人发现。
+  # 门控 pull_request/schedule/workflow_dispatch：develop 不存在时这些事件仍触发，
+  # 挂在 push:develop 上则分支一没就永远不跑（自我失明）。
+  branch-topology-guard:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: develop 分支存在 + push 触发器完整
+        run: |
+          set -euo pipefail
+          # ① 远端 develop 必须存在（git ls-remote 只读、不需要 API 权限）
+          if ! git ls-remote --exit-code --heads origin develop >/dev/null; then
+            echo "::error::远端 develop 分支不存在——develop-centric 工作流已断：CI push 触发器失效、coverage job 静默跳过。检查 delete_branch_on_merge 设置与 develop 分支保护（需含「不允许删除」）。"
+            exit 1
+          fi
+          # ② push 触发器必须仍指向 develop（防有人改了触发器却没更新文档）
+          if ! grep -Eq '^[[:space:]]+branches:\[[[:space:]]*develop[[:space:]]*\]' .github/workflows/ci.yml; then
+            echo "::error::ci.yml 的 push.branches 不再包含 develop——与 CONTRIBUTING.md 的 develop-centric 工作流冲突。"
+            exit 1
+          fi
+          echo "branch topology OK: develop exists, push.branches includes develop"
+
   # ── BUG-20：ARM64 / multi-arch 镜像构建闸（只 build，不 push，不跑 e2e）────
   docker-multiarch-build:
     # R22 根治（2026-09-13）：QEMU 模拟 arm64 是本 job 反复卡死/45min 超时的
