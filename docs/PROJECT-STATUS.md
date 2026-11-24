@@ -1,6 +1,6 @@
 # 项目状态总览（R290–R475 收口 + 第4轮真机补验快照）
 
-> **受众**：接手维护者 / 发布决策者 · **状态**：内部 · **最后核对**：2026-11-24
+> **受众**：接手维护者 / 发布决策者 · **状态**：内部 · **最后核对**：2026-11-25
 > 一页看懂这批改动的整体状态：73 轮交付地图、当前验证数字、已知未决项、发布与接手指引。本文是阶段性快照，不替代各专项文档。**R290–R475 共 73 轮改动（R459 按主题分 11 组提交 + R475 追加 5 组提交）已合入 `main` 并随 `v2.3.0`（2026-11-22）发布；一次性验收/复演报告已归档至 `docs/archive/{reviews,verifies}/`。**
 > **第4轮真机补验（2026-11-24，HEAD=`4c531991`）**：此前「无 X/无 Chrome」系未导出 `XAUTHORITY` 的误判，图形环境打通后完成中台 Chrome + 桌面 Electron 双端真机补验（中台 8/8、桌面除 1 P1 外全过），返修 1 个 P1（桌面历史页日志查看器关闭后焦点归还）并真机复验；另补真机白屏量化归因（Xwayland 无 WM 的合成器 first-paint 迟到约 28s，属环境税、非产品缺陷）。最新逐轮事实源见 [AGENT_HANDOFF.md](AGENT_HANDOFF.md) 头部。
 > **数字口径**：轮次/项数均由命令实测（`git status --short | wc -l`、`ls docs/plan/*.md | wc -l`），不手写估计——历史快照的手写值曾漂移，本版已按实测校正。
@@ -27,21 +27,23 @@
 
 ## 3. 当前验证状态
 
-主 agent 最新实跑数字（R469 合并回归确认口径，覆盖 R448–R468 全部改动——含 R460–R468 的 demo 三句承诺验证、3 个新守卫、SDK 集成测试、CLI 文档 flag 修复）：
+主 agent 最新实跑数字（**2026-11-25 按 CI 真实命令串行复演**，覆盖 R5–R20 累积 17 提交的全部改动；本表取代 R469 旧口径，历史 flake 归因保留在下方说明段）：
 
 | 项目 | 数字 | 结果 |
 |---|---|---|
-| admin-api 全量测试 | 509 suites / 8605 passed / 6 skipped | exit 0 |
-| admin-web 全量测试 | 350 files / 2847 passed / 1 skipped | exit 0 |
-| CI 复演·SDK job（`npm test -- --coverage`） | 6 suites / 151 passed，stmt 96.78% | exit 0 |
-| CI 复演·Docs job（`npm run test:docs`） | 两新守卫确实执行（7/7、6/6 selftest + 主跑） | exit 0 |
-| CI 复演·admin-web coverage | 350 files / 2847 passed，stmt 83.04% | exit 0 |
-| CI 复演·executor-node coverage | 64 suites / 1875 passed，stmt 86.91% | exit 0 |
+| admin-api 全量测试（`--maxWorkers=2`） | 510 suites passed（2 skipped）/ 8624 tests passed（6 skipped） | exit 0 |
+| CI 复演·admin-api-test 全 4 分片（`--shard=N/4`） | 128/127/127/128 suites，全部 exit 0 | exit 0 |
+| admin-web 全量测试（`vitest run`） | 366 files / 3018 passed（1 skipped） | exit 0 |
+| CI 复演·SDK job（`npx jest`） | 6 suites / 151 passed | exit 0 |
+| CI 复演·Docs job（`npm run test:docs`） | 四守卫 selftest + 主跑全绿 | exit 0 |
+| executor-node 全量（`--maxWorkers=2`） | 64 suites / 1875 passed（13 skipped） | exit 0 |
+| acf-cli 全量（`vitest run`） | 16 files / 466 passed | exit 0 |
 | `typecheck:all` | 8 个端 | exit 0 |
-| `test:guards:chain` | 全守卫链 | exit 0 |
+| `test:guards:chain` | 全守卫链 129 段 | exit 0 |
 | north-star-health | 静态 5/5（真库 6/6） | exit 0 |
-| 迁移独立库往返 | 146 up → 幂等 → revert ×2 → 清理 | 全 exit 0 |
-| 真浏览器 + 真后端 e2e（R436） | 真 PG/后端 dist/系统 Chrome：确认端点→漏斗落行→看板真读→反证 1→0→1 | 1 passed / exit 0，无 mock、pageerror=[] |
+| 真浏览器深链 e2e（真 Chrome 158，系统 Chrome 通道） | 4 passed / 0 failed，pageerror=[] | exit 0 |
+| 真浏览器 + 真后端 e2e（R436，历史） | 真 PG/后端 dist/系统 Chrome：确认端点→漏斗落行→看板真读→反证 1→0→1 | 1 passed / exit 0，无 mock、pageerror=[] |
+| 迁移独立库往返（R433/R441，历史） | 146 up → 幂等 → revert ×2 → 清理 | 全 exit 0 |
 
 说明：健康自检区分「代码在（静态）」与「运行时健康（真库）」，静态 PASS ≠ 运行时健康；迁移链在独立干净库实测，`down()` 真回滚已验证（R314 只验 up+幂等的缺口已补）。R436 端到端验收抓到浏览器真发 `GET /api/agent/north-star/metrics` 200，看板数值=真后端数（非 mock/硬编码），反证增删漏斗行看板随之变化——这是四级验收里的最高层。R442 在 R433 之后所有改动落定后**最终复跑**双端全量：admin-api 8602 passed exit 0；admin-web 首跑遇 1 例性能红线 flake（`maintenance-window-parity` 20 tasks best-of-3 72.8ms > 50ms，与文案改动无关，单跑 13ms），重跑全量 350/350 / 2845 passed exit 0，坐实为 350 workers 并发争抢的一次性抖动而非回归。R477 在 R475 提交后、用户 push 前，按 CI 真实命令逐个复演关键 job（SDK/docs/admin-web/executor-node 的 coverage 与 test:docs），全部 exit 0——消除 R459 首推后曾出现「本地绿 CI 红」的那类风险，确认这批提交在 CI 命令下不会红。
 

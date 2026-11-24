@@ -1,7 +1,17 @@
 # AutoCodeFlow Agent Handoff
 
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 16 轮 · 提交态完整性审计 + 剩余 3 个守卫假绿收口）
-> 当前分支 `develop` = `1bfce27d`（第 5-20 轮累积已按主题分 12 组提交：`8684c1eb`…`4b7f8508` Jest flag 修复与守卫 + `1bfce27d` R19 交接）。工作树干净，**领先 origin/develop 16 提交、未 push**。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> 当前分支 `develop` = `93ff8450`（第 5-20 轮累积已按主题分 13 组提交：`8684c1eb`…`4b7f8508` Jest flag 修复与守卫 + `1bfce27d`/`93ff8450` R19/R20 交接）。工作树干净，**领先 origin/develop 17 提交、未 push**。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 21 轮）：PROJECT-STATUS 验证数字同步到真实实测口径
+
+**方向来源**：objective 续轮。核对文档权威时发现 `docs/PROJECT-STATUS.md` §3「当前验证状态」表仍写 R469 旧口径（admin-api 509 suites/8605 passed、admin-web 350 files/2847），而第 13 轮按 CI 真实命令串行复演实测为 admin-api **510/8624**、admin-web **366/3018**——表头自称"最新实跑"却落后 20 轮，是真实的文档权威缺口。
+
+**修法**：§3 表改为 2026-11-25 CI 口径实测数字（admin-api 510/8624、4 分片全绿、admin-web 366/3018、executor-node 64/1875、acf-cli 16/466、SDK 6/151、typecheck 8 端、守卫链 129 段、真浏览器深链 e2e 4/4），历史项（R436 真栈 e2e、R433/R441 迁移往返、north-star-health）保留并标注"历史"；说明段保留 R442/R477 历史 flake 归因。§1 的"最后核对"改 2026-11-25。数字来源全部为已留存的实测日志（`/tmp/r13-*.log`），未手写估计。
+
+**验收**：`npm run test:docs` 0（结构/围栏/新鲜度/cli-doc-flags/examples-code 全绿）。验收级别：文档权威同步 + 已留存的全量实测证据引用；无代码改动，不涉浏览器/真机。遗留缺陷 0。本轮 2 文件（PROJECT-STATUS + 本交接段）待提交，**未 push**。
+
+---
 
 ## 本轮（2026-11-25 · 第 20 轮）：CI 全分片复演补全 + 工具 flag / script 名实核查（无净新缺口）
 
