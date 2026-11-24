@@ -2,7 +2,7 @@ import { Tray, Menu, nativeImage, app } from 'electron';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import { ExecutorStatus } from './executor-process';
-import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from './agent-status-view';
+import { agentActivityLabel, agentOutcomeLabel, agentStatusSignature, type AgentStatusSnapshot } from './agent-status-view';
 import { TRAY_TEXTS, resolveTrayLocale, traySupportsClick, type TrayLocale, type TrayTexts } from './tray-texts';
 import { isTrayStopActive, trayStopGate } from './tray-stop-gate';
 import log from './logger';
@@ -137,13 +137,9 @@ export class TrayManager {
 
   /** Agent 只改菜单和提示；托盘图标仍专指执行器连接状态。 */
   setAgentStatus(status: AgentStatusSnapshot): void {
-    if (
-      this.agentStatus.enabled === status.enabled &&
-      this.agentStatus.polling === status.polling &&
-      this.agentStatus.working === status.working &&
-      this.agentStatus.processed === status.processed &&
-      this.agentStatus.lastOutcome === status.lastOutcome
-    ) return;
+    // R5-T2：早退比较改成全字段签名——lastAssignmentId / lastEffectiveProfile
+    // 变化也必须重绘，否则新指派/换档位后菜单一直停在上一单的展示。
+    if (agentStatusSignature(this.agentStatus) === agentStatusSignature(status)) return;
     this.agentStatus = status;
     this.updateTooltip();
     this.rebuildMenu();

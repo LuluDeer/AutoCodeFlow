@@ -3,6 +3,7 @@ import {
   agentActivityLabel,
   agentActivityState,
   agentOutcomeLabel,
+  agentStatusSignature,
   type AgentStatusSnapshot,
 } from './agent-status-view';
 import { TRAY_TEXTS, type TrayLocale } from './tray-texts';
@@ -62,5 +63,38 @@ assert.equal(agentOutcomeLabel('gate_stopped', en), 'Execution limit reached');
 assert.equal(agentOutcomeLabel(null, en), 'None yet');
 // 未知 outcome：两语言同策略原样透出（不炸、不误报）
 assert.equal(agentOutcomeLabel('future_outcome', en), 'future_outcome');
+
+// ── R5-T2：托盘刷新签名（全字段；早退条件只剩「签名相同」一条） ────────
+const sig = agentStatusSignature(base);
+assert.equal(agentStatusSignature(base), sig, '同一快照签名稳定');
+// 关键反例：仅指派 ID 变化，旧早退条件五字段全等 → 菜单不刷新。
+assert.notEqual(
+  agentStatusSignature({ ...base, lastAssignmentId: 'asg-1' }),
+  sig,
+  'lastAssignmentId 变化必须触发托盘重绘',
+);
+assert.notEqual(
+  agentStatusSignature({ ...base, lastEffectiveProfile: 'workspace-write' }),
+  sig,
+  'lastEffectiveProfile 变化必须触发托盘重绘',
+);
+assert.notEqual(
+  agentStatusSignature({ ...base, lastOutcome: 'delivered' }),
+  sig,
+  '最近结果变化必须触发托盘重绘',
+);
+assert.notEqual(agentStatusSignature({ ...base, processed: 1 }), sig, '处理计数参与签名');
+assert.notEqual(agentStatusSignature({ ...base, enabled: true }), sig, '开关参与签名');
+assert.notEqual(agentStatusSignature({ ...base, polling: true }), sig, '轮询态参与签名');
+assert.notEqual(agentStatusSignature({ ...base, working: true }), sig, '工作中参与签名');
+// 无关字段：快照形状之外的附加元数据不进菜单/tooltip，签名必须保持不变。
+const withExtra = { ...base, polledAt: '2026-11-24T10:00:00Z', traceToken: 'x' } as AgentStatusSnapshot;
+assert.equal(agentStatusSignature(withExtra), sig, '快照外字段不影响签名');
+// 分隔符合理：不同字段边界不得撞出同一个签名。
+assert.notEqual(
+  agentStatusSignature({ ...base, lastAssignmentId: 'ab', lastOutcome: 'c' }),
+  agentStatusSignature({ ...base, lastAssignmentId: 'a', lastOutcome: 'bc' }),
+  'NUL 分隔避免字段拼接碰撞',
+);
 
 console.log('agent-status-view selftest ok');

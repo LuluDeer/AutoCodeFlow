@@ -9,6 +9,8 @@ import { createCfgTexts, resolveRendererLocale } from '../i18n';
 import { ipcErrorMessage } from '../ipc-error';
 // P3-5：推荐网卡判定抽取到共享模块（与 ConfigPage 同源，原 D-04 实现迁移）。
 import { pickRecommendedIp } from '../network-address';
+// R5-T1：bind host 单一真源——探针 / 保存 / 完成页摘要三点同源。
+import { wizardBindHost } from './wizard/wizard-bind-host';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
@@ -77,6 +79,9 @@ export default function Wizard() {
   // 预填源（重跑向导）：挂载时读一次当前配置。null = 读取失败或首次安装
   // （配置为默认值），finish() 回落原固定默认，行为不变。
   const [wizardCfg, setWizardCfg] = useState<Record<string, unknown> | null>(null);
+  // R5-T1：本向导将保存的监听地址——探针、finish() 与完成页摘要共用同一真源。
+  // 首次安装读不到配置时 wizardBindHost 回落 0.0.0.0，行为与原先一致。
+  const bindHost = wizardBindHost(wizardCfg?.executorHost);
   const wizardRef = useRef<HTMLElement>(null);
   const prevStepRef = useRef(step);
 
@@ -167,16 +172,10 @@ export default function Wizard() {
     try {
       const r = await window.electronAPI.saveAndCloseWizard({
         ...form,
-        // F-23（UIUX 审计）：重跑向导不再把 executorHost 悄悄改回全网卡监听
-        // ——向导没有该字段的输入位，finish() 此前硬编码 '0.0.0.0'，用户刻意
-        // 配置的仅本机回环监听（127.0.0.1）会被静默降级且无任何提示。沿用
-        // 挂载时读到的已存配置（首次安装读不到/为空时回落原固定默认，行为
-        // 不变；与下方 maxConcurrentTasks/logLevel 的「未暴露字段保留」同款
-        // 口径）。
-        executorHost:
-          typeof wizardCfg?.executorHost === 'string' && wizardCfg.executorHost
-            ? wizardCfg.executorHost
-            : '0.0.0.0',
+        // F-23 / R5-T1：重跑向导不把 executorHost 悄悄改回全网卡监听——
+        // 沿用挂载时读到的已存值，首次安装读不到/为空时回落 0.0.0.0。
+        // 端口探针与完成页摘要读同一个 bindHost，三处不再各算各的。
+        executorHost: bindHost,
         // 重跑向导不重置未暴露的档位：沿用挂载时读到的已存配置（首次安装
         // 读不到时回落原默认 10/info，行为不变）——否则重跑一次会把
         // logLevel=debug / 自定义并发数悄悄冲回默认。
@@ -254,6 +253,7 @@ export default function Wizard() {
         {step === 3 && (
           <StepExecutor
             form={form}
+            bindHost={bindHost}
             onChange={set}
             onBack={() => setStep(2)}
             onNext={() => setStep(4)}
@@ -270,6 +270,7 @@ export default function Wizard() {
         {step === 5 && (
           <StepFinish
             form={form}
+            bindHost={bindHost}
             onChange={set}
             onBack={() => setStep(4)}
             onFinish={finish}
@@ -404,9 +405,11 @@ function StepConnect({
  *  设置页失焦自动填充/IP 快速选择同源，排除链路本地与回环后取第一个地址）。 */
 
 function StepExecutor({
-  form, onChange, onBack, onNext,
+  form, bindHost, onChange, onBack, onNext,
 }: {
   form: WizardForm;
+  /** 与 finish() 同源的监听地址（由父组件经 wizardBindHost 算出）。 */
+  bindHost: string;
   onChange: (k: keyof WizardForm, v: unknown) => void;
   onBack: () => void;
   onNext: () => void;
@@ -462,17 +465,19 @@ function StepExecutor({
   const portValid = Number.isInteger(form.executorPort) && form.executorPort >= 1 && form.executorPort <= 65535;
   const nameMissing = nameTouched && form.executorName.trim() === '';
   const portInvalid = !portValid || Boolean(portResult && !portResult.available);
-  const canNext = form.executorName.trim().length > 0 && portValid;
+  // R5-T1：探测结果为「不可用」时拦住「下一步」。失败原因复用端口行已有的
+  // test-result.fail（portResult.message），不新增文案键；用户改端口会清空
+  // portResult 自动解锁，按钮 title 也带上原因便于悬停查看。
+  const canNext = form.executorName.trim().length > 0 && portValid && portResult?.available !== false;
 
   async function checkPort() {
     if (!portValid) return;
     setCheckingPort(true);
     setPortResult(null);
     try {
-      // B-8：传本向导将保存的 executorHost（见 finish() 固定 0.0.0.0）——
-      // 检测的监听 host 与执行器实际 bind 的 host 同源，不再依赖主进程的
-      // 固定 0.0.0.0。
-      setPortResult(await window.electronAPI.checkPort(form.executorPort, '0.0.0.0'));
+      // 探针按本向导实际保存的 bind host 检测，不再硬编码 0.0.0.0：
+      // 重跑向导且已存 127.0.0.1 时，探测结论与最终 bind 目标一致。
+      setPortResult(await window.electronAPI.checkPort(form.executorPort, bindHost));
     } catch (err) {
       setPortResult({ available: false, message: ipcErrorMessage(err) });
     } finally {
@@ -658,7 +663,10 @@ function StepExecutor({
       </div>
       <div className="wizard-actions">
         <button className="btn" onClick={onBack}><Icon name="chevron-right" className="icon-xs icon-flip-h" /> {t('wizard.back')}</button>
-        <button className="btn btn-primary" onClick={onNext} disabled={!canNext}>{t('wizard.next')} <Icon name="chevron-right" className="icon-xs" /></button>
+        <button className="btn btn-primary" onClick={onNext} disabled={!canNext}
+          title={portResult?.available === false ? portResult.message : undefined}>
+          {t('wizard.next')} <Icon name="chevron-right" className="icon-xs" />
+        </button>
       </div>
     </>
   );
@@ -785,9 +793,11 @@ function StepSource({
 }
 
 function StepFinish({
-  form, onChange, onBack, onFinish, saving, error,
+  form, bindHost, onChange, onBack, onFinish, saving, error,
 }: {
   form: WizardForm;
+  /** 与 finish() 提交值同源的监听地址，供用户保存前核对。 */
+  bindHost: string;
   onChange: (k: keyof WizardForm, v: unknown) => void;
   onBack: () => void;
   onFinish: () => void;
@@ -811,6 +821,10 @@ function StepFinish({
           <div className="confirm-row">
             <span className="confirm-key">{t('wizard.finish.keyPort')}</span>
             <span className="confirm-val">{form.executorPort}</span>
+          </div>
+          <div className="confirm-row">
+            <span className="confirm-key">{t('wizard.finish.keyBindHost')}</span>
+            <span className="confirm-val">{bindHost}</span>
           </div>
           <div className="confirm-row">
             <span className="confirm-key">{t('wizard.finish.keyPublic')}</span>

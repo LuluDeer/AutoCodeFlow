@@ -26,6 +26,29 @@ export interface AgentStatusSnapshot {
   lastEffectiveProfile: string | null;
 }
 
+/**
+ * R5-T2：托盘刷新签名 —— 快照里「菜单/tooltip 真正读到的全部字段」的紧凑表示。
+ *
+ * 托盘菜单显示 Agent 活动、处理计数与最近结果；lastAssignmentId 与
+ * lastEffectiveProfile 虽然不直接渲染成文字，却是「这次指派/档位换了」的唯一
+ * 证据（同一 outcome、同一 processed 时，旧早退条件会让菜单一直停在上一单）。
+ * 因此七项全部入签，任一变化都必须重绘。
+ *
+ * 用 NUL 分隔而非简单拼接：避免 `('ab','c')` 与 `('a','bc')` 撞出同一串。
+ * 纯函数、无 IPC / locale 依赖，便于 selftest 逐格钉住。
+ */
+export function agentStatusSignature(view: AgentStatusSnapshot): string {
+  return [
+    view.enabled ? '1' : '0',
+    view.polling ? '1' : '0',
+    view.working ? '1' : '0',
+    view.lastAssignmentId ?? '',
+    view.lastOutcome ?? '',
+    String(view.processed),
+    view.lastEffectiveProfile ?? '',
+  ].join('\u0000');
+}
+
 /** 状态快照 → 活动标签键（纯映射，便于自检钉住分支语义）。 */
 export function agentActivityState(status: AgentStatusSnapshot): AgentActivityState {
   if (status.working) {
