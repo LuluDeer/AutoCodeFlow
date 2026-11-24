@@ -121,6 +121,108 @@ export function runningActionGate(running: RunningMap, unknown: boolean): Runnin
   };
 }
 
+/** 删除动作的四态；前 3 态禁用，allowed 可执行。 */
+export type DeleteActionReason = 'current' | 'running' | 'unknown' | 'allowed';
+
+export interface DeleteActionInfo {
+  reason: DeleteActionReason;
+  disabled: boolean;
+  /** title 用的双语键（三态禁用原因 + allowed） */
+  titleKey: string;
+  /** 不可用按钮/菜单项的短文案键；allowed 时调用方改用 deleteAria + 版本名 */
+  labelKey: string;
+}
+
+/**
+ * T1：删除动作的**单一口径**。抽屉内的版本行与表格 ⋯ 菜单共用本函数，
+ * 避免两处对同一个禁用状态给出不同解释（例如一律写「当前版本不可删」，
+ * 真实原因却是执行器仍在运行或运行态读取失败）。
+ *
+ * 判定优先级：current > unknown > running > allowed。unknown 必须排在
+ * running 之前：`blockedByRunning()` 在读取失败时对所有 id 返回 true，
+ * 若先看它会把「状态未知」误报成「运行中」。group 用于兜底同步——若
+ * entry.isCurrent 与 group.current 漂移，以 group 的 current 指向为准。
+ */
+export function deleteActionInfo(
+  entry: AppEntry | null,
+  gate: RunningActionGate,
+  group: AppGroup,
+): DeleteActionInfo {
+  // 表格 ⋯ 菜单没有具体版本（firstDeletable 返回 null）：按分组推断真正阻塞原因。
+  // 优先 unknown——读取失败时任何「已停止」结论都不可信。
+  if (!entry) {
+    if (gate.unknown) {
+      return {
+        reason: 'unknown', disabled: true,
+        titleKey: 'appx.deleteBlockedUnknown', labelKey: 'appx.deleteReason.unknownLabel',
+      };
+    }
+    const runningBlocked = group.entries.some(e =>
+      !e.isCurrent && gate.blockedByRunning(e.deploymentId));
+    if (runningBlocked) {
+      return {
+        reason: 'running', disabled: true,
+        titleKey: 'apps.deleteBlockedRunning', labelKey: 'appx.deleteReason.runningLabel',
+      };
+    }
+    return {
+      reason: 'current', disabled: true,
+      titleKey: 'apps.deleteBlockedCurrent', labelKey: 'appx.deleteReason.currentLabel',
+    };
+  }
+  const isCurrent = entry.isCurrent
+    || Boolean(group.current && group.current.deploymentId === entry.deploymentId);
+  if (isCurrent) {
+    return {
+      reason: 'current', disabled: true,
+      titleKey: 'apps.deleteBlockedCurrent', labelKey: 'appx.deleteReason.currentLabel',
+    };
+  }
+  if (gate.unknown) {
+    return {
+      reason: 'unknown', disabled: true,
+      titleKey: 'appx.deleteBlockedUnknown', labelKey: 'appx.deleteReason.unknownLabel',
+    };
+  }
+  if (gate.blockedByRunning(entry.deploymentId)) {
+    return {
+      reason: 'running', disabled: true,
+      titleKey: 'apps.deleteBlockedRunning', labelKey: 'appx.deleteReason.runningLabel',
+    };
+  }
+  return {
+    reason: 'allowed', disabled: false,
+    titleKey: 'apps.deleteAllowedTitle', labelKey: 'appx.deleteReason.allowedLabel',
+  };
+}
+
+/**
+ * T2：部署定位串——复制后粘到中台应用页即可精确定位这份部署。
+ * 三字段缺一不可但都可以缺省（旧部署没有 version / 尚未发布没有 deploymentId），
+ * 缺字段统一用破折号占位，绝不拼出 `undefined` / `null` 字面量。
+ * 第二行是中台应用页 URL：base 只接受 http(s)，去掉 /api 后缀与尾斜杠，
+ * appId 做 URI 编码；base 缺失或非法时只返回定位字段，不硬编码任何域名。
+ */
+export function formatDeployLocator(
+  entry: Pick<AppEntry, 'appId' | 'deploymentId' | 'version'>,
+  consoleBaseUrl?: string | null,
+): string {
+  const field = (value: string | null | undefined) =>
+    typeof value === 'string' && value.trim() ? value.trim() : '—';
+  const lines = [
+    `appId=${field(entry.appId)}`,
+    `deploymentId=${field(entry.deploymentId)}`,
+    `version=${field(entry.version)}`,
+  ];
+  const base = typeof consoleBaseUrl === 'string'
+    ? consoleBaseUrl.trim().replace(/\/+$/, '').replace(/\/api$/i, '')
+    : '';
+  if (/^https?:\/\//i.test(base)) {
+    lines.push(`${base}/applications/${encodeURIComponent(entry.appId || '')}?tab=releases`);
+  }
+  return lines.join('\n');
+}
+
 export function sortAriaOf(
   sortOrder: AppSort,
   col: 'app' | 'current' | 'versions' | 'status' | 'deployed',

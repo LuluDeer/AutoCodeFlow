@@ -22,12 +22,15 @@ import AppsDrawer from './apps/AppsDrawer';
 import {
   buildAppGroups,
   countAppFilters,
+  deleteActionInfo,
   firstDeletable,
+  formatDeployLocator,
   formatDeployTime,
   runModePrefix,
   runningActionGate,
   sortAriaOf,
   type AppGroup,
+  type DeleteActionInfo,
   type DisplayRunStatus,
   type RunningActionGate,
   type RunningMap,
@@ -298,6 +301,7 @@ function AppLogScreen({ entry, onClose }: { entry: AppEntry; onClose: () => void
 // ── 版本行列表（卡片内联展开 / 详情抽屉共用）────────────────────────────────
 interface ReleaseListProps {
   appId: string;
+  group: AppGroup;
   entries: AppEntry[];
   limit: number;
   initialLimit: number;
@@ -309,11 +313,14 @@ interface ReleaseListProps {
   onViewLog: (entry: AppEntry) => void;
   onOpenFolder: (entry: AppEntry, releaseOnly: boolean) => void;
   onRequestDelete: (appId: string, entry: AppEntry, label: string) => void;
+  /** T2：把应用 ID + 部署 ID + 版本复制到剪贴板，到中台应用页定位部署/回滚。 */
+  onCopyLocator: (entry: AppEntry) => void;
   onSetLimit: (appId: string, limit: number) => void;
 }
 
 function ReleaseList({
   appId,
+  group,
   entries,
   limit,
   initialLimit,
@@ -324,6 +331,7 @@ function ReleaseList({
   onViewLog,
   onOpenFolder,
   onRequestDelete,
+  onCopyLocator,
   onSetLimit,
 }: ReleaseListProps) {
   const groupBusy = Boolean(busy);
@@ -334,6 +342,9 @@ function ReleaseList({
         const isRunning = gate.isRunning(entry.deploymentId);
         const pid = running[entry.deploymentId]?.pid;
         const blocked = entry.isCurrent || gate.blockedByRunning(entry.deploymentId);
+        // T1：唯一口径——抽屉与表格菜单都读 deleteActionInfo 的 title/disabled。
+        // blocked 与 delInfo.disabled 同真值（四态判定一致），保留前者供历史守卫核对。
+        const delInfo: DeleteActionInfo = deleteActionInfo(entry, gate, group);
         const label = versionLabel(entry);
         return (
           <div key={entry.releaseKey || entry.deploymentId} className="app-deployment-row appx-release-row">
@@ -368,16 +379,17 @@ function ReleaseList({
                   <button type="button" className="btn btn-sm app-icon-button" onClick={() => onOpenFolder(entry, true)} title={t('apps.openReleaseTitle')} aria-label={t('apps.openReleaseAria', label)}><Icon name="folder" /></button>
                   <button
                     type="button"
+                    className="btn btn-sm app-icon-button"
+                    onClick={() => onCopyLocator(entry)}
+                    title={t('apps.copyDeployLocatorTitle')}
+                    aria-label={t('apps.copyDeployLocator')}
+                  ><Icon name="copy" /></button>
+                  <button
+                    type="button"
                     className="btn btn-sm btn-danger-ghost app-icon-button"
                     disabled={blocked || groupBusy || Boolean(pendingConfirm)}
                     onClick={() => onRequestDelete(appId, entry, label)}
-                    title={entry.isCurrent
-                      ? t('apps.deleteBlockedCurrent')
-                      : gate.unknown
-                        ? t('appx.deleteBlockedUnknown')
-                        : isRunning
-                          ? t('apps.deleteBlockedRunning')
-                          : t('apps.deleteAllowedTitle')}
+                    title={t(delInfo.titleKey)}
                     aria-label={t('apps.deleteAria', label)}
                   >{busy === entry.appId + entry.releaseKey ? '...' : <Icon name="trash" />}</button>
                 </>
@@ -418,6 +430,9 @@ export default function AppsPage() {
   // 弹窗——无边框窗口下会阻塞渲染进程且样式不可控（部分平台直接
   // 不显示，HistoryPage 清除历史早已因此改为页内确认），此处对齐。
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  // T2：中台应用页基址从既有配置读（adminApiUrl，getAllMasked 不脱敏此字段），
+  // 绝不硬编码域名；读不到时定位串仍带 appId/deploymentId/version 三字段。
+  const [consoleBaseUrl, setConsoleBaseUrl] = useState('');
   // 详情抽屉是唯一详情面：表格行 / 紧凑行点击都打开它，关闭时焦点还给触发行。
   const [detailAppId, setDetailAppId] = useState<string | null>(null);
   // C-05：确认条出现时必须滚进视口——列表尾部卡片的「卸载/删除」把确认条插在
@@ -505,6 +520,18 @@ export default function AppsPage() {
     const t = setTimeout(() => setNotice(null), 6000);
     return () => clearTimeout(t);
   }, [notice]);
+
+  // T2：中台地址是可选辅助信息，读失败不阻塞页面（定位串三字段仍完整）。
+  useEffect(() => {
+    let cancelled = false;
+    void window.electronAPI.getConfig()
+      .then(cfg => {
+        const value = cfg && cfg.adminApiUrl;
+        if (!cancelled && typeof value === 'string') setConsoleBaseUrl(value);
+      })
+      .catch(() => { /* 配置不可读：定位串退化为纯三字段，不报错打扰用户 */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // V4-4（X-05）：Ctrl+F 聚焦搜索框（页面可见且查看器未打开时；HistoryPage 同口径）
   useEffect(() => {
@@ -670,6 +697,21 @@ export default function AppsPage() {
     setPendingConfirm({ kind: 'delete-release', appId, entry, label });
   }
 
+  // T2：走既有 writeClipboardText 通道（不新增 IPC），成功/失败都落页内 notice。
+  function copyDeployLocator(entry: AppEntry) {
+    const text = formatDeployLocator(entry, consoleBaseUrl);
+    void window.electronAPI.writeClipboardText(text)
+      .then(res => {
+        if (res && res.ok === false) {
+          setNotice({ kind: 'err', text: res.error === 'tooLarge'
+            ? t('status.copyTooLarge') : t('apps.notice.locatorCopyFail') });
+        } else {
+          setNotice({ kind: 'ok', text: t('apps.notice.locatorCopied') });
+        }
+      })
+      .catch(() => setNotice({ kind: 'err', text: t('apps.notice.locatorCopyFail') }));
+  }
+
   function sortAria(col: 'app' | 'current' | 'versions' | 'status' | 'deployed'):
   'ascending' | 'descending' | 'none' {
     return sortAriaOf(sortOrder, col);
@@ -695,8 +737,11 @@ export default function AppsPage() {
     return (
       <>
         <div className="appx-detail-heading">{t('appx.detail.releases')}</div>
+        {/* T2：删当前版本前必须去中台部署/回滚——把出口写在本机，避免「看版本后无路可走」。 */}
+        <p className="appx-detail-hint">{t('apps.consoleDeployHint')}</p>
         <ReleaseList
           appId={group.appId}
+          group={group}
           entries={releases}
           limit={limit}
           initialLimit={initialLimit}
@@ -707,6 +752,7 @@ export default function AppsPage() {
           onViewLog={setViewing}
           onOpenFolder={(entry, releaseOnly) => void handleOpenFolder(entry, releaseOnly)}
           onRequestDelete={requestDeleteRelease}
+          onCopyLocator={copyDeployLocator}
           onSetLimit={(_appId, next) => setDetailLimit(next)}
         />
       </>
@@ -943,6 +989,9 @@ export default function AppsPage() {
                     ? group.current
                     : group.entries.find(entry => entry.hasLog) ?? null;
                   const deletable = firstDeletable(group, running, runningGate.unknown);
+                  // T1：表格 ⋯ 菜单与抽屉共用 deleteActionInfo；deletable=null 时它
+                  // 按分组推断真正的阻塞原因（unknown / running / current）。
+                  const menuDelete: DeleteActionInfo = deleteActionInfo(deletable, runningGate, group);
                   return (
                     <tr
                       key={appId}
@@ -1042,13 +1091,23 @@ export default function AppsPage() {
                               <button
                                 type="button"
                                 className="appx-menu-item"
-                                disabled={!deletable || Boolean(pendingConfirm) || Boolean(busy)}
-                                title={deletable ? t('apps.deleteAllowedTitle') : t('apps.deleteBlockedCurrent')}
+                                onClick={event => {
+                                  event.currentTarget.closest('details')?.removeAttribute('open');
+                                  const target = deletable ?? group.current ?? group.entries[0];
+                                  if (target) copyDeployLocator(target);
+                                }}
+                                title={t('apps.copyDeployLocatorTitle')}
+                              >{t('apps.copyDeployLocator')}</button>
+                              <button
+                                type="button"
+                                className="appx-menu-item"
+                                disabled={menuDelete.disabled || Boolean(pendingConfirm) || Boolean(busy)}
+                                title={t(menuDelete.titleKey)}
                                 onClick={event => {
                                   event.currentTarget.closest('details')?.removeAttribute('open');
                                   if (deletable) requestDeleteRelease(appId, deletable, versionLabel(deletable));
                                 }}
-                              >{deletable ? t('apps.deleteAria', versionLabel(deletable)) : t('apps.confirmDelete')}</button>
+                              >{deletable && !menuDelete.disabled ? t('apps.deleteAria', versionLabel(deletable)) : t(menuDelete.labelKey)}</button>
                               <button
                                 type="button"
                                 className="appx-menu-item appx-menu-item-danger"

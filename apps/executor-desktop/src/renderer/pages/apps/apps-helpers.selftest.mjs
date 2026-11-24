@@ -23,7 +23,9 @@ const appsView = loadTs(resolve(here, '../../apps-view.ts'));
 const {
   buildAppGroups,
   countAppFilters,
+  deleteActionInfo,
   firstDeletable,
+  formatDeployLocator,
   groupStatus,
   runningActionGate,
   runModePrefix,
@@ -93,6 +95,63 @@ eq(unknownGate.isRunning('dep-2'), false, '读取失败：不得谎报「运行�
 eq(unknownGate.blockedByRunning('dep-1'), true, '读取失败：所有版本按运行状态未知处理，删除先禁用');
 eq(unknownGate.blockedByRunning('dep-999'), true, '读取失败：未知 deploymentId 同样禁用');
 eq(unknownGate.displayStatusOf(groups[1]), 'unknown', '读取失败：状态列显示「运行状态未知」，不冒充已停止/定时');
+
+// T1：deleteActionInfo 四态逐格断言（抽屉与表格菜单共用的唯一口径）。
+const oldEntry = groups[0].entries.find(e => e.releaseKey === 'rel-1');
+const currentEntry = groups[0].current;
+eq(
+  deleteActionInfo(currentEntry, knownGate, groups[0]),
+  { reason: 'current', disabled: true, titleKey: 'apps.deleteBlockedCurrent', labelKey: 'appx.deleteReason.currentLabel' },
+  '当前版本：原因 current，title 指当前版本阻塞',
+);
+eq(
+  deleteActionInfo(oldEntry, knownGate, groups[0]),
+  { reason: 'allowed', disabled: false, titleKey: 'apps.deleteAllowedTitle', labelKey: 'appx.deleteReason.allowedLabel' },
+  '读取成功且未在跑：可删',
+);
+eq(
+  deleteActionInfo(oldEntry, runningActionGate({ 'dep-1': { pid: 7, running: true } }, false), groups[0]),
+  { reason: 'running', disabled: true, titleKey: 'apps.deleteBlockedRunning', labelKey: 'appx.deleteReason.runningLabel' },
+  '运行中：原因 running，不误报为 current',
+);
+eq(
+  deleteActionInfo(oldEntry, unknownGate, groups[0]),
+  { reason: 'unknown', disabled: true, titleKey: 'appx.deleteBlockedUnknown', labelKey: 'appx.deleteReason.unknownLabel' },
+  '运行态未知：原因 unknown，优先于 running 与 current',
+);
+// 表格菜单（deletable=null）按分组推断：
+eq(
+  deleteActionInfo(null, unknownGate, groups[0]).reason,
+  'unknown',
+  '菜单无候选 + 读取失败 → unknown 口径',
+);
+eq(
+  deleteActionInfo(null, runningActionGate({ 'dep-1': { pid: 7, running: true } }, false), groups[0]).reason,
+  'running',
+  '菜单无候选 + 旧版仍在跑 → running 口径',
+);
+eq(
+  deleteActionInfo(null, knownGate, groups[1]).reason,
+  'current',
+  '菜单无候选 + 仅 current 版本 → current 口径',
+);
+
+// T2：部署定位串——三字段齐全 / 缺字段 / 非法 baseURL 不硬编码域名。
+eq(
+  formatDeployLocator({ appId: 'app-1', deploymentId: 'dep-1', version: '1.0.0' }, 'http://console.local:3000/api/'),
+  'appId=app-1\ndeploymentId=dep-1\nversion=1.0.0\nhttp://console.local:3000/applications/app-1?tab=releases',
+  '定位串拼 appId/deploymentId/version 与中台应用页 URL（去尾斜杠与 /api）',
+);
+eq(
+  formatDeployLocator({ appId: 'app-1', deploymentId: 'dep-1', version: null }),
+  'appId=app-1\ndeploymentId=dep-1\nversion=—',
+  '缺 version 用破折号占位，无 baseURL 时不拼 URL',
+);
+eq(
+  formatDeployLocator({ appId: 'app-2', deploymentId: '', version: '' }, 'not-a-url'),
+  'appId=app-2\ndeploymentId=—\nversion=—',
+  '缺 deploymentId/version 与非法 baseURL 都不拼出 undefined/null/域名',
+);
 
 eq(sortAriaOf('name', 'app'), 'ascending', 'name 排序映射 aria-sort');
 eq(sortAriaOf('recent', 'deployed'), 'descending', 'recent 排序映射 aria-sort');
