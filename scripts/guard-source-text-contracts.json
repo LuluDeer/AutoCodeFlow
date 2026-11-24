@@ -242,7 +242,11 @@
       "needle": "读全部 JS/TS 源码，自研状态机数非注释行/函数体/构造器参数/export/分支密度",
       "reads": [
         "apps/**/*.{ts,tsx,js,mjs,cjs}",
-        "packages/**/*.{ts,tsx,js,mjs,cjs}"
+        "packages/**/*.{ts,tsx,js,mjs,cjs}",
+        "scripts/check-size-caps.mjs",
+        "scripts/lib/guard-selftest.mjs",
+        "scripts/lib/ratchet-baseline.mjs",
+        "scripts/lib/agent-coverage.mjs"
       ],
       "asserts": "非注释行 600/900、函数体 300、构造器参数 5/8、export 25、分支密度 20（基线棘轮）",
       "disposition": "keep-and-accept",

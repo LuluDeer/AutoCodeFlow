@@ -2181,6 +2181,43 @@
       "reviewBy": "2027-02-28",
       "triageStatus": "triaged",
       "dispositionNote": "**已知脆弱面**：它锚定的是 `QueueStallBadge.tsx` 里的分支形态 ⇒ 若把 tooltip 文案改成组件外传入（props / context），本条会红并**要求重新评估措辞判据该放哪里**（那正是应该被注意到的事）。**为什么接受这个脆弱性**：措辞差异承载的是「『workers===0』是不是事实」这一语义区别（R210/R211 的核心），比「测试稳定」更重要；而它的失效方式是**红**（不是静默），符合本仓对源码断言的纪律（R157/R310：失效必须可见）。"
+    },
+    {
+      "id": "STC-127",
+      "tier": "P2",
+      "spec": "apps/admin-web/src/__tests__/motion-skeleton-ux08.test.ts",
+      "specLine": 20,
+      "needle": "const INDEX_CSS = read('index.css');",
+      "reads": [
+        "apps/admin-web/src/index.css"
+      ],
+      "asserts": "B4 质感收口：读 `index.css` 源码文本，断言四枚 motion 令牌（--motion-fast/normal/slow/easing）已定义、既有主题/侧栏过渡**引用令牌而非裸写时长**、且全局 `prefers-reduced-motion: reduce` 块覆盖 transition/animation 时长、迭代次数与平滑滚动。判据对象就是 CSS 文本形态（运行时布局不暴露「有没有裸写 200ms」这类事实）。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "⚠️ 该断言**依赖 CSS 文本形态**（令牌名、过渡的书写顺序、reduced-motion 的覆写行）⇒ 若把过渡改成 `transition: all ...` 简写、或把令牌改由 CSS-in-JS 注入，needle/断言会失配 ⇒ **改这些样式时必须同步复核本条**。接受理由：失效方式是红（不是静默假绿），而「令牌收敛 + 降级块齐全」没有等价的运行时观察面。",
+      "owner": "web-ui",
+      "reviewBy": "2027-02-28",
+      "triageStatus": "triaged"
+    },
+    {
+      "id": "STC-128",
+      "tier": "P2",
+      "spec": "apps/admin-web/src/__tests__/placeholder-fallback-glyph.test.ts",
+      "specLine": 26,
+      "needle": "readFileSync(join(SRC, rel), 'utf-8')",
+      "reads": [
+        "apps/admin-web/src/components/ExecutionCompare.tsx",
+        "apps/admin-web/src/components/ExecutionRetryChain.tsx",
+        "apps/admin-web/src/pages/ApplicationDetailPage.tsx",
+        "apps/admin-web/src/pages/settings/EventSubscriptionsSettings.tsx",
+        "apps/admin-web/src/pages/settings/index.tsx",
+        "apps/admin-web/src/pages/task-detail/version-view-models.tsx"
+      ],
+      "asserts": "P3 占位符残留：逐个读 6 个读面文件的源码文本（先剥注释），断言空值回落**只用全角破折号 `—`**，不再残留半角 `'-'` 占位字面量。判据对象是字面量形态（语义上无法从运行时的格式化结果反推「某处兜底写的是 -」）。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "⚠️ 该断言**依赖源码文本形态**（`'-'` 字面量的出现）⇒ 若把兜底改到共享常量（如 `FALLBACK`）或改为三元外的 helper，本条对那个文件的字形约束会**变松**；`TARGET_FILES` 增删文件时必须同步改本条 reads。接受理由：这是对「读面占位一致性」的跨文件字形契约，失效方向是红（新增半角占位会立刻被点名），且刻意保留的例外已在 spec 头注列明。",
+      "owner": "web-ui",
+      "reviewBy": "2027-02-28",
+      "triageStatus": "triaged"
     }
   ],
   "discipline": [

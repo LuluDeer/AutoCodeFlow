@@ -92,6 +92,5 @@ source-digest: 80edbcd8fe940ca8268d55fae3f8f8b6b0a9327e30c8638d3bc3943e3bb63ed5
 # 2026-11-24 回填（波2 B5 桌面体验升级：kill-tree 进程树清理加固）：
 #   src/main/agent/kill-tree.ts 与 kill-tree.selftest.ts 改了 worker bundle 输入
 #   （41 个输入文件），语义摘要 2baf5cccc… → 80edbcd8…，按维护规则同 commit 重打。
-#   本机 Windows（node 22 / esbuild 同仓锁版）重打 ebe1651f… → 95dbaefe…
-#   （dist/index.js 无绝对路径，esbuild 同输入同版本字节确定）。
-95dbaefee31d2491275b746877709fec6ad22acafffc477ab07c70d6171bb6d5  dist/index.js
+#   字节哈希以 CI 构建为准回填：ebe1651f… → 0de3893d…
+0de3893d53284b31c4baaf75d49cb8ead50a7404ecaa7d1e16841dba358eca04  dist/index.js
