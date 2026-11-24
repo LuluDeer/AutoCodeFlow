@@ -1,7 +1,34 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 3 轮 · 波1 收口）
-> 当前分支 `develop` = `39aacb85`（首轮 6 批 + 波1 4 批已提交，**未 push**）；`main` = `origin/main` = `de49cf9e` 保持不动，`stash@{0}`（用户 11-16 WIP）未动。波2（B1 引导 / B5 桌面含暗色补建）进行中。其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-24（第 3 轮 · 波2 收口）
+> 当前分支 `develop` = `f1346d65`（首轮 6 批 + 波1 4 批 + docs + 波2 2 批已提交，**未 push**）；`main` = `origin/main` = `de49cf9e` 保持不动，`stash@{0}`（用户 11-16 WIP）未动。两波体验优化均已收口。其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
+
+## 本轮（2026-11-24 · 第 3 轮续）：波2 体验上限五切片（引导/效率/可视化/质感/桌面含暗色补建）+ 统一验收 + 返修闭环 + 分批提交
+
+**编排方式**：B1 引导 + B5 桌面并行（写域互斥）→ B2 效率 → B3 可视化 → B4 质感横切（admin-web locales 共享，串行单写者）→ 统一验收（5 项 P1 守卫红）→ 返修统一路由 B2（locales 单写者避免并发冲突）→ 复核通过分 2 批提交。期间 KAIROS 第三次断连 + 两个新子会话沙箱 provisioning 持续失败（SANDBOX_UNAVAILABLE），按「探查笔记转移到 KAIROS 共享路径 → 终止旧会话 → 新会话重派」模式零成果丢失（笔记在编排方工作区 `agents\o_000VYVlihdg\handoff\`）。
+
+| 批次 | Commit | 内容 | 文件数 |
+|---|---|---|---|
+| ① admin-web 四切片 | `f81d6f0a` | **B1 引导**：状态机 welcome→taskCreated→firstRun→completed（deriveStep 纯数据派生）、信封 `autoflow-onboarding:v1`（dismissedStep 按步骤压制/推进自动失效/completedAt 收口/老用户静默补写不弹横幅）、useOnboardingGuide + OnboardingGuideCard + DashboardOnboardingSection + TaskListVacuumEmpty 外提、执行列表真空态 CTA、首次成功一次性横幅；useTaskFormSubmit 字节未动。**B2 效率**：列自定义（显隐+顺序+重置+最后一列死面守卫+legacy 键一次性迁移）、保存筛选视图（上限 20/名称归一/切换实际改请求参数）、批量操作（任务侧既有 `/tasks/batch/*` 端点逐项吸收；执行侧无批量端点→客户端顺序编排+进度+部分失败逐项报告，不伪造成功）、CommandPalette 波1 已成型仅复核；键 `autoflow-{tasklist,executions}-{columns,views}:v1`。**B3 可视化**：趋势图用既有 `/api/metrics/trend?days=N`（服务端日桶，无新端点）+既有 recharts，右轴成功率折线（分母=成功+失败+超时，无样本断点不画 0%）+口径说明行；执行时间线升级（排队/运行耗时派生、失败点红叉+归类 Tag+原始错误、重试链元信息+跳转 `?tab=retry`）。**B4 质感**：动效令牌 4 枚（--motion-fast/normal/slow/easing）+10 处散落收敛、任务列表移动骨架缺口单行门控（shouldShowPageSkeleton 外提）、reduced-motion 既有全局块核验+源码守卫补强；**乐观更新审计 40 个 mutation 站点后决定不新增**（仅 pause/resume 一对有安全快照-回滚路径，其余无安全回滚不硬造）。含返修：drift 双基线登记 BatchKillRow/KillExecutionFn（allowlist/notPairs，owner=arch-core/review_by=2026-12-15）、SavedViewsBar okText/cancelText 改既有 i18n 键、删 3 对零引用死键（execs.batchKillFail / taskList.columnSettings.desc / dashboard.trend.empty）；i18n-key-baseline 登记 execColumns.ts | 58（+4373/−367） |
+| ② B5 桌面 | `f1346d65` | 托盘「运行中：N」实时活动（既有 status 通道）；窗口记忆扩展 x/y/displayId（断开回落主屏安全区，resolveRestoreBounds 纯函数）；通知同类 5s 合并+静默时段（跨零点纯函数，双时间选择器默认关）；多显示器/DPI 钳制；**暗色分面补建（用户批准）**：tokens.css [data-theme=dark]、三态设置默认跟随系统、localStorage `acf-theme-mode` + config.theme ENUM 镜像（主进程启动读 config 定窗口底色，nativeTheme 兜底）、theme-bridge、index.html 首帧防闪、托盘适配。**顺手修复既有缺陷**：kill-tree win32「进程不存在」误判失败（中文区 taskkill GBK 文案正则失配）→ pidExists ESRCH 探测优先+退出码 128 兜底。size-baseline 登记 ipc-handlers+i18n 两条（裁决授权，review_by=2026-12-15）；新 selftest 全接线（64 main/10 renderer） | 38（+1319/−67） |
+
+**验收证据（独立验收方实测；报告 `…\agents\s_000VybeZLu6\artifacts\wave2\acceptance-report-wave2-2026-11-24.md`，含 §11 返修复核与 commit 清单）**：
+- admin-web vitest 三分片单 worker：**362 文件 / 2986 用例 = 2984 过 / 1 失败（孤儿棘轮死键，返修已关闭）/ 1 跳过**，无存量回归（波1 基线 355/2911）；返修后 i18n 定向 7 文件 74 过+1 跳过、切片定向 10 文件 95 过（locales 仅删 3 对零引用死键，未重跑全量，口径如实）。
+- `tsc -b` 0；`lint:i18n` 0（zh/en 各 **3889** 成对，动态键文件 41）；根守卫绿：size-caps（2305 文件/98 基线）/desktop-wired（64 main+10 renderer）/mutation-residue（83 配对）/web-type-drift（selftest 23/23）/field-drift（27/27）/api-i18n/response-schema/failure-reasons/install-script-sync/error-i18n/ssrf-parity。
+- admin-api（Node 24.21.0）：tsc 0；jest 52（north-star 12+classify/summary 40）+454（processor/executor.service）全过，波2 无 api fallout。
+- 桌面：typecheck:renderer 0、test:renderer 10 组过、**test:main 64 selftest 全链 Windows EXIT=0**（含 kill-tree 修复）。
+- **真浏览器 smoke 9/9**（生产 build+preview，headless-shell-1254，内存闸下）；B1-B4 harness 独立复跑 **16/16**（6+4+3+3，dev+stub 端口 4180/4181/4182/4183）。
+- 变异独立重放 2 处（theme-bridge 兜底/window-bounds 上钳）红→还原绿，SHA256 一致；切片自报演练 B5 五处/B3 两处/B4 两处记录在案。
+- B5 真窗取证：暗色×中英×2 尺寸 8 截图（data-theme=dark/底色 rgb(15,23,42) 探针实测）、窗口记忆落盘+二次启动恢复逐字段一致（harness 注入 focusOrOpenStatus，无生产开窗 IPC 入口如实标注）、托盘文案断言+通知真实触发日志。证据：`…\agents\s_0007tzqKj4f\artifacts\`（desktop-experience-upgrade-report.md / mutation-drill-record.json / evidence-*.json / dark-zh、dark-en 截图）。
+- **Verdict：返修后无 P0/P1，两批落地。**
+
+**未覆盖边界（如实）**：① B1/B2/B3 harness only-on-failure 全过未留存截图（通过结论来自 list reporter 进程观察），B4 3 png+json 已抽查；② B5 托盘菜单/图标像素、Windows toast 像素、双屏拔屏、物理 DPI 切换未真机取证（纯函数 selftest 覆盖）；通知 5s 合并真机复用未复现（4s 轮询时机+私有面不可达，shouldReuseCoalesce selftest 钉死）；③ B1 写链路（表单填写→触发→成功执行）未真机覆盖（stub 面过重），移动空态 CTA 与英文渲染未独立取证；④ 趋势/时间线取证为 dev+stub，未真栈复核 `/metrics/trend` 聚合；⑤ admin-api jest 为离线夹具级。
+
+**遗留与后续候选**：语言守卫 3 条存量命中+3 陈旧基线（application.ts:854/859、NotificationSettingsPage:790，不在本轮写域，建议统一处置或 --update 收紧）；failure-classifiers 14 条 D-16 存量噪声（同波1）；executor-node alpine 缺 bash 但声明 shell→exit 127（波1 确证）；D-2 任务量>100 任务名回退 id；对账脚本不覆盖 promotionEligibility；admin-web 死代码 App.css（Vite 模板残留，零引用）；SchedulerLatencyCard 在途占位未转骨架（DashboardPage 零增量约束）；--motion-fast 预留档无消费点；执行侧批量 kill 后端端点（当前客户端编排兜底）。
+
+**体量水位警示**：DashboardPage 553/554（仅余 1 行）、TaskListPage 737/737（零余量）、ExecutionDetailPage 444/458——后续任何接线必须先外提，基线登记须走 owner/review_by 真话口径。
+
+---
 
 ## 本轮（2026-11-24 · 第 3 轮）：波1 验证盲区闭环（暗色真机 parity / 真栈运行态 UX / 错误可行动性链）+ 独立验收 + 分批提交
 
@@ -38,7 +65,7 @@
 
 **未覆盖边界（如实）**：① north-star-real-backend.spec 未对真栈跑（栈为旧码快照，A3 后端改动未入栈）；② SSE 逐帧载荷时序未存档（仅请求链 + UI 行级追加 5→5→7 快照）；Kill 201 + DB killed×3 已断言；③ 深节流/丢包/断连重连未测（仅 1.5s 延迟样本，低于重连阈值）；④ 桌面真机证据为实现方产出、验收只读抽查。
 
-**波2 进行中（本段提交时）**：B1 首次体验引导（admin-web，TTFV 北极星）与 B5 桌面五项 + 已批准的暗色分面补建（executor-desktop）并行；B2 效率 / B3 可视化 / B4 质感待 B1 后按序（locales 共享需串行）。波2 收口同样分批 commit + 交接段增量更新。纪律不变：严禁 push、main/stash 不动、持久化优先 localStorage 避免 DDL、不动发版/版本号。
+**波2 进行中（本段提交时）**：B1 首次体验引导（admin-web，TTFV 北极星）与 B5 桌面五项 + 已批准的暗色分面补建（executor-desktop）并行；B2 效率 / B3 可视化 / B4 质感待 B1 后按序（locales 共享需串行）。波2 收口同样分批 commit + 交接段增量更新。纪律不变：严禁 push、main/stash 不动、持久化优先 localStorage 避免 DDL、不动发版/版本号。（【2026-11-24 更新】波2 已收口：`f81d6f0a`/`f1346d65`，见上方波2 交接段。）
 
 ---
 
