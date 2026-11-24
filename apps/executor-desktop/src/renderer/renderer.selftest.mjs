@@ -2,11 +2,16 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname);
-// 样式已拆分为四文件（tokens → base → components → pages，与 main.tsx 的
-// import 顺序一致）；拼接后作为整体 css 参与下方全部断言。
-const css = ['tokens.css', 'base.css', 'components.css', 'pages.css']
-  .map((file) => readFileSync(resolve(root, 'styles', file), 'utf8'))
-  .join('\n');
+// 样式已拆分为四基础文件 + 三份 V5 页面样式（顺序与 main.tsx 的 import 一致）；
+// 全部纳入守卫，避免 V5 新样式成为无人检查的裸色飞地。
+const cssFiles = [
+  'tokens.css', 'base.css', 'components.css', 'pages.css',
+  'pages/config-v5.css', 'pages/apps-v5.css', 'pages/history-v5.css',
+];
+const cssByFile = new Map(
+  cssFiles.map((file) => [file, readFileSync(resolve(root, 'styles', file), 'utf8')]),
+);
+const css = [...cssByFile.values()].join('\n');
 const app = readFileSync(resolve(root, 'App.tsx'), 'utf8');
 const pages = ['AppsPage.tsx', 'ConfigPage.tsx', 'HistoryPage.tsx', 'StatusWindow.tsx', 'Wizard.tsx']
   .map((file) => readFileSync(resolve(root, 'pages', file), 'utf8'));
@@ -16,6 +21,8 @@ const requiredTokens = [
   // 主 CTA 绿锚定 green-700 #15803d（白字 4.6:1 过 AA，见 MASTER.md DOC-01）。
   '--color-primary: #15803d',
   '--color-accent: #15803d',
+  // 白字前景锚点：按钮对比度守卫改成引用该令牌后，仍需钉住浅色主题下它是白色。
+  '--color-on-primary: #ffffff',
   '--color-background: #f5f6f8',
   '--color-foreground: #1a2230',
   '--space-md: 16px',
@@ -29,6 +36,26 @@ const requiredTokens = [
 ];
 for (const token of requiredTokens) {
   if (!css.includes(token)) throw new Error(`missing design token: ${token}`);
+}
+// D-B：V5 三文件纳入同一守卫后，非令牌文件不得残留裸色（去注释后判，
+// 解释性注释里引用的旧色值不算）。tokens.css 是唯一允许定义色值的地方。
+const bareColorRules = [
+  ['rgb(255 255 255', /rgb\(\s*255\s+255\s+255\b/i],
+  ['rgb(247 248 250', /rgb\(\s*247\s+248\s+250\b/i],
+  ['rgb(220 38 38', /rgb\(\s*220\s+38\s+38\b/i],
+  ['rgb(37 99 235', /rgb\(\s*37\s+99\s+235\b/i],
+  ['rgb(16 24 40', /rgb\(\s*16\s+24\s+40\b/i],
+  ['hex', /#[0-9a-f]{3,8}\b/i],
+];
+for (const [file, raw] of cssByFile) {
+  if (file === 'tokens.css') continue;
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const [name, pattern] of bareColorRules) {
+    const hit = pattern.exec(src);
+    if (hit) {
+      throw new Error(`样式守卫：${file} 仍有裸色 ${name}（${hit[0]}）——颜色只能来自 tokens.css 令牌`);
+    }
+  }
 }
 if (!css.includes('@media (prefers-reduced-motion: reduce)')) {
   throw new Error('missing reduced-motion guard');
@@ -46,9 +73,9 @@ if (!css.includes('.btn-primary') || !css.includes('.btn-success') || !css.inclu
 // 主 CTA 为 green-700 #15803d 实底 + 白字（4.6:1 过 WCAG AA，MASTER.md
 // DOC-01 结论）；红底 #dc2626 + 白字同为 AA。断言意图是"对比度合规"。
 const btnForegrounds = [
-  { cls: 'btn-primary', want: '#ffffff' },
-  { cls: 'btn-success', want: '#ffffff' },
-  { cls: 'btn-danger', want: '#fff' },
+  { cls: 'btn-primary', want: 'var(--color-on-primary)' },
+  { cls: 'btn-success', want: 'var(--color-on-primary)' },
+  { cls: 'btn-danger', want: 'var(--color-on-primary)' },
 ];
 for (const { cls, want } of btnForegrounds) {
   // 选择器可能是分组形态（`.btn-primary,\n.btn-success {`），正则需允许类名后
@@ -536,6 +563,7 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
     eq(gg.known, false, `max=${String(badMax)} 时必须 known=false`);
     eq(gg.percent, 0, `max=${String(badMax)} 时不得画进度`);
     eq(gg.running, 3, `max 不可用时 running 仍要如实显示`);
+    eq(gg.state, 'unknown', `max=${String(badMax)} 时不得把任意 running 判成 over（上限未知无法判超额）`);
   }
   // running 脏值 → 0（与既有 runningCount 的 ?? [] 口径一致）
   for (const badRunning of [null, undefined, NaN, '', -1]) {
@@ -577,6 +605,17 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
   }
   if (!/\.today-summary-gauge\.is-over/.test(css)) {
     throw new Error('2.1: 超额态必须有独立样式（否则超额与打满视觉上无从区分）');
+  }
+  // T3：上限未知必须渲染 is-unknown class（中性色规则在 styles 里由 D-B 提供），
+  // 且 full/over 标签必须先过 gauge.known 守卫——否则「3/—」还会被染红标「超额」。
+  if (!status.includes('today-summary-gauge is-${gauge.state}')) {
+    throw new Error('T3: 并发条必须把 gauge.state 映射成 is-* class（含 is-unknown）');
+  }
+  if (!/\{gauge\.known && \(gauge\.state === 'full' \|\| gauge\.state === 'over'\)\s*&&/.test(status)) {
+    throw new Error("T3: full/over 标签渲染必须先判 gauge.known（上限未知时不得标「已打满/已超额」）");
+  }
+  if (!css.includes('.today-summary-gauge.is-unknown')) {
+    throw new Error('T3: 缺少 .today-summary-gauge.is-unknown 中性色样式');
   }
 }
 
@@ -968,6 +1007,35 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
   }
 }
 
+// ── T2/T4：历史读取失败必须进「未知确认」，短任务不得谎报 1m ──────────
+{
+  const statusPage = pages[3];
+  if (!statusPage.includes('stopActionGate(allRecords)')
+    || !statusPage.includes("if (stopGate !== 'empty')")) {
+    throw new Error('T2: 停止执行器必须走 stopActionGate 三路门禁（unknown/running 都先确认）');
+  }
+  if (!statusPage.includes('historyUnknown')
+    || !statusPage.includes("t('status.stopConfirmUnknownDesc')")) {
+    throw new Error('T2: 任务列表读不到的确认态必须给出专门说明文案');
+  }
+  if (/function formatRunningMs\(/.test(statusPage)
+    || !statusPage.includes('formatRunningMs,')) {
+    throw new Error('T4: 时长格式化必须只有 status-helpers 一份实现（页面不得再内联）');
+  }
+  const i18nSrc = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
+  for (const key of [
+    'status.stopConfirmUnknownDesc', 'appx.runningUnknownStatus',
+    'appx.runningUnknownAlert', 'appx.runningUnknownRetry', 'appx.deleteBlockedUnknown',
+  ]) {
+    const zhIdx = i18nSrc.indexOf('  zh: {');
+    const enIdx = i18nSrc.indexOf('  en: {');
+    if (!i18nSrc.slice(zhIdx, enIdx).includes(`'${key}':`)
+      || !i18nSrc.slice(enIdx).includes(`'${key}':`)) {
+      throw new Error(`T1/T2: i18n 双语表缺键 ${key}`);
+    }
+  }
+}
+
 // ── NETOPT-6⑥：渲染树必须有全局 ErrorBoundary 兜底 ─────────────────
 // 背景：main.tsx 此前直接 render(<App />)，全 renderer 零边界——任一组件
 // 渲染期抛错（EXP-09 记录过该事故形态：preload 缺方法同步抛 → 整树卸载
@@ -1116,8 +1184,18 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
   if (!/disabled=\{blocked \|\| groupBusy \|\| Boolean\(pendingConfirm\)\}/.test(appsPage)) {
     throw new Error('报障回归：删除按钮的禁用条件未同时覆盖 isCurrent/isRunning/确认态');
   }
-  if (!/const blocked = entry\.isCurrent \|\| isRunning;/.test(appsPage)) {
-    throw new Error('报障回归：删除按钮的禁用条件未同时覆盖 isCurrent 与 isRunning');
+  // T1：unknown 期间所有版本按「运行状态未知」处理——blocked 判定必须走
+  // runningActionGate（而不是裸 isRunning），否则读失败会重新解锁删除/卸载。
+  if (!/const blocked = entry\.isCurrent \|\| gate\.blockedByRunning\(entry\.deploymentId\);/.test(appsPage)) {
+    throw new Error('T1: 删除按钮禁用判定必须走 gate.blockedByRunning（运行态未知时保守禁用）');
+  }
+  if (!appsPage.includes('runningActionGate(running, runningUnknown)')
+    || !appsPage.includes('firstDeletable(group, running, runningGate.unknown)')) {
+    throw new Error('T1: 页面未把「运行态未知」接入删除/卸载门禁（菜单入口会漏）');
+  }
+  if (!/\{runningUnknown && \(\s*<div className="apps-error" role="alert"/.test(appsPage)
+    || !appsPage.includes("t('appx.runningUnknownRetry')")) {
+    throw new Error('T1: 运行态读取失败必须渲染 role=alert 提示 + 原位重试入口');
   }
   // 运行态必须真的从执行器取（getRunningApps），否则「运行中」徽标无从判断，
   // 用户会把「当前版本」（current 指向）误当成"应用在跑"。
@@ -2123,7 +2201,7 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
     }
   }
   // C3 channel 必须是**字面量**：把 channel 写成变量就是一个任意 channel 透传。
-  for (const method of ['invoke', 'on', 'removeListener']) {
+  for (const method of ['invoke', 'on', 'removeListener', 'sendSync']) {
     const total = (preloadCode.match(new RegExp('ipcRenderer\\.' + method + '\\(', 'g')) ?? []).length;
     const literal = (preloadCode.match(new RegExp('ipcRenderer\\.' + method + '\\(\\s*[\\x27"]', 'g')) ?? []).length;
     if (total !== literal) {
@@ -2133,14 +2211,26 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
       );
     }
   }
-  if (/ipcRenderer\.(?:send|sendSync)\s*\(/.test(preloadCode)) {
-    throw new Error('R102-A1/C: preload 不得使用 ipcRenderer.send/sendSync（单向通道由主进程按需反向推送）');
+  // C3b：send 全禁；sendSync 只允许 0 或 1 处精确白名单
+  // `ipcRenderer.sendSync('theme:boot-snapshot')`——preload 阶段同步取主题快照，
+  // 供首帧防闪（config:get 是异步，拿不到同步值）。其余 sendSync 一律 fail-closed。
+  if (/ipcRenderer\.send\s*\(/.test(preloadCode)) {
+    throw new Error('R102-A1/C: preload 不得使用 ipcRenderer.send（单向通道由主进程按需反向推送）');
+  }
+  const sendSyncTotal = (preloadCode.match(/ipcRenderer\.sendSync\s*\(/g) ?? []).length;
+  const bootSyncCalls = [...preloadCode.matchAll(/ipcRenderer\.sendSync\(\s*'([^']+)'/g)];
+  if (sendSyncTotal > 1 || bootSyncCalls.length !== sendSyncTotal
+    || (bootSyncCalls.length === 1 && bootSyncCalls[0][1] !== 'theme:boot-snapshot')) {
+    throw new Error(
+      "R102-A1/C: sendSync 只允许 0 或 1 处 ipcRenderer.sendSync('theme:boot-snapshot')" +
+      '（字面量 channel，禁止 ipcRenderer.send、禁止第二处/变量 channel）',
+    );
   }
   // C4 每个 channel 都必须在主进程源码里真实存在（防桥变成"死面/幻面"：
   // 页面能调、主进程无 handler 的通道既误导审计又掩盖改名回归）。
   {
     const channels = [...new Set(
-      [...preloadCode.matchAll(/ipcRenderer\.(?:invoke|on|removeListener)\(\s*'([^']+)'/g)].map((m) => m[1]),
+      [...preloadCode.matchAll(/ipcRenderer\.(?:invoke|on|removeListener|sendSync)\(\s*'([^']+)'/g)].map((m) => m[1]),
     )];
     const mainSources = collectSources(resolve(root, '..', 'main'))
       .filter((file) => !file.endsWith('.selftest.ts'))
@@ -2238,4 +2328,4 @@ await import('./pages/config/agent-matrix.selftest.mjs');
 await import('./pages/history/history-nav.selftest.mjs');
 await import('./pages/status/status-helpers.selftest.mjs');
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit, R7-B config-io layer, R-UX apps/config/history/status pure-logic selftests passed');
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit (theme sync sendSync whitelist), R7-B config-io layer, R-UX apps/config/history/status pure-logic selftests, T1/T2/T3/T4 read-failure honesty guards passed');

@@ -32,6 +32,8 @@ export type AppGroup = {
 
 export type RunningMap = Record<string, { pid?: number; running?: boolean }>;
 export type RunStatus = 'running' | 'scheduled' | 'stopped';
+/** 运行态读取失败时的第四档：不是「已停止」，而是「不知道」。 */
+export type DisplayRunStatus = RunStatus | 'unknown';
 
 const APP_FILTERS: readonly AppFilter[] = [
   'all',
@@ -87,12 +89,36 @@ export function runModePrefix(group: AppGroup): string {
   return mode && mode !== '-' && mode !== '—' ? `${mode} · ` : '';
 }
 
-export function firstDeletable(group: AppGroup, running: RunningMap): AppEntry | null {
+/** 运行态未知时保守返回 null：未知 ≠ 没有可删版本。 */
+export function firstDeletable(group: AppGroup, running: RunningMap, unknown = false): AppEntry | null {
+  if (unknown) return null;
   return group.entries.find(entry =>
     entry.releaseKey
     && !entry.isCurrent
     && !running[entry.deploymentId]?.running,
   ) ?? null;
+}
+
+/**
+ * T1：运行态读取失败 ≠ 全部停止。
+ * unknown=true 时：不谎报「运行中」徽标、破坏性操作一律禁用、状态列显式
+ * 显示「运行状态未知」（不冒充「已停止 / 定时」）。判定集中在此处，
+ * 页面只消费结果，不复制第二套 unknown 分支。
+ */
+export interface RunningActionGate {
+  unknown: boolean;
+  isRunning(deploymentId: string): boolean;
+  blockedByRunning(deploymentId: string): boolean;
+  displayStatusOf(group: AppGroup): DisplayRunStatus;
+}
+
+export function runningActionGate(running: RunningMap, unknown: boolean): RunningActionGate {
+  return {
+    unknown,
+    isRunning: (deploymentId) => !unknown && Boolean(running[deploymentId]?.running),
+    blockedByRunning: (deploymentId) => unknown || Boolean(running[deploymentId]?.running),
+    displayStatusOf: (group) => (unknown ? 'unknown' : groupStatus(group)),
+  };
 }
 
 export function sortAriaOf(

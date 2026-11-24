@@ -24,11 +24,12 @@ import {
   countAppFilters,
   firstDeletable,
   formatDeployTime,
-  groupStatus,
   runModePrefix,
+  runningActionGate,
   sortAriaOf,
   type AppGroup,
-  type RunStatus,
+  type DisplayRunStatus,
+  type RunningActionGate,
   type RunningMap,
 } from './apps/apps-helpers';
 
@@ -49,10 +50,11 @@ type AppEntry = {
   runMode: string | null;
 };
 
-const STATUS_LABEL_KEY: Record<RunStatus, string> = {
+const STATUS_LABEL_KEY: Record<DisplayRunStatus, string> = {
   running: 'appx.status.running',
   scheduled: 'appx.status.scheduled',
   stopped: 'appx.status.stopped',
+  unknown: 'appx.runningUnknownStatus',
 };
 
 const INITIAL_RELEASE_COUNT = 3;
@@ -300,6 +302,8 @@ interface ReleaseListProps {
   limit: number;
   initialLimit: number;
   running: RunningMap;
+  /** T1：运行态未知时统一由它给「徽标不谎报 + 破坏性操作禁用」的判定。 */
+  gate: RunningActionGate;
   busy: string | null;
   pendingConfirm: PendingConfirm | null;
   onViewLog: (entry: AppEntry) => void;
@@ -314,6 +318,7 @@ function ReleaseList({
   limit,
   initialLimit,
   running,
+  gate,
   busy,
   pendingConfirm,
   onViewLog,
@@ -326,9 +331,9 @@ function ReleaseList({
   return (
     <>
       {entries.slice(0, limit).map(entry => {
-        const isRunning = Boolean(running[entry.deploymentId]?.running);
+        const isRunning = gate.isRunning(entry.deploymentId);
         const pid = running[entry.deploymentId]?.pid;
-        const blocked = entry.isCurrent || isRunning;
+        const blocked = entry.isCurrent || gate.blockedByRunning(entry.deploymentId);
         const label = versionLabel(entry);
         return (
           <div key={entry.releaseKey || entry.deploymentId} className="app-deployment-row appx-release-row">
@@ -368,9 +373,11 @@ function ReleaseList({
                     onClick={() => onRequestDelete(appId, entry, label)}
                     title={entry.isCurrent
                       ? t('apps.deleteBlockedCurrent')
-                      : isRunning
-                        ? t('apps.deleteBlockedRunning')
-                        : t('apps.deleteAllowedTitle')}
+                      : gate.unknown
+                        ? t('appx.deleteBlockedUnknown')
+                        : isRunning
+                          ? t('apps.deleteBlockedRunning')
+                          : t('apps.deleteAllowedTitle')}
                     aria-label={t('apps.deleteAria', label)}
                   >{busy === entry.appId + entry.releaseKey ? '...' : <Icon name="trash" />}</button>
                 </>
@@ -432,6 +439,13 @@ export default function AppsPage() {
   // 而不是只看到「当前版本」（current 指向 ≠ 进程活着——daemon 启动失败时
   // current 已经切过去但进程没起来）。
   const [running, setRunning] = useState<RunningMap>({});
+  // T1：getRunningApps 读失败 = 运行态未知，绝不静默降级成「全部停止」
+  // （那样会解锁删除/卸载并让状态列谎报「已停止」）。
+  const [runningUnknown, setRunningUnknown] = useState(false);
+  const runningGate = useMemo(
+    () => runningActionGate(running, runningUnknown),
+    [running, runningUnknown],
+  );
 
   const refresh = useCallback(async (background: boolean = false) => {
     // P3-8：in-flight 去重——10s 轮询、visibilitychange/MutationObserver kick
@@ -453,13 +467,16 @@ export default function AppsPage() {
       if (!background) setLoading(false);
       refreshInFlight.current = false;
     }
-    // 运行态单独取：它依赖执行器进程在线，拿不到就保持空（UI 不显示"运行中"，
-    // 而不是谎报）。**绝不因它失败而把整个列表标记为错误**——列表本身是好的。
+    // 运行态单独取：它依赖执行器进程在线，拿不到就保持空（UI 不显示"运行中"
+    // 徽标），但必须把「未知」事实显性化并保守禁用破坏性操作——绝不因为
+    // 读不到就谎报「全部停止」。**绝不因它失败而把整个列表标记为错误**。
     try {
       const runningMap = await window.electronAPI.getRunningApps();
       setRunning(runningMap ?? {});
+      setRunningUnknown(false);
     } catch {
       setRunning({});
+      setRunningUnknown(true);
     }
   }, []);
 
@@ -684,6 +701,7 @@ export default function AppsPage() {
           limit={limit}
           initialLimit={initialLimit}
           running={running}
+          gate={runningGate}
           busy={busy}
           pendingConfirm={pendingConfirm}
           onViewLog={setViewing}
@@ -726,7 +744,11 @@ export default function AppsPage() {
   }
 
   function renderDrawer(group: AppGroup) {
-    const status = groupStatus(group);
+    const status = runningGate.displayStatusOf(group);
+    // AppsDrawer 不在本切片写域，其 status class 仍只收三值；未知态借 stopped
+    // 的中性 class，文案由 statusLabel 明确标为「运行状态未知」，不谎报已停止。
+    const drawerStatusClass: 'running' | 'scheduled' | 'stopped' =
+      status === 'unknown' ? 'stopped' : status;
     return (
       <AppsDrawer
         group={{
@@ -739,12 +761,12 @@ export default function AppsPage() {
           versionCount: group.versionCount,
           runModePrefix: runModePrefix(group),
         }}
-        status={status}
+        status={drawerStatusClass}
         statusLabel={t(STATUS_LABEL_KEY[status])}
         avatarClass={avatarClassName(group.name, group.appId, 'lg')}
         avatarInitialText={avatarInitial(group.name)}
         busy={busy}
-        hasPendingConfirm={Boolean(pendingConfirm)}
+        hasPendingConfirm={Boolean(pendingConfirm) || runningGate.unknown}
         closeRef={drawerCloseRef}
         confirmBar={confirmInDrawer ? renderConfirmBar() : null}
         releases={renderReleases(group)}
@@ -822,6 +844,17 @@ export default function AppsPage() {
       {error && (
         <div className="apps-error" role="alert">
           <Icon name="warning" className="icon-xs" /> {t('apps.loadError', error)}
+        </div>
+      )}
+
+      {/* T1：运行态读取失败必须显性化 + 原位重试；未知期间所有版本按
+          「运行状态未知」处理，删除/卸载按钮保守禁用（真值源 runningGate）。 */}
+      {runningUnknown && (
+        <div className="apps-error" role="alert">
+          <Icon name="warning" className="icon-xs" /> {t('appx.runningUnknownAlert')}
+          <button type="button" className="btn btn-sm" onClick={() => void refresh()}>
+            {t('appx.runningUnknownRetry')}
+          </button>
         </div>
       )}
 
@@ -905,11 +938,11 @@ export default function AppsPage() {
               <tbody>
                 {filteredGroups.map(group => {
                   const { appId, name } = group;
-                  const status = groupStatus(group);
+                  const status = runningGate.displayStatusOf(group);
                   const logEntry = group.current?.hasLog
                     ? group.current
                     : group.entries.find(entry => entry.hasLog) ?? null;
-                  const deletable = firstDeletable(group, running);
+                  const deletable = firstDeletable(group, running, runningGate.unknown);
                   return (
                     <tr
                       key={appId}
@@ -1019,7 +1052,7 @@ export default function AppsPage() {
                               <button
                                 type="button"
                                 className="appx-menu-item appx-menu-item-danger"
-                                disabled={Boolean(pendingConfirm) || Boolean(busy)}
+                                disabled={runningGate.unknown || Boolean(pendingConfirm) || Boolean(busy)}
                                 onClick={event => {
                                   event.currentTarget.closest('details')?.removeAttribute('open');
                                   setPendingConfirm({ kind: 'uninstall', appId, name: name ?? appId.slice(0, 8), count: group.entries.length });
@@ -1038,7 +1071,7 @@ export default function AppsPage() {
         <div className="appx-compact-list">
           {filteredGroups.map(group => {
             const { appId, name } = group;
-            const status = groupStatus(group);
+            const status = runningGate.displayStatusOf(group);
             const currentVersion = group.current?.version ?? null;
             return (
               <button

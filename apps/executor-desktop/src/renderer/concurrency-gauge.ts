@@ -15,8 +15,8 @@
  *     环境变量同源）。
  */
 
-/** 并发表的饱和度分档：idle 空转 / ok 有余 / warn 逼近 / full 打满 / over 超额。 */
-export type ConcurrencyState = 'idle' | 'ok' | 'warn' | 'full' | 'over';
+/** 并发表饱和度分档：unknown 上限未知 / idle 空转 / ok 有余 / warn 逼近 / full 打满 / over 超额。 */
+export type ConcurrencyState = 'unknown' | 'idle' | 'ok' | 'warn' | 'full' | 'over';
 
 export interface ConcurrencyGauge {
   /** 正在运行的任务数（非法输入归一为 0）。 */
@@ -47,8 +47,10 @@ export const CONCURRENCY_WARN_RATIO = 0.8;
 export function concurrencyGauge(running: unknown, max: unknown): ConcurrencyGauge {
   const r = toNonNegativeInt(running);
   const m = toNonNegativeInt(max);
+  // T3：上限未知时一律 unknown——running>0 也不能判定「超额」（那需要上限），
+  // 渲染层据此套 is-unknown 并用 --text3 中性色，不画进度条/不打 full/over 标签。
   if (m <= 0) {
-    return { running: r, max: 0, percent: 0, state: r > 0 ? 'over' : 'idle', known: false };
+    return { running: r, max: 0, percent: 0, state: 'unknown', known: false };
   }
   const percent = Math.min(100, Math.max(0, Math.round((r / m) * 100)));
   let state: ConcurrencyState;

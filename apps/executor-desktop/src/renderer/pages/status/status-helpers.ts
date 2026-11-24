@@ -1,6 +1,18 @@
 import { useEffect, useRef } from 'react';
 
 /**
+ * T2：历史记录读取失败（null）≠ 确认无运行中任务（[]）。
+ * 停止执行器必须三路分流：unknown → 加确认（说明读不到列表）；
+ * running → 原确认；empty → 单击即停。绝不把 unknown 当成 empty 直接停。
+ */
+export type StopActionGate = 'unknown' | 'running' | 'empty';
+
+export function stopActionGate(records: ReadonlyArray<{ status?: string }> | null): StopActionGate {
+  if (records === null) return 'unknown';
+  return records.some((record) => record?.status === 'running') ? 'running' : 'empty';
+}
+
+/**
  * 格式化右栏「最近失败」时间：
  *  · 今日显示 `HH:mm`；
  *  · 跨日（非今日）显示 `MM/DD HH:mm`，避免历史记录排在今日下方看似乱序；
@@ -53,6 +65,17 @@ export function formatFailureTitle(
 /** 构造活动条运行中任务的完整 tooltip（任务名 + 运行时长）。 */
 export function formatRunningTaskTitle(name: string, durationText: string | null): string {
   return durationText ? `${name} · ${durationText}` : name;
+}
+
+/**
+ * T4：运行中任务时长。不足 1 分钟显示 `<1m`（原实现 Math.max(1, ...) 把
+ * 40s 谎报成 1m）；≥60s 保留既有 `Nm` / `Nh Nm` 口径。
+ */
+export function formatRunningMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 60_000) return '<1m';
+  const totalMin = Math.floor(ms / 60_000);
+  if (totalMin < 60) return `${totalMin}m`;
+  return `${Math.floor(totalMin / 60)}h ${totalMin % 60}m`;
 }
 
 /** 格式化活动条单个运行中任务的持续时长文案。 */

@@ -14,7 +14,7 @@ import { createCfgTexts, resolveRendererLocale } from '../i18n';
 // 都只在一处），抽到 concurrency-gauge.ts 由 test:renderer 真执行断言。
 import { concurrencyGauge } from '../concurrency-gauge';
 import RunningTaskChip from './status/RunningTaskChip';
-import { formatCopyLiveText, formatFailureTime, formatFailureTitle, formatRunningDuration, useStatusCtrlF } from './status/status-helpers';
+import { formatCopyLiveText, formatFailureTime, formatFailureTitle, formatRunningDuration, formatRunningMs, formatRunningTaskTitle, stopActionGate, useStatusCtrlF } from './status/status-helpers';
 
 const locale = resolveRendererLocale(() => navigator.language);
 const t = createCfgTexts(locale);
@@ -332,13 +332,6 @@ interface TodaySummary {
   runningTasks: Array<{ id: string; name: string; since: number | null }>;
 }
 
-/** 运行中时长（分钟级，随 60s 轮询刷新；<1h 显示 Nm，跨小时 h m）。 */
-function formatRunningMs(ms: number): string {
-  const totalMin = Math.max(1, Math.floor(ms / 60_000));
-  if (totalMin < 60) return `${totalMin}m`;
-  return `${Math.floor(totalMin / 60)}h ${totalMin % 60}m`;
-}
-
 function summarizeToday(records: TodaySummaryRecord[]): TodaySummary | null {
   const since = new Date();
   since.setHours(0, 0, 0, 0);
@@ -408,6 +401,10 @@ export default function StatusWindow({ active }: { active: boolean }) {
     () => (allRecords ?? []).filter((r) => r?.status === 'running').length,
     [allRecords],
   );
+  // T2：null = 读不到历史（未知）；[] = 确认无任务。停止动作必须三路分流，
+  // 读失败时绝不能按「0 个运行中任务」直接停。
+  const historyUnknown = allRecords === null;
+  const stopGate = stopActionGate(allRecords);
   // 2.1：并发饱和度（running/max）。两个数都来自**已有**通道，无新 IPC：
   //   · running ← 上面那份全量 records（同一份数据，不再发一次 getHistory）；
   //   · max     ← executor:status 已返回的 config.maxConcurrentTasks（与设置页
@@ -664,8 +661,9 @@ export default function StatusWindow({ active }: { active: boolean }) {
   // C-01：停止入口。存在运行中任务时先弹页内确认条，否则维持单击即停（现状）。
   // 确认条只包在外层——handleStop 原函数体（F-22 的 try/finally/页内错误条）
   // 未改写，确认停止后的错误/复位语义与直接停止完全一致。
+  // T2：三路——unknown（读不到任务列表，先确认）/ running（原确认）/ empty（直接停）。
   function requestStop() {
-    if (runningCount > 0) {
+    if (stopGate !== 'empty') {
       setConfirmingStop(true);
       return;
     }
@@ -878,7 +876,9 @@ export default function StatusWindow({ active }: { active: boolean }) {
           <ConfirmBar
             titleId="status-stop-title"
             title={t('status.stopConfirmTitle')}
-            description={t('status.stopConfirmDesc', runningCount)}
+            description={historyUnknown
+              ? t('status.stopConfirmUnknownDesc')
+              : t('status.stopConfirmDesc', runningCount)}
             confirmLabel={t('status.stopConfirmOk')}
             variant="danger"
             confirmDisabled={acting}
@@ -942,7 +942,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
                       aria-label={t('status.concurrencyAria', gauge.running, gauge.max, gauge.percent)}
                     />
                   )}
-                  {(gauge.state === 'full' || gauge.state === 'over') && (
+                  {gauge.known && (gauge.state === 'full' || gauge.state === 'over') && (
                     <span className="today-summary-gauge-tag">
                       {gauge.state === 'over' ? t('status.concurrencyOver') : t('status.concurrencyFull')}
                     </span>

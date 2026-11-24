@@ -5,8 +5,10 @@ import {
   formatFailureTitle,
   formatFullDateTime,
   formatRunningDuration,
+  formatRunningMs,
   formatRunningTaskTitle,
   isEditableTarget,
+  stopActionGate,
 } from './status-helpers.ts';
 
 // 1. formatFailureTime: 今日只显 HH:mm，跨日补 MM/DD HH:mm
@@ -65,5 +67,22 @@ assert.equal(isEditableTarget({ tagName: 'DIV', isContentEditable: true }), true
 assert.equal(isEditableTarget({ tagName: 'DIV', isContentEditable: false }), false);
 assert.equal(isEditableTarget({ tagName: 'BUTTON' }), false);
 assert.equal(isEditableTarget(null), false);
+
+// 6. T2 stopActionGate：null(未知) / [] / running 三路必须分开
+assert.equal(stopActionGate(null), 'unknown', '读取失败必须 unknown（不得按空任务直接停）');
+assert.equal(stopActionGate([]), 'empty', '确认读到空列表才允许直接停');
+assert.equal(stopActionGate([{ status: 'success' }]), 'empty', '无 running 记录 → empty');
+assert.equal(stopActionGate([{ status: 'failed' }, { status: 'running' }]), 'running', '存在 running 记录 → running');
+assert.equal(stopActionGate([null, {}]), 'empty', '脏记录不得误判 running');
+
+// 7. T4 formatRunningMs：<60s 不谎报 1m；≥60s 保留原 Nm / Nh Nm
+assert.equal(formatRunningMs(0), '<1m');
+assert.equal(formatRunningMs(59_000), '<1m', '59 秒不得显示 1m');
+assert.equal(formatRunningMs(59_999), '<1m', '临界值仍不足 1 分钟');
+assert.equal(formatRunningMs(60_000), '1m', '整 1 分钟起显示 1m');
+assert.equal(formatRunningMs(65_000), '1m');
+assert.equal(formatRunningMs(3_600_000), '1h 0m');
+assert.equal(formatRunningMs(3_720_000), '1h 2m');
+assert.equal(formatRunningMs(Number.NaN), '<1m', '脏值不谎报时长');
 
 console.log('status-helpers selftest: all assertions passed');
