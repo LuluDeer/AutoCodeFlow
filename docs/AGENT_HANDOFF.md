@@ -3,6 +3,20 @@
 > **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-23
 > 当前治理分支为 `chore/repo-governance-2026-11`（基于 `origin/main` `v2.3.0`，`develop` 已 fast-forward 同步至 `origin/main`）。其余轮次是历史记录，并非当前待办。接手时先核对工作树和测试结果。
 
+## 本轮（2026-11-24）：恢复 develop-centric 分支拓扑（撤销自动删分支误配）
+
+**问题**：11-22 治理开了仓库级 `delete_branch_on_merge=true`，该设置无差别删除 PR 的 head 分支——develop 作为 develop→main PR 的 head 被自动删（PR #205/#206 合并后各删一次）。后果：ci.yml 的 `push: branches:[develop]` 触发器永久失效，全部 CI 只能靠 PR/schedule；`admin-api-coverage` 门控含 `github.ref == 'refs/heads/develop'`，PR 路径下 skipped，覆盖率门只剩 nightly 兜底。这不是设计变更，是与 [CONTRIBUTING.md](../CONTRIBUTING.md) §二 / [docs/development.md](development.md) §352 的 develop-centric 约定直接冲突的配置错误。
+
+**治理（方案 A）**：
+1. **止血**：从 main（`de49cf9e`）重建 `origin/develop`（纯快进、零风险）。push 立即触发 CI run `45315103515`，实证 `admin-api-coverage` 从 skipped 变 in_progress。
+2. **根因修复（需 admin 权限，待用户操作）**：给 develop 加 GitHub 分支保护、勾选「不允许删除」。GitHub 官方文档明确：分支保护规则可阻止 auto-delete 删除该分支。这样保留 auto-delete 对 feature 分支的自动清理，同时 develop 受保护不被删。**当前 PAT 读 branch protection 返回 403，这一步必须由仓库 admin 在 Settings → Branches 完成。**
+3. **防复发闸**：ci.yml 新增 `branch-topology-guard` job（门控 `github.event_name != 'push'`——develop 被删时 PR/schedule 仍触发，挂在 push:develop 上会自我失明）：`git ls-remote --heads origin develop` 验远端分支存在 + grep ci.yml 验 `push.branches` 含 develop，任一不成立即红。workflow 四守卫（YAML 10 文件 / action 112 处全 SHA / runner 63 处 / guards-wired 105）全绿。
+4. **11-22 交接标注**：原「开启合并自动删分支」条目已在本段开头标注为误配并说明撤销路径。
+
+**待办（明确）**：仓库 admin 给 develop 配「不允许删除」分支保护——在 GitHub UI：Settings → Branches → Add branch ruleset / Add branch protection rule → Branch name pattern 填 `develop` → 勾选「Do not allow this branch to be deleted」（或 Ruleset 的 Deletion 限制）。配完后 develop→main PR 合并将不再删 develop。若该步未做，下次 develop→main PR 合并后 develop 会再次消失，branch-topology-guard 会在后续 PR/schedule 报警。
+
+---
+
 ## 本轮（2026-11-23）：中台与桌面客户端 UI/UX 细节优化收口（3 阶段多 Agent 流水线）
 
 **编排方式**：Stage 1 四路只读审计（web-visual / web-code / desktop-visual / desktop-code）→ Stage 2 五路零写域冲突并行修复（brand-gradient / audit-i18n / test-alignment / log-loading-race / desktop-wiring）→ Stage 3 独立只读复核（review-gate）+ 主控真机浏览器验收。全部产出落在工作树，**未提交、未 push**。
