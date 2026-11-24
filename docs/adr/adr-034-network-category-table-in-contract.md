@@ -1,6 +1,6 @@
 # ADR-034: 网络类别表收敛到契约——三份手抄表 + 一层运行时别名，改为编译期同源
 
-状态：Proposed（设计已定稿；**本轮零代码、零契约改动**）
+状态：Accepted（已落地；2026-11-24 核实回写，见文末落地核实注记）
 - 日期：2026-11-06
 - 决策来源：R70（承接 R67-W5 的可行性勘察 `artifacts/autonomy/R67-node/parity-plan.md`）
 - 前置：[ADR-029](adr-029-metadata-addresses-outbound-deny.md)（恒拒表**已**用「契约 → 三端生成物」这套做法跑通，本 ADR 把同款做法推广到**类别表**）、[ADR-032](adr-032-python-switch-posture-parity.md)、[ADR-033](adr-033-admin-webhook-posture-parity.md)（两轮把三端的**决策**拉齐）
@@ -243,3 +243,11 @@ R77/W5 把 node 的分类与开关表搬进 `apps/executor-node/src/lib/address-
 ### 9.5 对 §5 步骤 2 的修订
 
 步骤 2（node 两端）的「做」增加一条：**先改签名再换来源**——给 `categoryAllowed` 加 `unlockedUnderSwitch` 入参、`ssrf-guard` 包装传生成物；同批加 9.4 的两条断言。其余判据（`check:ssrf-three-way-matrix` 差异仍为 4 条、node 定向 jest 绿）不变。
+
+## 10. 落地核实与状态回写
+
+2026-11-24 核实：已落地，状态回写 Accepted（CATEGORY_ALIASES 清零 + networkPolicy 契约段在场）。
+
+- 契约事实源在场：`packages/executor-protocol/protocol.json:2995` 的 `networkPolicy` 段含 `categories`（`:3076`，`order` / `allowedUnderPrivateNetwork` / `endLabels`）。
+- 三端生成物在场：`apps/executor-node/src/generated/protocol-categories.ts`、`apps/admin-api/src/generated/protocol-categories.ts`、`apps/executor-python/generated/protocol_categories.py`。
+- 手抄别名表清零：`CATEGORY_ALIASES` 在 admin-web / admin-api / executor-node / packages 全仓零命中；本 ADR 的落地判定以四端为准（`scripts/ssrf-category-matrix.mjs` 中残留的同名归一表属脚本域、非三端手抄表，按 §2.4 的语义已不参与类别判定源）。

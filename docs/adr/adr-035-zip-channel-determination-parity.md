@@ -1,6 +1,6 @@
 # ADR-035: zip 渠道判定的两端对齐——歧义行归谁
 
-状态：Proposed（设计已定稿；**本轮零实现改动**，只出 ADR）
+状态：Accepted（R76 已实施；2026-11-24 核实回写，见文末落地核实注记）
 - 日期：2026-11-06
 - 决策来源：R75（承接 R74 中 W4 实测出的两端口径分叉）
 - 相关 ADR：[ADR-020](adr-020-agent-boundary-model.md)（工具/渠道的显式信号优先）、[ADR-026](adr-026-conditional-state-writes.md)（条件化写）
@@ -171,3 +171,13 @@ else:
 - 契约与设计：`docs/design/python-task-upload-and-multiversion/CONTRACT.md`（§2.1 `tasks.codeSource`、§2.4 admin 派发与 python 下载）、`packages/executor-protocol/protocol.json:1398`（`task.codeSource` 的 schema 段）
 - 既有实现：`apps/admin-api/src/modules/executor/executor.service.ts:5465`（admin 判定）、`apps/executor-python/routers/execute.py:2318`（python 判定）、`apps/executor-python/routers/execute.py:2222`（python 下载前闸）
 - 计划项：R75（本 ADR）、R74（python 收单一入口时记录了本分叉）
+
+## 9. 落地核实与状态回写
+
+2026-11-24 核实：R76 已实施，状态回写 Accepted。
+
+- 判定已对齐：`apps/executor-python/routers/execute.py:2362`–`:2367` 的 `_zip_channel_enabled` 已是
+  `if code_source == 'application_zip': enabled = True` / `elif not code_source and application_id: enabled = True`——
+  第 2 条已去掉 `packageUrl` 条件，与 admin（`executor.service.ts:5465`）及契约（CONTRACT.md §2.1/§2.4）逐字一致。
+- docstring 已同步：`execute.py:2325` 明写「ADR-035 裁决后与 admin / 契约逐字对齐」，`:2335` 记录「R76 / ADR-035：为什么去掉旧的 `packageUrl` 条件」。
+- 本轮仅回写文档状态，未改动任何 python 代码。

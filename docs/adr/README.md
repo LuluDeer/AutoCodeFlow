@@ -1,7 +1,7 @@
 # 架构决策记录（ADR）索引
 
 > 固化历轮开发中“代价高昂才学到”的架构/契约决策。每篇 ADR 记录：背景、决策、后果、被否掉的替代方案。
-> 状态：Accepted（现行）/ Proposed（待拍板）/ Superseded（被 ADR-xxx 取代）。新决策按序号追加。最后核对：2026-11-22。
+> 状态：Accepted（现行）/ Proposed（待拍板）/ Superseded（被 ADR-xxx 取代）。新决策按序号追加。最后核对：2026-11-24。
 
 ## 写作规则
 
@@ -44,11 +44,11 @@
 | [ADR-028](adr-028-config-secret-at-rest.md) | 配置类密钥的静态加密边界——**接受现状**（现值明文），明确**拒绝**「只加密历史表」的安全剧场，并给出四条重开条件（R83 顺着密钥脱敏数据流发现） | Accepted |
 | [ADR-029](adr-029-metadata-addresses-outbound-deny.md) | 出站地址闸的「元数据地址恒拒」契约段——把云元数据地址从 `restricted` 拆出单列，任何 posture/开关都拒，三端从契约派生（R07 裁决方案②） | Accepted |
 | [ADR-030](adr-030-executor-token-cross-instance-idempotency.md) | per-executor 令牌签发的**跨实例幂等**——三方案对比（Redis 明文缓存 / hash+DB 幂等键 / 单写者 lease），采纳「确定性派生 + `tokenRotationEpoch` CAS」，否决另两条（R12 P1） | Accepted（设计；落地排下一轮） |
-| [ADR-031](adr-031-replay-decision-hoist.md) | replay 决策前移——把「台账写哪一行」从两个判据（`opts.replayApproved` vs `verdict.approvedApprovalKey`）收成一个 per-call `ToolCallContext.ledger`，为 R57 blocked 的 `ToolCallLedger` 接缝清障（5 步计划 + 回滚开关；本轮零业务代码） | Proposed |
+| [ADR-031](adr-031-replay-decision-hoist.md) | replay 决策前移——把「台账写哪一行」从两个判据（`opts.replayApproved` vs `verdict.approvedApprovalKey`）收成一个 per-call `ToolCallContext.ledger`，为 R57 blocked 的 `ToolCallLedger` 接缝清障（5 步计划 + 回滚开关；本轮零业务代码） | Proposed（步骤 1/2/4 已落地；步骤 3/5 另立项） |
 | [ADR-032](adr-032-python-switch-posture-parity.md) | python 执行器出站闸的「开关姿态」与契约对齐——开关只放行 `privateIPv4`（原先额外放行 linkLocal/cgnat/unspecified/multicast/reserved，含云元数据 `169.254.169.254`），与 node gitRepo / admin 执行器同构；Step 1–3 已落地（`8f04f468`/`4cf4ebdb`），含失效半径、`PY_EXECUTOR_SWITCH_POSTURE_STRICT` 灰度与「粒度不足 ⇒ 契约层拆分」后续立项（R61 立、R63 落） | Accepted（Step 1–3 已落地；Step 4–5 待办） |
 | [ADR-033](adr-033-admin-webhook-posture-parity.md) | admin webhook 出站面的开关姿态与契约同构——开关只解锁 `privateIPv4`，`loopback`/`cgnat`/`benchmark` 任何开关态都拒；覆盖 11 个共享谓词的调用点（事件订阅入站+出站、5 个通知渠道、AI/OIDC 出站），与 node 下载面 / python 闸门结论一致（R66；11 个面的清单 + 失效半径 + 表驱动收敛） | Accepted |
-| [ADR-034](adr-034-network-category-table-in-contract.md) | 网络类别表收敛到契约——三份手抄表 + 一层运行时别名（`CATEGORY_ALIASES`）改为「契约 `networkPolicy.categories` → 三端生成物」的编译期同源；收益是**编译期同源而非修行为**（三端决策已逐格一致），admin 保留粗标签靠 `endLabels` 反查（R70；8 处文件 + 5 步计划 + 回滚零风险） | Proposed |
-| [ADR-035](adr-035-zip-channel-determination-parity.md) | zip 渠道判定的两端对齐——歧义行「无 codeSource + 有 applicationId + 无 packageUrl」：admin 判 zip（派发期解析不到就失败）、python 判非 zip（照常跑）⇒ 同一行两结论；判定 **admin 侧正确**（契约 CONTRACT.md §2.1/§2.4 两处都是 admin 口径，且 admin 判定时还没有 packageUrl），python 去掉 `packageUrl` 条件对齐（R75；5 步计划，首步先加跨端对照判据） | Proposed |
+| [ADR-034](adr-034-network-category-table-in-contract.md) | 网络类别表收敛到契约——三份手抄表 + 一层运行时别名（`CATEGORY_ALIASES`）改为「契约 `networkPolicy.categories` → 三端生成物」的编译期同源；收益是**编译期同源而非修行为**（三端决策已逐格一致），admin 保留粗标签靠 `endLabels` 反查（R70；8 处文件 + 5 步计划 + 回滚零风险） | Accepted |
+| [ADR-035](adr-035-zip-channel-determination-parity.md) | zip 渠道判定的两端对齐——歧义行「无 codeSource + 有 applicationId + 无 packageUrl」：admin 判 zip（派发期解析不到就失败）、python 判非 zip（照常跑）⇒ 同一行两结论；判定 **admin 侧正确**（契约 CONTRACT.md §2.1/§2.4 两处都是 admin 口径，且 admin 判定时还没有 packageUrl），python 去掉 `packageUrl` 条件对齐（R75；5 步计划，首步先加跨端对照判据） | Accepted |
 | [ADR-036](adr-036-localhost-dns-bypass.md) | `localhost` 系主机名**先于 DNS** 拒绝——旧实现只在 DNS 解析到 127.x 时才拒，`*.localhost` 解析到公网即被放行（R80 实测：注入公网解析 ⇒ 4 条用例红）；改用 R79 的零依赖 `isLoopbackHostname` 在 `lookup()` 前短路，并**刻意接受错误码变更**（`SSRF_HOST_DNS_LOOKUP_FAILED` → `SSRF_HOST_DENIED[_PINNED]`）；同族 git/executor 面登记为遗留 | Accepted |
 | [ADR-037](adr-037-heartbeat-lower-bound-atomic.md) | 心跳 `runningTaskCount` 的**服务端下限并入同一条 UPDATE**（原子化，消除 count→write 的 TOCTOU）；**否掉**两条热门方案：B「下限改读占坑数」会永久饥饿（I2）、C「claim 与建行同事务」前提不成立（执行行总在占坑前已存在，`scheduler.service.ts:2855` → `task.processor.ts:326`）⇒ 无迁移、无开关、不动派发事务 | Accepted |
 | [ADR-038](adr-038-broadcast-occupancy-vs-heartbeat-floor.md) | **同一计数列上的两种相反语义**：广播扇出按每台 `+1`（`executor.service.ts:6034`）但只有一行执行记录（`:5852-5855`）⇒ 未持行目标 `计数1/行数0`（真 PG 实证）；ADR-037 的心跳下限按**行数**取大 ⇒ 看不见广播占坑、会把它抹掉，而 `:6020-6026` 又**依赖**心跳覆写纠正广播少计 ⇒ 两者在同一列上互相抵消 ⇒ **容量少计、可被多派单播**。推荐**方案 B**（独立列 `broadcastReservedCount`，容量 = 两列之和，心跳下限仍只管单播行数）；否掉 A（行语义崩塌）/ C（把超卖写成已声明）/ D（热路径 join + TTL 清理） | Accepted（已实现，步骤 1–5 全部完成） |

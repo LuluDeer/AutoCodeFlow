@@ -359,6 +359,8 @@ SELECT pg_size_pretty(pg_total_relation_size('task_executions'));
 
 ## 待拍板项
 
+> **2026-11-24 复核：** 本决策仍需合规/法务提供留存要求输入，维持 Proposed 不实施；默认保守=维持现状不删。
+
 ### 需要谁
 
 | 角色 | 需要回答 |
