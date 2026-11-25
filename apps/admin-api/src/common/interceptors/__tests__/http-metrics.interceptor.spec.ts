@@ -1,4 +1,4 @@
-import { CallHandler, ExecutionContext } from "@nestjs/common";
+import { CallHandler, ExecutionContext, HttpException } from "@nestjs/common";
 import { of, throwError } from "rxjs";
 import {
   HttpMetricsInterceptor,
@@ -155,7 +155,7 @@ describe("HttpMetricsInterceptor (HTTP RED)", () => {
 
   // ── 状态码 / 方法 ──────────────────────────────────────────────────
   describe("status code and method capture", () => {
-    it("reads the final statusCode at teardown (not at intercept time)", async () => {
+    it("records the success path exactly once with the final statusCode", async () => {
       const metrics = makeMetrics();
       const res = makeRes({ statusCode: 200 });
       // 模拟处理器/异常过滤器在请求过程中改写状态码
@@ -171,12 +171,13 @@ describe("HttpMetricsInterceptor (HTTP RED)", () => {
         res,
         handler,
       );
+      expect(metrics.recordHttpRequest).toHaveBeenCalledTimes(1);
       expect(metrics.recordHttpRequest.mock.calls[0][2]).toBe(503);
     });
 
-    it("records on the error path too (thrown handler still counts)", async () => {
+    it("records a real 500 for a plain Error while res.statusCode is still 200", async () => {
       const metrics = makeMetrics();
-      const res = makeRes({ statusCode: 500 });
+      const res = makeRes(); // 不预置 500：真实 finalize 先于 exception filter
       const handler: CallHandler = {
         handle: () => throwError(() => new Error("boom")),
       };
@@ -186,8 +187,27 @@ describe("HttpMetricsInterceptor (HTTP RED)", () => {
         res,
         handler,
       );
+      expect(res.statusCode).toBe(200);
+      // 旧实现只会由 finalize 记 200；双记实现会记 2 次，两者都会红。
       expect(metrics.recordHttpRequest).toHaveBeenCalledTimes(1);
       expect(metrics.recordHttpRequest.mock.calls[0][2]).toBe(500);
+    });
+
+    it("records HttpException status from getStatus() while res.statusCode is still 200", async () => {
+      const metrics = makeMetrics();
+      const res = makeRes();
+      const handler: CallHandler = {
+        handle: () => throwError(() => new HttpException("x", 404)),
+      };
+      await run(
+        new HttpMetricsInterceptor(metrics as never),
+        makeReq(),
+        res,
+        handler,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(metrics.recordHttpRequest).toHaveBeenCalledTimes(1);
+      expect(metrics.recordHttpRequest.mock.calls[0][2]).toBe(404);
     });
 
     it("uppercases the method and falls back to UNKNOWN when absent", async () => {

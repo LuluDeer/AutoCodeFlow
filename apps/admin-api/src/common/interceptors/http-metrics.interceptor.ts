@@ -1,12 +1,13 @@
 import {
   CallHandler,
   ExecutionContext,
+  HttpException,
   Injectable,
   NestInterceptor,
 } from "@nestjs/common";
 import type { Request, Response } from "express";
-import { Observable } from "rxjs";
-import { finalize } from "rxjs/operators";
+import { Observable, throwError } from "rxjs";
+import { catchError, finalize } from "rxjs/operators";
 import {
   HTTP_ROUTE_UNMATCHED,
   PrometheusMetricsService,
@@ -18,11 +19,10 @@ import { hasSseContentType, isSsePath } from "../utils/sse-compression.util";
  *
  * ## 为什么是拦截器而不是 middleware
  *
- * RED 的 Duration 要在**响应真正结束**时才有意义（statusCode 已定、处理器
- * 与响应拦截器都已跑完）。Nest 拦截器的 `finalize()` 挂在 Observable 的
- * teardown 上：正常完成、抛异常、被下游拦截器 map 改写，三条路径都会执行
- * 且只执行一次——比 `res.on("finish")` 更贴近「一次请求生命周期」的语义，
- * 也不需要手动摘监听器。
+ * RED 的 Duration 要在**响应真正结束**时才有意义。正常路径挂在
+ * Observable 的 finalize teardown 上；异常路径必须在 catchError 里主动记
+ * ——Nest 的 exception filter 在 await 之后才 response.status(...).json(...)，
+ * finalize 那时仍读到默认 200。recordOnce 保证两条路径恰好记一次。
  *
  * ## 路由基数（本文件最关键的一条）
  *
@@ -66,27 +66,47 @@ export class HttpMetricsInterceptor implements NestInterceptor {
     const req = http.getRequest<Request>();
     const res = http.getResponse<Response>();
     const startedAt = process.hrtime.bigint();
-    // 方法在请求期不变，路由与状态码必须**在 finalize 时读**（此刻路由可能
-    // 尚未匹配、状态码还是默认 200）。
+    // 方法在请求期不变；成功路径的状态码在 finalize 读，异常路径从异常取
+    // （见下方 catchError）。路由模板在记录时解析，未匹配仍稳定折叠。
     const method = normalizeMethod(req.method);
 
+    // 恰好一次：异常路径在 catchError 主动记，成功路径在 finalize 记；
+    // 两者共用 recorded 标志，避免旧实现「finalize 先于 filter 读到 200」的漏报。
+    let recorded = false;
+    const recordOnce = (status: number): void => {
+      if (recorded) return;
+      recorded = true;
+      try {
+        // SSE / 长连接：不进 Duration（见头注）。路由与状态码一律不读，
+        // 连计数器都不加——一条流的「请求数」没有 RED 语义。
+        if (isSsePath(req) || hasSseContentType(res)) return;
+        const durationMs =
+          Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+        this.metrics.recordHttpRequest(
+          method,
+          resolveRoutePattern(req),
+          status,
+          durationMs,
+        );
+      } catch {
+        // 埋点旁路失败不影响响应（见头注）。
+      }
+    };
+
     return next.handle().pipe(
-      finalize(() => {
+      // Nest 的 exception filter 在 await 之后才 response.status(...).json(...)，
+      // finalize 早于它执行；异常状态只能从异常本身取。AppError 继承
+      // HttpException，走 getStatus()；普通 Error 归 500。
+      catchError((err: unknown) => {
         try {
-          // SSE / 长连接：不进 Duration（见头注）。路由与状态码一律不读，
-          // 连计数器都不加——一条流的「请求数」没有 RED 语义。
-          if (isSsePath(req) || hasSseContentType(res)) return;
-          const durationMs =
-            Number(process.hrtime.bigint() - startedAt) / 1_000_000;
-          this.metrics.recordHttpRequest(
-            method,
-            resolveRoutePattern(req),
-            res.statusCode,
-            durationMs,
-          );
+          recordOnce(err instanceof HttpException ? err.getStatus() : 500);
         } catch {
-          // 埋点旁路失败不影响响应（见头注）。
+          recordOnce(500);
         }
+        return throwError(() => err);
+      }),
+      finalize(() => {
+        recordOnce(res.statusCode);
       }),
     );
   }
