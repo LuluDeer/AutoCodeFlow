@@ -1,7 +1,27 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 30 轮 · cron dow 7/范围裸 i18n key 修复 + 审计候选全清）
-> 当前分支 `develop` = `67e9c342`（第 5-29 轮累积已按主题分 28 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`67e9c342` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 32 提交、未 push**。子 agent 平台已恢复（第 24-30 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 31 轮 · 执行器包下载鉴权绕过 + 按缺陷类型三路审计 + 集成期 4 处回归）
+> 当前分支 `develop` = `f5507b70`（第 5-30 轮累积已按主题分 29 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`f5507b70` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 34 提交、未 push**。子 agent 平台已恢复（第 24-31 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 31 轮）：执行器包下载鉴权绕过（viewer 可下 500MB 包）+ 按缺陷类型三路审计
+
+**方向来源**：objective 续轮，自己找方向。R30 候选清零后换方法论——前几轮按目录切，本轮按**缺陷类型**切三路只读审计（幂等/并发、鉴权/越权、数据一致性），带严格排除清单。三路各报 1 个净新缺口，主控 CodeGraph 逐层复核后按后果严重度裁决：选**鉴权绕过**（安全档，最高）。
+
+**缺口（P1 鉴权绕过）**：`executor-package.controller.ts:129-130` 类级 `@UseGuards(JwtAuthGuard,RolesGuard)` + `@Roles(ADMIN)`，download 端点（:267-270）用 `@Public()` + 空 `@Roles()` 抹掉两层保护，改由 handler 内联双通道鉴权；机器令牌通道正常，但管理 JWT 通道（:319-330）只验签名 + `type==='access'`，不查 role / 用户存在 / isActive / sessionVersion。后果：任意 viewer/editor 用自己 access JWT 即可下载 500MB 管理面包；登出/改密/停用用户未过期 token 同样可下载（正常 `jwt.strategy.ts:164-203` 会查这些，此处全绕过）。注释还谎称"有效的管理员 access JWT"。主控实测 JWT payload（`auth.service.ts:612-631`）无 role claim，故不能只验 claim。
+
+**修法（方案 A，agent 深挖后选）**：Nest 守卫是 AND、同路由无法干净 OR 拆分（B 否决）；注入 UsersService（UsersModule 已导出，module 加一行 import），JWT fallback 验签 + type 后复用 `findByIdOrNull` + isActive + `role===ADMIN` + ver/sessionVersion 比对（无 ver 兼容放行，口径同 jwt.strategy），失败走同一稳定 401；机器共享令牌通道完全未动；ApiOperation/401 描述改为真实管理员承诺。测试补 4 条（viewer / 陈旧 ver / 禁用用户 / refresh token 拒绝）+ 强化 admin 与机器正例。
+
+**集成期 4 处回归（主控亲修，AGENTS §4.1/§4.5 例外）**：全守卫链从"R27 绿"到本轮首跑红，逐段定位并修复前序改动涟漪——① `check-atlas-counts`：`07-testing/README.md` 数字陈旧（R27 加测试致 mcp-server 10→11，另有 admin-web 341→358 等累积漂移），用权威 `--update` 同步 + 日期改 11-25；②③ `check:size-caps`：`task.service.spec.ts` 7418>7385（R29 加 2 条 kill 测试）、`scheduler.service.spec.ts` 3755>3751（R29 RETURNING 断言 1→4 行），按既有"受控测试新增重签"先例只调 nonCommentLines/maxLines 并追加 why；④ `check:source-text-contracts`：STC-113 needle 因新用例插行漂到 :359（±20 外），更新 specLine；⑤ `lint:api` 20 个 prettier 错误（R28/R29/本轮 agent 测试排版），`eslint --fix` 只针对 3 个文件、复核语义未变。**修复后全链 130 段 exit 0**。
+
+**验证（主控独立复跑）**：`executor-package.controller.spec.ts` 27/27 exit 0；`tsc --noEmit` 0；route-authz-matrix / query-param-required / size-caps / source-text-contracts(59/59) / 全守卫链 130 段均 0。**反证（主控自做）**：删 isActive/role 校验 → viewer 与 disabled 两用例 exit 1（expected 401 got 200），还原 sha256 `85e2b6ec…` 逐字节一致、复跑 27/27。验收级别：单测（UsersService 内存替身）+ 类型/接线/全守卫链；**未达**真 Nest+PG 端到端。遗留缺陷 0。
+
+**另两个候选（审计确证，本轮未做，登记后续）**：① 幂等 `task.controller.ts:1018-1048` 同一 try 包 trigger + audit.log，audit 失败 → catch 无条件 releaseClaim 删幂等键 → 同 key 重试致任务执行两次（发货类重复副作用）；修法 `triggered` 标志限定 release 仅 trigger 失败时。② 一致性 `executor.service.ts:6047-6051` 广播占坑计数仅靠回调释放，机器崩溃/回调丢失则永久 +1，容量闸门持续拒派；修法需真 PG 验收、较复杂。
+
+**提交**：按 objective「分批提交」分 3 批——① atlas 文档（`f5507b70`，已提交）；② 鉴权修复 3 文件；③ 集成期回归修复 + 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 上述提交，34+ 提交未 push；鉴权绕过已堵且反证有牙，全链绿。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 30 轮）：cron dow 7/范围裸 i18n key 修复（R27 三路审计候选收尾）
 

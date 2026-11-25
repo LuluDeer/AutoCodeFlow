@@ -30,10 +30,7 @@ function deps() {
   };
 }
 
-function signedRequest(
-  body = '{"params":{"x":1}}',
-  timestamp = Date.now(),
-) {
+function signedRequest(body = '{"params":{"x":1}}', timestamp = Date.now()) {
   const rawBody = Buffer.from(body, "utf8");
   const ts = String(timestamp);
   const signature =
@@ -149,14 +146,22 @@ describe("TaskWebhookService — 入站重放去重（SEC-R3-4）", () => {
 
     expect(first.signature).not.toBe(second.signature);
 
-    const firstRes = await svc.triggerFromWebhook(TASK_ID, {}, {
-      ...first,
-      delivery: "d-1",
-    });
-    const secondRes = await svc.triggerFromWebhook(TASK_ID, {}, {
-      ...second,
-      delivery: "d-2",
-    });
+    const firstRes = await svc.triggerFromWebhook(
+      TASK_ID,
+      {},
+      {
+        ...first,
+        delivery: "d-1",
+      },
+    );
+    const secondRes = await svc.triggerFromWebhook(
+      TASK_ID,
+      {},
+      {
+        ...second,
+        delivery: "d-2",
+      },
+    );
 
     expect(firstRes).toEqual({ id: "exec-1" });
     expect(secondRes).toEqual({ deduplicated: true });

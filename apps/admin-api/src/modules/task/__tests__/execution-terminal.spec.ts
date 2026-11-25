@@ -119,11 +119,7 @@ describe("A1 执行终态跃迁（transitionToTerminal）", () => {
       ExecutionStatus.RUNNING,
       ExecutionStatus.WAITING,
     ]);
-    expect(calls[0].returning).toEqual([
-      "id",
-      "executorAddress",
-      "executorId",
-    ]);
+    expect(calls[0].returning).toEqual(["id", "executorAddress", "executorId"]);
   });
 
   it("normalizeRaw：透出 RETURNING 的 executorId，非字符串归 null（与地址同口径）", async () => {
@@ -170,9 +166,7 @@ describe("A1 执行终态跃迁（transitionToTerminal）", () => {
       ids: ["e1", "e2"],
       patch: { ...SUCCESS_PATCH },
     });
-    expect(res.rows).toEqual([
-      { id: "e1", executorAddress: "10.0.0.1:8002" },
-    ]);
+    expect(res.rows).toEqual([{ id: "e1", executorAddress: "10.0.0.1:8002" }]);
     expect(res.transitioned).toBe(true);
     // e2 不在 rows 里——它已被并发路径终态化，调用方据此不释放它的槽位
     expect(res.rows.map((r) => r.id)).not.toContain("e2");
@@ -274,9 +268,7 @@ describe("A1 执行终态跃迁（transitionToTerminal）", () => {
       patch: { ...SUCCESS_PATCH },
     });
     expect(calls[0].params.ids).toEqual(["e1"]);
-    expect(res.rows).toEqual([
-      { id: "e1", executorAddress: "addr" },
-    ]);
+    expect(res.rows).toEqual([{ id: "e1", executorAddress: "addr" }]);
   });
 
   it("事务：传入 manager 时用 manager 建 QB（复用事务连接）", async () => {

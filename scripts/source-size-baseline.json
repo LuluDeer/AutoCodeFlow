@@ -572,10 +572,10 @@
     "apps/admin-api/src/modules/scheduler/__tests__/scheduler.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 3751,
-      "why": "2026-11-04 实测 nonCommentLines=3663 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6（+4 例：补偿窗口收紧/抑制可观测）+ A6b（+1 例：被消耗的落点不算漏跑）两批共 +34 非注释行；本轮 T2-B4 第一刀未动本文件。 | **R9 flaky 修正（+2 行，已复核批准）**：`A6: fixed_rate 退回一个真实周期作窗口起点`的判据原为 `ageMs = Date.now() - windowStart` ≤ `60_001` —— 它把**两次独立的墙钟采样**相减，量的是 `checkMisfires()` 的 await 链 + 事件循环排队，**不是窗口语义**；11 个 worker 跑 456 套件时这段间隔涨到几 ms 就红（实测 60_001 → 60_003，全量套件下 ~1/4 轮复现）。改为**采样窗口不变式** `windowStart ∈ [before - PERIOD_MS, after)`（与机器快慢无关）。**+2 非注释行**来自 `before`/`after` 两个采样点与命名常量 `PERIOD_MS`（被长注释多次引用，内联会与注释脱节）。⇒ 这是**修正判据**而非新增功能，不属棘轮想防的「无上限增长」；已作为复核人批准。 | **2026-11-15 本轮重签（+52 非注释行）**：INCIDENT-2026-11-10 多点 cron 跨夜空档成批漏单修复（24b5e98b，`estimateCronPeriodMs` 由「最近一次触达间隔」改为「回看窗口内相邻落点最小间隔」）补 8 条回归用例（`INCIDENT-2026-11-10` 分组），锁定 6 种 cron 形状的真实周期与「TTL 严格小于最小落点间隔」不变式；ceiling.nonCommentLines 3699→3751，函数体/密度/exports 未变。",
+      "maxLines": 3755,
+      "why": "【R29 重签：3751 → 3755（+4 非注释行）】transitionToTerminal 的 RETURNING 加 executorId 列（修手动 kill 用快照错投）后，本文件写死的两列断言 toHaveBeenCalledWith([\"id\",\"executorAddress\"]) 真红，更新为三列并折行（+4 行）；属集成期受控回归修复，函数体/密度/exports 未变。 | 2026-11-04 实测 nonCommentLines=3663 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6（+4 例：补偿窗口收紧/抑制可观测）+ A6b（+1 例：被消耗的落点不算漏跑）两批共 +34 非注释行；本轮 T2-B4 第一刀未动本文件。 | **R9 flaky 修正（+2 行，已复核批准）**：`A6: fixed_rate 退回一个真实周期作窗口起点`的判据原为 `ageMs = Date.now() - windowStart` ≤ `60_001` —— 它把**两次独立的墙钟采样**相减，量的是 `checkMisfires()` 的 await 链 + 事件循环排队，**不是窗口语义**；11 个 worker 跑 456 套件时这段间隔涨到几 ms 就红（实测 60_001 → 60_003，全量套件下 ~1/4 轮复现）。改为**采样窗口不变式** `windowStart ∈ [before - PERIOD_MS, after)`（与机器快慢无关）。**+2 非注释行**来自 `before`/`after` 两个采样点与命名常量 `PERIOD_MS`（被长注释多次引用，内联会与注释脱节）。⇒ 这是**修正判据**而非新增功能，不属棘轮想防的「无上限增长」；已作为复核人批准。 | **2026-11-15 本轮重签（+52 非注释行）**：INCIDENT-2026-11-10 多点 cron 跨夜空档成批漏单修复（24b5e98b，`estimateCronPeriodMs` 由「最近一次触达间隔」改为「回看窗口内相邻落点最小间隔」）补 8 条回归用例（`INCIDENT-2026-11-10` 分组），锁定 6 种 cron 形状的真实周期与「TTL 严格小于最小落点间隔」不变式；ceiling.nonCommentLines 3699→3751，函数体/密度/exports 未变。",
       "ceiling": {
-        "nonCommentLines": 3751,
+        "nonCommentLines": 3755,
         "functionLines": 30,
         "ctorParams": 0,
         "exports": 0,
@@ -627,10 +627,10 @@
     "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 7385,
-      "why": "R125 广播释放接线与 N=3 对账判据（+61）；回滚值 7273 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。 【R283 重签：nonCommentLines/maxLines 7342 → 7385（+43 非注释行）】受控的测试新增：GET /tasks?triggerType= 此前 DTO 用 @IsEnum 严格校验（= 已对外承诺）而 buildTaskListWhere 一行不读 ⇒ 用户选「触发方式」拿到未过滤全量，且该面 filter matrix 零断言。本轮补 3 条真断言（写进 where / q 的两个 OR 分支都带上 / 与 projectId 取交集），反证：注释掉实现那一行 ⇒ 3 条全红。函数体与分支密度未变。",
+      "maxLines": 7418,
+      "why": "R125 广播释放接线与 N=3 对账判据（+61）；回滚值 7273 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。 【R283 重签：nonCommentLines/maxLines 7342 → 7385（+43 非注释行）】受控的测试新增：GET /tasks?triggerType= 此前 DTO 用 @IsEnum 严格校验（= 已对外承诺）而 buildTaskListWhere 一行不读 ⇒ 用户选「触发方式」拿到未过滤全量，且该面 filter matrix 零断言。本轮补 3 条真断言（写进 where / q 的两个 OR 分支都带上 / 与 projectId 取交集），反证：注释掉实现那一行 ⇒ 3 条全红。函数体与分支密度未变。 【R29 重签：7385 → 7418（+33 非注释行）】受控的测试新增：手动 kill 此前透传 findOne 快照 executorId，dispatch 落库窗口内为 null ⇒ 按 address 路由进同址兄弟行队列、页面已 KILLED 而真实进程继续。本轮补 2 条真断言（RETURNING executorId 优先 / 缺失回落快照），反证：第三参改回快照 ⇒ 核心用例红（期望 row-b、实收 null）。函数体与分支密度未变。",
       "ceiling": {
-        "nonCommentLines": 7385,
+        "nonCommentLines": 7418,
         "functionLines": 126,
         "ctorParams": 0,
         "exports": 0,
