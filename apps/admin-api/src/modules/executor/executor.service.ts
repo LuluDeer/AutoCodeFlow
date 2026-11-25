@@ -421,7 +421,8 @@ type HeartbeatOwnedColumn = (typeof HEARTBEAT_OWNED_COLUMNS)[number];
  *    executorStartedAt / executorStartupId；
  *  - 另有几条**双主人**列（register 与管理台/心跳各写一面）：address（地址漂移）、
  *    status / offlineReason / lastHeartbeat（注册即在线）、runningTaskCount
- *    （重启恢复清零）。
+ *    （重启恢复清零）、broadcastReservedCount（与 runningTaskCount 同构：广播
+ *    占坑也是进程内状态，重启后回调丢失 ⇒ 同样必须清零；容量判定按两列之和）。
  *
  * **不在**本白名单里的列 = register 没有任何上报口径的列，最典型的是四个指标列
  * cpuUsage / memUsage / diskUsage / networkLatency（register DTO 里根本没有它们，
@@ -435,6 +436,8 @@ type HeartbeatOwnedColumn = (typeof HEARTBEAT_OWNED_COLUMNS)[number];
  *     groupName / tags / description / dispatchMode / protocolVersion /
  *     deviceFingerprint / interpreters : 「Update mutable fields」逐列守卫
  *   - runningTaskCount   : didRestart / shouldRecoverMissingBaseline 两分支清零
+ *   - broadcastReservedCount : 同上两分支清零（容量 = 单播 + 广播占坑；广播
+ *     占坑回调随进程重启失效，漏清会让重启后的容量闸门永久扣着幻影占用）
  *   - executorStartedAt / executorStartupId : 仅当上报
  *   - status / offlineReason / lastHeartbeat : 无条件（注册即在线）
  */
@@ -456,6 +459,7 @@ const REGISTER_OWNED_COLUMNS = [
   "deviceFingerprint",
   "interpreters",
   "runningTaskCount",
+  "broadcastReservedCount",
   "executorStartedAt",
   "executorStartupId",
   // R3-A（§4.3/P10）：已安装执行器包清单（注册面同心跳三态采纳）。
@@ -2951,6 +2955,10 @@ export class ExecutorService implements OnModuleInit {
       // R-P0-008: Reset runningTaskCount to 0 after executor restart
       e.runningTaskCount = 0;
       adopted.add("runningTaskCount");
+      // 广播占坑同属进程内状态（容量 = 单播 + 广播）：重启后回调必然丢失，
+      // 必须一起清零并登记采纳，否则容量闸门永久扣着幻影占用 ⇒ 重启后少派单。
+      e.broadcastReservedCount = 0;
+      adopted.add("broadcastReservedCount");
     } else if (shouldRecoverMissingBaseline) {
       await this.failRunningExecutionsAfterRestart(
         recoveryAddress,
@@ -2960,6 +2968,9 @@ export class ExecutorService implements OnModuleInit {
       // R-P0-008: Reset runningTaskCount to 0 after recovery
       e.runningTaskCount = 0;
       adopted.add("runningTaskCount");
+      // 恢复分支与重启分支同构：广播占坑回调同样已随进程失效，同步清零。
+      e.broadcastReservedCount = 0;
+      adopted.add("broadcastReservedCount");
     }
     if (incomingStartedAt) {
       e.executorStartedAt = incomingStartedAt;

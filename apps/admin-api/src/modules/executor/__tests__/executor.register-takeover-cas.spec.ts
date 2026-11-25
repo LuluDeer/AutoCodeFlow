@@ -519,4 +519,66 @@ describe("E-1/E-2 — foreignInstall 接管：CAS 收口与幻影计数清零", 
 
     expect(repo.rows[0].runningTaskCount).toBe(3); // 未被注册面清掉（心跳是计数主人）
   });
+
+  it("E-2 重启/恢复清零广播占坑 broadcastReservedCount：两分支写 0 并落库", async () => {
+    // 同安装（同指纹 + ONLINE）重注册，绕开接管分支，只由重启/恢复分支清零。
+    const cases = [
+      {
+        name: "didRestart",
+        row: { executorStartupId: "old-startup" },
+        payload: { startupId: "new-startup" },
+      },
+      {
+        name: "shouldRecoverMissingBaseline",
+        row: {},
+        payload: {
+          startupId: undefined,
+          restartedAt: new Date().toISOString(),
+        },
+      },
+    ];
+    for (const c of cases) {
+      const repo = makeRepo();
+      repo.rows.push(
+        deadOccupant({
+          status: ExecutorStatus.ONLINE,
+          deviceFingerprint: FP_NEW,
+          broadcastReservedCount: 4,
+          ...c.row,
+        }),
+      );
+      const svc = await buildService(repo);
+
+      await svc.registerExecutor(takeoverPayload(c.payload) as never);
+
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: "victim-row", deviceFingerprint: FP_NEW },
+        expect.objectContaining({ broadcastReservedCount: 0 }),
+      );
+      expect(repo.rows[0].broadcastReservedCount).toBe(0);
+    }
+  });
+
+  it("E-2 控制组：无重启信号的普通 register 不写 broadcastReservedCount", async () => {
+    const repo = makeRepo();
+    repo.rows.push(
+      deadOccupant({
+        status: ExecutorStatus.ONLINE,
+        deviceFingerprint: FP_NEW,
+        executorStartupId: "same-startup",
+        broadcastReservedCount: 4,
+      }),
+    );
+    const svc = await buildService(repo);
+
+    await svc.registerExecutor(
+      takeoverPayload({ startupId: "same-startup" }) as never,
+    );
+
+    expect(repo.update).toHaveBeenCalled();
+    for (const [, patch] of repo.update.mock.calls) {
+      expect(patch).not.toHaveProperty("broadcastReservedCount");
+    }
+    expect(repo.rows[0].broadcastReservedCount).toBe(4);
+  });
 });
