@@ -36,6 +36,7 @@ import { ExecutorPackageController } from "../executor-package.controller";
 import { ExecutorPackageService } from "../executor-package.service";
 import { ExecutorService } from "../../executor/executor.service";
 import { SystemConfigService } from "../../config/config.service";
+import { UsersService } from "../../users/users.service";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../../common/guards/roles.guard";
 import { HttpExceptionFilter } from "../../../common/filters/http-exception.filter";
@@ -67,6 +68,7 @@ describe("R178 · POST /executor-packages/:id/push —— 没有在线执行器�
             findPushTargets: jest.fn().mockResolvedValue([]),
           },
         },
+        { provide: UsersService, useValue: { findByIdOrNull: jest.fn() } },
       ],
     })
       // 类级 @UseGuards(JwtAuthGuard, RolesGuard) 在本用例不是被测面 ⇒ 放行

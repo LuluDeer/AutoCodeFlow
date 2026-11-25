@@ -31,6 +31,10 @@ import { buildBenignZip } from "../../../common/utils/__tests__/zip-samples";
 jest.mock("../../executor/executor.service", () => ({
   ExecutorService: jest.fn(),
 }));
+// R31: 控制器新增 UsersService 依赖（design:paramtypes 值引用）。users.service
+// 顶层同样 import bcrypt；本 spec 整体 mock fs ⇒ node-gyp-build 加载原生构建失败。
+// 本族用例不碰 download 鉴权，沿用 ExecutorService 的同款空壳 stub。
+jest.mock("../../users/users.service", () => ({ UsersService: class {} }));
 jest.mock("axios");
 jest.mock("../../../common/utils/safe-http.util", () => ({
   ...jest.requireActual("../../../common/utils/safe-http.util"),
@@ -737,6 +741,7 @@ describe("ExecutorPackageService", () => {
         { findPushTargets: jest.fn().mockResolvedValue(targets) } as any,
         config as any,
         systemConfig as any,
+        {} as never,
       );
     });
 

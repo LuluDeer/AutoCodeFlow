@@ -57,6 +57,9 @@ jest.mock("fs", () => ({
 jest.mock("../../executor/executor.service", () => ({
   ExecutorService: jest.fn(),
 }));
+// R31: 控制器新增 UsersService 依赖，与上面同理——users.service 顶层 import
+// bcrypt，而本 spec 整体 mock fs ⇒ 原生构建加载失败。列表/游标不碰 download 鉴权。
+jest.mock("../../users/users.service", () => ({ UsersService: class {} }));
 
 /** 表里的行：只保留本端点会过滤/排序的列。 */
 interface Row {
@@ -838,6 +841,7 @@ describe("§2.1 ExecutorPackageService.findAll — OFFSET / keyset 双路径", (
         {} as never,
         {} as never,
         {} as never,
+        {} as never,
       );
       await controller.findAll({
         page: 1,
@@ -856,6 +860,7 @@ describe("§2.1 ExecutorPackageService.findAll — OFFSET / keyset 双路径", (
         .mockResolvedValue({ items: [], total: 0 } as never);
       const controller = new ExecutorPackageController(
         service,
+        {} as never,
         {} as never,
         {} as never,
         {} as never,
