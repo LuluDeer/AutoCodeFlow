@@ -1747,7 +1747,7 @@
       "id": "STC-101",
       "tier": "P1",
       "spec": "packages/mcp-server/src/__tests__/tools.test.ts",
-      "specLine": 2396,
+      "specLine": 2429,
       "needle": "const src = readFileSync(join(__dirname, \"..\", \"index.ts\"), \"utf8\");",
       "reads": [
         "packages/mcp-server/src/index.ts"

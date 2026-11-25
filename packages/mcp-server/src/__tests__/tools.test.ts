@@ -1399,6 +1399,39 @@ describe("list_dead_letters", () => {
     const out = parse(await tools.get("list_dead_letters")!.handler({}));
     expect(out.totalDeadLetters).toBe(2);
   });
+
+  it("R114-B: runtime-config total 501 > 2 returned rows → truncated:true + totals", async () => {
+    call
+      .mockResolvedValueOnce({
+        data: [
+          { id: "a", appName: "A", deadLetterCount: 2 },
+          { id: "b", appName: "B", deadLetterCount: 3 },
+        ],
+      })
+      .mockResolvedValueOnce({ executorTotal: 501, listLimit: 500 });
+    const out = parse(await tools.get("list_dead_letters")!.handler({}));
+    expect(call).toHaveBeenCalledWith("GET", "/executors/runtime-config");
+    expect(out.truncated).toBe(true);
+    expect(out.executorsTotal).toBe(501);
+    expect(out.listLimit).toBe(500);
+    expect(out.totalDeadLetters).toBe(5);
+    expect(out.note).toContain("2/501");
+    expect(out.note).toContain("truncated=true");
+  });
+
+  it("R114-B: runtime-config rejection degrades to truncated:null without failing", async () => {
+    call
+      .mockResolvedValueOnce({
+        data: [{ id: "a", appName: "A", deadLetterCount: 2 }],
+      })
+      .mockRejectedValueOnce(new Error("runtime-config unreachable"));
+    const res = await tools.get("list_dead_letters")!.handler({});
+    expect(res.isError).toBeUndefined();
+    const out = parse(res);
+    expect(out.truncated).toBeNull();
+    expect(out.totalDeadLetters).toBe(2);
+    expect(out.note).toContain("truncated=null");
+  });
 });
 
 describe("get_scheduler_health", () => {

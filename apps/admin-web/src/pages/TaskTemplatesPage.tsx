@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next';
 import { taskTemplatesApi, TaskTemplate } from '../api/task-templates';
 import { useTaskTemplates } from '../api/queries';
 import { showApiError } from '../utils/error';
+import { isAdminUser, useAuthStore, type AuthUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
@@ -100,11 +101,39 @@ function configSummary(config: Record<string, unknown>, t: TFn): string[] {
   return bits;
 }
 
+/**
+ * 编辑/删除入口的前端预检：与后端 assertMutable / isTemplateOwner 同口径，
+ * 只隐藏注定 403 的按钮（官方只读在首行拦截）。
+ * 新键 `user:<id>|<name>` 只认 id（删号后同名新号不继承）；legacy 裸 username
+ * 精确比对；createdBy 为空一律非属主，仅 ADMIN 可管。
+ */
+function canManageTemplate(tpl: TaskTemplate, user: AuthUser | null | undefined): boolean {
+  if (tpl.isOfficial) return false;
+  if (isAdminUser(user)) return true;
+  // 身份尚未 hydration（user 缺席）且旧载荷连 createdBy 字段都没有时，保留旧的
+  // 「非官方即可见」展示口径，避免把「未知身份」误判成已登录非属主；写请求仍由
+  // 后端 assertMutable 兜底。显式 null / 历史 username 行一律走下方严格判定。
+  if (!user && tpl.createdBy === undefined) return true;
+  const raw = tpl.createdBy;
+  if (raw == null || raw === '') return false;
+  const keyed = /^user:(\d+)\|/.exec(raw);
+  if (keyed) {
+    const ownerId = Number(keyed[1]);
+    if (Number.isSafeInteger(ownerId) && ownerId > 0) {
+      // id 是唯一权威；requester.id 缺失（运行时坏数据）fail-closed。
+      return typeof user?.id === 'number' && user.id === ownerId;
+    }
+  }
+  // 非 keyed（或非法 id 回退）按字面 username 精确比，对齐后端 legacy 口径。
+  return raw === user?.username;
+}
+
 export default function TaskTemplatesPage() {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：主色图标走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
   const nav = useNavigate();
+  const user = useAuthStore((s) => s.user);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // 「使用模板」= 直接实例化：弹窗只采集任务名，其余 config 由后端展开。
@@ -289,7 +318,7 @@ export default function TaskTemplatesPage() {
                 >
                   {t('templates.export')}
                 </Button>
-                {!tpl.isOfficial && (
+                {canManageTemplate(tpl, user) && (
                   <Button
                     type="link" size="small" icon={<EditOutlined aria-hidden />}
                     onClick={() => setEditingTpl(tpl)}
@@ -297,7 +326,7 @@ export default function TaskTemplatesPage() {
                     {t('templates.edit')}
                   </Button>
                 )}
-                {!tpl.isOfficial && (
+                {canManageTemplate(tpl, user) && (
                   <Popconfirm
                     title={t('templates.deleteConfirm')} okText={t('templates.deleteOk')} cancelText={t('templates.cancel')}
                     okButtonProps={{ danger: true }}

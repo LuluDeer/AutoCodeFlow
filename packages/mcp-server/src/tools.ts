@@ -717,6 +717,27 @@ export function registerObservabilityTools(
           errorCode: "UNEXPECTED_RESPONSE_SHAPE",
         });
       }
+      // R114-B：GET /executors 被 findAll 的 EXECUTOR_LIST_LIMIT 截断，真实总数只在
+      // /executors/runtime-config。拿不到就标 null，绝不冒充「未截断」。
+      let executorsTotal: number | null = null;
+      let listLimit: number | null = null;
+      let truncated: boolean | null = null;
+      let configNote = "";
+      try {
+        const cfg = await call<{
+          executorTotal?: unknown;
+          listLimit?: unknown;
+        }>("GET", "/executors/runtime-config");
+        const total = cfg?.executorTotal;
+        const limit = cfg?.listLimit;
+        if (typeof total === "number" && Number.isFinite(total)) executorsTotal = total;
+        if (typeof limit === "number" && Number.isFinite(limit)) listLimit = limit;
+        // 判据=已返回行是否覆盖全部执行器，比「总数 > listLimit」更准（空列表也会被截断）。
+        if (executorsTotal !== null) truncated = executorsTotal > rows.length; // mutation-residue-ok: 截断判据须严格大于已返回行数，边界相等不算截断
+        else configNote = " runtime-config fields missing: truncation unknown (truncated=null).";
+      } catch {
+        configNote = " runtime-config request failed: truncation unknown (truncated=null).";
+      }
       const summary = rows
         .map((r) => {
           const deadLetterCount = r["deadLetterCount"];
@@ -738,7 +759,15 @@ export function registerObservabilityTools(
           0,
         ),
         executors: summary,
-        note: "Counts are executor-side callback payloads awaiting replay (last heartbeat value). Files live in <work_dir>/callbacks/dead-letter on each executor host.",
+        executorsTotal,
+        listLimit,
+        truncated,
+        note:
+          "Counts are executor-side callback payloads awaiting replay (last heartbeat value). " +
+          "Files live in <work_dir>/callbacks/dead-letter on each executor host. " +
+          (executorsTotal === null
+            ? `Only ${rows.length} executor(s) returned; total unknown.${configNote} The sum may be understated.`
+            : `Covered ${rows.length}/${executorsTotal} executors; if truncated=true the sum may be understated (dead letters on later executors are invisible).`),
       });
     },
   );

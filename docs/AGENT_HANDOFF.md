@@ -1,7 +1,27 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 48 轮 · 审批 grant 时序死锁 + node failureReason 分叉）
-> 本批提交前基线 `develop` = `0e77fd6b`（领先 origin/develop 70 提交、未 push）；按 operator「不做无意义提交」约束，本轮修复 + 测试 + 生成物/基线 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-48 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 49 轮 · 两处前端越权可见 + MCP 死信静默截断）
+> 本批提交前基线 `develop` = `ff650f19`（领先 origin/develop 71 提交、未 push）；按 operator「不做无意义提交」约束，本轮三修复 + 三测试 + 基线 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-49 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 49 轮）：模板/事件订阅越权可见 + MCP 死信静默截断（三域并行）
+
+**方向来源**：objective 续轮，自己找方向。派 2 路审计扫前端权限门与 MCP 工具契约（后者晚回报），主控 CodeGraph 复核三处确证后 3 agent 并行修，写域互斥。
+
+**缺口①（模板越权可见）**：`TaskTemplatesPage.tsx:292-318` 只凭 `!isOfficial` 显示编辑/删除；后端 `assertMutable`（task-template.service.ts:284-299）是官方只读 + 自定义仅属主/ADMIN + createdBy=NULL 历史行仅 ADMIN。普通用户对他人模板看到按钮、提交必 403。修：前端复刻 `isTemplateOwner` 口径（`^user:(\d+)\|` 取 id，否则字面 username，空 createdBy=false，ADMIN 全放行）+ useAuthStore，gate 两处按钮。
+
+**缺口②（事件订阅越权可见）**：`EventSubscriptionsSettings.tsx` 只 gate 新建，行内开关/编辑/删除/死信 replay 对所有用户可见；后端 findAll 对普通用户返回 `[自有, userId IS NULL 系统级]`（service.ts:185-193），但写面判 ADMIN 或属主——系统级行提交必 403。修：`canManageSub = isAdmin || (userId != null && userId === currentUser.id)`，gate 全部行内写控件。
+
+**缺口③（MCP 死信静默截断）**：`tools.ts:700-742 list_dead_letters` 用 `GET /executors` 返回行求和当 totalDeadLetters，但该端点按 EXECUTOR_LIST_LIMIT=500 截断（executor.service.ts:4154-4175），真实总数只在 `/executors/runtime-config`。>500 台且积压落第 501+ 台时报 0/偏小 → agent 误判"全清"。R114 只修了形状漂移、没修截断。修：额外读 runtime-config，输出 executorsTotal/listLimit/truncated（`executorTotal > rows.length`），请求失败降级 `truncated:null` 不冒充 false；note 诚实说明可能低估。
+
+**集成期连锁**：MCP 两文件 size 基线重签（tools.ts 779→805、tools.test 2244→2275）；STC-101 needle 2396→2429（tools.test 插行）；mutation-residue 对新增 `>` 截断判据误报 → 行内带理由豁免。
+
+**验证（主控独立复跑）**：admin-web 39 tests（事件订阅+模板页）、MCP 353 tests、双端 tsc、size/STC/consumer-routes/mutation、全守卫链 130 段全绿。**反证（主控自做）**：MCP 截断判据恒 false → 用例红；两前端 agent 各反证（gate 回退 → 用例红）；还原 sha 逐字节一致（`8f8cfe6e…`）。验收级别：组件单测 + 真子进程守卫 + 全链；未达真浏览器权限点击/真 >500 台现场。遗留缺陷 0。
+
+**仍留候选**：中间态 bisect 退化（R38）；广播占坑另两子场景（ADR 级）。轻量确证候选清零。
+
+**提交**：单批（6 源码/测试 + 2 基线 + 本交接段）。**未 push**。处于可发布态。
+
+---
 
 ## 本轮（2026-11-25 · 第 48 轮）：审批 grant/waiting 交错死锁 + node failureReason 分叉（双域并行）
 

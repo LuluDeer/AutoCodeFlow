@@ -177,7 +177,13 @@ function CreateResultModal(props: {
 }
 
 /** 死信列表段：按订阅逐个拉取（属主/ADMIN 契约），只读 + replay。 */
-function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription[] }) {
+function DeadLetterSection({
+  subscriptions,
+  canManage,
+}: {
+  subscriptions: EventSubscription[];
+  canManage: (sub: EventSubscription) => boolean;
+}) {
   const qc = useQueryClient();
   const { t } = useTranslation();
   // 默认展开第一个订阅；订阅列表异步到达前用兜底 effect 补设（useState 初值
@@ -234,6 +240,9 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
     });
   };
 
+  const expandedSub = subscriptions.find((s) => s.id === expandedId) ?? null;
+  const canReplayExpanded = expandedSub ? canManage(expandedSub) : false;
+
   const cols: ColumnsType<EventSubscriptionDeadLetter> = [
     { title: t('eventSub.deadLetter.col.event'), dataIndex: 'eventType', width: 180, render: (v: string) => <Tag>{eventTypeLabel(v)}</Tag> },
     {
@@ -263,6 +272,7 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
           size="small"
           icon={<ThunderboltOutlined aria-hidden />}
           data-testid={`dead-letter-replay-${record.id}`}
+          disabled={!canReplayExpanded}
           loading={replayingId === record.id}
           onClick={() => expandedId && handleReplay(expandedId, record)}
         >
@@ -485,10 +495,13 @@ export default function EventSubscriptionsSettings() {
   const { t } = useTranslation();
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<EventSubscription | null>(null);
-  // SUB-SCOPE-01：后端已把 POST /event-subscriptions 收紧为 ADMIN-only。
-  // 读面与 PATCH/DELETE（ADMIN 或属主）保持原样，故非管理员仍能看自己的订阅、
-  // 看死信、启停/编辑/删除已有订阅——只是不能再新增出站通道。
-  const isAdmin = isAdminUser(useAuthStore((s) => s.user));
+  // SUB-SCOPE-01：新建仅 ADMIN；已有行按后端 assertCanManage（ADMIN 或属主）
+  // 收敛写控件。系统级订阅 userId=null 只有 ADMIN 可管理——普通用户保留只读展示，
+  // 不再渲染必吃 403 的启停/编辑/删除/replay 操作。
+  const currentUser = useAuthStore((s) => s.user);
+  const isAdmin = isAdminUser(currentUser);
+  const canManageSub = (sub: EventSubscription) =>
+    isAdmin || (sub.userId != null && sub.userId === currentUser?.id);
 
   // UI-16：读请求失败要页内可见（此前失败只留空表，与「尚无订阅」不可区分）
   const { data: subscriptions = [], isLoading, error: subsError, refetch: refetchSubs } = useQuery({
@@ -550,6 +563,7 @@ export default function EventSubscriptionsSettings() {
           checked={v}
           size="small"
           data-testid={`sub-enabled-${record.id}`}
+          disabled={!canManageSub(record)}
           loading={toggleMut.isPending && toggleMut.variables?.id === record.id}
           onChange={(checked) => toggleMut.mutate({ id: record.id, enabled: checked })}
         />
@@ -579,6 +593,7 @@ export default function EventSubscriptionsSettings() {
             size="small"
             icon={<EditOutlined aria-hidden />}
             data-testid={`sub-edit-${record.id}`}
+            disabled={!canManageSub(record)}
             onClick={() => { setEditing(record); setFormOpen(true); }}
           >
             {t('eventSub.edit')}
@@ -590,7 +605,7 @@ export default function EventSubscriptionsSettings() {
             okButtonProps={{ danger: true }}
             onConfirm={() => removeMut.mutate(record.id)}
           >
-            <Button size="small" danger icon={<DeleteOutlined aria-hidden />} data-testid={`sub-delete-${record.id}`} aria-label={t('eventSub.deleteAria')} />
+            <Button size="small" danger icon={<DeleteOutlined aria-hidden />} data-testid={`sub-delete-${record.id}`} aria-label={t('eventSub.deleteAria')} disabled={!canManageSub(record)} />
           </Popconfirm>
         </Space>
       ),
@@ -651,7 +666,7 @@ export default function EventSubscriptionsSettings() {
 
       <SubscriptionFormModal open={formOpen} editing={editing} onClose={() => setFormOpen(false)} />
 
-      <DeadLetterSection subscriptions={subscriptions} />
+      <DeadLetterSection subscriptions={subscriptions} canManage={canManageSub} />
     </Card>
   );
 }

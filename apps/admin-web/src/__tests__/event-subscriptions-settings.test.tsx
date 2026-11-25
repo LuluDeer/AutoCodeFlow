@@ -406,12 +406,69 @@ describe('SUB-SCOPE-01 非管理员：可读不可建', () => {
     expect(screen.getAllByText('execution.failed').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('已有订阅仍可编辑（PATCH 是 ADMIN 或属主，未收紧）', async () => {
+  it('自有订阅仍可编辑（PATCH 是 ADMIN 或属主，未收紧）', async () => {
+    mocked.list.mockResolvedValue([subRow({ userId: 2 })]);
     renderPage();
     const editBtn = await screen.findByTestId('sub-edit-e1111111-1111-4111-8111-111111111111');
     expect(editBtn).toBeTruthy();
     fireEvent.click(editBtn);
     // 编辑 Modal 能打开
     expect(await screen.findByTestId('sub-url-input')).toBeTruthy();
+  });
+});
+
+describe('事件订阅写控件属主可见性', () => {
+  const systemSubId = 'e3333333-3333-4333-8333-333333333333';
+  const systemDeadId = 'd3333333-3333-4333-8333-333333333333';
+
+  function expectWriteControls(id: string, deadId: string, enabled: boolean) {
+    const sw = screen.getByTestId(`sub-enabled-${id}`) as HTMLButtonElement;
+    expect(sw.disabled || sw.classList.contains('ant-switch-disabled')).toBe(!enabled);
+    expect((screen.getByTestId(`sub-edit-${id}`) as HTMLButtonElement).disabled).toBe(!enabled);
+    expect((screen.getByTestId(`sub-delete-${id}`) as HTMLButtonElement).disabled).toBe(!enabled);
+    expect((screen.getByTestId(`dead-letter-replay-${deadId}`) as HTMLButtonElement).disabled).toBe(!enabled);
+  }
+
+  it('普通用户 + 系统级订阅（userId=null）：启停/编辑/删除/replay 均禁用，仅保留只读展示', async () => {
+    useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
+    mocked.list.mockResolvedValue([subRow({ id: systemSubId, userId: null })]);
+    mocked.listDeadLetters.mockResolvedValue({
+      data: [deadLetterRow({ id: systemDeadId, subscriptionId: systemSubId })],
+      total: 1,
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId(`sub-enabled-${systemSubId}`)).toBeTruthy());
+    await screen.findByTestId(`dead-letter-replay-${systemDeadId}`);
+    expectWriteControls(systemSubId, systemDeadId, false);
+    // 只读展示仍在：URL/事件类型照常可见。
+    expect(screen.getByText('https://ci.example.com/hooks')).toBeTruthy();
+    expect(screen.queryByTestId('sub-create')).toBeNull();
+  });
+
+  it('普通用户 + 自有订阅：启停/编辑/删除/replay 均可用', async () => {
+    useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
+    mocked.list.mockResolvedValue([subRow({ id: systemSubId, userId: 2 })]);
+    mocked.listDeadLetters.mockResolvedValue({
+      data: [deadLetterRow({ id: systemDeadId, subscriptionId: systemSubId })],
+      total: 1,
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId(`sub-enabled-${systemSubId}`)).toBeTruthy());
+    await screen.findByTestId(`dead-letter-replay-${systemDeadId}`);
+    expectWriteControls(systemSubId, systemDeadId, true);
+  });
+
+  it('ADMIN + 系统级订阅（userId=null）：写控件仍可用', async () => {
+    useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
+    mocked.list.mockResolvedValue([subRow({ id: systemSubId, userId: null })]);
+    mocked.listDeadLetters.mockResolvedValue({
+      data: [deadLetterRow({ id: systemDeadId, subscriptionId: systemSubId })],
+      total: 1,
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId(`sub-enabled-${systemSubId}`)).toBeTruthy());
+    await screen.findByTestId(`dead-letter-replay-${systemDeadId}`);
+    expectWriteControls(systemSubId, systemDeadId, true);
+    expect(screen.getByTestId('sub-create')).toBeTruthy();
   });
 });

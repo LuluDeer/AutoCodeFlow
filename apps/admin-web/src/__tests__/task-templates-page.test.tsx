@@ -20,6 +20,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskTemplatesPage from '../pages/TaskTemplatesPage';
 import { taskTemplatesApi, type TaskTemplate } from '../api/task-templates';
 import { message } from '../utils/toast';
+import type { AuthUser } from '../store/auth';
+
+// 属主门控需要可控的当前用户；保留真实 store 的 getState/setState/subscribe，
+// 只把 selector 看到的 user 换成夹具（其他组件也读这个 store，不会拿到空壳 hook）。
+const authState = vi.hoisted(() => ({
+  user: { id: 42, username: 'me', role: 'user' } as AuthUser | null,
+}));
 
 const navMock = vi.fn();
 vi.mock('react-router-dom', () => ({ useNavigate: () => navMock }));
@@ -31,6 +38,16 @@ vi.mock('../api/task-templates', () => ({
 vi.mock('../utils/toast', () => ({
   message: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
 }));
+vi.mock('../store/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../store/auth')>();
+  const fakeHook = ((
+    selector?: (s: ReturnType<typeof actual.useAuthStore.getState>) => unknown,
+  ) =>
+    selector
+      ? selector({ ...actual.useAuthStore.getState(), user: authState.user })
+      : (undefined as never)) as typeof actual.useAuthStore;
+  return { ...actual, useAuthStore: Object.assign(fakeHook, actual.useAuthStore) };
+});
 
 // jsdom 缺失 antd 依赖的浏览器 API（对齐 task-form-page.test 先例）。
 const g = globalThis as Record<string, unknown>;
@@ -94,8 +111,28 @@ async function openUseModal(): Promise<HTMLElement> {
   return screen.findByRole('dialog');
 }
 
+/** 按模板名定位 antd Card，在其内部查编辑/删除按钮（避免全局按钮计数误判）。 */
+async function manageCard(name: string): Promise<HTMLElement> {
+  await screen.findByText(name);
+  const card = screen.getByText(name).closest('.ant-card') as HTMLElement | null;
+  if (!card) throw new Error(`找不到模板卡片：${name}`);
+  return card;
+}
+
+/** 编辑（text=编辑）与删除（aria-label=删除模板）必须同时出现/消失。 */
+function expectCanManage(card: HTMLElement, expected: boolean): void {
+  expect(within(card).queryByRole('button', { name: '编辑' }) !== null).toBe(expected);
+  expect(within(card).queryByRole('button', { name: '删除模板' }) !== null).toBe(expected);
+}
+
+function renderTemplates(list: TaskTemplate[]): void {
+  vi.mocked(taskTemplatesApi.list).mockClear().mockResolvedValue(list as never);
+  renderPage();
+}
+
 beforeEach(() => {
   navMock.mockReset();
+  authState.user = { id: 42, username: 'me', role: 'user' };
   vi.mocked(message.success).mockClear();
   vi.mocked(message.error).mockClear();
   vi.mocked(taskTemplatesApi.instantiate).mockReset().mockResolvedValue({
@@ -115,6 +152,7 @@ beforeEach(() => {
       description: null,
       category: null,
       isOfficial: false,
+      createdBy: 'user:42|me',
       config: { triggerType: 'manual', runtime: 'python', entrypoint: 'main.py' },
     }),
   ] as never);
@@ -248,5 +286,84 @@ describe('TaskTemplatesPage configSummary：glue 模板', () => {
 
     await screen.findByText('定时备份');
     expect(document.body.textContent ?? '').toContain('shell · backup.sh');
+  });
+});
+
+describe('TaskTemplatesPage 模板管理按钮属主门控（对齐后端 assertMutable）', () => {
+  it('普通用户：他人 keyed 模板（user:999|other）不显示编辑/删除', async () => {
+    renderTemplates([
+      makeTemplate({
+        id: 'gate-1', key: 'other-key', name: '他人模板',
+        isOfficial: false, createdBy: 'user:999|other',
+      }),
+    ]);
+
+    expectCanManage(await manageCard('他人模板'), false);
+  });
+
+  it('普通用户：自己的 keyed 模板（user:42|me）显示编辑/删除', async () => {
+    renderTemplates([
+      makeTemplate({
+        id: 'gate-2', key: 'own-key', name: '我的模板',
+        isOfficial: false, createdBy: 'user:42|me',
+      }),
+    ]);
+
+    expectCanManage(await manageCard('我的模板'), true);
+  });
+
+  it('普通用户：legacy 他人（other）不显示编辑/删除', async () => {
+    renderTemplates([
+      makeTemplate({
+        id: 'gate-3', key: 'legacy-other', name: '历史他人模板',
+        isOfficial: false, createdBy: 'other',
+      }),
+    ]);
+
+    expectCanManage(await manageCard('历史他人模板'), false);
+  });
+
+  it('普通用户：legacy 自己（user.username）显示编辑/删除', async () => {
+    renderTemplates([
+      makeTemplate({
+        id: 'gate-4', key: 'legacy-me', name: '历史我的模板',
+        isOfficial: false, createdBy: 'me',
+      }),
+    ]);
+
+    expectCanManage(await manageCard('历史我的模板'), true);
+  });
+
+  it('普通用户：createdBy=null 历史模板不显示编辑/删除', async () => {
+    renderTemplates([
+      makeTemplate({
+        id: 'gate-5', key: 'null-owner', name: '无主模板',
+        isOfficial: false, createdBy: null,
+      }),
+    ]);
+
+    expectCanManage(await manageCard('无主模板'), false);
+  });
+
+  it('ADMIN：非官方模板（他人 keyed / null）全显示；官方仍只读', async () => {
+    authState.user = { id: 42, username: 'me', role: 'admin' };
+    renderTemplates([
+      makeTemplate({
+        id: 'gate-6', key: 'admin-other', name: '他人模板',
+        isOfficial: false, createdBy: 'user:999|other',
+      }),
+      makeTemplate({
+        id: 'gate-7', key: 'admin-null', name: '无主模板',
+        isOfficial: false, createdBy: null,
+      }),
+      makeTemplate({
+        id: 'gate-8', key: 'admin-official', name: '官方模板',
+        isOfficial: true, createdBy: null,
+      }),
+    ]);
+
+    expectCanManage(await manageCard('他人模板'), true);
+    expectCanManage(await manageCard('无主模板'), true);
+    expectCanManage(await manageCard('官方模板'), false);
   });
 });
