@@ -1,7 +1,27 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 28 轮 · webhook 重投去重穿透修复）
-> 当前分支 `develop` = `ce04cb5e`（第 5-27 轮累积已按主题分 24 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`ce04cb5e` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 28 提交、未 push**。子 agent 平台已恢复（第 24-28 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 29 轮 · 手动 kill executorId 快照错投修复）
+> 当前分支 `develop` = `84d06728`（第 5-28 轮累积已按主题分 26 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`84d06728` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 30 提交、未 push**。子 agent 平台已恢复（第 24-29 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 29 轮）：手动 kill 的 executorId 快照错投（dispatch 窗口）修复
+
+**方向来源**：objective 续轮，自己找方向。继续兑现登记候选的第二个（后果重）：`task.service.ts:5152-5164` 手动 kill 时 address 已优先取 RETURNING 库中实际值，但第三参 `notifyExecutorKill(..., execution.executorId)` 仍用 findOne 快照——dispatch 尚未落库时快照为 null，`executor.service.ts:1996-2003` 按 address 路由、同址多行进兄弟行队列，页面已 KILLED 而真实进程继续。根因：`execution-terminal.ts:318` 的 RETURNING 只有 `["id","executorAddress"]`，没带 executorId。主控 CodeGraph 逐层复核确认（rawBody/secret/entity 字段/路由校验均在）。
+
+**修法（增量、对其它调用方零影响）**：`execution-terminal.ts` — `TerminalTransitionRow` 加可选 `executorId`、`normalizeRaw` 透出该列（非 string → null）、RETURNING 加 `"executorId"`；行身份设为**不可枚举属性**（`Object.defineProperty enumerable:false`），避免改变 rows 的序列化/深比较形状，其它只读 id/executorAddress 的调用方（scheduler/executor/block-strategy/callback）零影响。`task.service.ts:5162` 第三参改 `result.rows[0]?.executorId ?? execution.executorId`（RETURNING 优先、快照兜底），注释改诚实版。
+
+**集成期回归修复（主控亲自，AGENTS §4.1 例外）**：RETURNING 加列后，`scheduler.service.spec.ts:1824` 写死的两列断言 `toHaveBeenCalledWith(["id","executorAddress"])` 真红（实测 1 failed / 194）；主控把它更新为三列（与 production 一致），恢复 194/194。这是本轮改动的涟漪，agent 因写域边界未碰，主控集成时补齐。
+
+**交付（5 文件）**：`execution-terminal.ts`、`task.service.ts`、`execution-terminal.spec.ts`（+1 RETURNING/normalizeRaw 用例）、`task.service.spec.ts`（+2：RETURNING 优先 / 快照兜底）、`scheduler.service.spec.ts`（回归修断言）。
+
+**验证（主控独立复跑）**：3 套相关 spec `task.service` + `execution-terminal` + `scheduler` 共 **551 passed** exit 0；`tsc --noEmit` 0。**反证（主控自做）**：第三参改回 `execution.executorId` → 核心用例 exit 1（期望 row-b、实收 null），还原 sha256 `28b5516…` 逐字节一致、复跑 551/551。验收级别：单测/内存替身（jest + mock repo/RETURNING 行）；**未达**真 PG `UPDATE...RETURNING` 时序 / 真 pull 执行器寻路。遗留缺陷 0。
+
+**未做候选（仍留后续）**：web `cron-desc.ts:85,89` + `maintenance-desc.ts:30` cron dow `7`/范围 `1-5` 裸 i18n key（R27 交接有修法/验收口径）——本仓最后一个已确证的用户可感知小缺口。
+
+**提交**：按 objective「分批提交」分 2 批——① 功能 5 文件；② 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 功能提交 + 交接提交，30+ 提交未 push；kill 错投已修且反证有牙。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 28 轮）：webhook 重投去重穿透（timestamp 重签绕过）修复
 
