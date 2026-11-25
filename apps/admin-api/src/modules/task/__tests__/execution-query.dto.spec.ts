@@ -252,6 +252,27 @@ describe("ExecutionLogsQueryDto (OBS-03: GET /tasks/:id/executions/:execId/logs)
     expect(result.level).toBeUndefined();
   });
 
+  it("rejects a negative fromLine with 400 VALIDATION_FAILED (no OFFSET -1)", async () => {
+    await expect(validate({ fromLine: "-1" })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it("rejects fractional and non-numeric fromLine (digits-only)", async () => {
+    await expect(validate({ fromLine: "1.5" })).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(validate({ fromLine: "abc" })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it("accepts fromLine=0 and an oversized all-digit string at the DTO layer", async () => {
+    expect((await validate({ fromLine: "0" })).fromLine).toBe("0");
+    const big = await validate({ fromLine: "999999999999999999999" });
+    expect(big.fromLine).toBe("999999999999999999999");
+  });
+
   it("level is optional", async () => {
     const result = await validate({});
     expect(result.level).toBeUndefined();
@@ -304,5 +325,66 @@ describe("TaskController query metatypes (N7 root cause)", () => {
       "executionLogs",
     );
     expect(scoped).toContain(ExecutionLogsQueryDto);
+  });
+});
+
+/**
+ * 纵深防御：HTTP 层由 @Matches 拦负数（400 VALIDATION_FAILED），但 controller
+ * 的 Math.max(0, …) 必须在 DTO 校验被绕过的内部直调路径上仍把 fromLine 钳到
+ * 非负——否则 execution-log-read.collaborator 的 skip(负数) 会生成 PG OFFSET -1（500）。
+ */
+describe("ExecutionLogsQueryDto — controller fromLine clamp (纵深防御)", () => {
+  const makeController = () => {
+    const taskService = {
+      getExecution: jest.fn().mockResolvedValue({ id: "exec-1" }),
+      getExecutionLogs: jest
+        .fn()
+        .mockResolvedValue({ lines: [], totalLines: 0 }),
+    };
+    const audit = { log: jest.fn().mockResolvedValue(undefined) };
+    const controller = new TaskController(
+      taskService as any,
+      {} as any,
+      audit as any,
+    );
+    return { controller, taskService };
+  };
+
+  it("clamps a negative fromLine to 0 even when DTO validation is bypassed", async () => {
+    const { controller, taskService } = makeController();
+
+    await controller.executionLogs("task-1", "exec-1", {
+      fromLine: "-1",
+    } as any);
+
+    expect(taskService.getExecutionLogs).toHaveBeenCalledWith(
+      "exec-1",
+      0,
+      500,
+      undefined,
+    );
+  });
+
+  it("keeps fromLine=0 and parses an oversized numeric string without throwing", async () => {
+    const { controller, taskService } = makeController();
+
+    await controller.executionLogs("task-1", "exec-1", {
+      fromLine: "0",
+    } as any);
+    expect(taskService.getExecutionLogs).toHaveBeenLastCalledWith(
+      "exec-1",
+      0,
+      500,
+      undefined,
+    );
+
+    await controller.executionLogsByExecId("exec-1", {
+      fromLine: "999999999999999999999",
+    } as any);
+    const huge = taskService.getExecutionLogs.mock.calls[1][1];
+    expect(typeof huge).toBe("number");
+    // 超大 OFFSET 必须钳到 PG int64 安全上界：1e21 虽是 finite number，
+    // 但直接下发会让 PG OFFSET 触发 bigint 越界 500。
+    expect(huge).toBe(Number.MAX_SAFE_INTEGER);
   });
 });

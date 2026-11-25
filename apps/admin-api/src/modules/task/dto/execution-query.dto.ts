@@ -7,6 +7,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   Min,
 } from "class-validator";
@@ -318,6 +319,9 @@ export class ExecutionLogsQueryDto {
   @ApiPropertyOptional({ description: "起始行号，缺省 0" })
   @IsOptional()
   @IsString()
+  @Matches(/^\d+$/, {
+    message: "fromLine must be a non-negative integer string",
+  })
   fromLine?: string;
 
   @ApiPropertyOptional({ description: "每页行数，缺省 500，最大 2000" })

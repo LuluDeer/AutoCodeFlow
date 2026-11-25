@@ -735,7 +735,12 @@ export class TaskController {
   ) {
     return this.taskService.getExecutionLogs(
       execId,
-      query.fromLine ? parseInt(query.fromLine, 10) || 0 : 0,
+      query.fromLine
+        ? Math.min(
+            Math.max(0, parseInt(query.fromLine, 10) || 0),
+            Number.MAX_SAFE_INTEGER,
+          )
+        : 0,
       query.limit ? Math.min(parseInt(query.limit, 10) || 500, 2000) : 500,
       parseLevelParam(query.level),
     );
@@ -1255,7 +1260,12 @@ export class TaskController {
     await this.taskService.getExecution(execId, id);
     return this.taskService.getExecutionLogs(
       execId,
-      query.fromLine ? parseInt(query.fromLine, 10) || 0 : 0,
+      query.fromLine
+        ? Math.min(
+            Math.max(0, parseInt(query.fromLine, 10) || 0),
+            Number.MAX_SAFE_INTEGER,
+          )
+        : 0,
       query.limit ? Math.min(parseInt(query.limit, 10) || 500, 2000) : 500,
       parseLevelParam(query.level),
     );
