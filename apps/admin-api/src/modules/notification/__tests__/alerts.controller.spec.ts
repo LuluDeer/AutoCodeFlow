@@ -266,6 +266,65 @@ describe("AlertsController webhook (OBS-02)", () => {
     const arg = notificationService.sendAll.mock.calls[0][0];
     expect(arg.content).not.toContain("Runbook:");
   });
+
+  it("R28 漏网：同一 rawBody 不同 timestamp（签名均合法）只扇出一次，异 rawBody 不被误杀", async () => {
+    // 真 SETNX 语义：同键第一次放行、后续拒绝；不同键各自放行。
+    const seen = new Set<string>();
+    const guard = {
+      setIfAbsent: jest.fn(async (key: string, _ttl: number) => {
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }),
+      deleteKey: jest.fn(async (_key: string) => undefined),
+    };
+    const c = new AlertsController(
+      notificationService as never,
+      {
+        get: (key: string) =>
+          key === "alert.webhookSecret" ? SECRET : undefined,
+      } as never,
+      taskRepo as never,
+      guard as never,
+    );
+    notificationService.sendAll.mockResolvedValue({ wecom: "sent" });
+
+    const rawBody = payloadBody();
+    const payload = JSON.parse(rawBody.toString());
+    // 两个 timestamp 相隔 1s，均在 ±5min 窗内且各自验签通过；但签名不同。
+    const ts1 = String(FIXED_NOW);
+    const ts2 = String(FIXED_NOW + 1000);
+    expect(sign(ts1, rawBody)).not.toBe(sign(ts2, rawBody));
+
+    const first = await c.webhook(payload, sign(ts1, rawBody), ts1, {
+      rawBody,
+    } as never);
+    expect(first).toMatchObject({ ok: true });
+    expect(notificationService.sendAll).toHaveBeenCalledTimes(1);
+
+    const second = await c.webhook(payload, sign(ts2, rawBody), ts2, {
+      rawBody,
+    } as never);
+    expect(second).toEqual({ deduplicated: true });
+    expect(notificationService.sendAll).toHaveBeenCalledTimes(1);
+
+    // 异 rawBody（告警内容变化）→ HMAC 键不同，不被误杀，正常扇出。
+    const otherBody = Buffer.from(
+      JSON.stringify({
+        ...payload,
+        commonAnnotations: { summary: "a different alert" },
+      }),
+    );
+    const ts3 = String(FIXED_NOW + 2000);
+    const third = await c.webhook(
+      JSON.parse(otherBody.toString()),
+      sign(ts3, otherBody),
+      ts3,
+      { rawBody: otherBody } as never,
+    );
+    expect(third).toMatchObject({ ok: true });
+    expect(notificationService.sendAll).toHaveBeenCalledTimes(2);
+  });
 });
 
 /**

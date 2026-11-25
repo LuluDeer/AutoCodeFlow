@@ -1,7 +1,27 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 49 轮 · 两处前端越权可见 + MCP 死信静默截断）
-> 本批提交前基线 `develop` = `ff650f19`（领先 origin/develop 71 提交、未 push）；按 operator「不做无意义提交」约束，本轮三修复 + 三测试 + 基线 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-49 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 50 轮 · webhook 去重漏网两处 + uv 进程树杀复制漂移）
+> 本批提交前基线 `develop` = `e7bdcf06`（领先 origin/develop 72 提交、未 push）；按 operator「不做无意义提交」约束，本轮三修复 + 三测试 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-50 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 50 轮）：Alertmanager/发版 webhook 去重漏网 + uv 进程树杀（三域并行）
+
+**方向来源**：objective 续轮，自己找方向。派 2 路审计扫缓存/锁/去重键与执行器资源生命周期，CodeGraph 复核三处确证后 3 agent 并行修（写域互斥）。
+
+**缺口①（告警风暴，R28 漏网）**：`alerts.controller.ts:176-181` 去重键 = `sha256(signature)`，而 signature = HMAC(secret, `${timestamp}.${rawBody}`)。同告警窗内重试刷新时间戳 → 新键 → 10min 内全渠道二次扇出。R28 只修了 task-webhook.service.ts。修：键改 `createHmac('sha256', secret).update(rawBody)` 短前缀（timestamp 不入键、异 body 不误杀），前缀/TTL/fail-open 不变。
+
+**缺口②（重复滚动升级，R28 漏网）**：`application.controller.ts:718-723` 同缺陷——发版 webhook 换时间戳重试 → 重复 updateVersion + 对全部 RUNNING 部署滚动升级；无 delivery 头的老 CI 只靠此闸。修：键改 `createHmac('sha256', targetApp.webhookSecret).update(rawBody)`，createHash 保留给 :185 别处用（两 import 共存，agent 间私信纠正了误改）。
+
+**缺口③（uv 超时孤儿进程，复制漂移）**：`interpreters.py:569 _kill_process_tree` POSIX 只 `proc.kill()`，但 `_spawn_kwargs_for_platform` 用 `start_new_session=True` 建独立进程组；uv python install 超时后孙进程持 stdout 管道 → communicate 超时被吞 → 孤儿 + fd 泄漏。同仓 `execute.py:429 _posix_kill_process_group` 已有完整实现。修：内联同款（killpg(SIGKILL) + EXEC-02"与执行器同组则只 kill(pid)"安全底线）——因 test_interpreters.py:1356 硬约束本模块不得反向依赖 routers，无法 import 复用；docstring 注明两处须同步。
+
+**验证（主控独立复跑）**：admin 51 tests（alerts 15 + app dedupe 1 + app controller 35）、Python 119 tests（killpg 2 + interpreters 117）、双 tsc、全守卫链 130 段全绿。**反证（主控自做）**：alerts/app 改回 `createHash(signature)` → 各新用例红；uv killpg 回只 kill → 用例红（agent 反证）；三处还原 sha 逐字节一致（`1fedf843…` / `f8747775…` / `190117f8…`）。验收级别：单测/内存替身 + 全链；未达真 Redis 时序/真 uv 超时现场。遗留缺陷 0。
+
+**协作亮点**：alerts agent 发现 app agent 的跨写域 TS2552（createHmac 未 import），私信纠正——AGENTS §4.2/§4.3 子 agent 直接通信按期生效。
+
+**仍留候选**：中间态 bisect 退化（R38）；广播占坑另两子场景（ADR 级）。轻量确证候选清零。
+
+**提交**：单批（3 源码 + 3 测试 + 本交接段）。**未 push**。处于可发布态。
+
+---
 
 ## 本轮（2026-11-25 · 第 49 轮）：模板/事件订阅越权可见 + MCP 死信静默截断（三域并行）
 

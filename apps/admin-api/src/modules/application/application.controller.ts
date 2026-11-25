@@ -73,7 +73,7 @@ import { UpgradeAllDto } from "./dto/rollout.dto";
 import * as fs from "fs";
 import * as path from "path";
 // R5a：上传包内容寻址——对暂存字节流式计算 sha256，作为落盘路径成分。
-import { createHash } from "crypto";
+import { createHash, createHmac } from "crypto";
 // FEAT-21: HMAC 校验收敛到共享纯函数（与 alerts / 任务 webhook 同源）
 import { verifyWebhookSignature } from "../../common/utils/webhook-hmac.util";
 import type { Request } from "express";
@@ -708,15 +708,21 @@ export class ApplicationController {
       }
     }
 
-    // SEC-R3-4（P2）：同一签名在窗内重复到达时不再重复 update/upgrade
-    // （旧实现每次重放都会把版本元数据再写一遍，并在 triggerDeploy 时对
-    // 所有 RUNNING 部署**再发起一轮滚动升级**）。首投放行；命中返回
+    // SEC-R3-4（P2）：同一业务投递（rawBody 相同）在窗内重复到达时不再重复
+    // update/upgrade（旧实现每次重放都会把版本元数据再写一遍，并在 triggerDeploy
+    // 时对**所有 RUNNING 部署再发起一轮滚动升级**）。首投放行；命中返回
     // `{deduplicated:true}`（200 让 CI 停止重试）。Redis 不可达 fail-open。
     if (this.replayGuard) {
-      // 键必须用签名：delivery 头不在 HMAC 覆盖范围内，拿它做键等于让攻击者
-      // 改一个头就绕过去重。delivery 仅记录在日志里。
-      const key = `webhook:app:${targetApp.id}:${createHash("sha256")
-        .update(signature ?? "")
+      // 键不得用请求签名：签名 = HMAC(secret, `${timestamp}.${rawBody}`)，
+      // CI 换个时间戳重签就得到新签名 → 新键 → 绕过去重（SEC-R3-4 漏网）。
+      // 改用与上面 verify 同一个服务端 secret 对 **rawBody 本身** 的 HMAC-SHA256
+      // 短前缀：timestamp 不入键（重签仍落同键），异 rawBody 落异键（不误杀），
+      // 外部无 secret 无法伪造/碰撞；delivery 头不在 HMAC 覆盖内，只记日志。
+      const key = `webhook:app:${targetApp.id}:${createHmac(
+        "sha256",
+        targetApp.webhookSecret,
+      )
+        .update(req?.rawBody ?? Buffer.alloc(0))
         .digest("hex")
         .slice(0, 32)}`;
       try {

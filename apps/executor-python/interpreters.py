@@ -77,6 +77,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -567,6 +568,36 @@ def _spawn_kwargs_for_platform() -> dict:
     return {'start_new_session': True}
 
 
+def _posix_kill_process_group(proc: 'subprocess.Popen') -> None:
+    """POSIX 侧组杀：``killpg(SIGKILL)`` 打整棵树，失败再退化为 ``proc.kill()``。
+
+    与 ``routers/execute.py::_posix_kill_process_group`` **同款内联**：本模块按
+    分层纪律不反向依赖上层路由（两处改动必须同步）。EXEC-02 安全底线：
+    ``killpg`` 前先比对**执行器自己**的 pgid；子进程若因任何原因没拿到独立
+    进程组（``_spawn_kwargs_for_platform`` 的 ``start_new_session=True`` 失效），
+    ``getpgid(proc.pid)`` 会返回执行器自己的 pgid，此时 killpg 等于自杀
+    （连同其它并发任务一起 SIGKILL），只能退化为杀该 pid。
+    """
+    if proc.pid is None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+        if pgid == os.getpgid(0):
+            # 不是独立进程组：killpg 会打到执行器自己 → 只杀该 pid。
+            logger.warning(
+                'task child pid %s shares the executor process group (pgid %s); '
+                'falling back to a single-process kill', proc.pid, pgid,
+            )
+            proc.kill()
+            return
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+
+
 def _kill_process_tree(proc: 'subprocess.Popen') -> None:
     if sys.platform == 'win32':
         try:
@@ -578,12 +609,17 @@ def _kill_process_tree(proc: 'subprocess.Popen') -> None:
             )
         except Exception:  # pragma: no cover - 尽力而为
             pass
-    try:
-        proc.kill()
-    except ProcessLookupError:
-        pass
-    except Exception:  # pragma: no cover - 进程已退出
-        pass
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        except Exception:  # pragma: no cover - 进程已退出
+            pass
+    else:
+        # _spawn_kwargs_for_platform() 的 start_new_session=True 让子进程自带
+        # 进程组：uv 派生的孙进程（git/构建后端）继承 stdout 写端会吊住
+        # communicate()，只 kill 直接子进程会留下孤儿 + Popen pipe fd 泄漏。
+        _posix_kill_process_group(proc)
 
 
 def _tail(text: str, limit: int = 1200) -> str:

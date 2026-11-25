@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+import { createHmac } from "crypto";
 import {
   Body,
   Controller,
@@ -172,9 +172,13 @@ export class AlertsController {
     // `{deduplicated:true}`（200 让 Alertmanager 停止重试）。Redis 不可达
     // fail-open：去重是加固，不是让告警链路全挂的理由。
     let replayKey: string | null = null;
-    if (this.replayGuard && signature) {
-      const key = `webhook:alert:${createHash("sha256")
-        .update(signature)
+    // R28 漏网修复：不能拿请求签名做键——签名 = HMAC(secret, `${timestamp}.${rawBody}`)，
+    // 窗内重试刷新 timestamp 即得新签名→新键→10min 内二次全渠道扇出。改用服务端
+    // secret 对 rawBody 的 HMAC-SHA256 短前缀：timestamp 不入键、同 body 必同键；
+    // secret 只在服务端外部无法伪造，不同 body 落不同键不误杀。
+    if (this.replayGuard && req?.rawBody) {
+      const key = `webhook:alert:${createHmac("sha256", secret)
+        .update(req.rawBody)
         .digest("hex")
         .slice(0, 32)}`;
       try {
