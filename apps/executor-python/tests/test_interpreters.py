@@ -1295,6 +1295,47 @@ def test_unpinned_install_recorded_as_unverified(fake_uv, pool, monkeypatch):
     assert interpreters.integrity_unverified_versions() == ['3.12']
 
 
+def test_cached_hit_with_pin_mismatch_is_corrupt_sync_and_async(fake_uv, pool, monkeypatch):
+    """缓存命中（锁内 double-check/同步/异步入口）必须复用 SHA pin 校验。
+
+    池内预置"报告正确版本但哈希不同"的假二进制：三条命中路径任一绕过校验，
+    ensure_version / ensure_version_async 就会返回被替换的解释器而非报错。
+    """
+    make_entry(pool, '3.11.20')
+    monkeypatch.setattr(settings, 'uv_python_sha256_pins', {'3.11': 'f' * 64})
+    monkeypatch.setattr(interpreters, '_sha256_of', lambda _path: '0' * 64)
+
+    with pytest.raises(interpreters.InterpreterUnavailable) as ei:
+        interpreters.ensure_version('3.11', timeout=30)
+    assert ei.value.version == '3.11'
+    assert ei.value.reason == 'corrupt'
+    assert '不匹配' in (ei.value.detail or '')
+
+    async def scenario():
+        with pytest.raises(interpreters.InterpreterUnavailable) as async_ei:
+            await interpreters.ensure_version_async('3.11', timeout=30)
+        assert async_ei.value.reason == 'corrupt'
+
+    asyncio.run(scenario())
+    assert fake_uv.installs == [], '缓存命中不得触发下载，拒绝必须发生在校验处'
+
+
+def test_cached_hit_without_pin_records_integrity_unverified(fake_uv, pool, monkeypatch):
+    """无 pin 缓存命中不抛错，仅按既有口径记录 integrity_unverified。"""
+    make_entry(pool, '3.11.20')
+    monkeypatch.setattr(settings, 'uv_python_sha256_pins', {})
+
+    resolved = interpreters.ensure_version('3.11', timeout=30)
+    assert resolved == interpreters.resolve_python_bin('3.11')
+
+    async def scenario():
+        return await interpreters.ensure_version_async('3.11', timeout=30)
+
+    assert asyncio.run(scenario()) == resolved
+    assert '3.11' in interpreters.pool_summary()['integrity_unverified']
+    assert fake_uv.installs == []
+
+
 # ---------------------------------------------------------------------------
 # uv 定位
 # ---------------------------------------------------------------------------

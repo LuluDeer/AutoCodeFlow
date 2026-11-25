@@ -1241,7 +1241,27 @@ def _verify_installed(version: str) -> Path:
             f'解释器 {resolved} 报告的 Python 版本为 {reported or "?"} '
             f'（期望 {version}.x）：{_tail(out)}',
         )
-    # F-2: SHA-256 pin 校验（constant-time 比对，不匹配 → corrupt，绝不运行）。
+    # F-2: SHA-256 pin 校验复用缓存命中口径（constant-time，不匹配 → corrupt）。
+    return _verify_cached_python(version, resolved)
+
+
+def _constant_time_eq(left: str, right: str) -> bool:
+    """长度恒定的字符串比较（防时序侧信道推断 pin 前缀）。"""
+    if len(left) != len(right):
+        return False
+    result = 0
+    for a, b in zip(left, right):
+        result |= ord(a) ^ ord(b)
+    return result == 0
+
+
+def _verify_cached_python(version: str, resolved: Path) -> Path:
+    """校验池内二进制的完整性：有 pin 则 constant-time 比对，无 pin 沿用既有留痕。
+
+    缓存命中（锁内 double-check / 同步 / 异步入口）与在线下载共用同一口径——
+    不能因为"别人已经下载完"就跳过 SHA-256 pin；未配置 pin 时仍只做原有
+    「可执行 + 版本号」抽查，并按既有口径记录 integrity_unverified。
+    """
     pin = (settings.uv_python_sha256_pins or {}).get(version)
     if pin:
         actual = _sha256_of(resolved)
@@ -1256,16 +1276,6 @@ def _verify_installed(version: str) -> Path:
     else:
         _mark_integrity_unverified(version)
     return resolved
-
-
-def _constant_time_eq(left: str, right: str) -> bool:
-    """长度恒定的字符串比较（防时序侧信道推断 pin 前缀）。"""
-    if len(left) != len(right):
-        return False
-    result = 0
-    for a, b in zip(left, right):
-        result |= ord(a) ^ ord(b)
-    return result == 0
 
 
 def record_sha256_pin(version: str) -> str:
@@ -1337,7 +1347,7 @@ def _ensure_version_locked(version: str, timeout: float) -> Path:
     # double-checked：等待者拿到锁时下载方可能已经完成（AC-16b/EG-06）。
     cached = resolve_python_bin(version)
     if cached is not None:
-        return cached
+        return _verify_cached_python(version, cached)
 
     env = build_uv_env(cache_dir=pool_root() / '.uv-cache')
     args = _build_install_args(version)
@@ -1399,7 +1409,7 @@ def ensure_version(version: str, *, timeout: float) -> Path:
     validate_version(version)
     cached = resolve_python_bin(version)
     if cached is not None:
-        return cached
+        return _verify_cached_python(version, cached)
     _raise_if_not_downloadable(version)
     lock = _get_version_lock(version)
     with lock:
@@ -1425,7 +1435,7 @@ async def ensure_version_async(version: str, *, timeout: float) -> Path:
     validate_version(version)
     cached = resolve_python_bin(version)
     if cached is not None:
-        return cached
+        return _verify_cached_python(version, cached)
     _raise_if_not_downloadable(version)
     semaphore = _get_download_semaphore()
     async with semaphore:

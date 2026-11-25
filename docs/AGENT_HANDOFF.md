@@ -1,7 +1,21 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 46 轮 · 调度 dom/dow 语义 + manifest 类型校验）
-> 本批提交前基线 `develop` = `79c06149`（领先 origin/develop 68 提交、未 push）；按 operator「不做无意义提交」约束，本轮两个修复 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-46 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 47 轮 · 解释器 pin 缓存命中绕过修复）
+> 本批提交前基线 `develop` = `3a754bf9`（领先 origin/develop 69 提交、未 push）；按 operator「不做无意义提交」约束，本轮修复 + 测试 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-47 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 47 轮）：解释器 SHA-256 pin 缓存命中绕过（安全档）
+
+**方向来源**：objective 续轮，自己找方向。兑现上轮审计登记的安全候选。CodeGraph 复核确证：`interpreters.py` 的 pin 校验只在下载路径 `_verify_installed`（:1244）做，但三处缓存命中（:1338 锁内 double-check、:1400 sync、:1426 async）只 `resolve_python_bin` 命中即 return——池内二进制被换成"仍报正确版本"的后门时，配了 pin 也挡不住，token/产物可被窃。
+
+**修法（1 源码 + 1 测试）**：抽 `_verify_cached_python(version, resolved)`——有 pin 则 `_sha256_of` 与 pin.lower() 用既有 `_constant_time_eq` 比对、不符抛 `InterpreterUnavailable('corrupt')`；无 pin 则 `_mark_integrity_unverified` 后返回（行为逐字不变）。三处缓存命中统一调它；下载路径 `_verify_installed` 的 SHA 段也改调同一 helper（口径统一、文案不回退）。测试：pin 错 + 假二进制报对版本 → sync/async 均 corrupt；无 pin 命中 → 只记 unverified 不抛。
+
+**验证（主控独立复跑）**：Python 全量 87.36% 覆盖过 86% 门槛（含 test_interpreters 117 + 相关共 171 passed）、全守卫链 130 段 0。**反证（主控自做）**：三处改回直接 `return cached` → 新用例 `DID NOT RAISE InterpreterUnavailable`，还原 sha256 `e22744de…` 逐字节一致。验收级别：单测/monkeypatch 替身 + 全链；未达真实二进制替换攻击现场。遗留缺陷 0。
+
+**仍留候选**：中间态 bisect 退化（R38，需 rebase/CI commit 守卫）；广播占坑另两子场景（ADR 级，需数据模型变更+真 PG）。轻量确证候选清零。
+
+**提交**：单批（源码 + 测试 + 本交接段）。**未 push**。处于可发布态。
+
+---
 
 ## 本轮（2026-11-25 · 第 46 轮）：调度 dom/dow AND 语义 + manifest 类型校验（双域并行）
 
