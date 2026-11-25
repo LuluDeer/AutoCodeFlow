@@ -1,7 +1,29 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 33 轮 · webhook 密钥双读分叉 + python VIRTUAL_ENV 密钥注入）
-> 当前分支 `develop` = `43d9d884`（第 5-32 轮累积已按主题分 34 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`43d9d884` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 39 提交、未 push**。子 agent 平台已恢复（第 24-33 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R33 更正】上一轮头部写的 `4c6b9eb5`/37 提交是提交前快照，实际提交后 HEAD=`43d9d884`/39 提交。）
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 34 轮 · swagger enum 嵌套分叉 + 静默轮询失败停摆）
+> 当前分支 `develop` = `df5086e6`（第 5-33 轮累积已按主题分 37 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`df5086e6` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 42 提交、未 push**。子 agent 平台已恢复（第 24-34 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R34 更正】上一轮头部写的 `43d9d884`/39 提交是提交前快照，实际提交后 HEAD=`df5086e6`/42 提交。）
+
+## 本轮（2026-11-25 · 第 34 轮）：swagger enum 嵌套分叉 + 静默轮询失败停摆（双域并行）
+
+**方向来源**：objective 续轮，自己找方向。先复核 ADR-031 步骤 3/5（PROJECT-STATUS 标为自主可落地）——CodeGraph 发现 `tool-executor.service.ts` 的决策 ② 已改读 `ledgerRowExists` 单判据、0 行补插，`replayApproved` 不再参与写入判定，**步骤 3 实已被前序轮次落地、ADR 文档滞后**（同 ADR-024），不做纯文档回写。全守卫链基线 130 段绿。派 2 路只读审计分域（web 状态机、跨端契约），主控 CodeGraph 复核后两处都做、写域互斥并行。
+
+**缺口①（跨端契约，生成物分叉）**：`execution-callback.dto.ts:174` 的 `enum: [EXECUTOR_REPORTABLE_FAILURE_REASONS]` 数组套数组（该常量本身是数组）→ openapi.json 生成 `enum:[[12码]]` + `type:"number"`，api-types.ts 生成 tuple `failureReason?: ["package_fetch_failed",...]` + `@enum {number}`；而运行时 `@IsIn([...])` 收**单个字符串码**。下游按 `failureReason:"script_error"` 赋值即 tsc 红、SDK 按 tuple 发错形状被拒。现有 response-schema/web-type-field-drift/api-types-drift 全绿盲区（比的两份产物同错）。修法：enum 平铺 `[...ARRAY]` + `type:"string"`，重跑 `openapi:export`+`gen:api-types` 更新两产物。
+
+**缺口②（web 状态机）**：`useAgentSessionDetail.ts:36/41/50/59` 静默轮询（15s `refresh(id,true)`）里 detail 失败/异 ID/畸形 → 无条件 publish error → `detail=null` → `isLive=false` → interval effect 清除 → **轮询永久停摆**，会话仍在跑却不再自愈。对照 `AgentSessionsPage.tsx:315` 的 silent 语义（保留旧数据下一拍重试）。修法：三处失败 publish 加 `if(!silent)` 守卫。
+
+**交付（6 文件）**：DTO + 两份生成物（failureReason 变扁平 12 串、`@enum {string}`、字符串联合）+ i18n 映射（2 条新文案）；hook + 其测试（2 条新用例）。
+
+**集成期回归（主控亲修）**：生成物重跑把 R31 遗留的 executor-package download 描述漂移一并同步（正确，属源码/产物对齐），但这引入 2 条新中文文案缺英文映射 → `check:api-i18n` 红。主控补 `openapi-en-map.json` 2 条（首次用 json.dumps 全量重排致 446 行 churn、已回滚改用文本精确插入仅 +3 行），api-i18n 与全链 130 段恢复 0。
+
+**验证（主控独立复跑）**：admin-api `tsc --noEmit` 0、`typecheck:web` 0、`check:response-schema` 0、`check:web-type-drift` 0、`use-agent-session-detail` 4/4、`check:api-i18n` 0、全守卫链 130 段 0。**反证（主控自做）**：hook 去掉三处 `!silent` 守卫 → 核心用例红（detail 被清空），还原 sha256 `47550545…` 逐字节一致、复跑 4/4；swagger 由 agent 反证（改回嵌套重生成→回 tuple，还原 sha 一致，主控已核对生成物形状）。验收级别：生成物契约核对 + 单测/内存替身 + 全守卫链；**未达**真浏览器长时轮询/真 SDK 往返。遗留缺陷 0。
+
+**仍留候选**：广播占坑计数泄漏（ADR 级）。ADR-031 步骤 3/5 实已落地、ADR 文档滞后（未回写，非本轮范围）。
+
+**提交**：按 objective「分批提交」分 3 批——① swagger enum + 两生成物 + i18n 映射；② 静默轮询 hook + 测试；③ 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 上述提交，42+ 提交未 push；两缺口已修且反证有牙，全链绿。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 33 轮）：webhook 密钥双读分叉 + python VIRTUAL_ENV 密钥注入（双域并行）
 
