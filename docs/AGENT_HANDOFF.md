@@ -1,7 +1,27 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 40 轮 · HTTP 指标错误路径记 2xx + SOP 指派静默截断）
-> 当前分支 `develop` = `b5841774`（第 5-39 轮累积已按主题分 53 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`b5841774` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 58 提交、未 push**。子 agent 平台已恢复（第 24-40 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R40 更正】上一轮头部写的 `b4950b11`/55 提交是提交前快照，实际提交后 HEAD=`b5841774`/58 提交。）
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 41 轮 · 五端全量回归 + R31 DI 夹具缺口修复）
+> 当前分支 `develop` = `42a28089`（第 5-40 轮累积已按主题分 57 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`42a28089` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 62 提交、未 push**。子 agent 平台已恢复（第 24-41 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R41 更正】上一轮头部写的 `b5841774`/58 提交是提交前快照，实际提交后 HEAD=`42a28089`/62 提交。）
+
+## 本轮（2026-11-25 · 第 41 轮）：五端全量回归验收（真实进程内集成级）
+
+**方向来源**：objective 续轮，自己找方向。前 17 轮累积 60+ 提交、跨 admin-api/web/executor-node/python/desktop/mcp-server 大量改动，全守卫链虽每轮绿，但**全量单测从未整体复跑**——交接反复强调"本地绿 CI 红"风险。本轮不做新功能，做 AGENTS §4.4「真实进程内集成」级的全量回归验收，发现红灯即修。这是当前最有价值的集成验证。
+
+**发现（真回归，全量才暴露）**：`npm run test:api` 全量首跑 508 suites / 8561 tests + **3 suite 失败**——全部因 R31（执行器包下载鉴权修复）给 `ExecutorPackageController` 新增第 5 参 `usersService: UsersService`，但三个测试夹具没同步：`executor-package.service.spec.ts:734`、`executor-package-keyset-pagination.spec.ts:836/857` 直接 `new` 只传 4 参（TS2554 Expected 5 got 4）；`executor-package.push-no-target-status.spec.ts` 的 Nest Test 模块缺 UsersService Provider（`app` undefined→afterAll close 抛错）。定向测试 + 守卫链全绿都发现不了——只有全量 tsc 编译所有 spec 才暴露。
+
+**修法（纯测试夹具，1 agent）**：三处直接构造补第 5 参 `{} as never`；push spec 的 Test 模块加 `{ provide: UsersService, useValue: { findByIdOrNull: jest.fn() } }`。agent 还发现两份 mock `fs` 的 spec 因 UsersService→bcrypt 的 node-gyp 加载链需沿用既有 stub 模式（主控未预见的细节，处理到位）。主控全仓扫构造点确认 4 处全覆盖无遗漏。
+
+**五端全量复跑结果（主控独立，全 exit 0）**：admin-api 511 suites / 8651 tests；admin-web 367 files / 3029 tests；executor-node 64 suites / 1875 tests；executor-python 87.32% 覆盖（门槛 86%）；acf-cli 16/466；executor-desktop（test:main + renderer）；mcp-server 11/348；node-sdk 6/151；全守卫链 130 段。**反证（主控自做）**：去掉 service.spec 第 5 参 → TS2554 真红，还原 sha256 `d927e983…` 逐字节一致、复跑绿。
+
+**文档权威同步**：`PROJECT-STATUS.md` §3 验证数字更新到本轮实测（admin-api 510→511/8624→8651、admin-web 366→367/3018→3029、守卫链 129→130、新增 python/desktop/mcp 三项），说明段记入本轮回归发现与教训（跨端 DI 签名变更必须全量复跑，定向测试覆盖不到所有 `new Controller` 夹具点）。
+
+**仍留候选**：MCP sop_get slug 分叉（跨端）；中间态 bisect 退化（R38）；广播占坑另两子场景（ADR 级）。本轮无新功能，仅测试夹具 + 文档。
+
+**提交**：按 objective「分批提交」分 2 批——① 三个测试夹具；② PROJECT-STATUS + 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 上述提交，62+ 提交未 push；五端全量 + 全链绿，处于可发布态。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 40 轮）：HTTP 指标错误路径记 2xx + SOP 指派静默截断（双域并行）
 
