@@ -11,8 +11,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
   JSON_CONTENT,
+  JSON_CONTENT_VERBATIM,
   JSON_ERROR,
   UUID_PATH_ID,
+  rejectRedactionSentinel,
 } from "./shared";
 import type { ApiCall } from "./shared";
 
@@ -53,19 +55,19 @@ export function registerTaskOperationTools(server: McpServer, call: ApiCall): vo
   // context, not a file-write surface.
   server.tool(
     "export_task",
-    "Export a task definition as a portable JSON payload ({ schemaVersion: \"1\", exportedAt, task }) for cross-environment transfer. Secrets are NEVER part of the export (SEC-02 red line). The returned JSON text is the verbatim POST /tasks/import body: save it to a file yourself (MCP tool output is not written to disk), or pass it straight back to import_task.",
+    "Export a task definition as a portable JSON payload ({ schemaVersion: \"1\", exportedAt, task }) for cross-environment transfer. Ordinary params are returned verbatim (e.g. PASSWORD/API_KEY values are unchanged); secrets are already removed by the backend (SEC-02 red line). The returned JSON text is the verbatim POST /tasks/import body: save it to a file yourself (MCP tool output is not written to disk), or pass it straight back to import_task.",
     {
       taskId: UUID_PATH_ID.describe("Task ID to export"),
     }, { readOnlyHint: true },
     async ({ taskId }) => {
       const data = await call<unknown>("GET", `/tasks/${taskId}/export`);
-      return JSON_CONTENT(data);
+      return JSON_CONTENT_VERBATIM(data);
     },
   );
 
   server.tool(
     "import_task",
-    "Create a task from an export_task payload (POST /tasks/import). Name conflicts are never overwritten — an ' (imported)' suffix (then 2, 3, …) is appended; the new task starts paused and without secrets, so review the response's warnings before running it. Accepts the export JSON text verbatim or the equivalent object.",
+    "Create a task from an export_task payload (POST /tasks/import). Name conflicts are never overwritten — an ' (imported)' suffix (then 2, 3, …) is appended; the new task starts paused and without secrets, so review the response's warnings before running it. Accepts the export JSON text verbatim or the equivalent object. Payloads containing the [redacted] sentinel are rejected before POST; re-read the export or omit masked fields.",
     {
       payload: z
         .union([z.string(), z.record(z.string(), z.unknown())])
@@ -103,6 +105,11 @@ export function registerTaskOperationTools(server: McpServer, call: ApiCall): vo
             'Invalid export payload: expected an object with "schemaVersion" and "task" keys — pass the verbatim export_task output (JSON text or object)',
         });
       }
+      const sentinelError = rejectRedactionSentinel(
+        body as Record<string, unknown>,
+        "import_task",
+      );
+      if (sentinelError) return sentinelError;
       const data = await call<unknown>("POST", "/tasks/import", body);
       return JSON_CONTENT(data);
     },

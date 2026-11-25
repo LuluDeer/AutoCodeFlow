@@ -6,7 +6,21 @@
  * 任何一处新增面时漏一次，凭据就会经 `JSON_CONTENT` **直接进 LLM 上下文**。
  */
 import { describe, expect, it } from 'vitest';
-import { REDACTED, redactSensitive } from '../redact.js';
+import { DEPTH_LIMIT, REDACTED, redactSensitive } from '../redact.js';
+
+/** 把含敏感叶子的对象包 levels 层：敏感对象恰好落在 depth = levels。 */
+function nestSecrets(levels: number, value: string): Record<string, unknown> {
+  let node: Record<string, unknown> = { token: value, password: value, secret: value };
+  for (let i = 0; i < levels; i += 1) node = { child: node };
+  return node;
+}
+
+/** 沿 child 链下钻 levels 层。 */
+function walkChild(root: any, levels: number): Record<string, unknown> {
+  let node = root;
+  for (let i = 0; i < levels; i += 1) node = node.child;
+  return node;
+}
 
 describe('R110 出参凭据剥除', () => {
   it('整键删除：敏感键名（大小写不敏感）一律替换为 [redacted]', () => {
@@ -78,5 +92,35 @@ describe('R110 出参凭据剥除', () => {
     expect(redactSensitive('plain')).toBe('plain');
     expect(redactSensitive(42)).toBe(42);
     expect(redactSensitive(null)).toBeNull();
+  });
+
+  it('深度超限 13 层：整枝 [depth-limit]，敏感叶子无明文（fail-closed）', () => {
+    const secret = 'SUPER_SECRET_13';
+    const out = redactSensitive(nestSecrets(13, secret)) as Record<string, unknown>;
+    const text = JSON.stringify(out);
+    expect(text).not.toContain(secret);
+    expect(text).toContain(DEPTH_LIMIT);
+  });
+
+  it('边界 12 层：不误截断，敏感键仍按 [redacted] 脱敏', () => {
+    const secret = 'BOUNDARY_SECRET_12';
+    const out = redactSensitive(nestSecrets(12, secret)) as Record<string, any>;
+    const leaf = walkChild(out, 12);
+    const text = JSON.stringify(out);
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain(DEPTH_LIMIT);
+    for (const key of ['token', 'password', 'secret']) expect(leaf[key]).toBe(REDACTED);
+  });
+
+  it('环引用 + 深度超限：不崩溃、无明文，[circular] 与 [depth-limit] 不冲突', () => {
+    const secret = 'CIRCULAR_DEEP_SECRET';
+    const cycleRoot: Record<string, unknown> = { payload: nestSecrets(12, secret) };
+    cycleRoot.self = cycleRoot;
+    const out = redactSensitive(cycleRoot) as Record<string, unknown>;
+    let text = '';
+    expect(() => { text = JSON.stringify(out); }).not.toThrow();
+    expect(text).not.toContain(secret);
+    expect(text).toContain(DEPTH_LIMIT);
+    expect(out.self).toBe('[circular]');
   });
 });

@@ -45,6 +45,19 @@ export const JSON_CONTENT = (data: unknown) => ({
 });
 
 /**
+ * 逐字 JSON 出参：只给 export_task 这类「后端已剔除 secrets + 工具承诺 verbatim
+ * round-trip」的出口使用。`GET /tasks/:id/export` 在后端已按 SEC-02 三处约定
+ * （select:false + DTO 排除 + maskReadSurface）保证无 secret 材料，普通业务参数
+ * （PASSWORD / API_KEY 这类键名）必须原样回传，否则 import_task 回传时会把
+ * `[redacted]` 写进任务，造成数据损坏。
+ *
+ * 不可用于一般工具出参：其它 17 个工具继续用 JSON_CONTENT 保留本地脱敏兜底。
+ */
+export const JSON_CONTENT_VERBATIM = (data: unknown) => ({
+  content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+});
+
+/**
  * 错误面统一口径：HTTP 失败由 apiRequest 抛错、MCP SDK 转成
  * isError:true + error.message；而「参数可解析但语义无效」的用法错误
  * （未知模板/未知应用名/缺二选一 id）发生在 handler 内部——也必须带
@@ -72,13 +85,19 @@ export const JSON_ERROR = (data: unknown) => ({
  */
 export const REDACTION_SENTINEL = '[redacted]';
 
-/** 在任意嵌套结构里找 `[redacted]`，返回首个命中路径（无命中 → null）。 */
+/**
+ * 在任意嵌套结构里找 `[redacted]`，返回首个命中路径（无命中 → null）。
+ *
+ * 深度上限是递归帧护栏（无 seen 表），因此超过 12 层时**不能**返回 null：
+ * 那等于断言「深层没有哨兵」，而调用方会据此放行写入。fail-closed 返回一个
+ * `<depth-limit>` 路径标记，让 rejectRedactionSentinel 明确拒绝这个载荷。
+ */
 export function findRedactionSentinel(
   value: unknown,
   path = '$',
   depth = 0,
 ): string | null {
-  if (depth > 12) return null;
+  if (depth > 12) return `${path}<depth-limit>`;
   if (typeof value === 'string') {
     return value.includes(REDACTION_SENTINEL) ? path : null;
   }

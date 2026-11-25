@@ -17,7 +17,8 @@
  * - **整键删除**：键名命中敏感名单（大小写不敏感）⇒ 值替换为 `[redacted]`；
  * - **`env` 值选择性掩码**：`env` 是用户自己的配置（还可能是合法的非密值），所以只掩**键名像密钥**的那些，
  *   其余原样保留 —— 一刀切会把正常配置也涂掉，让 agent 失去排障能力；
- * - **有界递归**：深度上限 + 访问过集合（防循环引用把工具调用打挂）；
+ * - **有界递归 + fail-closed**：深度上限（超限整枝替换为 `[depth-limit]`，绝不原样放行）+
+ *   访问过集合（防循环引用把工具调用打挂）；
  * - **不改原对象**：返回新结构，避免影响调用方后续逻辑。
  */
 
@@ -44,7 +45,16 @@ const SECRETISH_ENV_KEY = /(SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|CREDENTI
 
 export const REDACTED = '[redacted]';
 
-/** 递归深度上限：足够覆盖真实载荷，又不会在病态结构上打转。 */
+/**
+ * 深度超限的截断标记。fail-closed：整枝替换，不让深层子树原样流进 LLM 上下文。
+ * 与环标记 `[circular]` 分开，便于测试与调用方区分两种截断原因。
+ */
+export const DEPTH_LIMIT = '[depth-limit]';
+
+/**
+ * 递归深度上限：足够覆盖真实载荷；超限整枝截断（见 `DEPTH_LIMIT`），
+ * 不在病态结构上原样放行——原样放行等于给深层凭据开后门。
+ */
 const MAX_DEPTH = 12;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -55,7 +65,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * 剥除敏感字段，返回**新**结构（不改原对象）。
  */
 export function redactSensitive(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
-  if (depth > MAX_DEPTH) return value;
+  // fail-closed：超限的容器整枝替换为 DEPTH_LIMIT。深层对象里可能藏着敏感叶子，
+  // `return value` 会把整棵子树（含 token/password/secret）原样放进 LLM 上下文。
+  // 基本类型保持原值：它们不是容器，且敏感键已在父层按 SENSITIVE_KEYS 处理完毕。
+  if (depth > MAX_DEPTH) {
+    return value !== null && typeof value === 'object' ? DEPTH_LIMIT : value;
+  }
   if (Array.isArray(value)) {
     if (seen.has(value)) return '[circular]';
     seen.add(value);
