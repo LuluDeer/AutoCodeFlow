@@ -544,13 +544,14 @@ export class ApplicationService implements OnModuleInit {
    * (applicationId, version)：同一版本号重复上传视为同一次发布，避免唯一索引
    * 23505；best-effort——快照失败只 warn，绝不阻断上传主链。
    *
-   * A-7①: 同版本号重传是**文件替换**——此前保留首个快照原样返回，快照
-   * packageUrl 永远钉在首传的旧 zip 上（controller 每次上传都落新文件名带
-   * Date.now() 的 zip），版本历史/回滚会带回旧包且无提示。现改为把既有快照的
-   * packageUrl 就地更新到本次新文件，并 best-effort 清理不再被任何快照引用的
-   * 旧 zip（应用删除只 unlink 当前 packageUrl，历史快照钉住的旧 zip 会永久
-   * 成为孤儿）。快照其余字段（entrypoint/env/manifest）保持首传值——同版本
-   * 号的语义就是同一次发布的文件替换。不做全量 GC 任务（记录在案）。
+   * 写入边界重新 findByIdRaw：controller 传入的是 update() 的 masked 返回，
+   * 不能把读面包上的 '***' 当作 env 快照持久化。raw 重读与快照写入同处
+   * try，失败仍只 warn，保持 best-effort。
+   *
+   * A-7①: 同版本号重传是**文件替换**——既有快照必须同步刷新本次 raw 应用的
+   * 完整上传字段（packageUrl/runtime/manifest/entrypoint/env 等），避免回滚时
+   * 把新包与首传旧配置组合。packageUrl 变化时仍 best-effort 清理不再被任何
+   * 快照引用的旧 zip。不做全量 GC 任务（记录在案）。
    *
    * status 取 **"released"**（不是 "uploaded"）：回滚面（本文件 rollbackApplication
    * 的 released 守卫、rollbackDeploymentToPrevious 的 released 过滤、前端
@@ -567,10 +568,29 @@ export class ApplicationService implements OnModuleInit {
     if (!this.versionRepo) return;
     if (!app.version) return;
     try {
+      // 快照是持久化写面：调用方可能持有 update() 返回的 masked 对象，
+      // 这里只认数据库 raw 行，避免把 '***' 写入可回滚快照。
+      const rawApp = await this.findByIdRaw(app.id);
+      if (!rawApp.version) return;
+      const snapshot = {
+        id: rawApp.id,
+        name: rawApp.name,
+        description: rawApp.description,
+        version: rawApp.version,
+        runtime: rawApp.runtime,
+        status: rawApp.status,
+        gitRepo: rawApp.gitRepo,
+        gitBranch: rawApp.gitBranch,
+        gitCommit: rawApp.gitCommit,
+        packageUrl: rawApp.packageUrl,
+        manifest: rawApp.manifest,
+        env: rawApp.env,
+        entrypoint: rawApp.entrypoint,
+      };
       const existing = await this.versionRepo.findOne({
         where: {
-          applicationId: app.id,
-          version: app.version,
+          applicationId: rawApp.id,
+          version: rawApp.version,
           // TypeORM 1.x：where 里的 null 字面量会抛错（不再编译成 IS NULL）。
           // 上传路径的 sourceDeploymentId 恒为 NULL，必须显式 IsNull()。
           sourceDeploymentId: IsNull(),
@@ -583,20 +603,18 @@ export class ApplicationService implements OnModuleInit {
           typeof existing.snapshot.packageUrl === "string"
             ? existing.snapshot.packageUrl
             : null;
+        // 同版本重传可能同时换包和换配置；完整刷新才能让回滚包与配置成对。
+        existing.snapshot = snapshot;
+        await this.versionRepo.save(existing);
         if (
           oldPackageUrl &&
-          app.packageUrl &&
-          oldPackageUrl !== app.packageUrl
+          rawApp.packageUrl &&
+          oldPackageUrl !== rawApp.packageUrl
         ) {
-          existing.snapshot = {
-            ...existing.snapshot,
-            packageUrl: app.packageUrl,
-          };
-          await this.versionRepo.save(existing);
           // 旧 zip 若已无其他快照引用则清理（best-effort，见 helper 注释）。
           await this.unlinkSupersededPackage(
             oldPackageUrl,
-            app.id,
+            rawApp.id,
             existing.id,
           );
         }
@@ -604,28 +622,14 @@ export class ApplicationService implements OnModuleInit {
       }
       await this.versionRepo.save(
         this.versionRepo.create({
-          applicationId: app.id,
-          version: app.version,
-          gitCommit: app.gitCommit ?? null,
+          applicationId: rawApp.id,
+          version: rawApp.version,
+          gitCommit: rawApp.gitCommit ?? null,
           sourceDeploymentId: null,
           // 上传即可回滚（详见方法头注）：与部署路径同取 released 语义，
           // 否则 zip 上传的版本会被回滚守卫判为「仅已发布版本可回滚」。
           status: "released",
-          snapshot: {
-            id: app.id,
-            name: app.name,
-            description: app.description,
-            version: app.version,
-            runtime: app.runtime,
-            status: app.status,
-            gitRepo: app.gitRepo,
-            gitBranch: app.gitBranch,
-            gitCommit: app.gitCommit,
-            packageUrl: app.packageUrl,
-            manifest: app.manifest,
-            env: app.env,
-            entrypoint: app.entrypoint,
-          },
+          snapshot,
           createdBy: user?.id != null ? String(user.id) : null,
           description: "Package upload",
         }),

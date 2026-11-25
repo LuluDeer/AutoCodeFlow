@@ -1,5 +1,8 @@
 import { Readable } from "node:stream";
+import { ServiceUnavailableException } from "@nestjs/common";
 
+import type { AppError } from "../../../common/errors/app-error";
+import { ErrorCode } from "../../../common/errors/error-codes";
 import {
   ExecutionLogRead,
   paginateLogStream,
@@ -368,5 +371,228 @@ describe("R284-LOGPURGE-01 · 日志已按保留期清理的读面判定", () =>
     expect(res.logsPurged).toBe(false);
     // 分页 count（totalLines）一次即可；不该再为"空态判定"打第二次。
     expect(count).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** S3 指针是权威后端：解析/读取/分页故障显式 503，绝不伪装成 DB 空页。 */
+describe("getExecutionLogs · S3 指针权威后端", () => {
+  const EXECUTION_ID = "exec-s3-authoritative";
+  const OBJECT_KEY = "logs/exec-s3-authoritative.gz";
+
+  const expectDependencyUnavailable = async (
+    promise: Promise<unknown>,
+  ): Promise<void> => {
+    const error = await promise.then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect(error).toMatchObject({
+      errorCode: ErrorCode.DEPENDENCY_UNAVAILABLE,
+      params: {
+        executionId: EXECUTION_ID,
+        dependency: "s3_log_storage",
+      },
+    });
+    expect((error as AppError).getStatus()).toBe(503);
+  };
+
+  const makeReadService = (
+    opts: {
+      logStorage?: "s3" | "db";
+      logObjectKey?: string | null;
+      resolveS3Storage?: jest.Mock;
+      getStream?: jest.Mock;
+      getMany?: jest.Mock;
+      count?: jest.Mock;
+    } = {},
+  ) => {
+    const qb: Record<string, jest.Mock> = {
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      getMany: opts.getMany ?? jest.fn().mockResolvedValue([]),
+    };
+    const count = opts.count ?? jest.fn().mockResolvedValue(0);
+    const createQueryBuilder = jest.fn().mockReturnValue(qb);
+    const getStream = opts.getStream ?? jest.fn();
+    const resolveS3Storage =
+      opts.resolveS3Storage ??
+      jest.fn().mockReturnValue({ getStream } as never);
+    const warn = jest.fn();
+    const findOne = jest.fn().mockResolvedValue({
+      id: EXECUTION_ID,
+      startTime: new Date("2026-11-01T10:00:00Z"),
+      createdAt: new Date("2026-11-01T10:00:00Z"),
+      logStorage: opts.logStorage ?? "s3",
+      logObjectKey:
+        opts.logObjectKey === undefined ? OBJECT_KEY : opts.logObjectKey,
+    });
+    const svc = new ExecutionLogRead({
+      execRepo: { findOne } as never,
+      logLineRepo: { createQueryBuilder, count } as never,
+      taskRepo: {} as never,
+      logger: { warn } as never,
+      aiAnalysisService: {} as never,
+      resolveS3Storage: resolveS3Storage as never,
+      acquireSseSlot: () => () => undefined,
+      maybeNotifyTimeoutWarning: async () => undefined,
+      assertCanWriteExecution: async () => undefined,
+      configService: { get: <T>() => 30 as unknown as T },
+      systemConfig: null,
+    });
+    return {
+      svc,
+      qb,
+      findOne,
+      count,
+      createQueryBuilder,
+      getStream,
+      resolveS3Storage,
+      warn,
+    };
+  };
+
+  it("getStream reject ⇒ 503，DB query builder/count 零调用", async () => {
+    const failure = new Error("S3 getObject rejected");
+    const getStream = jest.fn().mockRejectedValue(failure);
+    const fixture = makeReadService({ getStream });
+
+    await expectDependencyUnavailable(
+      fixture.svc.getExecutionLogs(EXECUTION_ID),
+    );
+
+    expect(fixture.findOne).toHaveBeenCalledWith({
+      where: { id: EXECUTION_ID },
+    });
+    expect(getStream).toHaveBeenCalledWith(OBJECT_KEY);
+    expect(fixture.warn).toHaveBeenCalledWith(
+      expect.stringContaining(failure.message),
+    );
+    expect(fixture.createQueryBuilder).not.toHaveBeenCalled();
+    expect(fixture.count).not.toHaveBeenCalled();
+  });
+
+  it("resolveS3Storage 返回 null ⇒ 503，DB query builder/count 零调用", async () => {
+    const resolveS3Storage = jest.fn().mockReturnValue(null);
+    const fixture = makeReadService({ resolveS3Storage });
+
+    await expectDependencyUnavailable(
+      fixture.svc.getExecutionLogs(EXECUTION_ID),
+    );
+
+    expect(resolveS3Storage).toHaveBeenCalledTimes(1);
+    expect(fixture.getStream).not.toHaveBeenCalled();
+    expect(fixture.warn).toHaveBeenCalledWith(
+      expect.stringContaining("S3 log storage is not configured"),
+    );
+    expect(fixture.createQueryBuilder).not.toHaveBeenCalled();
+    expect(fixture.count).not.toHaveBeenCalled();
+  });
+
+  it("分页期间流失败 ⇒ 503，DB query builder/count 零调用", async () => {
+    const failure = new Error("S3 stream broke during pagination");
+    const stream = Readable.from(
+      (async function* () {
+        yield "first line\n";
+        throw failure;
+      })(),
+    );
+    const getStream = jest.fn().mockResolvedValue(stream);
+    const fixture = makeReadService({ getStream });
+
+    await expectDependencyUnavailable(
+      fixture.svc.getExecutionLogs(EXECUTION_ID),
+    );
+
+    expect(getStream).toHaveBeenCalledWith(OBJECT_KEY);
+    expect(fixture.warn).toHaveBeenCalledWith(
+      expect.stringContaining(failure.message),
+    );
+    expect(fixture.createQueryBuilder).not.toHaveBeenCalled();
+    expect(fixture.count).not.toHaveBeenCalled();
+  });
+
+  it("S3 成功控制组 ⇒ 保持流式分页/level 过滤/元数据，不查 DB 日志行", async () => {
+    const getStream = jest
+      .fn()
+      .mockResolvedValue(
+        Readable.from([
+          "[INFO] first\n",
+          "[ERROR] second\n",
+          "[ERROR] third\n",
+        ]),
+      );
+    const fixture = makeReadService({ getStream });
+
+    const result = await fixture.svc.getExecutionLogs(
+      EXECUTION_ID,
+      1,
+      1,
+      "ERROR",
+    );
+
+    expect(getStream).toHaveBeenCalledWith(OBJECT_KEY);
+    expect(result).toEqual({
+      lines: ["[ERROR] third"],
+      totalLines: 2,
+      hasMore: false,
+      logsPurged: false,
+      logsPurgedAt: null,
+    });
+    expect(fixture.warn).not.toHaveBeenCalled();
+    expect(fixture.createQueryBuilder).not.toHaveBeenCalled();
+    expect(fixture.count).not.toHaveBeenCalled();
+  });
+
+  it("DB 驱动控制组 ⇒ 保持既有查询与分页，S3 解析/读取零调用", async () => {
+    const getMany = jest
+      .fn()
+      .mockResolvedValue([{ lineNumber: 2, content: "db line" }]);
+    const count = jest.fn().mockResolvedValue(5);
+    const fixture = makeReadService({
+      logStorage: "db",
+      logObjectKey: OBJECT_KEY,
+      getMany,
+      count,
+    });
+
+    const result = await fixture.svc.getExecutionLogs(EXECUTION_ID, 2, 1);
+
+    expect(result).toEqual({
+      lines: ["db line"],
+      totalLines: 5,
+      hasMore: true,
+      logsPurged: false,
+      logsPurgedAt: null,
+    });
+    expect(fixture.resolveS3Storage).not.toHaveBeenCalled();
+    expect(fixture.getStream).not.toHaveBeenCalled();
+    expect(fixture.createQueryBuilder).toHaveBeenCalledTimes(1);
+    expect(fixture.qb.where).toHaveBeenCalledWith("l.executionId = :id", {
+      id: EXECUTION_ID,
+    });
+    expect(fixture.qb.andWhere).toHaveBeenCalledWith(
+      "l.createdAt >= :logSince AND l.createdAt <= :logUntil",
+      expect.objectContaining({
+        logSince: expect.any(Date),
+        logUntil: expect.any(Date),
+      }),
+    );
+    expect(fixture.qb.andWhere).toHaveBeenCalledWith("l.lineNumber >= :from", {
+      from: 2,
+    });
+    expect(fixture.qb.orderBy).toHaveBeenCalledWith("l.lineNumber", "ASC");
+    expect(fixture.qb.select).toHaveBeenCalledWith([
+      "l.lineNumber",
+      "l.content",
+    ]);
+    expect(fixture.qb.take).toHaveBeenCalledWith(1);
+    expect(getMany).toHaveBeenCalledTimes(1);
+    expect(count).toHaveBeenCalledTimes(1);
+    expect(fixture.warn).not.toHaveBeenCalled();
   });
 });

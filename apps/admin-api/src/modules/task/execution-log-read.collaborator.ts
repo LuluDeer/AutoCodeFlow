@@ -9,6 +9,7 @@ import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { Task } from "./entities/task.entity";
 import { S3LogStorage } from "./log-storage/s3-log-storage";
 import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 import { ExecutionStatus } from "./entities/task-execution.entity";
 import { levelOfLine } from "./log-level.util";
 import { UserRole } from "../users/entities/user.entity";
@@ -30,7 +31,8 @@ import { LOG_RETENTION_CONFIG_KEY } from "./log-retention/log-retention-cleanup.
  * ## ⚠️ S3：实现留 Facade（**本轮真机未验** ⇒ 不搬）
  *
  * `getExecutionLogs` / `streamExecutionLogs` 各有一处 S3 读取分支
- * （`exec.logStorage === "s3"` ⇒ `s3.getStream(...)`，失败回落 DB 行）。
+ * （`exec.logStorage === "s3"` ⇒ `s3.getStream(...)`）。分页读面以执行行中的
+ * S3 指针为权威后端：解析或读取失败显式报 503，DB 行不参与该分支兜底。
  * **S3 路径本仓尚未真机验证**（smoke-matrix 明确「留 compose 轮」）⇒
  * 本刀**不搬 S3 运行态**：`resolveS3Storage`（持有 `configService` + 两个缓存
  * 字段）与 `s3GetExistingLog` 留 Facade，经**注入回调**使用。
@@ -268,28 +270,35 @@ export class ExecutionLogRead {
     }
     const logWindow = this.logPartitionWindow(exec);
     // LOG-02 + High-6.1: S3-stored logs are streamed line-by-line so we never
-    // hold the full decompressed payload in memory; DB rows remain the
-    // fallback (and the db-driver path).
+    // hold the full decompressed payload in memory. The S3 pointer is the
+    // authoritative backend: failures stay failures instead of looking like an
+    // empty DB result (S3 writes purge the DB rows).
     if (exec.logStorage === "s3" && exec.logObjectKey) {
+      let result: Awaited<ReturnType<typeof paginateLogStream>>;
       try {
         const s3 = this.deps.resolveS3Storage();
-        if (s3) {
-          const stream = await s3.getStream(exec.logObjectKey);
-          const result = await paginateLogStream(stream, fromLine, safeLimit, {
-            level: level ?? null,
-          });
-          // R284：S3 内容为空同样要能说清"为什么空"（对象被 S3LogObjectRetention
-          // 回收 ⇒ 指针被清空后根本进不了本分支；能进来但内容为空 ⇒ 真没输出）。
-          return {
-            ...result,
-            ...(await this.purgedFields(exec, result.lines)),
-          };
+        if (!s3) {
+          throw new Error("S3 日志存储未配置");
         }
+        const stream = await s3.getStream(exec.logObjectKey);
+        result = await paginateLogStream(stream, fromLine, safeLimit, {
+          level: level ?? null,
+        });
       } catch (err: unknown) {
         this.deps.logger.warn(
-          `Failed to read S3 logs for execution ${execId} (${err instanceof Error ? err.message : String(err)}) — falling back to DB log lines`,
+          `Failed to read S3 logs for execution ${execId} (${err instanceof Error ? err.message : String(err)}) — S3 pointer is authoritative; DB fallback skipped`,
         );
+        throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {
+          executionId: execId,
+          dependency: "s3_log_storage",
+        });
       }
+      // R284：S3 内容为空同样要能说清"为什么空"（对象被 S3LogObjectRetention
+      // 回收 ⇒ 指针被清空后根本进不了本分支；能进来但内容为空 ⇒ 真没输出）。
+      return {
+        ...result,
+        ...(await this.purgedFields(exec, result.lines)),
+      };
     }
     // N10: use typed logLineRepo instead of string-based getRepository
     // CODE-01: fetch true total in parallel so pagination metadata is accurate

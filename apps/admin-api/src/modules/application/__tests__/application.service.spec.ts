@@ -1754,12 +1754,17 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
     } as unknown as Application;
 
     /** 单独装配：需要注入 ApplicationVersion 的 versionRepo（@Optional）。 */
-    const buildWithVersionRepo = async (versionRepo: {
-      findOne: jest.Mock;
-      save: jest.Mock;
-      create: jest.Mock;
-    }) => {
-      const repo = makeRepo({ findOne: jest.fn() });
+    const buildWithVersionRepo = async (
+      versionRepo: {
+        findOne: jest.Mock;
+        save: jest.Mock;
+        create: jest.Mock;
+      },
+      rawApp: Application = app,
+    ) => {
+      const repo = makeRepo({
+        findOne: jest.fn().mockResolvedValue(rawApp),
+      });
       const module = await Test.createTestingModule({
         providers: [
           ApplicationService,
@@ -1806,6 +1811,32 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
       expect(saved.createdBy).toBe("7");
     });
 
+    it("新版本快照重读 raw Application，masked env 不会写成字面 '***'", async () => {
+      const rawApp = {
+        ...app,
+        env: { API_KEY: "sk-raw", NODE_ENV: "production" },
+      } as unknown as Application;
+      const versionRepo = {
+        findOne: jest.fn().mockResolvedValue(null),
+        save: jest.fn().mockImplementation((v: unknown) => Promise.resolve(v)),
+        create: jest.fn().mockImplementation((v: unknown) => v),
+      };
+      const svc = await buildWithVersionRepo(versionRepo, rawApp);
+      const rawRead = jest.spyOn(svc, "findByIdRaw");
+      const maskedApp = svc.maskReadSurface(rawApp);
+
+      await svc.recordUploadVersion(maskedApp, { id: 7 });
+
+      expect(maskedApp.env?.API_KEY).toBe("***");
+      expect(versionRepo.save).toHaveBeenCalledTimes(1);
+      const saved = versionRepo.save.mock.calls[0][0] as {
+        snapshot: Record<string, unknown>;
+      };
+      expect(saved.snapshot.env).toEqual(rawApp.env);
+      expect(saved.snapshot.env).not.toEqual(maskedApp.env);
+      expect(rawRead).toHaveBeenCalledWith(rawApp.id);
+    });
+
     it("同版本号重复上传不重复落行（唯一索引 (applicationId, version)）", async () => {
       const versionRepo = {
         findOne: jest.fn().mockResolvedValue({ id: "v-existing" }),
@@ -1816,7 +1847,11 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
 
       await svc.recordUploadVersion(app, { id: 7 });
 
-      expect(versionRepo.save).not.toHaveBeenCalled();
+      // 同版本重传只刷新既有行，不 create 新行（唯一索引仍由 DB 兜底）。
+      expect(versionRepo.create).not.toHaveBeenCalled();
+      expect(versionRepo.save).toHaveBeenCalledTimes(1);
+      const saved = versionRepo.save.mock.calls[0][0] as { id: string };
+      expect(saved.id).toBe("v-existing");
     });
 
     it("快照失败只 warn，不抛（best-effort：绝不阻断上传主链）", async () => {
@@ -1830,6 +1865,35 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
       await expect(
         svc.recordUploadVersion(app, { id: 7 }),
       ).resolves.toBeUndefined();
+    });
+
+    it("raw 重读失败仍 best-effort 不抛，且不写版本快照", async () => {
+      const versionRepo = {
+        findOne: jest.fn().mockResolvedValue(null),
+        save: jest.fn(),
+        create: jest.fn(),
+      };
+      const svc = await buildWithVersionRepo(versionRepo);
+      jest
+        .spyOn(svc, "findByIdRaw")
+        .mockRejectedValue(new Error("raw read failed"));
+      const warn = jest
+        .spyOn(
+          (svc as unknown as { logger: { warn: jest.Mock } }).logger,
+          "warn",
+        )
+        .mockImplementation(() => undefined);
+
+      await expect(
+        svc.recordUploadVersion(svc.maskReadSurface(app), { id: 7 }),
+      ).resolves.toBeUndefined();
+
+      expect(versionRepo.findOne).not.toHaveBeenCalled();
+      expect(versionRepo.create).not.toHaveBeenCalled();
+      expect(versionRepo.save).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("raw read failed"),
+      );
     });
 
     // A-7①: 同版本号重传是文件替换——既有快照的 packageUrl 不再钉在首传的
@@ -1851,6 +1915,10 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
       const buildWithRefs = async (
         referencedCount: number,
         oldUrl: string = LOCAL_URL_OLD,
+        rawApp: Application = {
+          ...app,
+          packageUrl: LOCAL_URL_NEW,
+        } as unknown as Application,
       ) => {
         const versionRepo = {
           findOne: jest.fn().mockResolvedValue({
@@ -1858,7 +1926,13 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
             applicationId: "app-1",
             version: "1.0.1",
             status: "released",
-            snapshot: { packageUrl: oldUrl, entrypoint: "dist/main.js" },
+            snapshot: {
+              packageUrl: oldUrl,
+              runtime: "node",
+              manifest: { main: "dist/old.js" },
+              entrypoint: "dist/main.js",
+              env: { API_KEY: "sk-old", NODE_ENV: "production" },
+            },
           }),
           save: jest
             .fn()
@@ -1873,28 +1947,46 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
         const unlinkSpy = jest
           .spyOn(fs.promises, "unlink")
           .mockResolvedValue(undefined);
-        const svc = await buildWithVersionRepo(versionRepo);
+        const svc = await buildWithVersionRepo(versionRepo, rawApp);
         return { svc, versionRepo, unlinkSpy };
       };
 
-      it("重传后既有快照的 packageUrl 更新为新文件（版本历史/回滚不再带回旧包）", async () => {
-        const { svc, versionRepo, unlinkSpy } = await buildWithRefs(0);
-        const newApp = {
+      it("同版本重传从 raw Application 刷新完整快照，masked secret 不落库", async () => {
+        const rawApp = {
           ...app,
           packageUrl: LOCAL_URL_NEW,
+          runtime: "python",
+          manifest: {
+            main: "worker/main.py",
+            requirements: "requirements.txt",
+          },
+          entrypoint: "worker/main.py",
+          env: { API_KEY: "sk-raw-reupload", NODE_ENV: "production" },
         } as unknown as Application;
+        const { svc, versionRepo, unlinkSpy } = await buildWithRefs(
+          0,
+          LOCAL_URL_OLD,
+          rawApp,
+        );
+        const rawRead = jest.spyOn(svc, "findByIdRaw");
+        const maskedApp = svc.maskReadSurface(rawApp);
 
-        await svc.recordUploadVersion(newApp, { id: 7 });
+        await svc.recordUploadVersion(maskedApp, { id: 7 });
 
+        expect(maskedApp.env?.API_KEY).toBe("***");
         expect(versionRepo.save).toHaveBeenCalledTimes(1);
         const saved = versionRepo.save.mock.calls[0][0] as {
           snapshot: Record<string, unknown>;
           id: string;
         };
         expect(saved.id).toBe("v-existing");
-        expect(saved.snapshot.packageUrl).toBe(LOCAL_URL_NEW);
-        // 快照其余字段保持首传值（同版本号 = 同一次发布的文件替换）
-        expect(saved.snapshot.entrypoint).toBe("dist/main.js");
+        expect(saved.snapshot.packageUrl).toBe(rawApp.packageUrl);
+        expect(saved.snapshot.runtime).toBe(rawApp.runtime);
+        expect(saved.snapshot.manifest).toEqual(rawApp.manifest);
+        expect(saved.snapshot.entrypoint).toBe(rawApp.entrypoint);
+        expect(saved.snapshot.env).toEqual(rawApp.env);
+        expect(saved.snapshot.env).not.toEqual(maskedApp.env);
+        expect(rawRead).toHaveBeenCalledWith(rawApp.id);
         // 旧 zip 无其他引用 → 被清理
         expect(unlinkSpy).toHaveBeenCalledWith(
           expect.stringContaining("Demo_111.zip"),
@@ -1933,7 +2025,10 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
         const unlinkSpy = jest
           .spyOn(fs.promises, "unlink")
           .mockResolvedValue(undefined);
-        const svc = await buildWithVersionRepo(versionRepo);
+        const svc = await buildWithVersionRepo(versionRepo, {
+          ...app,
+          packageUrl: "https://cdn.example.com/pkg-new.zip",
+        } as unknown as Application);
 
         await svc.recordUploadVersion(
           {
@@ -1954,7 +2049,10 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
         const sha = "a".repeat(64);
         const nestedOld = `http://api.local/uploads/packages/app-1/${sha}/Demo.zip`;
         const nestedNew = `http://api.local/uploads/packages/app-1/${"b".repeat(64)}/Demo.zip`;
-        const { svc, unlinkSpy } = await buildWithRefs(0, nestedOld);
+        const { svc, unlinkSpy } = await buildWithRefs(0, nestedOld, {
+          ...app,
+          packageUrl: nestedNew,
+        } as unknown as Application);
         const rmdirSpy = jest
           .spyOn(fs.promises, "rmdir")
           .mockResolvedValue(undefined as never);

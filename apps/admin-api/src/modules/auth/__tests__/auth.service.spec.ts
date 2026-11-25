@@ -18,6 +18,7 @@ const mockUser = {
   username: "admin",
   password: "hashed",
   isActive: true,
+  sessionVersion: 0,
 };
 const mockJti = "test-jti-uuid";
 
@@ -639,6 +640,7 @@ describe("AuthService (__tests__)", () => {
         username: "admin",
         type: "refresh",
         jti: mockJti,
+        ver: 7,
       } as any);
       refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
       usersService.findByIdOrNull.mockResolvedValue({
@@ -684,7 +686,7 @@ describe("AuthService (__tests__)", () => {
       expect(jwtService.sign).not.toHaveBeenCalled();
     });
 
-    it("ver 快照与库中 sessionVersion 一致（未改密）→ 正常轮换（回归）", async () => {
+    it("ver 快照与库中 sessionVersion 一致（未改密）→ 正常轮换（控制组）", async () => {
       jwtService.verify.mockReturnValue({ ...consumedPayload, ver: 3 } as any);
       refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
       usersService.findByIdOrNull.mockResolvedValue({
@@ -695,19 +697,57 @@ describe("AuthService (__tests__)", () => {
       const result = await service.refreshToken("valid-refresh");
       expect(result).toHaveProperty("accessToken");
       expect(result).toHaveProperty("refreshToken");
+      expect(jwtService.sign).toHaveBeenCalledTimes(2);
+      expect(jwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "access", ver: 3 }),
+        expect.any(Object),
+      );
+      expect(jwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "refresh", ver: 3 }),
+        expect.any(Object),
+      );
     });
 
-    it("存量无 ver claim 的旧 refresh token → 兼容放行（与 access 侧同形态）", async () => {
+    it("存量无 ver + sessionVersion>0（已 bump）→ SESSION_REVOKED，消费旧令牌且 jwt.sign 零调用", async () => {
       jwtService.verify.mockReturnValue(consumedPayload as any);
       refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
       usersService.findByIdOrNull.mockResolvedValue({
         ...mockUser,
-        sessionVersion: 9, // 旧令牌无 ver，不做比对
+        sessionVersion: 9, // 改密 / logout 已 bump 过
       } as any);
 
       await expect(
         service.refreshToken("legacy-refresh"),
-      ).resolves.toHaveProperty("accessToken");
+      ).rejects.toMatchObject({
+        errorCode: "SESSION_REVOKED",
+        message: "会话已被吊销",
+      });
+      // fail-closed：即使判据拒绝，也已消费旧 jti，30 天续签链在此断开
+      expect(refreshTokenRepo.update).toHaveBeenCalledWith(
+        { jti: mockJti, revoked: false },
+        { revoked: true },
+      );
+      expect(jwtService.sign).not.toHaveBeenCalled();
+      expect(refreshTokenRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("存量无 ver + sessionVersion===0（未 bump）→ 兼容放行并正常轮换", async () => {
+      jwtService.verify.mockReturnValue(consumedPayload as any);
+      refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
+      usersService.findByIdOrNull.mockResolvedValue({
+        ...mockUser,
+        sessionVersion: 0,
+      } as any);
+
+      const result = await service.refreshToken("legacy-refresh");
+      expect(result).toHaveProperty("accessToken");
+      expect(result).toHaveProperty("refreshToken");
+      expect(jwtService.sign).toHaveBeenCalledTimes(2);
+      expect(jwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "refresh", ver: 0 }),
+        expect.any(Object),
+      );
+      expect(refreshTokenRepo.save).toHaveBeenCalledTimes(1);
     });
   });
 

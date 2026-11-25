@@ -136,17 +136,19 @@ export class AuthService {
       throw new AppError("ACCOUNT_INACTIVE");
     }
 
-    // SEC-05: successful login — reset failure counter
-    await this.usersService.resetLoginFailure(user.id);
-
     // SEC-03: TOTP enabled users do NOT receive tokens from /auth/login.
     // Contract (documented in docs/api-reference.md): responds 200 with
     // { totpRequired: true } — the client must then call POST /auth/totp/verify.
     // 200 (not 401) so frontends cannot confuse a normal failure with the
     // second-factor challenge, and audit success is not doubled.
+    // challenge 只证明密码正确，不是完整登录成功：保留失败计数，直到
+    // totpVerifyLogin 真正验证第二因子后才重置，避免错误 TOTP 交错清计数。
     if (user.totpEnabled && user.totpSecret) {
       return { totpRequired: true };
     }
+
+    // SEC-05: only a completed non-TOTP login resets the failure counter.
+    await this.usersService.resetLoginFailure(user.id);
 
     return this.generateTokens(user, meta);
   }
@@ -448,10 +450,17 @@ export class AuthService {
     // （bumpSessionVersion）后，改密前签发的 refresh token 的 ver 快照与库中
     // 当前值失配 → 401。轮换消费（上方原子 UPDATE）已先行吊销该 jti 且不再
     // 签发新对（DR-07 fail-closed），被窃的 30 天 refresh 链就此断掉——此前
-    // 该链在改密后仍可无限续换新 access token。存量无 ver claim 的旧令牌
-    // 维持「到期自然失效」兼容语义（与 jwt.strategy 的 access 侧比对同形态），
-    // 正常未改密流程 ver 恒等，零影响。
-    if (payload.ver !== undefined && payload.ver !== user.sessionVersion) {
+    // 该链在改密后仍可无限续换新 access token。
+    //
+    // 兼容边界：有 ver 时必须与库中版本相等；无 ver 的部署前旧令牌只允许
+    // sessionVersion===0 的未 bump 账号。一旦改密 / 重用触发过 bump，旧令牌
+    // 一律 SESSION_REVOKED，不再续签。logout 的 refresh 行已由
+    // revokeAllForUser 吊销，不依赖本判据兜底。
+    const sessionVersionMatches =
+      payload.ver !== undefined
+        ? payload.ver === user.sessionVersion
+        : user.sessionVersion === 0;
+    if (!sessionVersionMatches) {
       throw new AppError("SESSION_REVOKED");
     }
     // REFRESH-META（审计 P2，2026-10-17）：轮换后保留原会话的 UA/IP。

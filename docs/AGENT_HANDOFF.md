@@ -1,7 +1,31 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 50 轮 · webhook 去重漏网两处 + uv 进程树杀复制漂移）
-> 本批提交前基线 `develop` = `e7bdcf06`（领先 origin/develop 72 提交、未 push）；按 operator「不做无意义提交」约束，本轮三修复 + 三测试 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-50 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-26（第 51 轮 · 上传快照掩码污染 + 认证锁定/刷新撤销 + S3 日志失败假空）
+> 本批提交前基线 `develop` = `9a5241ea`（领先 origin/develop 73 提交、未 push）；按 operator「不做无意义提交」约束，本轮四修复 + 四测试 + size 基线重签 + 本交接段合并为**单个提交**。子 agent 平台正常（3 路只读审计 + 3 路实现均产出）。第 4 轮真机能力已打通（详见下方），更早轮次均为已收口历史。
+
+## 本轮（2026-11-26 · 第 51 轮）：上传快照/认证/S3 日志三域四缺口（三路审计 + 三路实现）
+
+**方向来源**：objective 续轮，自己找方向。派 3 路只读审计（认证生命周期 / SDK-CLI 客户端边界 / 观测与存储一致性），主控 CodeGraph 逐条复核确证后取 4 处写域互斥缺口，3 agent 并行修（其中 fix-upload 兼修两子场景）。
+
+**缺口①（上传版本快照掩码污染 + 同版本配置陈旧）**：`application.controller.ts:599` 把 `svc.update()` 的 **masked 返回**（env secret = `'***'`）传给 `recordUploadVersion()` 作持久化快照；回滚的 `buildVersionRestoreDto` 取 `snapshot.env` 写回——当前 env 缺该 key 时落字面 `'***'` ⇒ 部署认证失败。且同版本重传分支此前只更新 `packageUrl`，runtime/manifest/entrypoint/env 保持首传旧值，回滚会把新包与旧配置组合。修：`recordUploadVersion` 自身 try 内先 `findByIdRaw` 重读 raw 行，new/existing 共用一次构造的完整字段集；raw 重读失败仍 best-effort warn 不抛；controller 与 HTTP masked 返回未动。
+
+**缺口②（TOTP 交错绕过账户锁定）**：`auth.service.ts:139` login 在返回 `{totpRequired:true}` 前 `resetLoginFailure()`，而错误 TOTP 在 `totpVerifyLogin` 累加计数——交替调用可让计数永远归零，账户锁定阈值（5 次）永不触发。修：reset 移到 TOTP 分支之后，challenge 只证明密码正确、不清计数；verify 成功仍由 `totpVerifyLogin:240` 重置。
+
+**缺口③（无 ver 旧 refresh 改密后可续命）**：`refreshToken` 仅当 `payload.ver !== undefined` 才比对 sessionVersion，部署前签发的无 ver refresh 在改密 bump 后仍可反复轮换出新 ver 对（30 天链续命）。修：有 ver 严格等值；无 ver 仅 `sessionVersion===0`（未 bump）放行，>0 抛 `SESSION_REVOKED`；旧 jti 已先行原子消费、`jwt.sign` 零调用。logout 的 refresh 行已由 `revokeAllForUser` 吊销，不依赖本判据。
+
+**缺口④（S3 日志故障伪装空日志）**：`execution-log-read.collaborator.ts:273` 对 `logStorage='s3'`+`logObjectKey` 的执行，`resolveS3Storage` 缺失 / `getStream` / `paginateLogStream` 失败仅 warn 后落 DB；而 S3 写成功会删 DB 行，故通常返回 200 `{lines:[],totalLines:0,logsPurged:false}`——把存储故障说成"确实无输出/未清理"。修：S3 指针为权威后端，try 只包解析+读取+分页，任一步失败 warn 后抛 `AppError(DEPENDENCY_UNAVAILABLE)`（503），不查 DB；`purgedFields`/return 移到 catch 之后（S3 已读成功后 DB count 失败保留原异常，不误标 S3 故障）。
+
+**集成期连锁**：① `check:user-facing-language` 抓 S3 内部 Error 文案英文 → 改中文（进 warn 日志，可读）；② `check:size-caps` 因 application.service.spec 测试 +92 行、application.service 分支密度 +0.1 红 → 按纪律重签基线（write why，**不压缩测试断言**）。
+
+**验证（主控独立复跑）**：admin-api 4 suites / 191 tests（application 83 + auth 84 + log-read 24 含新增 5）全绿；双端 tsc（api + specs）0；size-caps 0；全守卫链 130 段 exit 0。**反证（主控自做三处）**：`recordUploadVersion` 改回信任入参 → 3 failed（masked `'***'` 落库、raw 失败用例红）；TOTP challenge 恢复清零 + refresh 恢复"无 ver 恒放行" → 2 failed（计数停在 1、旧 token 成功续签）；S3 恢复回落 DB → 3 failed（收到 null 而非 503）；还原后各复跑全绿。**验收级别**：单测/内存替身 + 真子进程守卫 + 全链；**未达**真 PG 并发上传、真 S3/PG 故障现场、真浏览器认证时序。遗留缺陷 0。
+
+**未采纳候选（本轮审计产出，留后续）**：CLI `exec tail` 按 TCP chunk 解码 UTF-8 致中文/emoji 跨 chunk 损坏（P2，acf-cli）；Node SDK 退避期不响应 AbortSignal 最长延迟 30s（P3）；artifact TTL 清盘后 DB 清理失败无持久重试入口（P2，需 outbox/marker）。均非本轮轻量确证范围。
+
+**仍留候选**：中间态 bisect 退化（R38）；广播占坑另两子场景（ADR 级）。轻量确证候选至此清零。
+
+**提交**：单批（4 源码 + 4 测试 + size 基线 + 本交接段）。**未 push**。处于可发布态。
+
+---
 
 ## 本轮（2026-11-25 · 第 50 轮）：Alertmanager/发版 webhook 去重漏网 + uv 进程树杀（三域并行）
 

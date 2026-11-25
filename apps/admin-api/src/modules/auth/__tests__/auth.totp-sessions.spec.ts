@@ -35,6 +35,7 @@ const baseUser = {
   username: "alice",
   password: "hashed",
   isActive: true,
+  sessionVersion: 0,
   totpSecret: null as string | null,
   totpEnabled: false,
 };
@@ -160,6 +161,73 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       expect(result).toEqual({ totpRequired: true });
       expect(jwtService.sign).not.toHaveBeenCalled();
       expect(refreshTokenRepo.save).not.toHaveBeenCalled();
+      // challenge 不是登录成功：失败计数必须保留到 totpVerifyLogin 真正通过
+      expect(usersService.resetLoginFailure).not.toHaveBeenCalled();
+    });
+
+    it("连续 5 轮 challenge + 错误 verify 后锁定，锁定后 login 与 verify 都拒绝", async () => {
+      const account: any = makeUser({
+        totpSecret: FIXED_SECRET,
+        totpEnabled: true,
+        loginFailCount: 0,
+        lockedUntil: null,
+      });
+      usersService.findByUsername.mockImplementation(async () => ({
+        ...account,
+      }));
+      // 忠实模拟 UsersService.recordLoginFailure 的计数 / 达阈值加锁副作用
+      usersService.recordLoginFailure.mockImplementation(
+        async (
+          _userId: number,
+          opts: { maxFail: number; lockMinutes: number },
+        ) => {
+          account.loginFailCount += 1;
+          if (account.loginFailCount >= opts.maxFail) {
+            account.lockedUntil = new Date(
+              Date.now() + opts.lockMinutes * 60_000,
+            );
+          }
+        },
+      );
+      // 若 login challenge 错误地重置，这里会真实清计数，用例随即红
+      usersService.resetLoginFailure.mockImplementation(async () => {
+        account.loginFailCount = 0;
+        account.lockedUntil = null;
+      });
+
+      for (let round = 1; round <= 5; round += 1) {
+        await expect(
+          service.login({ username: "alice", password: "p" }),
+        ).resolves.toEqual({ totpRequired: true });
+        await expect(
+          service.totpVerifyLogin({
+            username: "alice",
+            password: "p",
+            code: badCode(),
+          }),
+        ).rejects.toThrow("TOTP 验证码错误");
+      }
+
+      expect(account.loginFailCount).toBe(5);
+      expect(account.lockedUntil).toEqual(expect.any(Date));
+      expect(usersService.recordLoginFailure).toHaveBeenCalledTimes(5);
+      expect(usersService.resetLoginFailure).not.toHaveBeenCalled();
+      expect(jwtService.sign).not.toHaveBeenCalled();
+
+      await expect(
+        service.login({ username: "alice", password: "p" }),
+      ).rejects.toThrow("账号已锁定");
+      await expect(
+        service.totpVerifyLogin({
+          username: "alice",
+          password: "p",
+          code: goodCode(),
+        }),
+      ).rejects.toThrow("账号已锁定");
+      // 活跃锁期间不续期、不重置，也不能凭正确 TOTP 绕过锁定
+      expect(usersService.recordLoginFailure).toHaveBeenCalledTimes(5);
+      expect(usersService.resetLoginFailure).not.toHaveBeenCalled();
+      expect(jwtService.sign).not.toHaveBeenCalled();
     });
 
     it("keeps the token path unchanged for users without TOTP (backward compat)", async () => {
