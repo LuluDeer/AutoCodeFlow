@@ -1,7 +1,31 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 37 轮 · 广播占坑重启清零（ADR 级缺口的子场景收口））
-> 当前分支 `develop` = `a7340c9f`（第 5-36 轮累积已按主题分 44 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`a7340c9f` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 49 提交、未 push**。子 agent 平台已恢复（第 24-37 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R37 更正】上一轮头部写的 `ff9f7ff9`/47 提交是提交前快照，实际提交后 HEAD=`a7340c9f`/49 提交。）
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 38 轮 · 通知 429/408 重试 + 负 fromLine + 趋势时区三缺口 + 中间态审计）
+> 当前分支 `develop` = `a360d926`（第 5-37 轮累积已按主题分 46 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`a360d926` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 51 提交、未 push**。子 agent 平台已恢复（第 24-38 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R38 更正】上一轮头部写的 `a7340c9f`/49 提交是提交前快照，实际提交后 HEAD=`a360d926`/51 提交。）
+
+## 本轮（2026-11-25 · 第 38 轮）：通知 429/408 重试 + 负 fromLine + 趋势时区（三路并行）+ 中间态审计
+
+**方向来源**：objective 续轮，自己找方向。广播占坑剩两子场景（offline/stale 判死归零——OFFLINE 不参与派发故价值有限；地址集落库+终态释放——需数据模型变更+真 PG），本轮不碰。全链基线绿，派 2 路审计（输入校验边界、通知失败语义）+ 1 路中间态完整性验证，主控 CodeGraph 逐层复核三处确证后，3 个写域互斥实现 agent 并行。
+
+**缺口①（通知，告警丢失）**：`base.channel.ts` 的 `isDeterministicHttpReject` 判据 `status<500`，把 429（限流）/408（请求超时）当确定性拒绝、`withRetry` 首错即 break，3 次退避预算全废，六个渠道共用的可重试告警被丢弃；`classifyDeliveryFailure` 还把它们归 `http_4xx`（日志误诊"配置问题"）。修法：排除 408/429 走重试、新增 `http_408`/`http_429` 分类、QA5 注释更新。
+
+**缺口②（输入校验，DB 500 + 语义分叉）**：`task.controller.ts:738,1258` 的 `parseInt(fromLine)||0` 保留负值 → `skip(-1)` → PG `OFFSET -1` 500；S3 分支 `idx>=-1` 恒真返回头部（DB/S3 分叉）。修法：DTO 加 `@Matches(/^\d+$/)`（负数/小数 400 VALIDATION_FAILED）、controller 两处 `Math.max(0,...)` 纵深防御。**主控补强**：agent 报的残留缺口（1e21 虽 finite 但 PG OFFSET bigint 越界）——主控把两处再包 `Math.min(..., Number.MAX_SAFE_INTEGER)` 上界钳，测试断言超大值=MAX_SAFE_INTEGER。
+
+**缺口③（数据展示，静默低报）**：`KpiSparkline.tsx` 的 `recentDateKeys` 用本地 getFullYear/getDate 建键，后端 `metrics.service` 用 UTC 日键（`toISOString().slice(0,10)`，PG 默认 UTC）→ UTC+8 浏览器本地 00:00–08:00 执行被归 UTC 前一日，键匹配不上、今日曲线静默缺失。修法：改 `getUTC*`/`Date.UTC`，测试加 TZ=Asia/Shanghai 固定时刻用例。
+
+**中间态审计（check-midstate agent）**：20 个功能/守卫/基线 commit（跳过 13 docs）逐个 worktree 跑四守卫——12 全绿、8 中间态红，全部归因"代码先行、基线/文档重签滞后"（atlas-counts mcp-server 10→11、size-caps 多处、STC-113 锚点），每处都在紧随的 rebaseline/docs commit 修复，守卫本身无真实回归。**结论：本批存在可 bisect 性缺陷**（相对历史前 18 commit 每个中间态全绿的标准退化）——需按"功能提交+重签提交"成对回退，不能停在中间红点。登记为后续改进项（建议未来把基线重签并入同一功能 commit，或 CI 只检查 head 中间态不强求）。
+
+**集成期基线重签**：size-caps 报 channels.spec.ts 1028>994（429 测试 +34）、task.controller.ts 1407>1397（上界 clamp +10）；按既有先例只调 nonCommentLines/maxLines + why，functionLines 未超不动。
+
+**验证（主控独立复跑）**：admin-api 4 suites 158 tests（execution-query.dto 34/34、outbound-audit + channels 105/105 含 429 重试、collaborator 19/19）全绿；web trend-series 9/9（默认 TZ 与 TZ=Asia/Shanghai 双跑）+ tsc 0；双端 tsc 0、check:query-param-required 0、size-caps 0、全守卫链 130 段 0。**反证（主控自做）**：去掉 fromLine 上界钳 → 超大用例红（1 failed），还原 sha `759771cf…` 逐字节一致；三 agent 各自反证（恢复 status<500 → 429 用例红；去 Math.max → 负用例红；回本地日期 → TZ 用例双红）均真红。验收级别：单测/内存替身 + 真子进程退避 + 全链；未达真 PG OFFSET 越界实测 / 真通知渠道限流现场。遗留缺陷 0。
+
+**仍留候选**：广播占坑另两子场景；中间态可 bisect 性退化（见上）。
+
+**提交**：按 objective「分批提交」分 4 批——① 通知 429/408（3 文件）；② fromLine（3 文件）；③ 趋势时区（2 文件）；④ 基线重签 + 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 上述提交，51+ 提交未 push；三缺口已修且反证有牙，全链绿。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 37 轮）：广播占坑计数重启清零（ADR 级缺口的首个权威子场景）
 
