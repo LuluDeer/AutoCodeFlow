@@ -1,7 +1,23 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 35 轮 · examples 守卫假绿 selftest 黑盒化 + CI 命令真实性审计）
-> 当前分支 `develop` = `85a145ff`（第 5-34 轮累积已按主题分 40 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`85a145ff` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 45 提交、未 push**。子 agent 平台已恢复（第 24-35 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R35 更正】上一轮头部写的 `df5086e6`/42 提交是提交前快照，实际提交后 HEAD=`85a145ff`/45 提交。）
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 36 轮 · 接线守卫扩面纳入 examples/ 盲区）
+> 当前分支 `develop` = `ff9f7ff9`（第 5-35 轮累积已按主题分 42 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`ff9f7ff9` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 47 提交、未 push**。子 agent 平台已恢复（第 24-36 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R36 更正】上一轮头部写的 `85a145ff`/45 提交是提交前快照，实际提交后 HEAD=`ff9f7ff9`/47 提交。）
+
+## 本轮（2026-11-25 · 第 36 轮）：接线守卫扩面纳入 examples/（R35 登记的扫描面盲区）
+
+**方向来源**：objective 续轮，自己找方向。兑现 R35 明确登记的小尾巴——examples/ 不被两个接线守卫扫描的盲区。CodeGraph 复核确证：`check-guards-wired.mjs:239 scanGuards` 只走 scripts/ + apps/*/scripts + packages/*/scripts；`check-selftests-wired.mjs:153` 只 `readdirSync(scripts/)` 顶层。`examples/scripts/check-task-examples.mjs`（有脚本内 `--selftest`、接线完整）落盲区——将来改坏/断接线两守卫都抓不到。examples/ 下仅此一个脚本，扩面无涟漪；R162「先接线再扩面」前置已满足（上轮已接线）。
+
+**修法（2 文件）**：`check-guards-wired.mjs` 的 `scanGuards`（判据①②③）与 `scanGuardUniverse`（判据④）**同口径**扩到 `examples/scripts` 直接层 + `examples/<子目录>/scripts`（examples 布局特殊：唯一脚本住直接层，故两层都走），否则 ①②③ 认它而 ④ 分母没它、账对不上；selftest 加 ㉞/㉟/㊱ 三条 R163 反证（临时仓库 orphan 未接线→红、接线控制组→绿），计数注释 34→41。`check-selftests-wired.mjs` 扩收集面到 examples 两层、加 2 红反证 + 1 绿控制组（8/8），但**判据口径未改**（仍按文件名含 selftest 识别，不把脚本内 flag 算进来，避免造绿）——头注释明确 `check-task-examples` 的脚本内 selftest 由 guards-wired 判据③覆盖。
+
+**验证（主控独立复跑）**：guards `--selftest` 41/41、真仓 110 守卫全接线（+1=check-task-examples）/ universe 111 / 24 未登记（只提示不判红）；selftests `--selftest` 8/8、真仓 0；全守卫链 130 段 0。**反证（主控自做）**：临时在 examples/scripts 放未接线 guard `check-r35-orphan-probe.mjs` → `check-guards-wired` 真仓 exit 1 并精确点名该文件；删除后 exit 0。验收级别：真子进程守卫 + 临时仓库夹具反证 + 全链；未达 GitHub Actions 线上。遗留缺陷 0。
+
+**仍留候选**：广播占坑计数泄漏（ADR 级，需数据模型变更 + 真 PG 验收）——轻量缺口至此全部收口。
+
+**提交**：按 objective「分批提交」分 2 批——① 两个守卫脚本；② 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 上述提交，47+ 提交未 push；examples/ 扫描面盲区已补且反证有牙，全链绿。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 35 轮）：examples 守卫假绿 selftest 黑盒化（CI 真实性双审计）
 
