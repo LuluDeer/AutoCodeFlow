@@ -24,8 +24,18 @@
  *   node examples/scripts/check-task-examples.mjs --selftest # 反例自检（修好的那份必须绿、
  *                                                            # 修复前的形态必须红）
  * 退出码：0 = 全绿；1 = 有偏差（逐条打印文件与原因）。
+ *
+ * --selftest 除保留进程内「有齿」断言外，还用真子进程 CLI 黑盒覆盖 main：
+ *   · 无参子进程必须 exit 0 且打印「示例任务配置守卫通过」；
+ *   · --root <临时仓库> 里放坏 fixture，main 必须 exit 1 并点名该 task.example.json；
+ *     这条直接覆盖 main 末尾的 process.exit(1)——把它改成 exit(0) 会让 selftest 红。
+ * --root DIR 仅供自检夹具覆盖事实源/示例根目录；不传时默认行为逐字不变。
  */
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync,
+} from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -307,6 +317,82 @@ const FIXTURES = {
   },
 };
 
+// ── CLI 黑盒：spawn 自己，断言 main 的退出码 ────────────────────────────────
+const SELF = fileURLToPath(import.meta.url);
+const CLI_TIMEOUT_MS = 20_000;
+
+/** 真子进程运行本脚本；返回退出码与两路输出。 */
+function runSelf(args = []) {
+  const child = spawnSync(process.execPath, [SELF, ...args], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    timeout: CLI_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (child.error && child.error.code !== "ETIMEDOUT") {
+    throw new Error(`[selftest] 子进程启动失败：${child.error.message}`);
+  }
+  return {
+    code: typeof child.status === "number" ? child.status : null,
+    stdout: child.stdout ?? "",
+    stderr: child.stderr ?? "",
+    timedOut: child.error?.code === "ETIMEDOUT",
+  };
+}
+
+/** 断言一次 CLI 运行的退出码 + 输出片段；失败抛带完整输出的错。 */
+function expectCli(label, result, { code, contains = [] }) {
+  const output = `${result.stdout}${result.stderr}`;
+  const problems = [];
+  if (result.timedOut) problems.push(`超时被 SIGKILL（>${CLI_TIMEOUT_MS}ms）`);
+  else if (result.code !== code) problems.push(`退出码 ${result.code}（期望 ${code}）`);
+  for (const needle of contains) {
+    if (!output.includes(needle)) problems.push(`输出缺少片段 ${JSON.stringify(needle)}`);
+  }
+  if (problems.length === 0) return;
+  throw new Error(
+    [
+      `CLI 断言失败「${label}」：`,
+      ...problems.map((p) => `  ✘ ${p}`),
+      "  ——— stdout ———",
+      result.stdout.trimEnd() || "(空)",
+      "  ——— stderr ———",
+      result.stderr.trimEnd() || "(空)",
+    ].join("\n"),
+  );
+}
+
+/** 造一棵最小临时仓库：事实源抄真仓库，examples/ 下放一份违反 DTO 的配置。 */
+function makeBrokenRepoFixture() {
+  const dir = mkdtempSync(join(tmpdir(), "task-examples-selftest-"));
+  const write = (rel, text) => {
+    const abs = join(dir, rel);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, text);
+  };
+  for (const rel of [DTO_PATH, ENTITY_PATH]) {
+    write(rel, readFileSync(join(REPO_ROOT, rel), "utf8"));
+  }
+  const rel = "examples/broken-fixture/task.example.json";
+  write(
+    rel,
+    JSON.stringify(
+      {
+        name: "坏夹具",
+        triggerType: "cron",
+        runtime: "node",
+        entrypoint: "examples/broken-fixture/task.js",
+        cronExpression: "0 3 * * *",
+        bogusExtraKey: 1,
+      },
+      null,
+      2,
+    ),
+  );
+  return { dir, rel, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
 function runSelftest() {
   const dtoFields = parseDtoFields(readRepo(DTO_PATH));
   const entity = readRepo(ENTITY_PATH);
@@ -338,15 +424,56 @@ function runSelftest() {
       for (const p of problems) console.log(`    · ${p}`);
     }
   }
+  // ② CLI 黑盒：真子进程走 main，覆盖进程内断言摸不到的退出码分支。
+  let cliTotal = 0;
+  const cliCase = (label, fn) => {
+    try {
+      fn();
+      console.log(`✅ CLI 黑盒：${label}`);
+    } catch (e) {
+      failures++;
+      console.error(`✗ CLI 黑盒：${label}\n${e.message}`);
+    } finally {
+      cliTotal++;
+    }
+  };
+  const fixture = makeBrokenRepoFixture();
+  try {
+    cliCase("真仓库基线 → exit 0 + 通过文案", () => {
+      expectCli("baseline", runSelf(), {
+        code: 0,
+        contains: ["示例任务配置守卫通过"],
+      });
+    });
+    cliCase("坏 fixture → main exit 1 并点名文件", () => {
+      expectCli("broken-fixture", runSelf(["--root", fixture.dir]), {
+        code: 1,
+        contains: ["示例任务配置守卫发现", fixture.rel, "bogusExtraKey"],
+      });
+    });
+  } finally {
+    fixture.cleanup();
+  }
+  const total = cases.length + cliTotal;
+  const required = dtoFields.filter((f) => !f.optional).map((f) => f.name).join(", ");
   if (failures > 0) {
-    console.error(`\n${failures} 项反例测试失败\n`);
+    console.error(`\n${failures}/${total} 项反例测试失败\n`);
     process.exit(1);
   }
-  console.log(`\n反例测试全部通过（DTO 必填项：${dtoFields.filter((f) => !f.optional).map((f) => f.name).join(", ")}）\n`);
+  console.log(
+    `\n反例测试全部通过（${total} 例：进程内 ${cases.length} + CLI 黑盒 ${cliTotal}；DTO 必填项：${required}）\n`,
+  );
 }
 
 function main() {
-  const { results, dtoFields } = checkRepo();
+  // --root 仅供 selftest 指向临时仓库；不传时与改动前逐字等价。
+  const rootFlag = process.argv.indexOf("--root");
+  const rootValue = rootFlag >= 0 ? process.argv[rootFlag + 1] : undefined;
+  if (rootFlag >= 0 && (!rootValue || rootValue.startsWith("--"))) {
+    console.error("✖ --root 需要一个目录参数");
+    process.exit(1);
+  }
+  const { results, dtoFields } = rootFlag < 0 ? checkRepo() : checkRepo(resolve(rootValue));
   const errors = results.flatMap((r) => r.problems.map((p) => `${r.file}: ${p}`));
   if (errors.length > 0) {
     console.error(`\n✖ 示例任务配置守卫发现 ${errors.length} 个问题：`);
