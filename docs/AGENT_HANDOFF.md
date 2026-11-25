@@ -1,7 +1,28 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 16 轮 · 提交态完整性审计 + 剩余 3 个守卫假绿收口）
-> 当前分支 `develop` = `ba121ce6`（第 5-22 轮累积已按主题分 15 组提交：`8684c1eb`…`4b7f8508` Jest flag 修复与守卫 + `1bfce27d`…`ba121ce6` 各轮交接）。工作树干净，**领先 origin/develop 19 提交、未 push**。子 agent 平台自第 23 轮起故障（见下方），后续由主会话直做。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 24 轮 · 产物库任务名全量解析 + agent 平台恢复）
+> 当前分支 `develop` = `51a762b1`（第 5-23 轮累积已按主题分 16 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`51a762b1` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 20 提交、未 push**。子 agent 平台第 23 轮故障后**本轮探测已恢复**（极简探测 + 1 实现 + 1 只读审计均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 24 轮）：产物库任务名全量解析（共享 listAll hook）+ 并行审计 + 分批提交
+
+**方向来源**：objective 续轮，自己找方向。先探 ADR-024「后端流式导出」自主项——CodeGraph 核实 `streamExecutionsCsv`/`execution-csv.ts` + controller 3 处调用**已落地**（交接描述滞后），不重复造轮子。换扫交接登记的候选，选中一个用户可感知的真实缺口：`ArtifactsPage.tsx:338-358` 产物库任务名只查首页 100 条（`useTasksList({page:1,pageSize:100})`），超百回退 UUID；同文件注释自承「应走共享 listAll 分页 hook，属后续项」。ADR-024 §自主项同类缺口已完成，本项是其前端消费侧的同类收口。
+
+**编排（AGENTS §4）**：主控先用 CodeGraph 确证缺口与共享 `tasksApi.listAll`（`tasks.ts:608`，默认 `fields=id,name`、上限 `TASK_LIST_MAX_PAGES=20`=2000、超额抛错不静默截断）及同款 `useAllTasksForDag`（`queries.ts:444`），再切 2 路并行：① 实现切片（写域 = `queries.ts`/`ArtifactsPage.tsx`/`artifacts-page.test.tsx`）；② 只读审计（listAll 方案风险）。子 agent 平台第 23 轮故障本轮探测恢复，两路均正常产出。
+
+**交付（纯前端，3 文件）**：
+- `queries.ts`：新增 `queryKeys.tasks.allForNames`（`['tasks','list','names-all']`，与 `allForDag` 独立不串味）+ `useAllTasksForNames()`（`listAll({fields:'id,name'})`, staleTime 60s，注释钉住 2000 上限抛错语义）。
+- `ArtifactsPage.tsx`：任务名/筛选下拉改读 `useAllTasksForNames`，删 `TASK_LIST_PAGE_SIZE` import，注释更新为已实现口径；`taskMap[taskId] ?? taskId` 兜底保留（listAll 失败 → data 缺席 → 回退 id，不制造新崩溃面）。
+- `artifacts-page.test.tsx`：mock 迁到新 hook；删旧「pageSize≤100」断言（口径已变），新增 2 条——「走共享 hook 不再拉首页 100 条」+「跨页任务显示 name 不回退 UUID」（真反证型）。
+
+**审计结论（采纳，方案未改）**：① >2000 任务时名称字典整体失败，但**仅**行内名/下拉降级为 id，`useArtifactsIndex` 主列表错误态独立（`:335-336`），不受牵连——与 `listAll` "抛错不静默截断"纪律一致，如实记为边界；② 新 queryKey 与 `all/list/allForDag` 无冲突，`invalidateTaskData` 前缀 `['tasks']` 覆盖到它是期望行为；③ 两 hook 各跑一遍分页，但分属不同页面不会同挂，请求放大可接受，独立键的最小投影收益更大；④ 全仓无第二处同型「首页 100 条取名字典」，本轮不扩范围。
+
+**验证（主控独立复跑，不采信 agent 自述）**：`vitest run artifacts-page.test.tsx` 13/13 exit 0；`npm run typecheck:web`（`tsc -b`）exit 0；关键守卫 6 段全 0（web-type-drift 23/23、web-type-field-drift 28/28、selftests-wired、guards-wired 108 守卫全接线、test:docs、size-caps）。**反证（主控自做）**：把 `taskMap` 构造改为 `.slice(0,1)` 模拟首页截断 → 跨页用例 exit 1（`Unable to find element: 跨页任务`）；还原后 sha256 `9999e4cca321ad7bd763283ef43e21c59da7e7b37e75389c40c8e412e6f7d81f` 逐字节一致、复跑 exit 0。
+
+**验收级别**：单测/内存替身（vitest + mock hooks）+ tsc + 真子进程守卫链；**未达**浏览器真机与真实 API 分页链路（`listAll` 多页聚合由 tasks.api.test.ts 既有覆盖，本轮未接真后端）。遗留缺陷 0。本轮按 objective「分批提交」分 2 批：① 功能 3 文件；② 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 功能提交 + 交接提交，20+ 提交未 push；功能可独立 revert，守卫全绿。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 23 轮）：子 agent 平台故障确认 + 18-commit 中间态完整验证（主会话直做）
 
