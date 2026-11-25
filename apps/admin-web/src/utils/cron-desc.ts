@@ -86,7 +86,9 @@ export function describeCron(expr: string | null | undefined, t?: TFunc): string
     if (!dows || dows.length === 0) return null;
     // 星期名走 cron.desc.dow.*（zh 汉字/en 缩写，双语成对）——此前即便传 t
     // 也用硬编码 DOW_ZH，英文界面会把「一、二、三」漏进 "Weekly on …"。
-    const names = dows.map((d) => T(`cron.desc.dow.${d}`)).join(T('common.listSep.comma'));
+    // Quartz 把 7 当作周日别名（同 trigger-preview）：归一到既有 dow.0 key，
+    // 否则 i18next 找不到 cron.desc.dow.7，界面直出裸 key。
+    const names = dows.map((d) => T(`cron.desc.dow.${d === 7 ? 0 : d}`)).join(T('common.listSep.comma'));
     return T('cron.desc.weekly', { dow: names, times });
   }
 

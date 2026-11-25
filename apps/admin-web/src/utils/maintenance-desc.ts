@@ -27,6 +27,16 @@ function parseCronTime(expr: string): CronTime | null {
   const m = Number(minute);
   const h = Number(hour);
   if (m < 0 || m > 59 || h < 0 || h > 23) return null;
+  // dow 严格校验（宁缺勿错）：'*' 原样留给下方每日分支；单个数字 0-7 可
+  // 人文化，其中 7 是 Quartz 周日别名，归一到既有 dow.0 key；范围/列表/
+  // 步进等超集一律 null，让 describeMaintenanceWindow 回退原始 Cron，
+  // 避免拼出不存在的 i18n key 后在界面直出裸 key。
+  if (dow !== '*') {
+    if (!/^\d+$/.test(dow)) return null;
+    const d = Number(dow);
+    if (d < 0 || d > 7) return null;
+    return { minute: m, hour: h, dow: String(d === 7 ? 0 : d) };
+  }
   return { minute: m, hour: h, dow };
 }
 

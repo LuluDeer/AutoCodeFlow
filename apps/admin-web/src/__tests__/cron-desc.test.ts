@@ -30,6 +30,14 @@ describe('describeCron（CRON-DESC-01）', () => {
     expect(describeCron('0 0 * * 8')).toBeNull();
   });
 
+  it('dow=7（Quartz 周日别名）归一到周日，不露裸 key', () => {
+    const text = describeCron('0 0 * * 7');
+    expect(text).toBe('每周日 00:00');
+    expect(text ?? '').not.toContain('cron.desc.dow');
+    // 控制组：超过 dow 名字集合的值仍回退 null（既有断言保留）
+    expect(describeCron('0 0 * * 8')).toBeNull();
+  });
+
   it('多分钟每小时场景', () => {
     expect(describeCron('0,30 * * * *')).toBe('每小时 :00, :30');
   });
