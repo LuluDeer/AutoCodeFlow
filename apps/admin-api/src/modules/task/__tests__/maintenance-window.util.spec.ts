@@ -64,14 +64,20 @@ describe("lastWindowCronFireBefore（cron 最近触达扫描）", () => {
     expect(fire7).toEqual(at("2026-06-14T08:00:00"));
   });
 
-  it("dom 与 dow 同时受限按 POSIX OR 语义", () => {
-    // 2026-06-15 是周一（dow=1），dom=15
+  it("dom 与 dow 同时受限按 node-cron AND 语义", () => {
+    // node-cron@4.6 实跑确认：0 6 1 * 1 只命中"1 日且周一"——2026-06-01
+    // 命中，2026-06-15（周一但非 1 日）不命中；getNextMatch 从 06-01 06:00
+    // 之后直接跳到 2027-02-01 06:00。默认 7 天回看不含 06-01 → null。
+    expect(
+      lastWindowCronFireBefore("0 6 1 * 1", at("2026-06-15T07:00:00")),
+    ).toBeNull();
+    // 放宽回看至 15 天：AND 下最近的"1 日且周一"落点是 2026-06-01T06:00。
     const fire = lastWindowCronFireBefore(
       "0 6 1 * 1",
       at("2026-06-15T07:00:00"),
+      15 * 24 * 60,
     );
-    // dom=1 与 dow=1 均受限 → OR：6 月 15 日（周一）命中
-    expect(fire).toEqual(at("2026-06-15T06:00:00"));
+    expect(fire).toEqual(at("2026-06-01T06:00:00"));
   });
 
   it("月字段过滤（8 月 cron 在 6 月不命中 → null）", () => {

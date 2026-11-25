@@ -63,7 +63,7 @@ interface ParsedCron {
   dayOfMonth: Set<number>;
   month: Set<number>;
   dayOfWeek: Set<number>;
-  /** 原始字段是否为纯 `*`（POSIX cron 的 dom/dow OR 规则据此判定） */
+  /** 原始字段是否为纯 `*`（本仓按 node-cron AND 语义据此判定） */
   domAll: boolean;
   dowAll: boolean;
 }
@@ -137,9 +137,11 @@ function parseWindowCron(expr: string): ParsedCron | null {
 }
 
 /**
- * 单分钟匹配。日/周并存按 POSIX OR（两者均受限时命中其一即真；
- * 任一为纯 `*` 时只看受限的那个）。注意：这比"dom/dow 都受限则都不
- * 触发"的旧版 vixie 差异实现更贴近 node-cron 实际行为。
+ * 单分钟匹配。日/周并存时按 node-cron 的 AND 语义：两者均受限必须同时
+ * 命中；任一为纯 `*` 时只看受限的那个；两者都 `*` 则恒真。
+ * 依据：实读 node-cron@4.6 的 dist/_shared.js:963-967，TimeMatcher.match
+ * 以 `runOnDay && ... && runOnWeekDay` 组合，POSIX/Vixie 的 dom/dow OR
+ * 规则不适用于本仓调度器，反查最近触达时勿按 OR 推断落点。
  *
  * 入参是"某时区的壁钟字段"而非 Date：本地路径从 Date 本地 getter 提取，
  * 分区路径从 Intl formatToParts 提取（见 zoneWallClockAt）——匹配逻辑只有
@@ -157,7 +159,7 @@ function cronMatchesWallClock(
   if (parsed.domAll && parsed.dowAll) return true;
   if (parsed.domAll) return dowHit;
   if (parsed.dowAll) return domHit;
-  return domHit || dowHit;
+  return domHit && dowHit;
 }
 
 /** 本地路径：Date 本地 getter 即服务端时区壁钟（既有行为，逐字节不变）。 */

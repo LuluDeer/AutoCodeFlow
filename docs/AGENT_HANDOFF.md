@@ -1,7 +1,23 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 45 轮 · SDK 3xx 回调 + rollback/limit 校验漏网）
-> 本批提交前基线 `develop` = `a90993a6`（领先 origin/develop 67 提交、未 push）；按 operator「不做无意义提交」约束，本轮三个轻量修复 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-45 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 46 轮 · 调度 dom/dow 语义 + manifest 类型校验）
+> 本批提交前基线 `develop` = `79c06149`（领先 origin/develop 68 提交、未 push）；按 operator「不做无意义提交」约束，本轮两个修复 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-46 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 46 轮）：调度 dom/dow AND 语义 + manifest 类型校验（双域并行）
+
+**方向来源**：objective 续轮，自己找方向。派 2 路审计扫调度/cron 边界与 Python manifest 部署边界，主控 CodeGraph + 实测复核两处确证后 2 agent 并行修。
+
+**缺口①（调度语义错，主控独立实测确证）**：`maintenance-window.util.ts:162` 的 `cronMatchesWallClock` 在 dom/dow 都受限时写 `domHit || dowHit`（OR），注释还称"更贴近 node-cron"。但主控实读 node-cron@4.6 `dist/_shared.js:963-967`：`runOnDay && ... && runOnWeekDay`（**AND**）；agent 亦用 node-cron 实跑 `0 6 1 * 1`：06-01T06=true、06-15T06=false。后果：维护窗口反查按 OR 把"任意周一"当落点（如 2026-12-14 周一非15日），而 node-cron 实为下个"1号且周一"→ 周一误报 MISSED、FIRE_ONCE 周期估成 168h 可在非计划日补偿执行。修：`||`→`&&`，注释改诚实版（引用实测依据）。spec 用例从"POSIX OR"改"node-cron AND"，落点改为 06-01T06（7 天回看为 null）。
+
+**缺口②（manifest 类型未校验）**：`manifest.py:28` yaml 顶层未校验类型、`:36-43` requirements 直接 `m_reqs + t_reqs`。manifest.yaml 写 `requirements: "requests"`（字符串）→ TypeError 或单字符包名列表，`execute.py:5030-5031` prepare 崩。修：load 非 Mapping → warn 返回 {}；新增 `_valid_requirements` 只接受 list[str]，畸形侧忽略+warn，合法合并去重语义不变。新建 test_manifest_types.py。
+
+**验证（主控独立复跑）**：admin cron spec 28/28、Python 全量 87.36% 覆盖过 86% 门槛、双端 tsc、全守卫链 130 段 0。**反证（主控自做）**：cron 改回 `||` → AND 用例红；manifest 去类型校验 → 用例红；还原 sha 逐字节一致（`40e4bf9a…` / `3e62b5b7…`）。验收级别：单测 + 源码实测（node-cron）+ 全链；未达真调度器跨月运行。遗留缺陷 0。
+
+**仍留候选**：解释器 pin 缓存命中绕过（审计发现，安全档但需密码学比对+池内二进制替换语义，非轻量）；中间态 bisect 退化（R38）；广播占坑另两子场景（ADR 级）。
+
+**提交**：单批（2 源码 + 2 测试 + 本交接段）。**未 push**。处于可发布态。
+
+---
 
 ## 本轮（2026-11-25 · 第 45 轮）：SDK 3xx 回调逃逸 + rollback/limit 校验漏网（三域并行）
 
