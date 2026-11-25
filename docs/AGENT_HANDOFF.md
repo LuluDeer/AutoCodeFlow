@@ -1,7 +1,25 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 27 轮 · MCP 脱敏 fail-open + 导出导入往返污染双修）
-> 当前分支 `develop` = `bf53df6f`（第 5-26 轮累积已按主题分 22 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`bf53df6f` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 26 提交、未 push**。子 agent 平台已恢复（第 24-27 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 28 轮 · webhook 重投去重穿透修复）
+> 当前分支 `develop` = `ce04cb5e`（第 5-27 轮累积已按主题分 24 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`ce04cb5e` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 28 提交、未 push**。子 agent 平台已恢复（第 24-28 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 28 轮）：webhook 重投去重穿透（timestamp 重签绕过）修复
+
+**方向来源**：objective 续轮，自己找方向。上轮三路审计登记了 3 个确证候选，本轮不再全盘扫描，直接按后果严重度兑现最高者：`task-webhook.service.ts:319-322` 的幂等键用请求签名，而 `webhook-hmac.util.ts:64-70` 的签名覆盖 `${timestamp}.${rawBody}` —— 同一 rawBody 换时间戳重签得到新签名、新 SETNX 键，绕过去重再建 execution（清理/发布/对账任务被重复执行）。主控 CodeGraph 逐层复核：rawBody(:262) 与 `resolveSecret(task.webhookSecret)`(:296) 均在作用域、`resolveSecret`(:139) 对同一存储值确定性——修法前提成立。
+
+**修法**：去重键改 `createHmac('sha256', 服务端 secret).update(rawBody).digest('hex').slice(0,32)`，保留 `webhook:task:` 前缀 / 10min TTL / SETNX / Redis fail-open；timestamp、delivery 都不入键，不同 rawBody 不误杀；`opts.rawBody` 缺失（签名校验已先 throw）退化 empty buffer，**不回退到 signature**（那会重新引入穿透）。注释 :305-318 重写为诚实版：原注释只防 delivery 头绕过，没意识到签名自身的 timestamp 分量也是可变绕过面。
+
+**交付（2 文件）**：`task-webhook.service.ts`（import + 键 + 注释）；`task-webhook.dedupe.spec.ts`（helper 参数化 timestamp，新增 2 条核心用例：① 同 rawBody 换 timestamp 重签 + 不同 delivery → 第二次 `{deduplicated:true}`、trigger 仅 1 次、两键相等；② 不同 rawBody 同 timestamp → 两次都触发、两键不等；主控另修正一条旧用例名「键只由签名决定」→「只由 rawBody 决定」以免误导）。
+
+**验证（主控独立复跑）**：`npm test -- --runInBand task-webhook.dedupe.spec.ts` 8/8 exit 0（注意 admin-api 必须走 `npm test` 口径带 `--experimental-vm-modules`，主控首次直接 `npx jest` 撞 ESM 加载错，非代码问题）；`tsc --noEmit` 0；webhook-hmac.util 回归 0；语言守卫 0。**反证（主控自做）**：把键改回 `createHash(signature)` → 核心用例 exit 1（第二次返回 exec-1、trigger 2 次），还原 sha256 `bfd9deb7…` 逐字节一致、复跑 8/8。验收级别：单测/内存替身（jest + 假 replayGuard）；**未达**真 Redis SETNX 时序 / 真 PG / 浏览器。遗留缺陷 0。
+
+**未做候选（上轮审计确证，仍留后续）**：① web `cron-desc.ts:85,89` + `maintenance-desc.ts:30` cron dow `7`/范围 `1-5` 裸 i18n key（修法/验收见 R27 交接）；② api `task.service.ts:5124` 手动 kill 用 findOne 快照 executorId，dispatch 落库窗口内错投（`execution-terminal.ts:318` RETURNING 增 executorId）。
+
+**提交**：按 objective「分批提交」分 2 批——① 功能 2 文件；② 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 功能提交 + 交接提交，28+ 提交未 push；去重穿透已修且反证有牙。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 27 轮）：MCP 两处脱敏缺陷（深层 fail-open + 导出导入往返污染）+ 三路系统审计
 
