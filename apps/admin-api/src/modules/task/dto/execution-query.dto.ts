@@ -327,6 +327,9 @@ export class ExecutionLogsQueryDto {
   @ApiPropertyOptional({ description: "每页行数，缺省 500，最大 2000" })
   @IsOptional()
   @IsString()
+  @Matches(/^\d+$/, {
+    message: "limit must be a non-negative integer string",
+  })
   limit?: string;
 
   @ApiPropertyOptional({

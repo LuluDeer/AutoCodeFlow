@@ -1,5 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsString, IsOptional, Matches } from "class-validator";
+import { IsString, IsOptional, Matches, IsObject } from "class-validator";
+// B-9: 与 create/trigger/webhook 面同一 params 体积门与键冲突闸（常量单一出处）
+import { TaskParamsMaxBytes } from "./params-size.constraint";
+import { TaskParamsNoKeyCaseCollision } from "./param-key-collision.constraint";
 
 export class RollbackTaskDto {
   @ApiProperty({
@@ -14,5 +17,8 @@ export class RollbackTaskDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @IsObject()
+  @TaskParamsMaxBytes()
+  @TaskParamsNoKeyCaseCollision()
   params?: Record<string, any>;
 }

@@ -273,6 +273,22 @@ describe("ExecutionLogsQueryDto (OBS-03: GET /tasks/:id/executions/:execId/logs)
     expect(big.fromLine).toBe("999999999999999999999");
   });
 
+  it("rejects a negative limit with 400 VALIDATION_FAILED (no limit=-1)", async () => {
+    await expect(validate({ limit: "-1" })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it("rejects non-numeric limit (digits-only)", async () => {
+    await expect(validate({ limit: "abc" })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it("accepts limit=50 (digits-only)", async () => {
+    expect((await validate({ limit: "50" })).limit).toBe("50");
+  });
+
   it("level is optional", async () => {
     const result = await validate({});
     expect(result.level).toBeUndefined();

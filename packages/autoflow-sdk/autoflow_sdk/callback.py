@@ -358,7 +358,7 @@ class CallbackClient:
                         )
                         continue
                     raise last_error
-                if resp.status_code >= 400:
+                if resp.status_code >= 300:
                     raise self._status_error(resp)
                 try:
                     body = resp.json()

@@ -1,7 +1,25 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 44 轮 · SDK 文档示例 + SavedViewsBar a11y）
-> 本批提交前基线 `develop` = `19d5d29c`（领先 origin/develop 66 提交、未 push）；按 operator「不做无意义提交」约束，本轮两个轻量修复 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-44 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 45 轮 · SDK 3xx 回调 + rollback/limit 校验漏网）
+> 本批提交前基线 `develop` = `a90993a6`（领先 origin/develop 67 提交、未 push）；按 operator「不做无意义提交」约束，本轮三个轻量修复 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-45 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 45 轮）：SDK 3xx 回调逃逸 + rollback/limit 校验漏网（三域并行）
+
+**方向来源**：objective 续轮，自己找方向。派 2 路审计扫 Python SDK 运行时与 admin-api DTO 校验边界（与前几轮 controller/service 层错开），主控 CodeGraph 复核三处确证后 3 agent 并行修，写域互斥。
+
+**缺口①（SDK 3xx 回调逃逸）**：`autoflow_sdk/callback.py:361` 用 `>= 400` 判错，3xx（反代 302 登录跳转/网关拦截 + JSON envelope）落成功分支，admin 未处理终态→执行卡 RUNNING 至 stale sweep、真实 failureReason 丢失。同包 http.py:241 已用 `raise_for_status()` 对 3xx 抛（R177-A1 已修），callback 漏同步。修：`>= 300`，置于重试分支后（3xx 单发），统一抛 HttpClientError。
+
+**缺口②（rollback params 漏校）**：`rollback-task.dto.ts:15` 的 params 只有 @IsOptional，POST rollback 带超长字符串/数组原样写 TaskExecution.params(jsonb) 并入队（近 55MB 无界载荷 + 类型混淆）。create/trigger/webhook 面均有 @IsObject + @TaskParamsMaxBytes(64KB) + @TaskParamsNoKeyCaseCollision，rollback 是唯一漏网执行触发面。修：补三个约束器（复用单一出处）。
+
+**缺口③（logs limit 漏 @Matches）**：execution-query.dto.ts limit 只有 @IsString，R38 只补了 fromLine。`?limit=-1` 经 controller/collaborator clamp 成 1 行、HTTP 200，调用方无从分辨。修：加 `@Matches(/^\d+$/)`（与 fromLine 同口径）。
+
+**验证（主控独立复跑）**：admin 2 suites / 43 tests、SDK pytest 71 passed、双端 tsc 0、全守卫链 130 段 0。**反证（主控自做）**：SDK 改回 `>=400` → 302 用例 `DID NOT RAISE`；limit 去 @Matches → 两用例红；还原 sha 逐字节一致（`2f968ac6…` / `2b517379…`）。验收级别：单测/契约验证 + 全链；未达真反代 302 / 真 55MB 载荷。遗留缺陷 0。
+
+**仍留候选**：中间态 bisect 退化（R38，需 rebase/CI commit 守卫）；广播占坑另两子场景（ADR 级）。轻量确证候选清零。
+
+**提交**：单批（3 源码 + 3 测试 + 本交接段）。**未 push**。处于可发布态。
+
+---
 
 ## 本轮（2026-11-25 · 第 44 轮）：SDK 文档示例签名 + SavedViewsBar a11y（双域并行）
 

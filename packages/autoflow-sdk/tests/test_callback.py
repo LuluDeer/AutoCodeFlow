@@ -107,6 +107,25 @@ class TestReportSuccess:
             "deviceFingerprint": DEVICE_FP,
         }
 
+    @respx.mock
+    def test_302_with_json_envelope_raises_http_client_error(self):
+        """3xx（反代 302 登录跳转/网关拦截）即使带成功 envelope 也不得静默返回成功。
+
+        httpx 默认不跟随重定向；旧判错 `>= 400` 让 302 落入解包分支，admin
+        实际未处理终态。与 http.py 的 raise_for_status（覆盖 3xx）同口径。
+        """
+        route = respx.post(URL).mock(return_value=httpx.Response(302, json={
+            "ok": True,
+            "code": 302,
+            "message": "Redirecting to login",
+            "data": {"results": []},
+        }))
+
+        with pytest.raises(HttpClientError):
+            make_client().report_success()
+
+        assert route.call_count == 1
+
 
 class TestReportFailure:
     @respx.mock
