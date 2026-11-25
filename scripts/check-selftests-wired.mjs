@@ -17,13 +17,27 @@
  *
  * ## 判据
  *
- * 对 `scripts/` 下每个名字含 `selftest` 的脚本文件：
+ * 对 `scripts/`、`examples/scripts` 直接层与 `examples/<子目录>/scripts` 下每个
+ * 名字含 `selftest` 的脚本文件：
  *   ① 从 `test:guards:chain` / `test:unit` / `test:guards:selftests` /
  *      `typecheck:all` 出发做**递归可达性分析**（并集 CI 里直接 `node`/`bash` 的调用），
  *      命中 ⇒ 通过；
  *   ② 未命中 ⇒ 要求**该文件自己的头注**（前 `HEADER_LINES` 行）里出现
  *      **真机理由的关键词**（`needs-env` / `docker` / `分钟` / `连跑` / `真机`…）⇒ 通过；
  *   ③ 两者皆无 ⇒ **红**，并点名「它叫 selftest 却没人跑，也没有说明为什么」。
+ *
+ * ## R163：examples/ 也进扫描面（防孤儿，但判据口径不变）
+ *
+ * `examples/scripts/check-task-examples.mjs` 的 `--selftest` 写在**脚本内**
+ *（`argv.includes("--selftest")`），文件名并不含 selftest ⇒ 本守卫按**文件名**
+ * 识别的判据看不到它，扩面到 examples 也看不到。它的脚本内自检由
+ * `check-guards-wired` 的判据③ 覆盖（实测全仓 110 个守卫自检面全绿，含它）。
+ * 这里**刻意不把「脚本内含 --selftest」也算成 selftest 文件**：那会把全仓所有
+ * 带自检开关的普通守卫都拖进本判据，逼它们补头注理由或接线 —— 那是改判据造绿。
+ *
+ * examples/ 下将来若出现**独立** `*.selftest.*` 文件（命名即接线契约），它必须
+ * 同样受本判据管辖。所以扫描面扩到 `examples/scripts` 直接层与 examples 各子目录
+ * 的 `scripts/`，与 `check-guards-wired` 的 examples 扫描面同口径。
  *
  * ## 为什么是「头注」而不是「豁免清单」
  *
@@ -154,7 +168,30 @@ export function check(root = resolve(HERE, "..")) {
   if (!existsSync(scriptsDir)) {
     return { errors: ["读不到 scripts/ —— 判据失去对象"], printed };
   }
-  const files = readdirSync(scriptsDir).filter((f) => f.includes("selftest"));
+  // R163：examples/ 下的**独立** `*.selftest.*` 也要进判据。与 check-guards-wired
+  // 同口径：examples/scripts 直接层（check-task-examples.mjs 就在这一层）+ examples
+  // 各子目录的 scripts/。判据仍按**文件名**含 selftest 识别 —— 脚本内 `--selftest`
+  // 由 check-guards-wired 的判据③ 覆盖，不在本守卫改判据（避免假绿）。
+  const files = [];
+  const collect = (dir, relDir) => {
+    if (!existsSync(dir)) return;
+    for (const f of readdirSync(dir)) {
+      if (f.includes("selftest")) files.push({ rel: `${relDir}/${f}`, abs: join(dir, f) });
+    }
+  };
+  collect(scriptsDir, "scripts");
+  collect(join(root, "examples", "scripts"), "examples/scripts");
+  let exampleChildren = [];
+  try {
+    exampleChildren = readdirSync(join(root, "examples"), { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    // examples/ 不存在 ⇒ 没有子目录可扫；scripts/ 的规模下界仍钉住扫描面。
+  }
+  for (const child of exampleChildren) {
+    collect(join(root, "examples", child, "scripts"), `examples/${child}/scripts`);
+  }
 
   // 规模下界：若 somehow 扫不到文件，上面 existsSync 已红；这里再兜一层
   // ——「目录改名 ⇒ 零命中 ⇒ 一句 ✔」是本仓反复踩过的形态。
@@ -165,8 +202,7 @@ export function check(root = resolve(HERE, "..")) {
     return { errors, printed };
   }
 
-  for (const f of files.sort()) {
-    const rel = `scripts/${f}`;
+  for (const { rel, abs } of files.sort((a, b) => a.rel.localeCompare(b.rel))) {
     // ① 可达：被某个可达 npm script 或 CI 直接调用
     const wired = reachBodies.includes(rel) || ciText.includes(rel);
     if (wired) {
@@ -174,7 +210,7 @@ export function check(root = resolve(HERE, "..")) {
       continue;
     }
     // ② 未可达 ⇒ 头注必须有理由
-    const head = readFileSync(join(root, rel), "utf8")
+    const head = readFileSync(abs, "utf8")
       .split("\n")
       .slice(0, HEADER_LINES)
       .join("\n");
@@ -314,6 +350,57 @@ function runSelftest() {
         contains: ["wired.selftest.mjs", "叫 selftest 却没人跑"],
         withinMs: 20000,
         label: "注释键不算接线",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  // ── R163：examples/ 扫描面的反证（独立 selftest 文件）─────────────────────
+  // 判据按文件名含 selftest 识别，所以夹具必须是独立 *.selftest.* 文件。
+  // 两条路径分别钉住 examples/scripts 直接层（真实缺口所在层）与
+  // examples/<子目录>/scripts（同款遍历）；控制组证明红不是 fixture 自身坏了。
+  const EXAMPLE_DIRECT = "examples/scripts/orphan-example.selftest.mjs";
+  const EXAMPLE_NESTED = "examples/demo/scripts/orphan-nested.selftest.mjs";
+  const exampleRepo = (rel, { wired = false } = {}) => {
+    const files = baseFiles();
+    files[".github/workflows/ci.yml"] =
+      "run: node scripts/wired.selftest.mjs\n" + (wired ? `run: node ${rel}\n` : "run: echo hi\n");
+    files[rel] = "// 故意不写理由，也没被任何入口执行\n";
+    return makeFixtureRepo({
+      ...files,
+      "package.json": JSON.stringify({ scripts: baseScripts() }, null, 2),
+    });
+  };
+  const expectExampleRed = (rel, label) => {
+    const repo = exampleRepo(rel);
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: [rel, "叫 selftest 却没人跑"],
+        withinMs: 20000,
+        label,
+      });
+    } finally {
+      repo.cleanup();
+    }
+  };
+  // 写成两条独立 push（而非循环）：本脚本的 COVERAGE_CASES 是静态数 push 调用点，
+  // 循环会让「打印数」与「实际跑的用例数」脱钩，正是 R168 要防的形态。
+  push("反例⑤【R163】examples/scripts 直接层的 selftest 未接线且无理由 ⇒ 红", () =>
+    expectExampleRed(EXAMPLE_DIRECT, "examples 直接层 orphan 未接线"),
+  );
+  push("反例⑤【R163】examples/<子目录>/scripts 的 selftest 未接线且无理由 ⇒ 红", () =>
+    expectExampleRed(EXAMPLE_NESTED, "examples 子目录 orphan 未接线"),
+  );
+  push("反例⑥【R163】直接层 orphan selftest 接进 CI ⇒ 绿（证明上一条的红不是 fixture 自身坏了）", () => {
+    const repo = exampleRepo(EXAMPLE_DIRECT, { wired: true });
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 0,
+        contains: ["selftest 接线判据通过", `${EXAMPLE_DIRECT}：已接线`],
+        withinMs: 20000,
+        label: "examples orphan 已接线",
       });
     } finally {
       repo.cleanup();

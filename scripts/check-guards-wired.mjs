@@ -69,6 +69,20 @@
  * `scripts/lib/` 下是**共用库不是守卫**（`agent-coverage.mjs` 恰好也叫 agent-*），
  * 与判据④ 的 `scanGuardUniverse` 同一口径排除 —— 否则分母会被 `lib/` 污染。
  *
+ * ## R163：扫描面纳入 `examples/<子目录>/scripts`（防孤儿守卫）
+ *
+ * `examples/scripts/check-task-examples.mjs` 有脚本内 `--selftest`，且接线完整
+ * （package.json 的 `check:task-examples` / `check:task-examples:selftest` 与 ci.yml
+ * 的对应 step）。但它落在 `examples/` 下 —— 判据①②③ 的 `scanGuards()` 与判据④
+ * 的 `scanGuardUniverse()` 都只走 `scripts/` + `apps/<子目录>/scripts` + `packages/<子目录>/scripts`，
+ * **扫不到它**。后果：它将来被改坏或断接线，两个守卫都抓不到（又一个「静默孤儿」）。
+ *
+ * 两处扫描面必须**同口径**一起扩：`examples/scripts/`（该脚本实际所在的直接层）与
+ * `examples/<子目录>/scripts`（与 apps/packages 同款遍历），否则 ①②③ 说「被跑了」
+ * 而 ④ 说「不在分母里」，账对不上。
+ * R162 的前置「先接线、再扩面」已满足：该脚本本轮已先接线（上一条切片），扩面不产生
+ * 新增未接线守卫。`.selftest.mjs` 伴生文件、`lib/` 共用库的排除规则保持不变。
+ *
  * ## 例外（ALLOWLIST / SELFTEST_ALLOWLIST）与「豁免必须可证」
  *
  * ALLOWLIST 管判据①②（脚本要不要被 CI 跑），SELFTEST_ALLOWLIST 管判据③（自检要
@@ -229,17 +243,23 @@ function walk(dir, out) {
 }
 
 /**
- * 收集 root 下的守卫脚本（根 scripts/ + apps/<pkg>/scripts + packages/<pkg>/scripts）。
+ * 收集 root 下的守卫脚本（根 scripts/ + apps/<pkg>/scripts + packages/<pkg>/scripts
+ * + examples/scripts 直接层 + examples/<子目录>/scripts）。
  *
  * R162：扫描面 = `check-*` ∪ `agent-*`。`agent-*` 一族此前完全不进判据①②③；
  * 补齐时它们必须**先接线再扩面**，理由见文件头「R162」那节。
+ * R163：`examples/<子目录>/scripts` 也纳入（防孤儿，前置「先接线再扩面」已满足），
+ * 与判据④ 的 `scanGuardUniverse` 同口径；理由见文件头「R163」那节。
  * `lib/` 是共用库（`scripts/lib/agent-coverage.mjs` 也匹配 agent-*），
  * 与判据④ 的 `scanGuardUniverse` 同口径排除：它没有自检，也不该被当成守卫接线。
  */
 export function scanGuards(root) {
   const guards = [];
   walk(join(root, "scripts"), guards);
-  for (const group of ["apps", "packages"]) {
+  // examples/ 的布局与 apps/packages 不同：唯一的脚本直接住在 examples/scripts/，
+  // 因此除了 examples/<子目录>/scripts 的同款遍历，还要单独走这一层。
+  walk(join(root, "examples", "scripts"), guards);
+  for (const group of ["apps", "packages", "examples"]) {
     let children = [];
     try {
       children = readdirSync(join(root, group), { withFileTypes: true })
@@ -896,11 +916,18 @@ const sideHint = (p, side) =>
  * 不带 `--root`。
  */
 /**
- * 判据④ 的扫描面：仓库里**所有**判别型脚本（`check-*.mjs` + `agent-*.mjs`）。
+ * 判据④ 的扫描面：仓库里**所有**判别型脚本（`check-*.mjs` + `agent-*.mjs`），
+ * 覆盖根 `scripts/` 与 `apps/<子目录>/scripts`、`packages/<子目录>/scripts`、
+ * `examples/scripts` 直接层、`examples/<子目录>/scripts`。
  *
  * 为什么要把 `agent-*.mjs` 一族也算进来：登记表是按「判别型脚本」记账的，而
  * 判据①②③ 的扫描面从 R162 起**也是** `check-* ∪ agent-*`（此前只认 check-*，
  * agent 族不进分母 ⇒ 「N 个守卫里覆盖了 M 个」会算错账）。
+ *
+ * R163 把 `examples/<子目录>/scripts` 一并纳入：必须与 `scanGuards` 同口径，否则
+ * ①②③ 认了它、④ 的分母里却没有它（examples 下的守卫成为判据盲区）。
+ * 这里的「未登记」只打印差额、不判红 —— 扩面后 examples 的守卫会先显示为
+ * uncovered，等它补进登记表为止；这不是假绿，登记覆盖面本来就该单独记账。
  *
  * 两个族合起来的口径随仓库增长；登记覆盖之外的差额必须打印出来：
  * 「没登记」不等于「有覆盖」。
@@ -931,7 +958,9 @@ function scanGuardUniverse(root) {
     }
   };
   walkAll(join(root, "scripts"));
-  for (const group of ["apps", "packages"]) {
+  // 与 scanGuards 同口径：examples/scripts/ 直接层 + examples/<子目录>/scripts。
+  walkAll(join(root, "examples", "scripts"));
+  for (const group of ["apps", "packages", "examples"]) {
     let children = [];
     try {
       children = readdirSync(join(root, group), { withFileTypes: true })
@@ -1414,7 +1443,7 @@ const names = (n) => Array.from({ length: n }, (_, i) => `check-fake${String(i).
 const direct = (guards) => guards.map((g) => `      - run: node scripts/${g}`);
 
 /**
- * 自检：24 条子进程用例（每条断言退出码 + 关键文本 + <1s）+ 10 条 API 级用例 = 34。
+ * 自检：41 条用例（子进程断言退出码 + 关键文本 + <1s；其余为 API 级断言）。
  *
  * 为什么要子进程：本脚本的事故形态恰好都发生在 **CLI 层**（`process.exit`
  * 是否真的执行、报错文本是否还在），抽函数在内存里断言的 selftest 对它们完全盲。
@@ -2245,6 +2274,55 @@ function runSelftest() {
       code: 1,
       contains: [names(22)[21], "package.json 里也没有脚本包装它"],
       absent: ["npm run //", "package.json 里有 //note"],
+    },
+  );
+
+  // ── R163：examples 扫描面扩面（两条反证 + 控制组）────────────────────────
+  // 夹具名必须带 check- 前缀才落进判据面（walk 只认 check-* ∪ agent-*）：
+  // 任务书举例的裸名 `orphan-guard.mjs` 会被正则过滤，反而证明不了扩面有没有牙。
+  // 两条路径分别钉住 examples/<子目录>/scripts（同款遍历）与 examples/scripts
+  // （check-task-examples.mjs 实际所在的直接层，只走同款遍历会漏掉它）。
+  const ORPHAN_EXAMPLE_REL = "examples/demo/scripts/check-orphan-example-guard.mjs";
+  const ORPHAN_DIRECT_REL = "examples/scripts/check-orphan-direct-guard.mjs";
+  subprocess(
+    "㉞ 【R163】examples/<子目录>/scripts 的 orphan 守卫没接线 → 红（扩面前判绿）",
+    {
+      ...guardTree({ guards: names(22), stepLines: direct(names(22)) }),
+      [ORPHAN_EXAMPLE_REL]: "// examples/demo 的孤儿守卫：未接线\n",
+    },
+    {
+      code: 1,
+      contains: ["check-orphan-example-guard.mjs", "没有被任何 CI workflow 执行"],
+      absent: ["守卫接线自检通过", "结构错误"],
+    },
+  );
+
+  subprocess(
+    "㉟ 【R163】examples/scripts 直接层的 orphan 守卫没接线 → 红（真实缺口形态）",
+    {
+      ...guardTree({ guards: names(22), stepLines: direct(names(22)) }),
+      [ORPHAN_DIRECT_REL]: "// examples/scripts 的孤儿守卫：未接线\n",
+    },
+    {
+      code: 1,
+      contains: ["check-orphan-direct-guard.mjs", "没有被任何 CI workflow 执行"],
+      absent: ["守卫接线自检通过", "结构错误"],
+    },
+  );
+
+  subprocess(
+    "㊱ 【R163】直接层 orphan 守卫接进 CI → 绿（证明 ㉟ 的红不是 fixture 自身坏了）",
+    {
+      ...guardTree({
+        guards: names(22),
+        stepLines: [...direct(names(22)), `      - run: node ${ORPHAN_DIRECT_REL}`],
+      }),
+      [ORPHAN_DIRECT_REL]: "// examples/scripts 的守卫：已接线\n",
+    },
+    {
+      code: 0,
+      contains: ["守卫接线自检通过", "24 个守卫（check-* ∪ agent-*）全部被 CI 执行"],
+      absent: ["没有被任何 CI workflow 执行", "结构错误"],
     },
   );
 
