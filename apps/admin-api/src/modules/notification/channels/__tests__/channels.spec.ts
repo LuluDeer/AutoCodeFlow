@@ -762,6 +762,51 @@ describe("R3: redirects refused (maxRedirects: 0)", () => {
     expect(urls).toHaveLength(1); // QA5: 3xx is deterministic, not retried
     expect(urls[0]).toBe("https://redirecting.example.com/hook");
   });
+
+  it("WebhookChannel: a 429 is transient — retries twice, succeeds on 3rd attempt", async () => {
+    // R-retry-429: unlike the 302 above, a 429 (rate limited) is a retryable
+    // transient 4xx. Before the fix isDeterministicHttpReject(429) returned
+    // true (429 < 500) → withRetry broke on the FIRST error → only one
+    // axios.post call and a retryable alert silently dropped. With 408/429
+    // excluded, the full 3-attempt budget is used and the 3rd call succeeds.
+    const rateLimitErr = Object.assign(
+      new Error("Request failed with status code 429"),
+      { response: { status: 429, headers: { "retry-after": "1" } } },
+    );
+    mockedAxios.post = jest
+      .fn()
+      .mockRejectedValueOnce(rateLimitErr)
+      .mockRejectedValueOnce(rateLimitErr)
+      .mockResolvedValueOnce({ status: 200 });
+
+    jest.useFakeTimers();
+    try {
+      const channel = new WebhookChannel(makeStore());
+      const sendPromise = channel.send(
+        payload,
+        "https://ratelimited.example.com/hook",
+      );
+      // Drain the async SSRF pin + withRetry backoff timers until the promise
+      // settles (2 backoffs: 1000ms then 2000ms).
+      let settled = false;
+      void sendPromise.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      for (let i = 0; i < 20 && !settled; i++) {
+        await jest.advanceTimersByTimeAsync(1000);
+      }
+      await expect(sendPromise).resolves.toBe("sent");
+      // First two 429s consumed retries; the third attempt succeeded.
+      expect(mockedAxios.post).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 // ────────────────────────────────────────────────────────────

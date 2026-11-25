@@ -350,6 +350,24 @@ describe("R150-A1 轴2: 失败原因分类（只进日志，不改状态契约�
     );
   });
 
+  it("R-retry-429: 瞬态 4xx（限流/请求超时）单独归类，不混进 http_4xx", () => {
+    // 429/408 是对端限流/请求超时，可重试、非配置错，必须与确定性 4xx 分开，
+    // 否则日志会把它误标成「改配置才有用」。
+    expect(classifyDeliveryFailure({ response: { status: 429 } })).toBe(
+      "http_429",
+    );
+    expect(classifyDeliveryFailure({ response: { status: 408 } })).toBe(
+      "http_408",
+    );
+    // 其他 4xx 仍归 http_4xx（既有红线不破坏）
+    expect(classifyDeliveryFailure({ response: { status: 401 } })).toBe(
+      "http_4xx",
+    );
+    expect(classifyDeliveryFailure({ response: { status: 404 } })).toBe(
+      "http_4xx",
+    );
+  });
+
   it("超时与网络故障分开（axios timeout / ECONNREFUSED / DNS）", () => {
     // axios 的 timeout 没有 code，只有 message
     expect(

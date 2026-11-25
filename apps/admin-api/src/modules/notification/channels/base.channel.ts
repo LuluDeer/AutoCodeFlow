@@ -39,6 +39,7 @@ export interface RetryConfig {
  * 的 results 值域），不该为了排障改契约。但**日志**没有理由同样折叠：运维
  * 需要从一行日志区分
  *   · http_4xx/http_3xx → 配置问题（URL/凭据/重定向），改配置才有用；
+ *   · http_408/http_429 → 瞬态限流/请求超时，重试可恢复（不是配置错）；
  *   · http_5xx          → 对端故障，等恢复（重试已耗尽）；
  *   · timeout/network    → 网络/DNS/TLS，查链路；
  * 而不是看到 6 个渠道都写 "failed" 再去翻堆栈。
@@ -50,6 +51,8 @@ export interface RetryConfig {
 export type DeliveryFailureKind =
   | "http_3xx_redirect"
   | "http_4xx"
+  | "http_408"
+  | "http_429"
   | "http_5xx"
   | "timeout"
   | "network"
@@ -60,6 +63,10 @@ export function classifyDeliveryFailure(error: unknown): DeliveryFailureKind {
     error as { response?: { status?: number } } | undefined | null
   )?.response?.status;
   if (typeof status === "number" && Number.isFinite(status)) {
+    // R-retry-429: 408/429 是对端限流/请求超时，属可重试瞬态，先于通用 4xx
+    // 判定，避免被记成「配置问题」误导排障；其余 4xx 仍归 http_4xx。
+    if (status === 429) return "http_429";
+    if (status === 408) return "http_408";
     if (status >= 300 && status < 400) return "http_3xx_redirect";
     if (status >= 400 && status < 500) return "http_4xx";
     if (status >= 500 && status < 600) return "http_5xx";
@@ -103,11 +110,23 @@ export abstract class BaseChannel {
 
   /** QA5: 3xx (redirect refused by the R3 maxRedirects:0 posture) and 4xx
    *  are deterministic remote verdicts — retrying them only burns the
-   *  backoff budget. Only transport errors and 5xx are worth retrying. */
+   *  backoff budget. Only transport errors and 5xx are worth retrying.
+   *  EXCEPTION (R-retry-429): 408 (request timeout) and 429 (rate limited)
+   *  are TRANSIENT 4xx — the peer asks us to back off / retry later. Treating
+   *  them as deterministic breaks on the first error and drops a retryable
+   *  alert, wasting all 3 backoff attempts. They must go through withRetry.
+   *  Note: status < 300 is not a deterministic HTTP reject either (an error
+   *  carrying a 2xx status is not a remote refusal); only 3xx–5xx counts. */
   private static isDeterministicHttpReject(error: unknown): boolean {
     const status = (error as { response?: { status?: number } } | undefined)
       ?.response?.status;
-    return typeof status === "number" && status < 500;
+    return (
+      typeof status === "number" &&
+      status >= 300 &&
+      status < 500 &&
+      status !== 408 &&
+      status !== 429
+    );
   }
 
   protected async withRetry<T>(
