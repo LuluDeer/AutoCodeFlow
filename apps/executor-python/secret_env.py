@@ -99,6 +99,13 @@ def is_injectable_secret_name(name: str) -> bool:
     # PYTHONPATH…），执行器为保证日志编码正确**必须**独占。
     if upper.startswith('PYTHON'):
         return False
+    # VIRTUAL_ENV 是 python 独有的 venv 上下文键：一旦被 secret 覆盖，
+    # sys.prefix / pip 安装目标就会指向错误环境，任务以与凭据无关的形态失败。
+    # node 白名单没有这一项（python 单端缺口）。刻意不并入
+    # _RESERVED_SECRET_NAMES——那是三端 parity 强制同集的集合，改它要连带
+    # 4 个文件；只在 secret 注入闸门这一层拒绝即可。
+    if upper == 'VIRTUAL_ENV':
+        return False
     return True
 
 

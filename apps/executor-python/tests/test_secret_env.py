@@ -155,6 +155,26 @@ class TestInjectSecretEnv:
         assert 'PATH' not in env
         assert 'PYTHONIOENCODING' not in env
 
+    def test_virtual_env_rejected_and_not_injected(self):
+        """VIRTUAL_ENV 被跳过、普通合法键照常注入。
+
+        VIRTUAL_ENV 是 python 独有的 venv 上下文键：secret 覆盖它会让
+        sys.prefix / pip 安装目标指错环境，故障形态与凭据无关、极难定位；
+        node 白名单没有这一项，属 python 单端缺口。
+        """
+        assert is_injectable_secret_name('VIRTUAL_ENV') is False
+        assert is_injectable_secret_name('virtual_env') is False  # 大小写归一
+
+        env = {}
+        skipped = inject_secret_env(env, {
+            'FEISHU_APP_ID': 'cli_abc',
+            'VIRTUAL_ENV': '/evil/.venv',
+            'virtual_env': '/evil/.venv',
+        })
+        assert sorted(skipped) == ['VIRTUAL_ENV', 'virtual_env']
+        # 控制组：普通合法键仍写入
+        assert env == {'FEISHU_APP_ID': 'cli_abc'}
+
     def test_does_not_overwrite_existing_reserved_vars(self):
         """被拒绝的名字绝不能改写调用方已设的值。"""
         env = {
