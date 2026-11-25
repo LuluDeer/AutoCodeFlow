@@ -63,4 +63,43 @@ describe('selected Agent session', () => {
     expect(result.current.detail).toBeNull();
     expect(agentApi.detail).toHaveBeenCalledTimes(1);
   });
+
+  it('silent poll failure keeps the last ready detail and the polling interval alive', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    vi.mocked(agentApi.detail)
+      .mockResolvedValueOnce(response('A', 'running'))
+      .mockRejectedValueOnce(new Error('transient read failure'))
+      .mockResolvedValueOnce(response('A', 'succeeded'));
+    const { result } = renderHook(() => useAgentSessionDetail('A'));
+    await act(async () => {});
+    expect(result.current.detail?.session.status).toBe('running');
+    expect(result.current.detailState).toBe('ready');
+
+    // Second frame: the 15s silent poll rejects. The last ready value survives,
+    // isLive stays true and the interval is not torn down.
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(agentApi.detail).toHaveBeenCalledTimes(2);
+    expect(result.current.detail?.session.status).toBe('running');
+    expect(result.current.detailState).toBe('ready');
+    expect(result.current.detailError).toBeNull();
+
+    // Third frame: the next tick succeeds and the fresh value lands.
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(agentApi.detail).toHaveBeenCalledTimes(3);
+    expect(result.current.detail?.session.status).toBe('succeeded');
+  });
+
+  it('manual refresh failure still publishes an error state', async () => {
+    vi.mocked(agentApi.detail)
+      .mockResolvedValueOnce(response('A', 'running'))
+      .mockRejectedValueOnce(new Error('manual failure'));
+    const { result } = renderHook(() => useAgentSessionDetail('A'));
+    await act(async () => {});
+    expect(result.current.detail?.session.status).toBe('running');
+
+    await act(async () => { await result.current.refresh('A'); });
+    expect(result.current.detailState).toBe('error');
+    expect(result.current.detail).toBeNull();
+    expect(result.current.detailError).toBeInstanceOf(Error);
+  });
 });

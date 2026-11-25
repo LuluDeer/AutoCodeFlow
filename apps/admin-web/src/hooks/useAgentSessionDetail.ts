@@ -10,7 +10,12 @@ const liveStatuses = new Set(['pending', 'running', 'waiting_input']);
 
 /** Fetch by selected ID, never by list position. Each side of the drawer has its
  * own result (a slow detail read must not hold up approvals, or vice versa).
- * A route change invalidates outstanding reads and mutation-triggered refreshes. */
+ * A route change invalidates outstanding reads and mutation-triggered refreshes.
+ *
+ * `silent` means the 15s background poll: a failed/malformed read is discarded
+ * and the last ready snapshot is kept for the next tick to retry — the same
+ * semantics as `AgentSessionsPage.load({ silent: true })`. Only first paint and
+ * manual refresh publish an error state. */
 export function useAgentSessionDetail(id: string | null) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const guard = useRaceGuard();
@@ -32,13 +37,17 @@ export function useAgentSessionDetail(id: string | null) {
         const value = await agentApi.detail(target);
         // A collection endpoint or a malformed response is not a session. Do
         // not render an unrelated record or expose its actions under this URL.
+        // During a silent poll, drop the bad response and keep the last ready
+        // detail: writing an error here would clear `detail`, flip `isLive` to
+        // false and tear down the polling interval permanently. First paint /
+        // manual refresh still surfaces the error as before.
         if (value?.session?.id?.toLowerCase() !== target.toLowerCase()) {
-          publish({ detail: { status: 'error', error: null } });
+          if (!silent) publish({ detail: { status: 'error', error: null } });
         } else {
           publish({ detail: { status: 'ready', value } });
         }
       } catch (error) {
-        publish({ detail: { status: 'error', error } });
+        if (!silent) publish({ detail: { status: 'error', error } });
       }
     };
     const readApprovals = async () => {
@@ -46,7 +55,8 @@ export function useAgentSessionDetail(id: string | null) {
         const value = await agentApi.listApprovals(target);
         publish({ approvals: { status: 'ready', value } });
       } catch (error) {
-        publish({ approvals: { status: 'error', error } });
+        // Silent-poll failures keep the previous approvals value; next tick retries.
+        if (!silent) publish({ approvals: { status: 'error', error } });
       }
     };
     await Promise.all([readDetail(), readApprovals()]);
