@@ -9,16 +9,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import ArtifactsPage from '../pages/ArtifactsPage';
-import { useArtifactsIndex, useApplicationsList, useTasksList } from '../api/queries';
+import { useAllTasksForNames, useArtifactsIndex, useApplicationsList } from '../api/queries';
 import { artifactsApi } from '../api/artifacts';
-import { TASK_LIST_PAGE_SIZE } from '../api/tasks';
 import { message } from '../utils/toast';
 import '../i18n';
 
 vi.mock('../api/queries', () => ({
   useArtifactsIndex: vi.fn(),
   useApplicationsList: vi.fn(),
-  useTasksList: vi.fn(),
+  useAllTasksForNames: vi.fn(),
 }));
 vi.mock('../api/artifacts', () => ({
   artifactsApi: {
@@ -76,7 +75,7 @@ const envelope = (rows: typeof ROW[], total = rows.length) => ({
 beforeEach(() => {
   refetch.mockReset();
   vi.mocked(useApplicationsList).mockReturnValue({ data: [APP] } as never);
-  vi.mocked(useTasksList).mockReturnValue({ data: { items: [TASK] } } as never);
+  vi.mocked(useAllTasksForNames).mockReturnValue({ data: { items: [TASK] } } as never);
   vi.mocked(useArtifactsIndex).mockReturnValue({
     data: envelope([ROW]),
     isLoading: false,
@@ -119,20 +118,40 @@ describe('ArtifactsPage 列表渲染', () => {
   });
 });
 
-describe('ArtifactsPage 任务名字典分页', () => {
-  it('pageSize 对齐后端 @Max(100)，不发超限的 200', async () => {
+describe('ArtifactsPage 任务名字典全量口径', () => {
+  it('名称解析走共享 useAllTasksForNames，不再拉首页 100 条任务', async () => {
     render(
       <MemoryRouter initialEntries={['/artifacts']}>
         <ArtifactsPage />
       </MemoryRouter>,
     );
-    await waitFor(() => {
-      expect(useTasksList).toHaveBeenCalledWith({
-        page: 1,
-        pageSize: TASK_LIST_PAGE_SIZE,
-      });
-    });
-    expect(TASK_LIST_PAGE_SIZE).toBeLessThanOrEqual(100);
+
+    expect(await screen.findByText('订单同步任务')).toBeTruthy();
+    expect(useAllTasksForNames).toHaveBeenCalledTimes(1);
+  });
+
+  it('跨页任务在任务名聚合口径下显示名称，不回退 UUID', async () => {
+    const BEYOND_TASK = { id: 't-beyond-100', name: '跨页任务' };
+    const BEYOND_ROW = { ...ROW, id: 'row-2', taskId: BEYOND_TASK.id };
+    vi.mocked(useAllTasksForNames).mockReturnValue({
+      data: { items: [TASK, BEYOND_TASK] },
+    } as never);
+    vi.mocked(useArtifactsIndex).mockReturnValue({
+      data: envelope([BEYOND_ROW]),
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch,
+    } as never);
+
+    render(
+      <MemoryRouter initialEntries={['/artifacts']}>
+        <ArtifactsPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('跨页任务')).toBeTruthy();
+    expect(screen.queryByText(BEYOND_TASK.id)).toBeNull();
   });
 });
 

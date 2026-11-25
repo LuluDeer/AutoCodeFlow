@@ -36,9 +36,8 @@ import dayjs, { type Dayjs } from 'dayjs';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
-import { useApplicationsList, useArtifactsIndex, useTasksList } from '../api/queries';
+import { useAllTasksForNames, useApplicationsList, useArtifactsIndex } from '../api/queries';
 import { artifactsApi, type ArtifactRow } from '../api/artifacts';
-import { TASK_LIST_PAGE_SIZE } from '../api/tasks';
 import { useUrlStateSync } from '../hooks/useUrlStateSync';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { formatArtifactSize } from '../utils/artifactSize';
@@ -336,14 +335,12 @@ export default function ArtifactsPage() {
     useArtifactsIndex(indexQuery);
 
   // 下拉候选 + 名称解析（后端索引行只带 id 列，名字回查应用/任务列表）。
-  // 任务名字典走首页：后端 GET /tasks 的 pageSize @Max(100)（pagination.dto），
-  // 传 200 会直接 400 VALIDATION_FAILED。任务量超百时未收录的任务名回退显示
-  // id；全量名称聚合应走共享 listAll 分页 hook（与 DAG 取数同策），属后续项。
+  // 任务名字典走共享 listAll 分页 hook（与 DAG 取数同策，但用独立缓存键）：
+  // 逐页聚合全量任务的 id+name 投影；上限 TASK_LIST_MAX_PAGES=20 页 / 2000
+  // 任务，超额抛错而非静默截断。listAll 失败时 data 为 undefined，下方仍
+  // 回退显示 taskId，不制造新的崩溃面。
   const { data: apps } = useApplicationsList();
-  const { data: taskPage } = useTasksList({
-    page: 1,
-    pageSize: TASK_LIST_PAGE_SIZE,
-  });
+  const { data: allTasks } = useAllTasksForNames();
 
   const appMap = useMemo(() => {
     const m: Record<string, string> = {};
@@ -353,9 +350,9 @@ export default function ArtifactsPage() {
 
   const taskMap = useMemo(() => {
     const m: Record<string, string> = {};
-    for (const task of taskPage?.items ?? []) m[task.id] = task.name || task.id;
+    for (const task of allTasks?.items ?? []) m[task.id] = task.name || task.id;
     return m;
-  }, [taskPage]);
+  }, [allTasks]);
 
   const [previewRow, setPreviewRow] = useState<ArtifactRow | null>(null);
 
@@ -385,7 +382,7 @@ export default function ArtifactsPage() {
   };
 
   const appOptions = (apps ?? []).map((a) => ({ value: a.id, label: a.name || a.id }));
-  const taskOptions = (taskPage?.items ?? []).map((task) => ({
+  const taskOptions = (allTasks?.items ?? []).map((task) => ({
     value: task.id,
     label: task.name || task.id,
   }));

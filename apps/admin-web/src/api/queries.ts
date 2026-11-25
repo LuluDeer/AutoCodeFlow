@@ -125,6 +125,8 @@ export const queryKeys = {
     stats: (id: string) => ['tasks', 'stats', id] as const,
     /** 分页聚合后的全量任务表（DAG 布局解析用） */
     allForDag: ['tasks', 'list', 'dag-all'] as const,
+    /** 分页聚合后的全量任务表（产物库名称解析用；仅 id,name 投影，独立缓存键） */
+    allForNames: ['tasks', 'list', 'names-all'] as const,
   },
   applications: {
     all: ['applications'] as const,
@@ -446,6 +448,23 @@ export function useAllTasksForDag(): UseQueryResult<PageResult<Task>> {
     queryKey: queryKeys.tasks.allForDag,
     queryFn: ({ signal }) =>
       tasksApi.listAll({ fields: 'id,name,dependencies' }, signal),
+    staleTime: 60_000,
+  });
+}
+
+/**
+ * 分页拉取全量任务表（产物库任务名 / 筛选下拉解析）。
+ * 与 DAG 同走共享 `tasksApi.listAll`，但只取 `id,name` 投影并用独立缓存键，
+ * 避免与 DAG 的 `dependencies` 投影互相串味。
+ *
+ * listAll 每页不超过后端 PaginationDto 的 100 上限；超过 TASK_LIST_MAX_PAGES
+ * （20 页 = 2000 任务）时抛错而非静默截断。消费方在 data 缺席时回退显示
+ * taskId，不制造新的崩溃面。
+ */
+export function useAllTasksForNames(): UseQueryResult<PageResult<Task>> {
+  return useQuery({
+    queryKey: queryKeys.tasks.allForNames,
+    queryFn: ({ signal }) => tasksApi.listAll({ fields: 'id,name' }, signal),
     staleTime: 60_000,
   });
 }
