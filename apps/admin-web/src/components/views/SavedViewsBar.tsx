@@ -119,7 +119,7 @@ export default function SavedViewsBar<F>({
         <Button
           type="text"
           size="small"
-          aria-label="confirm"
+          aria-label={t('inbox.action.confirm')}
           icon={<CheckOutlined />}
           onClick={onSubmit}
         />
@@ -169,7 +169,7 @@ export default function SavedViewsBar<F>({
         </>
       )}
       {error && (
-        <Text type="danger" style={{ fontSize: 12 }}>
+        <Text type="danger" role="alert" style={{ fontSize: 12 }}>
           {error}
         </Text>
       )}

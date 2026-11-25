@@ -63,3 +63,21 @@ class TestTaskResultToDict:
         assert d["success"] is False
         assert d["error"] == "boom"
         assert d["exit_code"] == 3
+
+
+class TestDocumentedCallSignatures:
+    """文档签名对账：packages/docs-site/sdk-python.md:119-120 的写法必须可直接照抄。
+
+    这里测的是「文档承诺的调用形态可用」，不是重复验证 ok/fail 的内部实现；
+    未来若改签名而文档没同步，本用例先红。
+    """
+
+    def test_sdk_python_md_result_constructor_examples(self):
+        # 逐字照抄 docs-site/sdk-python.md「结果构造器」两行
+        result = TaskResult.ok(message="done", data={"rows": 42})
+        failed = TaskResult.fail("boom")
+        assert result.success is True
+        assert result.message == "done"
+        assert result.data == {"rows": 42}
+        assert failed.success is False
+        assert failed.error == "boom"

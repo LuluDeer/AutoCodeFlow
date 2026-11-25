@@ -116,8 +116,8 @@ ctx.log.warning("fallback used")
 ```python
 from autoflow_sdk import TaskResult
 
-result = TaskResult.ok(message="done", output={"rows": 42})
-failed = TaskResult.fail(message="boom")
+result = TaskResult.ok(message="done", data={"rows": 42})
+failed = TaskResult.fail("boom")
 ```
 
 `TaskResult.ok()/fail()` 为独立类方法（非 ctx 方法，与 node 的

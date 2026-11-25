@@ -1,7 +1,23 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 43 轮 · MCP sop_get slug 跨端对齐）
-> 本批提交前基线 `develop` = `1887d6a1`（领先 origin/develop 65 提交、未 push）；本轮把功能 + 生成物 + 基线收口 + 本交接段合并为**单个原子提交**（按 operator「不做无意义提交」要求，避免中间态红与碎片化提交）。子 agent 平台已恢复（第 24-43 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 44 轮 · SDK 文档示例 + SavedViewsBar a11y）
+> 本批提交前基线 `develop` = `19d5d29c`（领先 origin/develop 66 提交、未 push）；按 operator「不做无意义提交」约束，本轮两个轻量修复 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-44 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 44 轮）：SDK 文档示例签名 + SavedViewsBar a11y（双域并行）
+
+**方向来源**：objective 续轮，自己找方向。实质候选（slug 等）已清零，派 2 路审计扫未覆盖的文档/a11y 面，主控 CodeGraph 复核两处确证后 2 agent 并行修。不做纯验证轮次。
+
+**缺口①（SDK 文档照抄即崩）**：`packages/docs-site/sdk-python.md:119-120` 的 TaskResult 示例用 `ok(output=...)` / `fail(message=...)`，真实签名是 `ok(message,data)` / `fail(error,exit_code)`（result.py:17/21）——照抄 100% TypeError。现有 `check:sdk-docs-truthfulness` TARGETS 只有 README/sdk-guide，不扫 docs-site，也不校验参数名（盲区）。修：两行改为 `ok(message="done", data={...})` / `fail("boom")`，并在 `tests/test_result.py` 加文档签名对账用例。
+
+**缺口②（a11y，1 文件两处）**：`SavedViewsBar.tsx:172` 错误态 Text 无 role="alert"（读屏无播报，同仓 AgentSessionsPage:950 已用）；`:122` 确认按钮 aria-label 硬编码英文（中文界面读屏念 "confirm"，i18n-scan 只扫中文盲区）。修：加 role="alert"；aria-label 改用 `t('inbox.action.confirm')`（双语键已存在）。新建真组件测试覆盖两处。
+
+**验证（主控独立复跑）**：web saved-views 2 files / 13 tests、SDK pytest 13 passed、双端 tsc 0、lint:i18n 0、全守卫链 130 段 0。**反证（主控自做）**：去 role="alert" → 用例红；文档改回 `output=` → TypeError；还原 sha 逐字节一致（`e47c5ae0…` / `cbc6b191…`）。验收级别：单测/组件渲染 + 全链；未达真读屏器。遗留缺陷 0。
+
+**仍留候选**：中间态 bisect 退化（R38，需 rebase/CI commit 守卫）；广播占坑另两子场景（ADR 级）。轻量已确证候选清零。
+
+**提交**：单批（2 修复 + 2 测试 + 本交接段）。**未 push**。当前处于可发布态（五端全量+全链+CI 四分片均绿）。
+
+---
 
 ## 本轮（2026-11-25 · 第 43 轮）：MCP sop_get 支持 slug（agent/REST/MCP 三端对齐）
 
