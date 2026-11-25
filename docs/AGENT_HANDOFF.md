@@ -1,7 +1,31 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 38 轮 · 通知 429/408 重试 + 负 fromLine + 趋势时区三缺口 + 中间态审计）
-> 当前分支 `develop` = `a360d926`（第 5-37 轮累积已按主题分 46 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`a360d926` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 51 提交、未 push**。子 agent 平台已恢复（第 24-38 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R38 更正】上一轮头部写的 `a7340c9f`/49 提交是提交前快照，实际提交后 HEAD=`a360d926`/51 提交。）
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 39 轮 · 终态槽位两缺口 + 桌面删除运行中版本）
+> 当前分支 `develop` = `b4950b11`（第 5-38 轮累积已按主题分 50 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`b4950b11` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 55 提交、未 push**。子 agent 平台已恢复（第 24-39 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R39 更正】上一轮头部写的 `a360d926`/51 提交是提交前快照，实际提交后 HEAD=`b4950b11`/55 提交。）
+
+## 本轮（2026-11-25 · 第 39 轮）：终态槽位两缺口 + 桌面删除运行中版本（双域并行）
+
+**方向来源**：objective 续轮，自己找方向。中间态可 bisect 性缺陷（R38 登记）彻底修需重写历史(rebase 风险)或新增 CI commit 级守卫(对当前 55 未 push 历史立即红)，非轻量项，本轮不碰。全链基线绿，派 2 路审计（桌面执行器、终态状态机），主控 CodeGraph 逐层复核三处确证后，2 个写域互斥实现 agent 并行。
+
+**缺口①（终态槽位泄漏）**：`execution-callback.collaborator.ts:582-587` winner 分支的 `transitionToTerminal` 没传 `addressSnapshot`（注释原称"无需快照"），而 winnerAddress = RETURNING 地址 ?? findOne 快照。秒级执行落 dispatch 落库窗口（快照 null）+ 驱动 affected=1 但 RETURNING 空（execution-terminal.spec.ts:203 认作真实场景）→ winnerAddress=null → `releaseSlot(null)` no-op → 该执行器 runningTaskCount 永久虚高、派发被压住。对照 kill/sweep/cover 三处都传了 snapshot。修法：补 `addressSnapshot:{[id]: cb.executorAddress ?? execution.executorAddress ?? null}`（回调地址优先，比 findOne 快照新）。
+
+**缺口②（广播首次重放双释放）**：同文件 duplicate 分支（:623-649）广播释放有 Redis SETNX `slot-release:${executionId}:${address}` 防重放，但 winner 分支（原 :737-739）释放前**没写这个 key** → 赢家回调响应丢失→执行器重放→duplicate 首次 SETNX 成功→同一执行器双减→GREATEST 只防负不防虚低→broadcastReservedCount 偏低→容量闸超发。修法：抽 `releaseBroadcastSlotOnce` 共用 helper（同 key、TTL 10min、Redis 失败 fail-open），winner 与 duplicate 两分支都走它。与 R37 重启子场景不同路径。
+
+**缺口③（桌面数据安全档）**：`executor-desktop/src/main/ipc-handlers.ts:1463-1509` 的 `apps:delete-release` 用渲染层入参 `deploymentId` 查 `/api/app-status` 的 running；若渲染层传错 id（陈旧列表/重放）→ running 落空→`canDeleteRelease` 放行→删掉实际运行中的 release（POSIX 进程存活但目录已失）。修法：入参改名 `_rendererDeploymentId` 且不作判据，改由 `listDeployedApps(workDir)` + 纯函数 `resolveDeploymentIdForRelease(appId, releaseKey)` 求权威 id（找不到则保守拒绝，与 status unknown 同口径），status 命中与 gate 全用权威 id。主控审阅确认 UI 传的 `entry.releaseKey` 与 listDeployedApps 同源、无误拒风险。
+
+**交付（5 文件）**：`execution-callback.collaborator.ts` + 其 spec（winner snapshot + 共用 helper + 2 新用例）；`ipc-handlers.ts` + `app-uninstall.ts`（纯函数）+ `app-uninstall.selftest.ts`（伪造 id 用例）。
+
+**集成期修复**：全链首跑 lint:api 红 1 处（collaborator spec 一行 prettier 折行，agent 写的）→ 主控 `eslint --fix` 修该文件（纯格式化、语义未变），size-caps 保持 0。
+
+**验证（主控独立复跑）**：admin-api 3 suites 45 tests（collaborator 8/8 + terminal + attempt-seq）全绿；desktop `npm run test:main` 0 + `typecheck:desktop` 0；双端 tsc 0、size-caps 0、全守卫链 130 段 0。**反证（主控自做两处 + agent 一处）**：去 winner addressSnapshot → ⑦ 红（a1/null）；winner 改回裸 releaseBroadcastSlot → ⑧ 红（SETNX 1≠2）；desktop 改回渲染层 id → 用例红；还原 sha256 `0072bf8f…` 逐字节一致、复跑绿。验收级别：单测/内存替身（jest mock repo + Redis/executor 替身）+ 真临时目录 selftest + 全链；**未达**真 Redis 并发重放现场 / 真 Electron 删除。遗留缺陷 0。
+
+**仍留候选**：中间态可 bisect 性退化（R38，需CI commit 级守卫或重写历史）；广播占坑另两子场景（ADR 级）。
+
+**提交**：按 objective「分批提交」分 3 批——① 终态槽位两缺口（2 文件）；② 桌面删除（3 文件）；③ 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 上述提交，55+ 提交未 push；三缺口已修且反证有牙，全链绿。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 38 轮）：通知 429/408 重试 + 负 fromLine + 趋势时区（三路并行）+ 中间态审计
 
