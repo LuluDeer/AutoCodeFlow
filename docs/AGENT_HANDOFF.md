@@ -1,7 +1,25 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 29 轮 · 手动 kill executorId 快照错投修复）
-> 当前分支 `develop` = `84d06728`（第 5-28 轮累积已按主题分 26 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`84d06728` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 30 提交、未 push**。子 agent 平台已恢复（第 24-29 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 30 轮 · cron dow 7/范围裸 i18n key 修复 + 审计候选全清）
+> 当前分支 `develop` = `67e9c342`（第 5-29 轮累积已按主题分 28 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`67e9c342` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 32 提交、未 push**。子 agent 平台已恢复（第 24-30 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 30 轮）：cron dow 7/范围裸 i18n key 修复（R27 三路审计候选收尾）
+
+**方向来源**：objective 续轮，自己找方向。兑现 R27 三路审计登记的最后一个已确证缺口，至此那批 5 个候选（MCP×2 / webhook / kill / cron）全部处理完。主控 CodeGraph 逐层复核：`cron-desc.ts:85` 的 `parseNumberList(dow,7)` 接受 Quartz 周日别名 7（同仓 `trigger-preview.ts:90` 明确「7 视同周日」），但 zh/en locale 只有 `cron.desc.dow.0`–`.6` → `T('cron.desc.dow.7')` 直出裸 key，任务列表/详情页显示「每周cron.desc.dow.7 00:00」；`maintenance-desc.ts:26-30` 只校验分/时，dow 原样插值（:67-68），范围 `1-5`（CronHelper weekday9 预设）拼出不存在的 key，违背该文件「超子集回退原始 Cron」（:37）契约。
+
+**修法**：`cron-desc.ts:89` dow 名字映射 `d===7?0:d`（复用既有 dow.0 key，双语无需改）；`maintenance-desc.ts:29-39` parseCronTime 加 dow 严格校验——`*` 原样留给 daily 分支、单数字 0-7 合法（7→0）、范围/列表/步进/越界一律 `null` 走调用方 raw 回退（宁缺勿错，不引入新语义）。crossMidnight/raw/daily 分支不变。
+
+**交付（4 文件）**：两工具源码 + `cron-desc.test.ts`（+1 dow=7 用例）+ 新 `cron-dow-normalize.test.ts`（5 例：describeCron dow=7、maintenance dow=7 人文化、1-5/1,3 回退 null、dow=* daily 控制组、8 越界）。
+
+**验证（主控独立复跑）**：4 文件 55 tests exit 0；`tsc -b` 0；语言守卫 0；`lint:i18n` 0。**反证（主控自做）**：去掉 7→0 归一 → exit 1、2 用例红，日志精确复现裸 key `每周cron.desc.dow.7 00:00`；还原 sha256 `92e952c8…` 逐字节一致、复跑绿。验收级别：纯函数单测 + jsdom 组件渲染面单测；**未达**真实浏览器（未做真机目视）。遗留缺陷 0。
+
+**批次审计闭环**：R27 三路系统审计共报 5 个净新缺口，R27 修 MCP×2、R28 修 webhook 去重穿透、R29 修 kill 错投、R30 修 cron 裸 key——全部落地且有反证。主控自扫产品代码 TODO/FIXME 零遗留、全守卫链 130 段全绿（R27 时点）。下一轮需重新找方向（尚无已登记的确证候选）。
+
+**提交**：按 objective「分批提交」分 2 批——① 功能 4 文件；② 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 功能提交 + 交接提交，32+ 提交未 push。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 29 轮）：手动 kill 的 executorId 快照错投（dispatch 窗口）修复
 
