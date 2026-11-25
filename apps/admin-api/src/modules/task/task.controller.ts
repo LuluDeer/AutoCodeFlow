@@ -1015,8 +1015,12 @@ export class TaskController {
       }
       // reason=unavailable → fail-open（去重是加固，不是可用性前提）
     }
+    // P1: 只有 trigger 本身失败才释放幂等键。trigger 成功后 audit 等后置步骤
+    // 失败必须保留键——否则同键重试会重复落库 execution 并入队（重复副作用）。
+    let triggered = false;
     try {
       const result = await this.taskService.trigger(id, dto, user);
+      triggered = true;
       // NF-01: API-Key 主体（CI/脚本免登录触发）——execution 行 triggerType
       // 已由 service 固定 manual；审计以 task.trigger_api 区分机器触发。
       if (isApiKeyUser(user)) {
@@ -1041,9 +1045,14 @@ export class TaskController {
       });
       return result;
     } catch (err: unknown) {
-      // 触发失败必须释放幂等键：否则客户端的「重试」会被当成 replay 409，
-      // 把可重试故障变成永久失败（与幂等目的相反）。
-      await releaseClaim?.();
+      // 仅 trigger 本身失败才释放幂等键：否则客户端的「重试」会被当成
+      // replay 409，把可重试故障变成永久失败（与幂等目的相反）。
+      // trigger 已成功（execution 落库 + 入队）后，audit 等后置步骤失败必须
+      // 保留幂等键——同键重试会重复触发（发货类即重复副作用）；audit 失败
+      // 仍如实上抛，契约不变。
+      if (!triggered) {
+        await releaseClaim?.();
+      }
       throw err;
     }
   }

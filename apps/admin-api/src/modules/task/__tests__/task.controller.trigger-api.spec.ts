@@ -141,11 +141,13 @@ describe("TaskController.trigger — Idempotency-Key（G10）", () => {
   const user = { id: 1, username: "alice", role: "admin" } as never;
   const req = { ip: "10.0.0.9" } as never;
 
-  const make = (claim: unknown) => {
+  const make = (claim: unknown, auditLog?: jest.Mock) => {
     const taskService = {
       trigger: jest.fn().mockResolvedValue({ executionId: "exec-9" }),
     };
-    const audit = { log: jest.fn().mockResolvedValue(undefined) };
+    const audit = {
+      log: auditLog ?? jest.fn().mockResolvedValue(undefined),
+    };
     const idempotency = { claim: jest.fn().mockResolvedValue(claim) };
     const controller = new TaskController(
       taskService as never,
@@ -153,7 +155,7 @@ describe("TaskController.trigger — Idempotency-Key（G10）", () => {
       audit as never,
       idempotency as never,
     );
-    return { controller, taskService, idempotency };
+    return { controller, taskService, idempotency, audit };
   };
 
   it("同键同参重放 → 409 TASK_IDEMPOTENCY_REPLAY，且不再触发", async () => {
@@ -184,6 +186,45 @@ describe("TaskController.trigger — Idempotency-Key（G10）", () => {
     taskService.trigger.mockRejectedValueOnce(new Error("db down"));
     await expect(
       controller.trigger("task-1", {} as never, user, req, "key-12345678"),
+    ).rejects.toThrow("db down");
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("P1 反证：trigger 成功后 audit 失败 → 保留幂等键（release 未被调用）", async () => {
+    const release = jest.fn().mockResolvedValue(undefined);
+    const auditLog = jest.fn().mockRejectedValue(new Error("audit down"));
+    const { controller, taskService } = make({ ok: true, release }, auditLog);
+
+    await expect(
+      controller.trigger("task-1", {} as never, user, req, "key-12345678"),
+    ).rejects.toThrow("audit down");
+
+    // trigger 本身已成功；只有后置 audit 失败，错误如实上抛（既有契约不变）
+    expect(taskService.trigger).toHaveBeenCalledTimes(1);
+    // 核心反证：旧实现无条件 release → 删键 → 同键重试再落库 execution 并入队
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it("控制组：API-Key 主体 trigger 自身失败 → 仍释放幂等键", async () => {
+    const release = jest.fn().mockResolvedValue(undefined);
+    const { controller, taskService } = make({ ok: true, release });
+    const apiKeyUser = {
+      type: "apiKey",
+      userId: 42,
+      keyPrefix: "acf_dead",
+      apiKeyId: 7,
+      scope: "readonly",
+    } as never;
+    taskService.trigger.mockRejectedValueOnce(new Error("db down"));
+
+    await expect(
+      controller.trigger(
+        "task-1",
+        {} as never,
+        apiKeyUser,
+        req,
+        "key-12345678",
+      ),
     ).rejects.toThrow("db down");
     expect(release).toHaveBeenCalledTimes(1);
   });
