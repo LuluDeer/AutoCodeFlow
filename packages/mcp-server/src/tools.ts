@@ -850,12 +850,12 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
   );
 
   // ---- sop_assignments_pending ----------------------------------------------
-  // 两种读形态对齐既有端点：sopId → GET /sop/:id/assignments（客户端按非终态
-  // 过滤）；assignmentId → GET /sop/assignments/:id（含澄清对话全量，供
+  // 两种读形态对齐既有端点：sopId → GET /sop/:id/assignments/page（分页信封，
+  // 客户端按非终态过滤）；assignmentId → GET /sop/assignments/:id（含澄清对话全量，供
   // sop_clarification_reply 拿 clarificationId）。
   server.tool(
     "sop_assignments_pending",
-    "ADMIN only. Inspect pending SOP work. Pass sopId to list that SOP's non-terminal assignments (assigned/in_progress/blocked/stalled — completed/failed/cancelled are excluded), or pass assignmentId to fetch one assignment's full detail including its clarification conversation (the clarification ids feed sop_clarification_reply).",
+    "ADMIN only. Inspect pending SOP work. Pass sopId to page through that SOP's non-terminal assignments (assigned/in_progress/blocked/stalled — completed/failed/cancelled are excluded); `offset`/`limit` page over raw assignments (newest first), and the response reports pendingTotal / truncated so an empty page never silently means 'no pending work'. Pass assignmentId to fetch one assignment's full detail including its clarification conversation (the clarification ids feed sop_clarification_reply).",
     {
       sopId: UUID_PATH_ID.optional().describe(
         "List non-terminal assignments of this SOP",
@@ -863,8 +863,22 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
       assignmentId: UUID_PATH_ID.optional().describe(
         "Return this assignment's full detail (includes clarifications)",
       ),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .max(1_000_000)
+        .optional()
+        .describe("Raw assignment offset (default 0); increment by limit to reach older work"),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe("Raw assignment page size (default 100, max 200)"),
     }, { readOnlyHint: true },
-    async ({ sopId, assignmentId }) => {
+    async ({ sopId, assignmentId, offset, limit }) => {
       if (assignmentId) {
         const data = await call<unknown>(
           "GET",
@@ -873,18 +887,45 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
         return JSON_CONTENT(data);
       }
       if (sopId) {
-        const rows = await call<Array<{ status?: string }>>(
+        const params = new URLSearchParams({
+          ...(offset === undefined ? {} : { offset: String(offset) }),
+          ...(limit === undefined ? {} : { limit: String(limit) }),
+        });
+        const qs = params.toString();
+        const page = await call<{
+          items?: Array<{ status?: string }>;
+          hasMore?: boolean;
+          total?: number;
+          pendingTotal?: number;
+          limit?: number;
+          offset?: number;
+        }>(
           "GET",
-          `/sop/${sopId}/assignments`,
+          // 路径里的字面 `?` 必须在 query 插值之前：consumer-routes 守卫按
+          // split("?")[0] 剥查询串再归一 ${...}，若写成 `${qs ? ...}` 会把
+          // 条件表达式误归一成尾部 `{}` 而与 openapi 路径不匹配。空 qs 时
+          // 末尾多个 `?` 对 GET 无害。
+          `/sop/${sopId}/assignments/page?${qs}`,
         );
-        const items = (Array.isArray(rows) ? rows : []).filter((r) =>
-          (SOP_PENDING_STATUSES as readonly string[]).includes(r?.status ?? ""),
+        const items = (Array.isArray(page?.items) ? page.items : []).filter(
+          (r) =>
+            (SOP_PENDING_STATUSES as readonly string[]).includes(r?.status ?? ""),
         );
+        const pendingTotal =
+          typeof page?.pendingTotal === "number" ? page.pendingTotal : null;
         return JSON_CONTENT({
           sopId,
           pendingCount: items.length,
+          pendingTotal,
+          truncated:
+            page?.hasMore === true ||
+            (pendingTotal !== null && items.length < pendingTotal),
+          total:
+            typeof page?.total === "number" ? page.total : null, // mutation-residue-ok: 后端可选字段缺省回填 null 是合法形态，非派生字段钉常量
+          limit: typeof page?.limit === "number" ? page.limit : null,
+          offset: typeof page?.offset === "number" ? page.offset : null,
           items,
-          note: "Terminal statuses (completed/failed/cancelled) are filtered out. Pass assignmentId to see one assignment's clarifications.",
+          note: "Terminal statuses (completed/failed/cancelled) are filtered out. offset/limit page over raw assignments (newest first); pass assignmentId to see one assignment's clarifications.",
         });
       }
       return JSON_ERROR({

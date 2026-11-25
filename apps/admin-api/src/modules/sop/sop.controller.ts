@@ -81,6 +81,21 @@ import {
  * 统一在此收敛：非有限数一律 null——宁可留空，也不把 NaN 写进可被
  * 「按 userId 过滤」的列（NaN 会静默筛不到任何行）。
  */
+/**
+ * 指派分页 query 是 HTTP 字符串；非法值安全回落默认值（与 service 的钳制
+ * 同口径），不 400。limit 上界 200，避免一次响应被拉爆。
+ */
+function parseAssignmentPageParam(
+  raw: string | undefined,
+  fallback: number,
+  max: number,
+): number {
+  const n = raw ? Number(raw) : Number.NaN;
+  return Number.isFinite(n)
+    ? Math.min(max, Math.max(0, Math.trunc(n)))
+    : fallback;
+}
+
 function auditUserId(user?: { id: number | string }): number | null {
   const id = Number(user?.id);
   return Number.isFinite(id) ? id : null;
@@ -648,14 +663,56 @@ export class SopController {
     return this.sops.listVersions(id);
   }
 
+  /**
+   * SOP-TRUNCATION-01：分页信封端点。旧 `/:id/assignments` 继续返回裸数组，
+   * 但浏览器/MCP 无法从裸数组知道「第 101+ 条是否存在」；新端点把 hasMore /
+   * total 放进响应体，MCP 工具改走这里，老前端契约逐字节不变。
+   */
+  @Get(":id/assignments/page")
+  @ApiOperation({ summary: "指派记录分页（带 hasMore/total 的信封）" })
+  @ApiQuery({ name: "limit", required: false, type: String })
+  @ApiQuery({ name: "offset", required: false, type: String })
+  @ApiOkResponse({
+    description: "items + hasMore/total/pendingTotal/limit/offset 信封",
+  })
+  async assignmentsPage(
+    @Param("id") id: string,
+    @Query("limit") limit?: string,
+    @Query("offset") offset?: string,
+  ) {
+    return this.sops.listAssignmentsPage(id, {
+      limit: parseAssignmentPageParam(limit, 100, 200),
+      offset: parseAssignmentPageParam(offset, 0, 1_000_000),
+    });
+  }
+
   @Get(":id/assignments")
-  @ApiOperation({ summary: "指派记录" })
+  @ApiOperation({ summary: "指派记录（兼容旧裸数组；可选分页 + 响应头）" })
+  @ApiQuery({ name: "limit", required: false, type: String })
+  @ApiQuery({ name: "offset", required: false, type: String })
   @ApiOkResponse({
     type: [SopAssignmentDto],
-    description: "最近 100 条，createdAt 降序",
+    description:
+      "默认最近 100 条，createdAt 降序；分页事实见 X-Has-More/X-Total",
   })
-  async assignments(@Param("id") id: string) {
-    return this.sops.listAssignments(id);
+  async assignments(
+    @Param("id") id: string,
+    @Query("limit") limit?: string,
+    @Query("offset") offset?: string,
+    @Res({ passthrough: true }) res?: import("express").Response,
+  ) {
+    // 没有 query 时继续走旧方法：老 controller 测试与消费方看到的调用形态不变。
+    if (limit === undefined && offset === undefined) {
+      return this.sops.listAssignments(id);
+    }
+    const page = await this.sops.listAssignmentsPage(id, {
+      limit: parseAssignmentPageParam(limit, 100, 200),
+      offset: parseAssignmentPageParam(offset, 0, 1_000_000),
+    });
+    res?.setHeader("X-Has-More", String(page.hasMore));
+    res?.setHeader("X-Total", String(page.total));
+    res?.setHeader("X-Pending-Total", String(page.pendingTotal));
+    return page.items;
   }
 
   /**

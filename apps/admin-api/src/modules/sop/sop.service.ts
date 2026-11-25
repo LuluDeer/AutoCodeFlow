@@ -152,6 +152,24 @@ export interface PublishSopInput {
   audit?: SopAuditContext;
 }
 
+/** 指派分页的非终态集合（与归档/取消判据同源）。 */
+const SOP_ASSIGNMENT_OPEN_STATUSES = [
+  "assigned",
+  "in_progress",
+  "blocked",
+  "stalled",
+] as const;
+
+function clampAssignmentLimit(raw?: number): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return 100;
+  return Math.min(200, Math.max(1, Math.trunc(raw)));
+}
+
+function clampAssignmentOffset(raw?: number): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return 0;
+  return Math.min(1_000_000, Math.max(0, Math.trunc(raw)));
+}
+
 @Injectable()
 export class SopService {
   private readonly logger = new Logger(SopService.name);
@@ -2025,12 +2043,50 @@ export class SopService {
   }
 
   async listAssignments(sopId: string): Promise<SopAssignment[]> {
+    return (await this.listAssignmentsPage(sopId)).items;
+  }
+
+  /**
+   * 指派分页读面：旧 `listAssignments()` 固定 take:100 且没有 total/hasMore，
+   * 第 101+ 条（createdAt DESC 的老单）对 MCP/前端静默不可见。此方法加性提供
+   * 页码事实；默认值与旧行为一致（limit=100 / offset=0），调用方不必改。
+   * `hasMore` 用 limit+1 探针判断，不引入额外 COUNT 往返。
+   */
+  async listAssignmentsPage(
+    sopId: string,
+    options: { limit?: number; offset?: number } = {},
+  ): Promise<{
+    items: SopAssignment[];
+    hasMore: boolean;
+    total: number;
+    pendingTotal: number;
+    limit: number;
+    offset: number;
+  }> {
     await this.requireSop(sopId);
-    return this.assignments.find({
-      where: { sopId },
-      order: { createdAt: "DESC" },
-      take: 100,
-    });
+    const limit = clampAssignmentLimit(options.limit);
+    const offset = clampAssignmentOffset(options.offset);
+    const [rows, total, pendingTotal] = await Promise.all([
+      this.assignments.find({
+        where: { sopId },
+        order: { createdAt: "DESC" },
+        skip: offset,
+        take: limit + 1,
+      }),
+      this.assignments.count({ where: { sopId } }),
+      this.assignments.count({
+        where: { sopId, status: In([...SOP_ASSIGNMENT_OPEN_STATUSES]) },
+      }),
+    ]);
+    const hasMore = rows.length > limit;
+    return {
+      items: hasMore ? rows.slice(0, limit) : rows,
+      hasMore,
+      total,
+      pendingTotal,
+      limit,
+      offset,
+    };
   }
 
   /**

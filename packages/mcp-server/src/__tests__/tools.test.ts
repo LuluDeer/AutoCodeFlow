@@ -2001,30 +2001,72 @@ describe("sop_assignments_pending", () => {
   const ASG_ID = "550e8400-e29b-41d4-a716-446655440002";
 
   it("lists a SOP's assignments filtered to non-terminal statuses", async () => {
-    call.mockResolvedValueOnce([
-      { id: "a1", status: "assigned" },
-      { id: "a2", status: "in_progress" },
-      { id: "a3", status: "blocked" },
-      { id: "a4", status: "stalled" },
-      { id: "a5", status: "completed" },
-      { id: "a6", status: "failed" },
-      { id: "a7", status: "cancelled" },
-    ]);
+    call.mockResolvedValueOnce({
+      items: [
+        { id: "a1", status: "assigned" },
+        { id: "a2", status: "in_progress" },
+        { id: "a3", status: "blocked" },
+        { id: "a4", status: "stalled" },
+        { id: "a5", status: "completed" },
+        { id: "a6", status: "failed" },
+        { id: "a7", status: "cancelled" },
+      ],
+      hasMore: false,
+      total: 7,
+      pendingTotal: 4,
+      limit: 100,
+      offset: 0,
+    });
     const out = await tools.get("sop_assignments_pending")!.handler({
       sopId: SOP_ID,
     });
     const [method, path] = call.mock.calls[0];
     expect(method).toBe("GET");
-    expect(path).toBe(`/sop/${SOP_ID}/assignments`);
+    expect(path).toBe(`/sop/${SOP_ID}/assignments/page`);
     const payload = parse(out);
     expect(payload.sopId).toBe(SOP_ID);
     expect(payload.pendingCount).toBe(4);
+    expect(payload.pendingTotal).toBe(4);
+    expect(payload.truncated).toBe(false);
     expect(payload.items.map((r: { id: string }) => r.id)).toEqual([
       "a1",
       "a2",
       "a3",
       "a4",
     ]);
+  });
+
+  it("pages raw assignments and reports pendingTotal/truncated when older work exists", async () => {
+    const older = { id: "a-101", status: "assigned" };
+    call.mockResolvedValueOnce({
+      items: [
+        ...Array.from({ length: 99 }, (_, i) => ({
+          id: `a-${i + 2}`,
+          status: "assigned",
+        })),
+        older,
+      ],
+      hasMore: false,
+      total: 101,
+      pendingTotal: 101,
+      limit: 100,
+      offset: 100,
+    });
+    const out = await tools.get("sop_assignments_pending")!.handler({
+      sopId: SOP_ID,
+      offset: 100,
+      limit: 100,
+    });
+    expect(call.mock.calls[0][1]).toBe(
+      `/sop/${SOP_ID}/assignments/page?offset=100&limit=100`,
+    );
+    const payload = parse(out);
+    expect(payload.offset).toBe(100);
+    expect(payload.pendingTotal).toBe(101);
+    expect(payload.items).toHaveLength(100);
+    expect(payload.items[99].id).toBe("a-101");
+    // offset 跳过的旧页里仍可能有 pending，不能靠本页非空就报"无待办"。
+    expect(payload.truncated).toBe(true);
   });
 
   it("SOP_PENDING_STATUSES excludes every terminal status", () => {
