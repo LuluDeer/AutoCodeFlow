@@ -1,7 +1,27 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 36 轮 · 接线守卫扩面纳入 examples/ 盲区）
-> 当前分支 `develop` = `ff9f7ff9`（第 5-35 轮累积已按主题分 42 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`ff9f7ff9` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 47 提交、未 push**。子 agent 平台已恢复（第 24-36 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R36 更正】上一轮头部写的 `85a145ff`/45 提交是提交前快照，实际提交后 HEAD=`ff9f7ff9`/47 提交。）
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 37 轮 · 广播占坑重启清零（ADR 级缺口的子场景收口））
+> 当前分支 `develop` = `a7340c9f`（第 5-36 轮累积已按主题分 44 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`a7340c9f` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 49 提交、未 push**。子 agent 平台已恢复（第 24-37 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R37 更正】上一轮头部写的 `ff9f7ff9`/47 提交是提交前快照，实际提交后 HEAD=`a7340c9f`/49 提交。）
+
+## 本轮（2026-11-25 · 第 37 轮）：广播占坑计数重启清零（ADR 级缺口的首个权威子场景）
+
+**方向来源**：objective 续轮，自己找方向。此前唯一登记缺口「广播占坑计数泄漏」被判 ADR 级（地址集只在内存、stale sweep 无从释放、真修需数据模型变更 + 真 PG）。本轮重新剖析找到一个**有权威信号、无需改数据模型**的子场景：执行器**重启/恢复**时 register 路径把单播 `runningTaskCount` 清零（executor.service.ts:2951/2960），但同构的 `broadcastReservedCount` 未清——实体注释（executor.entity.ts:234）明写「容量判定 = 两列之和」，广播占坑也是进程内状态、重启后回调必然失效。后果：崩溃后重启，泄漏的广播占坑仍在 → 容量闸门永久扣着幻影占用 → 重启后永久少派单。重启是明确的新生命周期信号，归零是 runningTaskCount 既有语义的自然延伸（非新设计）。
+
+**修法（单文件源码）**：`REGISTER_OWNED_COLUMNS`（正向白名单，:441）加入 `broadcastReservedCount`（否则 pickOwnedColumns 投影不出、清不进库），逐列依据注释补同构说明；`didRestart`/`shouldRecoverMissingBaseline` 两分支各加 `e.broadcastReservedCount = 0; adopted.add(...)`。**明确不改**心跳白名单、stale sweep、markOffline、entity/migration（那是另两个子场景，复杂度更高，留后续）。
+
+**交付（2 文件）**：`executor.service.ts` + `executor.register-takeover-cas.spec.ts`（+2 例：重启/恢复两分支断言 patch 与落库为 0；控制组无重启信号普通 register 不写该列）。
+
+**集成期基线重签**：size-caps 报 executor.service.ts 非注释行 4502>4498、最长函数体 598>591（本改动 +4/+7）。按既有「受控逻辑增长重签」先例只调这两项 + why 追加 R37 段（写清广播占坑与单播同构、反证），密度/exports 未动。size-caps 与全链恢复 0。
+
+**验证（主控独立复跑）**：专项 17/17、executor.service 397/397、`tsc --noEmit` 0、`check:enum-drift` 0、prettier 0、size-caps 0、全守卫链 130 段 0。**反证（主控自做）**：删两处清零 → 核心用例 exit 1（patch 缺 broadcastReservedCount:0），还原 sha256 `67f7d046…` 逐字节一致、复跑 17/17。验收级别：单测/内存替身（jest mock repo + 列级 patch 断言）+ 全链；**未达**真 PG 并发/真崩溃重启现场。遗留缺陷 0。
+
+**缺口剩余边界（如实）**：广播占坑泄漏另两子场景仍未做——① graceful offline（markOffline）与 stale-timeout 判死（sweep）时归零（需区分存活/竞争语义）；② 广播占坑地址集落库 + 终态逐台释放（真数据模型变更 + 真 PG 验收）。本轮只收口最安全的重启子场景。
+
+**提交**：按 objective「分批提交」分 2 批——① 功能 2 文件；② 基线重签 + 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 上述提交，49+ 提交未 push；重启清零已修且反证有牙，全链绿。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 36 轮）：接线守卫扩面纳入 examples/（R35 登记的扫描面盲区）
 

@@ -481,11 +481,11 @@
     "apps/admin-api/src/modules/executor/executor.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 4498,
-      "why": "R124 ADR-038 步骤3：广播占坑改打 broadcastReservedCount + 释放路径（+4）；回滚值 4467 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。",
+      "maxLines": 4502,
+      "why": "【R37 重签：nonCommentLines 4498→4502（+4）、functionLines 591→598（+7）】广播占坑泄漏的重启子场景收尾：register 重启/恢复两分支此前只把单播 runningTaskCount 清零、同构的 broadcastReservedCount 未清 ⇒ 崩溃重启后容量闸门永久扣着幻影广播占用（累计几次需手工清库）。REGISTER_OWNED_COLUMNS 增加 broadcastReservedCount + 两分支各 2 行清零/adopted（+4 非注释行），register 函数体因此 +7（含 3 行说明为何必须与 runningTaskCount 同构清零）；密度/exports 未变。反证：删两处清零或删白名单项 → 核心用例红。 | R124 ADR-038 步骤3：广播占坑改打 broadcastReservedCount + 释放路径（+4）；回滚值 4467 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。",
       "ceiling": {
-        "nonCommentLines": 4498,
-        "functionLines": 591,
+        "nonCommentLines": 4502,
+        "functionLines": 598,
         "ctorParams": 0,
         "exports": 8,
         "branchDensity": 19.1
