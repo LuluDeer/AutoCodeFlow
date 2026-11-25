@@ -1,7 +1,29 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 26 轮 · 北极星 API 对账补 promotionEligibility 覆盖面）
-> 当前分支 `develop` = `b0173147`（第 5-25 轮累积已按主题分 20 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`b0173147` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 24 提交、未 push**。子 agent 平台已恢复（第 24-26 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R26 更正】上一轮头部写的 `827f0f8b`/22 提交是提交前快照，实际提交后 HEAD=`b0173147`/24 提交。）
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 27 轮 · MCP 脱敏 fail-open + 导出导入往返污染双修）
+> 当前分支 `develop` = `bf53df6f`（第 5-26 轮累积已按主题分 22 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`bf53df6f` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 26 提交、未 push**。子 agent 平台已恢复（第 24-27 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 27 轮）：MCP 两处脱敏缺陷（深层 fail-open + 导出导入往返污染）+ 三路系统审计
+
+**方向来源**：objective 续轮，自己找方向。本轮不做单点修补，而是**先系统盘点**：主控自扫产品代码 TODO/FIXME（零遗留，仅 1 条解释性注释）+ 跑全守卫链 130 段全绿（无存量红灯），再派 3 路只读审计分域（web / api / 执行器+SDK+MCP）带严格排除清单找净新真缺口。三路共报 5 个候选；主控按「后果严重度 × 可静态/纯函数确证」裁决，选 MCP 同域两处——它们主控均**纯函数实跑复现**（不采信 agent 自述）：`redactSensitive({task:{params:{PASSWORD:'real-pw'}}})` → `[redacted]`；13 层嵌套 `token:'SUPER_SECRET'` 输出仍含明文。
+
+**缺陷①（数据损坏）**：`tools/shared.ts:43-45` 的 `JSON_CONTENT` 对所有工具出参套 `redactSensitive`；`tools/task-operations.ts:61-63` 的 `export_task` 用它输出「verbatim import body」，但普通业务参数键名（PASSWORD/API_KEY）被写成 `[redacted]`，`import_task`（:106）直 POST 又未调仓内已有的写面守卫 `rejectRedactionSentinel` → 回传把哨兵当真值写进任务，执行拿字面量认证失败。后端 `GET /tasks/:id/export` 已按 SEC-02 三约定剔除 secrets（R107-A1 核过），MCP 这层脱敏对 export 是**误伤**。
+
+**缺陷②（安全 fail-open）**：`redact.ts:58` `depth>MAX_DEPTH` 时 `return value` 原样放行整枝子树 → 深层凭据绕过脱敏直接进 LLM 上下文。并行 agent 另发现 `shared.ts:81` 的 `findRedactionSentinel`（写面哨兵检查）同型 fail-open：depth>12 返回 null = 断言「深层没哨兵」，会让埋深的哨兵被放行写回覆盖真实凭据——主控转给对应写域 agent 一并修。
+
+**编排（AGENTS §4）**：主控 CodeGraph 复核关键符号 + 纯函数复现后，切 2 个写域互斥实现切片（A: task-operations.ts + shared.ts；B: redact.ts + redact.test.ts），无独立验收 agent（主控亲自做集成验收：diff 审阅 + 全量测试 + 三条反证逐项复跑）。
+
+**交付（5 文件）**：`shared.ts` 新增 `JSON_CONTENT_VERBATIM`（仅 export_task 用；其它 17 工具仍用 `JSON_CONTENT` 保留脱敏兜底）、`findRedactionSentinel` 深度超限改 `<depth-limit>` 路径标记；`task-operations.ts` export 改 verbatim、import POST 前拒哨兵、两工具描述同步实现；`redact.ts` 深度超限容器整枝替换 `[depth-limit]`（导出 `DEPTH_LIMIT` 常量，基本类型原值）；新测试 `task-operations-roundtrip.test.ts` 3 条 + `redact.test.ts` 3 条（13 层无明文、12 层边界控制组、环+深度组合）。
+
+**验证（主控独立复跑）**：MCP 全量 `vitest run` 11 files / **347 passed** exit 0；`tsc --noEmit` 0；语言守卫 0。**反证（主控自做，3 条全真红、sha 逐字节还原）**：回退 export 到 `JSON_CONTENT` → 1 failed；删 import 哨兵守卫 → 2 failed；深度回 `return null` → 1 failed；还原后再跑全量 347/347。验收级别：单测/内存替身（vitest + 真工具 handler + mock call）+ 类型检查；**未达**真 MCP server 进程 / 真后端往返（export 后端去 secrets 由 R107-A1 既有审计保证）。遗留缺陷 0。
+
+**未做候选（本轮审计确证，登记给后续轮）**：① web `cron-desc.ts:85,89` + `maintenance-desc.ts:30` 的 cron dow `7`（Quartz 周日别名）与范围 `1-5` 未归一化 → 裸 i18n key 漏到界面（`trigger-preview.ts:90` 已有「7 视同周日」口径；修法 + 验收口径见 scan-web 报告）；② api `task-webhook.service.ts:319` 去重键用含 timestamp 的 signature → 同 body 换时间戳重投穿透（修法：改 rawBody 的 HMAC）；③ api `task.service.ts:5124` 手动 kill 用 findOne 快照 executorId，dispatch 落库窗口内错投（`execution-terminal.ts:318` RETURNING 增 executorId）。三者均静态确证、用户可感知，按成本/风险留后续。
+
+**提交**：按 objective「分批提交」分 2 批——① 功能 5 文件；② 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 功能提交 + 交接提交，26+ 提交未 push；MCP 两缺陷已修且反证有牙。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 26 轮）：北极星 API 对账补 promotionEligibility 覆盖面（共有子集）+ 三条真反证
 
