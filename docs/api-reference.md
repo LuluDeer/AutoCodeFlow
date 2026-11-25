@@ -1443,7 +1443,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 269 个操作，覆盖 232 个路径。
+共 270 个操作，覆盖 233 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1646,8 +1646,9 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/sop/{id}` | SOP 详情 |
 | PATCH | `/sop/{id}` | 编辑工作副本（published 态也可编辑——真身在不可变版本快照） |
 | POST | `/sop/{id}/assign` | 指派给执行器（executorId 或 executorAddress 二选一） |
-| GET | `/sop/{id}/assignments` | 指派记录 |
+| GET | `/sop/{id}/assignments` | 指派记录（兼容旧裸数组；可选分页 + 响应头） |
 | POST | `/sop/{id}/assignments/cancel` | 取消该 SOP 下所有未结束的指派（归档前置动作） |
+| GET | `/sop/{id}/assignments/page` | 指派记录分页（带 hasMore/total 的信封） |
 | POST | `/sop/{id}/deprecate` | 归档 SOP（停止派新单，保留全部历史） |
 | POST | `/sop/{id}/publish` | 发布（严格校验 + 不可变版本快照 + contentHash） |
 | POST | `/sop/{id}/restore` | 恢复已归档的 SOP |

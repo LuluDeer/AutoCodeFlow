@@ -1678,5 +1678,9 @@
   "结构化原因：稳定类别码 + 原文文本，与既有 reasons 数组一一对应": "Structured reasons: stable code + verbatim text, parallel to the legacy reasons[] array",
   "该执行由哪个 Agent 会话触发（Agent 触发路径可空）": "Which Agent session triggered this execution (nullable for non-Agent triggers)",
   "接受执行器共享令牌，或属于当前启用管理员的未撤销 access JWT（role=ADMIN、账户启用、会话版本匹配）。JWT 通道与 jwt.strategy 同口径查用户库；登出、改密、停用或降权后立即失效。": "Accepts the executor shared token, or a non-revoked access JWT of the currently enabled administrator (role=ADMIN, account enabled, session version matching). The JWT channel checks the user store with the same semantics as jwt.strategy; it becomes invalid immediately after logout, password change, deactivation or demotion.",
-  "执行器令牌无效，或 access JWT 非管理员/已失效": "Invalid executor token, or the access JWT is not an administrator / has eexpired"
+  "执行器令牌无效，或 access JWT 非管理员/已失效": "Invalid executor token, or the access JWT is not an administrator / has expired",
+  "指派记录分页（带 hasMore/total 的信封）": "Assignment list page (envelope with hasMore/total)",
+  "items + hasMore/total/pendingTotal/limit/offset 信封": "Envelope of items + hasMore/total/pendingTotal/limit/offset",
+  "指派记录（兼容旧裸数组；可选分页 + 响应头）": "Assignments (legacy bare array; optional paging + response headers)",
+  "默认最近 100 条，createdAt 降序；分页事实见 X-Has-More/X-Total": "Latest 100 by default, createdAt descending; paging facts in X-Has-More/X-Total"
 }

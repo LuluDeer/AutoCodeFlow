@@ -22477,6 +22477,22 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -22491,8 +22507,8 @@
                 }
               }
             },
-            "description": "最近 100 条，createdAt 降序",
-            "x-i18n-en": "Most recent 100 entries, createdAt descending"
+            "description": "默认最近 100 条，createdAt 降序；分页事实见 X-Has-More/X-Total",
+            "x-i18n-en": "Latest 100 by default, createdAt descending; paging facts in X-Has-More/X-Total"
           }
         },
         "security": [
@@ -22500,12 +22516,12 @@
             "bearer": []
           }
         ],
-        "summary": "指派记录",
+        "summary": "指派记录（兼容旧裸数组；可选分页 + 响应头）",
         "tags": [
           "sop"
         ],
         "x-i18n-en": {
-          "summary": "Assignment record"
+          "summary": "Assignments (legacy bare array; optional paging + response headers)"
         }
       }
     },
@@ -22545,6 +22561,55 @@
         ],
         "x-i18n-en": {
           "summary": "Cancel every unfinished assignment of this SOP (precondition for archiving)"
+        }
+      }
+    },
+    "/sop/{id}/assignments/page": {
+      "get": {
+        "operationId": "SopController_assignmentsPage",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "items + hasMore/total/pendingTotal/limit/offset 信封",
+            "x-i18n-en": "Envelope of items + hasMore/total/pendingTotal/limit/offset"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "指派记录分页（带 hasMore/total 的信封）",
+        "tags": [
+          "sop"
+        ],
+        "x-i18n-en": {
+          "summary": "Assignment list page (envelope with hasMore/total)"
         }
       }
     },
