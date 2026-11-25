@@ -171,7 +171,8 @@ export class CallbackItemDto {
   @ApiPropertyOptional({
     // A3: OpenAPI 上只暴露执行器**可上报**的子集——`stale_recovered` 由 admin
     // 内部写入，不该出现在回调契约的文档面上（此前用的是全集）。
-    enum: [EXECUTOR_REPORTABLE_FAILURE_REASONS],
+    enum: [...EXECUTOR_REPORTABLE_FAILURE_REASONS],
+    type: "string",
     description: "结构化的失败原因",
   })
   @IsOptional()

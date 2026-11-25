@@ -1676,5 +1676,7 @@
   "稳定的升主原因类别码；前端着色与本地化按此码判定，不解析文本": "Stable promotion-reason category code; coloring and localization must key off this, not the text",
   "后端原文人话原因；前端遇未知码时回落展示": "Human-readable reason text verbatim from the backend; fallback display when the code is unknown to the frontend",
   "结构化原因：稳定类别码 + 原文文本，与既有 reasons 数组一一对应": "Structured reasons: stable code + verbatim text, parallel to the legacy reasons[] array",
-  "该执行由哪个 Agent 会话触发（Agent 触发路径可空）": "Which Agent session triggered this execution (nullable for non-Agent triggers)"
+  "该执行由哪个 Agent 会话触发（Agent 触发路径可空）": "Which Agent session triggered this execution (nullable for non-Agent triggers)",
+  "接受执行器共享令牌，或属于当前启用管理员的未撤销 access JWT（role=ADMIN、账户启用、会话版本匹配）。JWT 通道与 jwt.strategy 同口径查用户库；登出、改密、停用或降权后立即失效。": "Accepts the executor shared token, or a non-revoked access JWT of the currently enabled administrator (role=ADMIN, account enabled, session version matching). The JWT channel checks the user store with the same semantics as jwt.strategy; it becomes invalid immediately after logout, password change, deactivation or demotion.",
+  "执行器令牌无效，或 access JWT 非管理员/已失效": "Invalid executor token, or the access JWT is not an administrator / has eexpired"
 }

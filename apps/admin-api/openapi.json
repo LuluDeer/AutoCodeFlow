@@ -3099,22 +3099,20 @@
           "failureReason": {
             "description": "结构化的失败原因",
             "enum": [
-              [
-                "package_fetch_failed",
-                "script_error",
-                "timeout",
-                "executor_offline",
-                "executor_restart",
-                "dependency_install_failed",
-                "git_fetch_failed",
-                "runtime_missing",
-                "interpreter_unavailable",
-                "sandbox_unavailable",
-                "killed",
-                "unknown"
-              ]
+              "package_fetch_failed",
+              "script_error",
+              "timeout",
+              "executor_offline",
+              "executor_restart",
+              "dependency_install_failed",
+              "git_fetch_failed",
+              "runtime_missing",
+              "interpreter_unavailable",
+              "sandbox_unavailable",
+              "killed",
+              "unknown"
             ],
-            "type": "number",
+            "type": "string",
             "x-i18n-en": "Structured failure reason"
           },
           "logs": {
@@ -19057,7 +19055,7 @@
     },
     "/executor-packages/{id}/download": {
       "get": {
-        "description": "接受有效的管理员 access JWT 或执行器共享令牌。JWT 校验是无状态的、不查用户库，与上传鉴权中间件一致；access token 的过期时间即撤销延迟。",
+        "description": "接受执行器共享令牌，或属于当前启用管理员的未撤销 access JWT（role=ADMIN、账户启用、会话版本匹配）。JWT 通道与 jwt.strategy 同口径查用户库；登出、改密、停用或降权后立即失效。",
         "operationId": "ExecutorPackageController_download",
         "parameters": [
           {
@@ -19101,8 +19099,8 @@
             "x-i18n-en": "Package binary content (passed through via Res)\n\nPackage binary content (passed through via Res)"
           },
           "401": {
-            "description": "access JWT 或执行器令牌无效",
-            "x-i18n-en": "Invalid access JWT or executor token"
+            "description": "执行器令牌无效，或 access JWT 非管理员/已失效",
+            "x-i18n-en": "Invalid executor token, or the access JWT is not an administrator / has expired"
           },
           "404": {
             "description": "包或文件不存在",
@@ -19119,7 +19117,7 @@
           "Executor Package Management"
         ],
         "x-i18n-en": {
-          "description": "Accepts either a valid admin access JWT or the executor shared token. JWT validation is stateless and does not query the user store, consistent with the upload auth middleware; the access token's expiry is the revocation delay.",
+          "description": "Accepts the executor shared token, or a non-revoked access JWT of the currently enabled administrator (role=ADMIN, account enabled, session version matching). The JWT channel checks the user store with the same semantics as jwt.strategy; it becomes invalid immediately after logout, password change, deactivation or demotion.",
           "summary": "Download executor package file"
         }
       }

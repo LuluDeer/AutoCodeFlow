@@ -2019,7 +2019,7 @@ export interface paths {
         };
         /**
          * 下载执行器包文件
-         * @description 接受有效的管理员 access JWT 或执行器共享令牌。JWT 校验是无状态的、不查用户库，与上传鉴权中间件一致；access token 的过期时间即撤销延迟。
+         * @description 接受执行器共享令牌，或属于当前启用管理员的未撤销 access JWT（role=ADMIN、账户启用、会话版本匹配）。JWT 通道与 jwt.strategy 同口径查用户库；登出、改密、停用或降权后立即失效。
          */
         get: operations["ExecutorPackageController_download"];
         put?: never;
@@ -5390,22 +5390,9 @@ export interface components {
             exitCode?: number;
             /**
              * @description 结构化的失败原因
-             * @enum {number}
+             * @enum {string}
              */
-            failureReason?: [
-                "package_fetch_failed",
-                "script_error",
-                "timeout",
-                "executor_offline",
-                "executor_restart",
-                "dependency_install_failed",
-                "git_fetch_failed",
-                "runtime_missing",
-                "interpreter_unavailable",
-                "sandbox_unavailable",
-                "killed",
-                "unknown"
-            ];
+            failureReason?: "package_fetch_failed" | "script_error" | "timeout" | "executor_offline" | "executor_restart" | "dependency_install_failed" | "git_fetch_failed" | "runtime_missing" | "interpreter_unavailable" | "sandbox_unavailable" | "killed" | "unknown";
             /** @description 原始日志输出（最大 500 KB） */
             logs?: string;
             /** @description python_task_multiversion（FR-12/AC-12a）：结构化的执行明细。当前承载解释器快照 { requested, resolved, reason, detail, pool }，使得 interpreter_unavailable 失败无需重跑任务即可定位。原样持久化到 task_executions.result。约束为对象，且序列化体积有上限（4 KB）。 */
@@ -12351,7 +12338,7 @@ export interface operations {
                     "application/octet-stream": string;
                 };
             };
-            /** @description access JWT 或执行器令牌无效 */
+            /** @description 执行器令牌无效，或 access JWT 非管理员/已失效 */
             401: {
                 headers: {
                     [name: string]: unknown;
