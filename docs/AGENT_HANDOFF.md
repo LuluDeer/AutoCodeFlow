@@ -1,7 +1,27 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 32 轮 · 幂等键误释放致重复执行修复）
-> 当前分支 `develop` = `4c6b9eb5`（第 5-31 轮累积已按主题分 32 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`4c6b9eb5` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 37 提交、未 push**。子 agent 平台已恢复（第 24-32 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R32 更正】上一轮头部写的 `f5507b70`/34 提交是提交前快照，实际提交后 HEAD=`4c6b9eb5`/37 提交。）
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 33 轮 · webhook 密钥双读分叉 + python VIRTUAL_ENV 密钥注入）
+> 当前分支 `develop` = `43d9d884`（第 5-32 轮累积已按主题分 34 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`43d9d884` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 39 提交、未 push**。子 agent 平台已恢复（第 24-33 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R33 更正】上一轮头部写的 `4c6b9eb5`/37 提交是提交前快照，实际提交后 HEAD=`43d9d884`/39 提交。）
+
+## 本轮（2026-11-25 · 第 33 轮）：webhook 密钥双读分叉 + python VIRTUAL_ENV 密钥注入（双域并行）
+
+**方向来源**：objective 续轮，自己找方向。上轮登记剩的广播占坑计数属 ADR 级重构（acceptedExecutors 地址集只在内存、未落执行行，stale sweep 无从释放，真修需数据模型变更），本轮不碰。换方法：派 2 路只读审计分域（配置/密钥/部署、执行器运行时），各找到 1 个轻量真缺口，主控 CodeGraph 逐层复核后**两处都做**（写域互斥、并行派 agent）。
+
+**缺口①（Node，SEC-02 一致性）**：`task-webhook.service.ts:139-143` 的 `resolveSecret` 对 `enc:v1` 信封直接 `decryptValue`，缺 `encryptionEnabled` 守卫；参照 `ai.service.ts:231-239 resolveProviderKey` 有三分支。触发：曾配 SEC_SECRETS_KEY 写入 webhookSecret 后移除/轮换漏配（或多实例漂移）→ null key 流进 `createDecipheriv` 抛裸 TypeError→500，webhook 全断无 key 提示且破 authFail 反枚举口径。修法：照搬 ai.service 三分支（明文原样 / 信封+无 key 抛清晰 SEC-02 Error / 否则解密）。
+
+**缺口②（Python，单端注入）**：`secret_env.py:90-102` 的 secret 键闸门未拒绝 `VIRTUAL_ENV`，而 `_ENV_WHITELIST`（execute.py:1125）含它 → 平台配一个名为 VIRTUAL_ENV 的 secret 即覆盖白名单值 → 子进程误判 venv 上下文（sys.prefix/pip 目标错乱）。修法：在闸门层加 `if upper == 'VIRTUAL_ENV': return False`；**刻意不动 `_RESERVED_SECRET_NAMES` 集合**（三端 parity 强制同集，改字面量要连带 4 文件）。
+
+**交付（4 文件）**：`task-webhook.service.ts`（三分支+注释）、`task-webhook.controller.spec.ts`（+1 用例）、`secret_env.py`（闸门+注释）、`tests/test_secret_env.py`（+1 用例）。
+
+**验证（主控独立复跑）**：`task-webhook.controller.spec.ts` 14/14、跨端 `secret-key-map.parity.spec.ts` 9/9、python `test_secret_env.py` 57/57、`tsc --noEmit` 0、lint 0、全守卫链 130 段 0（本轮无 size 基线涟漪）。**反证（主控自做，两处真红、sha 逐字节还原）**：删 webhook encryptionEnabled 分支 → 核心用例 1 failed（裸 TypeError）；删 python VIRTUAL_ENV 闸门 → 新用例 AssertionError；还原 sha `ef3e9ac6…` / `337d88f9…` 一致。验收级别：单测/内存替身（jest mock + pytest），未达真 DB/多实例漂移现场。遗留缺陷 0。
+
+**仍留候选**：广播占坑计数泄漏（ADR 级，需数据模型变更 + 真 PG 验收）；至此三路/双域审计的轻量缺口均收口。
+
+**提交**：按 objective「分批提交」分 3 批——① Node webhook 2 文件；② Python 2 文件；③ 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 上述提交，39+ 提交未 push；两缺口已修且反证有牙，全链绿。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 32 轮）：幂等键误释放致重复执行（trigger 成功后置步骤失败）修复
 
