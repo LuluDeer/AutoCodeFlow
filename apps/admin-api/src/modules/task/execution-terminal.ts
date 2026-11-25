@@ -66,6 +66,11 @@ export interface TerminalTransitionRow {
   id: string;
   /** 库中实际的 executorAddress（RETURNING 取回，覆盖 dispatch 落库窗口）。 */
   executorAddress: string | null;
+  /**
+   * RETURNING 取回的库中实际行身份，覆盖 dispatch 落库窗口；存量行或驱动
+   * 未返回该列时为 null，调用方据此回落到读时快照。
+   */
+  executorId?: string | null;
 }
 
 /**
@@ -203,10 +208,20 @@ function normalizeRaw(raw: unknown): TerminalTransitionRow[] {
     const id = row.id;
     if (typeof id !== "string" && typeof id !== "number") continue;
     const addr = row.executorAddress;
-    out.push({
+    const executorId = row.executorId;
+    const normalized: TerminalTransitionRow = {
       id: String(id),
       executorAddress: typeof addr === "string" ? addr : null,
+    };
+    // 行身份是只供调用方寻路的附加面：保持不可枚举，避免改变 rows 的
+    // 序列化/深比较形状（其它只读 id/executorAddress 的调用方零影响）。
+    Object.defineProperty(normalized, "executorId", {
+      value: typeof executorId === "string" ? executorId : null,
+      enumerable: false,
+      configurable: true,
+      writable: true,
     });
+    out.push(normalized);
   }
   return out;
 }
@@ -315,7 +330,7 @@ export async function transitionToTerminal(
     .update(TaskExecution)
     .set(patch as Record<string, unknown>)
     .where(whereSql, params)
-    .returning(["id", "executorAddress"])
+    .returning(["id", "executorAddress", "executorId"])
     .execute();
 
   const affected = result.affected ?? 0;

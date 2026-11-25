@@ -6844,6 +6844,80 @@ describe("TaskService (__tests__)", () => {
       );
     });
 
+    it("P2-3: kill notification prefers RETURNING executorId over findOne snapshot", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:8002",
+        // 快照尚未落库（dispatch 窗口）：旧实现会把 null 传给执行器服务。
+        executorId: null,
+        startTime: new Date(Date.now() - 1000),
+      };
+      givenOwnedExecution(exec);
+
+      // 模拟 transitionToTerminal 的 RETURNING 命中行（库中实际行身份）。
+      const qb: Record<string, jest.Mock> = {};
+      qb.update = jest.fn(() => qb);
+      qb.set = jest.fn(() => qb);
+      qb.where = jest.fn(() => qb);
+      qb.returning = jest.fn(() => qb);
+      qb.execute = jest.fn().mockResolvedValue({
+        affected: 1,
+        raw: [
+          {
+            id: "e1",
+            executorAddress: "10.0.0.9:8002",
+            executorId: "row-b",
+          },
+        ],
+      });
+      execRepo.createQueryBuilder.mockReturnValueOnce(qb as never);
+
+      await service.killExecution("e1", ADMIN_USER);
+
+      expect(executorServiceMock.notifyExecutorKill).toHaveBeenCalledWith(
+        "e1",
+        "10.0.0.9:8002",
+        "row-b",
+      );
+    });
+
+    it("P2-3: kill notification falls back to snapshot executorId when RETURNING row has none", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:8002",
+        executorId: "snapshot-row",
+        startTime: new Date(Date.now() - 1000),
+      };
+      givenOwnedExecution(exec);
+
+      const qb: Record<string, jest.Mock> = {};
+      qb.update = jest.fn(() => qb);
+      qb.set = jest.fn(() => qb);
+      qb.where = jest.fn(() => qb);
+      qb.returning = jest.fn(() => qb);
+      qb.execute = jest.fn().mockResolvedValue({
+        affected: 1,
+        raw: [
+          {
+            id: "e1",
+            executorAddress: "10.0.0.9:8002",
+            executorId: null,
+          },
+        ],
+      });
+      execRepo.createQueryBuilder.mockReturnValueOnce(qb as never);
+
+      await service.killExecution("e1", ADMIN_USER);
+
+      expect(executorServiceMock.notifyExecutorKill).toHaveBeenCalledWith(
+        "e1",
+        "10.0.0.9:8002",
+        "snapshot-row",
+      );
+    });
+
     it("still returns success and releases the slot when the kill notification fails (改动5 fail-safe)", async () => {
       jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
       executorServiceMock.notifyExecutorKill.mockRejectedValue(

@@ -1821,7 +1821,11 @@ describe("SchedulerService", () => {
           ],
         },
       );
-      expect(coverQb.returning).toHaveBeenCalledWith(["id", "executorAddress"]);
+      expect(coverQb.returning).toHaveBeenCalledWith([
+        "id",
+        "executorAddress",
+        "executorId",
+      ]);
       // No blind entity save anymore; slot released exactly once via RETURNING.
       expect(execRepo.save).not.toHaveBeenCalledWith(runningExec);
       expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);

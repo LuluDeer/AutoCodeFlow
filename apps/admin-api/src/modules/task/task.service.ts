@@ -5155,12 +5155,12 @@ export class TaskService implements OnModuleInit {
     await this.releaseExecutorSlot(executorAddress);
     // 改动5: 通知执行器真正终止进程（best-effort；地址为空则跳过，
     // 任何失败都在 notifyExecutorKill 内被吞掉）。
-    // P2-3: 透传行身份 execution.executorId（findOne 快照；存量行为 null →
-    // 上层回落 address 寻路）——pull 同址多行时 kill 必须送达正确行。
+    // P2-3: 优先透传 RETURNING 命中的库中行身份（覆盖 dispatch 落库窗口），
+    // 读时快照仅在该列未取到时兜底（存量行为 null → 上层回落 address 寻路）。
     await this.notifyExecutorKill(
       execId,
       executorAddress,
-      execution.executorId,
+      result.rows[0]?.executorId ?? execution.executorId,
     );
     this.logger.warn(`Execution ${execId} has been manually terminated`);
     return { success: true, message: "Execution marked as terminated" };

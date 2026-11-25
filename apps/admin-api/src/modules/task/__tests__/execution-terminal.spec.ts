@@ -107,7 +107,7 @@ describe("A1 执行终态跃迁（transitionToTerminal）", () => {
     }
   });
 
-  it("门槛：条件带 status IN (开放态)，且 RETURNING 取 id 与 executorAddress", async () => {
+  it("门槛：条件带 status IN (开放态)，且 RETURNING 取 id / executorAddress / executorId", async () => {
     const { repo, calls } = makeRepo({ raw: [], affected: 0 });
     await transitionToTerminal(repo as never, {
       ids: ["e1"],
@@ -119,7 +119,36 @@ describe("A1 执行终态跃迁（transitionToTerminal）", () => {
       ExecutionStatus.RUNNING,
       ExecutionStatus.WAITING,
     ]);
-    expect(calls[0].returning).toEqual(["id", "executorAddress"]);
+    expect(calls[0].returning).toEqual([
+      "id",
+      "executorAddress",
+      "executorId",
+    ]);
+  });
+
+  it("normalizeRaw：透出 RETURNING 的 executorId，非字符串归 null（与地址同口径）", async () => {
+    const { repo } = makeRepo({
+      raw: [
+        {
+          id: "e1",
+          executorAddress: "10.0.0.1:8002",
+          executorId: "row-b",
+        },
+        { id: "e2", executorAddress: "10.0.0.2:8002", executorId: 42 },
+      ],
+      affected: 2,
+    });
+    const res = await transitionToTerminal(repo as never, {
+      ids: ["e1", "e2"],
+      patch: { ...SUCCESS_PATCH },
+    });
+    expect(res.rows).toEqual([
+      { id: "e1", executorAddress: "10.0.0.1:8002" },
+      { id: "e2", executorAddress: "10.0.0.2:8002" },
+    ]);
+    // 附加面不可枚举：旧调用方的深比较/序列化形状不变，但可按属性读取。
+    expect(res.rows[0].executorId).toBe("row-b");
+    expect(res.rows[1].executorId).toBeNull();
   });
 
   it("门槛可收窄（如 PENDING 超时回收只认 PENDING）", async () => {
@@ -141,7 +170,9 @@ describe("A1 执行终态跃迁（transitionToTerminal）", () => {
       ids: ["e1", "e2"],
       patch: { ...SUCCESS_PATCH },
     });
-    expect(res.rows).toEqual([{ id: "e1", executorAddress: "10.0.0.1:8002" }]);
+    expect(res.rows).toEqual([
+      { id: "e1", executorAddress: "10.0.0.1:8002" },
+    ]);
     expect(res.transitioned).toBe(true);
     // e2 不在 rows 里——它已被并发路径终态化，调用方据此不释放它的槽位
     expect(res.rows.map((r) => r.id)).not.toContain("e2");
@@ -243,7 +274,9 @@ describe("A1 执行终态跃迁（transitionToTerminal）", () => {
       patch: { ...SUCCESS_PATCH },
     });
     expect(calls[0].params.ids).toEqual(["e1"]);
-    expect(res.rows).toEqual([{ id: "e1", executorAddress: "addr" }]);
+    expect(res.rows).toEqual([
+      { id: "e1", executorAddress: "addr" },
+    ]);
   });
 
   it("事务：传入 manager 时用 manager 建 QB（复用事务连接）", async () => {
