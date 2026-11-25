@@ -12,6 +12,9 @@ FROM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f407
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
+# SHELL-RUNTIME: POSIX shell 任务在 routes/execute.ts 里硬编码 spawn('bash')；
+# node:24-alpine 默认不带 bash，缺它时任务直接 ENOENT/exit 127。builder 不需要。
+RUN apk add --no-cache bash
 COPY --from=builder /app/dist ./dist
 
 # Q-09: run as non-root user

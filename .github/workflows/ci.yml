@@ -1121,6 +1121,13 @@ jobs:
       # 不让未装该端依赖的守卫 job 稳定红。
       - name: Jest CLI flags are real (no silently-ignored flags)
         run: npm run check:jest-cli-flags
+      # SHELL-RUNTIME（R3 交接）：executor-node 的 alpine 运行时镜像必须装 bash —— POSIX
+      # shell 任务在 execute.ts:2849 硬编码 spawn('bash')，python 端 execute.py:1226 也是
+      # bash -c；缺 bash 时任务 ENOENT/exit 127。守卫按最后一个 FROM 只判运行时 stage，
+      # 拒绝 builder-only、注释里的包、`|| true` 吞失败、bash-completion 近似名和两端
+      # argv parity 漂移；--selftest 7 例真子进程夹具，零依赖、离线、秒级。
+      - name: Executor shell runtime has bash in image
+        run: npm run check:executor-shell-runtime
       # A8-①：治「不在发布线的包谁也不管」。实测：version.txt=2.1.0，而
       # packages/autocodeflow-{ai,db,http,notify} 的 pyproject 停在 0.3.2（tag *-v0.3.2 真实存在），
       # 且不在 release.yml 的 version-guard / publish 矩阵里 —— 于是「版本一致性」这一整类
