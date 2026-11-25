@@ -66,6 +66,7 @@ import {
 } from "./dto/executor-package.dto";
 import { ExecutorPackage } from "./executor-package.entity";
 import { UserRole } from "../users/entities/user.entity";
+import { UsersService } from "../users/users.service";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { ExecutorPushResultDto } from "./dto/executor-package-response.dto";
 
@@ -137,6 +138,7 @@ export class ExecutorPackageController {
     private readonly executorService: ExecutorService,
     private readonly configService: ConfigService,
     private readonly systemConfigService: SystemConfigService,
+    private readonly usersService: UsersService,
   ) {}
 
   @Post()
@@ -266,12 +268,12 @@ export class ExecutorPackageController {
 
   @Public()
   // Reset inherited ADMIN roles: machine callers have no req.user.
-  // Access is gated by the shared token or access JWT checks below.
+  // Access is gated by the shared token or the inlined admin-JWT check below.
   @Roles()
   @Get(":id/download")
   @ApiOperation({
     description:
-      "接受有效的管理员 access JWT 或执行器共享令牌。JWT 校验是无状态的、不查用户库，与上传鉴权中间件一致；access token 的过期时间即撤销延迟。",
+      "接受执行器共享令牌，或属于当前启用管理员的未撤销 access JWT（role=ADMIN、账户启用、会话版本匹配）。JWT 通道与 jwt.strategy 同口径查用户库；登出、改密、停用或降权后立即失效。",
     summary: "下载执行器包文件",
   })
   @ApiParam({ name: "id", description: "包 ID" })
@@ -285,7 +287,7 @@ export class ExecutorPackageController {
   })
   @ApiResponse({
     status: 401,
-    description: "access JWT 或执行器令牌无效",
+    description: "执行器令牌无效，或 access JWT 非管理员/已失效",
   })
   @ApiResponse({ status: 404, description: "包或文件不存在" })
   @ApiOkResponse({
@@ -314,18 +316,38 @@ export class ExecutorPackageController {
       // Fall back to the management access JWT.
     }
 
-    // Mirror upload-auth.middleware: same secret and access type, no user DB
-    // lookup. Revocation relies on short access-token expiry (default 15m).
+    // Management channel: restore the class-level ADMIN semantics and the
+    // jwt.strategy.validate() state checks inline — @Public()/@Roles() opt this
+    // route out of both guards. A signed access token is not enough: role,
+    // isActive and sessionVersion are re-read from the DB so logout / password
+    // change / disable / demotion revoke access immediately. The machine
+    // shared-token channel above is untouched.
     if (!authorized && authHeader?.startsWith("Bearer ")) {
       try {
         const payload = jwt.verify(
           authHeader.slice("Bearer ".length),
           this.configService.get<string>("jwt.secret"),
           { ignoreExpiration: false },
-        ) as { type?: string } | string;
-        authorized = typeof payload === "object" && payload.type === "access";
+        ) as { type?: string; sub?: number; ver?: number } | string;
+        if (typeof payload === "object" && payload.type === "access") {
+          const user =
+            typeof payload.sub === "number"
+              ? await this.usersService.findByIdOrNull(payload.sub)
+              : null;
+          if (
+            user &&
+            user.isActive &&
+            user.role === UserRole.ADMIN &&
+            // Match jwt.strategy: a token with no `ver` claim stays valid
+            // (pre-revocation compatibility); a stale one is revoked.
+            (payload.ver === undefined || payload.ver === user.sessionVersion)
+          ) {
+            authorized = true;
+          }
+        }
       } catch {
-        // Both credential channels failed.
+        // Both credential channels failed (bad signature, expired token, or a
+        // lookup error) — fail closed with the same stable 401 below.
       }
     }
     if (!authorized) {

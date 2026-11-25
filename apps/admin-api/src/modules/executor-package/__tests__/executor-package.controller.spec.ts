@@ -13,6 +13,8 @@ import { buildContentDisposition } from "../executor-package.controller";
 import { ExecutorService } from "../../executor/executor.service";
 import { ExecutorStatus } from "../../executor/entities/executor.entity";
 import { SystemConfigService } from "../../config/config.service";
+import { UsersService } from "../../users/users.service";
+import { UserRole } from "../../users/entities/user.entity";
 import { assertSafeExecutorUrl } from "../../../common/utils/safe-http.util";
 
 jest.mock("../../executor/executor.service", () => ({
@@ -55,6 +57,16 @@ describe("ExecutorPackageController download HTTP contract", () => {
     "app.adminApiUrl": "http://admin:3002/api/",
   });
   const systemConfig = { findOne: jest.fn() };
+  // P1 鉴权修复：管理 JWT 通道内联复用 UsersService（与 jwt.strategy 同口径）。
+  const findByIdOrNull = jest.fn<any, any>();
+  const usersService = { findByIdOrNull };
+  const adminUser = () => ({
+    id: 1,
+    username: "admin",
+    role: UserRole.ADMIN,
+    isActive: true,
+    sessionVersion: 7,
+  });
   // R9: the download route consumes the streaming openPackageFile contract
   // (Readable + on-disk size) instead of the old in-memory getFileBuffer.
   const openPackageFile = jest.fn<any, any>();
@@ -82,6 +94,7 @@ describe("ExecutorPackageController download HTTP contract", () => {
         { provide: ExecutorPackageService, useValue: service },
         { provide: ConfigService, useValue: config },
         { provide: SystemConfigService, useValue: systemConfig },
+        { provide: UsersService, useValue: usersService },
         {
           provide: ExecutorService,
           useValue: {
@@ -107,6 +120,7 @@ describe("ExecutorPackageController download HTTP contract", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     systemConfig.findOne.mockResolvedValue({ value: "db-token" });
+    findByIdOrNull.mockResolvedValue(adminUser());
     openPackageFile.mockResolvedValue(streamPayload());
     service.update.mockResolvedValue(pkg);
   });
@@ -126,11 +140,13 @@ describe("ExecutorPackageController download HTTP contract", () => {
     expect(response.headers["content-length"]).toBe(String(buffer.length));
     expect(openPackageFile).toHaveBeenCalledWith(id);
     expect(systemConfig.findOne).toHaveBeenCalledWith("executor.sharedToken");
+    // 机器通道保持独立：共享令牌命中后不查用户库。
+    expect(findByIdOrNull).not.toHaveBeenCalled();
   });
 
   it("preserves administrator access JWT downloads", async () => {
     const token = jwt.sign(
-      { sub: 1, username: "admin", type: "access" },
+      { sub: 1, username: "admin", type: "access", ver: 7 },
       secret,
       { expiresIn: "15m" },
     );
@@ -139,6 +155,62 @@ describe("ExecutorPackageController download HTTP contract", () => {
       .set("Authorization", `Bearer ${token}`)
       .expect(200);
     expect(response.body).toEqual(buffer);
+    expect(findByIdOrNull).toHaveBeenCalledWith(1);
+  });
+
+  // P1 鉴权修复：@Roles() 清空了类级 ADMIN 元数据，JWT 通道必须内联恢复
+  // role / isActive / sessionVersion 校验（口径同 jwt.strategy.validate）。
+  const expectDownloadDenied = async (tokenString: string) => {
+    const response = await request(app.getHttpServer())
+      .get(path)
+      .set("Authorization", `Bearer ${tokenString}`)
+      .expect(401);
+    expect(response.body.message).toBe(
+      "未授权：下载执行器包需要有效的 access JWT 或执行器令牌",
+    );
+    expect(openPackageFile).not.toHaveBeenCalled();
+  };
+
+  it("rejects a viewer role access JWT (ADMIN rechecked from the DB)", async () => {
+    findByIdOrNull.mockResolvedValue({
+      id: 2,
+      username: "viewer",
+      role: UserRole.USER,
+      isActive: true,
+      sessionVersion: 7,
+    });
+    await expectDownloadDenied(
+      jwt.sign({ sub: 2, username: "viewer", type: "access", ver: 7 }, secret, {
+        expiresIn: "15m",
+      }),
+    );
+    expect(findByIdOrNull).toHaveBeenCalledWith(2);
+  });
+
+  it("rejects an admin access JWT with a stale session version", async () => {
+    await expectDownloadDenied(
+      jwt.sign({ sub: 1, username: "admin", type: "access", ver: 6 }, secret, {
+        expiresIn: "15m",
+      }),
+    );
+  });
+
+  it("rejects a disabled admin access JWT", async () => {
+    findByIdOrNull.mockResolvedValue({ ...adminUser(), isActive: false });
+    await expectDownloadDenied(
+      jwt.sign({ sub: 1, username: "admin", type: "access", ver: 7 }, secret, {
+        expiresIn: "15m",
+      }),
+    );
+  });
+
+  it("rejects a refresh token even when it carries an admin sub", async () => {
+    await expectDownloadDenied(
+      jwt.sign({ sub: 1, username: "admin", type: "refresh", ver: 7 }, secret, {
+        expiresIn: "15m",
+      }),
+    );
+    expect(findByIdOrNull).not.toHaveBeenCalled();
   });
 
   it.each([
