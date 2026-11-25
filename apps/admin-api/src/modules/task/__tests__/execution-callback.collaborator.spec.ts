@@ -12,7 +12,7 @@ import {
   TaskExecution,
   ExecutionStatus,
 } from "../entities/task-execution.entity";
-import { Task } from "../entities/task.entity";
+import { Task, ExecuteMode } from "../entities/task.entity";
 
 /**
  * T2-B4 第二刀：`ExecutionCallback` 协作者的**结构契约**单测（直构，不装配 Nest）。
@@ -57,8 +57,11 @@ describe("T2-B4 第二刀 · ExecutionCallback 协作者的结构契约", () => 
   };
   let eventBusEmit: jest.Mock;
 
-  /** transitionToTerminal 走 createQueryBuilder 链；返回 affected 可控。 */
-  const makeQb = (affected: number) => {
+  /** transitionToTerminal 走 createQueryBuilder 链；返回 affected / raw 可控。 */
+  const makeQb = (
+    affected: number,
+    raw: unknown[] = affected > 0 ? [{ id: "exec-1" }] : [],
+  ) => {
     const qb: Record<string, jest.Mock> = {
       update: jest.fn().mockReturnThis(),
       set: jest.fn().mockReturnThis(),
@@ -67,25 +70,36 @@ describe("T2-B4 第二刀 · ExecutionCallback 协作者的结构契约", () => 
       returning: jest.fn().mockReturnThis(),
       execute: jest.fn(async () => {
         rec("winner-terminal-update");
-        return { affected, raw: affected > 0 ? [{ id: "exec-1" }] : [] };
+        return { affected, raw };
       }),
     };
     return qb;
   };
 
-  const build = (opts: { affected?: number } = {}) => {
+  const build = (
+    opts: {
+      affected?: number;
+      raw?: unknown[];
+      execution?: TaskExecution;
+      task?: Partial<Task>;
+      redisLockService?: ExecutionCallbackDeps["redisLockService"];
+    } = {},
+  ) => {
     calls = [];
     clock = 0;
     execRepo = {
-      findOne: jest.fn(async () => makeExecution()),
+      findOne: jest.fn(async () => opts.execution ?? makeExecution()),
       find: jest.fn(async () => []),
-      createQueryBuilder: jest.fn(() => makeQb(opts.affected ?? 1)),
+      createQueryBuilder: jest.fn(() => makeQb(opts.affected ?? 1, opts.raw)),
     };
     eventBusEmit = jest.fn(() => rec("emit-event"));
     deps = {
       execRepo: execRepo as unknown as Repository<TaskExecution>,
       taskRepo: {
-        findOne: jest.fn(async () => ({ id: "task-1", name: "T" }) as Task),
+        findOne: jest.fn(
+          async () =>
+            ({ id: "task-1", name: "T", ...(opts.task ?? {}) }) as Task,
+        ),
         find: jest.fn(async () => []),
       } as unknown as Repository<Task>,
       artifactIndexRepo: {
@@ -117,7 +131,7 @@ describe("T2-B4 第二刀 · ExecutionCallback 协作者的结构契约", () => 
         log: jest.fn(),
         debug: jest.fn(),
       } as unknown as Logger,
-      redisLockService: null,
+      redisLockService: opts.redisLockService ?? null,
       executorService: {
         scheduleRetryAfterRecovery: jest.fn(async () => undefined),
       },
@@ -256,5 +270,46 @@ describe("T2-B4 第二刀 · ExecutionCallback 协作者的结构契约", () => 
     expect(src).not.toMatch(/\bTaskService\b/);
     // 也不应出现 `this.service` 之类的反向引用
     expect(src).not.toMatch(/this\.(service|facade|taskService)\b/);
+  });
+
+  it("⑦ RETURNING 空时用回调地址兜底释放槽位（dispatch 落库窗口）", async () => {
+    const svc = build({
+      affected: 1,
+      raw: [],
+      execution: makeExecution({ executorAddress: null }),
+    });
+    await svc.handleCallback([successCb({ executorAddress: "a1" })]);
+
+    expect(deps.releaseSlot).toHaveBeenCalledTimes(1);
+    expect(deps.releaseSlot).toHaveBeenCalledWith("a1");
+  });
+
+  it("⑧ 广播 winner→重放 duplicate 只释放一次占坑且 SETNX key 相同", async () => {
+    const setIfAbsent = jest
+      .fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const svc = build({
+      execution: makeExecution({ executorAddress: null }),
+      task: { executeMode: ExecuteMode.BROADCAST },
+      redisLockService: { setIfAbsent } as never,
+    });
+    let qbCalls = 0;
+    execRepo.createQueryBuilder.mockImplementation(() =>
+      makeQb(qbCalls++ === 0 ? 1 : 0),
+    );
+
+    const cb = successCb({ executorAddress: "A" });
+    await svc.handleCallback([cb]);
+    await svc.handleCallback([cb]);
+
+    expect(setIfAbsent).toHaveBeenCalledTimes(2);
+    expect(setIfAbsent.mock.calls[0][0]).toBe(setIfAbsent.mock.calls[1][0]);
+    expect(setIfAbsent.mock.calls[0]).toEqual([
+      "slot-release:exec-1:A",
+      10 * 60_000,
+    ]);
+    expect(deps.releaseBroadcastSlot).toHaveBeenCalledTimes(1);
+    expect(deps.releaseBroadcastSlot).toHaveBeenCalledWith("A");
   });
 });

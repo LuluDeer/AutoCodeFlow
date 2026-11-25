@@ -583,7 +583,13 @@ export class ExecutionCallback {
           ids: [cb.executionId],
           patch: { status: terminalStatus, ...restPatch },
           expectedAttemptSeq: snapshotAttemptSeq,
-          // 重复回调分支按 cb.executorAddress 释放（广播语义），此处无需快照。
+          // 驱动 affected=1 但 RETURNING 空时，统一入口按快照兜底 winner 地址；
+          // 优先取回调自带地址（比 findOne 快照新），避免 dispatch 落库窗口内
+          // 快照为 null → releaseSlot(null) no-op → 槽位永久虚高。
+          addressSnapshot: {
+            [cb.executionId]:
+              cb.executorAddress ?? execution.executorAddress ?? null,
+          },
         });
 
         if (!updated.affected) {
@@ -621,31 +627,12 @@ export class ExecutionCallback {
           // cb.executorAddress 释放——不能因「已终态」而漏掉。非广播执行此分支
           // 保持零释放（winner 已释放一次）。
           if (isBroadcast && cb.executorAddress) {
-            // 第 6 轮审计 P2：同一条回调被**重试**（首次已落库但响应丢失）
-            // 会再次落到本分支，同一台执行器被冲销第二次——GREATEST(...,0)
-            // 只防负数不防虚低，容量闸看到的负载比实际小，继续超发。用
-            // Redis SETNX 按 (executionId, address) 做一次性闸（TTL 10min，
-            // 覆盖执行器重试窗）；Redis 不可用 fail-open 释放（宁可少防一次，
-            // 不可让槽位永久泄漏）。
-            let shouldRelease = true;
-            if (this.deps.redisLockService) {
-              try {
-                shouldRelease = await this.deps.redisLockService.setIfAbsent(
-                  `slot-release:${cb.executionId}:${cb.executorAddress}`,
-                  10 * 60_000,
-                );
-              } catch (err: unknown) {
-                this.deps.logger.warn(
-                  `Slot-release claim unavailable (releasing anyway): ${
-                    err instanceof Error ? err.message : String(err)
-                  }`,
-                );
-                shouldRelease = true;
-              }
-            }
-            if (shouldRelease) {
-              await this.deps.releaseBroadcastSlot(cb.executorAddress);
-            }
+            // winner 与 duplicate 共用同 key 的一次性闸：winner 首次释放已
+            // 置键，响应丢失后的重放落到本分支会被 SETNX 拦住，避免双减。
+            await this.releaseBroadcastSlotOnce(
+              cb.executionId,
+              cb.executorAddress,
+            );
           }
           // 可观测性补齐：重复回调（已终态）业务分类计数；终态结果不计数——
           // 执行结果 series 只在唯一 winner 的 UPDATE 命中处记录。
@@ -731,11 +718,14 @@ export class ExecutionCallback {
         // failure); exactly once thanks to the conditional update above.
         // 改动4: 优先用 RETURNING 的库中实际地址，快照兜底。
         await this.deps.releaseSlot(winnerAddress);
-        // R-06（DEEP_REVIEW 0ef3bbe）: 广播执行的 winnerAddress 恒为 null（上方
-        // no-op），本执行器自己占的坑改按其上报地址释放；非广播执行 winnerAddress
-        // 已释放，这里跳过。
+        // R-06（DEEP_REVIEW 0ef3bbe）: 广播执行 winnerAddress 恒为 null（上方
+        // no-op），本执行器自己占的坑按 cb 上报地址释放，且与 duplicate 分支
+        // 共用 SETNX 一次性闸——首次 winner 写键，重放再来时不再冲销。
         if (isBroadcast && cb.executorAddress) {
-          await this.deps.releaseBroadcastSlot(cb.executorAddress);
+          await this.releaseBroadcastSlotOnce(
+            cb.executionId,
+            cb.executorAddress,
+          );
         }
 
         // ARCH-21（原「改动1」解耦）：终态事件发布——旧的 FAILED/TIMEOUT
@@ -862,6 +852,38 @@ export class ExecutionCallback {
       }
     }
     return results;
+  }
+
+  /**
+   * 广播槽位释放的一次性闸（winner 与 duplicate 共用）。
+   *
+   * 按 (executionId, address) SETNX（TTL 10min，覆盖执行器重试窗）：首次释放
+   * 写键后才减 broadcastReservedCount。Redis 不可用 fail-open 仍释放——沿用
+   * 原 duplicate 分支语义，宁可少防一次，也不让槽位永久泄漏。
+   */
+  private async releaseBroadcastSlotOnce(
+    executionId: string,
+    address: string,
+  ): Promise<void> {
+    let shouldRelease = true;
+    if (this.deps.redisLockService) {
+      try {
+        shouldRelease = await this.deps.redisLockService.setIfAbsent(
+          `slot-release:${executionId}:${address}`,
+          10 * 60_000,
+        );
+      } catch (err: unknown) {
+        this.deps.logger.warn(
+          `Slot-release claim unavailable (releasing anyway): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        shouldRelease = true;
+      }
+    }
+    if (shouldRelease) {
+      await this.deps.releaseBroadcastSlot(address);
+    }
   }
 
   /**
