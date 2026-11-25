@@ -1,7 +1,30 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 24 轮 · 产物库任务名全量解析 + agent 平台恢复）
-> 当前分支 `develop` = `51a762b1`（第 5-23 轮累积已按主题分 16 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`51a762b1` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 20 提交、未 push**。子 agent 平台第 23 轮故障后**本轮探测已恢复**（极简探测 + 1 实现 + 1 只读审计均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 25 轮 · executor-node alpine 镜像补 bash + 真机验证）
+> 当前分支 `develop` = `827f0f8b`（第 5-24 轮累积已按主题分 18 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`827f0f8b` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 22 提交、未 push**。子 agent 平台已恢复（第 24/25 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 25 轮）：executor-node alpine 镜像补 bash（shell runtime exit 127 真修复）+ 真机验证
+
+**方向来源**：objective 续轮，自己找方向。扫交接「确证未修」候选，选中第 3 轮真栈旁证、DB 行在案但一直挂着的缺陷：`executor-node` 运行时镜像 `node:24-alpine` 无 bash，而 POSIX shell 任务硬编码 `cmd='bash'`（`execute.ts:2849`；python 端 `execute.py:1226` 同款 `['bash','-c',...]`），派到 node 执行器即 spawn ENOENT/exit 127；`runtime-detection.ts:150` 又无条件上报 shell 能力（少报会让任务永远派不过来，更难排查）。
+
+**修法取向（并行审计确认）**：给 alpine 运行时 stage 装 bash（保持两端 bash 语义），**不**退 `/bin/sh`（busybox sh 会在含 `[[`/数组/`source` 的脚本上静默改语义——仓库内 `init-db.sh`/`deploy.sh` 就是活例），**不**改能力上报。审计确认只有 executor-node 需装（executor-python 是 `python:3.12-slim` 已带 bash；admin-api/admin-web/registry 等不跑 shell 任务）。
+
+**编排（AGENTS §4）**：主控 CodeGraph 确证根因与两端锚点后切 2 路并行——① 实现（写域 = `Dockerfile`/`package.json`/`ci.yml` + 新守卫脚本）；② 只读审计（修法三选一 / 跨镜像清单 / 守卫绕过面）。主控另起一路**真机验证**（最高级，不依赖 agent）。
+
+**交付（5 文件）**：
+- `apps/executor-node/Dockerfile:15-17`：运行时 stage（`RUN npm ci --omit=dev` 之后、`USER appuser` 之前）加 `RUN apk add --no-cache bash`，builder stage 不动。
+- 新守卫 `scripts/check-executor-shell-runtime.mjs`（零依赖）：① 按 `FROM` 切 stage，只认最后一个 FROM 后的 `apk add ... bash`，剥注释/续行合并/引号抹除/ARG-ENV 变量解析，`bash` 须独立包 token，拒绝 builder-only、`|| true`/`; true` 吞失败、`bash-completion` 近似名；② 解析两端 argv 结构（node `cmd` basename=bash + `args` 含 entrypoint + 白名单正则 anchored；python `argv[0]`/`bash -c` argv0 均 bash + `cd "$1" && exec "$2"` 位置参数 + `fullmatch` 未削成 `match`），防 parity 漂移；③ 结构红反永真。`--selftest` 7 例真子进程夹具。
+- `package.json`：新 script + chain 末尾追加（130 段，末段 = 新守卫）；`ci.yml` guards job 加 step。
+
+**验证（主控独立复跑，含真机）**：
+- **真机（AGENTS §4.4 最高级）**：`docker build -t acf-executor-shell:after ./apps/executor-node` exit 0 → `docker run --entrypoint bash acf-executor-shell:after -c 'echo BASH_OK'` → `BASH_OK` exit 0，`/bin/bash --version` = 5.3.9-alpine；对照修前镜像 `acf-demo-executor-node:latest`（11-23 构建）`bash: not found` exit 127。验证镜像已清理。
+- `node scripts/check-executor-shell-runtime.mjs --selftest` 7/7 exit 0；`npm run check:executor-shell-runtime` 主跑 0（点名 Dockerfile:17 / execute.ts:2849 / execute.py:1226）；`check:guards-wired`/`check:script-main-guard`/`check:workflow-yaml`/`check:selftests-wired` 全 0；chain 独立解析 130 段、末段新守卫、仅 1 次。
+
+**验收级别**：真机（真实 docker build + 容器内 bash 实跑）> 守卫真子进程 CLI 黑盒 > 静态审计。遗留缺陷 0。本轮按 objective「分批提交」分 2 批：① 功能 5 文件；② 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 功能提交 + 交接提交，22+ 提交未 push；新守卫全接线，镜像需发布方重建（compose `--build` 或 CI 构建）。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 24 轮）：产物库任务名全量解析（共享 listAll hook）+ 并行审计 + 分批提交
 
