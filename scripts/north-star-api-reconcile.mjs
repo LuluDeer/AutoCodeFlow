@@ -5,7 +5,10 @@
  * 核心命题：同一份真 PG 数据、同一个 as_of 下，新增 NorthStarMetricsService 的
  * report() 输出必须与 scripts/north-star-weekly.mjs --report --json 的权威 payload
  * 逐字段一致（as_of / business_confirmed.weeks+totals /
- * business_results_proxy.weeks+totals / warnings），否则对账红。
+ * business_results_proxy.weeks+totals / promotionEligibility 共有子集
+ * (eligible,reasons,weeks,activeInstallWeeks,thresholds) / warnings），否则对账红。
+ * API 额外产 promotionEligibility.reasonDetails（CLI 不产，text 与 reasons 同值），
+ * 因此不把整个 promotionEligibility 对象逐字比对，避免假红。
  *
  * 取数路径：
  *  ① 权威 CLI：execFileSync(node scripts/north-star-weekly.mjs --report --json
@@ -24,14 +27,16 @@
  *    库名必须含 test|e2e；口令只进连接配置/子进程 argv，所有日志 redact。
  *
  * 反假绿：payload 除了与 CLI 逐字段比较，还与独立字面常量 EXPECTED 对账；
- * 另做一次不落盘的反证（克隆 API payload，把周 A confirmed_events +1），
- * 必须转红，且原 payload sha256 前后不变。
+ * 真库 --counterproof 在 API payload 副本上同时注入周 A confirmed_events+1 与
+ * promotionEligibility.eligible 取反；selftest 另做 eligible / thresholds.minWeeks /
+ * reasons[0] 三条 promotion 子字段反证；全部必须被 compareFields 抓红，
+ * 且原 payload sha256 前后不变。
  *
  * 用法：
  *   node scripts/north-star-api-reconcile.mjs --from-env
  *   node scripts/north-star-api-reconcile.mjs --dsn=<url>
  *   node scripts/north-star-api-reconcile.mjs --selftest
- *   node scripts/north-star-api-reconcile.mjs --counterproof  # 真库上注入 +1，对账必须 exit 1
+ *   node scripts/north-star-api-reconcile.mjs --counterproof  # 真库双注入（+1 与 eligible 取反），对账必须 exit 1
  *   node scripts/north-star-api-reconcile.mjs --service=<dist 相对路径>（覆盖编译产物探测）
  * 无连接参数 ⇒ SKIP exit 0（不假绿）。
  * 退出码：0 全一致（含清理 0 残留） / 1 对账失败 / 2 结构错 / 3 连不上。
@@ -120,6 +125,20 @@ export const EXPECTED = {
   strictTotals: { active_install_weeks: 3, confirmed_events: 4 },
   proxy: [{ week_start: WEEK_A, executions: 2 }],
   proxyTotals: { executions: 2 },
+  // 独立字面量：本脚本 seed 只有周 A(active=2) + 周 B(active=1) ⇒ weeks=2 / activeInstallWeeks=3；
+  // 两个数值阈值 both unmet，故 eligible=false 且有两条阈值 reasons + 一条运营前置。
+  // 不从 CLI/API 输入拷贝，也不采其它样例的 3 周/21 数值。
+  promotionEligibility: {
+    eligible: false,
+    reasons: [
+      "样本期 2 周 < 4 周",
+      "活跃 install 周合计 3 < 20",
+      "运营前置（脚本不验证）：telemetry/status 的 coverage 须为 full 且 count>0",
+    ],
+    weeks: 2,
+    activeInstallWeeks: 3,
+    thresholds: { minWeeks: 4, minActiveInstallWeeks: 20 },
+  },
   warnings: [STRICT_WARNING, PROXY_WARNING],
 };
 
@@ -225,6 +244,14 @@ const FIELD_PATHS = [
   "business_confirmed.totals",
   "business_results_proxy.weeks",
   "business_results_proxy.totals",
+  // promotionEligibility 只比 CLI/API 共有的 5 个子字段；
+  // API 额外产 reasonDetails（reasonDetails[].text === reasons），CLI 不产，
+  // 整对象逐字比对必然假红，故不加入 promotionEligibility.reasonDetails。
+  "promotionEligibility.eligible",
+  "promotionEligibility.reasons",
+  "promotionEligibility.weeks",
+  "promotionEligibility.activeInstallWeeks",
+  "promotionEligibility.thresholds",
   "warnings",
 ];
 
@@ -254,6 +281,11 @@ export function compareWithExpected(payload, applyAssert, label) {
   }
   applyAssert(`[${label}] business_confirmed.totals=EXPECTED`, show(getPath(payload, "business_confirmed.totals")) === show(EXPECTED.strictTotals), `实得 ${show(getPath(payload, "business_confirmed.totals"))}`);
   applyAssert(`[${label}] business_results_proxy.totals=EXPECTED`, show(getPath(payload, "business_results_proxy.totals")) === show(EXPECTED.proxyTotals), `实得 ${show(getPath(payload, "business_results_proxy.totals"))}`);
+  for (const sub of ["eligible", "reasons", "weeks", "activeInstallWeeks", "thresholds"]) {
+    const path = `promotionEligibility.${sub}`;
+    const got = getPath(payload, path);
+    applyAssert(`[${label}] ${path}=EXPECTED`, show(got) === show(getPath(EXPECTED.promotionEligibility, sub)), `实得 ${show(got)}`);
+  }
   applyAssert(`[${label}] warnings 常驻逐字=EXPECTED`, show(getPath(payload, "warnings")) === show(EXPECTED.warnings), `实得 ${show(getPath(payload, "warnings"))}`);
 }
 
@@ -455,12 +487,41 @@ export function runSelftest() {
     as_of: EXPECTED.as_of,
     business_confirmed: { weeks: EXPECTED.strict, totals: EXPECTED.strictTotals },
     business_results_proxy: { weeks: EXPECTED.proxy, totals: EXPECTED.proxyTotals },
+    promotionEligibility: EXPECTED.promotionEligibility,
     warnings: EXPECTED.warnings,
   };
   const pos = makeAsserts(false);
   compareFields(good, JSON.parse(JSON.stringify(good)), pos.applyAssert);
   compareWithExpected(good, pos.applyAssert, "selftest");
   applyAssert("对账器正例全绿", pos.items.every((x) => x.ok), `${pos.items.filter((x) => x.ok).length}/${pos.items.length}`);
+
+  // API 比 CLI 多 reasonDetails：它不应让逐字段对账/EXPECTED 门控假红。
+  const apiGood = JSON.parse(JSON.stringify(good));
+  apiGood.promotionEligibility.reasonDetails = apiGood.promotionEligibility.reasons.map((text, i) => ({ code: `SELFTEST_${i}`, text }));
+  const apiPos = makeAsserts(false);
+  compareFields(good, apiGood, apiPos.applyAssert);
+  compareWithExpected(apiGood, apiPos.applyAssert, "selftest-api-extra");
+  applyAssert("API 多 reasonDetails 不假红", apiPos.items.every((x) => x.ok), `${apiPos.items.filter((x) => x.ok).length}/${apiPos.items.length}`);
+
+  // 三条 promotion 子字段真反证：每条只改 API payload 副本一处，compareFields 必须点亮对应路径。
+  const assertPromoCounterproof = (name, mutate, redPath) => {
+    const before = createHash("sha256").update(show(apiGood)).digest("hex");
+    const bad = JSON.parse(JSON.stringify(apiGood));
+    mutate(bad.promotionEligibility);
+    const probe = makeAsserts(false);
+    compareFields(good, bad, probe.applyAssert);
+    const redPaths = probe.items.filter((x) => !x.ok).map((x) => x.name);
+    applyAssert(
+      `反证：${name} ⇒ 对账转红`,
+      redPaths.some((path) => path.includes(redPath)),
+      `红项 ${redPaths.join(" | ") || "无"}`,
+    );
+    const after = createHash("sha256").update(show(apiGood)).digest("hex");
+    applyAssert(`反证：原 API payload sha256 前后不变（${name}）`, before === after, `${before.slice(0, 12)}… → ${after.slice(0, 12)}…`);
+  };
+  assertPromoCounterproof("promotionEligibility.eligible 取反", (p) => { p.eligible = !p.eligible; }, "promotionEligibility.eligible");
+  assertPromoCounterproof("promotionEligibility.thresholds.minWeeks+1", (p) => { p.thresholds.minWeeks += 1; }, "promotionEligibility.thresholds");
+  assertPromoCounterproof("promotionEligibility.reasons[0] 文案改字", (p) => { p.reasons[0] = p.reasons[0].replace("样本", "样版"); }, "promotionEligibility.reasons");
 
   const negPayload = JSON.parse(JSON.stringify(good));
   negPayload.business_confirmed.weeks[1].confirmed_events += 1;
@@ -485,6 +546,9 @@ const HELP = `用法：
   node scripts/north-star-api-reconcile.mjs --selftest
   node scripts/north-star-api-reconcile.mjs --from-env --counterproof
   node scripts/north-star-api-reconcile.mjs --service=<apps/admin-api/dist/.../north-star-metrics.service.js>
+覆盖字段：as_of / business_confirmed.weeks+totals / business_results_proxy.weeks+totals /
+promotionEligibility 共有子集(eligible,reasons,weeks,activeInstallWeeks,thresholds) / warnings；
+API 额外 reasonDetails 不逐字比对（CLI 不产）。
 目标库名须含 test|e2e，否则 exit 2。无连接参数 ⇒ SKIP exit 0（不假绿）。
 退出码：0 全一致 / 1 对账失败（--counterproof 下应稳定为 1） / 2 结构错 / 3 连不上；口令不落日志。`;
 
@@ -560,11 +624,31 @@ async function main() {
         const injected = apiPayload?.business_confirmed?.weeks?.find((w) => w.week_start === WEEK_A)
           ?? apiPayload?.business_confirmed?.weeks?.[0];
         if (injected && typeof injected.confirmed_events === "number") {
+          const beforeEvents = injected.confirmed_events;
           injected.confirmed_events += 1;
-          applyAssert("反证注入：路径② confirmed_events+1", true, `${injected.week_start}: ${injected.confirmed_events - 1} → ${injected.confirmed_events}`);
+          applyAssert("反证注入：路径② confirmed_events+1", true, `${injected.week_start}: ${beforeEvents} → ${injected.confirmed_events}`);
         } else {
           structural = 2;
           applyAssert("反证注入：路径② confirmed_events 可篡改", false, show(apiPayload?.business_confirmed?.weeks));
+        }
+        const promo = apiPayload?.promotionEligibility;
+        if (promo && typeof promo.eligible === "boolean") {
+          const beforeEligible = promo.eligible;
+          promo.eligible = !beforeEligible;
+          applyAssert("反证注入：路径② promotionEligibility.eligible 取反", true, `${beforeEligible} → ${promo.eligible}`);
+        } else {
+          structural = 2;
+          applyAssert("反证注入：路径② promotionEligibility.eligible 可篡改", false, show(promo));
+        }
+        if (!structural) {
+          const counterProbe = makeAsserts(false);
+          compareFields(cliPayload, apiPayload, counterProbe.applyAssert);
+          const redPaths = counterProbe.items.filter((x) => !x.ok).map((x) => x.name);
+          applyAssert(
+            "反证注入：confirmed_events+1 与 eligible 取反均可被 compareFields 抓红",
+            redPaths.some((name) => name.includes("business_confirmed.weeks")) && redPaths.some((name) => name.includes("promotionEligibility.eligible")),
+            `红项 ${redPaths.join(" | ") || "无"}`,
+          );
         }
       }
 
@@ -578,7 +662,7 @@ async function main() {
         compareFields(cliPayload, apiPayload, applyAssert);
         if (opts.counterproof) {
           const postCounterSha = createHash("sha256").update(show(originalApiPayload)).digest("hex");
-          applyAssert("反证：原路径② payload sha256 前后不变", preCounterSha === postCounterSha, `${preCounterSha.slice(0, 12)}… → ${postCounterSha.slice(0, 12)}…`);
+          applyAssert("反证：原路径② payload sha256 前后不变（双注入）", preCounterSha === postCounterSha, `${preCounterSha.slice(0, 12)}… → ${postCounterSha.slice(0, 12)}…`);
         } else {
           runCounterproof(cliPayload, apiPayload, applyAssert);
         }
