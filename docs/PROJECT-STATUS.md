@@ -32,7 +32,7 @@
 | 项目 | 数字 | 结果 |
 |---|---|---|
 | admin-api 全量测试（`--maxWorkers=2`） | 511 suites passed（2 skipped）/ 8651 tests passed（6 skipped） | exit 0 |
-| CI 复演·admin-api-test 全 4 分片（`--shard=N/4`） | 128/127/127/128 suites，全部 exit 0 | exit 0 |
+| CI 复演·admin-api-test 全 4 分片（`--shard=N/4`） | 128/127/127/128 suites（R41 复演：2841/1670/2218/1922 tests），全部 exit 0 | exit 0 |
 | admin-web 全量测试（`vitest run`） | 367 files / 3029 passed（1 skipped） | exit 0 |
 | CI 复演·SDK job（`npx jest`） | 6 suites / 151 passed | exit 0 |
 | CI 复演·Docs job（`npm run test:docs`） | 四守卫 selftest + 主跑全绿 | exit 0 |
@@ -48,7 +48,7 @@
 | 真浏览器 + 真后端 e2e（R436，历史） | 真 PG/后端 dist/系统 Chrome：确认端点→漏斗落行→看板真读→反证 1→0→1 | 1 passed / exit 0，无 mock、pageerror=[] |
 | 迁移独立库往返（R433/R441，历史） | 146 up → 幂等 → revert ×2 → 清理 | 全 exit 0 |
 
-说明：健康自检区分「代码在（静态）」与「运行时健康（真库）」，静态 PASS ≠ 运行时健康；迁移链在独立干净库实测，`down()` 真回滚已验证（R314 只验 up+幂等的缺口已补）。R436 端到端验收抓到浏览器真发 `GET /api/agent/north-star/metrics` 200，看板数值=真后端数（非 mock/硬编码），反证增删漏斗行看板随之变化——这是四级验收里的最高层。R442 在 R433 之后所有改动落定后**最终复跑**双端全量：admin-api 8602 passed exit 0；admin-web 首跑遇 1 例性能红线 flake（`maintenance-window-parity` 20 tasks best-of-3 72.8ms > 50ms，与文案改动无关，单跑 13ms），重跑全量 350/350 / 2845 passed exit 0，坐实为 350 workers 并发争抢的一次性抖动而非回归。R477 在 R475 提交后、用户 push 前，按 CI 真实命令逐个复演关键 job（SDK/docs/admin-web/executor-node 的 coverage 与 test:docs），全部 exit 0——消除 R459 首推后曾出现「本地绿 CI 红」的那类风险，确认这批提交在 CI 命令下不会红。**R40（2026-11-25）五端全量回归**：此前只跑定向测试 + 守卫链，首次整体复跑发现 3 个 executor-package spec 因 R31 新增 `UsersService` 构造器参数却未补夹具而 TS2554 红（定向测试与守卫链均发现不了）——补齐构造器第 5 参 + Test 模块 Provider 后 admin-api 全量 511 suites / 8651 tests exit 0；admin-web 367/3029、executor-node 64/1875、executor-python 87.32% 覆盖、acf-cli 16/466、executor-desktop、mcp-server 11/348、node-sdk 6/151 全 exit 0。**教训**：跨端 DI 签名变更必须全量复跑，定向测试覆盖不到所有 `new Controller(...)` 夹具点。
+说明：健康自检区分「代码在（静态）」与「运行时健康（真库）」，静态 PASS ≠ 运行时健康；迁移链在独立干净库实测，`down()` 真回滚已验证（R314 只验 up+幂等的缺口已补）。R436 端到端验收抓到浏览器真发 `GET /api/agent/north-star/metrics` 200，看板数值=真后端数（非 mock/硬编码），反证增删漏斗行看板随之变化——这是四级验收里的最高层。R442 在 R433 之后所有改动落定后**最终复跑**双端全量：admin-api 8602 passed exit 0；admin-web 首跑遇 1 例性能红线 flake（`maintenance-window-parity` 20 tasks best-of-3 72.8ms > 50ms，与文案改动无关，单跑 13ms），重跑全量 350/350 / 2845 passed exit 0，坐实为 350 workers 并发争抢的一次性抖动而非回归。R477 在 R475 提交后、用户 push 前，按 CI 真实命令逐个复演关键 job（SDK/docs/admin-web/executor-node 的 coverage 与 test:docs），全部 exit 0——消除 R459 首推后曾出现「本地绿 CI 红」的那类风险，确认这批提交在 CI 命令下不会红。**R40（2026-11-25）五端全量回归**：此前只跑定向测试 + 守卫链，首次整体复跑发现 3 个 executor-package spec 因 R31 新增 `UsersService` 构造器参数却未补夹具而 TS2554 红（定向测试与守卫链均发现不了）——补齐构造器第 5 参 + Test 模块 Provider 后 admin-api 全量 511 suites / 8651 tests exit 0；admin-web 367/3029、executor-node 64/1875、executor-python 87.32% 覆盖、acf-cli 16/466、executor-desktop、mcp-server 11/348、node-sdk 6/151 全 exit 0。**教训**：跨端 DI 签名变更必须全量复跑，定向测试覆盖不到所有 `new Controller(...)` 夹具点。**R41 追加 CI 分片复演**：按 CI 真实口径 `--node-options=--experimental-vm-modules jest --shard=N/4` 串行跑完 4 片（129/127/127/128 suites、2841/1670/2218/1922 tests，全 exit 0），四片 suites 合计 511、tests 合计 8651 与 `--maxWorkers=2` 全量逐字吻合——坐实本批改动在 CI 分片口径下同样全绿，无测试间状态泄漏/顺序依赖。
 
 ## 4. 已知未决项
 

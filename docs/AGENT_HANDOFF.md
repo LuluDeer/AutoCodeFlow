@@ -1,7 +1,30 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 41 轮 · 五端全量回归 + R31 DI 夹具缺口修复）
-> 当前分支 `develop` = `42a28089`（第 5-40 轮累积已按主题分 57 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`42a28089` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 62 提交、未 push**。子 agent 平台已恢复（第 24-41 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R41 更正】上一轮头部写的 `b5841774`/58 提交是提交前快照，实际提交后 HEAD=`42a28089`/62 提交。）
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 42 轮 · CI 四分片真跑复演）
+> 当前分支 `develop` = `510f1686`（第 5-41 轮累积已按主题分 59 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`510f1686` 各轮交接）。工作树在本轮文档提交后干净，**领先 origin/develop 64 提交、未 push**。子 agent 平台已恢复（第 24-41 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R42 更正】上一轮头部写的 `42a28089`/62 提交是提交前快照，实际提交后 HEAD=`510f1686`/64 提交。）
+
+## 本轮（2026-11-25 · 第 42 轮）：CI admin-api 四分片真跑复演（本地 CI 口径对齐）
+
+**方向来源**：objective 续轮，自己找方向。R41 刚做完五端全量串行复演，本轮补上 CI 特有的**分片口径**——交接 R20 做过一次（128/127/127/128），其后 40+ 轮改动（含 R31 注入、R41 夹具修复）从未复演。分片能抓 `--maxWorkers=2` 全量抓不到的测试间状态泄漏/顺序依赖，是当前最有价值的集成验证。
+
+**实跑（主控独立，CI 真实口径 `npx --node-options=--experimental-vm-modules jest --shard=N/4`，串行四片，内存纪律）**：
+- shard 1/4：129 suites / 2841 tests，exit 0
+- shard 2/4：127 passed + 1 skipped（128 total）/ 1670 tests passed，exit 0
+- shard 3/4：127 passed + 1 skipped（128 total）/ 2218 tests passed，exit 0
+- shard 4/4：128 suites / 1922 tests，exit 0
+四片 suites 合计 511、tests 合计 8651，与 R41 `--maxWorkers=2` 全量逐字吻合——**坐实本批改动在 CI 分片口径下同样全绿，无隔离性问题**。
+
+**文档权威同步**：`PROJECT-STATUS.md` §3 分片行补 tests 数（2841/1670/2218/1922），说明段记入分片复演结论。本轮无功能/代码改动，仅验证 + 文档。
+
+**候选复核（未做，登记下一轮）**：MCP `sop_get` 跨端分叉确证——agent 端 `tool-registry.ts:1148` 支持 `id 或 slug`、走 `getBySlug`，MCP `tools.ts:840-848` 只接受 sopId(UUID)，后端 controller 只有 `@Get(":id")`（:532，无 by-slug 路由）。修法需加后端 GET 路由 + MCP slug 分支 + openapi/i18n/api-reference 重生成（R40 同款连锁，需 DB superuser 注入），非纯轻量，留下一轮。
+
+**仍留候选**：MCP sop_get slug 分叉；中间态 bisect 退化（R38）；广播占坑另两子场景（ADR 级）。
+
+**提交**：按 objective「分批提交」——本轮仅 1 个文档提交（PROJECT-STATUS + 本交接段）。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 上述提交，64+ 提交未 push；五端全量 + 全守卫链 130 段 + CI 四分片全绿，处于可发布态。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 41 轮）：五端全量回归验收（真实进程内集成级）
 
