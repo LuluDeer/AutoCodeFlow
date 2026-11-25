@@ -1,7 +1,27 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 34 轮 · swagger enum 嵌套分叉 + 静默轮询失败停摆）
-> 当前分支 `develop` = `df5086e6`（第 5-33 轮累积已按主题分 37 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`df5086e6` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 42 提交、未 push**。子 agent 平台已恢复（第 24-34 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R34 更正】上一轮头部写的 `43d9d884`/39 提交是提交前快照，实际提交后 HEAD=`df5086e6`/42 提交。）
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 35 轮 · examples 守卫假绿 selftest 黑盒化 + CI 命令真实性审计）
+> 当前分支 `develop` = `85a145ff`（第 5-34 轮累积已按主题分 40 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`85a145ff` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 45 提交、未 push**。子 agent 平台已恢复（第 24-35 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R35 更正】上一轮头部写的 `df5086e6`/42 提交是提交前快照，实际提交后 HEAD=`85a145ff`/45 提交。）
+
+## 本轮（2026-11-25 · 第 35 轮）：examples 守卫假绿 selftest 黑盒化（CI 真实性双审计）
+
+**方向来源**：objective 续轮，自己找方向。前几轮单点真缺陷已密集收口，本轮换系统性主题「CI 命令真实性 / 守卫假绿」（交接反复出现"本地绿 CI 红"与 selftest 假绿）。全守卫链基线 130 段绿。派 2 路只读审计：① CI workflow 命令真实性；② 脚本接线/假绿盲区。主控同步做 working-directory 感知的 CI script 引用比对（初版没解析 wd 产生 23→59 条误报，正确按 step 映射后与审计一致：无真缺失）。
+
+**审计结论**：① scan-ci-truth 诚实报**无净新缺口**——npm run 引用按 wd 全部存在、外部工具 flag 逐字命中 argv/--help、`|| true`/continue-on-error 均为非阻塞观测或有后置断言、secret/env 引用一致；② scan-wiring-gaps 找到 1 个真缺口（下详）。
+
+**缺口（假绿 selftest，主控 CodeGraph + 变异实测双重确证）**：`examples/scripts/check-task-examples.mjs` 的 `--selftest` 进程内直调 `checkTaskConfig`（:324），从不进 main；main 的 `process.exit(1)`（:358）退出码零覆盖。主控实测把 :358 改 `exit(0)` 后 `--selftest` 仍 exit 0 全绿。双重扫描面盲区：`check-guards-wired`（只扫 scripts/∪apps/*/scripts∪packages/*/scripts）与 `check-selftests-wired`（只扫 scripts/ 顶层）都不含 examples/；但接线完整（package.json:272 + ci.yml:1056），属纯假绿非孤儿。
+
+**修法（单文件）**：selftest 保留进程内 3 条「有齿」断言，新增 2 条真子进程 CLI 黑盒——`node SELF` 无参 exit 0 + 通过文案；临时仓库坏 fixture（带 `bogusExtraKey`）经新增的 `--root` 参数让 main exit 1 并点名文件（不传 `--root` 时默认行为逐字不变）。这样 main 的 exit(1) 被黑盒覆盖。
+
+**验证（主控独立复跑）**：`check-task-examples.mjs --selftest` 0（5 例：进程内 3 + CLI 黑盒 2）；`npm run check:task-examples` 0；`check-guards-wired`/`check-selftests-wired` 均 0；全守卫链 130 段 0。**反证（主控自做）**：main `exit(1)→exit(0)` → selftest exit 1，精确红在「坏 fixture → main exit 1」用例；还原 sha256 `5365adcb…` 逐字节一致、复跑 0。验收级别：真子进程 CLI 黑盒（高于单测）；未达 GitHub Actions 线上。遗留缺陷 0。
+
+**仍留候选**：广播占坑计数泄漏（ADR 级）；examples/ 未被两接线守卫扫描的盲区（本轮只让该脚本自身 selftest 有牙，未扩守卫扫描面——扩面需改两个守卫并带反证，留后续评估）。
+
+**提交**：按 objective「分批提交」分 2 批——① 功能单文件；② 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 上述提交，45+ 提交未 push；假绿 selftest 已补牙，全链绿。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 34 轮）：swagger enum 嵌套分叉 + 静默轮询失败停摆（双域并行）
 
