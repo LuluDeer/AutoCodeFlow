@@ -1,7 +1,27 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 39 轮 · 终态槽位两缺口 + 桌面删除运行中版本）
-> 当前分支 `develop` = `b4950b11`（第 5-38 轮累积已按主题分 50 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`b4950b11` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 55 提交、未 push**。子 agent 平台已恢复（第 24-39 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R39 更正】上一轮头部写的 `a360d926`/51 提交是提交前快照，实际提交后 HEAD=`b4950b11`/55 提交。）
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 40 轮 · HTTP 指标错误路径记 2xx + SOP 指派静默截断）
+> 当前分支 `develop` = `b5841774`（第 5-39 轮累积已按主题分 53 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`b5841774` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 58 提交、未 push**。子 agent 平台已恢复（第 24-40 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R40 更正】上一轮头部写的 `b4950b11`/55 提交是提交前快照，实际提交后 HEAD=`b5841774`/58 提交。）
+
+## 本轮（2026-11-25 · 第 40 轮）：HTTP 指标错误路径记 2xx + SOP 指派静默截断（双域并行）
+
+**方向来源**：objective 续轮，自己找方向。中间态 bisect（需 rebase/CI commit 守卫）、广播占坑 ADR 子场景仍非轻量，不碰。全链基线绿，派 2 路审计（MCP 工具语义、错误码/可观测性），主控 CodeGraph 逐层复核两处确证后 2 个写域互斥 agent 并行。第三候选（MCP sop_get 不支持 slug 而 agent 端支持，跨端分叉）记入后续。
+
+**缺口①（可观测性根子问题，5xx 全记 2xx）**：`http-metrics.interceptor.ts:74-86` 在 `finalize()` 读 `res.statusCode`；真实 Nest 流程抛 AppError 时 finalize **先于** exception filter（filter 在 await 后 `response.status(...)`），此时 res 还是默认 200 → 所有未捕获 4xx/5xx 全记成 2xx → `alerts.yml` 5xx 告警漏报、P99 按 2xx 污染。现有 spec:177 靠 `makeRes({statusCode:500})` **预置** 500 假装错误被记录（假绿掩盖真缺陷）。修法：`catchError` 按 `HttpException.getStatus()`（主控确认 AppError 继承 HttpException）或普通 Error→500 主动记一次，抽 `recordOnce(status)` 带 recorded 标志保证恰好一次，finalize 仅补记成功路径。
+
+**缺口②（静默数据截断）**：`sop.service.ts:2031 listAssignments` 硬编码 `take:100`、无 hasMore/total；MCP `sop_assignments_pending` description 隐含列全部，>100 条时旧卡单永久不可见、模型误报"无待办"。修法（加性、不破坏旧数组契约）：新增 `listAssignmentsPage`（limit/offset、limit+1 探针、total/pendingTotal）+ 新端点 `GET /sop/:id/assignments/page`（信封）；旧端点无 query 原样、带 query 追加 X-Has-More/X-Total/X-Pending-Total 响应头；MCP 工具加 offset/limit 参数、改读新端点、回 truncated/pendingTotal。主控审阅确认消费方 admin-web/src/api/sops.ts:250 按裸数组读，故不改成信封。
+
+**集成期连锁修复（主控亲修，AGENTS §4.5）**：① `check:consumer-routes` 抓新端点不在 openapi → 重生成 `openapi:export`（首次 autoflow 密码认证失败，改用容器 superuser `user_bDWm8S` 注入 DB env，R34 先例）；② 重生成触发 4 条新中文缺英文 → 补 i18n map 4 条（并修 R34 遗留 typo "eexpired"）→ 再重跑完整 export（spec+注入串联）diff 收敛 73 行；③ consumer-routes 仍报路径 `/sop/{}/assignments/page{}` → MCP tools.ts 路径 `${qs ? ...}` 条件插值被守卫归一成尾部 `{}`，改为字面 `?` 在插值前（空 qs 多一个 `?` 对 GET 无害）；④ `check:size-caps` 3 文件超限（sop.service/tools.test/tools.ts）按先例只调 nonCommentLines/functionLines + why；⑤ `check:source-text-contracts` STC-101 锚点漂到 tools.test.ts:2369（±20 外）更新 specLine；⑥ lint:api 2 处 prettier（SOP 新 spec + controller）`eslint --fix`；⑦ `check:mutation-residue` 误报 tools.ts:923 类型守卫为派生字段钉常量 → 加行内带理由豁免。**最终全链 130 段 exit 0**。
+
+**验证（主控独立复跑）**：admin-api 4 suites 77 tests + MCP 348 tests 全绿；双端 tsc 0；consumer-routes / api-i18n / mutation-residue / size-caps / STC 均 0；全链 130 段 0。**反证（主控自做）**：metrics catchError status 改回 200 → 500/404 两用例红，还原 sha `a068fd92…` 一致；SOP hasMore 恒 false → 用例红（agent 反证）；还原复跑绿。验收级别：单测/内存替身 + 真子进程守卫 + 全链；**未达**真 PG 告警链路 / 真 101 条生产数据。遗留缺陷 0。
+
+**仍留候选**：MCP sop_get slug 分叉（跨端，需新路由+3 文件）；中间态 bisect 退化（R38）；广播占坑另两子场景（ADR 级）。
+
+**提交**：按 objective「分批提交」分 4 批——① HTTP 指标 2 文件；② SOP 4 文件（service/controller/新 spec/MCP tools + test）；③ openapi+i18n+api-reference 重生成；④ 基线重签 + 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 上述提交，58+ 提交未 push；两缺口已修且反证有牙，全链绿。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 39 轮）：终态槽位两缺口 + 桌面删除运行中版本（双域并行）
 
