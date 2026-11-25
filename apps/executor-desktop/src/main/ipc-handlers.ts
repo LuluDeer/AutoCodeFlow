@@ -24,6 +24,7 @@ import {
   resolveReleaseDir,
   resolveAppRoot,
   canDeleteRelease,
+  resolveDeploymentIdForRelease,
   readCurrentReleaseKey,
   deleteReleaseDir,
 } from './app-uninstall';
@@ -1460,8 +1461,10 @@ export function registerIpcHandlers(): void {
   // 删除单个历史版本（当前生效版本 / 运行中的版本会被拒绝）
   ipcMain.handle(
     'apps:delete-release',
-    async (_event, appId: string, releaseKey: string, deploymentId: string) => {
-      // R105：从磁盘删除发布产物，不可撤销。
+    async (_event, appId: string, releaseKey: string, _rendererDeploymentId: string) => {
+      // SEC: 渲染层入参 deploymentId 不可信（陈旧列表/重放可传"别的版本"的 id）。
+      // 拿它查 /api/app-status 会让 running 落空、canDeleteRelease 放行，
+      // 实际删掉正在跑的版本；故只按 appId+releaseKey 从权威清单求真实 id。
       if (!(await confirmDestructive('apps:delete-release', confirmViaNativeDialog))) {
         return CONFIRM_CANCELED;
       }
@@ -1471,47 +1474,37 @@ export function registerIpcHandlers(): void {
         log.warn(`apps:delete-release rejected: ${resolved.error}`);
         return { ok: false, error: resolved.error };
       }
-      // 运行中的 daemon 只登记在 executor 进程内（runningApps/runningAppRoots），
-      // 桌面端读不到 → 回环问一次 /api/app-status。**拿不到答案时按"在运行"
-      // 处理**（保守拒绝）：误删一个正在跑的版本会留下孤儿进程 + 半删目录，
-      // 而误拒只是让用户先去中台停一下——代价不对称，故取保守侧。
+      let deployedApps: Awaited<ReturnType<typeof listDeployedApps>>;
+      try { deployedApps = await listDeployedApps(workDir); }
+      catch (err) { log.warn(`apps:delete-release ${releaseKey}: listDeployedApps failed (${String(err)}) — refusing to delete`); return { ok: false, error: '无法读取已部署应用清单（拒绝删除）' }; }
+      const authoritativeDeploymentId = resolveDeploymentIdForRelease(deployedApps, appId, releaseKey);
+      if (!authoritativeDeploymentId) {
+        log.warn(`apps:delete-release ${releaseKey}: 权威清单中找不到该 app/release — refusing to delete`);
+        return { ok: false, error: '应用清单里找不到该版本，无法确认运行状态，已拒绝删除' };
+      }
+      // 运行中的 daemon 只登记在 executor 进程内 → 回环问 /api/app-status。
+      // 拿不到答案就按"在运行"处理（保守拒绝）：误删会让 POSIX 进程变孤儿
+      // 并指向半删目录，误拒只是让用户先去中台停一下。
       const status = await postToLocalExecutor('/api/app-status', {}, 5_000, 'GET');
-      let runningDeploymentId: string | null = null;
-      let statusKnown = false;
-      if (status.reached && status.ok) {
-        const table = (status.body ?? {}) as Record<string, { running?: boolean }>;
-        statusKnown = true;
-        const hit = Object.entries(table).find(
-          ([id, v]) => id === deploymentId && v?.running,
-        );
-        runningDeploymentId = hit ? hit[0] : null;
+      if (!status.reached || !status.ok) {
+        log.warn(`apps:delete-release ${releaseKey}: executor status unknown (${status.error ?? 'no answer'}) — refusing to delete`);
+        return { ok: false, error: '无法确认该版本是否正在运行（执行器未响应）。请先在中台停止应用，或稍后重试' };
       }
-      if (!statusKnown) {
-        log.warn(
-          `apps:delete-release ${releaseKey}: executor status unknown (${status.error ?? 'no answer'}) — refusing to delete`,
-        );
-        return {
-          ok: false,
-          error:
-            '无法确认该版本是否正在运行（执行器未响应）。请先在中台停止应用，或稍后重试',
-        };
-      }
+      const table = (status.body ?? {}) as Record<string, { running?: boolean }>;
+      const hit = Object.entries(table).find(
+        ([id, v]) => id === authoritativeDeploymentId && v?.running,
+      );
       const gate = canDeleteRelease({
         releaseKey,
         currentKey: readCurrentReleaseKey(resolved.appRoot),
-        runningDeploymentId,
-        deploymentId,
+        runningDeploymentId: hit ? hit[0] : null,
+        deploymentId: authoritativeDeploymentId,
       });
       if (!gate.ok) return { ok: false, error: gate.reason };
-      if (!fs.existsSync(resolved.releaseDir)) {
-        return { ok: true }; // 幂等：已经不在了
-      }
+      if (!fs.existsSync(resolved.releaseDir)) return { ok: true }; // 幂等
       const del = deleteReleaseDir(resolved.releaseDir);
-      if (!del.ok) {
-        log.warn(`apps:delete-release ${releaseKey} failed: ${del.error}`);
-      } else {
-        log.info(`apps:delete-release removed ${appId}/releases/${releaseKey}`);
-      }
+      if (!del.ok) log.warn(`apps:delete-release ${releaseKey} failed: ${del.error}`);
+      else log.info(`apps:delete-release removed ${appId}/releases/${releaseKey}`);
       return del;
     },
   );

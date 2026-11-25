@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import type { AppReleaseEntry } from './app-inventory';
 
 /**
  * 本地卸载/删除已部署应用（用户报障：「无法撤销部署(删除)」）。
@@ -132,6 +133,35 @@ export function readCurrentReleaseKey(appRoot: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * 纯函数：从权威清单 listDeployedApps(workDir) 里按 appId+releaseKey 求该
+ * release 的**真实** deploymentId；查不到（或清单自相矛盾）返回 null。
+ *
+ * 为什么不能信渲染层传来的 deploymentId：它来自可能陈旧的 apps:list 视图，
+ * 重放/伪造一个"别的版本"的 id 就能让 /api/app-status 按错 id 查 running，
+ * 落空后 canDeleteRelease 放行，实际正在运行的 release 被删（POSIX 下进程
+ * 存活但目录已失，daemon 重启会指向空路径）。返回 null 时调用方必须与
+ * "status unknown" 同口径保守拒绝。
+ */
+export function resolveDeploymentIdForRelease(
+  deployedApps: ReadonlyArray<
+    Pick<AppReleaseEntry, 'appId' | 'releaseKey' | 'deploymentId'>
+  >,
+  appId: unknown,
+  releaseKey: unknown,
+): string | null {
+  if (typeof appId !== 'string' || typeof releaseKey !== 'string') return null;
+  const matches = deployedApps.filter(
+    (entry) => entry.appId === appId && entry.releaseKey === releaseKey,
+  );
+  if (matches.length === 0) return null;
+  const deploymentId = matches[0].deploymentId;
+  if (typeof deploymentId !== 'string' || deploymentId === '') return null;
+  return matches.every((entry) => entry.deploymentId === deploymentId)
+    ? deploymentId
+    : null;
 }
 
 /**

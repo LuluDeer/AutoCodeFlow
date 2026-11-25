@@ -27,11 +27,13 @@ import {
   resolveAppRoot,
   resolveReleaseDir,
   canDeleteRelease,
+  resolveDeploymentIdForRelease,
   readCurrentReleaseKey,
   deleteReleaseDir,
   uninstallApp,
   type LocalRouteResult,
 } from './app-uninstall';
+import { listDeployedApps } from './app-inventory';
 import {
   parseReleaseAppNames,
   applyRecoveredAppNames,
@@ -42,6 +44,10 @@ import {
 const APP_A = '11111111-1111-4111-8111-111111111111';
 const DEP_A1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const DEP_A2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+/** 与 export-flows.selftest 同款：从源码读 handler 文本做 SYNC 锚点（electron 模块无法裸 node 加载）。 */
+const readMain = (name: string): string =>
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'main', name), 'utf-8');
 
 /** 造一个已部署应用的磁盘布局（与 executor-node 的真实布局同形）。 */
 function seedApp(workDir: string, appId: string, keys: string[]): string {
@@ -64,9 +70,80 @@ function seedApp(workDir: string, appId: string, keys: string[]): string {
   return appRoot;
 }
 
+/** 用例：渲染层伪造 deploymentId 时，必须按权威清单+假 status 表保守拒绝删除。 */
+async function checkForgedRendererDeploymentId(): Promise<void> {
+  const CASE = 'resolveDeploymentIdForRelease-forged-deploymentId';
+  const deployedApps = [
+    { appId: 'a', releaseKey: 'r1', deploymentId: 'dep-real' },
+    { appId: 'a', releaseKey: 'r2', deploymentId: 'dep-current' },
+  ];
+  assert.strictEqual(
+    resolveDeploymentIdForRelease(deployedApps, 'a', 'r1'),
+    'dep-real',
+    `${CASE}: 必须返回权威清单里的 deploymentId`,
+  );
+  assert.strictEqual(
+    resolveDeploymentIdForRelease(deployedApps, 'a', 'missing'),
+    null,
+    `${CASE}: 查不到 release 必须返回 null（保守拒绝）`,
+  );
+  assert.strictEqual(
+    resolveDeploymentIdForRelease(deployedApps, 'b', 'r1'),
+    null,
+    `${CASE}: appId 不匹配必须返回 null`,
+  );
+
+  // 真临时目录 + 假 app-status 表（dep-real running=true）：
+  // 从 listDeployedApps 的磁盘事实求 id，渲染层的 dep-fake 不参与判定。
+  const diskWorkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-delrel-'));
+  try {
+    seedApp(diskWorkDir, 'app-a', ['1.0.0/dep-real']);
+    const fromDisk = await listDeployedApps(diskWorkDir);
+    const authoritative = resolveDeploymentIdForRelease(
+      fromDisk, 'app-a', '1.0.0/dep-real',
+    );
+    assert.strictEqual(authoritative, 'dep-real', `${CASE}: 磁盘清单必须解析出真实 id`);
+    const statusTable: Record<string, { running?: boolean }> = {
+      'dep-real': { running: true },
+      'dep-fake': { running: false },
+    };
+    const fakeRendererId: string = 'dep-fake';
+    assert.strictEqual(fakeRendererId === authoritative, false, `${CASE}: 夹具的假 id 必须不同于权威 id`);
+    const hit = Object.entries(statusTable).find(
+      ([id, v]) => id === authoritative && v?.running,
+    );
+    const gate = canDeleteRelease({
+      releaseKey: '1.0.0/dep-real',
+      currentKey: null,
+      runningDeploymentId: hit ? hit[0] : null,
+      deploymentId: authoritative!,
+    });
+    assert.strictEqual(gate.ok, false, `${CASE}: 假 id 不得放行删除正在运行的版本`);
+    assert.strictEqual(
+      fs.existsSync(path.join(diskWorkDir, 'apps', 'app-a', 'releases', '1.0.0', 'dep-real')),
+      true,
+      `${CASE}: 被拒后目录必须仍在`,
+    );
+  } finally {
+    fs.rmSync(diskWorkDir, { recursive: true, force: true });
+  }
+
+  // 源码钉子：ipc-handlers 必须把权威 id 喂给 status 查询与 canDeleteRelease。
+  const ipc = readMain('ipc-handlers.ts');
+  const start = ipc.indexOf("ipcMain.handle(\n    'apps:delete-release'");
+  assert.ok(start >= 0, `${CASE}: 找不到 apps:delete-release handler`);
+  const next = ipc.indexOf('ipcMain.handle(', start + 1);
+  const block = ipc.slice(start, next >= 0 ? next : undefined);
+  assert.ok(block.includes('resolveDeploymentIdForRelease('), `${CASE}: handler 必须调用权威解析函数`);
+  assert.ok(block.includes('id === authoritativeDeploymentId'), `${CASE}: status 表必须按权威 id 查 running`);
+  assert.ok(block.includes('deploymentId: authoritativeDeploymentId'), `${CASE}: 删除判据必须用权威 id`);
+  assert.ok(!/id === deploymentId\b|id === _rendererDeploymentId\b/.test(block), `${CASE}: 不得回退用渲染层 id 查 status`);
+  assert.ok(!/deploymentId: deploymentId\b|deploymentId: _rendererDeploymentId\b/.test(block), `${CASE}: 不得回退用渲染层 id 做判据`);
+  console.log(`${CASE}: OK`);
+}
+
 async function main(): Promise<void> {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-uninst-'));
-
   try {
     // ── 路径校验：白名单 + containment ────────────────────────────────
     assert.strictEqual(isSafeAppId(APP_A), true);
@@ -108,6 +185,8 @@ async function main(): Promise<void> {
         path.join(workDir, 'apps', APP_A, 'releases', '1.0.0', DEP_A1),
       );
     }
+
+    await checkForgedRendererDeploymentId();
 
     // ── 保护条件：current / 运行中 不可删 ─────────────────────────────
     const appRoot = seedApp(workDir, APP_A, [`1.0.0-${DEP_A1}`, `1.0.1-${DEP_A2}`]);
