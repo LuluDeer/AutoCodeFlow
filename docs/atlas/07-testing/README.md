@@ -1,5 +1,5 @@
 # 测试体系总览
-> 所属: docs/atlas/07-testing · 最后核对: 2026-11-03 · 对应代码: package.json（根）、.github/workflows/ci.yml、apps/*/（各应用测试）、scripts/、apps/admin-web/e2e/legacy/
+> 所属: docs/atlas/07-testing · 最后核对: 2026-11-25 · 对应代码: package.json（根）、.github/workflows/ci.yml、apps/*/（各应用测试）、scripts/、apps/admin-web/e2e/legacy/
 
 > **本页数字由 `node scripts/check-atlas-counts.mjs --update` 机械维护**（它只改数字、不动文字）。
 > 判据带 **±5% 容差**（`--tolerance`，默认 5%；`--tolerance 0` 恢复旧的精确相等）：偏差超容差才红。
@@ -21,19 +21,19 @@
             └─────────────────────────────┘
 ```
 
-| 层 | 位置 | 规模（2026-10-31 静态核实） | 运行命令 |
+| 层 | 位置 | 规模（2026-11-25 静态核实） | 运行命令 |
 |---|---|---|---|
-| admin-api 单测 | `apps/admin-api/src/**/__tests__`（485 个 `*.spec.ts`） | jest，`it/test` 7788 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
+| admin-api 单测 | `apps/admin-api/src/**/__tests__`（486 个 `*.spec.ts`） | jest，`it/test` 7812 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（6 个） | jest-e2e 配置，含真实 PG/Redis 的连续审批及迁移回退 | `npm run test:e2e -- --runInBand` |
 | executor-node | `apps/executor-node/src`（65 个 `*.spec.ts`） | jest，`it/test` 1216 处（静态） | `npm run test:node` |
-| executor-python | `apps/executor-python/tests/`（68 个 `test_*.py`） | pytest，`def test_` 1072 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
-| admin-web | `apps/admin-web/src/__tests__/`（341 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
-| packages（JS） | acf-cli 16 文件 / mcp-server 10 文件 / node-sdk 6 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
+| executor-python | `apps/executor-python/tests/`（69 个 `test_*.py`） | pytest，`def test_` 1076 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
+| admin-web | `apps/admin-web/src/__tests__/`（358 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
+| packages（JS） | acf-cli 16 文件 / mcp-server 11 文件 / node-sdk 6 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
 | packages（Py） | autoflow-sdk 8 文件 / 166 用例 · http 2 文件 / 13 · ai 2 / 29 · notify 2 / 2 · db 2 / 30 | pytest（用例数 = `def test_` 静态计数） | `test:sdk-py` / `test:lib-*` |
 | registry-pypi | `apps/registry-pypi/tests/` | pytest，164 个 `def test_` | `npm run test:pypi` |
 | 契约测试 | [contract-and-selftest.md](contract-and-selftest.md) | 四端共享 `contract.json` | 随各包测试运行 |
 | 根级全链 e2e | `apps/admin-web/e2e/legacy/` 三份 spec：`e2e-full.spec.js`（48 个 `test()` + 5 个条件 `test.skip()`）、`e2e-python-executor.spec.js`（1 个）、`e2e-ui09-mobile.spec.js`（2 个） | Playwright chromium，真栈；`playwright.e2e.config.js` 的 `testDir` **只圈 `legacy/`**（`testMatch: '**/e2e-*.spec.js'`） | `bash scripts/e2e-full.sh` |
-| 自测/真机脚本 | `scripts/*selftest*`（41 个） | 见 [contract-and-selftest.md](contract-and-selftest.md) | 各自独立命令 |
+| 自测/真机脚本 | `scripts/*selftest*`（43 个） | 见 [contract-and-selftest.md](contract-and-selftest.md) | 各自独立命令 |
 
 > 遗留副本 `apps/admin-web/e2e-full.spec.js`（601 行 / 16 个 `test()`，内容停在用例 16）**不在**
 > `playwright.e2e.config.js` 的 `testDir` 内，任何入口都不会执行它——统计 e2e 例数时请以
@@ -41,21 +41,21 @@
 
 **上表数字的复核命令**（口径：文件数用 `find`/`ls` 点数；用例数用 `grep -o` 数声明，**静态**，不等于实跑数；
 `packages` 行的「N 文件」= 该包 `src/` 下 `.test.ts` 文件数（与各包收集配置对齐：acf-cli / mcp-server 是 vitest `include: ['src/**/*.test.ts']`；node-sdk 是 jest `roots: ['<rootDir>/src']` + `testMatch: '**/__tests__/**/*.test.ts'`，用例都在 `src/__tests__/` 下）；
-采样时点 2026-10-31，工作区在动，数字会跟着变，请以命令输出为准）：
+采样时点 2026-11-25，工作区在动，数字会跟着变，请以命令输出为准）：
 
 ```bash
-find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 485
-grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 7788
+find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 486
+grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 7812
 find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 65
 grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1216
-ls apps/executor-python/tests/test_*.py | wc -l                                             # 68
-grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 1072（async def 另 142）
-find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 341
+ls apps/executor-python/tests/test_*.py | wc -l                                             # 69
+grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 1076（async def 另 142）
+find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 358
 find packages/acf-cli/src -name '*.test.ts' | wc -l                                         # 16
-find packages/mcp-server/src -name '*.test.ts' | wc -l                                      # 10
+find packages/mcp-server/src -name '*.test.ts' | wc -l                                      # 11
 find packages/autocodeflow-node-sdk/src -name '*.test.ts' | wc -l                           # 6
 grep -rhoE '^\s*def test_' apps/registry-pypi/tests | wc -l                                 # 164
-ls scripts/*selftest* | wc -l                                                               # 41（含守卫 check-desktop-selftests-wired.mjs）
+ls scripts/*selftest* | wc -l                                                               # 43（含守卫 check-desktop-selftests-wired.mjs）
 ```
 
 ## 运行命令速查表（根 package.json scripts 逐条核实）
