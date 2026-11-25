@@ -135,11 +135,20 @@ export class TaskWebhookService {
       .getOne();
   }
 
-  /** 降级模式兼容：enc:v1 信封 → 解密；明文（SEC_SECRETS_KEY 未配置期）原样。 */
+  /**
+   * 读侧解封：明文（SEC_SECRETS_KEY 未配置期写入）原样返回；enc:v1 信封在
+   * key 缺席/轮换漏配时必须显式报错——不能让 null key 流进 decryptValue →
+   * createDecipheriv 的裸 TypeError（500 且无 key 提示，还破坏 authFail 的
+   * 反枚举口径）。与 ai.service.resolveProviderKey 同口径（SEC-02）。
+   */
   private resolveSecret(stored: string): string {
-    return isEncryptedSecret(stored)
-      ? this.secretsCrypto.decryptValue(stored)
-      : stored;
+    if (!isEncryptedSecret(stored)) return stored;
+    if (!this.secretsCrypto.encryptionEnabled) {
+      throw new Error(
+        "SEC-02：webhookSecret 已加密落库，但当前未配置 SEC_SECRETS_KEY",
+      );
+    }
+    return this.secretsCrypto.decryptValue(stored);
   }
 
   /**

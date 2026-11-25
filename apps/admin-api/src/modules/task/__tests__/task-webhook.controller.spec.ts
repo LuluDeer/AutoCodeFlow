@@ -362,6 +362,26 @@ describe("TaskWebhookController / TaskWebhookService（FEAT-21）", () => {
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
+  it("SEC-02：enc:v1 信封 + key 未配置 → 清晰 SEC_SECRETS_KEY 错误，不让 null key 流进 createDecipheriv", async () => {
+    secretsCrypto.encryptionEnabled = false;
+    // 模拟真实 decryptValue 在 key=null 时的行为（createDecipheriv 抛裸
+    // TypeError）。有守卫时 resolveSecret 必须先抛 SEC-02，绝不走到这里；
+    // 删掉守卫则此 mock 抛出 TypeError，令下方断言变红——即反证判据。
+    secretsCrypto.decryptValue.mockImplementation(() => {
+      throw new TypeError(
+        'The "key" argument must be of type string, an instance of Buffer, TypedArray, DataView, or KeyObject. Received null',
+      );
+    });
+
+    const err = await callTrigger().catch((e) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(TypeError);
+    expect(err.message).toMatch(/SEC-02|SEC_SECRETS_KEY/);
+    expect(secretsCrypto.decryptValue).not.toHaveBeenCalled();
+    expect(taskService.trigger).not.toHaveBeenCalled();
+  });
+
   it("降级模式（key 未配置）明文存储、明文可读", async () => {
     secretsCrypto.encryptionEnabled = false;
     const issued = (await svc().enable(
