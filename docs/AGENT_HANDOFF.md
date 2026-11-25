@@ -1,7 +1,27 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 31 轮 · 执行器包下载鉴权绕过 + 按缺陷类型三路审计 + 集成期 4 处回归）
-> 当前分支 `develop` = `f5507b70`（第 5-30 轮累积已按主题分 29 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`f5507b70` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 34 提交、未 push**。子 agent 平台已恢复（第 24-31 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 32 轮 · 幂等键误释放致重复执行修复）
+> 当前分支 `develop` = `4c6b9eb5`（第 5-31 轮累积已按主题分 32 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`4c6b9eb5` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 37 提交、未 push**。子 agent 平台已恢复（第 24-32 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R32 更正】上一轮头部写的 `f5507b70`/34 提交是提交前快照，实际提交后 HEAD=`4c6b9eb5`/37 提交。）
+
+## 本轮（2026-11-25 · 第 32 轮）：幂等键误释放致重复执行（trigger 成功后置步骤失败）修复
+
+**方向来源**：objective 续轮，自己找方向。兑现上轮三路语义审计登记的两个候选中后果更重者：幂等键误删。`task.controller.ts:1018-1048` 同一 try 包住 `taskService.trigger()` + 两次 `audit.log()`，catch 无条件 `releaseClaim()`；`audit.service.ts:143-151` 的 `log()` 是 `await repo.save()` 会抛。故 trigger 成功（execution 落库 + 入队）后 audit 失败 → 删幂等键 → 客户端同 K 重试 → 第二条 execution 落库入队 → **任务执行两次**（发货类重复副作用；`block-strategy-gate` 只把 RUNNING/WAITING 算活跃，PENDING 不计，discard 拦不住）。主控 CodeGraph 逐层复核确证。
+
+**修法**：`triggered` 标志——trigger 成功后立即置 true，catch 仅 `if (!triggered)` 才 release（trigger 自身失败仍释放，保持"允许重试"原语义；trigger 已成功后 audit 等后置步骤失败保留键，避免重复触发）；audit 失败仍如实上抛（既有契约不变）。catch 注释改诚实版。
+
+**交付（2 文件）**：`task.controller.ts`（标志 + 守卫 + 注释）、`task.controller.trigger-api.spec.ts`（make 加可选 auditLog mock 兼容既有调用；新增 2 条：① P1 反证 trigger 成功 + audit 失败 → release 未调用、错误仍上抛；② API-Key 主体 trigger 自身失败仍释放的控制组）。
+
+**集成期回归（主控亲修）**：全链首跑红——`check:size-caps` 报 task.controller.ts 非注释行 1397>1394、最长函数体 77>68（本轮标志 + 两段诚实注释所致）。按既有重签先例只调这两项并追加 why（写清 P1 幂等修复为何必须增行、反证），密度/exports 未变；另 `eslint --fix` 修 agent 写的一处 prettier 折行。size-caps 与全链 130 段恢复 exit 0。
+
+**验证（主控独立复跑）**：`task.controller.trigger-api.spec.ts` 11/11 exit 0；`tsc --noEmit` 0；lint 0（格式化后）；全守卫链 130 段 exit 0。**反证（主控自做）**：catch 改回无条件 release → 核心用例 exit 1（release 被调用 1 次），还原 sha256 `d0635f08…` 逐字节一致、复跑 11/11。验收级别：单测/内存替身（jest + mock 仓储/审计/幂等）；**未达**真 PG/Redis 进程内。遗留缺陷 0。
+
+**未做候选（仍留后续）**：一致性 `executor.service.ts:6047-6051` 广播占坑计数仅靠回调释放，机器崩溃/回调丢失则永久 +1，容量闸门持续拒派；修法需真 PG 验收、较复杂（R31 交接有完整锚点）。
+
+**提交**：按 objective「分批提交」分 2 批——① 功能 2 文件；② 基线重签 + 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 上述提交，37+ 提交未 push；幂等重复执行已堵且反证有牙，全链绿。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 31 轮）：执行器包下载鉴权绕过（viewer 可下 500MB 包）+ 按缺陷类型三路审计
 
