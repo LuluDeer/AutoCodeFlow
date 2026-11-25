@@ -30,15 +30,18 @@ function deps() {
   };
 }
 
-function signedRequest(body = '{"params":{"x":1}}') {
+function signedRequest(
+  body = '{"params":{"x":1}}',
+  timestamp = Date.now(),
+) {
   const rawBody = Buffer.from(body, "utf8");
-  const timestamp = String(Date.now());
+  const ts = String(timestamp);
   const signature =
     "sha256=" +
     createHmac("sha256", SECRET)
-      .update(Buffer.concat([Buffer.from(`${timestamp}.`), rawBody]))
+      .update(Buffer.concat([Buffer.from(`${ts}.`), rawBody]))
       .digest("hex");
-  return { rawBody, timestamp, signature };
+  return { rawBody, timestamp: ts, signature };
 }
 
 function build(
@@ -109,7 +112,7 @@ describe("TaskWebhookService — 入站重放去重（SEC-R3-4）", () => {
     expect(res).toEqual({ id: "exec-1" });
   });
 
-  it("改 delivery 头不能绕过去重（键只由签名决定，delivery 不在 HMAC 覆盖内）", async () => {
+  it("改 delivery 头不能绕过去重（键只由 rawBody 决定，delivery 不入键）", async () => {
     const d = deps();
     const keys: string[] = [];
     const guard = {
@@ -126,6 +129,70 @@ describe("TaskWebhookService — 入站重放去重（SEC-R3-4）", () => {
 
     expect(keys).toHaveLength(2);
     expect(keys[0]).toBe(keys[1]);
+  });
+
+  it("同一 rawBody 换 timestamp 重签（含不同 delivery）仍被去重：只触发一次", async () => {
+    const d = deps();
+    const seen = new Set<string>();
+    const guard = {
+      setIfAbsent: jest.fn(async (key: string, _ttl: number) => {
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }),
+    };
+    const svc = build(d, guard);
+    const body = '{"params":{"x":1}}';
+    const now = Date.now();
+    const first = signedRequest(body, now - 1000);
+    const second = signedRequest(body, now + 1000);
+
+    expect(first.signature).not.toBe(second.signature);
+
+    const firstRes = await svc.triggerFromWebhook(TASK_ID, {}, {
+      ...first,
+      delivery: "d-1",
+    });
+    const secondRes = await svc.triggerFromWebhook(TASK_ID, {}, {
+      ...second,
+      delivery: "d-2",
+    });
+
+    expect(firstRes).toEqual({ id: "exec-1" });
+    expect(secondRes).toEqual({ deduplicated: true });
+    expect(d.taskService.trigger).toHaveBeenCalledTimes(1);
+    const keys = guard.setIfAbsent.mock.calls.map((call) => call[0]);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+  });
+
+  it("不同 rawBody（timestamp 相同）不被去重误杀：两次都触发", async () => {
+    const d = deps();
+    const seen = new Set<string>();
+    const guard = {
+      setIfAbsent: jest.fn(async (key: string, _ttl: number) => {
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }),
+    };
+    const svc = build(d, guard);
+    const now = Date.now();
+    const first = signedRequest('{"params":{"x":1}}', now);
+    const second = signedRequest('{"params":{"x":2}}', now);
+
+    expect(first.timestamp).toBe(second.timestamp);
+    expect(first.rawBody.equals(second.rawBody)).toBe(false);
+
+    const firstRes = await svc.triggerFromWebhook(TASK_ID, {}, first);
+    const secondRes = await svc.triggerFromWebhook(TASK_ID, {}, second);
+
+    expect(firstRes).toEqual({ id: "exec-1" });
+    expect(secondRes).toEqual({ id: "exec-1" });
+    expect(d.taskService.trigger).toHaveBeenCalledTimes(2);
+    const keys = guard.setIfAbsent.mock.calls.map((call) => call[0]);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).not.toBe(keys[1]);
   });
 
   it("触发失败释放幂等键（否则上游重投被误判 deduplicated，任务永久不执行）", async () => {

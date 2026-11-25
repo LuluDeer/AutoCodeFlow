@@ -1,5 +1,5 @@
 import { Injectable, Logger, Optional } from "@nestjs/common";
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import { randomBytes } from "crypto";
@@ -302,22 +302,23 @@ export class TaskWebhookService {
       throw authFail();
     }
 
-    // SEC-R3-4（P2）：**幂等去重**——签名 + 时间戳窗只能证明「请求新鲜」，
-    // 证明不了「没被重放过」。同一条 (taskId, 签名) 在时间窗内再次到达时，
-    // 旧实现会再建一条 execution（清理/发布/对账类任务被重复执行 N 次）。
-    // 现在用 SETNX 抢占一个 10 分钟（> ±5min 窗）的键：
-    //   · 首次 → 继续触发；
-    //   · 命中 → 200 `{deduplicated:true}`（不触发、不报错，让投递方停止重试）。
-    // Redis 不可达时 **fail-open**（warn 后继续触发）：去重是加固，不是可用性
-    // 前提；让所有 webhook 因缓存故障全挂才是更大的事故。
+    // SEC-R3-4（P2）：**幂等去重**——请求签名校验覆盖 `${timestamp}.${rawBody}`，
+    // 同一 rawBody 换个时间戳重新签名就会得到新签名；若拿请求签名做 SETNX 键，
+    // 窗内重签即可绕过去重，再建一条 execution（清理/发布/对账任务被重复执行）。
+    // 因此键改用**服务端 secret 对 rawBody 本身**的 HMAC-SHA256 短前缀：
+    //   · secret 只在服务端，外部无法为同一 body 造出第二个键；
+    //   · timestamp / delivery 都不入键，同一业务投递怎么换头都落同一键；
+    //   · 不同 body 落不同键，不误杀合法的不同投递。
+    // 仍用 10 分钟 SETNX：首次触发、命中 200 `{deduplicated:true}`；Redis
+    // 不可达 warn 后 fail-open（去重是加固，不是可用性前提）。opts.rawBody
+    // 缺失时（签名校验已先 throw）退化为 empty buffer，绝不回退到 opts.signature。
     let replayKey: string | null = null;
     if (this.replayGuard) {
-      // 键**必须**用签名，不能用 delivery 头：HMAC 只覆盖
-      // `${timestamp}.${rawBody}`，delivery 头不在签名范围内——拿它做键等于
-      // 让攻击者改一个头就绕过去重（重放同一请求、换一个 delivery 值）。
-      // delivery 仅用于日志区分（GitHub 惯例的投递 id）。
-      const dedupeKey = `webhook:task:${task.id}:${createHash("sha256")
-        .update(opts.signature ?? "")
+      const dedupeKey = `webhook:task:${task.id}:${createHmac(
+        "sha256",
+        this.resolveSecret(task.webhookSecret),
+      )
+        .update(opts.rawBody ?? Buffer.alloc(0))
         .digest("hex")
         .slice(0, 32)}`;
       try {
