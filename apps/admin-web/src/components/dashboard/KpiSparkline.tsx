@@ -23,13 +23,22 @@ import '../../i18n';
 /** 迷你折线在 KPI 卡内的高度（px）——不参与响应式宽度 */
 export const SPARKLINE_HEIGHT = 36;
 
-/** 生成与「最近 7 天含今日」对齐的日期键（YYYY-MM-DD），供空桶补零 */
+/**
+ * 生成与「最近 days 天含今日」对齐的日期键（YYYY-MM-DD），供空桶补零。
+ *
+ * 必须按 UTC 建键：后端 metrics.service.getDailyTrend 用 SQL
+ * DATE_TRUNC('day', ...) + toISOString().slice(0,10) 产出 UTC 日键（compose/.env
+ * 默认 PG 时区 UTC）。若沿用本地 getFullYear/getMonth/getDate，UTC+8 浏览器在
+ * 本地 00:00–08:00 执行时本地日期仍比 UTC 日期早一天（如本地 11-25 01:00 =
+ * UTC 11-24 17:00，后端归入 11-24），键匹配不上 → 今日曲线静默缺失/低报。
+ * 统一走 getUTC* 与后端 toISOString().slice(0,10) 逐字对齐。
+ */
 export function recentDateKeys(days: number, now: Date = new Date()): string[] {
   const keys: string[] = [];
   for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
     keys.push(
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+      `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`,
     );
   }
   return keys;
