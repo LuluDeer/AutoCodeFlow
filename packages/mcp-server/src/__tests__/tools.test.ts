@@ -1994,6 +1994,32 @@ describe("sop_get", () => {
     expect(method).toBe("GET");
     expect(path).toBe("/sop/550e8400-e29b-41d4-a716-446655440000");
   });
+
+  it("GETs /sop/by-slug/:slug with the slug URL-encoded", async () => {
+    const slug = "日报/周报 v2";
+    await tools.get("sop_get")!.handler({ slug });
+    const [method, path] = call.mock.calls[0];
+    expect(method).toBe("GET");
+    expect(path).toBe(`/sop/by-slug/${encodeURIComponent(slug)}`);
+    expect(path).toContain(encodeURIComponent(slug));
+  });
+
+  it("rejects when both sopId and slug are given (isError, no API call)", async () => {
+    const r = await tools.get("sop_get")!.handler({
+      sopId: "550e8400-e29b-41d4-a716-446655440000",
+      slug: "daily-report",
+    });
+    expect(r.isError).toBe(true);
+    expect(parse(r).error).toBe("Provide either sopId or slug");
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("rejects when neither sopId nor slug is given (isError, no API call)", async () => {
+    const r = await tools.get("sop_get")!.handler({});
+    expect(r.isError).toBe(true);
+    expect(parse(r).error).toBe("Provide either sopId or slug");
+    expect(call).not.toHaveBeenCalled();
+  });
 });
 
 describe("sop_assignments_pending", () => {
@@ -2022,7 +2048,8 @@ describe("sop_assignments_pending", () => {
     });
     const [method, path] = call.mock.calls[0];
     expect(method).toBe("GET");
-    expect(path).toBe(`/sop/${SOP_ID}/assignments/page`);
+    // consumer-routes 守卫要求字面 `?` 在 query 插值之前；空 qs 时尾部 `?` 保留（对 GET 无害）。
+    expect(path).toBe(`/sop/${SOP_ID}/assignments/page?`);
     const payload = parse(out);
     expect(payload.sopId).toBe(SOP_ID);
     expect(payload.pendingCount).toBe(4);

@@ -1,7 +1,25 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 42 轮 · CI 四分片真跑复演）
-> 当前分支 `develop` = `510f1686`（第 5-41 轮累积已按主题分 59 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`510f1686` 各轮交接）。工作树在本轮文档提交后干净，**领先 origin/develop 64 提交、未 push**。子 agent 平台已恢复（第 24-41 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R42 更正】上一轮头部写的 `42a28089`/62 提交是提交前快照，实际提交后 HEAD=`510f1686`/64 提交。）
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 43 轮 · MCP sop_get slug 跨端对齐）
+> 本批提交前基线 `develop` = `1887d6a1`（领先 origin/develop 65 提交、未 push）；本轮把功能 + 生成物 + 基线收口 + 本交接段合并为**单个原子提交**（按 operator「不做无意义提交」要求，避免中间态红与碎片化提交）。子 agent 平台已恢复（第 24-43 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 43 轮）：MCP sop_get 支持 slug（agent/REST/MCP 三端对齐）
+
+**方向来源**：objective 续轮（新增「不做无意义提交」约束），兑现上轮登记的确证候选。CodeGraph 复核确证：agent 端 `sop_get` 支持 `id 或 slug`（tool-registry.ts:1148 + tool-binder.service.ts:348-352 走 getBySlug），MCP tools.ts:840 只接受 sopId(UUID)，后端 controller 只有 `@Get(":id")`（无 by-slug 路由）——沿用 agent 的 `sop_get{slug}` 调 MCP 被 zod 拒、REST 也无 slug 路由。service 已有 `getBySlug`（:2031，slug 唯一索引）。
+
+**修法（1 agent，写域互斥）**：① controller 加 `GET /sop/by-slug/:slug`，**注册在 `@Get(":id")` 之前**避免动态段吞掉，调 getBySlug、带中文 ApiOperation/ApiParam；② MCP sop_get 的 sopId 改 optional + 加 slug，二选一严格校验（都给/都缺 → JSON_ERROR，避免 id/slug 指向不同 SOP 时静默选一），slug 分支走 `GET /sop/by-slug/${encodeURIComponent(slug)}`，readOnlyHint 不变；③ 测试：controller 3 例（200/404/路由顺序）、MCP 3 例（编码路径 + 二选一双红），另顺手修正 R40 遗留的 `assignments/page?` 尾部断言（全量 MCP 才暴露）。
+
+**生成物/基线收口（原子提交必需，拆开即中间态红）**：i18n map 文本精确插 2 条（SOP 唯一 slug / SOP 详情按 slug）；openapi.json 重生成（DB superuser `user_bDWm8S` 注入，R40/R42 先例，+41 行仅新路由 + x-i18n-en）；api-reference 附录重生成；STC-101 needle 2369→2396；size 基线 tools.test 2221→2244、tools.ts 762→779 / functionLines 232→251；response-schema 基线 255→256（新 SopResponseDto 路由提升覆盖率，用权威 `--update` 上探）。
+
+**验证（主控独立复跑）**：admin controller 36/36、MCP 全量 11 files / 351 tests、双端 tsc 0、consumer-routes / api-i18n / query-param / STC / size / response-schema 全 0、全守卫链 130 段 0。**反证（主控自做）**：删 MCP slug 分支 → 1 failed exit 1（`tools.test.ts` slug 用例），还原 sha256 `3552d6c9…` 逐字节一致、复跑 351/351。验收级别：单测/内存替身 + 真子进程守卫 + 全链；未达真 Nest/PG 端到端 slug 查询。遗留缺陷 0。
+
+**仍留候选**：中间态 bisect 退化（R38，需 rebase/CI commit 守卫）；广播占坑另两子场景（ADR 级，需数据模型变更+真 PG）。轻量已确证候选至此清零。
+
+**提交**：单批原子提交（功能 7 文件 + 基线 3 文件 + 本交接段）。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` 领先 origin/develop 66 提交、未 push；五端全量 + 全守卫链 + CI 四分片（R42）+ 本轮跨端对齐全绿，处于可发布态。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 42 轮）：CI admin-api 四分片真跑复演（本地 CI 口径对齐）
 

@@ -30,6 +30,8 @@ import { SopController, DraftSopDto, UpdateSopDto } from "../sop.controller";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
 import { IS_PUBLIC_KEY } from "../../../common/decorators/public.decorator";
 import { UserRole } from "../../users/entities/user.entity";
+import { AppError } from "../../../common/errors/app-error";
+import { ErrorCode } from "../../../common/errors/error-codes";
 
 type Any = Record<string, any>;
 
@@ -55,6 +57,12 @@ function harness() {
     getSop: jest.fn(async (id: string) => ({
       id,
       slug: "daily-report",
+      title: "日报",
+      createdBy: "user:owner-9",
+    })),
+    getBySlug: jest.fn(async (slug: string) => ({
+      id: `sop-by-${slug}`,
+      slug,
       title: "日报",
       createdBy: "user:owner-9",
     })),
@@ -436,6 +444,36 @@ describe("SopController —— 起草/发布/只读面透传", () => {
     });
     await expect(h.controller.mediaList("a-1")).resolves.toHaveLength(1);
     await expect(h.controller.assignableExecutors()).resolves.toHaveLength(1);
+  });
+});
+
+describe("SopController —— 按 slug 取详情（agent / MCP 跨端同口径）", () => {
+  it("GET /sop/by-slug/:slug 直通 getBySlug（200 返回 Sop 实体）", async () => {
+    const h = harness();
+    await expect(
+      h.controller.detailBySlug("daily-report"),
+    ).resolves.toMatchObject({
+      id: "sop-by-daily-report",
+      slug: "daily-report",
+    });
+    expect(h.sops.getBySlug).toHaveBeenCalledWith("daily-report");
+    expect(h.sops.getSop).not.toHaveBeenCalled();
+  });
+
+  it("slug 不存在 → 透传 SOP_NOT_FOUND（全局 filter 映射 404），不吞成空对象", async () => {
+    const h = harness();
+    h.sops.getBySlug.mockRejectedValueOnce(
+      new AppError(ErrorCode.SOP_NOT_FOUND, { sopId: "missing-slug" }),
+    );
+    await expect(
+      h.controller.detailBySlug("missing-slug"),
+    ).rejects.toMatchObject({ errorCode: ErrorCode.SOP_NOT_FOUND });
+  });
+
+  it("路由声明顺序：by-slug 必须排在 :id 之前，否则动态段吞掉整条路径", () => {
+    const names = Object.getOwnPropertyNames(SopController.prototype);
+    expect(names.indexOf("detailBySlug")).toBeGreaterThan(-1);
+    expect(names.indexOf("detailBySlug")).toBeLessThan(names.indexOf("detail"));
   });
 });
 

@@ -25,6 +25,7 @@ import {
   ApiCreatedResponse,
   ApiExtraModels,
   ApiQuery,
+  ApiParam,
 } from "@nestjs/swagger";
 import {
   IsIn,
@@ -527,6 +528,16 @@ export class SopController {
         ip: ip ?? null,
       },
     });
+  }
+
+  // AGENT-PARITY：agent 端 sop_get 支持 id 或 slug；REST/MCP 必须同口径。
+  // 必须注册在 @Get(":id") 之前，否则动态段 :id 会先吞掉 by-slug/xxx。
+  @Get("by-slug/:slug")
+  @ApiOperation({ summary: "SOP 详情（按 slug）" })
+  @ApiOkResponse({ type: SopResponseDto })
+  @ApiParam({ name: "slug", description: "SOP 唯一 slug" })
+  async detailBySlug(@Param("slug") slug: string) {
+    return this.sops.getBySlug(slug);
   }
 
   @Get(":id")

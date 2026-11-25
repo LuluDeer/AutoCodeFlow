@@ -839,13 +839,32 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
   // ---- sop_get --------------------------------------------------------------
   server.tool(
     "sop_get",
-    "ADMIN only. Get one SOP by ID: metadata, current version, front-matter and markdown body. Use sop_list to resolve IDs.",
+    "ADMIN only. Get one SOP by ID or slug: metadata, current version, front-matter and markdown body. Use sop_list to resolve IDs; pass slug when you already have it.",
     {
-      sopId: UUID_PATH_ID.describe("SOP ID (UUID)"),
+      sopId: UUID_PATH_ID.optional().describe("SOP ID (UUID)"),
+      slug: z
+        .string()
+        .optional()
+        .describe("SOP slug (unique index); alternative to sopId"),
     }, { readOnlyHint: true },
-    async ({ sopId }) => {
-      const data = await call<unknown>("GET", `/sop/${sopId}`);
-      return JSON_CONTENT(data);
+    async ({ sopId, slug }) => {
+      // AGENT-PARITY：agent 端 sop_get 支持 id 或 slug，两端必须同口径。
+      // 两者都给也拒绝——避免 id/slug 指向不同 SOP 时静默选一个。
+      const usageError = () =>
+        JSON_ERROR({ error: "Provide either sopId or slug" });
+      if (sopId && slug) return usageError();
+      if (sopId) {
+        const data = await call<unknown>("GET", `/sop/${sopId}`);
+        return JSON_CONTENT(data);
+      }
+      if (slug) {
+        const data = await call<unknown>(
+          "GET",
+          `/sop/by-slug/${encodeURIComponent(slug)}`,
+        );
+        return JSON_CONTENT(data);
+      }
+      return usageError();
     },
   );
 

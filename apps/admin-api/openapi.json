@@ -22251,6 +22251,47 @@
         }
       }
     },
+    "/sop/by-slug/{slug}": {
+      "get": {
+        "operationId": "SopController_detailBySlug",
+        "parameters": [
+          {
+            "description": "SOP 唯一 slug",
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Unique SOP slug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "SOP 详情（按 slug）",
+        "tags": [
+          "sop"
+        ],
+        "x-i18n-en": {
+          "summary": "SOP details (by slug)"
+        }
+      }
+    },
     "/sop/clarifications/pending": {
       "get": {
         "operationId": "SopController_listPendingClarifications",
