@@ -1,7 +1,25 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 25 轮 · executor-node alpine 镜像补 bash + 真机验证）
-> 当前分支 `develop` = `827f0f8b`（第 5-24 轮累积已按主题分 18 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`827f0f8b` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 22 提交、未 push**。子 agent 平台已恢复（第 24/25 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 26 轮 · 北极星 API 对账补 promotionEligibility 覆盖面）
+> 当前分支 `develop` = `b0173147`（第 5-25 轮累积已按主题分 20 组提交：`8684c1eb`…`ba121ce6` 功能与守卫 + `259c1f4d`…`b0173147` 各轮交接）。工作树在本轮功能提交后干净，**领先 origin/develop 24 提交、未 push**。子 agent 平台已恢复（第 24-26 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。（【R26 更正】上一轮头部写的 `827f0f8b`/22 提交是提交前快照，实际提交后 HEAD=`b0173147`/24 提交。）
+
+## 本轮（2026-11-25 · 第 26 轮）：北极星 API 对账补 promotionEligibility 覆盖面（共有子集）+ 三条真反证
+
+**方向来源**：objective 续轮，自己找方向。先跑全守卫链 130 段全绿（无存量红灯），排掉已过期候选（语言守卫 3 条陈旧已在 R23 收口至 maxKnown=8、批量 kill 是有意的客户端编排设计）。从交接「确证未修」选中 `scripts/north-star-api-reconcile.mjs` 对账覆盖面缺口：`FIELD_PATHS`（:222）只比 6 字段，漏了 R3/R448 引入的 `promotionEligibility`——CLI（`north-star-weekly.mjs:238`）与 API（`north-star-metrics.service.ts:122`）都产它，却长期无 A/B 对账保护。
+
+**关键口径（并行审计确认）**：API 比 CLI **多** `promotionEligibility.reasonDetails`（text 与 reasons 同序，spec:253-255 钉住），整对象逐字比对必假红；故只比两边共有的 5 子字段 `eligible`/`reasons`/`weeks`/`activeInstallWeeks`/`thresholds`。审计逐条核实可比性：`PROMOTION_OPS_PREREQ` 两侧逐字同、阈值文案与顺序同源、`thresholds` 键序一致、`strictWeeks` 输入同源；PG 对账脚本不需补（promotion 是 SQL 后派生计算，非 DB 行字段）。
+
+**编排（AGENTS §4）**：主控 CodeGraph 确证缺口与可比性后切 2 路并行——① 实现（单文件写域）；② 只读审计（可比性 / PG 是否需补 / 反证强度 / 文档一致性）。审计发现头注释写了「eligible 取反反证」但真库 `--counterproof` 只注入 confirmed_events——主控转给实现方修正，保持文档与实现一致。
+
+**交付（单文件 `scripts/north-star-api-reconcile.mjs`）**：`EXPECTED`（:126）新增独立字面 `promotionEligibility`（按本脚本 seed：周 A active=2 + 周 B active=1 ⇒ weeks=2 / activeInstallWeeks=3，两阈值未达；不从输入拷贝，不采它样例数值）；`FIELD_PATHS`（:245）新增 5 条共有子路径（附「为何不含 reasonDetails」注释）；`compareWithExpected`（:282）新增 5 条 EXPECTED 门控；selftest 17/17（对账正例、API 多 reasonDetails 绿控、**三条真反证**：eligible 取反 / thresholds.minWeeks+1 / reasons[0] 改字，各断言对应路径转红 + 原 payload sha256 不变）；真库 `--counterproof`（:620-653）升级为**双注入**（confirmed_events+1 + eligible 取反），两红路径须同时命中、原 payload sha 不变、promotion 缺失置结构红；HELP/头注释同步覆盖面。
+
+**验证（主控独立复跑）**：`node --check` 0；`--selftest` 17/17 exit 0（三条反证红项分别精确点名 eligible/thresholds/reasons，sha 前后 `f9b3fe08ca1e…` 一致）；`--help` 0；无参数 SKIP exit 0（不假绿）。**未跑真库对账**（本轮为静态/纯函数覆盖面修复，未起 Postgres；真库 `--counterproof` 双注入分支由代码审阅 + 结构红反证保证，实跑留给有 test 库的环境）。验收级别：纯函数/内存 selftest + 真子进程反证；**未达**真库进程级。遗留缺陷 0。
+
+**历史段陈旧说明（不改，保留时间线真相）**：本文件旧段 :573/:609 写「对账脚本不覆盖 promotionEligibility」、`docs/archive/reviews/north-star-api-review.md` 只列六字段——均为当时事实的历史快照，按仓库纪律不回写；以本段为当前权威。本轮按 objective「分批提交」分 2 批：① 功能单文件；② 本交接段。**未 push**。
+
+**可用路径 / 发布前置**：分支 `develop` = 功能提交 + 交接提交，24+ 提交未 push；对账覆盖面已补且反证有牙，真库实跑前置 = test/e2e 库 + `--dsn`。push 等 operator 明确指令。
+
+---
 
 ## 本轮（2026-11-25 · 第 25 轮）：executor-node alpine 镜像补 bash（shell runtime exit 127 真修复）+ 真机验证
 
