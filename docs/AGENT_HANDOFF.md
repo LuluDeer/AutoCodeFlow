@@ -1,7 +1,25 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 47 轮 · 解释器 pin 缓存命中绕过修复）
-> 本批提交前基线 `develop` = `3a754bf9`（领先 origin/develop 69 提交、未 push）；按 operator「不做无意义提交」约束，本轮修复 + 测试 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-47 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+> **受众**：接手下一轮开发的维护者 · **状态**：内部 · **本次交接**：2026-11-25（第 48 轮 · 审批 grant 时序死锁 + node failureReason 分叉）
+> 本批提交前基线 `develop` = `0e77fd6b`（领先 origin/develop 70 提交、未 push）；按 operator「不做无意义提交」约束，本轮修复 + 测试 + 生成物/基线 + 本交接段合并为**单个提交**。子 agent 平台已恢复（第 24-48 轮均正常产出）。第 4 轮真机能力已打通（详见下方），此前"无 X/无 Chrome"结论系未导出 XAUTHORITY 的误判。更早轮次均为已收口历史。
+
+## 本轮（2026-11-25 · 第 48 轮）：审批 grant/waiting 交错死锁 + node failureReason 分叉（双域并行）
+
+**方向来源**：objective 续轮，自己找方向。派 2 路审计扫审批状态机与 executor-node 回调边界，CodeGraph 复核三处确证后 2 agent 并行修（写域互斥）。
+
+**缺口①（状态机死锁）**：`agent.controller.ts:611` decideApproval 读 session 快照，`:671` 仍用旧 status 判 resume。交错场景：worker 落 pending 单（tool-executor.service.ts:1319）但未 markWaiting（:1332）→ 管理员 grant 读到 running → worker markWaiting 触发 wakeup probe，单仍 pending ⇒ probe :68 直接 return → 管理员翻 granted 但 :671 旧快照不入队 → 会话永停 waiting_input、单永不 consume，sweep 跳过 granted + 只扫 pending ⇒ 永久卡死须人工 resume。与 R321-323 已修时序相反。修：decide 成功后重读 session（findById），用 fresh status/totalSteps 判定并入队；重读异常/为 null 沿用旧快照不新增崩溃面。
+
+**缺口②（node failureReason 分叉，同文件两处）**：`execute.ts:1869` 优雅停机 abort 的 pushCallback 无 failureReason → admin `collaborator.ts:470` 对「正在停机」文案落 UNKNOWN，而 worker.stop 同场景报 executor_restart；`:3520` SIGKILL 文案含「执行器超时/停机树杀」→ admin TIMEOUT_PATTERN（failure-patterns.ts:156）误标 timeout。修：abort 显式 `failureReason:'executor_restart'`；signaled 分支显式 `failureReason:'unknown'`（文案证据保留，admin 不再走 infer 兜底）。取值均经 CALLBACK_FAILURE_REASONS/admin ExecutionFailureReason 确认。
+
+**集成期连锁**：改 execute.ts（bundle 输入源码）→ check:desktop-bundle-drift 报 executor-node 源码语义摘要漂移 → `digest:regen` 回填清单；execute.spec size 基线 2481→2515（+34，受控测试新增，主控**不**为过闸压缩测试断言，明确回退 agent 的压缩意图）；1 处 prettier eslint --fix。
+
+**验证（主控独立复跑）**：admin 43 tests（controller 14 + approvals 29）、node 161 tests、双端 tsc、size/bundle、全守卫链 130 段全绿。**反证（主控自做）**：approval 改回旧快照 → 死锁用例红；node 去两处 failureReason → 4 failed（agent 反证）；还原 sha `b85c1a83…` / `0745944d…` 逐字节一致。验收级别：单测/内存替身 + 全链；未达真 PG/Redis 时序或真 SIGKILL 现场。遗留缺陷 0。
+
+**仍留候选**：中间态 bisect 退化（R38）；广播占坑另两子场景（ADR 级）。轻量确证候选清零。
+
+**提交**：单批（4 源码/测试 + digest 清单 + size 基线 + 本交接段）。**未 push**。处于可发布态。
+
+---
 
 ## 本轮（2026-11-25 · 第 47 轮）：解释器 SHA-256 pin 缓存命中绕过（安全档）
 

@@ -668,13 +668,27 @@ export class AgentController {
     }
 
     let resumed = false;
-    if (
-      decision === "granted" &&
-      session.status === "waiting_input" &&
-      !(await this.approvals.hasPendingForSession(sessionId))
-    ) {
-      await this.enqueueResume(session, "resume:approval");
-      resumed = true;
+    if (decision === "granted") {
+      // 时序修复：worker 可能先落 pending 单、后 markWaiting；管理员在两者之间
+      // grant 时 :611 的快照还是 running，而 markWaiting 触发的 wakeup probe
+      // 见单仍 pending 会直接 return，随后本处若再信旧快照就不入队 ⇒ 会话永停
+      // waiting_input、单永不 consume。这里在 decide 成功后重读会话，用最新
+      // status/totalSteps 判定并入队；重读失败或为 null 时沿用原快照，不制造
+      // 新的崩溃面（decide 前的 requireById 已钉住会话存在）。
+      let freshSession = session;
+      try {
+        const reread = await this.sessions.findById(sessionId);
+        if (reread) freshSession = reread;
+      } catch {
+        // 重读异常：沿用 decide 前快照，保持既有语义。
+      }
+      if (
+        freshSession.status === "waiting_input" &&
+        !(await this.approvals.hasPendingForSession(sessionId))
+      ) {
+        await this.enqueueResume(freshSession, "resume:approval");
+        resumed = true;
+      }
     }
     return {
       ok: true,

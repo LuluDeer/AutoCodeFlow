@@ -1871,6 +1871,10 @@ export async function dispatchExecutionToWorker(
             executionId,
             status: 'failed',
             errorMessage: '执行器正在停机，该执行尚未开始',
+            // NETOPT-D P3-4：停机 abort 是已知场景——显式上报既有枚举值，避免
+            // admin 的 inferFailureReason 对「正在停机」文案落 UNKNOWN，使分因、
+            // 重试与 runbook 分叉都能命中 executor_restart（与 worker.stop 同口径）。
+            failureReason: 'executor_restart',
             ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
           });
         }
@@ -3372,6 +3376,11 @@ async function runTaskInner(task: any, params: Record<string, any>, executionId:
     // 改动1：kill 端点已下达终止指令——失败回调标记 failureReason=killed
     // （与 admin 侧 ExecutionFailureReason.KILLED 对齐）。
     const killed = liveExecutions.get(executionId)?.killedByRequest === true;
+    // 信号退出（describeProcessExit 的 SIGKILL 文案含「执行器超时/停机树杀」）：
+    // 节点侧窄正则不命中 → 不设 failureReason ⇒ admin 的 TIMEOUT_PATTERN 会把
+    // 外部 SIGKILL（OOM / kill -9）误标 timeout。显式带中性值 unknown，文案的证据
+    // 价值照旧保留（cb.failureReason ?? infer 不再走兜底）。
+    const signaled = typeof processErr?.signal === 'string';
 
     writeExecMeta(executionId, {
       status: 'failed',
@@ -3397,7 +3406,11 @@ async function runTaskInner(task: any, params: Record<string, any>, executionId:
       // P2-11: 传入 logs——运行期 bwrap 启动失败（bwrap 非零退出）的证据只在
       // 任务输出里，message-only 分类器接不住（python
       // `_sandbox_startup_failure_reason` 同款扫描对象）。
-      ...(!killed ? withClassifiedFailureReason(message, logs) : {}),
+      ...(!killed
+        ? signaled
+          ? ({ failureReason: 'unknown' as CallbackFailureReason })
+          : withClassifiedFailureReason(message, logs)
+        : {}),
       durationMs: Date.now() - startTime,
       // NETOPT-D P3-3: 同成功路径——停机时跳过 artifacts 收集，防 flush 窗口
       // 被 gather 消耗导致终态回调丢失。

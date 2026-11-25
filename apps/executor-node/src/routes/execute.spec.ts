@@ -1076,7 +1076,7 @@ describe('abortAllLiveExecutions (NETOPT-C P3)', () => {
       .map((c) => c[0])
       .filter((p: any) => p.executionId === 'exec-abort-during-git' && p.status === 'failed');
     expect(failed).toHaveLength(1);
-    expect(failed[0].failureReason).toBeUndefined();
+    expect(failed[0].failureReason).toBe('executor_restart');
     // NETOPT-E P3-4: 补推终态同时写 execMeta——桌面历史对停机 abort 的执行
     // 能看到结束原因（此前只 pushCallback，观测层与 dispatch 失败分支不一致）。
     const metaWrites = (mockFs.writeFileSync as jest.Mock).mock.calls.filter((c) =>
@@ -1160,12 +1160,40 @@ describe('abortAllLiveExecutions (NETOPT-C P3)', () => {
       .map((c) => c[0])
       .filter((p: any) => p.executionId === 'exec-abort-during-zip' && p.status === 'failed');
     expect(failed).toHaveLength(1);
-    expect(failed[0].failureReason).toBeUndefined();
+    expect(failed[0].failureReason).toBe('executor_restart');
     const metaWrites = (mockFs.writeFileSync as jest.Mock).mock.calls.filter((c) =>
       String(c[0]).endsWith('exec-abort-during-zip.json.tmp'),
     );
     expect(metaWrites.length).toBeGreaterThan(0);
     expect(String(metaWrites[metaWrites.length - 1][1])).toContain('"status": "failed"');
+  });
+
+  it('停机 abort 的补推终态回调带 failureReason=executor_restart（分因/重试分叉）', async () => {
+    let captured: { runPrepared?: any } = {};
+    (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(
+      async (_tid: string, _eid: string, _task: any, _params: any, _onComplete?: () => void, runPrepared?: any) => {
+        captured = { runPrepared };
+      },
+    );
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-abort-restart-reason',
+      task: { runtime: 'node', entrypoint: 'index.js' },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+    expect(captured.runPrepared).toBeTruthy();
+
+    // abort 先于 prepare 的检查点 ⇒ prepareExecution 抛 ExecutionCancelledError，
+    // runPrepared catch 里走「非 kill 的停机 abort」补推分支。
+    expect(abortAllLiveExecutions()).toBeGreaterThanOrEqual(1);
+    await expect(captured.runPrepared!(() => undefined)).rejects.toThrow();
+
+    const failed = (pushCallback as jest.Mock).mock.calls
+      .map((c) => c[0])
+      .filter((p: any) => p.executionId === 'exec-abort-restart-reason' && p.status === 'failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].errorMessage).toContain('正在停机');
+    expect(failed[0].failureReason).toBe('executor_restart');
   });
 });
 
@@ -1290,6 +1318,23 @@ describe('EN-04 退出原因：signal 必须可归因', () => {
     expect(cb.errorMessage).toContain('SIGKILL');
     expect(cb.errorMessage).toContain('OOM');
     expect(cb.exitCode).toBe(137);
+  });
+
+  it('SIGKILL 经 callback 构造显式带 failureReason=unknown，不会被 infer 成 timeout', async () => {
+    // 文案里的「执行器超时/停机树杀」是可归因的来源说明，必须保留；但不能靠它
+    // 分类——admin 的 TIMEOUT_PATTERN 含泛化「超时」，空 failureReason 会让外部
+    // SIGKILL（OOM / kill -9）被误标 timeout。这里钉死回调显式带中性值。
+    const outcome = describeProcessExit(null, 'SIGKILL');
+    expect(outcome.message).toContain('超时');
+
+    const { proc, promise } = await startFakeTask('exec-sigkill-reason');
+    proc.emit('close', null, 'SIGKILL');
+    await promise;
+
+    const cb = failedCallbackFor('exec-sigkill-reason');
+    expect(cb).toBeTruthy();
+    expect(cb.failureReason).toBe('unknown');
+    expect(cb.failureReason).not.toBe('timeout');
   });
 
   it('无 signal 时逐字保持旧文案（存量语义不变：code ?? 1）', async () => {

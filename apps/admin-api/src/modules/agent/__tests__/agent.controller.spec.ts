@@ -13,10 +13,21 @@ import type { AgentSession } from "../entities/agent-session.entity";
  */
 function harness(
   sessionRow: Partial<AgentSession> | null,
-  opts: { hasPending?: boolean; reopen?: boolean; steps?: unknown[] } = {},
+  opts: {
+    hasPending?: boolean;
+    reopen?: boolean;
+    steps?: unknown[];
+    /** decide 后重读到的会话（默认与 requireById 快照相同）。 */
+    freshSession?: Partial<AgentSession> | null;
+    approval?: unknown;
+    decideResult?: unknown;
+  } = {},
 ) {
   const sessions = {
     requireById: jest.fn(async () => sessionRow),
+    findById: jest.fn(async () =>
+      opts.freshSession !== undefined ? opts.freshSession : sessionRow,
+    ),
     create: jest.fn(),
     list: jest.fn(),
     budget: jest.fn(),
@@ -29,19 +40,21 @@ function harness(
   const queue = {
     add: jest.fn(async () => undefined),
   } as unknown as Queue<unknown>;
+  const approvals = {
+    findByKey: jest.fn(async () => opts.approval ?? null),
+    decide: jest.fn(async () => opts.decideResult ?? null),
+    listForSession: jest.fn(async () => []),
+    // 实施轮 #14：resume 前置校验（有 pending 审批单时拒绝绕过审批）
+    hasPendingForSession: jest.fn(async () => opts.hasPending ?? false),
+    consume: jest.fn(async () => true),
+  };
   const ctl = new AgentController(
     sessions as never,
     { resolveBudget: jest.fn() } as never,
-    {
-      findByKey: jest.fn(async () => null),
-      decide: jest.fn(async () => null),
-      listForSession: jest.fn(async () => []),
-      // 实施轮 #14：resume 前置校验（有 pending 审批单时拒绝绕过审批）
-      hasPendingForSession: jest.fn(async () => opts.hasPending ?? false),
-    } as never,
+    approvals as never,
     queue as never,
   );
-  return { ctl, sessions, queue };
+  return { ctl, sessions, approvals, queue };
 }
 
 const baseSession = {
@@ -203,5 +216,63 @@ describe("AgentController · resume 状态防线（B-8）", () => {
     expect(Array.isArray(out.approvals)).toBe(true);
     expect(Date.parse(out.exportedAt)).not.toBeNaN();
     expect(sessions.requireById).toHaveBeenCalledWith("s-1");
+  });
+
+  it("审批时序死锁：快照 running、decide 后重读为 waiting_input → 入队 resume:approval，单仍 granted 未 consume", async () => {
+    const approvalKey = "apr-s-1-1700000000000";
+    const h = harness(
+      { ...baseSession, status: "running", totalSteps: 6 },
+      {
+        approval: {
+          approvalKey,
+          sessionId: "s-1",
+          toolName: "update_task",
+          status: "pending",
+        },
+        decideResult: {
+          approvalKey,
+          sessionId: "s-1",
+          status: "granted",
+          decidedBy: "alice",
+          decidedAt: new Date(),
+        },
+        freshSession: {
+          ...baseSession,
+          status: "waiting_input",
+          totalSteps: 7,
+        },
+        hasPending: false,
+      },
+    );
+    const out = await h.ctl.grantApproval("s-1", approvalKey, {
+      id: 1,
+      username: "alice",
+      role: "admin",
+    } as never);
+
+    expect(out).toEqual(
+      expect.objectContaining({
+        ok: true,
+        resumed: true,
+        approval: expect.objectContaining({ status: "granted" }),
+      }),
+    );
+    expect(h.sessions.findById).toHaveBeenCalledWith("s-1");
+    expect(h.approvals.decide).toHaveBeenCalledWith(
+      approvalKey,
+      "granted",
+      "alice",
+    );
+    // 步数取重读快照（6 → 7），证明入队用的是 freshSession 而非旧 session。
+    expect(h.queue.add).toHaveBeenCalledWith(
+      "run",
+      { sessionId: "s-1", reason: "resume:approval", expectTotalSteps: 7 },
+      {
+        attempts: 1,
+        removeOnComplete: true,
+        deduplication: { id: "resume-s-1-7" },
+      },
+    );
+    expect(h.approvals.consume).not.toHaveBeenCalled();
   });
 });
