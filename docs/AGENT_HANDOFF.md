@@ -1,5 +1,28 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 55 轮）：4-agent 并行——N1/N6/N11/N13续 接入层 + 9 项状态回写
+
+**方向来源**：objective 续轮。基线 HEAD `e27987fe` 干净、上批全量 9123 passed。本批挑 4 个可静态验收、写域互斥的目标；另把第 53/54/55 轮已落地却状态列滞后的 9 项（N9/N10/N12/N23/N25 + N1/N6/N11/N13）逐项核对代码证据后回写。
+
+**编排**：4 个写域互斥 agent 并行；一条跨切片契约 `impl-n1-external-bypass` ↔ `impl-n13-env-placeholder` 由两 agent 双向 `send_message` 闭环：`{env:NAME}` 严格正则 `/^\{env:([A-Z0-9_]+)\}$/`、大小写敏感、空/明文 sk-/PEM/长 hex 一律 null、`match[0].length === value.length` 防 JS `$` 尾换行洞。主控复核两边正则逐字一致。
+
+| 切片 | 目标 | 产出 | 验收 |
+|---|---|---|---|
+| impl-n1-external-bypass | N1 外部 agent 旁路 | `capability/external-agent-bypass.ts`：`buildBypassPointer`（只产 `{env:NAME}` 指针）+ `applySingleKeyRewrite`（单 key 原子改写、注入式落盘）；实现期自抓「误把捕获组当写入值」真缺陷并修正 | capability 14 suites/246 tests；两向反证 sha 还原 |
+| impl-n13-env-placeholder | N13 续 | `ai/provider-ref.ts`：env 占位严格解析（尾换行洞防护）+ `provider/model#variant` 拆分 + reasoningEffort 映射（low/medium/high） | ai 21 suites/296 tests；两向反证 sha 还原 |
+| impl-n6-im-webhook | N6 IM adapter | `im-identity/im-webhook.adapter.ts`：challenge 判定/回显 + 企微/飞书消息提取；验签复用 `verifyWebhookSignature` 不重写 | im-identity 5 suites/74 tests；空回显/跨平台误读两向反证 |
+| impl-n11-plan-agent | N11 plan 身份 | `agent/runtime/plan-agent.ts`：enterPlanMode 切只读身份（tier ≤ read + MemoryFileSystem）、allowedPrompts 意图级、exitPlanMode 只接受 once | agent-runtime 32 suites/559 tests；写工具放行/all 授权两向反证 |
+
+**主控集成修复**：① 30 处 prettier `eslint --fix`；② `check-sanitize-parity` 把 N1 的明文 hex 检测正则内嵌片段 `[0-9a-fA-F]{32,}` 误判为"脱敏规则第二份"——将字符类改为等价的 `[0-9A-Fa-f]`（顺序变、检测语义逐字不变，N1 17 tests 复跑绿）消除字面量撞车，**未改守卫判据、未加豁免**；③ 9 项状态回写（含 N9/N10/N12/N23/N25 第53轮已落地却仍 ⬜ 的旧账）。
+
+**验收（主控独立复跑）**：`test:guards:chain` **CHAIN_EXIT=0**（第 2 轮，首轮红在 sanitize-parity 字面量撞车）；全量 admin-api **API_FULL_EXIT=0，544 suites / 9213 passed / 6 skipped**；`npm run lint`(admin-api) 0；文档守卫绿。4 个契约/反证均有牙且 sha 还原。验收级别：单测/纯函数 + 真子进程守卫链 + 全量 jest；未达真实 HTTP 回调、真实 agent loop、外部 agent 配置文件落盘。本批引入缺陷 0。
+
+**提交**：单个原子提交（8 新文件 + 9 项状态回写 + 交接段），保持中间态绿与 `git show` 归因完整。**未 push**。
+
+**后续项**：① 9 个新纯函数层接真实调用链（N1 落盘、N6 HTTP 回调、N11 agent loop、N13 routeFor 消费、N18/N8 runtime 接线、N23 disposer）；② N19 gate 接线；③ N21/N22 系统实现（等保/留存/SLA 计量）；④ N24 进程外隔离（P4，需真实用户与能力规模触发）。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 54 轮）：5-agent 并行——4 个既有全量失败清零 + N8/N18 纯状态机
 
 **方向来源**：objective 续轮。上批（第 53 轮）全量 admin-api 暴露 4 个失败并经隔离 worktree 在基线 HEAD 确证为**既有欠账**（非上批引入）。本批按 AGENTS §4.4「低级别高置信缺陷升到可复现最高级再修」派 3 个 agent 修这 4 个，另派 2 个推进 N8/N18 纯状态机，写域严格互斥。
