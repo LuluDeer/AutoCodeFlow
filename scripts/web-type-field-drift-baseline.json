@@ -866,6 +866,36 @@
       "owner": "arch-core",
       "review_by": "2026-12-15",
       "reason": "待处置（未配对）：ActivationStatsDualBasis 是 stats 双口径视图模型（含 priceReason/金额位），后端运行时组装非持久化实体，openapi 无同名 DTO ⇒ 无字段可比面。按「手写契约 DTO / 视图模型」分组豁免，纳入生成合同后销账。"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tQuotaStatusQuery",
+      "owner": "arch-core",
+      "review_by": "2026-12-15",
+      "reason": "待处置（未配对）：配额状态相关手写视图/枚举类型，生成合同无同名 DTO ⇒ 无字段可比面。按「手写契约 DTO」分组豁免，纳入生成合同后销账。"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tQuotaScope",
+      "owner": "arch-core",
+      "review_by": "2026-12-15",
+      "reason": "待处置（未配对）：配额状态相关手写视图/枚举类型，生成合同无同名 DTO ⇒ 无字段可比面。按「手写契约 DTO」分组豁免，纳入生成合同后销账。"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tQuotaUnit",
+      "owner": "arch-core",
+      "review_by": "2026-12-15",
+      "reason": "待处置（未配对）：配额状态相关手写视图/枚举类型，生成合同无同名 DTO ⇒ 无字段可比面。按「手写契约 DTO」分组豁免，纳入生成合同后销账。"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tQuotaStatusLevel",
+      "owner": "arch-core",
+      "review_by": "2026-12-15",
+      "reason": "待处置（未配对）：配额状态相关手写视图/枚举类型，生成合同无同名 DTO ⇒ 无字段可比面。按「手写契约 DTO」分组豁免，纳入生成合同后销账。"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tQuotaStatusRow",
+      "owner": "arch-core",
+      "review_by": "2026-12-15",
+      "reason": "待处置（未配对）：配额状态相关手写视图/枚举类型，生成合同无同名 DTO ⇒ 无字段可比面。按「手写契约 DTO」分组豁免，纳入生成合同后销账。"
     }
   ]
 }

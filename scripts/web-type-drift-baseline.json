@@ -740,6 +740,31 @@
       "key": "apps/admin-web/src/api/capability-activation.ts\tActivationStatsDualBasis",
       "owner": "arch-core",
       "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tQuotaStatusQuery",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tQuotaScope",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tQuotaUnit",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tQuotaStatusLevel",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tQuotaStatusRow",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     }
   ],
   "allowlist": [
