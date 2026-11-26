@@ -1,5 +1,28 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 69 轮）：PM 视角盘点——provider.use 出域硬开关闭环（企业买单一票否决项）
+
+**方向来源**：operator「保持继续，站产品经理角度考虑企业级产品」。先跑 workflow 并行 3 路 PM 盘点（企业管控闭环 / 业务杀手锏旅程 / 竞品对标），不是列技术债，而是回答"能不能卖、用户能不能用"。三路结论收敛出三个一票否决断点：① provider.use 出域硬开关零实现（中台不敢买）；② 业务人员三页全 ADMIN-only + 交付物无归属字段（杀手锏旅程走不通）；③ 成本归责只输出 null（竞品都在卷）。**PM 裁决**：先做 ①——企业买单的一票否决、语义已在 ADR-044 冻结、验收线清晰；② 涉及权限契约（项目角色替代 ADMIN + 归属迁移 + e2e）是 L 级专项，下一轮单独立项；③ 属企业增值，排在基础成立之后。
+
+**交付（2 agent 并行 + 主控集成）**：
+- 后端（impl-provider-use-backend）：`ai-providers.ts:providerUseVerdict`（复用 scope-engine.evaluateAll 的 restrict 单调，不重写判据）+ `selectableProviders` 第三参（被 deny 的 provider 从目录**消失**不是置灰）；`ai-route.ts:RouteContext.deniedProviderIds` + `provider_denied` 拒绝分支（在 provider_disabled 后、能力闸前，不回落）；9/9 + 22 回归 + 反证 3 真红还原。
+- 前端（impl-provider-use-frontend）：`ai-provider-filter.ts` 第三参 deniedProviderIds + deniedForUse 双保险移除；4/4 + 24 回归 + 反证 3 真红还原。
+- 主控：`ai-egress.util.ts`（deny 名单解析/审计 detail/视图标记纯函数）+ `AiService.loadDeniedProviders`（读 system_configs `ai.provider.use.denied`，fail-open）+ routeFor 注入 deniedProviderIds + provider_denied 审计（字面量 `capability.provider_denied`，detail 不含 apiKey/baseUrl）+ `listProviderViews` 回传 deniedForUse；AuditModule 接线。
+
+**验收（分级）**：全守卫链 `CHAIN_EXIT=0`；**真 PG 进程内 e2e `provider-use-deny.e2e-spec.ts` 1 passed**——实测四条副作用：(1) system_configs 写 managed deny 后 `selectableProviders` 结果里该 provider 消失（不是置灰）(2) routeFor 命中 deny 返回 provider_denied、零出域请求 (3) 追加项目层 allow 不可推翻（restrict 单调）+ system_configs 未被改写 (4) audit_logs 落一行 capability.provider_denied 且 detail 无 apiKey/baseUrl 明文。workbench 全链 e2e 1 passed（回归未破，首跑 401 是漏设 ADMIN_TEST_PASS 的环境问题，补齐口令即绿）；admin-api 全量 `565 suites / 9452 passed`、admin-web 全量 `372 files / 3069 passed`（均 exit 0）；双端 typecheck 0 错、lint:api 0。
+
+**主控集成修的涟漪**：audit action 三处同步（95→96 + 前端标签/zh/en + resourceOptions 加 `ai_provider`）；openapi 生成链（deniedForUse 字段 + 中文 i18n 映射）；response-schema 275 不变；`ai.service.ts` 927 行破硬上限——按脚本合法路径加头部带理由的 `ALLOW:` 豁免（判据已外提 ai-egress.util.ts，绝对基线上限 98 已满不能新增条目），audit/index.tsx 基线 561→562 重签；跨轮后补了 ai-egress util 的三个 import（首次导出因缺 import 失败，已修后重导成功）。
+
+**边界与诚实声明**：
+- **`provider.use` deny 名单畸形 fail-open**（非数组/非字符串元素视为空，不把所有 provider 都 deny）——是否收紧待裁决；纯函数单测已覆盖。
+- **审计是 void async**（审计失败只 warn、不改变拒绝语义）——企业追责依赖审计落库，e2e 已证实在正常路径下落行。
+- **PM 盘点另两个断点未做**：业务人员三页 ADMIN-only + 交付物无归属字段（blocks_usage，L 级专项需权限契约 ADR）；成本归责 token/currency 恒 null（blocks_sale 增值项，数据已落库 agent_steps 只差接线）。这两项已在 PM 盘点记录里，作为下一轮优先级。
+- `scope-engine.parsePolicyRef` 按首个冒号切分，`provider:<id>:use` 精确策略配置表达另开切片；本轮用 deniedProviderIds 直传 + policyLayers 精确 ref 覆盖。
+
+**提交**：按 objective 分批提交（实现一批 + 集成同步一批 + 文档交接一批），不 push。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 68 轮）：用户场景裁决——ADR-044 企业管控+客户端自主 + 3 切片落地
 
 **方向来源**：用户明确最终场景「企业有统一权限管控 + 客户端保留普通 agent 工作台自主权」，并授权自主裁决 + 参考 `/data/project/opensource`。先用 workflow 并行 4 路 agent 深挖 opensource 五项目（opencode/ZCode/magpie/Octop/dsh）的 scope/policy/能力市场/HITL 机制，逐条带 file:line；主控据此**自主裁决**上一轮遗留的 needs_adr/needs_decision 六项，固化为 [ADR-044](adr/adr-044-enterprise-control-client-autonomy.md)，并把其中可独立落地的 3 个切片并行实现。
