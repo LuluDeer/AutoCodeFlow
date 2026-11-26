@@ -1,5 +1,23 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 64 轮）：N16 专门审计补全（上批裁决留白兑现）
+
+**方向来源**：objective 续轮。第 63 轮主控裁决"capability.transfer 专门审计留下一批，service 空出后补"——本批兑现。派 1 个 agent（按 AGENTS §4.1 按情况启用数量，不硬凑多 agent）。
+
+**交付**：`capability.service.ts` 新增 `transfer(id, {owner,backer}, actor?)` —— 先取 before owner/backer → 复用 `update()`（合并校验/乐观锁/`capability.update` 通用审计）→ 补 `capability.transfer` 治理审计（detail 含 before/after 精确值）。`writeAudit` 最小扩展第 4 个可选 detail 参数，其它调用方零影响；action 用字面量（审计清单守卫扫字面量，历史教训）。controller transfer 端点改调 `svc.transfer`，返回类型不变。fail-open：审计失败只 warn 不阻断移交。
+
+**验收**：capability 20 suites/351 tests（transfer.spec 7 例）；两向反证（controller 回退 svc.update / 审计 action 改 capability.noop 各 1 failed）sha 还原。
+
+**主控集成（审计清单三处同步，agent 禁改域）**：`audit.md` 表格加 `capability.transfer` + 头部计数 90→91；前端 `ACTION_LABEL_KEYS` + zh/en 词条各 +1（interface-maps 88 键齐）；`check:audit-doc`/`check:interface-maps` 全绿。
+
+**边界**：未做供应链重扫、resolve 验证编排（runbook §4 其余步骤）；单测/内存替身级，未做真 PG+Nest DI。
+
+**后续项**：核查锁定剩余 real_gap（N1/N8/N9/N18/N10/N11/N23/N19/N21 等）中，需跨切面通道者（N19 scope 来源、N21 egress 落点、N14 generation）需先立契约再做；纯"消费方已存在只差调用"者已基本收口。外部/ADR/裁决类维持原边界。
+
+**提交**：单个原子提交（3 实现文件 + 4 审计清单同步 + 交接段）。**未 push**。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 63 轮）：3-agent 并行接线 N3/N16/N26（核查缺口续做）
 
 **方向来源**：objective 续轮，继续消化第 62 轮 workflow 核查锁定的 12 条 real_gap。本批挑 3 个写域完全互斥、规模可控的：N3（四语义接 capability.service）、N16（所有权移交端点）、N26（CLI 分发真实启动）。再次坚持"agent 质疑 + 主控裁决"纪律。

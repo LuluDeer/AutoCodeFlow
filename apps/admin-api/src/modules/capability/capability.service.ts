@@ -485,6 +485,30 @@ export class CapabilityService {
   }
 
   /**
+   * N16 所有权移交：治理动作审计（capability.transfer）与字段变更审计
+   * （capability.update）分层——update 记「哪些列被改」，transfer 记
+   * 「谁把 owner/backer 交给谁、谁背书」并带前后值；语义不同，不是重复记录。
+   * 字段写入完全复用 update 的合并校验、乐观锁与通用审计，不引入旁路写库。
+   */
+  async transfer(
+    id: string,
+    dto: { owner: string; backer: string },
+    actor?: CapabilityActor,
+  ): Promise<Capability> {
+    const before = await this.findOne(id);
+    const saved = await this.update(
+      id,
+      { owner: dto.owner, backer: dto.backer },
+      actor,
+    );
+    await this.writeAudit("capability.transfer", saved, actor, {
+      before: { owner: before.owner, backer: before.backer },
+      after: { owner: saved.owner, backer: saved.backer },
+    });
+    return saved;
+  }
+
+  /**
    * ADR-026 规则 1/2/4（与 task.service.patchTaskColumns 同构）：列级条件写。
    * 只写本次 DTO 显式带来的列 + 库时钟 updatedAt；行谓词恒带 updatedAt 版本
    * 桶。QueryBuilder 的 UPDATE 不像 save() 自动刷新 @UpdateDateColumn，漏了它
@@ -670,6 +694,7 @@ export class CapabilityService {
     action: string,
     cap: Capability,
     actor?: CapabilityActor,
+    detail?: Record<string, unknown>,
   ): Promise<void> {
     if (!this.audit) return;
     try {
@@ -679,10 +704,19 @@ export class CapabilityService {
         action,
         resource: "capability",
         resourceId: cap.id,
-        detail: { key: cap.key, kind: cap.kind, visibility: cap.visibility },
+        detail: {
+          key: cap.key,
+          kind: cap.kind,
+          visibility: cap.visibility,
+          ...(detail ?? {}),
+        },
       });
-    } catch {
-      // fail-open：审计写失败不阻断 capability 主链。
+    } catch (err: unknown) {
+      // fail-open：审计写失败只 warn，不改变已落库的 capability 主链结果。
+      console.warn(
+        `[CapabilityService] audit write failed for ${action}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
     }
   }
 }

@@ -973,6 +973,7 @@ export default {
   'audit.action.subscription_deadLetter_delete': 'Delete subscription dead-letter',
   'audit.action.capability_create': 'Create capability',
   'audit.action.capability_update': 'Update capability',
+  'audit.action.capability_transfer': 'Transfer capability ownership',
   'audit.action.capability_delete': 'Delete capability',
   'audit.action.im_identity_bind': 'Bind IM identity',
   'audit.total': '{{count}} in total',

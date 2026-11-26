@@ -191,6 +191,7 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'task.webhook_rotate': 'audit.action.task_webhook_rotate',
   'task.webhook_disable': 'audit.action.task_webhook_disable',
   'capability.create': 'audit.action.capability_create',
+  'capability.transfer': 'audit.action.capability_transfer',
   'capability.update': 'audit.action.capability_update',
   'capability.delete': 'audit.action.capability_delete',
   'im_identity.bind': 'audit.action.im_identity_bind',

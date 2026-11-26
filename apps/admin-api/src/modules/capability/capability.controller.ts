@@ -143,8 +143,8 @@ export class CapabilityController {
 
   /**
    * N16 所有权移交：ADMIN-only 中台管控动作。新 owner + backer 双签由 DTO 形态闸
-   * 强制（缺任一字段 400）；字段写入复用 svc.update 的合并校验、乐观锁与既有审计，
-   * 不引入旁路写库。
+   * 强制（缺任一字段 400）；svc.transfer 复用 update 的合并校验与乐观锁，
+   * 并补一条 capability.transfer 治理审计（owner/backer 前后值），不引入旁路写库。
    */
   @Post(":id/transfer")
   @Roles(UserRole.ADMIN)
@@ -169,7 +169,7 @@ export class CapabilityController {
     @Body() dto: TransferCapabilityDto,
     @CurrentUser() user: AuthUser,
   ): Promise<Capability> {
-    return this.svc.update(
+    return this.svc.transfer(
       id,
       { owner: dto.owner, backer: dto.backer },
       this.actor(user),

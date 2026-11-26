@@ -981,6 +981,7 @@ export default {
   'audit.action.subscription_deadLetter_delete': '删除订阅死信',
   'audit.action.capability_create': '创建能力',
   'audit.action.capability_update': '更新能力',
+  'audit.action.capability_transfer': '移交能力所有权',
   'audit.action.capability_delete': '删除能力',
   'audit.action.im_identity_bind': '绑定 IM 身份',
   'audit.total': '共 {{count}} 条',
