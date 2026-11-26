@@ -1,8 +1,8 @@
 {
   "$comment": "ARCH-23 / N-12 响应 schema 覆盖率棘轮基线。coveredKeys = 已验证有**实质** response schema 的 METHOD PATH CODE 条目（防倒退：删装饰器即红）；coveredCount = 覆盖总数下限（只增不减）。hollowKeys = 引用**空壳组件**（properties 为空的具名 schema）的响应——看着有 schema，前端却只生成 Record<string, never>。存量记此以允许历史遗留，**新增即红**。补齐装饰器后用 --update 上探。覆盖率低不是缺陷本身，但**倒退与空壳新增**是。【2026-11-04】signoffs.coveredCount 是「覆盖率地板这张豁免」的签字（owner + review_by）——地板也是豁免，豁免必须有主有期限；signoffs 缺失即结构红。--update 只改数字，不动签字。",
-  "coveredCount": 269,
-  "totalCount": 292,
-  "pct": 92.1,
+  "coveredCount": 270,
+  "totalCount": 293,
+  "pct": 92.2,
   "hollowCount": 0,
   "coveredKeys": [
     "DELETE /api-keys/{id} 200",
@@ -225,6 +225,7 @@
     "POST /im-identity/intake 200",
     "POST /im-identity/scan 200",
     "POST /im-identity/verify-bind 200",
+    "POST /im-identity/webhook/{platform} 200",
     "POST /mutex-groups 201",
     "POST /notification/channels/{key}/test 201",
     "POST /notification/send 201",

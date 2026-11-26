@@ -328,6 +328,10 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
         // 归属比对需要它顺带解析出的回报行）。
         "ExecutorController.reportCommandResult",
         "ExecutorPackageController.pushResult",
+        // N6：IM webhook 入站——无 JWT，靠 HMAC 验签替代身份（@Public +
+        // @WriteGuard public），其后 intake 做 sender→平台 user 绑定校验。
+        // 与 ADMIN 的 POST intake 手动入口并存，不替换。
+        "ImIdentityController.webhook",
         // FEAT-21：任务 webhook 入站触发——per-task secret HMAC（webhook-hmac.util），
         // 与 applications/alerts webhook 同一安全范式。
         "TaskWebhookController.trigger",

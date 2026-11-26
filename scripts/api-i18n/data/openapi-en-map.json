@@ -1831,5 +1831,17 @@
   "处置是否成功（成功恒为 true，失败由错误码表示）": "Whether the disposition succeeded (true on success; failures are expressed via a stable error code).",
   "处置后的审批单行快照（含最新 status / decidedBy / decidedAt）": "Snapshot of the approval row after disposition (with latest status / decidedBy / decidedAt).",
   "用审批短语处置 Agent 审批单（一次性授权）": "Dispose an Agent approval with a phrase (one-time authorization).",
-  "短语仅接受 allow / allow once / 允许 / 批准 / deny / 拒绝；处置人取当前登录管理员，策略指纹由服务端当前策略快照重算，请求体自报一律忽略。": "Accepted phrases: allow or its Chinese-language equivalent / allow once / approve or its Chinese-language equivalent / deny or its Chinese-language equivalent. The decider is the current logged-in admin and the policy fingerprint is recomputed from the server's current policy snapshot; any self-reported value in the request body is ignored."
+  "短语仅接受 allow / allow once / 允许 / 批准 / deny / 拒绝；处置人取当前登录管理员，策略指纹由服务端当前策略快照重算，请求体自报一律忽略。": "Accepted phrases: allow or its Chinese-language equivalent / allow once / approve or its Chinese-language equivalent / deny or its Chinese-language equivalent. The decider is the current logged-in admin and the policy fingerprint is recomputed from the server's current policy snapshot; any self-reported value in the request body is ignored.",
+  "IM 平台 webhook 入站：验签→challenge 回显→方案卡预览（机器入站，验签即身份）": "IM platform webhook inbound: signature verification → challenge echo → plan-card preview (machine inbound, signature verification is the identity)",
+  "IM 平台（wecom / feishu），由平台调用方在 URL 路径上声明": "IM platform (wecom / feishu), declared by the platform caller in the URL path",
+  "企微 / 飞书原始 payload；只列出 adapter 实际消费的字段": "Raw WeCom / Feishu payload; only fields actually consumed by the adapter are listed",
+  "企微会话 id（ChatId），不参与身份绑定": "WeCom chat id (ChatId), not used for identity binding",
+  "企微发送方账号（FromUserName）；仅在 platform=wecom 时由 adapter 读取": "WeCom sender account (FromUserName); read by the adapter only when platform=wecom",
+  "企微消息 id（MsgId），不参与身份绑定": "WeCom message id (MsgId), not used for identity binding",
+  "企微消息正文（content），作为方案卡 goal；最长 500 字符": "WeCom message text (content), used as the plan-card goal; max 500 characters",
+  "正常消息返回方案卡预览；challenge 分支回显纯文本校验串": "Normal messages return a plan-card preview; the challenge branch echoes the plain-text verification string",
+  "签名头 X-Hub-Signature-256 与时间戳头 X-AutoCodeFlow-Timestamp 必带，验签失败统一 401；challenge 回显也在验签之后。平台只取 URL 路径参数，body 自报平台一律忽略。": "Signature header X-Hub-Signature-256 and timestamp header X-AutoCodeFlow-Timestamp are required; verification failure uniformly returns 401 and challenge echo also runs after verification. The platform is taken only from the URL path parameter; any platform self-reported in the body is ignored.",
+  "要 GET 的地址；缺省为 https://example.com。": "URL to GET; defaults to https://example.com.",
+  "飞书事件 schema 版本（2.0 = v2，content 可能是 JSON 串）": "Feishu event schema version (2.0 = v2; content may be a JSON string)",
+  "飞书事件信封（event）；仅在 platform=feishu 时由 adapter 读取，内部取 event.message.content 与 event.sender.sender_id": "Feishu event envelope; read by the adapter only when platform=feishu, internally taking event.message.content and event.sender.sender_id"
 }

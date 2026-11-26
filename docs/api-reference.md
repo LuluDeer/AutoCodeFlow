@@ -1443,7 +1443,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 292 个操作，覆盖 251 个路径。
+共 293 个操作，覆盖 252 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1626,6 +1626,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/im-identity/intake` | IM 消息入站编排：注入扫描→身份校验→ProjectRole→方案卡预览（ADMIN，只预览不落库） |
 | POST | `/im-identity/scan` | 群聊 @bot 消息 prompt-injection 自检（ADMIN，纯校验） |
 | POST | `/im-identity/verify-bind` | 校验网关发送方签名并绑定平台用户（ADMIN） |
+| POST | `/im-identity/webhook/{platform}` | IM 平台 webhook 入站：验签→challenge 回显→方案卡预览（机器入站，验签即身份） |
 | GET | `/metrics` | Prometheus 指标端点 |
 | GET | `/metrics/executors` | - |
 | GET | `/metrics/failures` | - |

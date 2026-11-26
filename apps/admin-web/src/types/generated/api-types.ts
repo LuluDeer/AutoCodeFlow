@@ -2897,6 +2897,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/im-identity/webhook/{platform}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * IM 平台 webhook 入站：验签→challenge 回显→方案卡预览（机器入站，验签即身份）
+         * @description 签名头 X-Hub-Signature-256 与时间戳头 X-AutoCodeFlow-Timestamp 必带，验签失败统一 401；challenge 回显也在验签之后。平台只取 URL 路径参数，body 自报平台一律忽略。
+         */
+        post: operations["ImIdentityController_webhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/metrics": {
         parameters: {
             query?: never;
@@ -7828,6 +7848,31 @@ export interface components {
             findings: unknown[][];
             /** @description 是否通过注入扫描（CRITICAL 命中即 false） */
             safe: boolean;
+        };
+        ImWebhookBodyDto: {
+            /** @description 企微会话 id（ChatId），不参与身份绑定 */
+            ChatId?: string;
+            /**
+             * @description 企微发送方账号（FromUserName）；仅在 platform=wecom 时由 adapter 读取
+             * @example zhangsan
+             */
+            FromUserName?: string;
+            /** @description 企微消息 id（MsgId），不参与身份绑定 */
+            MsgId?: string;
+            /**
+             * @description 企微消息正文（content），作为方案卡 goal；最长 500 字符
+             * @example 每月5号导出销售报表
+             */
+            content?: string;
+            /** @description 飞书事件信封（event）；仅在 platform=feishu 时由 adapter 读取，内部取 event.message.content 与 event.sender.sender_id */
+            event?: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description 飞书事件 schema 版本（2.0 = v2，content 可能是 JSON 串）
+             * @example 2.0
+             */
+            schema?: string;
         };
         ImportTaskDto: {
             /** @description 源导出物的 exportedAt（仅供参考） */
@@ -14662,6 +14707,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ImIdentityViewDto"];
+                };
+            };
+        };
+    };
+    ImIdentityController_webhook: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-hub-signature-256": string;
+                "x-autocodeflow-timestamp": string;
+            };
+            path: {
+                /** @description IM 平台（wecom / feishu），由平台调用方在 URL 路径上声明 */
+                platform: "wecom" | "feishu";
+            };
+            cookie?: never;
+        };
+        /** @description 企微 / 飞书原始 payload；只列出 adapter 实际消费的字段 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImWebhookBodyDto"];
+            };
+        };
+        responses: {
+            /** @description 正常消息返回方案卡预览；challenge 分支回显纯文本校验串 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImIntakeResultDto"];
                 };
             };
         };

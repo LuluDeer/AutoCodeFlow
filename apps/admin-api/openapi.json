@@ -8419,6 +8419,45 @@
         ],
         "type": "object"
       },
+      "ImWebhookBodyDto": {
+        "properties": {
+          "ChatId": {
+            "description": "企微会话 id（ChatId），不参与身份绑定",
+            "type": "string",
+            "x-i18n-en": "WeCom chat id (ChatId), not used for identity binding"
+          },
+          "FromUserName": {
+            "description": "企微发送方账号（FromUserName）；仅在 platform=wecom 时由 adapter 读取",
+            "example": "zhangsan",
+            "type": "string",
+            "x-i18n-en": "WeCom sender account (FromUserName); read by the adapter only when platform=wecom"
+          },
+          "MsgId": {
+            "description": "企微消息 id（MsgId），不参与身份绑定",
+            "type": "string",
+            "x-i18n-en": "WeCom message id (MsgId), not used for identity binding"
+          },
+          "content": {
+            "description": "企微消息正文（content），作为方案卡 goal；最长 500 字符",
+            "example": "每月5号导出销售报表",
+            "type": "string",
+            "x-i18n-en": "WeCom message text (content), used as the plan-card goal; max 500 characters"
+          },
+          "event": {
+            "additionalProperties": true,
+            "description": "飞书事件信封（event）；仅在 platform=feishu 时由 adapter 读取，内部取 event.message.content 与 event.sender.sender_id",
+            "type": "object",
+            "x-i18n-en": "Feishu event envelope; read by the adapter only when platform=feishu, internally taking event.message.content and event.sender.sender_id"
+          },
+          "schema": {
+            "description": "飞书事件 schema 版本（2.0 = v2，content 可能是 JSON 串）",
+            "example": "2.0",
+            "type": "string",
+            "x-i18n-en": "Feishu event schema version (2.0 = v2; content may be a JSON string)"
+          }
+        },
+        "type": "object"
+      },
       "ImportTaskDto": {
         "properties": {
           "exportedAt": {
@@ -22751,6 +22790,82 @@
         ],
         "x-i18n-en": {
           "summary": "Verify the gateway sender signature and bind the platform user (ADMIN)"
+        }
+      }
+    },
+    "/im-identity/webhook/{platform}": {
+      "post": {
+        "description": "签名头 X-Hub-Signature-256 与时间戳头 X-AutoCodeFlow-Timestamp 必带，验签失败统一 401；challenge 回显也在验签之后。平台只取 URL 路径参数，body 自报平台一律忽略。",
+        "operationId": "ImIdentityController_webhook",
+        "parameters": [
+          {
+            "description": "IM 平台（wecom / feishu），由平台调用方在 URL 路径上声明",
+            "in": "path",
+            "name": "platform",
+            "required": true,
+            "schema": {
+              "enum": [
+                "wecom",
+                "feishu"
+              ],
+              "type": "string"
+            },
+            "x-i18n-en": "IM platform (wecom / feishu), declared by the platform caller in the URL path"
+          },
+          {
+            "in": "header",
+            "name": "x-hub-signature-256",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-autocodeflow-timestamp",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImWebhookBodyDto"
+              }
+            }
+          },
+          "description": "企微 / 飞书原始 payload；只列出 adapter 实际消费的字段",
+          "required": true,
+          "x-i18n-en": "Raw WeCom / Feishu payload; only fields actually consumed by the adapter are listed"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImIntakeResultDto"
+                }
+              }
+            },
+            "description": "正常消息返回方案卡预览；challenge 分支回显纯文本校验串",
+            "x-i18n-en": "Normal messages return a plan-card preview; the challenge branch echoes the plain-text verification string"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "IM 平台 webhook 入站：验签→challenge 回显→方案卡预览（机器入站，验签即身份）",
+        "tags": [
+          "IM Identity"
+        ],
+        "x-i18n-en": {
+          "description": "Signature header X-Hub-Signature-256 and timestamp header X-AutoCodeFlow-Timestamp are required; verification failure uniformly returns 401 and challenge echo also runs after verification. The platform is taken only from the URL path parameter; any platform self-reported in the body is ignored.",
+          "summary": "IM platform webhook inbound: signature verification → challenge echo → plan-card preview (machine inbound, signature verification is the identity)"
         }
       }
     },

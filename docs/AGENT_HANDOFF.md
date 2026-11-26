@@ -1,5 +1,26 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 57 轮）：2-agent 并行——N6 IM webhook 真实入口 + N22 SLA 计量；3 项文档诚实化
+
+**方向来源**：objective 续轮。剩余目标里挑 2 个低风险、有真实价值的实现：N6 webhook 端点（IM 消息真实入口缺口）、N22 SLA 机器可判层。核心 agent loop（N8/N18 runtime 接线）是 9 调用方热路径 + 双跑防护 + 审批重放，**风险过高，主控刻意不派并行 agent 改**——留作独立专项。基线 HEAD `e29d7265` 干净。
+
+| 切片 | 目标 | 产出 | 验收 |
+|---|---|---|---|
+| wire-n6-webhook | N6 入口 | `POST /api/im-identity/webhook/:platform`（@Public+WriteGuard public，验签复用 `verifyWebhookSignature`→challenge 回显→`extractImMessage`→intake 装配）；body 自报平台一律忽略；与 ADMIN 手动 intake 并存 | im-identity 6 suites/83 tests；错签/空 secret/平台自报四向反证 |
+| impl-n22-sla-meter | N22 计量 | `capability/sla-meter.ts`：`evaluateSla` 四态 + `businessElapsedMs` 工作日钟（Mon–Fri 09–18 UTC，无节假日数据）+ `SLA_LIMITS` 四类；no_data/met=false 诚实口径 | capability 17 suites/288 tests；跨周末墙钟 65h⇒breached vs 业务钟 2h⇒met 对照反证 |
+
+**主控文档诚实化（3 项）**：① GCO N10/N11 状态列滞后（代码第 53/55 轮已落地）→ 回写 ✅；② N21 状态从"系统侧无实现"修正为**精确区分**——已实现（审计 6 月留存 + append-only 触发器、数据完整性摘要、SSRF 三层防护）vs 仅文档目标（等保二/三级认证需外部评估、独立数据分类分级标签、出域显式开关），不把认证写成已交付；③ N6/N22 状态随本轮进展更新。
+
+**主控集成修复**：① N6 新写端点使 `write-guard-coverage.spec.ts` 的 openIds 钉死清单漏 1 项（必改，否则稳定红）——按字母序加 `ImIdentityController.webhook` 并写验签即身份的理由；② 10 处 prettier `eslint --fix`；③ 真跑 openapi export + 补 12 条中文文案英文映射 → inject/gen:api-types/api-reference 全链，api-types +76 行；④ response-schema 基线 269→270 官方 `--update` 上探；⑤ `check-enum-drift` 对新 `SLA_LIMITS` const-object 报错——在 ALLOWLIST 登记"内存 SLA 常量表、非 DB 列值域"理由（守卫明示的合法处置），**未改判据**。
+
+**验收（主控独立复跑）**：全守卫链 `CHAIN_EXIT=0`（逐轮修 3 类涟漪后）；全量 admin-api `API_FULL_EXIT=0`（550 suites / 9275 passed）；api-lint、文档守卫 0；反证均有牙且 sha 还原。验收级别：单测/纯函数 + 真子进程守卫链 + 全量 jest + 真 PG openapi 导出；未达真发企微/飞书回调、真实 agent loop 接线。本批引入缺陷 0。
+
+**提交**：单个原子提交（6 新/改文件 + 生成物 + 4 项文档状态 + 交接段），保持中间态绿与 `git show` 归因完整。**未 push**。
+
+**后续项**：① N8/N18 接 agent loop 真实调用点（**独立专项**，需处理双跑防护/审批重放/代际围栏，不可并行硬改）；② N19 真实能力停用副作用（破坏性，待裁决）；③ N14 interrupt 在途工具调用；④ N21 等保认证（外部评估）/独立分类分级标签；⑤ N24 进程外隔离（P4，需真实用户与能力规模触发）。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 56 轮）：4-agent 并行——N14/N19/N20/N26 真实调用链接线
 
 **方向来源**：objective 续轮。前几轮把多数 N 目标做到纯函数/状态机层，本批挑 4 个**接入层**任务——把已有纯函数接到真实链（commit 闸、service DI、计量、桌面 selftest），按**文件边界**切分避免共享 controller 冲突。基线 HEAD `cdfd2e6e` 干净。

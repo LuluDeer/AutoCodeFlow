@@ -435,6 +435,12 @@ const ALLOWLIST = [
     reason: "错误码目录分片：值是 {status,zh,en} 对象（i18n 词典），不是 DB 列值域",
   },
   {
+    name: "SLA_LIMITS",
+    reason:
+      "N22 SLA 计量的内存常量表（值是毫秒数，如 capability_review=1 工作日=32400000），只在 sla-meter 纯函数里与 evaluateSla 的 limitMs 对账；" +
+      "SLA 违约不落 DB 列、无 PG enum 可比（中台编制/审核流水线仍是待建组织契约）",
+  },
+  {
     name: "NORTH_STAR_PROMOTION_REASON_CODES",
     reason:
       "升主判据的**原因类别码**（R192/D-2）：只在 API 响应 `reasonDetails[].code` 与前端着色/本地化键上流转，" +

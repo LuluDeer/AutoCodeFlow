@@ -257,8 +257,8 @@ GCO 是上一版 [agent-workbench-strategy.md](agent-workbench-strategy.md) 的*
 
 - **N6 IM 一等入口（带前置）**：Intake 增 IM adapter，验收旅程"企微@→方案卡→审批→交付"；**前置** IM identity→ProjectRole 映射 + 群聊 prompt injection 防护；身份走 Gateway sender 验证、审计双字段。（业务驻留 IM，采纳成本最低，但 red 要求身份前置，故 IM 不进 P2 MVP 首发批，与 N4 最小切片错开）【状态：🟡 部分实现（第 21 轮）：身份映射/注入防护/Intake 编排已实现，真实企微/飞书 webhook adapter 缺】
 - **N8 会话 park/drain**：审批期 steer 入 inbox → 模型步边界 drain；pendingWake 不复活死意图；补 blocked 看板。【状态：🟡 部分实现（第 54 轮）：steer-inbox 纯状态机落地（park/drain 步边界/死意图不唤醒，21 例反证有牙）；未接 agent runtime 循环、未做 blocked 看板】
-- **N10 Part 扩类 + share**：6 类扩到 opencode 12 类 + 会话级 share + 大字段入 blob。【状态：⬜ 未实现：无 12 类 Part 模型、会话级 share 与大字段入 blob】
-- **N11 Plan 做成 agent 身份**：不是 UX 折叠开关，换 MemoryFileSystem + PermissionService；allowedPrompts 意图级批准 = 一次 SOP 发布 scope=once。【状态：⬜ 未实现：无换 MemoryFileSystem + PermissionService 的 plan agent 身份与 allowedPrompts】
+- **N10 Part 扩类 + share**：6 类扩到 opencode 12 类 + 会话级 share + 大字段入 blob。【状态：✅ 已实现（第 53 轮）：`workbench/part-model.ts` 12 类 Part 判别联合 + isStaleGeneration + blob/share 类型标记；第 54 轮 N18 rewind-fence 已复用其 isStaleGeneration。未做：真实 blob 存储与 share 鉴权】
+- **N11 Plan 做成 agent 身份**：不是 UX 折叠开关，换 MemoryFileSystem + PermissionService；allowedPrompts 意图级批准 = 一次 SOP 发布 scope=once。【状态：✅ 已实现（第 55 轮）：`agent/runtime/plan-agent.ts` 纯状态机——enterPlanMode 切只读身份（tier ≤ read + MemoryFileSystem）、allowedPrompts 意图级、exitPlanMode 只接受 once；未接真实 agent loop/toolsForSessionKind 过滤】
 - **N14 在途策略即时失效**：`capability/changed` → interrupt 在途 + 下次 check 用新 policy + scopedRules 保 ask/deny。【状态：🟡 部分实现（第 52 轮）：代际持久化/emit 已落地，本轮补 scopedRules 纯分类（workbench/scoped-rules.ts，通配 allow 作废+显式 ask/deny fail-closed 保留，6 例反证有牙）；未接线 controller/service、未做 interrupt 在途工具调用】
 - **N18 rewind 代际围栏**：会话/Part 带 generation，回退使旧异步写入/通知作废 + 审计"作废 N 任务"。【状态：🟡 部分实现（第 54 轮）：第 53 轮 N10 的 Part generation + 本轮 `rewind-fence.ts` 纯判定（复用 isStaleGeneration，旧代异步写作废 + invalidatedCount），未接 controller/审计真写】
 - **N24 进程外隔离定位修正**：中间形态（P1/P2）先做进程内能力权限层 + 预算 + 失败降级；slots/streams 背压与进程外 host 留 P4（magpie `host.go:455-511`）。【状态：⬜ 未实现：能力层无 slots/streams 双限流、坏版本回退与进程外 host】
