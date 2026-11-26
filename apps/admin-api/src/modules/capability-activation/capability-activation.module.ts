@@ -10,6 +10,10 @@ import {
   QUOTA_HARD_LIMIT_GATE,
   type QuotaHardLimitGate,
 } from "./quota-limit.gate";
+import {
+  CAPABILITY_SCOPE_GATE,
+  capabilityScopeGate,
+} from "./capability-scope.gate";
 import { CapabilityActivationLog } from "./entities/activation-log.entity";
 
 /**
@@ -47,7 +51,11 @@ import { CapabilityActivationLog } from "./entities/activation-log.entity";
       }),
       inject: [ModuleRef],
     },
+    // N19 scope 闸：纯判定实现无 Nest/DB 依赖，直接 useValue 绑定；export
+    // 出去供 workbench（useExisting 前置 fail-close）与 api-keys 联动复用。
+    // service 侧是 @Optional 注入，裁剪部署/极简装配缺席即跳过，不阻断主链。
+    { provide: CAPABILITY_SCOPE_GATE, useValue: capabilityScopeGate },
   ],
-  exports: [CapabilityActivationService, QuotaService],
+  exports: [CapabilityActivationService, QuotaService, CAPABILITY_SCOPE_GATE],
 })
 export class CapabilityActivationModule {}

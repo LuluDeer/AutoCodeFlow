@@ -23,6 +23,11 @@ import {
   QUOTA_HARD_LIMIT_GATE,
   type QuotaHardLimitGate,
 } from "./quota-limit.gate";
+import {
+  CAPABILITY_SCOPE_GATE,
+  type CapabilityScopeGate,
+  type CapabilityScopeSet,
+} from "./capability-scope.gate";
 
 /** 深度钳位：与 agent 域 canonicalJson 同款，避免恶意深嵌套参数爆栈。 */
 const STABLE_MAX_DEPTH = 32;
@@ -119,10 +124,35 @@ export class CapabilityActivationService {
     @Optional()
     @Inject(QUOTA_HARD_LIMIT_GATE)
     private readonly gate?: QuotaHardLimitGate,
+    // N19 能力调用 scope 闸：追加到末尾（既有 spec 用定位参数装配，插中间会
+    // 静默错位——R394 教训）。@Optional 缺席跳过，保持内部审计/内部调用行为。
+    @Optional()
+    @Inject(CAPABILITY_SCOPE_GATE)
+    private readonly scopeGate?: CapabilityScopeGate,
   ) {}
 
-  /** 唯一写路径：先过硬阈闸，再落一行激活事实，返回落库后的实体。 */
-  async record(dto: CreateActivationDto): Promise<CapabilityActivationLog> {
+  /**
+   * 唯一写路径：先过 scope 闸（fail-close），再过硬阈闸，最后落一行激活事实。
+   *
+   * `apiKeyScope` 是**可选调用参数**：仅当本次调用确实携带 API Key scope 词集时
+   * 才过闸；内部调用（workbench/commit）无 key 上下文不传此参 → 跳过，避免把
+   * 「能力调用鉴权」误做成「内部审计」而打断主链。DTO 不可改（写域外），故用
+   * 调用参数显式表达，不臆造字段。
+   */
+  async record(
+    dto: CreateActivationDto,
+    apiKeyScope?: CapabilityScopeSet,
+  ): Promise<CapabilityActivationLog> {
+    // fail-close：携带 scope 且闸判定拒绝 ⇒ 403 类错误，零 save、不落库。
+    if (
+      this.scopeGate &&
+      apiKeyScope !== undefined &&
+      !this.scopeGate.canInvokeWithScope(apiKeyScope)
+    ) {
+      throw new AppError("API_KEY_SCOPE_DENIED", {
+        reason: `调用 API 能力「${dto.capabilityKey}」需要 readonly + trigger 或 manage scope`,
+      });
+    }
     if (this.gate) {
       let decision: HardLimitDecision | undefined;
       try {

@@ -65,6 +65,8 @@ import {
   type PolicySnapshot,
 } from "./preview-validator";
 import { PolicyGenerationService } from "./policy-generation.service";
+import type { PlanCardDto } from "./dto/preview-plan-card.dto";
+import { classifyScopedRules, type ScopedRule } from "./scoped-rules";
 
 /** 极简框架替身可能没有 @Optional / @Inject；缺席时降级 no-op，手动 new 不受影响。 */
 const Optional: (...args: any[]) => any =
@@ -76,6 +78,67 @@ const Inject: (...args: any[]) => any =
 function auditUserId(user?: { id: number | string }): number | null {
   const id = Number(user?.id);
   return Number.isFinite(id) ? id : null;
+}
+
+/**
+ * N14 scopedRules 合成规则集（纯函数，零 IO / 零 Nest / 零 DB）。
+ *
+ * 把「方案卡能力声明 + 当前策略快照」投影成逐条 ScopedRule，交给
+ * `classifyScopedRules` 判代际切换后的作废面。三种来源形态：
+ *  1. 快照显式携带 `scopedRules`（未来能力策略下发形态）——原样采用，
+ *     显式 ask/deny 因此在代际切换后保持 retained（保住人工确认/拒绝）；
+ *  2. 卡未绑定任何 capability（capabilityHints 空）——等价于通配授权，
+ *     合成 `*:*` allow，这是唯一会被第五闸作废的授权形态；
+ *  3. 卡绑定 capability——命中当前策略白名单 ⇒ 精确 allow（action 非通配，
+ *     作废也不触发「通配覆盖」拦截）；白名单外 ⇒ ask（fail-closed，
+ *     不把未授权能力静默当成放行）。
+ *
+ * 快照形状异常时抛错，由 commit 第五闸捕获并 warn 放行（降级路径），
+ * 与「判定为空 ⇒ 正常放行」刻意区分。
+ */
+export type CommitPolicySnapshot = PolicySnapshot & {
+  scopedRules?: readonly ScopedRule[];
+};
+
+export function synthesizeCommitScopedRules(
+  card: Pick<PlanCardDto, "capabilityHints"> | null | undefined,
+  snapshot: CommitPolicySnapshot,
+): ScopedRule[] {
+  if (!snapshot || typeof snapshot !== "object") {
+    throw new Error("N14 scopedRules：策略快照不可用");
+  }
+  if (snapshot.scopedRules !== undefined) {
+    if (!Array.isArray(snapshot.scopedRules)) {
+      throw new Error("N14 scopedRules：scopedRules 形态非法");
+    }
+    return snapshot.scopedRules.map((rule) => ({ ...rule }));
+  }
+  if (!Array.isArray(snapshot.capabilityWhitelist)) {
+    throw new Error("N14 scopedRules：capabilityWhitelist 形态非法");
+  }
+  const hints = Array.isArray(card?.capabilityHints)
+    ? (card as PlanCardDto).capabilityHints.filter(
+        (value): value is string =>
+          typeof value === "string" && value.length > 0,
+      )
+    : [];
+  if (hints.length === 0) {
+    return [
+      {
+        resource: "*",
+        action: "*",
+        decision: "allow",
+        layer: "plan-card/wildcard",
+      },
+    ];
+  }
+  const whitelist: readonly string[] = snapshot.capabilityWhitelist;
+  return hints.map((capability) => ({
+    resource: capability,
+    action: "invoke",
+    decision: whitelist.includes(capability) ? "allow" : "ask",
+    layer: "plan-card/capability",
+  }));
 }
 
 /**
@@ -239,6 +302,46 @@ export class WorkbenchController {
             : "能力配额硬阈值拦截：已达硬阈值，禁止提交",
         });
       }
+    }
+
+    // 第五道闸（N14 scopedRules，追加式）：上面 hash / eligible / generation /
+    // quota 四闸逐字不动。第四闸比对的是客户端带来的代际锚点；这里在 draft
+    // 落库前**再读一次**运行时代际——capability 写操作可能恰好在两次读取之间
+    // emit bump。服务端合成的规则面（方案卡能力 + 当前策略快照）交给
+    // classifyScopedRules：命中失效作用域的通配 allow 作废 ⇒ 拒绝落库，
+    // 显式 ask/deny 原样保留（不被误作废）。
+    // fail-closed 语义分两路：「判定为空（invalidated 空）」是正常放行；
+    // 「规则集构造/判定不可得」是降级——warn 后放行，保住既有四闸行为。
+    let scopedWildcardInvalidated = false;
+    try {
+      const rules = synthesizeCommitScopedRules(
+        rebuilt.card,
+        this.currentPolicySnapshot() as CommitPolicySnapshot,
+      );
+      const verdict = classifyScopedRules({
+        rules,
+        cardGeneration: expectedGeneration,
+        currentGeneration: await this.currentGeneration(),
+        scope: { resources: ["*"], actions: ["*"] },
+      });
+      scopedWildcardInvalidated = verdict.invalidated.some(
+        (item) => item.disposition === "invalidate-wildcard-allow",
+      );
+    } catch (err: unknown) {
+      // 构造失败 ⇒ warn + 放行（不拦）。与「判定为空 ⇒ 放行」刻意留痕区分：
+      // 前者是降级路径，日志必须可追；后者是 classifyScopedRules 的正常结论。
+      if (typeof this.logger?.warn === "function") {
+        this.logger.warn(
+          `N14 scopedRules 不可用（fail-open，不影响 commit）：` +
+            `cardHash=${rebuilt.cardHash} — ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    if (scopedWildcardInvalidated) {
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail: "方案卡中的通配授权已随策略代际切换失效，请重新预览后再提交",
+      });
     }
 
     const payload = buildDraftPayloadFromCard(rebuilt.card, rebuilt.cardHash);

@@ -126,7 +126,9 @@
     "src/main/destructive-actions.ts",
     "src/main/destructive-actions.selftest.ts",
     "src/main/navigation-policy.ts",
-    "src/main/navigation-policy.selftest.ts"
+    "src/main/navigation-policy.selftest.ts",
+    "src/main/cli-dispatch.ts",
+    "src/main/cli-dispatch.selftest.ts"
   ],
   "exclude": []
 }

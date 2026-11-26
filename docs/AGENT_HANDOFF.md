@@ -1,5 +1,28 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 56 轮）：4-agent 并行——N14/N19/N20/N26 真实调用链接线
+
+**方向来源**：objective 续轮。前几轮把多数 N 目标做到纯函数/状态机层，本批挑 4 个**接入层**任务——把已有纯函数接到真实链（commit 闸、service DI、计量、桌面 selftest），按**文件边界**切分避免共享 controller 冲突。基线 HEAD `cdfd2e6e` 干净。
+
+| 切片 | 目标 | 产出 | 验收 |
+|---|---|---|---|
+| wire-n14-scoped-commit | N14 接线 | `workbench.controller.ts` 纯追加第五道闸（quota 后、draft 前）：`synthesizeCommitScopedRules` + `classifyScopedRules`，通配 allow 作废即拒、显式 ask/deny 保留；既有四闸逐字不变 | workbench 8 suites/95 tests；既有 commit.spec 全绿 |
+| wire-n19-gate | N19 接线 | `activation.record(dto, apiKeyScope?)` 末位 @Optional 注入 gate（携带 scope 判拒→`API_KEY_SCOPE_DENIED`、零 save），`revoke` 联动判定审计；module useValue+export token | 17 suites/173 tests；真 Nest DI + 短路反证 4 例红 |
+| impl-n20-dual-meter | N20 双口径 | `capability-activation/dual-meter.ts`：`invocations`+`successfulDeliveries`+相对份额分摊，显式不产出 token/货币值（无样本） | 7 suites/75 tests；误计 failure/权重未归一化两向反证 |
+| impl-n26-cli-dispatch | N26 CLI | `executor-desktop/main/cli-dispatch.ts` argv→mode 纯判定 + selftest（冲突旗标 fail-closed），主控接线到 `test:main`/`tsconfig.selftest.json` | 桌面 test:main EXIT=0（58 断言/3 反证真被拾取） |
+
+**主控裁决（N19 的关键判断）**：N19 gate 接线后没有"实际触发的消费点"——`workbench.commit` 调 `activation.record` 是 **JWT 用户路径的审计旁路**（draft 落库后 fail-open 记账），**不是** API Key 能力调用。给它传 scope 会让 JWT 用户被 API Key scope 误拦，是语义错误。故刻意不传，gate 保持"数据层就绪、消费层待外部 agent API Key 能力调用"——这是**设计正确**，非缺口。`revoke` 联动也只做判定+审计，**真实能力停用**（破坏性副作用）刻意未做，列为待裁决。
+
+**主控集成修复**：① N26 selftest 未被 `test:main` 显式清单拾取，主控接线 tsconfig include + package.json 链尾（AGENTS §4.1 极小接线例外），验证真跑 58 断言；② N14 的 4 处英文日志文案触发语言守卫 `:108`，统一改中文（欠账仍 8，未加豁免）；③ 8 处 prettier `eslint --fix`。
+
+**验收（主控独立复跑）**：`test:guards:chain` **CHAIN_EXIT=0**；全量 admin-api **API_FULL_EXIT=0，548 suites / 9242 passed / 6 skipped**；桌面 `test:main` EXIT=0；api-lint/文档守卫 0。4 个反证均有牙且 sha 还原。验收级别：单测 + 真 Nest DI + 真子进程守卫链 + 全量 jest；未达真 HTTP/PG、真实 agent loop 中断、真实 CLI 启动。本批引入缺陷 0。
+
+**提交**：单个原子提交（12 文件 + 4 项状态回写 + 交接段），保持中间态绿与 `git show` 归因完整。**未 push**。
+
+**后续项**：① N19 真实能力停用副作用（需独立写域 + 裁决）；② N14 interrupt 在途工具调用 + 跨实例 5s TTL 真机；③ N8/N18 接 agent runtime 真实循环；④ N20 接真实 stats + token 样本；⑤ N21/N22 系统实现；⑥ N24 进程外隔离（P4，需真实用户规模触发）。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 55 轮）：4-agent 并行——N1/N6/N11/N13续 接入层 + 9 项状态回写
 
 **方向来源**：objective 续轮。基线 HEAD `e27987fe` 干净、上批全量 9123 passed。本批挑 4 个可静态验收、写域互斥的目标；另把第 53/54/55 轮已落地却状态列滞后的 9 项（N9/N10/N12/N23/N25 + N1/N6/N11/N13）逐项核对代码证据后回写。

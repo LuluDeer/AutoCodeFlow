@@ -1,4 +1,4 @@
-import { Injectable, Logger, Optional } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { IsNull, Repository } from "typeorm";
@@ -21,6 +21,10 @@ import { AuditService } from "../audit/audit.service";
 // R32-A4: 属主账号状态（存在 / 未禁用）是 API Key 凭据的活性条件——
 // 见 authenticate() 头注。
 import { UsersService } from "../users/users.service";
+import {
+  CAPABILITY_SCOPE_GATE,
+  type CapabilityScopeGate,
+} from "../capability-activation/capability-scope.gate";
 
 export interface CreateApiKeyInput {
   userId: number;
@@ -99,6 +103,11 @@ export class ApiKeysService {
     // 缺席时 maxActiveKeysPerUser() 回落常量（先例同 auth.service 的 LeaderGate）。
     @Optional()
     private readonly configService?: ConfigService | null,
+    // N19: revoke 后的能力停用联动判定。@Optional 追加到末尾（既有 spec 只
+    // 装配 repo+audit+users，缺席即跳过，行为逐字不变）；缺席/裁剪部署不崩。
+    @Optional()
+    @Inject(CAPABILITY_SCOPE_GATE)
+    private readonly scopeGate?: CapabilityScopeGate,
   ) {}
 
   /** A-9: 生效的每用户活跃 key 上限（配置优先，无配置回落常量）。 */
@@ -214,6 +223,37 @@ export class ApiKeysService {
         detail: { name: row.name, keyPrefix: row.keyPrefix, scope: row.scope },
         ip: ip ?? undefined,
       });
+      // N19: 吊销成功后的能力停用联动。只做判定 + 审计留痕，**不停用任何
+      // 能力行**（那是破坏性副作用，真实停用由主控裁决是否接）。gate 缺席
+      // 跳过——既有装配与幂等重吊销行为逐字不变。判定异常 fail-open。
+      if (this.scopeGate) {
+        let shouldDisable = false;
+        try {
+          shouldDisable = this.scopeGate.shouldDisableOnRevoke(revokedAt);
+        } catch (err) {
+          this.logger.warn(
+            `apikey revoke scope gate unavailable: ${String(err)}`,
+          );
+        }
+        if (shouldDisable) {
+          await this.safeAudit({
+            userId,
+            username: username ?? undefined,
+            action: "apikey.revoke.capability-disable-decision",
+            resource: "api_key",
+            resourceId: String(id),
+            detail: {
+              name: row.name,
+              keyPrefix: row.keyPrefix,
+              scope: row.scope,
+              revokedAt: revokedAt.toISOString(),
+              shouldDisable: true,
+              note: "判定该 key 关联能力应停用；真实停用由主控裁决是否接，本次仅判定+审计，未停用任何能力行",
+            },
+            ip: ip ?? undefined,
+          });
+        }
+      }
     }
     return this.toView(row);
   }
