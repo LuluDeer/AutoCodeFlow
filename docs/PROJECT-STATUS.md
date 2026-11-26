@@ -31,8 +31,8 @@
 
 | 项目 | 数字 | 结果 |
 |---|---|---|
-| admin-api 全量测试（`--maxWorkers=2`） | 550 suites passed（2 skipped）/ 9275 tests passed（6 skipped） | exit 0 |
-| admin-web 全量测试（`vitest run`） | 371 files / 3060 passed（1 skipped） | exit 0 |
+| admin-api 全量测试（`--maxWorkers=2`） | 551 suites passed（2 skipped）/ 9315 tests passed（6 skipped） | exit 0 |
+| admin-web 全量测试（`vitest run`） | 371 files / 3061 passed（1 skipped） | exit 0 |
 | executor-node 全量（`npx jest`） | 64 suites / 1877 passed（13 skipped） | exit 0 |
 | executor-python 全量（`pytest`，覆盖率门槛 86%） | 2010 passed（3 skipped）/ 87.32% 覆盖，达标 | exit 0 |
 | acf-cli 全量（`vitest run`） | 16 files / 466 passed | exit 0 |
