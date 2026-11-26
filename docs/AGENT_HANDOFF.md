@@ -1,5 +1,34 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 67 轮）：审计盲区补核——N24/N25 接线 + 10 项 done 滞后纠错
+
+**方向来源**：objective 续轮。前两轮审计只覆盖 N1/N8/N9/N11/N18/N23/N10/N19/N21/N14/N26/N5/N16/N20/N22/N24?……共 15 项，**strategy §12.3 另有 12 项（N2/N3/N4/N6/N7/N12/N13/N15/N17/N24/N25/N27）从未在本 objective 下沿调用链核实**。本轮先用 workflow 并行 3 路只读审计（audit-E/F/G）补核这 12 项，锁定 2 个新 real_gap（N24/N25）+ 10 项标称 done 但文档"未做"声明滞后的纠错点。按写域互斥派 2 个 agent 实现：N24 独占 capability.module.ts（加 provider），N25 不碰 module.ts（只改 service/entity/前端），零冲突。
+
+| 切片 | 目标 | 交付 | 验收 |
+|---|---|---|---|
+| impl-n24-inprocess-gate | N24 中间形态 | `backpressure.ts`（slots 上限/归还 + streams 并发计数纯状态机、fail-closed）+ `inprocess-gate.service.ts`（resolveFor 投影→classify→budget→degrade 严格顺序、三纯函数逐字复用、`capability.degraded` 审计）+ module 注册 | 14/14 新测 + capability 15 suites/287 tests；双反证 |
+| impl-n25-source-policy | N25 单一事实源 | `assertSourceShape` 接 `isSupportedSourceType`、entity `CapabilitySourceType=ExtendedSourceType` 派生、前端 8 源回填、`toggleMarketplace`（失败审计 `capability.marketplace.toggle_failed`）+ `canAutoUpdateFor` | 28/28 + 前端 10/10；编译期同源断言 + 反证 |
+
+**审计裁决（10 项 done 滞后，不重复造轮子）**：N2/N3/N4/N7/N15/N17 标称 ✅ 属实（沿调用链确认生产 callers）；N12「未做接 buildPreview」已被 `outputBudgetFor`→`buildPreview` 生产接线证伪；N13「provider-ref:44,62 仅测试消费」已被 `routeFor`（ai.service.ts:611）与 `resolveAiRoute`（ai-route.ts:246）生产消费证伪；N6「部分实现」低估——webhook→intake→scan/resolve/hasProjectRole/buildPreview 全链生产可达，仅真发企微/飞书回调与加解密属 external 尾巴；N27 tool-search 第 57 工具真注册、工具面 57 基线齐，仅头注释陈旧（本轮主控纠正 `tool-search.ts:5-9`，从"不注册/56"改为现状 57 + `_registeredTools` 耦合说明）。这 10 项均未硬做、不重复实现，只纠正文档状态列。
+
+**主控集成（逐层修跨切面涟漪）**：
+1. audit action 两处新增：`capability.degraded` 在 agent 稿里用常量引用（audit guard 只认字面量、历史教训）→ 改为字面量后 guard 扫到 94 个；同步 audit.md 头部 92→94 + capability 域表格、前端 `ACTION_LABEL_KEYS` + zh/en 词条；文档守卫 94/19 绿、前端标签 21/21 绿。
+2. 前端 `api/capabilities.ts:21` 手写 4 源类型与后端 8 源派生产生语义漂移（后端 source 是空壳 schema 无法生成精确类型）→ 手写扩到 8 源 + 注明同源理由。
+3. `lint:api` 5 处 prettier（N25 spec 新加的编译期断言 + 折行）→ `eslint --fix` 1 文件；复验 size-caps 仍绿（基线 98 条目未动）。
+
+**验收（分级，不越级上报）**：`npm run test:guards:chain` **CHAIN_EXIT=0**；admin-api 全量 `562 suites / 9413 passed`（exit 0）；admin-web 全量 `371 files / 3065 passed`（exit 0）；workbench 真 PG 全链 e2e `1 passed`；双端 typecheck 0 错、lint:api 0。各切片最高级别=单测/内存替身（N24 slots/streams 状态机 + 真 service/假 repo、N25 含 jsdom 组件与编译期同源断言），**未达**真 Nest DI 全量/真 PG 落库/浏览器真机。本批引入缺陷 0。
+
+**边界与诚实声明**：
+- N24：进程外 host / IPC、坏版本回退属 P4 needs_adr（非等价 rollback，需 ADR 后再切）；slots/streams 与 budget 上限当前是可覆盖进程内默认常量，生产取值待配置层收口；审计写失败 warn 不阻主链。
+- N25：autoUpdate 实际拉取更新属 external，本切片只接资格判定；后端 DTO 的 @ApiProperty 源描述仍写 4 源（注释层、非类型漂移），未改。
+- 10 项 done 纠错只改文档状态列，未改任何产品代码（除 N27 头注释纠错）；审计全程只读。
+
+**后续项**：① objective 的目标清单（N1–N27）经三轮审计已全部核实：能独立落地的 real_gap 已清零，剩余均 needs_adr（N11 plan 身份 / N21 分级标签+出域 / N14 方案 A 重开 / N24 P4 进程外隔离）或 needs_decision（N26 独立 CLI / N22 SLA 告警渠道）或 external（N5 业务样本、N6 真 IM 回调、N25 autoUpdate 拉取），需 ADR/产品裁决/外部输入后再切，不可硬做假接线；② N24 生产上限取值配置化、N25 DTO 源描述注释同步是低优先清理项。
+
+**提交**：按 objective 分批提交（实现一批 + 集成同步一批 + 文档交接一批），不 push。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 66 轮）：3-agent 并行接线 N1/N9/N10（上批 real_gap 收尾）
 
 **方向来源**：objective 续轮。上批 workflow 审计锁定 8 个 real_gap，第 65 轮做了 5 个；本批收尾剩余 3 个（N1/N9/N10）。主控先 CodeGraph 复核三个纯函数仍只有测试调用者（上批结论在 N23/N18 接线后仍成立），再按**写域严格互斥**派 3 个 agent：N1 只建新 service/spec（不碰 module.ts）、N9 改 capability.service/controller/dto（不碰 module.ts）、N10 独占 workbench 模块；capability.module.ts 由主控集成时统一接线，避免三 agent 写域冲突。
