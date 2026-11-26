@@ -150,11 +150,15 @@ export default function WorkbenchPage() {
         expectedPolicyGeneration: policyGeneration,
       });
       setCommitResult(saved);
+      // 确认记录锚定本次实际放行的策略代际：优先取 commit 回带值（第三闸已校验），
+      // 缺省时回退 preview 值以兼容旧后端；即便与 preview 不同也只记值、不报错，
+      // 因为提交已成功落库，不能制造「成功却报错」的矛盾。
+      const recordedGeneration = saved.policyGeneration ?? policyGeneration;
       // 本地确认记录仅作 UX 反馈；真正的落库结果是上面的 commitResult。
       setRecords((prev) => [
         {
           cardHash,
-          policyGeneration,
+          policyGeneration: recordedGeneration,
           at: new Date().toISOString(),
           user: user?.username ?? '当前用户',
         },
@@ -286,7 +290,11 @@ export default function WorkbenchPage() {
         <Card title="确认留痕">
           <Space orientation="vertical">
             {records.map((record, i) => (
-              <div key={`${record.cardHash}-${i}`} data-testid="workbench-confirm-record">
+              <div
+                key={`${record.cardHash}-${i}`}
+                data-testid="workbench-confirm-record"
+                data-generation={record.policyGeneration}
+              >
                 <span>已确认并留痕，方案已存为草稿，审阅发布后才会执行</span>
                 <span>方案标识：{record.cardHash}</span>
                 <span>策略代际：{record.policyGeneration.slice(0, 8)}</span>

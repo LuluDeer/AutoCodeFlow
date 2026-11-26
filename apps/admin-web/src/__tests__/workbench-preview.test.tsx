@@ -147,7 +147,30 @@ describe('工作台最小验证页', () => {
     const record = await screen.findByTestId('workbench-confirm-record');
     expect(record.textContent).toContain(okResult.cardHash);
     expect(record.textContent).toContain(okResult.policyGeneration.slice(0, 8));
+    expect(record.getAttribute('data-generation')).toBe(okResult.policyGeneration);
     expect(record.textContent).toContain('tester');
+  });
+
+  it('反证：commit 回带新 policyGeneration 时确认记录锚定放行值，且不误报策略竞态', async () => {
+    const bumpedGeneration = 'ffffffffffffffff';
+    vi.mocked(commitPlan).mockResolvedValueOnce({
+      ...commitOk,
+      policyGeneration: bumpedGeneration,
+    });
+    await previewWithGoal();
+    fireEvent.click(button('确认方案'));
+
+    expect(await screen.findByTestId('workbench-commit-success')).toBeTruthy();
+    // 提交锚点仍取 preview 值：后端第三闸按它校验，不能被回带值污染。
+    expect(vi.mocked(commitPlan).mock.calls[0][0].expectedPolicyGeneration).toBe(
+      okResult.policyGeneration,
+    );
+    // 成功路径不弹错误、不回滚留痕：不制造「成功却报错」的矛盾。
+    expect(screen.queryByText(/确认失败/)).toBeNull();
+    const record = await screen.findByTestId('workbench-confirm-record');
+    expect(record.getAttribute('data-generation')).toBe(bumpedGeneration);
+    expect(record.textContent).toContain(bumpedGeneration.slice(0, 8));
+    expect(record.textContent).not.toContain(okResult.policyGeneration.slice(0, 8));
   });
 
   it('确认失败显示内联错误且不展示成功区', async () => {

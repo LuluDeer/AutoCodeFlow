@@ -14,7 +14,9 @@
 
 **验收**：守卫链/全量 admin-api/文档守卫/CI 四守卫全绿（详见本轮回执）；ADR 六节结构经 `test:docs` 校准；反证均有牙且 sha 还原。本批引入缺陷 0。
 
-**提交**：单个原子提交（ADR + README/两文档引用 + 4 文件实现 + 生成物 + 交接段）。**未 push**。
+**续批（同 objective 连续推进）**：前端消费 commit 回带 generation（`WorkbenchPage.tsx` + spec）——确认记录用 `saved.policyGeneration ?? preview 的 generation`（commit 回带优先、缺省回退兼容老后端），与 preview 不等时**不弹错/不回滚**（后端已 201、SOP 已落库），只覆盖本地记录锚点（`data-generation`），不新增可见文案。反证改回 preview 值⇒1 failed/9 passed、sha 还原；web 全量 371 files/3061 passed、守卫链绿。这是 ADR-043 方案 A 输出锚点的前端消费闭环（仍未接真实会话传递）。
+
+**提交**：ADR/文档 + 4 文件实现 + 生成物为一批（`288c6f54`）；前端锚点消费为续批。**未 push**。
 
 **后续项**（ADR-043 方案 A 待独立立项，满足重开条件之一才启动）：① commit generation → 会话 scope 显式传递（>1 真实调用方或 IM 网关上线）→ boundary `setGenerationProvider` → 真 PG e2e；② N8/N18 runtime 接线专项；③ N19 真实停用（破坏性待裁决）；④ N21 等保认证（外部）/分类标签；⑤ N24 P4 进程外（需真实用户规模）。
 
