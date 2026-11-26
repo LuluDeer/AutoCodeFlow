@@ -1,5 +1,46 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-27 · 工作台改造第 74 轮）：发布审批卡 UX + 真浏览器/真 PG 双级验收（ADR-045 最后一跳）
+
+**方向来源**：objective 续轮 + 第 71 轮后续项 ②（前端发布审批卡与「待我审批」UX）④（真浏览器 e2e 验发布审批链）。**PM 裁决**：先做「主管看得见、点得动、批完真发布」的最后一跳，而不是再堆成本归责——第 72/73 轮已把价目表、token 采样、金额闸可观测性做完（`price.service.ts` / `token-sample.port.ts` / `quota.status`），成本侧剩的是「关联键重设 + 行级投影」这种要 ADR 的结构性项；而发布审批链在**真进程里根本跑不起来**（本轮实测，见下），这是用户旅程的硬断点，优先级更高。
+
+| 切片 | 目标 | 交付 | 验收 |
+|---|---|---|---|
+| impl-publish-card | 发布审批卡 UX | `pages/inbox/PublishApprovalCard.tsx`（`inbox-publish-card` + preview 解析 + 四眼红线 + argsDigest 前 16 位 + 核对深链，`canWrite` 才出批准/拒绝）；InboxPage `sop_publish` 分支（模块级 `confirmThenWith`/`grantPublishApproval` 外提避免破 300 行红线）；WorkbenchPage 提交后「已提交四眼审批」三件套（`approvalKey` 缺席整块不渲染）；AgentSessionsPage 四眼提示；api 透传 `preview`/`argsDigest`；14 组 zh/en 词条 | 13 新单测 + 196 回归 |
+| e2e-publish-chain | 真浏览器发布链 | `e2e/publish-approval-chain.spec.ts` 6 例（业务人员提交→主管见卡→批准→待办消失→非发布行回归→preview 降级） | **真 Chromium 6/6** |
+| e2e-publish-pg | 真 PG 发布副作用 | `test/publish-approval-inbox.e2e-spec.ts` 7 例（主管见单含 preview/argsDigest、业务人员不可见、grant⇒`sop_versions.published_by='agent:tool-call'`、重放不重复发布、argsDigest 同源、零会话 `total=0/degraded=false`） | **真 PG 7/7** |
+| 主控集成 | 接线 + 修真缺陷 + 生成物 | 见下「集成修的涟漪」 | 全守卫链 EXIT=0 |
+
+**主控集成修的涟漪（两条是真进程实测的产品缺陷，不是测试问题）**：
+1. **P0：ADR-045 发布链在真进程里 100% 不可用**。`workbench.module.ts` 的 `RELEASE_APPROVALS_PORT` 用 `useFactory` 在 **WorkbenchModule 实例化期 eager** `moduleRef.get(AgentApprovalsService,{strict:false})`，拿到的是**构造器没跑过**的空壳（`port.approvals===undefined`）⇒ `requestRelease` 抛 `Cannot read properties of undefined (reading 'create')`。同文件 SESSIONS/SOPS 端口是调用时才 `get`（惰性）所以正常。修法：改**惰性代理**（每方法现场 `moduleRef.get` 再转发，端口形状逐字不变）+ 6 例单测（计数假 ModuleRef 断言实例化期 get 次数=0、真时序「先空壳后真服务」端到端）；变异验证：改回 eager ⇒ 4 例红。
+2. **P1：零会话用户永远拿到 degraded 信封**。`agent-inbox.service.ts` 的空视域哨兵是裸字符串 `__no_visible_session__`，打在 **uuid 列** `sessionId` 上 ⇒ PG `invalid input syntax for type uuid` ⇒ items/total/sessionTotal 全 null + `degraded=true`（事实是零，被说成读不到）。修法：换合法全零 uuid（`NO_VISIBLE_SESSION_ID`，`gen_random_uuid()` 不可能产出）+ 8 例单测（替身按 uuid 语义校验 `In(...)`）；变异验证：改回裸字符串 ⇒ 5 例红。
+3. **openapi.json 陈旧**（HEAD 上 `CommitResultDto` 无 `approvalKey`、24 条中文缺英文映射，第 71 轮改了 DTO 没导出）：重新导出 + 补 30 条 `openapi-en-map.json` 映射（只追加、不重排，diff 31 行）+ `gen:api-types` + `gen:api-reference`（258 路径逐字节一致）。
+4. `api/workbench.ts` 的 `CommitResult` 补 `approvalKey?: string`（合同登记），WorkbenchPage 删掉本地扩展类型。
+5. i18n 标点守卫：中文全角冒号并进词条（新增 `inbox.publish.previewWithSummary`），删掉随之 orphan 的 `previewLabel`。
+6. PG e2e 去掉第 73 轮记录的「测试进程内替换端口」绕行（修完后 `port.approvals` 恒 undefined 会让绕行永久生效、掩盖修复），改为装配锚点断言 + 新增 ⑦ 零会话回归用例。
+7. **契约/实现口径不一致（第 72 轮遗留，本轮导出后才暴露）**：`GET /capability-activation/token-sample` 的 `sessionId` 契约写 `required:true`、实现是 `?:` 可选 ⇒ `check:query-param-required` 红。修法：加 `@ApiQuery({ name:"sessionId", required:false })`（本版 Nest 的 `@Query` 第二参是 PipeTransform，不接受 options——先踩过一次 tsc 红），契约与实现同口径，登记表未新增。
+8. prettier：新 spec 18 处 + `agent-inbox.service.ts` 1 处 → `eslint --fix`（语义不变）。
+
+**验收（分级，不越级上报）**：
+- **浏览器（第 4 级，传输层 mock）**：`publish-approval-chain.spec.ts` **6/6**（真 Chromium + 真 SPA + `page.route` 契约 fixture；**不证明后端真跑**）。
+- **真 PG 进程内（第 3 级）**：`publish-approval-inbox.e2e-spec.ts` **7/7**（真 Nest + 真 TypeORM + 真 Redis + supertest，零 mock；断言真表副作用：`agent_approvals.status=consumed`、`sop_versions` 恰 1 行 `published_by='agent:tool-call'`、`sops.currentVersion` 与版本行同源、`audit_logs detail.actor=agent:tool-call`）。
+- admin-api 全量 **574 suites / 9533 passed**（0 failed）；admin-web 全量 **376 files / 3089 passed**（0 failed）。
+- 全守卫链 `CHAIN_EXIT=0`；`check:size-caps` 0 error（InboxPage 默认函数曾 308 行破线，已外提模块级通道修复）。
+- 单测/内存替身：前端 13 例（卡片 10 + 工作台 3）、后端 14 例（端口装配 6 + 空视域 8），均带变异反证。
+
+**边界与诚实声明**：
+- **浏览器级是传输层 mock**：证明「DOM/交互可达、主管点得动」，不证明后端真跑；后端由真 PG e2e 覆盖。两段拼起来才是同一旅程的全链，**尚未做「真后端 + 真浏览器」合体**（需 e2e-full 编排）。
+- 卡内「批准」按钮**仅 `canWrite`（主管）可见**，业务人员 0 按钮；与任务书字面「不出现 grant/deny」的张力按 e2e 事实源裁决为「业务人员不出现」。卡内无任何「直接发布」入口（有断言钉死）。
+- 未覆盖：跨进程/重启后 `argsByApprovalKey` 缓存丢失的 fail-closed 分支（需真重启进程）；主管自批的服务端拒绝在浏览器侧未点过（服务端单测已钉）。
+- `i18n-scan --check` 存量 222 处硬编码中文为 HEAD 既有欠账（本轮增量 0），需单开迁移切片。
+- 第 73 轮交接里「两个来源不明的孤儿 e2e spec 已清理」的记录**已被本轮取代**：那两份就是本轮的 `publish-approval-chain.spec.ts` / `publish-approval-inbox.e2e-spec.ts`（当时实现未落地所以红），本轮实现落地后 6/6 与 7/7 全绿，是正式交付物。
+
+**后续项**：① 成本归责的关联键重设（`activation.sessionId` 写的是 SOP id，需 ADR + 迁移，第 72/73 轮已两次点名）；② 跨实例 args 缓存持久化（P4）；③「真后端 + 真浏览器」合体 e2e（把本轮两段接起来）；④ i18n 硬编码中文迁移；⑤ 价目表管理 UI。
+
+**提交**：按 objective 分批提交（前端 + 后端修复 + 生成物/映射 + 文档交接），不 push。
+
+---
+
 ## 本轮（2026-11-27 · 工作台改造第 73 轮）：成本归责可观测性——金额闸跳过要透明
 
 **方向来源**：objective 续轮 + 上轮诚实边界（金额闸永远 fail-open 因行级金额不可投影）。PM 复核：activation log 无 token 列、sessionId 是 SOP id 命名空间，行级金额按项目/能力归责必然是全局金额的错误分摊（伪归责），违反上轮"不做份额伪分摊"承诺——**不硬推行级投影**。改做更有价值且诚实的可观测性：让管理员看清"金额闸为何没拦"，而不是静默 fail-open 被误读成"未超限"。
