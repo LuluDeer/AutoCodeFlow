@@ -6,7 +6,9 @@ import {
   Post,
   Put,
   Query,
+  Req as NestReq,
 } from "@nestjs/common";
+import type { Request } from "express";
 import {
   ApiBearerAuth,
   ApiOkResponse,
@@ -15,6 +17,7 @@ import {
 } from "@nestjs/swagger";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+import { isApiKeyUser } from "../../common/interfaces/auth-user.interface";
 import { UserRole } from "../users/entities/user.entity";
 import {
   ActivationQueryDto,
@@ -29,6 +32,11 @@ import {
 } from "./capability-activation.service";
 import { CapabilityActivationLog } from "./entities/activation-log.entity";
 import { QuotaService } from "./quota.service";
+
+// 既有单测的 @nestjs/common 替身只 mock 了路由装饰器，未导出 Req；缺位时降级
+// 为空装饰器，保持这些 spec 可加载。生产环境 NestReq 恒在，注入语义不变。
+const Req: typeof NestReq =
+  NestReq ?? ((() => () => undefined) as typeof NestReq);
 
 /**
  * N15 / GCO §11：运行时能力激活日志端点。
@@ -70,8 +78,14 @@ export class CapabilityActivationController {
     summary: "记录一次能力激活（JWT；供 capability/workbench 调用方写入）",
   })
   @ApiOkResponse({ type: ActivationLogViewDto })
-  record(@Body() dto: CreateActivationDto): Promise<CapabilityActivationLog> {
-    return this.svc.record(dto);
+  record(
+    @Body() dto: CreateActivationDto,
+    @Req() req: Request,
+  ): Promise<CapabilityActivationLog> {
+    // N19：API Key 主体（JwtAuthGuard 的 apiKey 分支）带真实 scope 进闸；
+    // JWT 会话主体无 scope → undefined，service 跳过 scope 闸，行为逐字不变。
+    const scope = isApiKeyUser(req.user) ? req.user.scope : undefined;
+    return this.svc.record(dto, scope);
   }
 
   /** 静态段必须在参数路由之前——本控制器无 @Get(":id")，天然安全。 */

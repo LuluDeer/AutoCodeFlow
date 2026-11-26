@@ -141,6 +141,7 @@ interface CapabilityTableCardProps {
   onEdit: (cap: Capability) => void;
   onToggle: (cap: Capability) => void;
   onRemove: (cap: Capability) => void;
+  onTransfer: (cap: Capability) => void;
 }
 
 /** 列表卡片：刷新 / 新建 / 错误提示 / 能力表格（含 ADMIN 操作列）。 */
@@ -156,6 +157,7 @@ function CapabilityTableCard({
   onEdit,
   onToggle,
   onRemove,
+  onTransfer,
 }: CapabilityTableCardProps) {
   return (
     <>
@@ -229,6 +231,14 @@ function CapabilityTableCard({
                           onClick={() => onEdit(row)}
                         >
                           编辑
+                        </Button>
+                        <Button
+                          type="link"
+                          size="small"
+                          aria-label={`移交能力 ${row.key}`}
+                          onClick={() => onTransfer(row)}
+                        >
+                          移交
                         </Button>
                         <Button
                           type="link"
@@ -615,6 +625,39 @@ export default function CapabilitiesPage() {
   const [editing, setEditing] = useState<Capability | 'new' | null>(null);
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [transferTarget, setTransferTarget] = useState<Capability | null>(null);
+  const [transferOwner, setTransferOwner] = useState('');
+  const [transferBacker, setTransferBacker] = useState('');
+
+  function openTransfer(cap: Capability) {
+    setTransferOwner('');
+    setTransferBacker('');
+    setTransferTarget(cap);
+  }
+
+  function closeTransfer() {
+    setTransferTarget(null);
+    setTransferOwner('');
+    setTransferBacker('');
+  }
+
+  async function submitTransfer() {
+    if (!transferTarget || !transferOwner.trim() || !transferBacker.trim()) return;
+    setBusyId(transferTarget.id);
+    try {
+      await capabilitiesApi.transfer(transferTarget.id, {
+        owner: transferOwner.trim(),
+        backer: transferBacker.trim(),
+      });
+      message.success('能力已移交。');
+      closeTransfer();
+      void refetch();
+    } catch (err) {
+      showApiError(err, '移交能力失败，请稍后重试。');
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   function openCreate() {
     form.setFieldsValue({
@@ -744,6 +787,7 @@ export default function CapabilitiesPage() {
         onEdit={openEdit}
         onToggle={(cap) => void toggleEnabled(cap)}
         onRemove={(cap) => void removeCap(cap)}
+        onTransfer={openTransfer}
       />
 
       <CapabilityFormModal
@@ -754,6 +798,37 @@ export default function CapabilitiesPage() {
         onCancel={() => setEditing(null)}
         onSubmit={(v) => void submitForm(v)}
       />
+
+      <Modal
+        title="移交能力所有权"
+        open={transferTarget !== null}
+        okText="提交"
+        cancelText="取消"
+        okButtonProps={{ disabled: !transferOwner.trim() || !transferBacker.trim() }}
+        confirmLoading={busyId === transferTarget?.id}
+        onCancel={closeTransfer}
+        onOk={() => void submitTransfer()}
+        data-testid="capability-transfer-modal"
+      >
+        <Form layout="vertical">
+          <Form.Item label="新 owner" required>
+            <Input
+              data-testid="transfer-owner"
+              value={transferOwner}
+              onChange={(e) => setTransferOwner(e.target.value)}
+              placeholder="发布者"
+            />
+          </Form.Item>
+          <Form.Item label="新 backer" required>
+            <Input
+              data-testid="transfer-backer"
+              value={transferBacker}
+              onChange={(e) => setTransferBacker(e.target.value)}
+              placeholder="部门 / 角色"
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <CapabilityResolveCard capabilities={capabilities} />
       <CapabilityDumpCard capabilities={capabilities} />

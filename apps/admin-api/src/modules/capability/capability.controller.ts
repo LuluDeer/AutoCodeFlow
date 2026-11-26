@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  Optional,
   Param,
   Patch,
   Post,
@@ -37,6 +38,7 @@ import {
 import { ResolveCapabilityDto } from "./dto/resolve-capability.dto";
 import { TransferCapabilityDto } from "./dto/transfer-capability.dto";
 import { CapabilityViewDto } from "./dto/capability-view.dto";
+import { CapabilityGenerationRegistry } from "./capability-generation.registry";
 
 /**
  * ADR-040 / P1：Capability 注册表端点（管理台，全部走全局 JwtAuthGuard）。
@@ -57,7 +59,11 @@ import { CapabilityViewDto } from "./dto/capability-view.dto";
 @ApiBearerAuth("JWT")
 @Controller("capabilities")
 export class CapabilityController {
-  constructor(private readonly svc: CapabilityService) {}
+  constructor(
+    private readonly svc: CapabilityService,
+    // N23：内存单测常以单参实例化本控制器，registry 缺席即 fail-open 走旧 service。
+    @Optional() private readonly generation?: CapabilityGenerationRegistry,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: "列出全部 capability" })
@@ -81,7 +87,9 @@ export class CapabilityController {
   @ApiResponse({ status: 200, description: "生效配置 + 策略结论" })
   @ApiResponse({ status: 400, description: "key 未注册 / layers 非法" })
   resolve(@Body() dto: ResolveCapabilityDto): Promise<CapabilityResolution> {
-    return this.svc.resolveFor(dto);
+    // N23：优先读 generation swap 当前代；空态回退 service（既有 resolve 逐字不变）。
+    if (!this.generation) return this.svc.resolveFor(dto);
+    return this.generation.resolve(dto, () => this.svc.resolveFor(dto));
   }
 
   @Get(":key/dump")

@@ -1,6 +1,8 @@
 import { Module } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
 
+import { AuditModule } from "../audit/audit.module";
+import { AuditService } from "../audit/audit.service";
 import { ConfigCacheSyncService } from "../config/config-cache-sync.service";
 import { SystemConfigModule } from "../config/config.module";
 import { SystemConfigService } from "../config/config.service";
@@ -18,6 +20,13 @@ import {
   CapabilityActivationRecorder,
   WorkbenchController,
 } from "./workbench.controller";
+import {
+  EmptyRewindAsyncWriteSource,
+  REWIND_ASYNC_WRITE_SOURCE,
+  REWIND_AUDIT_SINK,
+  REWIND_GENERATION_SOURCE,
+  RewindRunner,
+} from "./rewind-runner";
 
 /**
  * 最小方案卡面：preview 纯内存；commit 先过硬阈闸（超限 429、不落 draft），
@@ -33,7 +42,12 @@ import {
  * 与 config.service.ts 自身对 cacheSync 的 @Optional 姿态一致）。
  */
 @Module({
-  imports: [SopModule, CapabilityActivationModule, SystemConfigModule],
+  imports: [
+    SopModule,
+    CapabilityActivationModule,
+    SystemConfigModule,
+    AuditModule,
+  ],
   controllers: [WorkbenchController],
   providers: [
     {
@@ -66,6 +80,16 @@ import {
     // N14：DomainEventModule 是 @Global（AppModule 已 import），其 DomainEventBus
     // 可直接注入；本服务构造时订阅 capability.changed 并 bump 运行时代际。
     PolicyGenerationService,
+    // N18 rewind：代际与审计用 token 别名到真实服务（runner 不值 import 它们，
+    // 保住既有 preview/commit 的内存替身单测）；在途写入源缺省为空实现，
+    // 生产可由其它模块用同名 token override 成真实仓储/注册表。
+    { provide: REWIND_GENERATION_SOURCE, useExisting: PolicyGenerationService },
+    { provide: REWIND_AUDIT_SINK, useExisting: AuditService },
+    {
+      provide: REWIND_ASYNC_WRITE_SOURCE,
+      useClass: EmptyRewindAsyncWriteSource,
+    },
+    RewindRunner,
   ],
 })
 export class WorkbenchModule {}

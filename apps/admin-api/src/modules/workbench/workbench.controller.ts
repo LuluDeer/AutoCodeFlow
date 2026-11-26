@@ -67,6 +67,8 @@ import {
 import { PolicyGenerationService } from "./policy-generation.service";
 import type { PlanCardDto } from "./dto/preview-plan-card.dto";
 import { classifyScopedRules, type ScopedRule } from "./scoped-rules";
+import { RewindRunner } from "./rewind-runner";
+import { RewindRequestDto, RewindResultDto } from "./dto/rewind.dto";
 
 /** 极简框架替身可能没有 @Optional / @Inject；缺席时降级 no-op，手动 new 不受影响。 */
 const Optional: (...args: any[]) => any =
@@ -177,6 +179,10 @@ export class WorkbenchController {
     @Optional()
     @Inject(QUOTA_HARD_LIMIT_GATE)
     private readonly quotaGate?: QuotaHardLimitGate | null,
+    // N18：rewind 代际围栏消费层。@Optional 缺席（手动 new / 裁剪部署）⇒ 端点报
+    // DEPENDENCY_UNAVAILABLE；既有 preview/commit 的装配与四道闸逐字不变。
+    @Optional()
+    private readonly rewindRunner?: RewindRunner | null,
   ) {}
 
   /**
@@ -407,6 +413,33 @@ export class WorkbenchController {
       status: "draft",
       next: "请在 SOP 页面审阅并发布",
       policyGeneration: currentGeneration,
+    };
+  }
+
+  @Post("rewind")
+  @ApiOperation({
+    summary:
+      "N18：作废旧代在途异步写入与通知并留审计（代际只读服务端注册表，不信任客户端）",
+  })
+  @ApiOkResponse({ type: RewindResultDto })
+  async rewind(
+    @Body() dto: RewindRequestDto,
+    @CurrentUser() user: { id: number | string; username?: string } | undefined,
+  ): Promise<RewindResultDto> {
+    if (!this.rewindRunner) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    const result = await this.rewindRunner.rewind({
+      sessionId: dto.sessionId,
+      partIds: dto.partIds,
+      username: user?.username,
+    });
+    return {
+      resourceId: result.resourceId,
+      allowedCount: result.allowedCount,
+      invalidatedCount: result.invalidatedCount,
+      executedWriteIds: result.executedWriteIds,
+      generation: result.generation,
     };
   }
 }

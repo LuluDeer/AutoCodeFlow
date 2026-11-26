@@ -142,6 +142,10 @@ export const capabilitiesApi = {
   update: (id: string, data: UpdateCapabilityPayload) =>
     client.patch<Capability>(`/capabilities/${encodeURIComponent(id)}`, data),
 
+  /** POST /capabilities/:id/transfer —— ADMIN，移交 owner / backer。 */
+  transfer: (id: string, data: { owner: string; backer: string }) =>
+    client.post<Capability>(`/capabilities/${encodeURIComponent(id)}/transfer`, data),
+
   /** DELETE /capabilities/:id —— ADMIN。 */
   remove: (id: string) =>
     client.delete<{ ok: true }>(`/capabilities/${encodeURIComponent(id)}`),

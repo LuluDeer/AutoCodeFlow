@@ -61,6 +61,8 @@ import { AgentController } from "./agent.controller";
 import { AgentSessionRetentionService } from "./agent-session-retention.service";
 // R278：待办收件箱的服务端聚合（S1，独立 provider）。
 import { AgentInboxService } from "./runtime/agent-inbox.service";
+// N8：steer inbox（进程内 provider；runtime/controller 同注入一个实例）。
+import { SteerInboxService } from "./runtime/steer-inbox.service";
 import { AgentBoundaryService } from "./boundary/agent-boundary.service";
 import { ToolExecutorService } from "./tools/tool-executor.service";
 import { AgentApiClient } from "./tools/agent-api.client";
@@ -158,6 +160,8 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
     // 独立 provider：agent-approvals.service.ts / agent-session.service.ts 都在
     // size-caps 的「逐文件只减不增」基线上，就地新增必然破顶。
     AgentInboxService,
+    // N8：waiting_input 期 steer 意图的进程内 inbox（独立 provider，无 DB/队列依赖）。
+    SteerInboxService,
     // R302：TTFV 阶段2 的 append-only 漏斗事件写入口（独立 provider，不碰顶格文件）。
     FunnelEventsService,
     // R303：90 天滚动清理（TTFV §3.2；独立 provider，不改写入口/实体）。
@@ -199,6 +203,8 @@ export class AgentModule implements OnModuleInit {
     // GAP-3：LLM 瞬态耗尽的自动续跑出队口（agent-jobs delayed job）。
     @InjectQueue(AGENT_QUEUE_NAME)
     private readonly agentQueue: Queue<AgentJobData>,
+    // N8：runtime 只持有 drain 口；装配在 onModuleInit，缺席即 fail-open（同 toolExecutor）。
+    private readonly steerInboxes: SteerInboxService,
   ) {}
 
   /**
@@ -221,6 +227,8 @@ export class AgentModule implements OnModuleInit {
     this.runtime.setToolExecutor(this.executor);
     // TOOLS-02：重放文案要知道审批单真实状态（已批准 → 提示重提执行）。
     this.runtime.setApprovals(this.approvals);
+    // N8：同一个进程内 inbox 实例同时供 controller.park 与 runtime.drain。
+    this.runtime.setSteerInbox(this.steerInboxes);
     // GAP-3：LLM 瞬态耗尽的自动续跑出队口——agent-jobs delayed job（60s）。
     //
     // jobId 固定为「会话 id + 用途」：同一会话重复收敛（重试耗尽与并发判定

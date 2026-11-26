@@ -35,6 +35,9 @@ import type { AgentStep } from "../entities/agent-step.entity";
 import type { AgentToolCall } from "../entities/agent-tool-call.entity";
 import { shapeToolResultForModel } from "../tools/tool-result-shaping";
 import type { ReplayDeclaration } from "../tools/tool-call-context";
+// N8：steer inbox 只以注入口进入热路径——缺席时 drain 不调用，主链逐字不变。
+import type { StepBoundary } from "./steer-inbox";
+import type { SteerInboxService } from "./steer-inbox.service";
 
 /**
  * 重放进上下文时单条工具结果的上限（字符）。
@@ -497,6 +500,18 @@ export class AgentRuntimeService {
   }
 
   /**
+   * N8 装配点：注入 steer inbox（生产由 AgentModule 装配）。
+   *
+   * 只取 drain 一法：runtime 不碰 park（写入只在 waiting_input 的 controller），
+   * 也不碰持久化——缺席即 fail-open，既有 run 循环行为逐字不变。
+   */
+  private steerInbox: Pick<SteerInboxService, "drain"> | null = null;
+
+  setSteerInbox(inbox: Pick<SteerInboxService, "drain">): void {
+    this.steerInbox = inbox;
+  }
+
+  /**
    * 运行（或恢复）一个会话，直到终态。
    *
    * 幂等性：已是终态的会话直接返回——重复入队（resume 与定时扫描撞车）
@@ -612,6 +627,21 @@ export class AgentRuntimeService {
             steps: usage.steps,
             reason: verdict.message,
           };
+        }
+
+        // ── N8：步边界 drain steer 意图，追加为下一轮 user 消息 ──────────
+        // 落点纪律：预算闸门 + 终态复查之后、上下文折叠规划之前。
+        //   · 终态/超预算轮次不 drain，不给已停止的会话制造新输入；
+        //   · 注入的是 rebuildMessages 产出的 messages，审批重放语义（其尾部
+        //     的 tool 应答）原样保留，steer 只追加在末尾；
+        //   · 当前步序号取自本 run 的 DB 用量（usage.steps），每轮 LLM 前调一次；
+        //   · provider 缺席 ⇒ 整段跳过（fail-open），主链逐字不变。
+        if (this.steerInbox) {
+          const drained: { intents: readonly { content: string }[] } =
+            this.steerInbox.drain(sessionId, usage.steps as StepBoundary);
+          for (const intent of drained.intents) {
+            messages = [...messages, { role: "user", content: intent.content }];
+          }
         }
 
         // ── 推理 ──

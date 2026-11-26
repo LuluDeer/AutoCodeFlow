@@ -10,6 +10,7 @@ import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-li
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import CapabilitiesPage from '../pages/CapabilitiesPage';
 import { capabilitiesApi, type Capability, type CapabilityDump } from '../api/capabilities';
+import { client } from '../api/client';
 import { message } from '../utils/toast';
 import type { AuthUser } from '../store/auth';
 
@@ -28,6 +29,7 @@ vi.mock('../api/capabilities', async (importOriginal) => {
       remove: vi.fn(),
       resolve: vi.fn(),
       dump: vi.fn(),
+      transfer: vi.fn(),
     },
   };
 });
@@ -132,12 +134,18 @@ async function openCreateModal() {
   return screen.findByRole('dialog');
 }
 
+async function openTransferModal() {
+  fireEvent.click(screen.getByRole('button', { name: '移交能力 browser' }));
+  return screen.findByRole('dialog');
+}
+
 beforeEach(() => {
   authState.user = { id: 7, username: 'tester', role: 'user' };
   vi.mocked(capabilitiesApi.list).mockReset().mockResolvedValue(CAPS);
   vi.mocked(capabilitiesApi.create).mockReset().mockResolvedValue(CAPS[0]);
   vi.mocked(capabilitiesApi.update).mockReset().mockResolvedValue(CAPS[0]);
   vi.mocked(capabilitiesApi.remove).mockReset().mockResolvedValue({ ok: true });
+  vi.mocked(capabilitiesApi.transfer).mockReset().mockResolvedValue(CAPS[0]);
   vi.mocked(capabilitiesApi.resolve).mockReset().mockResolvedValue({
     key: 'browser',
     effective: { timeout: 60, model: 'gpt-x' },
@@ -295,5 +303,77 @@ describe('能力注册表页面', () => {
     expect(within(table).getByTestId('dump-layer-project').textContent).toContain('45');
     expect(within(table).getAllByText('<redacted>').length).toBeGreaterThan(0);
     expect(capabilitiesApi.dump).toHaveBeenCalledWith('browser', {});
+  });
+
+  it('transfer client 命中 POST /capabilities/:id/transfer 且 body 逐字对齐 DTO', async () => {
+    const actual = await vi.importActual<typeof import('../api/capabilities')>('../api/capabilities');
+    const post = vi.spyOn(client, 'post').mockResolvedValue(CAPS[0]);
+    try {
+      await actual.capabilitiesApi.transfer('cap-1', { owner: 'alice', backer: 'team-a' });
+      expect(post).toHaveBeenCalledWith('/capabilities/cap-1/transfer', {
+        owner: 'alice',
+        backer: 'team-a',
+      });
+    } finally {
+      post.mockRestore();
+    }
+  });
+
+  it('点移交 → Modal → 填 owner/backer → 提交命中 transfer 并刷新列表', async () => {
+    authState.user = { id: 7, username: 'tester', role: 'admin' };
+    renderPage();
+    await screen.findByText('browser');
+    expect(capabilitiesApi.list).toHaveBeenCalledTimes(1);
+
+    const dialog = await openTransferModal();
+    fireEvent.change(within(dialog).getByTestId('transfer-owner'), { target: { value: 'alice' } });
+    fireEvent.change(within(dialog).getByTestId('transfer-backer'), { target: { value: 'team-a' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /提\s*交/ }));
+
+    await waitFor(() => {
+      expect(capabilitiesApi.transfer).toHaveBeenCalledWith(CAPS[0].id, {
+        owner: 'alice',
+        backer: 'team-a',
+      });
+    });
+    await waitFor(() => {
+      expect(capabilitiesApi.list).toHaveBeenCalledTimes(2);
+    });
+    expect(message.success).toHaveBeenCalled();
+  });
+
+  it('owner / backer 任一为空时提交按钮禁用且不发请求', async () => {
+    authState.user = { id: 7, username: 'tester', role: 'admin' };
+    renderPage();
+    await screen.findByText('browser');
+    const dialog = await openTransferModal();
+    const submit = within(dialog).getByRole('button', { name: /提\s*交/ }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.click(submit);
+    expect(capabilitiesApi.transfer).not.toHaveBeenCalled();
+
+    fireEvent.change(within(dialog).getByTestId('transfer-owner'), { target: { value: 'alice' } });
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(within(dialog).getByTestId('transfer-backer'), { target: { value: 'team-a' } });
+    expect(submit.disabled).toBe(false);
+    expect(capabilitiesApi.transfer).not.toHaveBeenCalled();
+  });
+
+  it('transfer 报错时不刷新列表并显示错误提示', async () => {
+    authState.user = { id: 7, username: 'tester', role: 'admin' };
+    vi.mocked(capabilitiesApi.transfer).mockReset().mockRejectedValue(new Error('boom'));
+    renderPage();
+    await screen.findByText('browser');
+    expect(capabilitiesApi.list).toHaveBeenCalledTimes(1);
+
+    const dialog = await openTransferModal();
+    fireEvent.change(within(dialog).getByTestId('transfer-owner'), { target: { value: 'alice' } });
+    fireEvent.change(within(dialog).getByTestId('transfer-backer'), { target: { value: 'team-a' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /提\s*交/ }));
+
+    await waitFor(() => {
+      expect(message.error).toHaveBeenCalled();
+    });
+    expect(capabilitiesApi.list).toHaveBeenCalledTimes(1);
   });
 });

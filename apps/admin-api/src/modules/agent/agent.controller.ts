@@ -58,6 +58,7 @@ import {
 } from "./entities/agent-session.entity";
 import {
   IsIn,
+  IsNotEmpty,
   IsObject,
   IsOptional,
   IsString,
@@ -101,6 +102,8 @@ import { AgentExecutionConfirmationService } from "./runtime/agent-execution-con
 // 同面（class 级 JwtAuthGuard + ADMIN），不进 metrics 的 @Public 抓取面。
 import { NorthStarMetricsService } from "./runtime/north-star-metrics.service";
 import { AgentNorthStarResponseDto } from "./dto/agent-north-star.dto";
+// N8：waiting_input 期 steer 意图的进程内 inbox（独立 provider，追加在构造末尾）。
+import { SteerInboxService } from "./runtime/steer-inbox.service";
 
 /**
  * R279：把 `since` query（ISO-8601）解析成 `Date`；**解析不出 ⇒ `undefined`（不筛）**。
@@ -145,6 +148,15 @@ export class CreateAgentSessionDto {
   @IsOptional()
   @IsObject()
   scope?: Record<string, unknown>;
+}
+
+/** N8：POST /api/agent/sessions/:id/steer 的请求体。 */
+export class AgentSteerDto {
+  @ApiProperty({ description: "用户追加的 steer 正文（步边界注入下一轮模型）" })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(4000)
+  content: string;
 }
 
 /**
@@ -244,6 +256,16 @@ export class AgentController {
      */
     @Optional()
     private readonly northStarMetrics?: NorthStarMetricsService | null,
+    /**
+     * N8：steer inbox provider。
+     *
+     * ⚠️ **同样追加在末尾且 `@Optional`**（R202/R205/R207/R278/R308/R325/R327
+     * 教训）：既有 spec 用定位参数装配本 controller，插在中间会让它们整体错位。
+     * 生产装配里 provider 由 AgentModule 注册；缺席时端点显式 503，绝不回
+     * 200 空信封。
+     */
+    @Optional()
+    private readonly steerInbox?: SteerInboxService | null,
   ) {}
 
   @Get("sessions")
@@ -1298,5 +1320,56 @@ export class AgentController {
       throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
     }
     return this.northStarMetrics.report(asOf);
+  }
+
+  /**
+   * N8：waiting_input 期追加一条 steer 意图。
+   *
+   * 只写 inbox，**不**入队 resume job、**不**产生 step/LLM 调用——会话仍在等
+   * 人工审批，模型此刻不在跑。真正注入发生在运行时的下一个模型步边界
+   * （AgentRuntimeService.run 的 drain）。终态/其它状态 soft-fail，沿用
+   * `resume` 端点的状态判定写法（200 + ok:false），绝不复活死意图。
+   */
+  @Post("sessions/:id/steer")
+  @ApiOperation({
+    summary: "向 waiting_input 会话追加 steer 意图（下一轮步边界注入）",
+  })
+  @ApiCreatedResponse({
+    schema: { type: "object", additionalProperties: true },
+  })
+  async steer(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @Body() dto: AgentSteerDto,
+  ) {
+    if (!this.steerInbox) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    const session = await this.sessions.requireById(id);
+    if (session.status !== "waiting_input") {
+      return {
+        ok: false,
+        parked: false,
+        wake: false,
+        reason: `会话不在 waiting_input（${session.status}），steer 未入队`,
+      };
+    }
+    const content = typeof dto?.content === "string" ? dto.content.trim() : "";
+    if (!content) {
+      throw new AppError("VALIDATION_FAILED", {
+        detail: "steer content 不能为空",
+      });
+    }
+    const result = this.steerInbox.park(
+      id,
+      content,
+      Number(session.totalSteps) || 0,
+      session.status,
+    );
+    return {
+      ok: true,
+      parked: result.intent !== null,
+      wake: result.wake,
+      intentId: result.intent?.id ?? null,
+    };
   }
 }
