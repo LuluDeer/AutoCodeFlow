@@ -48,6 +48,8 @@ import { In, MoreThanOrEqual, Repository } from "typeorm";
 
 import { AppError } from "../../../common/errors/app-error";
 import { ErrorCode } from "../../../common/errors/error-codes";
+import type { AuthUser } from "../../../common/interfaces/auth-user.interface";
+import { UserRole } from "../../users/entities/user.entity";
 import { AppDeploymentService } from "../../application/app-deployment.service";
 import { DeploymentApprovalStatus } from "../../application/entities/app-deployment.entity";
 import { AgentApproval } from "../entities/agent-approval.entity";
@@ -120,6 +122,50 @@ interface ReadResult<T> {
   degraded: boolean;
 }
 
+/**
+ * GCO §5「待我审批」的只读视域：`sessionIds === null` = 全量（ADMIN / 内部调用），
+ * 数组（含空数组）= 只认这些会话；`unknown` = 归属读失败，事实未知，**绝不**回落到全量。
+ */
+interface ViewerScope {
+  sessionIds: string[] | null;
+  unknown: boolean;
+  degraded: boolean;
+}
+
+/** 会话归属列的既有取值形如 `user:<username>`，兼容历史 `user:<id>` / 裸值。 */
+function viewerOwnerTokens(viewer: AuthUser): string[] {
+  const tokens = new Set<string>();
+  const username =
+    typeof viewer.username === "string" ? viewer.username.trim() : "";
+  if (username) {
+    tokens.add(username);
+    tokens.add(`user:${username}`);
+  }
+  if (viewer.id !== undefined && viewer.id !== null) {
+    const id = String(viewer.id);
+    tokens.add(id);
+    tokens.add(`user:${id}`);
+  }
+  return [...tokens];
+}
+
+/** items / total / sessionTotal / counts 共用的**唯一**谓词构造点。 */
+function pendingWhere(scope: ViewerScope) {
+  return {
+    status: "pending" as const,
+    scope: "once" as const,
+    ...(scope.sessionIds
+      ? {
+          sessionId: In(
+            scope.sessionIds.length
+              ? scope.sessionIds
+              : ["__no_visible_session__"],
+          ),
+        }
+      : {}),
+  };
+}
+
 @Injectable()
 export class AgentInboxService {
   private readonly logger = new Logger(AgentInboxService.name);
@@ -166,20 +212,63 @@ export class AgentInboxService {
   ) {}
 
   /**
+   * 解析 viewer 的会话视域。**只读**：仅查 `AgentSession.createdBy`，
+   * 不新增字段、不写任何审批/会话行。ADMIN 短路全量；归属读失败时 fail-closed。
+   */
+  private async resolveViewerScope(
+    viewer?: AuthUser | null,
+  ): Promise<ViewerScope> {
+    if (!viewer || viewer.role === UserRole.ADMIN) {
+      return { sessionIds: null, unknown: false, degraded: false }; // mutation-residue-ok: fail-closed 视域常量非变异体
+    }
+    const tokens = viewerOwnerTokens(viewer);
+    if (tokens.length === 0) {
+      return { sessionIds: [], unknown: true, degraded: true }; // mutation-residue-ok: fail-closed 视域常量非变异体
+    }
+    const owned = await this.read("pending.viewerSessions", async () => {
+      const rows = await this.sessionRepo.find({
+        where: { createdBy: In(tokens) },
+        select: { id: true, createdBy: true },
+      });
+      return rows.map((r) => r.id).filter((id) => typeof id === "string");
+    });
+    return owned.value === null
+      ? { sessionIds: [], unknown: true, degraded: true } // mutation-residue-ok: fail-closed 视域常量非变异体
+      : { sessionIds: owned.value, unknown: false, degraded: owned.degraded };
+  }
+
+  /**
    * `GET /agent/approvals/pending`：待审批单的**跨会话**聚合。
    *
    * 查询次数固定为 ≤4（不随会话数增长）：① items、② total、③ 会话数、④ 批量标题。
    * 原前端实现是 `1 + N`（每会话一次审批单请求）。
+   *
+   * GCO §5：`viewer` 非 ADMIN 时先按 `AgentSession.createdBy` 取本人会话，
+   * 再用同一个谓词贯穿 items / total / sessionTotal / truncated —— 徽标与列表同源。
    */
   async pending(
     input: {
       limit?: number | null;
+      viewer?: AuthUser | null;
     } = {},
   ): Promise<AgentPendingApprovalsResponseDto> {
     this.requireWiring();
 
+    const scope = await this.resolveViewerScope(input.viewer);
+    if (scope.unknown) {
+      // 归属未知 ⇒ 一条都不能露，且事实不能伪装成 0（与 read() 的纪律一致）。
+      return {
+        items: [],
+        total: null, // mutation-residue-ok: fail-closed 视域常量非变异体
+        sessionTotal: null,
+        returned: 0,
+        truncated: false, // mutation-residue-ok: fail-closed 视域常量非变异体
+        degraded: true, // mutation-residue-ok: fail-closed 视域常量非变异体
+      };
+    }
+
     const limit = clampPendingApprovalLimit(input.limit);
-    const where = { status: "pending" as const, scope: "once" as const };
+    const where = pendingWhere(scope);
 
     // 三个独立查询并行发：彼此不依赖，串行会白等两个往返。
     const [items, total, sessionTotal] = await Promise.all([
@@ -192,10 +281,15 @@ export class AgentInboxService {
         }),
       ),
       this.read("pending.total", () => this.approvals.count({ where })),
-      this.read("pending.sessionTotal", () => this.countPendingSessions()),
+      this.read("pending.sessionTotal", () =>
+        this.countPendingSessions(scope.sessionIds),
+      ),
     ]);
 
-    const rows = items.value ?? [];
+    // 二次拦截：即使仓储谓词意外漏过滤，也不会把他人 reason/preview 投影出去。
+    const rows = (items.value ?? []).filter(
+      (r) => !scope.sessionIds || scope.sessionIds.includes(r.sessionId),
+    );
     const sessionIds = [...new Set(rows.map((r) => r.sessionId))];
     // 一次 `In(...)` 批量取标题 ⇒ 查询数与会话数**无关**（消除 N+1）。
     const titles = await this.readTitles(sessionIds);
@@ -217,6 +311,7 @@ export class AgentInboxService {
 
     const returned = projected.length;
     const degraded =
+      scope.degraded ||
       items.degraded ||
       total.degraded ||
       sessionTotal.degraded ||
@@ -239,9 +334,16 @@ export class AgentInboxService {
    * 六个计数并行读，各自独立降级：任一读失败只让**那一个**字段变 null。
    * 全部读不到才算整体不可用 —— 但那时 `requireWiring()` 已经在入口抛出（装配
    * 缺失），DB 抖动则仍返回 null 信封 + `degraded: true`（HTTP 200）。
+   *
+   * GCO §5：非 ADMIN viewer 的 `pendingApprovals` 与 `/approvals/pending` 共用
+   * `pendingWhere(scope)`；归属未知时该字段为 null（未知 ≠ 0），其它计数不受影响。
    */
-  async counts(): Promise<AgentInboxCountsResponseDto> {
+  async counts(
+    input: { viewer?: AuthUser | null } = {},
+  ): Promise<AgentInboxCountsResponseDto> {
     this.requireWiring();
+
+    const scope = await this.resolveViewerScope(input.viewer);
 
     // 窗口先解析：两个新字段都要用它，且它是**配置**（同步可读）⇒ 不必进
     // `Promise.all`，也不会成为降级来源（读不到就回默认，见 resolveFailedWindowHours）。
@@ -260,9 +362,11 @@ export class AgentInboxService {
     ] = await Promise.all([
       // 口径 = **审批单**（与 `/approvals/pending` 的 total **同一谓词**，
       // 否则徽标与列表又会不等 —— D1 的全部意义就在这里）。
-      this.read("counts.pendingApprovals", () =>
-        this.approvals.count({ where: { status: "pending", scope: "once" } }),
-      ),
+      scope.unknown
+        ? { value: null, degraded: true } // mutation-residue-ok: fail-closed 视域常量非变异体
+        : await this.read("counts.pendingApprovals", () =>
+            this.approvals.count({ where: pendingWhere(scope) }),
+          ),
       this.read("counts.waitingSessions", () =>
         this.sessionsTotal({ status: "waiting_input" }),
       ),
@@ -297,6 +401,7 @@ export class AgentInboxService {
       // 配置而非事实 ⇒ 恒为数字，永不 null（读不到回默认 24）。
       failedWindowHours,
       degraded:
+        scope.degraded ||
         pendingApprovals.degraded ||
         waitingSessions.degraded ||
         stalled.degraded ||
@@ -314,14 +419,24 @@ export class AgentInboxService {
    *
    * 为什么不能用 `items.length` 之后 `new Set()` 的长度：条数被 `limit` 截断时
    * 会话数同样被截断，而它的用途恰恰是「徽标口径差多少」的对账数字。
+   *
+   * `sessionIds` 与 items/total 同源：非 ADMIN viewer 只数自己会话的待审单。
    */
-  private async countPendingSessions(): Promise<number> {
-    const row = await this.approvals
+  private async countPendingSessions(
+    sessionIds: string[] | null,
+  ): Promise<number> {
+    const qb = this.approvals
       .createQueryBuilder("a")
       .select("COUNT(DISTINCT a.sessionId)", "n")
       .where("a.status = :status", { status: "pending" })
-      .andWhere("a.scope = :scope", { scope: "once" })
-      .getRawOne<{ n: string | number }>();
+      .andWhere("a.scope = :scope", { scope: "once" });
+    if (sessionIds) {
+      // 空视域用一个不可能命中的哨兵，避开 `IN (:...[])` 的 SQL 方言差异。
+      qb.andWhere("a.sessionId IN (:...sessionIds)", {
+        sessionIds: sessionIds.length ? sessionIds : ["__no_visible_session__"],
+      });
+    }
+    const row = await qb.getRawOne<{ n: string | number }>();
     const n = Number(row?.n);
     if (!Number.isFinite(n)) {
       // 计数查询必然返回一行；拿不到就是读失败 ⇒ 交给 `read()` 转成 null。

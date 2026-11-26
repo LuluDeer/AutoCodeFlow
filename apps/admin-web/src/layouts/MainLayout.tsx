@@ -226,7 +226,9 @@ function buildMenuItems(t: (k: string) => string): MenuEntry[] {
 
 // ADMIN-only 菜单入口：普通用户不渲染（后端对应接口均 @Roles(ADMIN)）
 // R6：/notifications 收紧——GET/PATCH /notification/channels 为 ADMIN-only
-const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', '/notifications', '/sops', '/agent-sessions', '/artifacts', '/workbench', '/capabilities', '/activation-stats']);
+// 第70轮/ADR-044：/artifacts 与 /workbench 下沉为业务人员可见（我的交付物/自然语言工作台），
+// 数据面由后端按归属过滤；/sops、/agent-sessions 管理面仍在 Set 内。
+const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', '/notifications', '/sops', '/agent-sessions', '/capabilities', '/activation-stats']);
 
 // F-12（DEEP_REVIEW 0ef3bbe）: 实时时钟提取为独立 memoized 子组件。
 // 此前 setInterval 每秒触发 MainLayout 整棵组件树重渲；现在时钟自管 state

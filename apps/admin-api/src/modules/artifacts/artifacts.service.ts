@@ -8,9 +8,13 @@ import { InjectRepository } from "@nestjs/typeorm";
 import {
   And,
   ILike,
+  In,
+  IsNull,
   LessThanOrEqual,
   MoreThanOrEqual,
+  Not,
   Repository,
+  type EntityManager,
   type FindOperator,
   type FindOptionsWhere,
 } from "typeorm";
@@ -44,6 +48,22 @@ import {
 } from "./artifacts.constants";
 // NETOPT-3⑤ 同款先例：ILIKE 的 `_`/`%` 一律转义按字面量匹配（与 audit/users/project 共用工具）。
 import { escapeLikePattern } from "../audit/audit.service";
+// GCO §5：产物读面复用既有任务属主 + 项目角色底座，不新造归属列/权限体系。
+import { AuthUser } from "../../common/interfaces/auth-user.interface";
+import { UserRole } from "../users/entities/user.entity";
+import { Task } from "../task/entities/task.entity";
+import { ProjectAccessService } from "../project/project-access.service";
+import { ProjectMember } from "../project/entities/project-member.entity";
+import { Project } from "../project/project.entity";
+
+/**
+ * 读面主体投影。ADMIN 恒全量（viewer.isAdmin 短路）；role=user 只见
+ * ownerUserId=自己 或 自己具 editor+ 的项目成员行，且 task.ownerUserId 非空。
+ */
+export type ArtifactViewer = Pick<AuthUser, "id" | "role"> & {
+  username?: string;
+  isAdmin?: boolean;
+};
 
 const CONTENT_TYPE_BY_EXT: Record<string, string> = {
   ".png": "image/png",
@@ -200,13 +220,113 @@ export class ArtifactsService {
     };
   }
 
-  /** 读取执行行的产物清单（供列表端点）。 */
-  async getManifest(execId: string): Promise<ExecutionArtifact[]> {
-    if (!isUUID(execId))
+  /** 读取执行行的产物清单（供列表端点；role=user 先过归属校验）。 */
+  async getManifest(
+    execId: string,
+    viewer?: ArtifactViewer,
+  ): Promise<ExecutionArtifact[]> {
+    const exec = await this.assertArtifactReadable(execId, viewer);
+    return exec.artifacts ?? [];
+  }
+
+  private isAdminViewer(viewer?: ArtifactViewer): boolean {
+    return (
+      !!viewer && (viewer.isAdmin === true || viewer.role === UserRole.ADMIN)
+    );
+  }
+
+  /** 复用既有 ProjectAccessService.hasProjectRole，不在产物模块复制角色判据。 */
+  private projectAccessOf(manager: EntityManager): ProjectAccessService {
+    return new ProjectAccessService(
+      manager.getRepository(ProjectMember),
+      undefined,
+      manager.getRepository(Project),
+    );
+  }
+
+  /** 从既有 project_members 行筛出 viewer 具 editor+ 的项目（成员查询失败按非成员）。 */
+  private async editorProjectIds(
+    manager: EntityManager,
+    viewer: ArtifactViewer,
+  ): Promise<string[]> {
+    const rows = await manager.getRepository(ProjectMember).find({
+      select: { projectId: true, role: true },
+      where: { userId: viewer.id },
+    });
+    const access = this.projectAccessOf(manager);
+    const result: string[] = [];
+    for (const projectId of new Set(rows.map((row) => row.projectId))) {
+      if (await access.hasProjectRole(viewer.id, projectId, "editor")) {
+        result.push(projectId);
+      }
+    }
+    return result;
+  }
+
+  /** 角色=user 可见的 taskId 集合：本人属主 ∪ editor+ 项目中有属主的任务。 */
+  private async visibleTaskIds(
+    manager: EntityManager,
+    viewer: ArtifactViewer,
+    mineOnly: boolean,
+  ): Promise<string[]> {
+    const taskRepo = manager.getRepository(Task);
+    const owned = await taskRepo.find({
+      select: { id: true },
+      where: { ownerUserId: viewer.id },
+    });
+    const ownedIds = owned.map((row) => row.id);
+    if (mineOnly) return ownedIds;
+
+    const projects = await this.editorProjectIds(manager, viewer);
+    if (projects.length === 0) return ownedIds;
+    const shared = await taskRepo.find({
+      select: { id: true },
+      where: { ownerUserId: Not(IsNull()), projectId: In(projects) },
+    });
+    return [...new Set([...ownedIds, ...shared.map((row) => row.id)])];
+  }
+
+  /** mine=true / owner=me 只收窄到「属主=我」，不扩大服务端归属范围。 */
+  private isMineOnly(query: { mine?: boolean; owner?: string }): boolean {
+    return query.mine === true || query.owner === "me";
+  }
+
+  /**
+   * GCO §5：按 execId 反查执行行的 taskId → tasks.ownerUserId/projectId，
+   * 与 listArtifactRows 同口径校验。无主任务恒 403；ADMIN 与旧的无主体进程内
+   * 调用保持全量（controller 三个读端点恒传已认证主体）。
+   */
+  async assertArtifactReadable(
+    execId: string,
+    viewer?: ArtifactViewer,
+  ): Promise<TaskExecution> {
+    if (!isUUID(execId)) {
       throw new AppError(ErrorCode.ARTIFACT_EXECUTION_ID_INVALID);
+    }
     const exec = await this.execRepo.findOne({ where: { id: execId } });
     if (!exec) throw new AppError(ErrorCode.TASK_EXECUTION_NOT_FOUND);
-    return exec.artifacts ?? [];
+    if (!viewer || this.isAdminViewer(viewer)) return exec;
+
+    const manager = this.execRepo.manager;
+    if (!manager || !exec.taskId) throw new AppError(ErrorCode.TASK_NOT_OWNER);
+    const task = await manager
+      .getRepository(Task)
+      .findOne({ where: { id: exec.taskId } });
+    if (!task || task.ownerUserId == null) {
+      throw new AppError(ErrorCode.TASK_NOT_OWNER);
+    }
+    if (task.ownerUserId === viewer.id) return exec;
+    if (
+      task.projectId &&
+      (await this.projectAccessOf(manager).hasProjectRole(
+        viewer.id,
+        task.projectId,
+        "editor",
+      ))
+    ) {
+      return exec;
+    }
+    throw new AppError(ErrorCode.TASK_NOT_OWNER);
   }
 
   /**
@@ -228,16 +348,21 @@ export class ArtifactsService {
    * @returns paginate() 信封（仓库惯例 6 键：list/items/total/page/pageSize/totalPages）；
    *   `total` 是**过滤后**的总行数（findAndCount 的 count 与行集同一份 where）。
    */
-  async listArtifactRows(query: {
-    applicationId?: string;
-    taskId?: string;
-    q?: string;
-    from?: string;
-    to?: string;
-    ext?: string;
-    page: number;
-    pageSize: number;
-  }) {
+  async listArtifactRows(
+    query: {
+      applicationId?: string;
+      taskId?: string;
+      q?: string;
+      from?: string;
+      to?: string;
+      ext?: string;
+      mine?: boolean;
+      owner?: "me";
+      page: number;
+      pageSize: number;
+    },
+    viewer?: ArtifactViewer,
+  ) {
     // 参数校验与仓库惯例对齐：非 UUID 形状的过滤值 400（VALIDATION_FAILED，
     // 与 keyset-cursor invalidKeysetCursor 同款判据强度——宁可 400 也不带病查询）。
     if (query.applicationId !== undefined && !isUUID(query.applicationId)) {
@@ -248,6 +373,11 @@ export class ArtifactsService {
     if (query.taskId !== undefined && !isUUID(query.taskId)) {
       throw new AppError(ErrorCode.VALIDATION_FAILED, {
         detail: "taskId 必须是 UUID",
+      });
+    }
+    if (query.owner !== undefined && query.owner !== "me") {
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail: "owner 仅接受 me（不接受他人 userId）",
       });
     }
     if (!this.artifactIndexRepo) {
@@ -321,6 +451,20 @@ export class ArtifactsService {
     if (timePredicates.length === 1) where.createdAt = timePredicates[0];
     else if (timePredicates.length > 1)
       where.createdAt = And(...timePredicates);
+
+    // GCO §5：归属过滤一律下推到 findAndCount 的 SQL where（count 与 items
+    // 共用同一份 where）。viewer 缺席的旧进程内调用保持历史全量口径；三个
+    // HTTP 读端点恒传已认证主体。ADMIN 短路，mine/owner=me 再收窄到属主=我。
+    if (viewer && (this.isMineOnly(query) || !this.isAdminViewer(viewer))) {
+      const manager = this.execRepo.manager;
+      const allowed = manager
+        ? await this.visibleTaskIds(manager, viewer, this.isMineOnly(query))
+        : [];
+      const scoped = query.taskId
+        ? allowed.filter((id) => id === query.taskId)
+        : allowed;
+      where.taskId = In(scoped);
+    }
 
     const [rows, total] = await this.artifactIndexRepo.findAndCount({
       where,

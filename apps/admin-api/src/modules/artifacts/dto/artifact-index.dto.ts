@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import {
+  IsBoolean,
   IsISO8601,
   IsIn,
   IsOptional,
@@ -78,6 +79,31 @@ export class ListArtifactRowsDto extends PageQueryDto {
   )
   @IsIn([...ARTIFACT_EXTENSION_FILTERS])
   ext?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "只看当前登录用户作为任务属主的交付物（role=user 的归属过滤之上再收紧；true/1 视为开启）",
+    type: Boolean,
+  })
+  @IsOptional()
+  @Transform(
+    ({ value }) =>
+      value === true || value === "true" || value === "1" || value === 1,
+  )
+  @IsBoolean()
+  mine?: boolean;
+
+  @ApiPropertyOptional({
+    enum: ["me"],
+    description:
+      "mine 的别名写法：owner=me 等价于 mine=true；不接受他人 userId（role=user 的可见范围恒由服务端归属判定决定）",
+  })
+  @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === "string" ? value.trim().toLowerCase() : value,
+  )
+  @IsIn(["me"])
+  owner?: "me";
 }
 
 /**

@@ -161,7 +161,6 @@ export function synthesizeCommitScopedRules(
 @ApiTags("workbench")
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Roles(UserRole.ADMIN)
 @Controller("workbench")
 export class WorkbenchController {
   private readonly logger = new Logger(WorkbenchController.name);
@@ -221,6 +220,7 @@ export class WorkbenchController {
       "最小方案卡预览 + 确定性校验（N7 反幻觉闸门；不调用 LLM、不落 SOP）",
   })
   @ApiOkResponse({ type: PlanCardPreviewResponseDto })
+  @Roles(UserRole.ADMIN, UserRole.USER)
   async preview(
     @Body() dto: PreviewPlanCardRequestDto,
   ): Promise<PlanCardPreviewResponseDto> {
@@ -254,6 +254,7 @@ export class WorkbenchController {
       "确认方案卡并落成 SOP 草稿（N7 留痕 hash 校验；只 draft，不自动发布）",
   })
   @ApiOkResponse({ type: CommitResultDto })
+  @Roles(UserRole.ADMIN, UserRole.USER)
   async commit(
     @Body() dto: CommitPlanCardRequestDto,
     @CurrentUser() user: { id: number | string; username?: string } | undefined,
@@ -431,6 +432,7 @@ export class WorkbenchController {
       "N18：作废旧代在途异步写入与通知并留审计（代际只读服务端注册表，不信任客户端）",
   })
   @ApiOkResponse({ type: RewindResultDto })
+  @Roles(UserRole.ADMIN)
   async rewind(
     @Body() dto: RewindRequestDto,
     @CurrentUser() user: { id: number | string; username?: string } | undefined,
@@ -457,6 +459,7 @@ export class WorkbenchController {
     summary:
       "N10：按服务端 Part 与会话归属投影可见面（大字段仅在可见时从 blob 读回）",
   })
+  @Roles(UserRole.ADMIN, UserRole.USER)
   async projectPart(
     @Body() dto: { partId?: string },
     @CurrentUser() user: WorkbenchViewer | undefined,

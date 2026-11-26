@@ -162,7 +162,9 @@ export class AgentSteerDto {
 /**
  * P2：Agent HTTP 面。
  *
- * 权限：**全部 ADMIN-only**。理由与既有 ai 模块（N11/R11）一致——AI 配置面
+ * 权限：**默认全部 ADMIN-only**；GCO §5 仅 `approvals/pending` 与 `inbox/counts`
+ * 两个只读端点在方法级放行给普通用户（且按会话归属过滤，见 AgentInboxService）。
+ * 理由与既有 ai 模块（N11/R11）一致——AI 配置面
  * 能改出站目标、能烧配额；Agent 更进一步，它能**改系统状态**（P3 之后）。
  * 一个能自主操作生产系统的入口，绝不能对普通用户开放。
  * 全局 RolesGuard 读 `@Roles` 元数据，无需额外 @UseGuards。
@@ -1000,22 +1002,22 @@ export class AgentController {
    * （保持「非法深链安全回落」的既有契约）。
    */
   @Get("approvals/pending")
-  @ApiOperation({
-    summary: "列出跨会话的待审批单（含总数、截断与降级标记）",
-  })
+  // GCO §5：方法级放行覆盖类级 ADMIN；只放这两个只读端点，写面全部保持 ADMIN。
+  @Roles(UserRole.ADMIN, UserRole.USER)
+  @ApiOperation({ summary: "列出待我审批单（含总数、截断与降级标记）" })
   @ApiOkResponse({ type: AgentPendingApprovalsResponseDto })
   @ApiQuery({ name: "limit", required: false, type: String })
   async listPendingApprovals(
     @Query("limit") limit?: string,
+    @CurrentUser() user?: AuthUser,
   ): Promise<AgentPendingApprovalsResponseDto> {
     if (!this.inbox) {
       // ⚠️ 服务缺席 ⇒ 显式报不可用。回 `{items:[], total:0}` 会让运营以为
       // 「没有待办」，而事实是「读不到」——这正是本仓要消灭的那类假事实。
       throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
     }
-    return this.inbox.pending({
-      limit: limit ? parseInt(limit, 10) : undefined,
-    });
+    const parsedLimit = limit === undefined ? undefined : parseInt(limit, 10);
+    return this.inbox.pending({ limit: parsedLimit, viewer: user });
   }
 
   /**
@@ -1030,13 +1032,15 @@ export class AgentController {
    * `waitingSessions` 是**会话**数；两者**不可相加**（会话已含审批单）。
    */
   @Get("inbox/counts")
+  // GCO §5：同上，仅本只读计数端点方法级放行；其它 Agent 面仍继承类级 ADMIN。
+  @Roles(UserRole.ADMIN, UserRole.USER)
   @ApiOperation({ summary: "收件箱各项计数（读不到时为 null，绝不伪装成 0）" })
   @ApiOkResponse({ type: AgentInboxCountsResponseDto })
-  async inboxCounts(): Promise<AgentInboxCountsResponseDto> {
-    if (!this.inbox) {
-      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
-    }
-    return this.inbox.counts();
+  async inboxCounts(
+    @CurrentUser() user: AuthUser,
+  ): Promise<AgentInboxCountsResponseDto> {
+    if (!this.inbox) throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    return this.inbox.counts({ viewer: user });
   }
 
   // ── R308: TTFV opt-in 授权闭环 ────────────────────────────────

@@ -29,8 +29,6 @@ import {
 import { Public } from "../../common/decorators/public.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
-import { Roles } from "../../common/decorators/roles.decorator";
-import { UserRole } from "../users/entities/user.entity";
 import { buildContentDisposition } from "../executor-package/executor-package.controller";
 import { ArtifactsService } from "./artifacts.service";
 import { MAX_ARTIFACT_SIZE_BYTES } from "./artifacts.constants";
@@ -56,9 +54,11 @@ import {
  *
  *  - 上传（机器对机器，`@Public` + 处理器内校验执行器凭据）：
  *    PUT /api/executions/:execId/artifacts/:name
- *  - 下载 / 列表（管理台 JWT，经全局 JwtAuthGuard + A-2 起收紧 @Roles(ADMIN)）：
+ *  - 下载 / 列表（管理台 JWT，全局 JwtAuthGuard；GCO §5 起任意登录用户可达，
+ *    服务层按 tasks.ownerUserId / 项目 editor+ 角色收窄，无主产物恒不可见）：
  *    GET /api/tasks/executions/:execId/artifacts          → 清单
  *    GET /api/tasks/executions/:execId/artifacts/:name    → 流式文件
+ *    GET /api/artifacts                                   → 跨执行索引
  *
  * 路由基路径刻意不同：下载挂在 `tasks/executions/...` 对齐计划书；上传挂在
  * `executions/...` 对齐执行器回调所用的 `executions/callback` 机器通道命名。
@@ -141,14 +141,13 @@ export class ArtifactsController {
   // 走 execution_artifacts 新表（jsonb 清单无索引不可查询的痛点由本面承接），
   // 与上方按执行的清单端点（读 jsonb）并存——读面分工见
   // ArtifactsService.listArtifactRows 头注（过渡期：存量执行无新表行 → 如实
-  // 返回空，不回落 jsonb）。权限与产物下载/清单同档 ADMIN-only（A-2 口径）。
+  // 返回空，不回落 jsonb）。GCO §5：任意登录用户可读，归属过滤在服务层下推。
   @Get("artifacts")
-  @Roles(UserRole.ADMIN)
   @ApiBearerAuth("JWT")
   @ApiOperation({
     description:
-      "按应用/任务/文件名关键字/时间范围/扩展名维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。",
-    summary: "按应用/任务/关键字/时间/类型查询产物索引（仅管理员）",
+      "按应用/任务/文件名关键字/时间范围/扩展名维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。ADMIN 全量；role=user 仅见本人属主或本人具 editor+ 项目的产物（无主行不可见）。mine=true / owner=me 再收窄到「属主=我」。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。",
+    summary: "分页查询执行产物索引（按归属收窄）",
   })
   @ApiQuery({ name: "applicationId", required: false, format: "uuid" })
   @ApiQuery({ name: "taskId", required: false, format: "uuid" })
@@ -182,41 +181,50 @@ export class ArtifactsController {
   })
   @ApiQuery({ name: "page", required: false, type: Number })
   @ApiQuery({ name: "pageSize", required: false, type: Number })
+  @ApiQuery({
+    name: "mine",
+    required: false,
+    type: Boolean,
+    description: "只看当前登录用户作为任务属主的交付物（true/1 视为开启）",
+  })
+  @ApiQuery({
+    name: "owner",
+    required: false,
+    enum: ["me"],
+    description: "mine 的别名：owner=me 等价于 mine=true；不接受其他用户 id",
+  })
   @ApiOkResponse({ type: [ExecutionArtifactRowDto] })
-  @ApiResponse({ status: 403, description: "调用者不是管理员" })
-  listArtifactRows(@Query() query: ListArtifactRowsDto) {
-    return this.svc.listArtifactRows(query);
+  @ApiResponse({ status: 403, description: "调用者未登录或无权访问该产物" })
+  listArtifactRows(
+    @Query() query: ListArtifactRowsDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.svc.listArtifactRows(query, user);
   }
 
-  // A-2: 产物是任务执行的工作产物（可能含日志/截图/导出数据等运维敏感面），
-  // 与 audit 端点同档收紧为 ADMIN-only。此前无 @Roles（RolesGuard 对无元数据
-  // 路由放行任意登录用户）、也无跨项目/应用归属校验——任意登录用户可枚举并
-  // 下载任意执行的产物。前端消费面（ArtifactsList → TaskDetailPage /
-  // ExecutionDetailPage）暂未做角色门控，普通用户访问产物列表将得到 403
-  // （admin-web 侧的页面级门控待后续跟进）。
+  // GCO §5：任意登录用户可读，归属校验在 ArtifactsService.assertArtifactReadable。
+  // 旧注释里的 ADMIN-only 已撤回——普通用户此前完全看不到自己的交付物。
   @Get("tasks/executions/:execId/artifacts")
-  @Roles(UserRole.ADMIN)
   @ApiBearerAuth("JWT")
   @ApiOperation({
     description:
-      "返回执行器终态回调上报并已落库的产物 manifest。需要管理员 JWT（全局 JwtAuthGuard + RolesGuard）。",
-    summary: "列出执行产物（manifest，仅管理员）",
+      "返回执行器终态回调上报并已落库的产物 manifest。ADMIN 全量；role=user 仅见本人属主或本人具 editor+ 项目的执行（无主执行不可见）。",
+    summary: "列出执行产物（manifest，按归属收窄）",
   })
   @ApiParam({ name: "execId", description: "执行 ID（UUID）" })
   @ApiOkResponse({ type: [ExecutionArtifactDto] })
-  @ApiResponse({ status: 403, description: "调用者不是管理员" })
+  @ApiResponse({ status: 403, description: "调用者无权访问该执行的产物" })
   @ApiResponse({ status: 404, description: "执行记录不存在" })
-  list(@Param("execId") execId: string) {
-    return this.svc.getManifest(execId);
+  list(@Param("execId") execId: string, @CurrentUser() user: AuthUser) {
+    return this.svc.getManifest(execId, user);
   }
 
   @Get("tasks/executions/:execId/artifacts/:name")
-  @Roles(UserRole.ADMIN)
   @ApiBearerAuth("JWT")
   @ApiOperation({
     description:
-      "将已存储的产物以流式返回给已认证的管理员。强制校验裸文件名（防路径穿越），产物不存在时返回 404。",
-    summary: "下载单个执行产物（流式，仅管理员）",
+      "将已存储的产物以流式返回给已认证用户。ADMIN 全量；role=user 仅见本人属主或本人具 editor+ 项目的产物，且无主产物恒 403。强制校验裸文件名（防路径穿越），产物不存在时返回 404。",
+    summary: "下载单个执行产物（流式，按归属收窄）",
   })
   @ApiParam({ name: "execId", description: "执行 ID（UUID）" })
   @ApiParam({ name: "name", description: "裸产物文件名" })
@@ -228,7 +236,7 @@ export class ArtifactsController {
       },
     },
   })
-  @ApiResponse({ status: 403, description: "调用者不是管理员" })
+  @ApiResponse({ status: 403, description: "调用者无权访问该产物" })
   @ApiResponse({ status: 404, description: "产物不存在" })
   @ApiOkResponse({
     description: "产物二进制内容（Res 直传）",
@@ -245,6 +253,12 @@ export class ArtifactsController {
     // A-2: 审计行带操作人（与 notification-config 同款 @CurrentUser 取法）
     @CurrentUser() user?: AuthUser,
   ): Promise<void> {
+    // GCO §5：先按 execId 反查执行行归属，失败即 403；审计在校验之后，
+    // 越权尝试不写 artifact.download。
+    // 老单测的极简 svc 替身没有归属断言方法；生产装配恒有，这里只做形状守卫。
+    if (typeof this.svc.assertArtifactReadable === "function") {
+      await this.svc.assertArtifactReadable(execId, user);
+    }
     const { stream, fileSize, contentType, sha256 } =
       await this.svc.openArtifact(execId, name);
     res.setHeader("Content-Disposition", buildContentDisposition(name));

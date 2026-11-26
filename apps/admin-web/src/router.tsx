@@ -81,8 +81,9 @@ export const router = createBrowserRouter(
         { path: 'tasks/:id/edit', element: withSuspense(<TaskFormPage />) },
         { path: 'tasks/:taskId/executions/:execId', element: withSuspense(<ExecutionDetailPage />) },
         { path: 'executions', element: withSuspense(<ExecutionsPage />) },
-        // P1-3：产物库（GET /artifacts 为 ADMIN-only，路由级门控同 /audit）
-        { path: 'artifacts', element: <RequireAdmin>{withSuspense(<ArtifactsPage />)}</RequireAdmin> },
+        // P1-3：产物库——业务人员可见"我的交付物"（ADR-044 白名单内自主）；
+        // 数据面由后端按 ownerUserId/项目角色过滤，管理页门控不动。
+        { path: 'artifacts', element: withSuspense(<ArtifactsPage />) },
         { path: 'executors', element: withSuspense(<ExecutorListPage />) },
         // R5 RBAC: 安装向导依赖 ADMIN-only 的 install-cmd / executor-shared-token
         { path: 'executors/install', element: <RequireAdmin>{withSuspense(<ExecutorInstallWizardPage />)}</RequireAdmin> },
@@ -106,15 +107,17 @@ export const router = createBrowserRouter(
         { path: 'applications/:id', element: withSuspense(<ApplicationDetailPage />) },
         { path: 'executor-packages', element: <RequireAdmin>{withSuspense(<ExecutorPackagesPage />)}</RequireAdmin> },
         { path: 'sops', element: <RequireAdmin>{withSuspense(<SopsPage />)}</RequireAdmin> },
-        // 工作台最小验证页：与 /sops 同样的 ADMIN-only 口径（见 router-pages.tsx 说明）
-        { path: 'workbench', element: <RequireAdmin>{withSuspense(<WorkbenchPage />)}</RequireAdmin> },
+        // 工作台：业务人员的自然语言入口（ADR-044 白名单内自主）；commit 只落 draft、
+        // 发布/rewind 仍 ADMIN，数据面由后端主体与五道闸收窄。
+        { path: 'workbench', element: withSuspense(<WorkbenchPage />) },
         {
           path: 'sops/from-video',
           element: <RequireAdmin>{withSuspense(<SopFromVideoPage />)}</RequireAdmin>,
         },
         { path: 'agent-sessions', element: <RequireAdmin>{withSuspense(<AgentSessionsPage />)}</RequireAdmin> },
-        // P1-4：待办收件箱（数据源全为 ADMIN-only 接口，路由级门控同会话页）
-        { path: 'inbox', element: <RequireAdmin>{withSuspense(<InboxPage />)}</RequireAdmin> },
+        // P1-4：待办收件箱——业务人员只读"待我审批/待我处理"；后端按会话归属过滤，
+        // 写动作（approve/deny/resume）仍 ADMIN，InboxPage.canWrite 隐藏按钮。
+        { path: 'inbox', element: withSuspense(<InboxPage />) },
       ],
     },
   ],
