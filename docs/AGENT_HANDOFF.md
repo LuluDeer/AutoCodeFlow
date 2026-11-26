@@ -1,5 +1,30 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-27 · 工作台改造第 70 轮）：业务人员身份可达——GCO §5 杀手锏旅程对用户开放
+
+**方向来源**：objective 续轮 + 上轮 PM 盘点裁决（blocks_usage 断点：业务人员三页全 ADMIN-only、交付物无归属字段）。先跑 2 路只读审计确认权限契约与红线，主控据 ADR-044 裁决：以**既有归属底座**（`AgentSession.createdBy` / `tasks.ownerUserId` / `ProjectRole.hasProjectRole`）收窄，不新造权限体系、不放开任何管理写面。
+
+| 切片 | 目标 | 交付 | 验收 |
+|---|---|---|---|
+| impl-workbench-user-gate | 业务人员能建方案卡 | workbench.controller 类级 Roles 下沉；preview/commit/projectPart 方法级 `[ADMIN,USER]`（满足 write-guard 扫描且覆盖全枚举），rewind 保留 ADMIN；五道闸逐字不动、commit 只落 draft | 8/8 + 147 回归；反证（抹 rewind ADMIN→真红） |
+| impl-artifacts-ownership | 我的交付物 | 三读端点去 ADMIN + `@CurrentUser`；listArtifactRows 增 viewer，JOIN tasks.ownerUserId/projectId 归属过滤（无主 fail-closed、ADMIN 短路、mine/owner=me 下推 SQL where）；下载先归属断言；上传端点不动 | 15/15 + 反证（去 where→可见他人产物真红） |
+| impl-inbox-viewer | 待我审批/处理 | approvals/pending 与 inbox/counts 方法级 `[ADMIN,USER]` 覆盖类级 + `@CurrentUser` viewer；AgentInboxService 按 sessionId→AgentSession.createdBy 过滤，pendingWhere 单一谓词保 items/total/counts 一致，归属读失败 fail-closed；phrase/写面不动 | 8/8 + 80 回归；反证（去过滤→U2 单进 U1 items 真红） |
+| 主控前端 | 页面可达 | router 三路由（artifacts/workbench/inbox）去 RequireAdmin，MainLayout 菜单移两项；/sops、/agent-sessions 等管理页门控不动 | typecheck 0；真浏览器另验 |
+
+**主控集成修的涟漪**：① `.gitignore:240` 的 `artifacts/` 无锚定模式误伤 `src/modules/artifacts/` 新 spec（既有源码已入库才没暴露）→ 改为 `/artifacts/` 只忽略仓库根部署产物；② atlas-counts 测试数 514→544（spec 新增 + 累积）用官方 `--update` 同步；③ workbench-user-gate.spec 7 处 prettier → `eslint --fix`；④ `check-mutation-residue` 报 inbox service 7 处 fail-closed 常量可疑 → 逐行 `mutation-residue-ok: fail-closed 视域常量非变异体` 带理由标注（守卫明确路径，非变异体）；⑤ **既有时间炸弹**：`dashboard-trend-zerofill.test.tsx` 的 todayKey/daysAgoKey 用本地时区而生产 `recentDateKeys`（KpiSparkline）与后端日桶用 UTC——UTC+8 凌晨 00:00–08:00 跨日窗口错位致 5 failed；测试夹具改 UTC 口径（与生产同构），7/7 复绿（生产未改，既有缺陷由测试口径对齐）。
+
+**验收（分级）**：全守卫链 `CHAIN_EXIT=0`；**真 PG e2e `artifacts-ownership.e2e-spec.ts` 1 passed**——实测 U1 viewer 只见自己 owner 产物、他人/无主 0 行、ADMIN 见全量、total 与 items 同谓词（构造三 task/exec/artifact 行，真查真 service）。agent 单测覆盖 workbench commit 落 draft createdBy=user:<id> 且 publish/sop_versions 零调用、inbox U1/U2 对称过滤且 phrase 403 审批行不变。**未达**浏览器真机第 4 级（三页 DOM 呈现未真机验）；各切片最高为单测/内存替身 + 一条真 PG 第 3 级。
+
+**边界与红线（本轮严格未碰）**：SOP publish/assign/clarification 全链；workbench rewind；agent phrase/grant/deny/resume/会话写面/队列/北极星；artifacts 上传机器通道；项目 CRUD/成员任免；UserRole/RolesGuard/引擎级 restrict deny；executor-desktop 四页。这些是 ADR-044 硬边界与 GCO 旅程"业务人员自助≠拿到管理面"的分界。
+
+**诚实声明**：本轮让业务人员能进入三页并拿到自己的交付物，但 GCO §5 的"方案卡编译质量"（当前 buildPreview 是模板回显、非 LLM 编译 finance 能力）与"方案卡→四眼审批卡"那一跳（commit 只落 draft、不产生审批单，审批走 SOP 页 publish）**仍未打通**——用户能进、能落草稿、能看自己的产物，但杀手锏旅程的后三跳仍是下一轮工作，不得越级宣称全链可用。
+
+**后续项**：① 方案卡→审批→执行那一跳（需把 SOP draft 的 publishedBy 审批与四眼卡打通，或让业务人员有权在受限范围 publish）；② 成本归责（token/currency 恒 null，数据已落库只差接线）；③ 真浏览器 e2e 验三页 DOM 与 403 管理页。
+
+**提交**：按 objective 分批提交（实现 + 前端 + 集成同步 + 文档交接），不 push。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 69 轮）：PM 视角盘点——provider.use 出域硬开关闭环（企业买单一票否决项）
 
 **方向来源**：operator「保持继续，站产品经理角度考虑企业级产品」。先跑 workflow 并行 3 路 PM 盘点（企业管控闭环 / 业务杀手锏旅程 / 竞品对标），不是列技术债，而是回答"能不能卖、用户能不能用"。三路结论收敛出三个一票否决断点：① provider.use 出域硬开关零实现（中台不敢买）；② 业务人员三页全 ADMIN-only + 交付物无归属字段（杀手锏旅程走不通）；③ 成本归责只输出 null（竞品都在卷）。**PM 裁决**：先做 ①——企业买单的一票否决、语义已在 ADR-044 冻结、验收线清晰；② 涉及权限契约（项目角色替代 ADMIN + 归属迁移 + e2e）是 L 级专项，下一轮单独立项；③ 属企业增值，排在基础成立之后。
