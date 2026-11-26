@@ -975,6 +975,7 @@ export default {
   'audit.action.capability_update': 'Update capability',
   'audit.action.capability_transfer': 'Transfer capability ownership',
   'audit.action.capability_delete': 'Delete capability',
+  'audit.action.workbench_rewind': 'Rewind workbench session (invalidate in-flight writes)',
   'audit.action.im_identity_bind': 'Bind IM identity',
   'audit.total': '{{count}} in total',
   'audit.modal.detail': 'Detail',

@@ -1443,7 +1443,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 294 个操作，覆盖 253 个路径。
+共 296 个操作，覆盖 255 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1470,6 +1470,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/agent/sessions/{id}/approvals/{approvalKey}/phrase` | 用审批短语处置 Agent 审批单（一次性授权） |
 | GET | `/agent/sessions/{id}/export` | 导出 Agent 会话完整转录（JSON） |
 | POST | `/agent/sessions/{id}/resume` | 恢复挂起/失败的 Agent 会话 |
+| POST | `/agent/sessions/{id}/steer` | 向 waiting_input 会话追加 steer 意图（下一轮步边界注入） |
 | GET | `/agent/sessions/backlogged` | 列出「调度积压」的会话（pending 但队列里没有对应 job） |
 | GET | `/agent/sessions/queue-idle` | 队列是否空转（worker 在册却不再消费新 job） |
 | GET | `/agent/sessions/queue-stall` | 队列是否停摆（有活排队但结构上没人能消费） |
@@ -1741,5 +1742,6 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/webhooks/tasks/{taskId}` | 通过入站 Webhook 触发任务 |
 | POST | `/workbench/commit` | 确认方案卡并落成 SOP 草稿（N7 留痕 hash 校验；只 draft，不自动发布） |
 | POST | `/workbench/preview` | 最小方案卡预览 + 确定性校验（N7 反幻觉闸门；不调用 LLM、不落 SOP） |
+| POST | `/workbench/rewind` | N18：作废旧代在途异步写入与通知并留审计（代际只读服务端注册表，不信任客户端） |
 
 <!-- API-APPENDIX:END -->

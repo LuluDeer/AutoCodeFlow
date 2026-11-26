@@ -1160,6 +1160,19 @@
         ],
         "type": "object"
       },
+      "AgentSteerDto": {
+        "properties": {
+          "content": {
+            "description": "用户追加的 steer 正文（步边界注入下一轮模型）",
+            "type": "string",
+            "x-i18n-en": "Steer content appended by the user (injected into the next model turn at a step boundary)"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
       "AgentStepDto": {
         "properties": {
           "content": {
@@ -10299,6 +10312,68 @@
         ],
         "type": "object"
       },
+      "RewindRequestDto": {
+        "properties": {
+          "partIds": {
+            "description": "可选 Part id 过滤；省略则覆盖该会话的全部在途写入。仅缩小范围，不参与代际判定",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Optional Part id filter; when omitted, covers all in-flight writes of the session. Narrows scope only and does not affect generation checks"
+          },
+          "sessionId": {
+            "description": "目标 workbench 会话 id（服务端据此取 Parts 与在途异步写入）",
+            "type": "string",
+            "x-i18n-en": "Target workbench session id (the server uses it to load Parts and in-flight async writes)"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "RewindResultDto": {
+        "properties": {
+          "allowedCount": {
+            "description": "围栏放行的异步写入数",
+            "type": "number",
+            "x-i18n-en": "Number of async writes allowed by the fence"
+          },
+          "executedWriteIds": {
+            "description": "实际执行（落盘 + 通知扇出）的写入 id",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Ids of writes actually applied (persisted and fanned out)"
+          },
+          "generation": {
+            "description": "本次判定采用的运行时代际（16 位十六进制）；null = 当前代不可知，全部作废",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Runtime generation used for this check (16 hex digits); null means the current generation is unknown and everything is invalidated"
+          },
+          "invalidatedCount": {
+            "description": "作废的异步写入数（与审计 detail.invalidatedCount 同值）",
+            "type": "number",
+            "x-i18n-en": "Number of invalidated async writes (same value as audit detail.invalidatedCount)"
+          },
+          "resourceId": {
+            "description": "本次 rewind 的资源 id（与审计 resourceId 一致）",
+            "type": "string",
+            "x-i18n-en": "Resource id of this rewind (same as audit resourceId)"
+          }
+        },
+        "required": [
+          "allowedCount",
+          "invalidatedCount",
+          "executedWriteIds",
+          "generation",
+          "resourceId"
+        ],
+        "type": "object"
+      },
       "RolloutStrategyDto": {
         "properties": {},
         "type": "object"
@@ -15427,6 +15502,56 @@
         ],
         "x-i18n-en": {
           "summary": "Resume suspended/failed Agent sessions"
+        }
+      }
+    },
+    "/agent/sessions/{id}/steer": {
+      "post": {
+        "operationId": "AgentController_steer",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentSteerDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "向 waiting_input 会话追加 steer 意图（下一轮步边界注入）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Append a steer intent to a waiting_input session (injected at the next step boundary)"
         }
       }
     },
@@ -28645,6 +28770,46 @@
         ],
         "x-i18n-en": {
           "summary": "Minimal plan-card preview + deterministic validation (N7 anti-hallucination gate; no LLM call, no SOP persistence)"
+        }
+      }
+    },
+    "/workbench/rewind": {
+      "post": {
+        "operationId": "WorkbenchController_rewind",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RewindRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RewindResultDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "N18：作废旧代在途异步写入与通知并留审计（代际只读服务端注册表，不信任客户端）",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "summary": "N18: invalidate stale-generation in-flight async writes and notifications with an audit trail (generation is read only from the server-side registry, never from the client)"
         }
       }
     }

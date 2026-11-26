@@ -172,11 +172,11 @@
     "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 987,
-      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【R65 代签（Lead 已批准）：**共享类型 import**（replay 决策上下文类型），内联字面量会把这个形状写两份 —— 正是 ADR-031 要消灭的「两处各自推导」⇒ 986→**987**；**回滚值 986**。】",
+      "maxLines": 996,
+      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【R65 代签（Lead 已批准）：**共享类型 import**（replay 决策上下文类型），内联字面量会把这个形状写两份 —— 正是 ADR-031 要消灭的「两处各自推导」⇒ 986→**987**；**回滚值 986**。】 【第65轮续(N8 steer 接线，Lead 集成重签)：runtime run() 每轮 LLM 前经 steerInbox.drainAtStepBoundary 注入步边界意图(+注入口 setSteerInbox)，nonCommentLines 987→996、最长函数 run@L520 684→696；既有预算/审批重放/双跑防护逐字未动，反证真红还原。回滚值 987/684。】",
       "ceiling": {
-        "nonCommentLines": 987,
-        "functionLines": 684,
+        "nonCommentLines": 996,
+        "functionLines": 696,
         "ctorParams": 0,
         "exports": 10,
         "branchDensity": 23.2
@@ -1831,6 +1831,19 @@
         ]
       },
       "lastMeasured": "2026-11-26 (N27 tool-search re-export：nonCommentLines 806 / exports 15)"
+    },
+    "apps/admin-api/src/modules/agent/agent.controller.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 914,
+      "why": "第65轮续(N8 steer 接线，Lead 集成重签)：实测 nonCommentLines=914(>硬上限 900)、最长函数 decideApproval@L637=94、branchDensity=16.5、exports=3，均在各自阈值内；新增 POST /sessions/:id/steer 端点 + SteerInboxService @Optional 末尾注入(N8)。回滚值：删除该端点后为既有 900 以下。",
+      "ceiling": {
+        "nonCommentLines": 914,
+        "functionLines": 94,
+        "ctorParams": 0,
+        "exports": 3,
+        "branchDensity": 16.5
+      }
     }
   },
   "knownGaps": [
@@ -1854,7 +1867,7 @@
     }
   ],
   "$ratchet": {
-    "maxEntries": 97,
+    "maxEntries": 98,
     "note": "**条目上限 = 记录式棘轮**（与实际条目数**严格相等**）。为什么不是静态常量：静态常量只做上界检查、从不随条目减少而下调 ⇒ 合法删掉一条后可以**免费加另一条**，总数永远停在同一个数、棘轮永不收紧。⇒ 删条目必须同批下调本值；加条目必须显式上调（可见的、需要理由的评审动作）。`check-size-caps.mjs` 的 `MAX_BASELINE_ENTRIES` 保留为**绝对上界**，本值不得超过它。"
   }
 }

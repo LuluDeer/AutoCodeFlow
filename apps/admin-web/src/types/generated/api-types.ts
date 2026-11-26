@@ -424,6 +424,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/sessions/{id}/steer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 向 waiting_input 会话追加 steer 意图（下一轮步边界注入） */
+        post: operations["AgentController_steer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/telemetry/consent": {
         parameters: {
             query?: never;
@@ -4701,6 +4718,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workbench/rewind": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** N18：作废旧代在途异步写入与通知并留审计（代际只读服务端注册表，不信任客户端） */
+        post: operations["WorkbenchController_rewind"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5078,6 +5112,10 @@ export interface components {
             ok: boolean;
             /** @description ok=false 时出现 */
             reason?: string;
+        };
+        AgentSteerDto: {
+            /** @description 用户追加的 steer 正文（步边界注入下一轮模型） */
+            content: string;
         };
         AgentStepDto: {
             content: string | null;
@@ -8533,6 +8571,24 @@ export interface components {
             /** @description 已撤销的会话数 */
             revoked: number;
         };
+        RewindRequestDto: {
+            /** @description 可选 Part id 过滤；省略则覆盖该会话的全部在途写入。仅缩小范围，不参与代际判定 */
+            partIds?: string[];
+            /** @description 目标 workbench 会话 id（服务端据此取 Parts 与在途异步写入） */
+            sessionId: string;
+        };
+        RewindResultDto: {
+            /** @description 围栏放行的异步写入数 */
+            allowedCount: number;
+            /** @description 实际执行（落盘 + 通知扇出）的写入 id */
+            executedWriteIds: string[];
+            /** @description 本次判定采用的运行时代际（16 位十六进制）；null = 当前代不可知，全部作废 */
+            generation: string | null;
+            /** @description 作废的异步写入数（与审计 detail.invalidatedCount 同值） */
+            invalidatedCount: number;
+            /** @description 本次 rewind 的资源 id（与审计 resourceId 一致） */
+            resourceId: string;
+        };
         RolloutStrategyDto: Record<string, never>;
         RuntimeVersionContractDto: {
             /**
@@ -10714,6 +10770,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentSessionResumeResponseDto"];
+                };
+            };
+        };
+    };
+    AgentController_steer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentSteerDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -17830,6 +17913,29 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlanCardPreviewResponseDto"];
+                };
+            };
+        };
+    };
+    WorkbenchController_rewind: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RewindRequestDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RewindResultDto"];
                 };
             };
         };

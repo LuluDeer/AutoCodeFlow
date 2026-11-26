@@ -241,6 +241,10 @@ export const MIXED_EXEMPT_TOKENS = [
   'Access', 'Refresh', 'Events', 'EventSource',
   'Commit', 'Pull', 'Push', 'Sandbox', 'Runtime', 'Workflow', 'Prompt',
   'Provider', 'Capability', 'Capabilities', 'Embedding', 'Rerank', 'Streaming',
+  // Workbench = 企业 Agent 工作台的产品模块名；Part/Parts = GCO N10 的会话 Part 模型
+  //（12 类判别联合的专有类型名）。rewind DTO 描述里引用这两个类型名属技术标识，
+  // 译成「工作台/分片」会失去与代码类型的一一对应，与 Provider/Capability 同类。
+  'Workbench', 'Part', 'Parts',
   // N17 审批短语的**协议字面量**：用户实际要在输入框里敲的英文单词，译成中文就不是
   // 合法输入了（parseApprovalPhrase 的 PHRASE_TABLE 原样收这些词）。中文文案里列举它们
   // 属于"技术标识"，与 Webhook/Token 同类，不是英文散文漏进界面。

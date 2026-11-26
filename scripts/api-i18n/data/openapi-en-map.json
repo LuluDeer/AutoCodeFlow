@@ -1855,5 +1855,15 @@
   "移交 capability 所有权（ADMIN；新 owner + backer 双签）": "Transfer capability ownership (ADMIN; new owner + backer dual sign-off)",
   "移交后的 capability": "The capability after transfer",
   "owner/backer 缺失、空串或非字符串（须双签）": "owner/backer missing, empty, or non-string (dual sign-off required)",
-  "非 ADMIN 无权移交": "Non-ADMIN users cannot transfer ownership"
+  "非 ADMIN 无权移交": "Non-ADMIN users cannot transfer ownership",
+  "用户追加的 steer 正文（步边界注入下一轮模型）": "Steer content appended by the user (injected into the next model turn at a step boundary)",
+  "目标 workbench 会话 id（服务端据此取 Parts 与在途异步写入）": "Target workbench session id (the server uses it to load Parts and in-flight async writes)",
+  "可选 Part id 过滤；省略则覆盖该会话的全部在途写入。仅缩小范围，不参与代际判定": "Optional Part id filter; when omitted, covers all in-flight writes of the session. Narrows scope only and does not affect generation checks",
+  "围栏放行的异步写入数": "Number of async writes allowed by the fence",
+  "作废的异步写入数（与审计 detail.invalidatedCount 同值）": "Number of invalidated async writes (same value as audit detail.invalidatedCount)",
+  "实际执行（落盘 + 通知扇出）的写入 id": "Ids of writes actually applied (persisted and fanned out)",
+  "本次判定采用的运行时代际（16 位十六进制）；null = 当前代不可知，全部作废": "Runtime generation used for this check (16 hex digits); null means the current generation is unknown and everything is invalidated",
+  "本次 rewind 的资源 id（与审计 resourceId 一致）": "Resource id of this rewind (same as audit resourceId)",
+  "向 waiting_input 会话追加 steer 意图（下一轮步边界注入）": "Append a steer intent to a waiting_input session (injected at the next step boundary)",
+  "N18：作废旧代在途异步写入与通知并留审计（代际只读服务端注册表，不信任客户端）": "N18: invalidate stale-generation in-flight async writes and notifications with an audit trail (generation is read only from the server-side registry, never from the client)"
 }

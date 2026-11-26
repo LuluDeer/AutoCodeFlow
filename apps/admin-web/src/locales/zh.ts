@@ -983,6 +983,7 @@ export default {
   'audit.action.capability_update': '更新能力',
   'audit.action.capability_transfer': '移交能力所有权',
   'audit.action.capability_delete': '删除能力',
+  'audit.action.workbench_rewind': '回退工作台会话（作废在途写入）',
   'audit.action.im_identity_bind': '绑定 IM 身份',
   'audit.total': '共 {{count}} 条',
   'audit.modal.detail': '详情',
