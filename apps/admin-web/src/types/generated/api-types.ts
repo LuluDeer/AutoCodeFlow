@@ -4701,6 +4701,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workbench/part/project": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** N10：按服务端 Part 与会话归属投影可见面（大字段仅在可见时从 blob 读回） */
+        post: operations["WorkbenchController_projectPart"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workbench/preview": {
         parameters: {
             query?: never;
@@ -5884,6 +5901,50 @@ export interface components {
         CancelSopAssignmentDto: {
             /** @description 取消原因（可选，最多 500 字符；经脱敏后写入审计日志，不覆盖执行结果） */
             reason?: string;
+        };
+        CapabilityDumpResponseDto: {
+            /**
+             * @description 降级原因提示，格式为「可达性分级:降级编排标记」
+             * @example unreachable:x11+fromVideo
+             */
+            degradationHint?: string;
+            /**
+             * @description 能力可达性降级编排标记：direct 直连、x11+fromVideo 走 X11 桌面与录屏转写、unknown 为 fail-closed
+             * @enum {string}
+             */
+            degradePath?: "direct" | "x11+fromVideo" | "unknown";
+            /** @description 分层来源 / 生效值 / 来源层的三栏审计行 */
+            dump: Record<string, never>[];
+            /**
+             * @description 已注册的 capability key
+             * @example browser
+             */
+            key: string;
+        };
+        CapabilityResolutionResponseDto: {
+            /** @description 以 capability key 为资源的策略结论 */
+            decision: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description 降级原因提示，格式为「可达性分级:降级编排标记」
+             * @example unreachable:x11+fromVideo
+             */
+            degradationHint?: string;
+            /**
+             * @description 能力可达性降级编排标记：direct 直连、x11+fromVideo 走 X11 桌面与录屏转写、unknown 为 fail-closed
+             * @enum {string}
+             */
+            degradePath?: "direct" | "x11+fromVideo" | "unknown";
+            /** @description 按字段族规则合并后的生效配置 */
+            effective: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description 已注册的 capability key
+             * @example browser
+             */
+            key: string;
         };
         CapabilityViewDto: {
             /**
@@ -12661,12 +12722,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description 生效配置 + 策略结论 */
+            /** @description 生效配置 + 策略结论 + 可选的可达性降级标记 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["CapabilityResolutionResponseDto"];
+                };
             };
             /** @description key 未注册 / layers 非法 */
             400: {
@@ -12809,12 +12872,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 分层来源 / 生效值 / 来源层的三栏审计 */
+            /** @description 分层来源 / 生效值 / 来源层的三栏审计 + 可选的可达性降级标记 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["CapabilityDumpResponseDto"];
+                };
             };
             /** @description key 未注册 / 下层 JSON 非法 */
             400: {
@@ -17891,6 +17956,23 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["CommitResultDto"];
                 };
+            };
+        };
+    };
+    WorkbenchController_projectPart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

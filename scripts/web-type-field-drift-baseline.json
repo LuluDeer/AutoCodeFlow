@@ -784,12 +784,6 @@
       "review_by": "2026-12-15"
     },
     {
-      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityResolution",
-      "reason": "待处置（未配对）：CapabilityResolution 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
       "key": "apps/admin-web/src/api/capabilities.ts\tDumpLayerValue",
       "reason": "待处置（未配对）：DumpLayerValue 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
       "owner": "arch-core",
@@ -798,12 +792,6 @@
     {
       "key": "apps/admin-web/src/api/capabilities.ts\tDumpField",
       "reason": "待处置（未配对）：DumpField 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
-      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityDump",
-      "reason": "待处置（未配对）：CapabilityDump 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
       "owner": "arch-core",
       "review_by": "2026-12-15"
     },

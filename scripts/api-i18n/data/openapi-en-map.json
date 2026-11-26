@@ -1865,5 +1865,13 @@
   "本次判定采用的运行时代际（16 位十六进制）；null = 当前代不可知，全部作废": "Runtime generation used for this check (16 hex digits); null means the current generation is unknown and everything is invalidated",
   "本次 rewind 的资源 id（与审计 resourceId 一致）": "Resource id of this rewind (same as audit resourceId)",
   "向 waiting_input 会话追加 steer 意图（下一轮步边界注入）": "Append a steer intent to a waiting_input session (injected at the next step boundary)",
-  "N18：作废旧代在途异步写入与通知并留审计（代际只读服务端注册表，不信任客户端）": "N18: invalidate stale-generation in-flight async writes and notifications with an audit trail (generation is read only from the server-side registry, never from the client)"
+  "N18：作废旧代在途异步写入与通知并留审计（代际只读服务端注册表，不信任客户端）": "N18: invalidate stale-generation in-flight async writes and notifications with an audit trail (generation is read only from the server-side registry, never from the client)",
+  "能力可达性降级编排标记：direct 直连、x11+fromVideo 走 X11 桌面与录屏转写、unknown 为 fail-closed": "Capability reachability degradation path: direct for direct access, x11+fromVideo for X11 desktop and screen-recording transcription, unknown for fail-closed",
+  "降级原因提示，格式为「可达性分级:降级编排标记」": "Degradation hint in the form 'reachability:degradePath'",
+  "按字段族规则合并后的生效配置": "Effective configuration merged by field-family rules",
+  "以 capability key 为资源的策略结论": "Policy decision with the capability key as resource",
+  "分层来源 / 生效值 / 来源层的三栏审计行": "Three-column audit row: layer sources / effective value / source layer",
+  "N10：按服务端 Part 与会话归属投影可见面（大字段仅在可见时从 blob 读回）": "N10: project the visible surface from server-side Parts and session ownership (large fields are read back from blob only when visible)",
+  "生效配置 + 策略结论 + 可选的可达性降级标记": "Effective config + policy decision + optional reachability degradation markers",
+  "分层来源 / 生效值 / 来源层的三栏审计 + 可选的可达性降级标记": "Three-column audit (layer sources / effective value / source layer) + optional reachability degradation markers"
 }

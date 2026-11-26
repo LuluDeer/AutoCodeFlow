@@ -3334,6 +3334,89 @@
         },
         "type": "object"
       },
+      "CapabilityDumpResponseDto": {
+        "properties": {
+          "degradationHint": {
+            "description": "降级原因提示，格式为「可达性分级:降级编排标记」",
+            "example": "unreachable:x11+fromVideo",
+            "type": "string",
+            "x-i18n-en": "Degradation hint in the form 'reachability:degradePath'"
+          },
+          "degradePath": {
+            "description": "能力可达性降级编排标记：direct 直连、x11+fromVideo 走 X11 桌面与录屏转写、unknown 为 fail-closed",
+            "enum": [
+              "direct",
+              "x11+fromVideo",
+              "unknown"
+            ],
+            "type": "string",
+            "x-i18n-en": "Capability reachability degradation path: direct for direct access, x11+fromVideo for X11 desktop and screen-recording transcription, unknown for fail-closed"
+          },
+          "dump": {
+            "description": "分层来源 / 生效值 / 来源层的三栏审计行",
+            "items": {
+              "type": "object"
+            },
+            "type": "array",
+            "x-i18n-en": "Three-column audit row: layer sources / effective value / source layer"
+          },
+          "key": {
+            "description": "已注册的 capability key",
+            "example": "browser",
+            "type": "string",
+            "x-i18n-en": "Registered capability key"
+          }
+        },
+        "required": [
+          "key",
+          "dump"
+        ],
+        "type": "object"
+      },
+      "CapabilityResolutionResponseDto": {
+        "properties": {
+          "decision": {
+            "additionalProperties": true,
+            "description": "以 capability key 为资源的策略结论",
+            "type": "object",
+            "x-i18n-en": "Policy decision with the capability key as resource"
+          },
+          "degradationHint": {
+            "description": "降级原因提示，格式为「可达性分级:降级编排标记」",
+            "example": "unreachable:x11+fromVideo",
+            "type": "string",
+            "x-i18n-en": "Degradation hint in the form 'reachability:degradePath'"
+          },
+          "degradePath": {
+            "description": "能力可达性降级编排标记：direct 直连、x11+fromVideo 走 X11 桌面与录屏转写、unknown 为 fail-closed",
+            "enum": [
+              "direct",
+              "x11+fromVideo",
+              "unknown"
+            ],
+            "type": "string",
+            "x-i18n-en": "Capability reachability degradation path: direct for direct access, x11+fromVideo for X11 desktop and screen-recording transcription, unknown for fail-closed"
+          },
+          "effective": {
+            "additionalProperties": true,
+            "description": "按字段族规则合并后的生效配置",
+            "type": "object",
+            "x-i18n-en": "Effective configuration merged by field-family rules"
+          },
+          "key": {
+            "description": "已注册的 capability key",
+            "example": "browser",
+            "type": "string",
+            "x-i18n-en": "Registered capability key"
+          }
+        },
+        "required": [
+          "key",
+          "effective",
+          "decision"
+        ],
+        "type": "object"
+      },
       "CapabilityViewDto": {
         "properties": {
           "createdAt": {
@@ -19171,8 +19254,15 @@
         },
         "responses": {
           "200": {
-            "description": "生效配置 + 策略结论",
-            "x-i18n-en": "Effective configuration + policy decision"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilityResolutionResponseDto"
+                }
+              }
+            },
+            "description": "生效配置 + 策略结论 + 可选的可达性降级标记",
+            "x-i18n-en": "Effective config + policy decision + optional reachability degradation markers"
           },
           "400": {
             "description": "key 未注册 / layers 非法",
@@ -19384,8 +19474,15 @@
         ],
         "responses": {
           "200": {
-            "description": "分层来源 / 生效值 / 来源层的三栏审计",
-            "x-i18n-en": "Three-column audit of layered source / effective value / source layer"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilityDumpResponseDto"
+                }
+              }
+            },
+            "description": "分层来源 / 生效值 / 来源层的三栏审计 + 可选的可达性降级标记",
+            "x-i18n-en": "Three-column audit (layer sources / effective value / source layer) + optional reachability degradation markers"
           },
           "400": {
             "description": "key 未注册 / 下层 JSON 非法",
@@ -28730,6 +28827,29 @@
         ],
         "x-i18n-en": {
           "summary": "Confirm the plan card and persist it as an SOP draft (N7 audit hash check; draft only, never auto-published)"
+        }
+      }
+    },
+    "/workbench/part/project": {
+      "post": {
+        "operationId": "WorkbenchController_projectPart",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "N10：按服务端 Part 与会话归属投影可见面（大字段仅在可见时从 blob 读回）",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "summary": "N10: project the visible surface from server-side Parts and session ownership (large fields are read back from blob only when visible)"
         }
       }
     },

@@ -100,6 +100,10 @@ export interface CapabilityResolution {
   key: string;
   effective: Record<string, unknown>;
   decision: CapabilityDecision;
+  /** N9：可达性降级编排标记（缺席表示探测口未装配） */
+  degradePath?: "direct" | "x11+fromVideo" | "unknown";
+  /** N9：降级原因提示「可达性分级:降级编排标记」 */
+  degradationHint?: string;
 }
 
 /** GET /api/capabilities/:key/dump 三栏审计行（凭据已由后端脱敏）。 */
@@ -119,6 +123,10 @@ export interface DumpField {
 export interface CapabilityDump {
   key: string;
   dump: DumpField[];
+  /** N9：可达性降级编排标记（缺席表示探测口未装配） */
+  degradePath?: "direct" | "x11+fromVideo" | "unknown";
+  /** N9：降级原因提示「可达性分级:降级编排标记」 */
+  degradationHint?: string;
 }
 
 function parseJsonObject(text: string, fieldName: string): Record<string, unknown> {
