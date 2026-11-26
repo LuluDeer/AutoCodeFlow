@@ -149,6 +149,19 @@ function viewerOwnerTokens(viewer: AuthUser): string[] {
   return [...tokens];
 }
 
+/**
+ * 空可见视域用的**类型正确**哨兵：全零 uuid。
+ *
+ * 为什么不能用裸字符串（`'__no_visible_session__'`）：`agent_approvals.sessionId`
+ * 是 `uuid` 列（`1790000000040-AddAgentRuntimeTables.ts`），裸字符串进 `In(...)`
+ * 会被 PG 在**参数解析期**直接拒掉 —— `invalid input syntax for type uuid`。后果是
+ * `items` / `total` / `sessionTotal` 三个子查询一起失败 ⇒ 全 null + `degraded: true`，
+ * 把「这个用户一条待办都没有」渲染成「读不到」。事实是**零条**，不是读不到。
+ * 全零 uuid 是合法 uuid 字面量且不可能出现在 `gen_random_uuid()` 生成的主键里，
+ * 语义等价于 `1=0`，同时保住「谓词只有一个构造点」。
+ */
+export const NO_VISIBLE_SESSION_ID = "00000000-0000-0000-0000-000000000000";
+
 /** items / total / sessionTotal / counts 共用的**唯一**谓词构造点。 */
 function pendingWhere(scope: ViewerScope) {
   return {
@@ -159,7 +172,7 @@ function pendingWhere(scope: ViewerScope) {
           sessionId: In(
             scope.sessionIds.length
               ? scope.sessionIds
-              : ["__no_visible_session__"],
+              : [NO_VISIBLE_SESSION_ID],
           ),
         }
       : {}),
@@ -431,9 +444,11 @@ export class AgentInboxService {
       .where("a.status = :status", { status: "pending" })
       .andWhere("a.scope = :scope", { scope: "once" });
     if (sessionIds) {
-      // 空视域用一个不可能命中的哨兵，避开 `IN (:...[])` 的 SQL 方言差异。
+      // 空视域用**类型正确**的全零 uuid 哨兵（`NO_VISIBLE_SESSION_ID`）：裸字符串
+      // 进 `uuid` 列比较会在 PG 参数解析期抛 `invalid input syntax for type uuid`，
+      // 把「零条」渲染成「读不到」（degraded）。全零 uuid 合法且不可能命中真行。
       qb.andWhere("a.sessionId IN (:...sessionIds)", {
-        sessionIds: sessionIds.length ? sessionIds : ["__no_visible_session__"],
+        sessionIds: sessionIds.length ? sessionIds : [NO_VISIBLE_SESSION_ID],
       });
     }
     const row = await qb.getRawOne<{ n: string | number }>();

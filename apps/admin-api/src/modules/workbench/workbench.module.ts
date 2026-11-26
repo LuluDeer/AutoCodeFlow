@@ -13,6 +13,7 @@ import {
   RELEASE_SESSIONS_PORT,
   RELEASE_SOPS_PORT,
   ReleaseApprovalService,
+  type ReleaseApprovalsPort,
 } from "./release-approval.service";
 import { releasePolicyAdapter } from "./release-policy.adapter";
 import { ConfigCacheSyncService } from "../config/config-cache-sync.service";
@@ -111,11 +112,34 @@ import { WorkbenchBlobStore } from "./workbench-blob.store";
     // ADR-045：发布审批四端口。ModuleRef strict:false 惰性取全局装配的
     // AgentApprovalsService / SopService（不反向改 AgentModule exports）；
     // 会话端口复用已 import 的 AgentSessionService；策略指纹按 phrase 同口径适配。
+    //
+    // ⚠️ RELEASE_APPROVALS_PORT **必须惰性**：useFactory 在 **WorkbenchModule 实例化期**
+    // 执行，那时 `moduleRef.get(AgentApprovalsService)` 解析出的是「构造器尚未执行」的
+    // 空壳（实测 `Object.keys(port) === []`、`port.approvals === undefined`），于是
+    // `ReleaseApprovalService.requestRelease` 调 `approvals.request()` 直接抛
+    // `Cannot read properties of undefined (reading 'create')` —— 整条 ADR-045 发布链
+    // 在真进程里 100% 不可用。下面三个端口统一「调用时才 get」：工厂只返回代理，
+    // 每个方法内部现场解析真服务再转发（方法签名与返回语义逐字不变）。
     {
       provide: RELEASE_APPROVALS_PORT,
       inject: [ModuleRef],
-      useFactory: (moduleRef: ModuleRef) =>
-        moduleRef.get(AgentApprovalsService, { strict: false }),
+      useFactory: (moduleRef: ModuleRef) => {
+        const approvals = () =>
+          moduleRef.get(AgentApprovalsService, { strict: false });
+        return {
+          buildKey: (
+            sessionId: string,
+            toolName: string,
+            args: Record<string, unknown> | null,
+          ) => approvals().buildKey(sessionId, toolName, args),
+          request: (input: Parameters<ReleaseApprovalsPort["request"]>[0]) =>
+            approvals().request(input),
+          consume: (
+            approvalKey: string,
+            currentPolicyFingerprint: string | null,
+          ) => approvals().consume(approvalKey, currentPolicyFingerprint),
+        };
+      },
     },
     {
       provide: RELEASE_SESSIONS_PORT,
