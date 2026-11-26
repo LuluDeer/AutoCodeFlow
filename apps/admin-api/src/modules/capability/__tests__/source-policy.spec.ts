@@ -1,5 +1,6 @@
 import {
   SUPPORTED_SOURCE_TYPES,
+  assertOriginAllowed,
   canAutoUpdate,
   canToggleMarketplace,
   isSupportedSourceType,
@@ -180,5 +181,77 @@ describe("N25 source-policy · canAutoUpdate", () => {
     expect(canAutoUpdate({ type: "github" }, "  ", "1.1.0")).toBe(false);
     expect(canAutoUpdate({ type: "github" }, "1.0.0", "  ")).toBe(false);
     expect(canAutoUpdate({ type: "github" }, "1.0.0", "1.0.1")).toBe(true);
+  });
+});
+
+// N21 / ADR-044：来源白名单 + 分级标签（企业管控硬边界，fail-closed）
+describe("source-policy — N21 来源白名单与分级标签", () => {
+  it("合法来源（公网 public / 内网 sensitive）放行", () => {
+    expect(
+      assertOriginAllowed(
+        { type: "git", ref: "https://github.com/acf/skill.git" },
+        "public",
+      ).ok,
+    ).toBe(true);
+    expect(
+      assertOriginAllowed(
+        { type: "git", ref: "https://git.internal.example/skill.git" },
+        "sensitive",
+      ).ok,
+    ).toBe(true);
+    expect(assertOriginAllowed({ type: "folder" }).ok).toBe(true);
+  });
+
+  it("URL userinfo（带凭据）一律拒", () => {
+    const v = assertOriginAllowed({
+      type: "git",
+      ref: "https://user:pass@github.com/acf/skill.git",
+    });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/credentials/i);
+  });
+
+  it("headers 字段（不可移植、会带出密钥）一律拒", () => {
+    expect(
+      assertOriginAllowed({
+        type: "server",
+        ref: "https://api.example.com",
+        headers: { Authorization: "Bearer x" },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("白名单外 scheme（命令型）一律拒", () => {
+    expect(
+      assertOriginAllowed({ type: "server", ref: "file:///etc/passwd" }).ok,
+    ).toBe(false);
+    expect(
+      assertOriginAllowed({ type: "server", ref: "javascript:alert(1)" }).ok,
+    ).toBe(false);
+  });
+
+  it("sensitive 能力禁止公网 host", () => {
+    const v = assertOriginAllowed(
+      { type: "git", ref: "https://github.com/acf/skill.git" },
+      "sensitive",
+    );
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/sensitive/i);
+    expect(
+      assertOriginAllowed(
+        { type: "git", ref: "https://10.0.0.5/skill.git" },
+        "sensitive",
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("非法分级与畸形形态 fail-closed", () => {
+    expect(assertOriginAllowed({ type: "git" }, "top-secret").ok).toBe(false);
+    expect(assertOriginAllowed(null).ok).toBe(false);
+    expect(assertOriginAllowed({ type: "git", ref: "" }).ok).toBe(false);
+    // 非 URL ref（package@marketplace）由 type 层校验，不在来源层拒
+    expect(
+      assertOriginAllowed({ type: "npm", ref: "my-skill@marketplace" }).ok,
+    ).toBe(true);
   });
 });

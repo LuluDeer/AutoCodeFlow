@@ -257,6 +257,8 @@ export const AGENT_KINDS = [
   "sop_review",
   "app_scaffold",
   "chat",
+  // N11（ADR-044）：Plan 只读身份作为一等会话 kind，指标标签方可枚举。
+  "plan",
 ] as const;
 
 export const AGENT_TERMINAL_STATUSES = [

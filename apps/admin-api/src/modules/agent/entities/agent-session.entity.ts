@@ -41,6 +41,12 @@ export const AGENT_SESSION_KINDS = [
   "app_scaffold",
   /** 人工对话：管理员直接提问。 */
   "chat",
+  /**
+   * N11：Plan 受限执行身份——只读工具面 + 方案批准只有 once。
+   * 与既有 kind 共用同一 varchar(32) 列，无 DB enum/迁移；前端选择器与
+   * SESSION_TOOL_ALLOWLIST 的登记由主控同步（见交接说明）。
+   */
+  "plan",
 ] as const;
 export type AgentSessionKind = (typeof AGENT_SESSION_KINDS)[number];
 

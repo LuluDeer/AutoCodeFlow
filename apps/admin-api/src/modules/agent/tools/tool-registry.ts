@@ -1390,6 +1390,10 @@ export const SESSION_TOOL_ALLOWLIST: Record<string, readonly string[] | null> =
 
     /** 人工对话：不限工具（管理员与 Agent 对话，等价于管理员自己在操作）。 */
     chat: null,
+
+    plan: ALL_AGENT_TOOL_SPECS.filter((t) => t.tier === "read").map(
+      (t) => t.name,
+    ), // N11/ADR-044：Plan 只读面，写/destructive 由 plan-agent-gate 恒拒
   };
 
 /**

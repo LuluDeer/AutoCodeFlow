@@ -1,6 +1,9 @@
-import { Module, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { Logger, Module, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { AuditModule } from "../audit/audit.module";
+import { AuditService } from "../audit/audit.service";
+import { NotificationModule } from "../notification/notification.module";
+import { NotificationService } from "../notification/notification.service";
 import { Capability } from "./entities/capability.entity";
 import { CapabilityService } from "./capability.service";
 import { CapabilityController } from "./capability.controller";
@@ -8,6 +11,8 @@ import { CapabilityGenerationRegistry } from "./capability-generation.registry";
 import { ExternalAgentBypassWriteService } from "./external-agent-bypass.service";
 import { ReachabilityProbeService } from "./reachability-probe.service";
 import { safeHttpProbe } from "./reachability-probe.adapter";
+import { SlaAlertConsumer } from "./sla-alert.consumer";
+import { SlaNotificationSink } from "./sla-alert.sink";
 import { InProcessCapabilityService } from "./inprocess-gate.service";
 
 /**
@@ -26,7 +31,11 @@ import { InProcessCapabilityService } from "./inprocess-gate.service";
  * 主链逐字不变。
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([Capability]), AuditModule],
+  imports: [
+    TypeOrmModule.forFeature([Capability]),
+    AuditModule,
+    NotificationModule,
+  ],
   controllers: [CapabilityController],
   providers: [
     CapabilityService,
@@ -36,9 +45,22 @@ import { InProcessCapabilityService } from "./inprocess-gate.service";
       provide: ReachabilityProbeService,
       useFactory: () => new ReachabilityProbeService(safeHttpProbe),
     },
-    // N24：进程内能力网关（判据复用 inprocess-gate.ts 纯函数）；只追加 provider，
-    // 既有四个 provider 与 exports 逐字不动。
+    // N24：进程内能力网关（判据复用 inprocess-gate.ts 纯函数）。
     InProcessCapabilityService,
+    // N22/ADR-044：SLA 告警 consumer + 中台固定渠道 sink（无配置时 fail-closed 不发包）。
+    // policy 的 managedChannels 由 consume() 调用方注入，不在 DI 里硬编码。
+    {
+      provide: SlaNotificationSink,
+      inject: [NotificationService],
+      useFactory: (notification: NotificationService) =>
+        new SlaNotificationSink(notification),
+    },
+    {
+      provide: SlaAlertConsumer,
+      inject: [AuditService],
+      useFactory: (audit: AuditService) =>
+        new SlaAlertConsumer(audit, new Logger("SlaAlertConsumer")),
+    },
   ],
   exports: [CapabilityService],
 })

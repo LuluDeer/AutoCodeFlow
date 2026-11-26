@@ -23,6 +23,7 @@ import {
 } from "./entities/capability.entity";
 import type { CapabilityAttestation } from "./entities/capability.entity";
 import {
+  assertOriginAllowed,
   canAutoUpdate,
   canToggleMarketplace,
   isSupportedSourceType,
@@ -213,6 +214,9 @@ function assertSourceShape(source: unknown): void {
   if (!isSupportedSourceType(t)) {
     invalid(`source.type must be one of ${SUPPORTED_SOURCE_TYPES.join("|")}`);
   }
+  // N21 / ADR-044：来源白名单引擎级硬策略，fail-closed 不回退公网源。
+  const origin = assertOriginAllowed(source);
+  if (!origin.ok) invalid(`source origin rejected: ${origin.reason}`);
 }
 
 /** 对「合并后的完整字段」做确定性校验；create 与 update 共用同一判据。 */

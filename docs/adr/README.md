@@ -58,6 +58,7 @@
 | [ADR-042](adr-042-workbench-vertical-slice.md) | 三端职责 + **纵向切片优先**——Workbench 是第三入口非替换（与现有 56 工具 MCP 反向编排旁路并存）、桌面壳只做窗口/凭证；red V5 证伪切片先用现有 SOP draft/publish 承载方案卡，暂不建注册表/Scope 链/Part 模型/编译 prompt/三档；通过判据=真浏览器 e2e"不填 cron/UUID/glue 拿到报表"；否掉"先建全量注册表" | Accepted |
 
 | [ADR-043](adr-043-inflight-policy-invalidation.md) | 在途策略失效（N14 interrupt）的接线边界——三层已交付(代际 bump + scopedRules + commit 第五闸) + approval policy 实时重读已成立；capability 代际在途中断缺"方案卡→会话 generation 传递契约"(AgentSession 无 generation 字段、workbench 不建会话) ⇒ 暂缓完整接线、固化方案 A(显式传递+setGenerationProvider+作废集合)与重开条件；否决假绿/全局 DENY/混用 approval 指纹 | Accepted |
+| [ADR-044](adr-044-enterprise-control-client-autonomy.md) | 企业管控 + 客户端自主工作台的治理边界——硬边界走引擎级 restrict deny（不可被 scope.locked/CLI flag/项目 allow/客户端 enabled:false 撤销），客户端自主限白名单内追加；N21 出域+分级标签/N11 Plan 闸门只收紧/N14 事件 invalidate+wait/N22 中台渠道只追加接收人/N26 CLI 共用策略引擎/N24 P4 待第三方能力触发| Accepted |
 
 ## DOC-04 覆盖状态
 

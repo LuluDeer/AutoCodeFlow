@@ -155,3 +155,28 @@ export function exitPlanMode(
       : [],
   };
 }
+
+/**
+ * N11 接线辅助（纯函数，不改动上面三个状态机函数）：
+ * plan 闸门只收紧，放行一律**回原模式**——这里把原模式判定归一，未知模式 /
+ * 未知判定值一律 ask（fail-closed），不存在「没写规则就当 allow」的路径。
+ */
+export function planBaseDecision(
+  baseMode: unknown,
+  baseDecision: unknown,
+): "allow" | "ask" | "deny" {
+  if (typeof baseMode !== "string" || baseMode.length === 0) return "ask";
+  if (
+    baseDecision !== "allow" &&
+    baseDecision !== "ask" &&
+    baseDecision !== "deny"
+  ) {
+    return "ask";
+  }
+  return baseDecision;
+}
+
+/** plan 身份判定：只认字面量 "plan"，不做大小写折叠或包含匹配。 */
+export function isPlanIdentity(identity: unknown): boolean {
+  return identity === "plan";
+}

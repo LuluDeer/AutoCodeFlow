@@ -38,6 +38,8 @@ import type { ReplayDeclaration } from "../tools/tool-call-context";
 // N8：steer inbox 只以注入口进入热路径——缺席时 drain 不调用，主链逐字不变。
 import type { StepBoundary } from "./steer-inbox";
 import type { SteerInboxService } from "./steer-inbox.service";
+// N11：plan 身份的闸门只收紧；非 plan 会话走同一数组引用，主链逐字不变。
+import { narrowPlanTools } from "./plan-agent-gate";
 
 /**
  * 重放进上下文时单条工具结果的上限（字符）。
@@ -645,9 +647,12 @@ export class AgentRuntimeService {
         }
 
         // ── 推理 ──
-        const tools = this.toolExecutor
+        let tools = this.toolExecutor
           ? await this.toolExecutor.availableTools(fresh)
           : [];
+        // N11：闸门只收紧——plan 会话里写 / destructive 不暴露给模型；
+        // ask / allow 原样回原模式（审批链在 tool-executor 内，逐字不动）。
+        tools = narrowPlanTools(fresh, tools);
 
         // 上下文窗口（设计文档 02 §4.3 的滑动窗口）：每轮都基于**完整**历史
         // 重新算一次折叠计划，而不是改写 messages 变量本身——这样崩溃重启/
