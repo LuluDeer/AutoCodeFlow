@@ -8,7 +8,10 @@
 import { describe, expect, it } from "vitest";
 
 import { searchTools, type ToolDefinition } from "../tool-search";
-import { searchTools as reExported } from "../tools";
+import {
+  searchTools as reExported,
+  withStructuredToolErrors,
+} from "../tools";
 
 const TOOLS: ToolDefinition[] = [
   { name: "get_task", description: "Get one task by id", tags: ["read", "task"] },
@@ -132,10 +135,98 @@ describe("searchTools — 纯函数与接线", () => {
     expect(TOOLS).toHaveLength(snapshot.length);
   });
 
-  it("tools.ts 的 re-export 指向同一实现（未新增第 57 个工具）", () => {
+  it("tools.ts 的 re-export 指向同一实现（注册块单独校验）", () => {
     expect(reExported).toBe(searchTools);
     expect(reExported({ keyword: "task" }, TOOLS)).toEqual(
       searchTools({ keyword: "task" }, TOOLS),
     );
+  });
+});
+
+describe("tool_search — MCP 注册", () => {
+  type RegisteredLike = {
+    description?: string;
+    annotations?: { readOnlyHint?: boolean };
+  };
+  type ToolHandler = (args: Record<string, unknown>) => Promise<{
+    content: Array<{ type: string; text: string }>;
+  }>;
+  type CapturedTool = {
+    name: string;
+    description: string;
+    schema: Record<string, unknown>;
+    annotations?: RegisteredLike["annotations"];
+    handler: ToolHandler;
+  };
+
+  function setupRegistered() {
+    const registered = new Map<string, CapturedTool>();
+    const server = {
+      _registeredTools: {} as Record<string, RegisteredLike>,
+      tool: (
+        name: string,
+        description: string,
+        schema: Record<string, unknown>,
+        fourth: unknown,
+        fifth?: unknown,
+      ) => {
+        const annotations = fifth
+          ? (fourth as RegisteredLike["annotations"])
+          : undefined;
+        server._registeredTools[name] = { description, annotations };
+        registered.set(name, {
+          name,
+          description,
+          schema,
+          annotations,
+          handler: (fifth ?? fourth) as ToolHandler,
+        });
+      },
+    };
+    withStructuredToolErrors(server as never);
+    return { registered, server };
+  }
+
+  const rowsOf = async (handler: ToolHandler, args: Record<string, unknown>) => {
+    const result = await handler(args);
+    return JSON.parse(result.content[0]!.text) as ToolDefinition[];
+  };
+
+  it("生产注册边界把 tool_search 加进工具名集合", () => {
+    const { registered } = setupRegistered();
+    expect([...registered.keys()]).toContain("tool_search");
+
+    const tool = registered.get("tool_search")!;
+    expect(tool.description).toContain("keyword/tag");
+    expect(Object.keys(tool.schema).sort()).toEqual([
+      "keyword",
+      "limit",
+      "tags",
+    ]);
+    expect(tool.annotations).toEqual({ readOnlyHint: true });
+  });
+
+  it("handler 消费真实 _registeredTools，不是纯函数测试夹具 TOOLS", async () => {
+    const { registered, server } = setupRegistered();
+    Object.assign(server._registeredTools, {
+      get_task: {
+        description: "Get one task by id",
+        annotations: { readOnlyHint: true },
+      },
+      delete_task: {
+        description: "Delete a task",
+        annotations: { readOnlyHint: false },
+      },
+    });
+
+    const handler = registered.get("tool_search")!.handler;
+    expect(names(await rowsOf(handler, { keyword: "task" }))).toEqual([
+      "delete_task",
+      "get_task",
+    ]);
+    expect(names(await rowsOf(handler, { tags: ["read"] }))).toEqual([
+      "get_task",
+      "tool_search",
+    ]);
   });
 });

@@ -241,6 +241,12 @@ export const MIXED_EXEMPT_TOKENS = [
   'Access', 'Refresh', 'Events', 'EventSource',
   'Commit', 'Pull', 'Push', 'Sandbox', 'Runtime', 'Workflow', 'Prompt',
   'Provider', 'Capability', 'Capabilities', 'Embedding', 'Rerank', 'Streaming',
+  // N17 审批短语的**协议字面量**：用户实际要在输入框里敲的英文单词，译成中文就不是
+  // 合法输入了（parseApprovalPhrase 的 PHRASE_TABLE 原样收这些词）。中文文案里列举它们
+  // 属于"技术标识"，与 Webhook/Token 同类，不是英文散文漏进界面。
+  // `once` 在审批域是 N17 授权模型的**专有名词**（once+TTL 一次性授权，与 all 永久授权
+  // 对立），不是英文虚词 "once"；文案里的 "once+TTL" / "allow once" 都是该模型的标识。
+  'allow', 'deny', 'reset', 'once',
   // 国际化 / OIDC / 通知面
   'Google', 'Microsoft', 'Authenticator', 'DingTalk', 'Feishu', 'Slack',
   // 运行时/工具名（`uv venv`、`bwrap` 属专有名词）

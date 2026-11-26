@@ -259,7 +259,7 @@ GCO 是上一版 [agent-workbench-strategy.md](agent-workbench-strategy.md) 的*
 - **N8 会话 park/drain**：审批期 steer 入 inbox → 模型步边界 drain；pendingWake 不复活死意图；补 blocked 看板。【状态：⬜ 未实现：无审批期 steer inbox、模型步边界 drain、pendingWake 与 blocked 看板】
 - **N10 Part 扩类 + share**：6 类扩到 opencode 12 类 + 会话级 share + 大字段入 blob。【状态：⬜ 未实现：无 12 类 Part 模型、会话级 share 与大字段入 blob】
 - **N11 Plan 做成 agent 身份**：不是 UX 折叠开关，换 MemoryFileSystem + PermissionService；allowedPrompts 意图级批准 = 一次 SOP 发布 scope=once。【状态：⬜ 未实现：无换 MemoryFileSystem + PermissionService 的 plan agent 身份与 allowedPrompts】
-- **N14 在途策略即时失效**：`capability/changed` → interrupt 在途 + 下次 check 用新 policy + scopedRules 保 ask/deny。【状态：🟡 部分实现（第 16 轮）：运行时代际 + system_configs 持久化 + emit 已落地，scopedRules/interrupt 在途工具调用未做】
+- **N14 在途策略即时失效**：`capability/changed` → interrupt 在途 + 下次 check 用新 policy + scopedRules 保 ask/deny。【状态：🟡 部分实现（第 52 轮）：代际持久化/emit 已落地，本轮补 scopedRules 纯分类（workbench/scoped-rules.ts，通配 allow 作废+显式 ask/deny fail-closed 保留，6 例反证有牙）；未接线 controller/service、未做 interrupt 在途工具调用】
 - **N18 rewind 代际围栏**：会话/Part 带 generation，回退使旧异步写入/通知作废 + 审计"作废 N 任务"。【状态：🟡 部分实现（第 14 轮）：方案卡策略代际 + commit 代际闸已落地，会话/Part generation 与异步写入围栏未做】
 - **N24 进程外隔离定位修正**：中间形态（P1/P2）先做进程内能力权限层 + 预算 + 失败降级；slots/streams 背压与进程外 host 留 P4（magpie `host.go:455-511`）。【状态：⬜ 未实现：能力层无 slots/streams 双限流、坏版本回退与进程外 host】
 

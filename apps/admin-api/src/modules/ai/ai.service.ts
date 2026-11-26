@@ -31,6 +31,7 @@ import {
   normalizeToolCalls,
 } from "./llm-response";
 import {
+  isModelAllowed,
   legacyProviders,
   normalizeProviderEntry,
   parseProvidersJson,
@@ -620,13 +621,31 @@ export class AiService {
         : {}),
     };
 
-    return resolveAiRoute({
+    const resolved = resolveAiRoute({
       purpose,
       globalProvider,
       providers: entries,
       keys,
       override,
     });
+
+    // N13 模型硬策略闸门：resolveAiRoute 只负责选路，白/黑名单与
+    // modelEnabled 由 isModelAllowed 判定（唯一实现在 ai-providers.ts）。
+    // fail-closed：拒绝就抛给调用方，不静默回落其它模型，也不偷偷改走别的
+    // provider——管理员显式 providerOverride 选中被拒模型时同样得看到拒绝。
+    // resolved.status === "ok" 时 entry 必然存在；找不到也按拒绝处理。
+    if (resolved.status === "ok") {
+      const entry = entries.find((p) => p.id === resolved.route.provider);
+      if (!entry || !isModelAllowed(entry, resolved.route.model)) {
+        throw new AppError(ErrorCode.AI_PROVIDER_INVALID, {
+          detail:
+            `provider「${resolved.route.provider}」的模型「${resolved.route.model}」` +
+            "被模型策略拒绝（黑名单/白名单/模型开关），请检查 AI 设置",
+        });
+      }
+    }
+
+    return resolved;
   }
 
   /** 供设置页显示：注册表条目 + 每个条目是否已配密钥（永不回传密钥值）。 */

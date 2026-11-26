@@ -66,6 +66,13 @@ export interface CreateCapabilityPayload {
   scope?: CapabilityScope;
   manifest: Record<string, unknown>;
   enabled?: boolean;
+  /** N16 发布背书：owner 为发布者，backer 为部门/角色背书（非个人）。 */
+  owner?: string;
+  backer?: string;
+  /** N16 钉死版本（语义化版本或 40/64 位 hex hash）。 */
+  versionPin?: string;
+  /** N16 签署声明：封闭键 {signer, at?, scope?}，signer 非空。 */
+  attestation?: Record<string, unknown>;
 }
 
 /** PATCH /api/capabilities/:id 请求体（UpdateCapabilityDto = PartialType）。 */

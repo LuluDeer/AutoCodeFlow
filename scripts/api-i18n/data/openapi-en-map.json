@@ -1826,5 +1826,10 @@
   "新明文一次性回显；旧 key 立即失效": "New plaintext returned once; the old key is invalidated immediately",
   "设置 API Key 的 spendLimit（ADMIN，仅 trigger scope）": "Set an API Key's spendLimit (ADMIN, trigger scope only)",
   "N5 业务结果归因过滤：confirmed=已确认 / unconfirmed=未确认；映射 confirmed 列": "N5 business outcome attribution filter: confirmed = confirmed / unconfirmed = not confirmed; maps to the confirmed column",
-  "调用次数上限；null = 清除上限（恢复无限）": "Call limit; null = clear the limit (unlimited)"
+  "调用次数上限；null = 清除上限（恢复无限）": "Call limit; null = clear the limit (unlimited)",
+  "审批短语，整句精确匹配（首尾空白与英文大小写归一化）：allow / allow once / 允许 / 批准 / deny / 拒绝 / reset。reset 在 once+TTL 模型下不支持，会返回校验失败。": "Approval phrase, exact whole-sentence match (leading/trailing whitespace and English case normalized): allow / allow once / 允许 / 批准 / deny / 拒绝 / reset. reset is unsupported under the once+TTL model and returns a validation failure.",
+  "处置是否成功（成功恒为 true，失败由错误码表示）": "Whether the disposition succeeded (true on success; failures are expressed via a stable error code).",
+  "处置后的审批单行快照（含最新 status / decidedBy / decidedAt）": "Snapshot of the approval row after disposition (with latest status / decidedBy / decidedAt).",
+  "用审批短语处置 Agent 审批单（一次性授权）": "Dispose an Agent approval with a phrase (one-time authorization).",
+  "短语仅接受 allow / allow once / 允许 / 批准 / deny / 拒绝；处置人取当前登录管理员，策略指纹由服务端当前策略快照重算，请求体自报一律忽略。": "Accepted phrases: allow / allow once / 允许 / 批准 / deny / 拒绝. The decider is the current logged-in admin and the policy fingerprint is recomputed from the server's current policy snapshot; any self-reported value in the request body is ignored."
 }

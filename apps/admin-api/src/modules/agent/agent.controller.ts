@@ -42,6 +42,11 @@ import { AgentQueueStallService } from "./runtime/agent-queue-stall.service";
 import { AgentQueueIdleService } from "./runtime/agent-queue-idle.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
 import { AgentApprovalsService } from "./runtime/agent-approvals.service";
+import { computeApprovalPolicyFingerprint } from "./runtime/agent-approvals.service";
+import {
+  ApprovalPhraseDto,
+  ApprovalPhraseResponseDto,
+} from "./dto/approval-phrase.dto";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import type { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { AGENT_QUEUE_NAME, type AgentJobData } from "./runtime/agent.processor";
@@ -851,6 +856,96 @@ export class AgentController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.decideApproval(id, approvalKey, "denied", user);
+  }
+
+  /**
+   * N17：一句话审批的 HTTP 装配层。语义零重写——短语白名单、reset 拒绝、
+   * 策略指纹比对、once 条件写全在 `approvals.decideByPhrase` 里，这里只做
+   * 三件事：会话归属校验、取登录用户名、按**当前**策略快照重算指纹。
+   *
+   * `decidedBy` / `policyFingerprint` 均不接受请求体自报（DTO 里根本没有
+   * 这两个字段）——自报身份会冒批，自报旧指纹会绕过策略变更失效。
+   */
+  @Post("sessions/:id/approvals/:approvalKey/phrase")
+  // 显式再标一次 ADMIN（类级已有）：让「短语审批是 ADMIN-only」在方法元数据上
+  // 也能被守卫与契约检查直接钉住，不靠读类注释推断。
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: "用审批短语处置 Agent 审批单（一次性授权）",
+    description:
+      "短语仅接受 allow / allow once / 允许 / 批准 / deny / 拒绝；处置人取当前登录管理员，策略指纹由服务端当前策略快照重算，请求体自报一律忽略。",
+  })
+  @ApiOkResponse({ type: ApprovalPhraseResponseDto })
+  async decideApprovalByPhrase(
+    @Param("id") id: string,
+    @Param("approvalKey") approvalKey: string,
+    @Body() dto: ApprovalPhraseDto,
+    @CurrentUser() user: AuthUser,
+  ): Promise<ApprovalPhraseResponseDto> {
+    const session = await this.sessions.requireById(id);
+    const approval = await this.approvals.findByKey(approvalKey);
+    if (!approval) {
+      throw new AppError("AGENT_APPROVAL_NOT_FOUND", { approvalKey });
+    }
+    if (approval.sessionId !== session.id) {
+      throw new AppError("AGENT_APPROVAL_SESSION_MISMATCH", { sessionId: id });
+    }
+
+    // 指纹口径与闸门/落库侧同一份 computeApprovalPolicyFingerprint：读的是
+    // ConfigService 的当前值（boundary.resolveApprovalPolicy / resolveExecutableSourceGate
+    // 的 readBool 语义），而不是请求体给的字符串。配置读不到时 fail-closed：
+    // 显式 AppError + 中文 detail，不裸抛、不回退成「假定没变」。
+    const readBool = (key: string, fallback: boolean): boolean => {
+      const raw = this.config?.get<unknown>(key);
+      if (raw === undefined || raw === null || raw === "") return fallback;
+      if (typeof raw === "boolean") return raw;
+      const s = String(raw).trim().toLowerCase();
+      if (s === "true" || s === "1") return true;
+      if (s === "false" || s === "0") return false;
+      return fallback;
+    };
+    let policyFingerprint: string;
+    try {
+      policyFingerprint = computeApprovalPolicyFingerprint({
+        writeRequiresApproval: readBool(
+          "agent.policy.writeRequiresApproval",
+          false,
+        ),
+        dangerousRequiresApproval: readBool(
+          "agent.policy.dangerousRequiresApproval",
+          true,
+        ),
+        allowDangerous: readBool("agent.policy.allowDangerous", false),
+        executableSourceGate: readBool(
+          "agent.policy.executableSourceGate",
+          true,
+        ),
+      });
+    } catch (err: unknown) {
+      throw new AppError("VALIDATION_FAILED", {
+        detail:
+          "无法读取当前审批策略快照，拒绝按短语处置审批单：" +
+          (err instanceof Error ? err.message : String(err)),
+      });
+    }
+
+    const row = await this.approvals.decideByPhrase(
+      approvalKey,
+      dto.phrase,
+      user.username,
+      policyFingerprint,
+    );
+    return {
+      ok: true,
+      approval: row
+        ? {
+            approvalKey: row.approvalKey,
+            status: row.status,
+            decidedBy: row.decidedBy,
+            decidedAt: row.decidedAt,
+          }
+        : null,
+    };
   }
 
   @Get("sessions/:id/approvals")

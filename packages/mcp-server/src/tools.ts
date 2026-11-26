@@ -31,6 +31,7 @@ import {
   deploymentEnvWithinLimits,
   rejectRedactionSentinel,
   textWithin,
+  withStructuredToolErrors as withStructuredToolErrorsBase,
 } from "./tools/shared";
 import type { ApiCall } from "./tools/shared";
 
@@ -49,16 +50,64 @@ export {
   findRedactionSentinel,
   jsonByteLength,
   utf8ByteLength,
-  withStructuredToolErrors,
 } from "./tools/shared";
 export type { ApiCall, ToolErrorStructuredContent } from "./tools/shared";
+
+/**
+ * R31-E2 注册边界 + N27 按需检索入口。
+ *
+ * 真实 MCP server 在这里拿到 `tool_search`；既有 register*Tools 的 56 工具面
+ * 不动（tools.test.ts 的 full-surface 断言仍按原集合校验）。handler 读的是
+ * SDK 的 `_registeredTools`，即运行时真实工具表，不是测试夹具。
+ */
+export function withStructuredToolErrors(server: McpServer): McpServer {
+  type RegisteredToolLike = {
+    description?: string;
+    annotations?: { readOnlyHint?: boolean };
+  };
+  const wrapped = withStructuredToolErrorsBase(server);
+
+  // ---- tool_search ----------------------------------------------------------
+  server.tool(
+    "tool_search",
+    "Search the registered AutoCodeFlow tools on demand by keyword/tag; returns a ranked, bounded list instead of loading all 56 tools into the model context.",
+    {
+      keyword: z.string().optional().describe("Keyword matched against tool names and descriptions"),
+      tags: z.array(z.string()).optional().describe("Optional tags; any matching tag keeps a tool"),
+      limit: z.number().int().optional().describe("Maximum results (default 10, max 50)"),
+    }, { readOnlyHint: true },
+    async ({ keyword, tags, limit }) => {
+      const registered = (
+        server as unknown as {
+          _registeredTools?: Record<string, RegisteredToolLike>;
+        }
+      )._registeredTools ?? {};
+      const tools: ToolDefinition[] = Object.entries(registered).map(
+        ([name, definition]) => {
+          const access =
+            definition.annotations?.readOnlyHint === false ? "write" : "read";
+          const domain = name.split("_")[0] ?? "";
+          return {
+            name,
+            description: definition.description ?? "",
+            tags: Array.from(new Set([access, domain].filter(Boolean))),
+          };
+        },
+      );
+      return JSON_CONTENT(searchTools({ keyword, tags, limit }, tools));
+    },
+  );
+
+  return wrapped;
+}
 
 // 已搬出的工具组：同样再导出，`tools.ts` 仍是唯一的对外入口（S1 聚合出口）。
 export { registerAuditTools } from "./tools/audit";
 export { registerExecutorTools } from "./tools/executor";
 export { registerProjectTools } from "./tools/project";
 
-// N27：ToolSearch 纯函数（零依赖、不注册工具）的对外出口。56 工具面不受影响。
+// N27：ToolSearch 纯函数的对外出口；注册块见下方 withStructuredToolErrors 包装。
+import { searchTools, type ToolDefinition } from "./tool-search";
 export { searchTools } from "./tool-search";
 
 // task 组（21 个工具）的 6 个子域实现。**只在本文件里 import**（不 re-export）——

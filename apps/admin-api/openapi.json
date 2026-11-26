@@ -2818,6 +2818,43 @@
         },
         "type": "object"
       },
+      "ApprovalPhraseDto": {
+        "properties": {
+          "phrase": {
+            "description": "审批短语，整句精确匹配（首尾空白与英文大小写归一化）：allow / allow once / 允许 / 批准 / deny / 拒绝 / reset。reset 在 once+TTL 模型下不支持，会返回校验失败。",
+            "example": "allow",
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string",
+            "x-i18n-en": "Approval phrase, exact whole-sentence match (leading/trailing whitespace and English case normalized): allow / allow once / 允许 / 批准 / deny / 拒绝 / reset. reset is unsupported under the once+TTL model and returns a validation failure."
+          }
+        },
+        "required": [
+          "phrase"
+        ],
+        "type": "object"
+      },
+      "ApprovalPhraseResponseDto": {
+        "properties": {
+          "approval": {
+            "additionalProperties": true,
+            "description": "处置后的审批单行快照（含最新 status / decidedBy / decidedAt）",
+            "nullable": true,
+            "type": "object",
+            "x-i18n-en": "Snapshot of the approval row after disposition (with latest status / decidedBy / decidedAt)."
+          },
+          "ok": {
+            "description": "处置是否成功（成功恒为 true，失败由错误码表示）",
+            "type": "boolean",
+            "x-i18n-en": "Whether the disposition succeeded (true on success; failures are expressed via a stable error code)."
+          }
+        },
+        "required": [
+          "ok",
+          "approval"
+        ],
+        "type": "object"
+      },
       "ArtifactManifestItemDto": {
         "properties": {
           "name": {
@@ -15108,6 +15145,65 @@
         ],
         "x-i18n-en": {
           "summary": "Grant an agent approval request and resume the session"
+        }
+      }
+    },
+    "/agent/sessions/{id}/approvals/{approvalKey}/phrase": {
+      "post": {
+        "description": "短语仅接受 allow / allow once / 允许 / 批准 / deny / 拒绝；处置人取当前登录管理员，策略指纹由服务端当前策略快照重算，请求体自报一律忽略。",
+        "operationId": "AgentController_decideApprovalByPhrase",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "approvalKey",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalPhraseDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalPhraseResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "用审批短语处置 Agent 审批单（一次性授权）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "description": "Accepted phrases: allow / allow once / 允许 / 批准 / deny / 拒绝. The decider is the current logged-in admin and the policy fingerprint is recomputed from the server's current policy snapshot; any self-reported value in the request body is ignored.",
+          "summary": "Dispose an Agent approval with a phrase (one-time authorization)."
         }
       }
     },

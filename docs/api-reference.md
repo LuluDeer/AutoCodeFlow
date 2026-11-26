@@ -1443,7 +1443,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 291 个操作，覆盖 250 个路径。
+共 292 个操作，覆盖 251 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1467,6 +1467,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/agent/sessions/{id}/approvals` | 列出会话的全部审批单 |
 | POST | `/agent/sessions/{id}/approvals/{approvalKey}/deny` | 拒绝 Agent 审批单 |
 | POST | `/agent/sessions/{id}/approvals/{approvalKey}/grant` | 批准 Agent 审批单并恢复会话 |
+| POST | `/agent/sessions/{id}/approvals/{approvalKey}/phrase` | 用审批短语处置 Agent 审批单（一次性授权） |
 | GET | `/agent/sessions/{id}/export` | 导出 Agent 会话完整转录（JSON） |
 | POST | `/agent/sessions/{id}/resume` | 恢复挂起/失败的 Agent 会话 |
 | GET | `/agent/sessions/backlogged` | 列出「调度积压」的会话（pending 但队列里没有对应 job） |

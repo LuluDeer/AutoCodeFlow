@@ -370,6 +370,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/sessions/{id}/approvals/{approvalKey}/phrase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 用审批短语处置 Agent 审批单（一次性授权）
+         * @description 短语仅接受 allow / allow once / 允许 / 批准 / deny / 拒绝；处置人取当前登录管理员，策略指纹由服务端当前策略快照重算，请求体自报一律忽略。
+         */
+        post: operations["AgentController_decideApprovalByPhrase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/sessions/{id}/export": {
         parameters: {
             query?: never;
@@ -720,6 +740,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api-keys/{id}/limit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** 设置 API Key 的 spendLimit（ADMIN，仅 trigger scope） */
+        patch: operations["ApiKeysController_setSpendLimit"];
+        trace?: never;
+    };
     "/api-keys/{id}/permanent": {
         parameters: {
             query?: never;
@@ -748,6 +785,23 @@ export interface paths {
         put?: never;
         /** 撤销我的 API Key（显式别名，幂等） */
         post: operations["ApiKeysController_revokeAlias"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api-keys/{id}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 轮换 API Key（ADMIN，旧值立即失效） */
+        post: operations["ApiKeysController_rotate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1582,6 +1636,146 @@ export interface paths {
          * @description 重新校验用户名+密码，验证 6 位 TOTP 验证码，并签发 accessToken/refreshToken。在 /auth/login 返回 { totpRequired: true } 之后调用。
          */
         post: operations["AuthController_totpVerifyLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出全部 capability */
+        get: operations["CapabilityController_list"];
+        put?: never;
+        /** 新建 capability（ADMIN） */
+        post: operations["CapabilityController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capabilities/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 解析 capability 的最终生效配置（JWT 只读） */
+        post: operations["CapabilityController_resolve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capabilities/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 删除 capability（ADMIN） */
+        delete: operations["CapabilityController_remove"];
+        options?: never;
+        head?: never;
+        /** 局部更新 capability（ADMIN） */
+        patch: operations["CapabilityController_update"];
+        trace?: never;
+    };
+    "/capabilities/{key}/dump": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 导出 capability 三栏配置审计（JWT 只读，凭据脱敏） */
+        get: operations["CapabilityController_dump"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capability-activation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 过滤 + 分页查询能力激活日志（ADMIN） */
+        get: operations["CapabilityActivationController_query"];
+        put?: never;
+        /** 记录一次能力激活（JWT；供 capability/workbench 调用方写入） */
+        post: operations["CapabilityActivationController_record"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capability-activation/quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出全部配额配置（ADMIN；无配置返回空数组） */
+        get: operations["CapabilityActivationController_listQuotas"];
+        /** 创建或更新按项目/能力的配额配置（ADMIN；落 system_configs） */
+        put: operations["CapabilityActivationController_upsertQuota"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capability-activation/quota-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 按调用次数计算配额状态（ok/warn/exceeded）并触发软阈值告警（ADMIN） */
+        get: operations["CapabilityActivationController_quotaStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capability-activation/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 按 capabilityKey / 项目聚合激活次数（ADMIN） */
+        get: operations["CapabilityActivationController_stats"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2635,6 +2829,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/im-identity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出 IM 身份绑定（ADMIN） */
+        get: operations["ImIdentityController_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/im-identity/intake": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** IM 消息入站编排：注入扫描→身份校验→ProjectRole→方案卡预览（ADMIN，只预览不落库） */
+        post: operations["ImIdentityController_intake"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/im-identity/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 群聊 @bot 消息 prompt-injection 自检（ADMIN，纯校验） */
+        post: operations["ImIdentityController_scan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/im-identity/verify-bind": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 校验网关发送方签名并绑定平台用户（ADMIN） */
+        post: operations["ImIdentityController_verifyBind"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/metrics": {
         parameters: {
             query?: never;
@@ -3201,6 +3463,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sop/by-slug/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** SOP 详情（按 slug） */
+        get: operations["SopController_detailBySlug"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sop/clarifications/pending": {
         parameters: {
             query?: never;
@@ -3277,7 +3556,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 指派记录 */
+        /** 指派记录（兼容旧裸数组；可选分页 + 响应头） */
         get: operations["SopController_assignments"];
         put?: never;
         post?: never;
@@ -3298,6 +3577,23 @@ export interface paths {
         put?: never;
         /** 取消该 SOP 下所有未结束的指派（归档前置动作） */
         post: operations["SopController_cancelAssignments"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sop/{id}/assignments/page": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 指派记录分页（带 hasMore/total 的信封） */
+        get: operations["SopController_assignmentsPage"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4334,10 +4630,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workbench/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 确认方案卡并落成 SOP 草稿（N7 留痕 hash 校验；只 draft，不自动发布） */
+        post: operations["WorkbenchController_commit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workbench/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 最小方案卡预览 + 确定性校验（N7 反幻觉闸门；不调用 LLM、不落 SOP） */
+        post: operations["WorkbenchController_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        ActivationLogViewDto: {
+            /** @description N5 基线指标名；NULL 表示未采集 */
+            baselineMetric?: string | null;
+            /**
+             * @description 被激活能力的稳定 key（无 FK，能力删除后仍留存）
+             * @example finance-export
+             */
+            capabilityKey: string;
+            /** @description 激活时的能力版本（钉死，供 N16 归责）；NULL 表示未记录 */
+            capabilityVersion?: string | null;
+            /** @description N5 业务结果是否已确认；缺省落 false */
+            confirmed?: boolean | null;
+            /**
+             * Format: date-time
+             * @description 创建时间（ISO 8601）
+             */
+            createdAt: string;
+            /**
+             * @description 激活日志 UUID
+             * @example c1f0...uuid
+             */
+            id: string;
+            /** @description IM 来源平台（与 imSenderId 成对）；NULL 表示非 IM 触发 */
+            imPlatform?: string | null;
+            /** @description IM 发送方 ID（与 imPlatform 成对）；NULL 表示非 IM 触发 */
+            imSenderId?: string | null;
+            /** @description N5 相对基线的改进量 numeric(12,2)；NULL 表示未量化 */
+            improvement?: number | null;
+            /**
+             * @description 参数摘要 sha256 hex（明文参数永不落库）
+             * @example 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+             */
+            parametersDigest: string;
+            /** @description 归属项目 ID（可空 = 未分配），供按项目 showback */
+            projectId?: string | null;
+            /**
+             * @description 激活结果：success | failure | blocked
+             * @example success
+             * @enum {string}
+             */
+            result: "success" | "failure" | "blocked";
+            /** @description 触发的 Workbench/SOP 会话 ID；NULL 表示非会话内调用 */
+            sessionId?: string | null;
+            /** @description 平台用户 ID；NULL 表示无平台用户身份 */
+            userId?: number | null;
+            /** @description 平台用户名；NULL 表示无平台用户身份 */
+            username?: string | null;
+        };
         AgentBacklogResponseDto: {
             /** @description 积压条数（= sessionIds.length） */
             count: number;
@@ -5251,6 +5629,21 @@ export interface components {
             /** @description 可选的决策理由（≤200 字符），计入审计 */
             reason?: string;
         };
+        ApprovalPhraseDto: {
+            /**
+             * @description 审批短语，整句精确匹配（首尾空白与英文大小写归一化）：allow / allow once / 允许 / 批准 / deny / 拒绝 / reset。reset 在 once+TTL 模型下不支持，会返回校验失败。
+             * @example allow
+             */
+            phrase: string;
+        };
+        ApprovalPhraseResponseDto: {
+            /** @description 处置后的审批单行快照（含最新 status / decidedBy / decidedAt） */
+            approval: {
+                [key: string]: unknown;
+            } | null;
+            /** @description 处置是否成功（成功恒为 true，失败由错误码表示） */
+            ok: boolean;
+        };
         ArtifactManifestItemDto: {
             /** @description 产物文件名（裸文件名，不含任何路径分隔符） */
             name: string;
@@ -5417,6 +5810,76 @@ export interface components {
             /** @description 取消原因（可选，最多 500 字符；经脱敏后写入审计日志，不覆盖执行结果） */
             reason?: string;
         };
+        CapabilityViewDto: {
+            /**
+             * Format: date-time
+             * @description 创建时间（ISO 8601）
+             */
+            createdAt: string;
+            /** @description 创建人身份键（user:<id>|<username>）；NULL = 系统/迁移写入 */
+            createdBy?: string | null;
+            /** @description 能力说明；NULL 表示未提供 */
+            description?: string | null;
+            /**
+             * @description 是否启用
+             * @example true
+             */
+            enabled: boolean;
+            /**
+             * @description capability UUID
+             * @example c1f0...uuid
+             */
+            id: string;
+            /**
+             * @description 稳定标识（小写字母/数字起头的 1-128 位）
+             * @example browser
+             */
+            key: string;
+            /**
+             * @description 能力类型：skill | mcp | agent | provider | template
+             * @example skill
+             */
+            kind: string;
+            /**
+             * @description 展示名
+             * @example Browser
+             */
+            label: string;
+            /** @description 能力声明（封闭键集合，禁止可执行字段） */
+            manifest: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description 作用域：{ mode: managed | supervised | self_service, guidance: L1 | L2 | L3 }
+             * @example {
+             *       "guidance": "L2",
+             *       "mode": "supervised"
+             *     }
+             */
+            scope: Record<string, never>;
+            /**
+             * @description 来源：{ type: builtin | registry | git | folder, ref? }
+             * @example {
+             *       "type": "builtin"
+             *     }
+             */
+            source: Record<string, never>;
+            /**
+             * Format: date-time
+             * @description 更新时间（ISO 8601）
+             */
+            updatedAt: string;
+            /**
+             * @description 语义化版本
+             * @example 1.0.0
+             */
+            version: string;
+            /**
+             * @description 可见范围：global | project | private
+             * @example private
+             */
+            visibility: string;
+        };
         ChannelTestResponseDto: {
             message: string;
             /** @description 逐通道投递状态 */
@@ -5516,6 +5979,33 @@ export interface components {
                 permissionPolicy: string;
             };
         };
+        CommitPlanCardRequestDto: {
+            /**
+             * @example daily
+             * @enum {string}
+             */
+            cadence: "daily" | "weekly" | "monthly";
+            /** @description preview 返回的 cardHash（16 位十六进制）——确认留痕锚点 */
+            expectedCardHash: string;
+            /** @description preview 返回的 policyGeneration（16 位十六进制）——策略代际锚点 */
+            expectedPolicyGeneration: string;
+            /** @example 汇总昨日订单异常并推送日报 */
+            goal: string;
+            /** @description 必须与 preview 时的 params 完全一致，否则重建 hash 不匹配 */
+            params?: {
+                [key: string]: string;
+            };
+        };
+        CommitResultDto: {
+            /** @description 发布是独立审批动作，提交后仍需人工审阅 */
+            next: string;
+            /** @description 确定性 slug：workbench-<cardHash 前 8> */
+            slug: string;
+            /** @description 落库的 SOP 行 id */
+            sopId: string;
+            /** @enum {string} */
+            status: "draft";
+        };
         ConfigDeleteResultDto: {
             /** @description 成功时恒为 true —— 键不存在是 404，绝不会是 {deleted:false} */
             deleted: boolean;
@@ -5561,6 +6051,48 @@ export interface components {
              */
             valueType?: "string" | "number" | "boolean" | "json" | null;
         };
+        CreateActivationDto: {
+            /** @description N5 基线指标名（业务结果归因）；≤64 字符 */
+            baselineMetric?: string;
+            /**
+             * @description 能力稳定 key（1-128 位 [a-z0-9._-]，小写字母/数字起头）
+             * @example finance-export
+             */
+            capabilityKey: string;
+            /**
+             * @description 激活时的能力版本
+             * @example 2.3.1
+             */
+            capabilityVersion?: string;
+            /** @description N5 业务结果是否已确认；省略时按 false 落库 */
+            confirmed?: boolean;
+            /**
+             * @description IM 平台
+             * @example wecom
+             */
+            imPlatform?: string;
+            /** @description IM 发送方标识 */
+            imSenderId?: string;
+            /** @description N5 相对基线的改进量；numeric(12,2)，≤2 位小数 */
+            improvement?: number;
+            /** @description 本次激活的参数（敏感数据可含其中）；只用于计算摘要，明文永不落库 */
+            parameters?: {
+                [key: string]: unknown;
+            };
+            /** @description 归属项目 id（showback 维度） */
+            projectId?: string;
+            /**
+             * @description 激活结果；省略时按 success 落库
+             * @enum {string}
+             */
+            result?: "success" | "failure" | "blocked";
+            /** @description Workbench/SOP 会话 id */
+            sessionId?: string;
+            /** @description 平台用户 id */
+            userId?: number;
+            /** @description 平台用户名 */
+            username?: string;
+        };
         CreateAgentSessionDto: {
             /** @enum {string} */
             kind: "ops_watch" | "incident" | "sop_authoring" | "sop_review" | "app_scaffold" | "chat";
@@ -5599,6 +6131,80 @@ export interface components {
              * @example 1.0.0
              */
             version: string;
+        };
+        CreateCapabilityDto: {
+            /**
+             * @description N16 发布背书声明：封闭键 {signer, at?, scope?}，signer 非空
+             * @example {
+             *       "at": "2026-11-26T00:00:00Z",
+             *       "scope": "global",
+             *       "signer": "user:42|alice"
+             *     }
+             */
+            attestation?: Record<string, never>;
+            /**
+             * @description N16 部门/角色背书（非个人）；NULL = 未声明
+             * @example role:platform-eng
+             */
+            backer?: string;
+            /** @description 能力说明 */
+            description?: string;
+            /** @description 是否启用（默认 true） */
+            enabled?: boolean;
+            /**
+             * @description 稳定标识；1-128 位 [a-z0-9._-]，小写字母/数字起头
+             * @example browser
+             */
+            key: string;
+            /**
+             * @description 能力类型：skill | mcp | agent | provider | template
+             * @enum {string}
+             */
+            kind: "skill" | "mcp" | "agent" | "provider" | "template";
+            /**
+             * @description 展示名
+             * @example Browser
+             */
+            label: string;
+            /** @description 能力声明（封闭键集合，禁止 command/hook/script 可执行字段） */
+            manifest: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description N16 发布者身份键；NULL = 未声明
+             * @example user:42|alice
+             */
+            owner?: string;
+            /**
+             * @description 作用域：{mode: managed|supervised|self_service, guidance: L1|L2|L3}
+             * @example {
+             *       "guidance": "L2",
+             *       "mode": "supervised"
+             *     }
+             */
+            scope?: Record<string, never>;
+            /**
+             * @description 来源：{type: builtin|registry|git|folder, ref?}
+             * @example {
+             *       "type": "builtin"
+             *     }
+             */
+            source?: Record<string, never>;
+            /**
+             * @description 语义化版本
+             * @example 1.0.0
+             */
+            version?: string;
+            /**
+             * @description N16 钉死版本：语义化版本或 40/64 位 hex hash
+             * @example 1.2.3
+             */
+            versionPin?: string;
+            /**
+             * @description 可见范围：global | project | private
+             * @enum {string}
+             */
+            visibility: "global" | "project" | "private";
         };
         CreateDeploymentDto: {
             /** @description 环境变量覆盖（≤50 个键，每个值 ≤4096 字节） */
@@ -7102,6 +7708,127 @@ export interface components {
             /** @enum {string} */
             resolution: "answered" | "sop_amended";
         };
+        ImIdentityViewDto: {
+            /**
+             * Format: date-time
+             * @description 创建时间（ISO 8601）
+             */
+            createdAt: string;
+            /** @description 绑定操作人身份键（user:<id>）；NULL = 系统/迁移写入 */
+            createdBy?: string | null;
+            /** @description 绑定关系 UUID */
+            id: string;
+            /**
+             * @description IM 平台内的 sender id
+             * @example zhangsan
+             */
+            imSenderId: string;
+            /**
+             * @description IM 平台：wecom | feishu
+             * @example wecom
+             */
+            platform: string;
+            /** @description 绑定的平台 user id；NULL = 尚未绑定（verified 必为 false） */
+            platformUserId?: number | null;
+            /** @description 项目归属；NULL = 未分配（沿用平台默认项目视图） */
+            projectId?: string | null;
+            /** @description 项目角色：viewer | editor | admin；NULL = 未授予 */
+            projectRole?: string | null;
+            /**
+             * Format: date-time
+             * @description 更新时间（ISO 8601）
+             */
+            updatedAt: string;
+            /**
+             * @description 是否已通过网关发送方签名验证并完成绑定
+             * @example true
+             */
+            verified: boolean;
+        };
+        ImInjectionFindingDto: {
+            /**
+             * @description 触发规则的原文片段（超长截断至 160 字符）
+             * @example 忽略之前所有指令
+             */
+            evidence: string;
+            /**
+             * @description 命中的规则代码（如 ROLE_HIJACK_EN / URL_DANGEROUS_COMMAND）
+             * @example ROLE_HIJACK_EN
+             */
+            rule: string;
+            /**
+             * @description 命中严重级别：CRITICAL（阻断）| WARN（仅提示）
+             * @example CRITICAL
+             * @enum {string}
+             */
+            severity: "CRITICAL" | "WARN";
+        };
+        ImInjectionScanResultDto: {
+            /**
+             * @description CRITICAL 级命中数量
+             * @example 0
+             */
+            criticalCount: number;
+            /** @description 命中项列表（rule / severity / evidence） */
+            findings: components["schemas"]["ImInjectionFindingDto"][];
+            /**
+             * @description 是否通过注入扫描（CRITICAL 命中即 false）
+             * @example true
+             */
+            safe: boolean;
+            /**
+             * @description 正文超过 20000 字符时只扫描前缀并置位
+             * @example false
+             */
+            truncated: boolean;
+        };
+        ImIntakeDto: {
+            /**
+             * @example monthly
+             * @enum {string}
+             */
+            cadence: "daily" | "weekly" | "monthly";
+            /** @example zhangsan */
+            imSenderId: string;
+            /**
+             * @description 业务语言描述（作为方案卡 goal），如「每月5号导出销售报表」
+             * @example 每月5号导出销售报表
+             */
+            message: string;
+            /**
+             * @example wecom
+             * @enum {string}
+             */
+            platform: "wecom" | "feishu";
+        };
+        ImIntakeIdentityDto: {
+            /** @description 绑定的平台 user id（已验非空） */
+            platformUserId: number;
+            /** @description 项目归属；null = 平台级绑定，跳过角色校验 */
+            projectId?: string;
+            /** @description 绑定时登记的项目角色；null = 未授予 */
+            projectRole?: string;
+        };
+        ImIntakeResultDto: {
+            /** @description 方案卡主体 */
+            card: components["schemas"]["PlanCardDto"];
+            /** @description card 规范化 JSON 的 sha256 短前缀（16 位 hex） */
+            cardHash: string;
+            /** @description 方案卡确定性校验项（同 workbench preview） */
+            checks: Record<string, never>[];
+            /** @description 是否通过确定性闸门；任一 fail 即 false */
+            eligible: boolean;
+            identity: components["schemas"]["ImIntakeIdentityDto"];
+            /** @description 策略代际指纹（16 位 hex，编译期快照口径） */
+            policyGeneration: string;
+            scan: components["schemas"]["ImIntakeScanDto"];
+        };
+        ImIntakeScanDto: {
+            /** @description 命中项列表（rule/severity/evidence） */
+            findings: unknown[][];
+            /** @description 是否通过注入扫描（CRITICAL 命中即 false） */
+            safe: boolean;
+        };
         ImportTaskDto: {
             /** @description 源导出物的 exportedAt（仅供参考） */
             exportedAt?: string;
@@ -7450,6 +8177,47 @@ export interface components {
             total: number;
             totalPages: number;
         };
+        PlanCardBudgetDto: {
+            /** @description 本方案卡允许的最大轮次（中台硬上限 20） */
+            maxTurns: number;
+        };
+        PlanCardCheckDto: {
+            field: string;
+            message: string;
+            /** @enum {string} */
+            status: "ok" | "warn" | "fail";
+        };
+        PlanCardDto: {
+            acceptanceText: string;
+            budget: components["schemas"]["PlanCardBudgetDto"];
+            capabilityHints: string[];
+            title: string;
+            /** @description cron 回读出的确定性业务语句（每天/每周/每月 N 日） */
+            triggerText: string;
+        };
+        PlanCardPreviewResponseDto: {
+            card: components["schemas"]["PlanCardDto"];
+            /** @description card 规范化 JSON 的 sha256 短前缀（16 位十六进制） */
+            cardHash: string;
+            checks: components["schemas"]["PlanCardCheckDto"][];
+            /** @description 是否通过确定性闸门；任一 fail 即 false */
+            eligible: boolean;
+            /** @description 策略代际指纹（16 位十六进制）——能力/预算策略变更后需重新 preview */
+            policyGeneration: string;
+        };
+        PreviewPlanCardRequestDto: {
+            /**
+             * @example daily
+             * @enum {string}
+             */
+            cadence: "daily" | "weekly" | "monthly";
+            /** @example 汇总昨日订单异常并推送日报 */
+            goal: string;
+            /** @description 可选能力/预算参数；capabilityId 必须在内置白名单内 */
+            params?: {
+                [key: string]: string;
+            };
+        };
         ProjectDeleteResponseDto: {
             /** @description true = 删除/移除生效 */
             deleted: boolean;
@@ -7667,6 +8435,30 @@ export interface components {
             /** @description 本次单次重放投递是否成功 */
             ok: boolean;
         };
+        ResolveCapabilityDto: {
+            /** @description 字段族规则表；省略则使用 service 的默认规则表 */
+            fieldRules?: {
+                [key: string]: "replace" | "keyMerge" | "append" | "replaceIfSameKey" | "policyTighten";
+            };
+            /**
+             * @description 已注册的 capability key
+             * @example browser
+             */
+            key: string;
+            /** @description 高→低排列的配置层，1-8 层 */
+            layers: components["schemas"]["ResolveLayerDto"][];
+        };
+        ResolveLayerDto: {
+            /** @description 该层的原始配置（纯对象） */
+            config: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description 层名；数组按高→低排列，如 managed / project / private
+             * @example managed
+             */
+            name: string;
+        };
         RevokeOthersResponseDto: {
             /** @description 已撤销的会话数 */
             revoked: number;
@@ -7728,6 +8520,10 @@ export interface components {
              * @enum {string}
              */
             transport?: "openai" | "ollama";
+        };
+        ScanTextDto: {
+            /** @description 待扫描的群聊 @bot 消息原文 */
+            text: string;
         };
         SchedulerStatsResponseDto: {
             activeCronTasks: number;
@@ -7804,6 +8600,26 @@ export interface components {
              * @description 命中的 application_versions.id
              */
             versionId: string;
+        };
+        SetQuotaDto: {
+            /** @description 硬阈值：usage >= hardLimit 记 exceeded */
+            hardLimit: number;
+            /**
+             * @description 按项目或按能力计量
+             * @enum {string}
+             */
+            scope: "project" | "capability";
+            /** @description 软阈值：usage >= softLimit 记 warn */
+            softLimit: number;
+            /** @description projectId 或 capabilityKey */
+            target: string;
+            /** @description 告警 webhook URL；缺省回落全局通知配置 */
+            webhookUrl?: string;
+            windowDays: number;
+        };
+        SetSpendLimitDto: {
+            /** @description 调用次数上限；null = 清除上限（恢复无限） */
+            spendLimit?: number | null;
         };
         SimpleOkResponseDto: {
             /** @enum {boolean} */
@@ -8752,6 +9568,80 @@ export interface components {
             /** @description 用于 Webhook 签名校验的 HMAC-SHA256 secret。置为空字符串即关闭。 */
             webhookSecret?: string;
         };
+        UpdateCapabilityDto: {
+            /**
+             * @description N16 发布背书声明：封闭键 {signer, at?, scope?}，signer 非空
+             * @example {
+             *       "at": "2026-11-26T00:00:00Z",
+             *       "scope": "global",
+             *       "signer": "user:42|alice"
+             *     }
+             */
+            attestation?: Record<string, never>;
+            /**
+             * @description N16 部门/角色背书（非个人）；NULL = 未声明
+             * @example role:platform-eng
+             */
+            backer?: string;
+            /** @description 能力说明 */
+            description?: string;
+            /** @description 是否启用（默认 true） */
+            enabled?: boolean;
+            /**
+             * @description 稳定标识；1-128 位 [a-z0-9._-]，小写字母/数字起头
+             * @example browser
+             */
+            key?: string;
+            /**
+             * @description 能力类型：skill | mcp | agent | provider | template
+             * @enum {string}
+             */
+            kind?: "skill" | "mcp" | "agent" | "provider" | "template";
+            /**
+             * @description 展示名
+             * @example Browser
+             */
+            label?: string;
+            /** @description 能力声明（封闭键集合，禁止 command/hook/script 可执行字段） */
+            manifest?: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description N16 发布者身份键；NULL = 未声明
+             * @example user:42|alice
+             */
+            owner?: string;
+            /**
+             * @description 作用域：{mode: managed|supervised|self_service, guidance: L1|L2|L3}
+             * @example {
+             *       "guidance": "L2",
+             *       "mode": "supervised"
+             *     }
+             */
+            scope?: Record<string, never>;
+            /**
+             * @description 来源：{type: builtin|registry|git|folder, ref?}
+             * @example {
+             *       "type": "builtin"
+             *     }
+             */
+            source?: Record<string, never>;
+            /**
+             * @description 语义化版本
+             * @example 1.0.0
+             */
+            version?: string;
+            /**
+             * @description N16 钉死版本：语义化版本或 40/64 位 hex hash
+             * @example 1.2.3
+             */
+            versionPin?: string;
+            /**
+             * @description 可见范围：global | project | private
+             * @enum {string}
+             */
+            visibility?: "global" | "project" | "private";
+        };
         UpdateChannelDto: {
             /** @description 渠道配置覆盖（string → string 映射，哨兵 '***' 不覆盖真实机密） */
             config?: Record<string, never>;
@@ -9070,6 +9960,30 @@ export interface components {
             updatedAt: string;
             /** @description 1..128 字符，唯一 */
             username: string;
+        };
+        VerifyBindDto: {
+            /**
+             * @description IM 平台内的 sender id
+             * @example zhangsan
+             */
+            imSenderId: string;
+            /**
+             * @example wecom
+             * @enum {string}
+             */
+            platform: "wecom" | "feishu";
+            /**
+             * @description 平台 users 表主键
+             * @example 42
+             */
+            platformUserId: number;
+            /** @description 项目 id；省略 = 不归属具体项目 */
+            projectId?: string;
+            /**
+             * @description 项目角色
+             * @enum {string}
+             */
+            projectRole?: "viewer" | "editor" | "admin";
         };
         VersionDiffEntryDto: {
             /** @description version2 中的值（任意 JSON） */
@@ -9631,6 +10545,32 @@ export interface operations {
             };
         };
     };
+    AgentController_decideApprovalByPhrase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                approvalKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalPhraseDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalPhraseResponseDto"];
+                };
+            };
+        };
+    };
     AgentController_exportSession: {
         parameters: {
             query?: never;
@@ -10138,6 +11078,31 @@ export interface operations {
             };
         };
     };
+    ApiKeysController_setSpendLimit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetSpendLimitDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
+                };
+            };
+        };
+    };
     ApiKeysController_remove: {
         parameters: {
             query?: never;
@@ -10176,6 +11141,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
+                };
+            };
+        };
+    };
+    ApiKeysController_rotate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 新明文一次性回显；旧 key 立即失效 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyCreateResponseDto"];
                 };
             };
         };
@@ -11422,6 +12409,325 @@ export interface operations {
             };
             /** @description 凭据或 TOTP 验证码错误 */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description capability 列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityViewDto"][];
+                };
+            };
+        };
+    };
+    CapabilityController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCapabilityDto"];
+            };
+        };
+        responses: {
+            /** @description 已创建的 capability */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityViewDto"];
+                };
+            };
+            /** @description 字段/scope/manifest 非法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityController_resolve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveCapabilityDto"];
+            };
+        };
+        responses: {
+            /** @description 生效配置 + 策略结论 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description key 未注册 / layers 非法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityController_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description capability UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description capability 不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description capability UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCapabilityDto"];
+            };
+        };
+        responses: {
+            /** @description 更新后的 capability */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityViewDto"];
+                };
+            };
+            /** @description 字段/scope/manifest 非法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description capability 不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityController_dump: {
+        parameters: {
+            query?: {
+                projectLayer?: string;
+                privateLayer?: string;
+            };
+            header?: never;
+            path: {
+                /** @description capability key（非 UUID） */
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 分层来源 / 生效值 / 来源层的三栏审计 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description key 未注册 / 下层 JSON 非法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityActivationController_query: {
+        parameters: {
+            query?: {
+                page?: Record<string, never>;
+                pageSize?: Record<string, never>;
+                /** @description 按能力 key 精确过滤 */
+                capabilityKey?: string;
+                /** @description 按会话 id 精确过滤 */
+                sessionId?: string;
+                /** @description 按平台用户 id 精确过滤 */
+                userId?: number;
+                /** @description 按项目 id 精确过滤 */
+                projectId?: string;
+                /** @description 按平台用户名精确过滤 */
+                username?: string;
+                result?: "success" | "failure" | "blocked";
+                /** @description N5 业务结果归因过滤：confirmed=已确认 / unconfirmed=未确认；映射 confirmed 列 */
+                outcome?: "confirmed" | "unconfirmed";
+                /** @description 仅返回 createdAt >= from（ISO 8601） */
+                from?: string;
+                /** @description 仅返回 createdAt <= to（ISO 8601） */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityActivationController_record: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateActivationDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivationLogViewDto"];
+                };
+            };
+        };
+    };
+    CapabilityActivationController_listQuotas: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityActivationController_upsertQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetQuotaDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityActivationController_quotaStatus: {
+        parameters: {
+            query?: {
+                windowDays?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityActivationController_stats: {
+        parameters: {
+            query?: {
+                /** @description 仅统计 createdAt >= from（ISO 8601） */
+                from?: string;
+                /** @description 仅统计 createdAt <= to（ISO 8601） */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13269,6 +14575,97 @@ export interface operations {
             };
         };
     };
+    ImIdentityController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImIdentityViewDto"][];
+                };
+            };
+        };
+    };
+    ImIdentityController_intake: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImIntakeDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImIntakeResultDto"];
+                };
+            };
+        };
+    };
+    ImIdentityController_scan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScanTextDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImInjectionScanResultDto"];
+                };
+            };
+        };
+    };
+    ImIdentityController_verifyBind: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-hub-signature-256": string;
+                "x-autocodeflow-timestamp": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerifyBindDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImIdentityViewDto"];
+                };
+            };
+        };
+    };
     MetricsController_getPrometheusMetrics: {
         parameters: {
             query?: never;
@@ -14206,6 +15603,28 @@ export interface operations {
             };
         };
     };
+    SopController_detailBySlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description SOP 唯一 slug */
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SopResponseDto"];
+                };
+            };
+        };
+    };
     SopController_listPendingClarifications: {
         parameters: {
             query?: {
@@ -14322,7 +15741,10 @@ export interface operations {
     };
     SopController_assignments: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: string;
+                offset?: string;
+            };
             header?: never;
             path: {
                 id: string;
@@ -14331,7 +15753,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 最近 100 条，createdAt 降序 */
+            /** @description 默认最近 100 条，createdAt 降序；分页事实见 X-Has-More/X-Total */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -14360,6 +15782,29 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SopCancelAssignmentsResponseDto"];
                 };
+            };
+        };
+    };
+    SopController_assignmentsPage: {
+        parameters: {
+            query?: {
+                limit?: string;
+                offset?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description items + hasMore/total/pendingTotal/limit/offset 信封 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -16162,6 +17607,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskWebhookTriggerResponseDto"];
+                };
+            };
+        };
+    };
+    WorkbenchController_commit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommitPlanCardRequestDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitResultDto"];
+                };
+            };
+        };
+    };
+    WorkbenchController_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewPlanCardRequestDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanCardPreviewResponseDto"];
                 };
             };
         };

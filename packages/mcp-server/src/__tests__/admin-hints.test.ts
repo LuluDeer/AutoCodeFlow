@@ -315,7 +315,7 @@ function collectControllerFiles(dir: string, out: string[] = []): string[] {
  * 「从任一新文件里删掉一个工具」必然红（这也正是本 spec 的变异验证方式）。
  * 新增/删除工具时这个数字要一起改：那是本守卫唯一的人工签字点。
  */
-const EXPECTED_TOOL_COUNT = 56;
+const EXPECTED_TOOL_COUNT = 57;
 
 describe("ADMIN-only MCP 工具的描述必须带 `ADMIN only.`（SDK-DX-08）", () => {
   const tools = readToolsFromSources();

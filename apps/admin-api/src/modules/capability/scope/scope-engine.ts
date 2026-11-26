@@ -17,6 +17,7 @@ import {
   normalizePolicy,
   policySource,
   lookupDecisions,
+  tighterDecision,
 } from "./merge-rules";
 
 export { aggregateDecisions } from "./merge-rules";
@@ -44,6 +45,19 @@ export interface PolicyEntry {
 export interface PolicyRef {
   resource: string;
   action: string;
+}
+
+/**
+ * 分层策略的合并语义，对齐 opencode policy.ts 的四类 rule：
+ * restrict 单调（本层 deny 不可撤销）、override 同名替换、fallback 上层缺省才生效、rules 走规则表。
+ */
+export type PolicySemantic = "override" | "restrict" | "fallback" | "rules";
+
+/** 带语义标签的策略层：数组从高到低排列，semantic 决定本层与已解析上层的合并方式。 */
+export interface SemanticPolicyLayer {
+  name: string;
+  semantic: PolicySemantic;
+  config: Record<string, unknown>;
 }
 
 export interface DumpLayerValue {
@@ -225,3 +239,75 @@ export function evaluatePolicy(
 }
 
 export const evaluateManagedPolicy = evaluatePolicy;
+
+/**
+ * 单资源四语义分层求值。layers 从高到低；同一层内多条命中先 any-deny 收紧。
+ * restrict 层产生的 deny 单调锁定，后续任何语义都不得撤销；
+ * override 在本层命中时替换上层决策（锁定 deny 除外）；
+ * fallback 仅在上层无任何命中规则时生效；rules 与上层取更紧（fail-closed）。
+ * 无命中规则 / 非法入参 → 'ask'。
+ */
+export function evaluateSemanticPolicy(
+  layers: readonly SemanticPolicyLayer[],
+  resource: string,
+  action: string,
+  field: string = DEFAULT_POLICY_FIELD,
+): Decision {
+  if (
+    !Array.isArray(layers) ||
+    typeof resource !== "string" ||
+    typeof action !== "string"
+  ) {
+    return "ask";
+  }
+  let current: Decision | undefined;
+  let lockedDeny = false;
+  for (const layer of layers) {
+    if (layer == null || typeof layer.config !== "object") continue;
+    const entries = normalizePolicy(layer.config?.[field], layer.name);
+    const hits = lookupDecisions(entries, resource, action);
+    if (hits.length === 0) continue;
+    const local = aggregateDecisions(hits);
+    switch (layer.semantic) {
+      case "restrict":
+        current =
+          current === undefined ? local : tighterDecision(current, local);
+        if (local === "deny") lockedDeny = true;
+        break;
+      case "override":
+        if (!lockedDeny) current = local;
+        break;
+      case "fallback":
+        if (current === undefined) current = local;
+        break;
+      case "rules":
+      default:
+        current =
+          current === undefined ? local : tighterDecision(current, local);
+        break;
+    }
+  }
+  return current ?? "ask";
+}
+
+/**
+ * 多资源聚合：每个 (resource, action) 独立走四语义求值，再 any-deny 聚合。
+ * 任一资源 deny ⇒ 整体 deny；无规则 / 空 refs / 非法入参 ⇒ 'ask'（fail-closed）。
+ */
+export function evaluateAll(
+  layers: readonly SemanticPolicyLayer[],
+  refs: readonly PolicyRef[],
+  field: string = DEFAULT_POLICY_FIELD,
+): Decision {
+  if (!Array.isArray(layers) || !Array.isArray(refs) || refs.length === 0) {
+    return "ask";
+  }
+  const decisions: Decision[] = refs.map((ref) =>
+    ref != null &&
+    typeof ref.resource === "string" &&
+    typeof ref.action === "string"
+      ? evaluateSemanticPolicy(layers, ref.resource, ref.action, field)
+      : "ask",
+  );
+  return aggregateDecisions(decisions);
+}

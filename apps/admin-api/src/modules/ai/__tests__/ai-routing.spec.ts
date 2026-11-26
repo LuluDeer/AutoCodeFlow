@@ -398,3 +398,126 @@ describe("视频直链签发（视频转 SOP 的前置）", () => {
     if (res.status === "error") expect(res.reason).toBe("no_secret");
   });
 });
+
+describe("模型硬策略闸门（N13：isModelAllowed 接入真实路由链）", () => {
+  const gated = (extra: Record<string, unknown> = {}) => ({
+    "ai.provider": "gated",
+    "ai.providers": JSON.stringify([
+      {
+        id: "gated",
+        label: "受控模型",
+        baseUrl: "https://api.example.com/v1",
+        model: "baseline-model",
+        maxTokens: 512,
+        timeoutMs: 30_000,
+        supportsVideo: true,
+        enabled: true,
+        ...extra,
+      },
+    ]),
+    "ai.providers.gated.apiKey": "sk-gated",
+  });
+
+  async function expectGateReject(p: Promise<unknown>, model: string) {
+    let caught: unknown;
+    try {
+      await p;
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeTruthy();
+    expect((caught as { errorCode?: string }).errorCode).toBe(
+      "AI_PROVIDER_INVALID",
+    );
+    expect((caught as Error).message).toContain("被模型策略拒绝");
+    expect((caught as Error).message).toContain(model);
+  }
+
+  const ask = (h: Harness, provider?: string) =>
+    h.service.chatMultimodal({
+      messages: [{ role: "user", content: "hi" }],
+      ...(provider ? { provider } : {}),
+    });
+
+  it("黑名单命中 → 抛稳定错误码与中文原因，且一个请求都不发", async () => {
+    const h = await harness({
+      ...gated({ deniedModels: ["banned-model"] }),
+      "ai.routes.agent.model": "banned-model",
+    });
+    await expectGateReject(ask(h), "banned-model");
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("白名单外的模型 → 拒；白名单内的模型 → 正常放行", async () => {
+    const denied = await harness({
+      ...gated({ allowedModels: ["only-this"] }),
+      "ai.routes.agent.model": "outside-model",
+    });
+    await expectGateReject(ask(denied), "outside-model");
+    expect(denied.calls).toHaveLength(0);
+
+    const allowed = await harness({
+      ...gated({ allowedModels: ["inside-model"] }),
+      "ai.routes.agent.model": "inside-model",
+    });
+    await ask(allowed);
+    expect(allowed.calls).toHaveLength(1);
+    expect(allowed.calls[0].body.model).toBe("inside-model");
+  });
+
+  it("modelEnabled=false 的模型 → 拒", async () => {
+    const h = await harness({
+      ...gated({ modelEnabled: { "off-model": false } }),
+      "ai.routes.agent.model": "off-model",
+    });
+    await expectGateReject(ask(h), "off-model");
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("请求级 providerOverride 同样过闸，不能绕开管理员硬策略", async () => {
+    const h = await harness({
+      "ai.provider": "safe",
+      "ai.providers": JSON.stringify([
+        {
+          id: "safe",
+          label: "安全档",
+          baseUrl: "https://safe.example.com/v1",
+          model: "safe-model",
+          maxTokens: 512,
+          timeoutMs: 30_000,
+          enabled: true,
+        },
+        {
+          id: "gated",
+          label: "受控模型",
+          baseUrl: "https://api.example.com/v1",
+          model: "banned-model",
+          maxTokens: 512,
+          timeoutMs: 30_000,
+          enabled: true,
+          deniedModels: ["banned-model"],
+        },
+      ]),
+      "ai.providers.safe.apiKey": "sk-safe",
+      "ai.providers.gated.apiKey": "sk-gated",
+    });
+    await expectGateReject(ask(h, "gated"), "banned-model");
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("默认配置控制组：无黑白名单/有 enabled/无 override → 返回与调用逐字不变", async () => {
+    const h = await harness(gated());
+    expect(await h.service.getActiveRoute("agent")).toEqual({
+      provider: "gated",
+      model: "baseline-model",
+    });
+    const res = await ask(h);
+    expect(res.model).toBe("baseline-model");
+    expect(res.provider).toBe("gated");
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].body.model).toBe("baseline-model");
+    // Agent 用途的输出预算/超时按下限抬高是既有行为，闸门不得改变它
+    expect(h.calls[0].body.max_tokens).toBe(2048);
+    expect(h.calls[0].cfg.timeout).toBe(60_000);
+  });
+});

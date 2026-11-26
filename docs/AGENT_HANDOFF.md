@@ -1,5 +1,30 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 52 轮）：6-agent 并行消费层接线（N3/N13/N14/N17/N19/N27）
+
+**方向来源**：operator「作为项目负责人，编排多个 agent 全面协作推进开发，让 agent 之间都可以协同；必要时先分批 git 提交」。基线验证 `test:guards:chain` EXIT=0、`typecheck:all` EXIT=0；把已验收的 24 轮工作台成果作自洽基线提交 `b1905e61`（controller↔openapi↔i18n↔baseline 强耦合，拆批必产生红中间态），再派发新一批。
+
+**编排**：6 个写域严格互斥的实现 agent 并行；两条跨切片契约由 agent 直接 `send_message` 闭环——① `impl-n3-policy` → `impl-n14-scoped-rules`：`evaluateAll`/`aggregateDecisions` 精确签名与失败语义，对方据此保持零依赖纯分类、不复制 any-deny；② `impl-n13-model-gate` ↔ `impl-n17-phrase-route`：统一 `AppError` + 中文 detail、断言按 errorCode（不用 instanceof）。主控只做定题/审阅/集成/验收。
+
+| 切片 | 目标 | 产出 | 验收 |
+|---|---|---|---|
+| impl-n3-policy | N3 四语义 | `scope-engine.ts` 新增 `evaluateAll`/`evaluateSemanticPolicy` + `PolicySemantic`（restrict deny 单调锁定）；旧导出逐字不变 | 2 suites/28 tests、`AI` 无关；反证篡改 restrict→红、sha 还原 |
+| impl-n14-scoped-rules | N14 scopedRules | `workbench/scoped-rules.ts` 纯分类：通配 allow 作废、显式 ask/deny + 作用域不可判 fail-closed 保留 | workbench 4 suites/45 tests；反证翻 fail-closed→2 failed |
+| impl-n13-model-gate | N13 消费层 | `ai.service.ts:633` routeFor 接 `isModelAllowed`，黑/白名单+modelEnabled 命中即 `AI_PROVIDER_INVALID`，不回落、override 同检 | ai 20 suites/283 tests；反证删 gate→原静默选中被拒模型 |
+| impl-n17-phrase-route | N17 路由 | ADMIN-only `POST /agent/sessions/:id/approvals/:approvalKey/phrase`；decidedBy/指纹服务端取，自报忽略 | agent 66 suites/1054 tests；反证自报字段→2/3 failed |
+| impl-n19-key-scope | N19 gate | `capability-scope.gate.ts`：能力调用需 readonly+trigger 双 scope、manage 全集、revoke 联动判定（纯函数+token，未接线） | activation/api-keys 14 suites/150 tests；反证恒 true→4 failed |
+| impl-n27-toolsearch | N27 第57工具 | `tool_search` 注册（真实 `_registeredTools`、`readOnlyHint`），工具数 56→57 | 17/17；反证删注册→2 failed；运行时工具面 57/57 |
+
+**主控集成修复（各切片只跑定向测试，跨切面漂移由收口抓出）**：① 工具数 56→57 涟漪——sync `mcp-tool-sources`/`probe`/`admin-hints`/`interface-maps`/工具地图 5 处计数 + `source-size-baseline` tools.ts 844/16 重签；② 真跑 openapi export（容器 PG 口令与 .env 不一致，用 superuser 同步 autoflow 角色后成功）→ 251 paths 含新路由，补 5 条 i18n 映射 → inject/gen:api-types/api-reference 全链；③ response-schema 268→269 官方 `--update` 上探；④ 语言守卫 `once` 为 once+TTL 协议标识，加入 MIXED_EXEMPT_TOKENS（欠账仍 8，未新增）；⑤ `CreateCapabilityPayload` 补 N16 四字段（owner/backer/versionPin/attestation）+ 清 6 条陈旧 notPairs；⑥ `eslint --fix` 修 11 个文件的 prettier（纯格式）。
+
+**最终验收（主控独立复跑）**：`npm run test:guards:chain` **CHAIN_EXIT=0**（第 4 轮，前 3 轮逐层暴露上述 6 类涟漪）；`npm run typecheck:web`/`:all` EXIT=0；后端 capability/workbench/ai/agent-runtime **956 passed / 958 total**；MCP 运行时工具面 **57 tools**。**验收级别**：单测/内存替身 + 真子进程守卫链 + 真 PG openapi 导出 + MCP 运行时工具面；**未达**真实 Nest+PG 的 N19 gate 接线、HTTP filter 实测、真浏览器 e2e。遗留缺陷 0。
+
+**提交**：`7ce965d5` 单个原子提交（29 文件：实现 + 生成物 + 基线重签 + 文档状态回写 + 本交接段）。不拆批的理由——本批对 openapi/i18n/baseline/文档状态的交叉依赖使拆批必产生红中间态（R38 教训），且提交前 4 轮守卫链全绿已证明整体自洽；同 commit 也让 `git show` 的归因链完整（并行编排下 `git blame` 本就不可用）。**未 push**（operator 未授权 push）。
+
+**后续项**：① N19 gate 接线到 `capability-activation.service.record` / `api-keys.service.revoke`（agent 已留 file:line + provider 写法建议）；② N14 scopedRules 接 controller + interrupt 在途工具调用；③ N3 四语义接 capability.service resolve；④ N13 补模型 variant + `{env:NAME}` 凭据占位；⑤ N27 的 `_registeredTools` 内部字段在 SDK 升级时复核。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 1 轮）：P0 契约 ADR + GCO 证伪切片（三路并行）
 
 **方向来源**：objective「开始不断编排 agent 协作推进实现 2 份开发文档」。两份方案（[strategy](../docs/plan/agent-workbench-strategy.md) §12 / [GCO](../docs/plan/guided-capability-mode.md) §11）经 6 agent 交叉评审后，按 red V5「证伪切片优先」定第一刀：先用现有 SOP draft/publish 语义承载方案卡，暂不建注册表/Scope 链。

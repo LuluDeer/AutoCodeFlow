@@ -406,7 +406,7 @@ P1≈中、P2≈高（前端+会话模型，是主投入）、P3≈中、P4≈�
 |---|---|---|---|
 | N1 外部 agent 旁路接入 | 不改 agent 内核，只原子改写其配置一个 key，中台下发 baseUrl/key 指针，让 Claude Code/Cursor/Codex 原样接入；**Workbench 是第三入口，不是替换**，不把"迁移到 Workbench"设为前置（与现有 56 工具 MCP 反向编排旁路并存） | magpie/zcode | ⬜ 未实现：无中台下发 baseUrl/key 指针改写外部 agent 配置的旁路代码 |
 | N2 合并规则 + dump 三栏 | capability resolve 按 §12.2 逐族合并；dump 输出「分层来源/生效值/凭据占位符」三栏，不泄露明文（dsh `dump-config.ts:45-75`） | opencode/magpie | ✅ 已实现（第 3 轮）：scope 逐族合并 + resolve/dump 三栏脱敏（capability/scope/ 与 /capabilities/resolve、dump） |
-| N3 Policy 四语义层 | `override/restrict/fallback/rules` + 无规则默认 ask + 多资源 any-deny 聚合（opencode `policy.ts:28-37,103-104,166-171`） | opencode | 🟡 部分实现（第 2 轮）：policyTighten、默认 ask 与 any-deny 聚合已落地，但无 evaluateAll 多资源聚合与四语义显式分层 |
+| N3 Policy 四语义层 | `override/restrict/fallback/rules` + 无规则默认 ask + 多资源 any-deny 聚合（opencode `policy.ts:28-37,103-104,166-171`） | opencode | ✅ 已实现（第 52 轮）：`scope-engine.ts` 新增 `evaluateAll`/`evaluateSemanticPolicy` + `PolicySemantic` 四语义（override/restrict/fallback/rules，restrict 的 deny 单调锁定），空/非法输入默认 ask；旧 `evaluatePolicy`/`aggregateDecisions` 签名行为逐字不变；scope 2 suites/28 tests 绿、反证有牙。未接入 capability.service 真实链（纯函数层）。 |
 | N4 最小可验证切片（V5） | **P2 前置证伪闸门，2 周**：只选 1 个已有只读能力 + 用现有 SOP draft/publish 承载方案卡 + 现有四眼/digest 确认 + 一页前端（3 业务字段→预览→审批→看产物），真浏览器 e2e 断言"不填 cron/UUID/glue 拿到报表"。不通则后续全白做——**暂不建注册表/Scope 链/Part 模型/编译 prompt/三档** | red | ✅ 已实现（第 1 轮）：preview-validator + 真浏览器 workbench-preview e2e 已落地 |
 | N5 业务结果归因埋点 | capability/session 表加 outcome 字段：基线对照 + 人时节省 + 差错率，做启用组 vs 对照组归因；事后补不出基线 | biz | ⬜ 未实现：capability/session 表无 outcome 字段，基线对照与人时节省埋点均未做 |
 
@@ -421,18 +421,18 @@ P1≈中、P2≈高（前端+会话模型，是主投入）、P3≈中、P4≈�
 | N10 Part 模型扩类 + share | 从 6 类扩到 opencode 12 类（agent/subtask/compaction/snapshot/patch 等，`v1/session.ts:357-383`）；会话级 share（`SessionInfo.share`）；大字段入 blob | opencode | ⬜ 未实现：无 12 类 Part 模型、会话级 share 与大字段入 blob |
 | N11 Plan 做成 agent 身份 | 不是 UX 折叠开关：ZCode `enterPlanMode` 换 MemoryFileSystem+PermissionService（`plan-mode.ts:106-113`）、opencode plan 是 primary agent；allowedPrompts 是意图/类别级请求，方案卡一次批准=一次 SOP 发布 scope=once | opencode/zcode | ⬜ 未实现：无换 MemoryFileSystem + PermissionService 的 plan agent 身份与 allowedPrompts |
 | N12 上下文成本（P2 必做） | 默认最小工具集 + 按 kind 收窄 + 输出预算（opencode `tool.ts:426-437`、`config.mdx:306-317`）；ToolSearch 式按需检索留 P4 | zcode/opencode | ⬜ 未实现：底座有 toolsForSessionKind/agent-budget，但工作台编译链未接最小工具集与输出预算 |
-| N13 provider 黑白名单 | provider 级硬策略 + 模型 enabled 位 + 模型级白名单（ZCode `legacyZCodeConfigProviderReader.ts:109-138`）；凭据走 `{env:NAME}` 占位（`mcp-servers.mdx:125`）；variant 承载 reasoningEffort，方案卡存 `provider/model#variant` | zcode/opencode | ⬜ 未实现：provider 有 enabled 位，但硬黑白名单、模型 variant 与 {env:NAME} 凭据占位未做 |
+| N13 provider 黑白名单 | provider 级硬策略 + 模型 enabled 位 + 模型级白名单（ZCode `legacyZCodeConfigProviderReader.ts:109-138`）；凭据走 `{env:NAME}` 占位（`mcp-servers.mdx:125`）；variant 承载 reasoningEffort，方案卡存 `provider/model#variant` | zcode/opencode | 🟡 部分实现（第 52 轮）：`AiService.routeFor` 接入 `isModelAllowed`（黑名单/白名单/modelEnabled 命中即 fail-closed 抛 `AI_PROVIDER_INVALID`，不回落、override 同检），ai 20 suites/283 tests 绿、反证有牙。未做：模型 variant、`{env:NAME}` 凭据占位。 |
 
 **C. P3 — 治理、审计、归责**
 
 | 目标 | 说明 | 来源 | 状态 |
 |---|---|---|---|
-| N14 在途策略即时失效 | `capability/changed` → interrupt 在途 + 下次工具 check 用新 policy + scopedRules 保住未被通配覆盖的 ask/deny（opencode `session.ts:86`/`policy.ts:204-240`/`run-coordinator.ts:146-186`；dsh `sandbox/mode` `policy-processes.ts:24-34`）。不接此条则"引导在权限框架内"为空 | magpie/opencode/red | 🟡 部分实现（第 16 轮）：运行时代际 + system_configs 持久化 + emit 已落地，scopedRules/interrupt 在途工具调用未做 |
+| N14 在途策略即时失效 | `capability/changed` → interrupt 在途 + 下次工具 check 用新 policy + scopedRules 保住未被通配覆盖的 ask/deny（opencode `session.ts:86`/`policy.ts:204-240`/`run-coordinator.ts:146-186`；dsh `sandbox/mode` `policy-processes.ts:24-34`）。不接此条则"引导在权限框架内"为空 | magpie/opencode/red | 🟡 部分实现（第 52 轮）：运行时代际 + system_configs 持久化 + emit 已落地；本轮补 `workbench/scoped-rules.ts` 纯分类（通配 allow 作废、显式 ask/deny 与作用域不可判定时的 fail-closed 保留），6 例反证有牙。未做：controller/service 实际接线、interrupt 在途工具调用、跨实例 5s TTL 真机。 |
 | N15 运行时能力审计 | `capability_activation_log`（session/能力 id/版本/参数摘要/user_id/IM id），与写操作审计并列；企业必问"本月哪个会话用了财务导出" | zcode/biz | ✅ 已实现（第 9 轮）：capability-activation 审计 + 真 PG 数据层验证 + 用量看板已落地 |
 | N16 发布背书 + 失败归责 | capability 增 `owner/backer/versionPin/attestation`；版本钉死 + 调用可回放；责任分层定位到能力发布者/编译系统/确认人/中台策略；owner 离职孤儿化 → **部门/角色背书 + 所有权移交是自研必需层**（magpie 的 movers/parity 是宿主对自家插件的内部契约，非通用市场治理，不可照搬） | magpie/biz/red | ⬜ 未实现：capability 仅有 version，无 owner/backer/versionPin/attestation 与归责回放 |
-| N17 审批短语（scoped+TTL） | 只借鉴 Octop"一句话审批"UX，整句精确匹配；授权落 once + TTL + 指纹重算，**不做 all 永久授权**（破坏失效语义）；放 P3 观察期，不进 P2 MVP | octop/red | ⬜ 未实现：无「一句话审批」短语精确匹配 + once/TTL 授权 |
+| N17 审批短语（scoped+TTL） | 只借鉴 Octop"一句话审批"UX，整句精确匹配；授权落 once + TTL + 指纹重算，**不做 all 永久授权**（破坏失效语义）；放 P3 观察期，不进 P2 MVP | octop/red | ✅ 已实现（第 52 轮）：`parseApprovalPhrase` + `decideByPhrase`（once+TTL、无 all、指纹重算）已落地；本轮暴露 ADMIN-only `POST /agent/sessions/:id/approvals/:approvalKey/phrase` 路由，decidedBy/指纹均服务端取值、请求体自报一律忽略，agent 66 suites/1054 tests 绿、反证有牙。HTTP filter 真机未测。 |
 | N18 rewind 代际围栏 | 会话/Part 带 generation，回退使旧 generation 的异步写入/通知作废 + 审计"作废 N 任务"（ZCode `branchGeneration` `registry.ts:186-188`）；否则"已撤回对账仍发报表" | zcode/biz | 🟡 部分实现（第 14 轮）：方案卡策略代际 + commit 代际闸已落地，会话/Part generation 与异步写入围栏未做 |
-| N19 Key 权限分级复用 | 本仓已有 readonly/trigger/manage + revoke（`api-key.util.ts:50-54`）；能力调用走 readonly+trigger scope，revoke 联动能力停用；补 rotate/limit（magpie `access.go:612,641-670`） | magpie | ⬜ 未实现：底座有 ApiKeyScope + revoke，但能力调用未走 readonly+trigger scope，rotate/limit 与联动停用未做 |
+| N19 Key 权限分级复用 | 本仓已有 readonly/trigger/manage + revoke（`api-key.util.ts:50-54`）；能力调用走 readonly+trigger scope，revoke 联动能力停用；补 rotate/limit（magpie `access.go:612,641-670`） | magpie | 🟡 部分实现（第 52 轮）：rotate/limit 已落地；本轮补 `capability-scope.gate.ts`（token+纯判定：能力调用需 readonly+trigger 双 scope，manage 全集放行，revoke 联动判定），9 例反证有牙。gate 未接线到 activation.service / revoke（主控接线建议已留），未做真实 HTTP 鉴权链。 |
 | N20 成本分摊 + showback | provider 增 showback 计量（token/成功交付双口径）+ 按项目配额 + 软硬阈值告警 + 超支降级（magpie quota/KeySpendCaps） | biz/magpie | 🟡 部分实现（第 18 轮）：调用次数计量/配额/告警/硬阈值 + 前端看板已落地，token 口径与成本分摊因无样本未做 |
 | N21 合规基线 | 等保二/三级、日志留存 6 月不可篡改、数据分类分级 + 公有模型出域管控 | biz | ⬜ 未实现：无等保二/三级、6 月不可篡改留存与数据分类分级/出域管控 |
 | N22 中台团队与 SLA | 平台工程/能力审核/Agent 训练师/SRE 角色；能力审核 SLA ≤1 工作日，否则业务流失 | biz | ⬜ 未实现：无中台角色编制与能力审核 SLA 的代码/流程落点，详见 [ops-runbook](agent-workbench-ops-runbook.md) |
@@ -445,7 +445,7 @@ P1≈中、P2≈高（前端+会话模型，是主投入）、P3≈中、P4≈�
 | N24 进程外隔离 + 背压 | 中间形态（P1/P2）：进程内能力权限层 + 预算 + 失败降级（plan agent 只读即范例）；P4 才上 slots/streams 双限流 + 坏版本回退 + 进程外 host（magpie `host.go:455-511,1060-1070`） | magpie/opencode | ⬜ 未实现：能力层无 slots/streams 双限流、坏版本回退与进程外 host |
 | N25 marketplace 多源 + autoUpdate | source 五源（npm/git/github/server/mcp:）+ `plugin@marketplace` 启停；autoUpdate 留 P4（Octop 未见） | magpie/octop | ⬜ 未实现：CapabilitySource 仅声明，五源注册/marketplace 启停/autoUpdate 未做 |
 | N26 统一 CLI 入口 | 桌面壳沿用同一 CLI 分发 TUI/Web/Agent CLI（ZCode `README.md:93-114`）；桌面壳只做窗口/凭证，Web 内容用现有 renderer webview，**避免重走 ROADMAP:123 桌面 V2 重写** | zcode/red | ⬜ 未实现：桌面壳未做同一 CLI 分发 TUI/Web/Agent CLI |
-| N27 ToolSearch 按需检索 | 56 工具按需加载，ZCode 有（`tool/19-tool-search.md:57,576`）、opencode 未见 | zcode | ⬜ 未实现：无 ToolSearch 按需加载，56 工具仍全量注册 |
+| N27 ToolSearch 按需检索 | 56 工具按需加载，ZCode 有（`tool/19-tool-search.md:57,576`）、opencode 未见 | zcode | ✅ 已实现（第 52 轮）：`tool_search` 注册为第 57 个 MCP 工具（按关键词/标签检索真实 `_registeredTools`、`readOnlyHint: true`），tool-search 17/17 绿；工具数基线 56→57 已同步（mcp-tool-sources/probe/admin-hints/interface-maps/工具地图），运行时工具面 57/57 绿。SDK 内部字段 `_registeredTools` 为已知耦合点。 |
 
 ### 12.4 开源边界校准（P0 决策，推翻初稿措辞）
 

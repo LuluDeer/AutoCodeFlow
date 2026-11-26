@@ -1,7 +1,7 @@
-# MCP 工具地图（56 个）
-> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-25 · 对应代码: packages/mcp-server/src（tools.ts 注册 **56** 个 server.tool，9 个 register*Tools；index.ts 入口）
+# MCP 工具地图（57 个）
+> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-25 · 对应代码: packages/mcp-server/src（tools.ts 注册 **57** 个 server.tool，9 个 register*Tools；index.ts 入口）
 >
-> 数量由 `scripts/check-interface-maps.mjs` 守护：源码注册的工具名必须逐个出现在本页，缺一即红。**手写枚举必然单向腐烂**（本页曾停留在 40 个，实际 56 个，漏了 16 个）。
+> 数量由 `scripts/check-interface-maps.mjs` 守护：源码注册的工具名必须逐个出现在本页，缺一即红。**手写枚举必然单向腐烂**（本页曾停留在 40 个，实际 57 个，漏了 17 个）。
 
 ## 怎么连
 
@@ -69,7 +69,7 @@ acf config show                                    # 打印配置文件路径
 
 请求侧：30s 超时预算（`REQUEST_TIMEOUT_MS`）；工具调用即对应 REST 端点，因此同样受 scope / RBAC / 限流约束——建议给 Agent 建**独立低权用户或 readonly API Key**，而非共用 ADMIN。
 
-## 工具地图（按注册域分组，共 56 个）
+## 工具地图（按注册域分组，共 57 个）
 
 ### Task 域 — registerTaskTools（0 个）
 
@@ -220,6 +220,12 @@ acf config show                                    # 打印配置文件路径
 | sop_clarification_reply | assignmentId, body | 回复澄清提问（写入审计 `sop.reply`） |
 | agent_session_list | 分页 | 中心 agent 会话列表（ADR-019） |
 | agent_session_get | sessionId | 单会话详情 |
+
+### 元工具域 — withStructuredToolErrors 包装（1 个）
+
+| 工具 | 参数概要 | 语义 |
+|---|---|---|
+| tool_search | keyword?, tags?, limit? | 按关键词/标签**按需检索**已注册工具，返回排序且有界（默认 10 / 上限 50）的清单，避免把全部工具 schema 塞进模型上下文；只读（`readOnlyHint: true`）。运行时读 MCP server 的真实注册表 `_registeredTools`（内部字段，SDK 升级需复核），不是测试夹具。 |
 
 ## 与 REST 的对应关系要点
 
