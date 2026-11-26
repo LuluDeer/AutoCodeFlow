@@ -350,6 +350,10 @@ jobs:
       - name: Apply migrations for e2e
         run: npm run migration:run
         working-directory: apps/admin-api
+      # R58：迁移就绪守卫——台账行数必须等于代码迁移数，否则 e2e 的「日志 0 条」等断言
+      # 会把「测试库迁移落后」伪装成代码回归（本轮真实踩到）。DB_DATABASE 由本 job env 提供。
+      - name: Verify e2e migration readiness
+        run: npm run check:e2e-migration-readiness
       # --runInBand：三个 e2e suite 各自 bootstrap 完整 AppModule，并行时
       # admin seed 存在 users_email_key 竞态；串行执行消除竞态。
       # ── R99（2026-11-06）：真机 PG 并发自检（必须 DATABASE_URL；缺失则 SKIP 并打印原因）

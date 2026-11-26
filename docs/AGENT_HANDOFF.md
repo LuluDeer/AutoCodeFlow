@@ -1,5 +1,25 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 58 轮）：真 PG e2e 暴露测试库迁移落后 + 2-agent 并行守卫/文档核查
+
+**方向来源**：objective 续轮。前几轮多数目标已做到纯函数/接线层，核心 agent loop 接线风险过高（上批已留专项）。本批先做**最高级验收**判断实质进度——6 轮新代码叠加后首次复跑真 PG 全链 e2e。
+
+**关键发现（主控独立）**：`workbench-fullchain.e2e-spec.ts` 首次失败——commit 成功后 `capability_activation_log` 0 条，断言 `toHaveLength` 看起来像代码回归。深挖根因：本地 `autoflow_test` 库迁移停在 105（代码 151），缺 `baselineMetric`/`improvement`/`confirmed` 三列 ⇒ `record().save()` 报 PG「column does not exist」⇒ 被 commit 的 fail-open try/catch 吞掉 ⇒ 日志 0 条。补跑 `npm run migration:run`（106/107）后 **E2E_EXIT=0**。确认是**测试库 fixture 迁移落后，非代码回归**——正是本项目反复强调的「读不到 ≠ 没有」纪律的实例。CI 的 e2e job 已有固定 `migration:run` 前置（ci.yml:350），不受影响；本地无守卫。
+
+**2-agent 并行（写域互斥）**：
+- `impl-e2e-migration-readiness`：新建零依赖守卫 `verify-e2e-migration-readiness.sh` + 4 例自检——库内 migrations 台账数 == 代码迁移文件数（精确 `^[0-9]{13}-.+\.ts$` 匹配，排除 spec/d.ts 假红），不等则 exit 1 打印处置；口令按 key 抽 .env 不 source、不落盘。反证用业务库 `autoflow`（142 vs 151 天然落后）即证明有牙。
+- `audit-doc-status`：逐项 CodeGraph 核对两份文档 N1-N27 状态，**6 处纠偏**（N8 两处 blocked 看板 R286 已实现升 ✅、N14 已接 commit 第五闸、N6 webhook 已落地、N13 variant 未消费边界精确化、GCO N14 同步），28 条确认无误；最小 diff 6+/6-，文档守卫绿。**避免接手者重复实现已有功能**。
+
+**主控接线**：package.json 加 `verify:e2e-migration-readiness` / `check:e2e-migration-readiness` 两 script；CI e2e job 在 migration 步骤后加守卫步骤（DB_DATABASE 由 job env 提供）；自检 4/4 + 真库 151=151 绿。
+
+**验收**：守卫链/文档守卫/CI 四守卫（workflow-yaml/actions-pinned/runner-labels + guards-wired）全绿；真 PG e2e `E2E_EXIT=0`（补迁移后）；新守卫自检 4/4、反证有牙、口令不落盘。验收级别：**真 PG 进程内 e2e（最高级）+ 真子进程守卫 + 全量文档事实核查**；未达真机/浏览器。本批引入缺陷 0。
+
+**提交**：单个原子提交（2 新脚本 + package.json/CI 接线 + 2 文档状态纠偏 + 交接段），中间态绿。**未 push**。
+
+**后续项**：① N8/N18 接 agent loop 真实调用点（独立专项，需处理双跑防护/审批重放）；② N19 真实能力停用（破坏性待裁决）；③ N14 interrupt 在途工具调用 + 跨实例 5s TTL；④ N21 等保认证（外部）/分类分级标签；⑤ N24 P4 隔离（需真实用户规模触发）。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 57 轮）：2-agent 并行——N6 IM webhook 真实入口 + N22 SLA 计量；3 项文档诚实化
 
 **方向来源**：objective 续轮。剩余目标里挑 2 个低风险、有真实价值的实现：N6 webhook 端点（IM 消息真实入口缺口）、N22 SLA 机器可判层。核心 agent loop（N8/N18 runtime 接线）是 9 调用方热路径 + 双跑防护 + 审批重放，**风险过高，主控刻意不派并行 agent 改**——留作独立专项。基线 HEAD `e29d7265` 干净。
