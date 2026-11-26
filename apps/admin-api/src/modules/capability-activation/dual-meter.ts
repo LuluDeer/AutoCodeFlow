@@ -3,11 +3,15 @@
  *
  * capability_activation_log 只有调用事实，本仓没有 token 用量样本，因此这里只
  * 建模两个可复算口径：invocations（调用次数）与 successfulDeliveries
- * （result=success 的次数）。token / 货币值恒为 null，不编造任何用量或金额。
+ * （result=success 的次数）。tokenSample / currencyValue / priceReason 是为下游
+ * 金额折算预留的显式声明位：本层不采样、不折算，恒为 null / null /
+ * NO_TOKEN_SAMPLE，不编造任何用量或金额。
  *
  * result 的合法集合与 entities/activation-log.entity.ts 的 ACTIVATION_RESULTS
  * 相同，但刻意不 import 那个模块，以保持本文件对 ORM 的零依赖。
  */
+
+import type { PriceReason, TokenSample } from "./price.dto";
 
 /** 计量口径标签：报告自描述，消费方可据此核对口径。 */
 export type DualMeterBasis = "invocations+successfulDeliveries";
@@ -43,14 +47,16 @@ export interface ProjectMeterRow extends DualMeterCounts {
 /**
  * 双口径计量报告。
  *
- * tokenSample / currencyValue 恒为 null，是结构上的显式声明位，不参与任何计算：
- * 没有样本就没有 token 值，也没有成本金额。
+ * tokenSample / currencyValue / priceReason 是结构上的显式声明位，不参与计数：
+ * 本层没有 token 样本，故恒为 null / null / 'NO_TOKEN_SAMPLE'；下游折算成功后
+ * 才能写入非空样本与金额。零样本绝不写成 0 元。
  */
 export interface DualMeterReport {
   readonly basis: DualMeterBasis;
   readonly note: MeasurementNote;
-  readonly tokenSample: null;
-  readonly currencyValue: null;
+  readonly tokenSample: TokenSample | null;
+  readonly currencyValue: number | null;
+  readonly priceReason: PriceReason;
   readonly total: DualMeterCounts & { skipped: number };
   readonly byCapability: CapabilityMeterRow[];
   readonly byProject: ProjectMeterRow[];
@@ -80,8 +86,9 @@ export interface CostAllocationRow {
 export interface CostAllocation {
   readonly unit: "relative-share";
   readonly note: MeasurementNote;
-  readonly tokenSample: null;
-  readonly currencyValue: null;
+  readonly tokenSample: TokenSample | null;
+  readonly currencyValue: number | null;
+  readonly priceReason: PriceReason;
   readonly byCapability: CostAllocationRow[];
   readonly byProject: CostAllocationRow[];
 }
@@ -169,6 +176,7 @@ export function meterActivations(
     note: MEASUREMENT_NOTE,
     tokenSample: null,
     currencyValue: null,
+    priceReason: "NO_TOKEN_SAMPLE",
     total: {
       invocations: byCapability.reduce((sum, r) => sum + r.invocations, 0),
       successfulDeliveries: byCapability.reduce(
@@ -215,6 +223,7 @@ export function attributeCost(
       note: MEASUREMENT_NOTE,
       tokenSample: null,
       currencyValue: null,
+      priceReason: "NO_TOKEN_SAMPLE",
       byCapability: [],
       byProject: [],
     };
@@ -260,6 +269,7 @@ export function attributeCost(
     note: MEASUREMENT_NOTE,
     tokenSample: null,
     currencyValue: null,
+    priceReason: "NO_TOKEN_SAMPLE",
     byCapability: report.byCapability.map((row) => ({
       scope: "capability",
       target: row.capabilityKey,

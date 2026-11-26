@@ -34,10 +34,18 @@ describe("N20 · meterActivations 双口径计量", () => {
       note: MEASUREMENT_NOTE,
       tokenSample: null,
       currencyValue: null,
+      priceReason: "NO_TOKEN_SAMPLE",
       total: { invocations: 0, successfulDeliveries: 0, skipped: 0 },
       byCapability: [],
       byProject: [],
     });
+  });
+
+  it("金额载体字段：空输入恒为 null / null / NO_TOKEN_SAMPLE（零样本不写 0 元）", () => {
+    const report = meterActivations([]);
+    expect(report.tokenSample).toBeNull();
+    expect(report.currencyValue).toBeNull();
+    expect(report.priceReason).toBe("NO_TOKEN_SAMPLE");
   });
 
   it("按 capability 与 project 聚合两个口径；failure/blocked 只进调用次数", () => {
@@ -159,6 +167,7 @@ describe("N20 · attributeCost 相对份额分摊", () => {
       note: MEASUREMENT_NOTE,
       tokenSample: null,
       currencyValue: null,
+      priceReason: "NO_TOKEN_SAMPLE",
       byCapability: [
         { scope: "capability", target: "cap-a", fraction: 0.25 },
         { scope: "capability", target: "cap-b", fraction: 0.5 },
@@ -242,6 +251,7 @@ describe("N20 · attributeCost 相对份额分摊", () => {
       note: MEASUREMENT_NOTE,
       tokenSample: null,
       currencyValue: null,
+      priceReason: "NO_TOKEN_SAMPLE",
       byCapability: [],
       byProject: [],
     });

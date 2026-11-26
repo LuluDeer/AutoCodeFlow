@@ -132,6 +132,24 @@ export default function ActivationStatsPage() {
               <Statistic title="覆盖项目数" value={data?.byProject.length ?? 0} />
             </Col>
           </Row>
+          {data?.dualBasis ? (
+            <Alert
+              style={{ marginTop: 16 }}
+              type={data.dualBasis.priceReason === 'OK' ? 'success' : 'info'}
+              showIcon
+              message={
+                data.dualBasis.priceReason === 'OK' &&
+                data.dualBasis.currencyValue != null
+                  ? `折算金额：${data.dualBasis.currencyValue}`
+                  : '成本金额不可用（未折算）'
+              }
+              description={
+                data.dualBasis.priceReason === 'OK'
+                  ? data.dualBasis.note
+                  : `原因：${data.dualBasis.priceReason}。${data.dualBasis.note}`
+              }
+            />
+          ) : null}
         </Space>
       </Card>
 

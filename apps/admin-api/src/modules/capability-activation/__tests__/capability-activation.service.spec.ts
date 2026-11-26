@@ -645,6 +645,7 @@ describe("N20 · stats 双口径接线", () => {
       note: "无 token 样本，不产出 token/货币值；仅调用次数与成功交付次数两个可复算口径",
       tokenSample: null,
       currencyValue: null,
+      priceReason: "NO_TOKEN_SAMPLE",
       allocationNote:
         "attributeCost 未接线：相对份额分摊需外部权重配置，当前无业务权重来源；本字段只提供可复算的双口径计数。",
     });

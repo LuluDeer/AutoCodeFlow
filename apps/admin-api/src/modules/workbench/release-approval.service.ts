@@ -1,8 +1,4 @@
-import {
-  Inject as NestInject,
-  Injectable,
-  Optional,
-} from "@nestjs/common";
+import { Inject as NestInject, Injectable, Optional } from "@nestjs/common";
 
 // 极简框架替身（preview-validator.spec 等）只 mock 了部分装饰器，未导出 Inject；
 // 缺席降级为空装饰器，保住这些既有 spec 可加载。生产 NestInject 恒在，语义不变。

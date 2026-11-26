@@ -20,11 +20,35 @@ export interface ActivationProjectStat {
   count: number;
 }
 
+/** 成本归责：金额不可得时 amount/currency 为 null 且 reason 非 OK（绝不显示 0 元）。 */
+export type PriceReason =
+  | 'OK'
+  | 'NO_TOKEN_SAMPLE'
+  | 'PRICE_MISSING'
+  | 'INVALID_TOKEN_COUNT'
+  | 'INVALID_PRICE';
+
+export interface ActivationStatsDualBasis {
+  basis: string;
+  invocations: number;
+  successfulDeliveries: number;
+  skipped: number;
+  note: string;
+  tokenSample: { tokensIn: number; tokensOut: number } | null;
+  currencyValue: number | null;
+  priceReason: PriceReason;
+  allocationNote: string;
+  byCapability: Array<{ capabilityKey: string } & Record<string, unknown>>;
+  byProject: Array<{ projectId: string | null } & Record<string, unknown>>;
+}
+
 /** 时间窗内的总量、按能力与按项目两张聚合表。 */
 export interface ActivationStats {
   total: number;
   byCapability: ActivationStatsEntry[];
   byProject: ActivationProjectStat[];
+  /** 成本归责双口径；零样本/缺价目时金额位为 null + reason（诚实标缺） */
+  dualBasis?: ActivationStatsDualBasis;
 }
 
 /**

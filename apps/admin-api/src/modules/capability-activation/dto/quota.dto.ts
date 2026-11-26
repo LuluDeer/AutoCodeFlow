@@ -3,6 +3,7 @@ import { Type } from "class-transformer";
 import {
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   Max,
@@ -25,6 +26,10 @@ export const QUOTA_KEY_PREFIX = "acf.showback.quota.";
 export const QUOTA_SCOPES = ["project", "capability"] as const;
 export type QuotaScope = (typeof QUOTA_SCOPES)[number];
 
+/** 硬阈比较单位：缺省 invocations，保持旧配置逐字不变。 */
+export const QUOTA_UNITS = ["invocations", "amount"] as const;
+export type QuotaUnit = (typeof QUOTA_UNITS)[number];
+
 export type QuotaStatus = "ok" | "warn" | "exceeded";
 
 /** 落库 value（JSON）与 list/quota 端点的返回形状。 */
@@ -35,6 +40,10 @@ export interface QuotaConfig {
   hardLimit: number;
   windowDays: number;
   webhookUrl?: string;
+  /** 缺省 invocations；旧配置不写该字段即按调用次数硬阈判定。 */
+  unit?: QuotaUnit;
+  /** unit='amount' 必填：正数有限金额阈值；非金额配置忽略。 */
+  amountHardLimit?: number;
 }
 
 /** quota-status 单行：usage 来自 stats，status 由 soft/hard 边界判定。 */
@@ -46,6 +55,14 @@ export interface QuotaStatusRow {
   usage: number;
   status: QuotaStatus;
   windowDays: number;
+  /** 缺省 invocations；金额闸只对显式 'amount' 行生效。 */
+  unit?: QuotaUnit;
+  /** 金额不可得必须是 null，绝不使用 0 兜底。 */
+  amount?: number | null;
+  /** 金额不可得原因（零样本 / 缺价目 / 折算失败），透传给审计 detail。 */
+  priceReason?: string;
+  /** 金额硬阈副本；缺席时纯函数回退到 hardLimit 以兼容直接构造的测试行。 */
+  amountHardLimit?: number;
 }
 
 /** PUT /api/capability-activation/quota 的请求体。 */
@@ -92,6 +109,25 @@ export class SetQuotaDto implements QuotaConfig {
   @IsString()
   @MaxLength(2000)
   webhookUrl?: string;
+
+  @ApiPropertyOptional({
+    enum: [...QUOTA_UNITS],
+    default: "invocations",
+    description: "硬阈单位；缺省按调用次数，旧配置零漂移",
+  })
+  @IsOptional()
+  @IsIn([...QUOTA_UNITS])
+  unit?: QuotaUnit;
+
+  @ApiPropertyOptional({
+    type: Number,
+    description: "unit='amount' 必填：正数有限金额硬阈，非金额配置忽略",
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  amountHardLimit?: number;
 }
 
 /** GET /api/capability-activation/quota-status 的查询参数。 */

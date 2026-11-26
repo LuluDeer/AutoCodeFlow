@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  Optional,
   Post,
   Put,
   Query,
@@ -32,6 +33,10 @@ import {
 } from "./capability-activation.service";
 import { CapabilityActivationLog } from "./entities/activation-log.entity";
 import { QuotaService } from "./quota.service";
+import { PriceService } from "./price.service";
+import { SetPriceDto } from "./price.dto";
+import { TokenSamplePort } from "./token-sample.port";
+import type { TokenSampleView } from "./dto/token-sample.dto";
 
 // 既有单测的 @nestjs/common 替身只 mock 了路由装饰器，未导出 Req；缺位时降级
 // 为空装饰器，保持这些 spec 可加载。生产环境 NestReq 恒在，注入语义不变。
@@ -65,6 +70,10 @@ export class CapabilityActivationController {
   constructor(
     private readonly svc: CapabilityActivationService,
     private readonly quota: QuotaService,
+    // 成本归责：价目表读写 + 按 sessionId 诚实采样。末尾 @Optional 兼容既有
+    // 定位参数装配（R394 教训），缺席时新端点显式 503 不伪装成功。
+    @Optional() private readonly prices?: PriceService | null,
+    @Optional() private readonly tokenSamples?: TokenSamplePort | null,
   ) {}
 
   /**
@@ -94,6 +103,40 @@ export class CapabilityActivationController {
   @ApiOperation({ summary: "按 capabilityKey / 项目聚合激活次数（ADMIN）" })
   stats(@Query() query: ActivationStatsQueryDto): Promise<ActivationStats> {
     return this.svc.stats({ from: query.from, to: query.to });
+  }
+
+  /**
+   * 成本归责（ADR-044 企业买单理由）：managed 价目表 CRUD（ADMIN）。
+   * 价目只存 system_configs 零迁移；金额折算在 stats.dualBasis，零样本恒 null。
+   */
+  @Put("price")
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: "设置模型 token 价目（ADMIN；managed 配置）" })
+  async setPrice(@Body() dto: SetPriceDto): Promise<unknown> {
+    if (!this.prices) throw new Error("成本归责依赖未装配（PriceService/TokenSamplePort）");
+    return this.prices.set(dto);
+  }
+
+  @Get("price")
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: "列出 managed 价目表（ADMIN）" })
+  async listPrices(): Promise<unknown> {
+    if (!this.prices) throw new Error("成本归责依赖未装配（PriceService/TokenSamplePort）");
+    return this.prices.getByPrefix();
+  }
+
+  /** 按 sessionId 诚实采样（no_link/zero_sample/insufficient/ok），ADMIN 审计用。 */
+  @Get("token-sample")
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: "按 sessionId 采样真实 token（ADMIN；无关联/零样本诚实标缺）",
+  })
+  async tokenSample(
+    @Query("sessionId") sessionId?: string,
+  ): Promise<TokenSampleView> {
+    if (!this.tokenSamples)
+      throw new Error("成本归责依赖未装配（PriceService/TokenSamplePort）");
+    return this.tokenSamples.sample(sessionId);
   }
 
   @Put("quota")

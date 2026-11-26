@@ -12,9 +12,11 @@ import { CapabilityActivationService } from "./capability-activation.service";
 import {
   QUOTA_KEY_PREFIX,
   QUOTA_SCOPES,
+  QUOTA_UNITS,
   type QuotaConfig,
   type QuotaScope,
   type QuotaStatusRow,
+  type QuotaUnit,
   type SetQuotaDto,
 } from "./dto/quota.dto";
 import type { QuotaHardLimitGate } from "./quota-limit.gate";
@@ -28,6 +30,15 @@ import {
 /** LANG-ERR-01：校验失败统一抛稳定码，detail 点名字段与原因。 */
 const invalid: (detail: string) => never = (detail: string): never => {
   throw new AppError(ErrorCode.VALIDATION_FAILED, { detail });
+};
+
+/**
+ * 金额闸只消费 stats 行上的投影字段；dual-meter 的顶层 report → stats 行投影
+ * 由 service 装配层负责。这里不调用价目模块，也不把 null 折算成 0。
+ */
+type MeterAmountProjection = {
+  currencyValue?: number | null;
+  priceReason?: string;
 };
 
 /**
@@ -67,6 +78,10 @@ export class QuotaService implements QuotaHardLimitGate {
       hardLimit: dto.hardLimit,
       windowDays: dto.windowDays,
       ...(dto.webhookUrl ? { webhookUrl: dto.webhookUrl } : {}),
+      ...(dto.unit ? { unit: dto.unit } : {}),
+      ...(dto.amountHardLimit !== undefined
+        ? { amountHardLimit: dto.amountHardLimit }
+        : {}),
     };
     this.assertValid(cfg);
     await this.config.upsert({
@@ -103,6 +118,11 @@ export class QuotaService implements QuotaHardLimitGate {
     });
 
     const rows: QuotaStatusRow[] = configs.map((cfg) => {
+      const meterRow = (
+        cfg.scope === "project"
+          ? stats.byProject.find((p) => p.projectId === cfg.target)
+          : stats.byCapability.find((c) => c.capabilityKey === cfg.target)
+      ) as MeterAmountProjection | undefined;
       const usage =
         cfg.scope === "project"
           ? (stats.byProject.find((p) => p.projectId === cfg.target)?.count ??
@@ -111,7 +131,7 @@ export class QuotaService implements QuotaHardLimitGate {
               ?.count ?? 0);
       // 先判 hard 再判 soft：等值边界分别落 exceeded / warn（与 gate 共用判定）。
       const status = classifyQuota(cfg, usage);
-      return {
+      const row: QuotaStatusRow = {
         scope: cfg.scope,
         target: cfg.target,
         softLimit: cfg.softLimit,
@@ -120,6 +140,20 @@ export class QuotaService implements QuotaHardLimitGate {
         status,
         windowDays,
       };
+      if (cfg.unit === "amount") {
+        row.unit = "amount";
+        // 非有限/null 一律折叠为 null：金额不可得的状态只有 null，没有 0。
+        row.amount =
+          typeof meterRow?.currencyValue === "number" &&
+          Number.isFinite(meterRow.currencyValue)
+            ? meterRow.currencyValue
+            : null;
+        if (meterRow?.priceReason) row.priceReason = meterRow.priceReason;
+        if (cfg.amountHardLimit !== undefined) {
+          row.amountHardLimit = cfg.amountHardLimit;
+        }
+      }
+      return row;
     });
 
     await Promise.all(rows.map((row) => this.maybeAlert(configs, row)));
@@ -144,6 +178,7 @@ export class QuotaService implements QuotaHardLimitGate {
       );
       if (relevant.length === 0) return { blocked: false };
 
+      const reasons: string[] = [];
       for (const windowDays of [
         ...new Set(relevant.map((c) => c.windowDays)),
       ]) {
@@ -160,8 +195,11 @@ export class QuotaService implements QuotaHardLimitGate {
         );
         const decision = evaluateHardLimit(scoped, dto);
         if (decision.blocked) return decision;
+        if (decision.reasons) reasons.push(...decision.reasons);
       }
-      return { blocked: false };
+      return reasons.length === 0
+        ? { blocked: false }
+        : { blocked: false, reasons };
     } catch (err: unknown) {
       this.logger.warn(
         `[showback] hard-limit gate failed open for ${dto.capabilityKey}: ${
@@ -204,6 +242,20 @@ export class QuotaService implements QuotaHardLimitGate {
     ) {
       invalid("配额 windowDays 必须在 1 到 90 之间");
     }
+    if (
+      cfg.unit !== undefined &&
+      !QUOTA_UNITS.includes(cfg.unit as QuotaUnit)
+    ) {
+      invalid("配额 unit 非法，仅支持 invocations 或 amount");
+    }
+    if (
+      cfg.unit === "amount" &&
+      (typeof cfg.amountHardLimit !== "number" ||
+        !Number.isFinite(cfg.amountHardLimit) ||
+        cfg.amountHardLimit <= 0)
+    ) {
+      invalid("配额 amountHardLimit 必须是正数有限值（unit=amount 必填）");
+    }
   }
 
   private parseConfig(value: string | null): QuotaConfig | null {
@@ -214,6 +266,26 @@ export class QuotaService implements QuotaHardLimitGate {
       }
       const cfg = parsed as Partial<QuotaConfig>;
       if (!QUOTA_SCOPES.includes(cfg.scope as QuotaScope) || !cfg.target) {
+        return null;
+      }
+      if (
+        cfg.unit !== undefined &&
+        !QUOTA_UNITS.includes(cfg.unit as QuotaUnit)
+      ) {
+        this.logger.warn(
+          `[showback] quota config line skipped: invalid unit ${JSON.stringify(cfg.unit)} for ${cfg.scope}/${cfg.target}`,
+        );
+        return null;
+      }
+      if (
+        cfg.unit === "amount" &&
+        (typeof cfg.amountHardLimit !== "number" ||
+          !Number.isFinite(cfg.amountHardLimit) ||
+          cfg.amountHardLimit <= 0)
+      ) {
+        this.logger.warn(
+          `[showback] quota config line skipped: invalid amountHardLimit for ${cfg.scope}/${cfg.target}`,
+        );
         return null;
       }
       return cfg as QuotaConfig;

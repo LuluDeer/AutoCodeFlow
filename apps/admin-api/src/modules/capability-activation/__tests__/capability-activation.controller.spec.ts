@@ -17,6 +17,9 @@ jest.mock("@nestjs/common", () => {
     Body: deco,
     Query: deco,
     HttpCode: deco,
+    Optional: deco,
+    // AppError extends HttpException（PriceService 校验失败经它抛）；替身需提供基类
+    HttpException: class HttpException extends Error {},
     SetMetadata: () => () => undefined,
   };
 });
@@ -59,6 +62,16 @@ jest.mock("../../notification/notification.service", () => ({
 // 裸 jest 无 reflect-metadata：pagination.dto 的 @Type 会炸，桩掉即可。
 jest.mock("class-transformer", () => ({
   Type: () => () => undefined,
+}));
+
+// 成本归责依赖用轻量替身：本 spec 只测路由委托，不加载 PriceService 的
+// SystemConfig→RedisLock 真依赖链（@nestjs/common 替身没有 Injectable 等）。
+jest.mock("../price.service", () => ({
+  PriceService: class {},
+}));
+jest.mock("../token-sample.port", () => ({
+  TokenSamplePort: class {},
+  createTokenSamplePort: () => ({}),
 }));
 
 import { CapabilityActivationController } from "../capability-activation.controller";

@@ -36,6 +36,7 @@ import {
   type ProjectMeterRow,
   type RawActivationLog,
 } from "./dual-meter";
+import type { PriceReason, TokenSample } from "./price.dto";
 
 /** 深度钳位：与 agent 域 canonicalJson 同款，避免恶意深嵌套参数爆栈。 */
 const STABLE_MAX_DEPTH = 32;
@@ -111,8 +112,10 @@ export interface ActivationStatsDualBasis {
   readonly byCapability: CapabilityMeterRow[];
   readonly byProject: ProjectMeterRow[];
   readonly note: MeasurementNote;
-  readonly tokenSample: null;
-  readonly currencyValue: null;
+  /** 成本归责：有 provider 实测样本才非 null；零样本/无关联一律 null（不编造）。 */
+  readonly tokenSample: TokenSample | null;
+  readonly currencyValue: number | null;
+  readonly priceReason: PriceReason;
   readonly allocationNote: string;
 }
 
@@ -358,6 +361,7 @@ export class CapabilityActivationService {
         note: dualReport.note,
         tokenSample: dualReport.tokenSample,
         currencyValue: dualReport.currencyValue,
+        priceReason: dualReport.priceReason,
         allocationNote: ALLOCATION_NOTE,
       },
     };

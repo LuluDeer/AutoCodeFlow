@@ -65,8 +65,18 @@ import type { NotificationService } from "../../notification/notification.servic
 import type { NotificationPayload } from "../../notification/channels/base.channel";
 
 type Row = { key: string; value: string | null };
-type StatProject = { projectId: string | null; count: number };
-type StatCap = { capabilityKey: string; count: number };
+type StatProject = {
+  projectId: string | null;
+  count: number;
+  currencyValue?: number | null;
+  priceReason?: string;
+};
+type StatCap = {
+  capabilityKey: string;
+  count: number;
+  currencyValue?: number | null;
+  priceReason?: string;
+};
 
 function configStub(rows: Row[] = []) {
   const store = new Map(rows.map((r) => [r.key, r]));
@@ -458,5 +468,137 @@ describe("N20 · 软阈值告警去重与 fail-open", () => {
     const rows = await svc.status(30);
     expect(rows[0].status).toBe("exceeded");
     expect(notify.sendWebhook).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("N20 · 金额闸接线与坏配置跳过", () => {
+  const dto = { capabilityKey: "cap-a", projectId: "proj-a" };
+  const key = "acf.showback.quota.project.proj-a";
+
+  function warnSpy(svc: QuotaService) {
+    const logger = (
+      svc as unknown as {
+        logger: { warn: (message: string) => void };
+      }
+    ).logger;
+    return jest.spyOn(logger, "warn").mockImplementation(() => undefined);
+  }
+
+  it("status 投影行级 currencyValue/priceReason；旧配置不新增金额字段", async () => {
+    const amountCfg = base({
+      unit: "amount",
+      amountHardLimit: 10,
+      target: "proj-a",
+    });
+    const legacyCfg = base({ target: "proj-a" });
+    const svc = makeService(
+      activationStub([
+        {
+          projectId: "proj-a",
+          count: 3,
+          currencyValue: 12.5,
+          priceReason: "priced",
+        },
+      ]),
+      configStub([
+        { key, value: JSON.stringify(amountCfg) },
+        {
+          key: "acf.showback.quota.capability.legacy",
+          value: JSON.stringify(legacyCfg),
+        },
+      ]),
+      notifyStub(),
+      channelStub(),
+    );
+    const rows = await svc.status(30);
+    const amountRow = rows.find((r) => r.unit === "amount")!;
+    expect(amountRow.amount).toBe(12.5);
+    expect(amountRow.priceReason).toBe("priced");
+    expect(amountRow.amountHardLimit).toBe(10);
+    const legacyRow = rows.find((r) => r.unit === undefined)!;
+    expect(legacyRow.amount).toBeUndefined();
+    expect(legacyRow.priceReason).toBeUndefined();
+  });
+
+  it("金额达标 → blocked 且 detail 字段齐备；金额不可得 → skip 不比较", async () => {
+    const cfg = base({ unit: "amount", amountHardLimit: 10, windowDays: 7 });
+    const blocked = makeService(
+      activationStub([
+        {
+          projectId: "proj-a",
+          count: 3,
+          currencyValue: 12.5,
+          priceReason: "priced",
+        },
+      ]),
+      configStub([{ key, value: JSON.stringify(cfg) }]),
+      notifyStub(),
+      channelStub(),
+    );
+    expect(await blocked.evaluateHardLimit(dto)).toEqual({
+      blocked: true,
+      matched: {
+        scope: "project",
+        target: "proj-a",
+        usage: 3,
+        hardLimit: 20,
+        windowDays: 7,
+        unit: "amount",
+        amount: 12.5,
+        priceReason: "priced",
+        reason: "priced",
+        amountHardLimit: 10,
+      },
+    });
+
+    const skipped = makeService(
+      activationStub([
+        {
+          projectId: "proj-a",
+          count: 999,
+          currencyValue: null,
+          priceReason: "NO_TOKEN_SAMPLE",
+        },
+      ]),
+      configStub([{ key, value: JSON.stringify(cfg) }]),
+      notifyStub(),
+      channelStub(),
+    );
+    const decision = await skipped.evaluateHardLimit(dto);
+    expect(decision.blocked).toBe(false);
+    expect(decision.matched).toBeUndefined();
+    expect(decision.reasons?.[0]).toContain("NO_TOKEN_SAMPLE");
+  });
+
+  it("坏 unit / unit=amount 缺阈值或阈值非正 → 跳过本行并 warn", async () => {
+    const badUnit = makeService(
+      activationStub(),
+      configStub([
+        { key, value: JSON.stringify(base({ unit: "tokens" as "amount" })) },
+      ]),
+      notifyStub(),
+      channelStub(),
+    );
+    const warn1 = warnSpy(badUnit);
+    expect(await badUnit.list()).toEqual([]);
+    expect(warn1).toHaveBeenCalledWith(expect.stringContaining("invalid unit"));
+
+    for (const amountHardLimit of [undefined, 0, Number.NaN]) {
+      const cfg = base({ unit: "amount" });
+      if (amountHardLimit !== undefined) {
+        cfg.amountHardLimit = amountHardLimit;
+      }
+      const svc = makeService(
+        activationStub(),
+        configStub([{ key, value: JSON.stringify(cfg) }]),
+        notifyStub(),
+        channelStub(),
+      );
+      const warn = warnSpy(svc);
+      expect(await svc.list()).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("invalid amountHardLimit"),
+      );
+    }
   });
 });

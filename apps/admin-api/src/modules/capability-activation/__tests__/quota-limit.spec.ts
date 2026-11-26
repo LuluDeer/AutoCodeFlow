@@ -107,3 +107,92 @@ describe("N20 · evaluateHardLimit 硬阈边界", () => {
     ).toBe(false);
   });
 });
+
+describe("N20 · 金额硬闸 unit='amount'（金额不可得显式 skip）", () => {
+  const dto = { capabilityKey: "cap-a", projectId: "proj-a" };
+
+  it("控制组：旧配置无 unit 仍按 usage 比较，matched 不带金额字段", () => {
+    const legacy = row({ usage: 20 });
+    const decision = evaluateHardLimit([legacy], dto);
+    expect(decision).toEqual({
+      blocked: true,
+      matched: {
+        scope: "project",
+        target: "proj-a",
+        usage: 20,
+        hardLimit: 20,
+        windowDays: 30,
+      },
+    });
+    expect(decision.matched?.unit).toBeUndefined();
+    expect(decision.matched?.amount).toBeUndefined();
+  });
+
+  it("amount >= amountHardLimit → blocked，matched 带 unit/amount/reason", () => {
+    const hit = evaluateHardLimit(
+      [
+        row({
+          unit: "amount",
+          amount: 12.5,
+          amountHardLimit: 10,
+          priceReason: "priced",
+          usage: 3,
+        }),
+      ],
+      dto,
+    );
+    expect(hit.blocked).toBe(true);
+    expect(hit.matched).toEqual({
+      scope: "project",
+      target: "proj-a",
+      usage: 3,
+      hardLimit: 20,
+      windowDays: 30,
+      unit: "amount",
+      amount: 12.5,
+      priceReason: "priced",
+      reason: "priced",
+      amountHardLimit: 10,
+    });
+  });
+
+  it.each<Array<number | null | undefined>>([
+    [null],
+    [Number.NaN],
+    [undefined],
+  ])("amount=%p → skip 且不比较阈值（不是按 0 未超限）", (amount) => {
+    const readLimit = jest.fn(() => 20);
+    const skipped = row({
+      unit: "amount",
+      amount: amount as number | null,
+      priceReason: "NO_TOKEN_SAMPLE",
+      usage: 999,
+    });
+    // 阈值若被读取即证明走了比较分支；null→0 会读取它参与比较。
+    Object.defineProperty(skipped, "hardLimit", {
+      configurable: true,
+      enumerable: true,
+      get: readLimit,
+    });
+    Object.defineProperty(skipped, "amountHardLimit", {
+      configurable: true,
+      enumerable: true,
+      get: readLimit,
+    });
+
+    const decision = evaluateHardLimit([skipped], dto);
+    expect(decision.blocked).toBe(false);
+    expect(decision.matched).toBeUndefined();
+    expect(decision.reasons).toHaveLength(1);
+    expect(decision.reasons?.[0]).toContain("NO_TOKEN_SAMPLE");
+    expect(readLimit).not.toHaveBeenCalled();
+  });
+
+  it("amount < amountHardLimit → 放行且不带 skip reason", () => {
+    const decision = evaluateHardLimit(
+      [row({ unit: "amount", amount: 9.99, amountHardLimit: 10 })],
+      dto,
+    );
+    expect(decision).toEqual({ blocked: false });
+  });
+});

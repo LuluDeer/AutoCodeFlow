@@ -15,6 +15,9 @@ import {
   capabilityScopeGate,
 } from "./capability-scope.gate";
 import { CapabilityActivationLog } from "./entities/activation-log.entity";
+import { PriceService } from "./price.service";
+import { TokenSamplePort, createTokenSamplePort } from "./token-sample.port";
+import { DataSource } from "typeorm";
 
 /**
  * N15 / GCO §11：运行时能力审计模块。
@@ -43,6 +46,27 @@ import { CapabilityActivationLog } from "./entities/activation-log.entity";
   providers: [
     CapabilityActivationService,
     QuotaService,
+    // 成本归责：managed 价目表（system_configs 零迁移）+ 按 sessionId 诚实采样端口
+    PriceService,
+    {
+      provide: TokenSamplePort,
+      inject: [DataSource],
+      useFactory: (ds: DataSource) =>
+        createTokenSamplePort({
+          selectAgentSessionTotals: async (sessionId) => {
+            const rows = await ds.query(
+              'SELECT id, "totalTokensIn", "totalTokensOut" FROM agent_sessions WHERE id = $1 LIMIT 1',
+              [sessionId],
+            );
+            return rows[0] ?? null;
+          },
+          selectStepUsages: async (agentSessionId) =>
+            ds.query(
+              'SELECT "tokensIn", "tokensOut" FROM agent_steps WHERE "sessionId" = $1 AND "tokensIn" > 0',
+              [agentSessionId],
+            ),
+        }),
+    },
     {
       provide: QUOTA_HARD_LIMIT_GATE,
       useFactory: (moduleRef: ModuleRef): QuotaHardLimitGate => ({
