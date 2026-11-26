@@ -1,5 +1,31 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 53 轮）：5-agent 并行数据层扩展（N9/N10/N12/N23/N25）+ 4 项状态回写
+
+**方向来源**：objective 续轮——继续编排多 agent 协作推进两份开发文档。基线 HEAD `967aa7fb` 干净、上批守卫链绿。本批从 strategy §12.3 剩余 ⬜ 目标里挑 5 个「纯数据/纯函数层、写域互斥、单测可验收」的切片；另有 4 项（N5/N16/N21/N22）经 CodeGraph 核对**代码/文档早已落地、只是状态列滞后**，主控直接回写（其中 N21/N22 诚实标注为「建议基线/流程」而非已交付系统能力）。
+
+**编排**：5 个写域互斥 agent 并行；一条跨切片契约由 agent 直接 `send_message` 闭环——`impl-n23-generation-swap` ↔ `impl-n10-part-model` 对齐 generation 语义（opaque string token、相等即同代、严格 null/undefined 缺失判旧、空串是合法 token、同代 `===` no-op），两方各自在文件头记录同一口径，避免 workbench 与 capability 出现两套 generation。
+
+| 切片 | 目标 | 产出 | 验收 |
+|---|---|---|---|
+| impl-n9-reachability | N9 可达性探测 | `capability/reachability.ts`：三态分级 + 无 API→`x11+fromVideo` 降级，unknown/幽灵能力 fail-closed | capability 13 suites/229 tests；两向反证转红 |
+| impl-n10-part-model | N10 Part 扩展 | `workbench/part-model.ts`：12 类判别联合 + `isStaleGeneration`/blob 标记/share 可见性；generation 与 N23 同口径 | workbench 6 suites/82 tests；同代/缺失两向反证 |
+| impl-n12-context-budget | N12 上下文成本 | `workbench/context-budget.ts`：按 kind 收窄（未知 fail-closed）+ 相对预算单位 RU（不虚构 token） | workbench 5 suites/56 tests；三次反证转红 |
+| impl-n23-generation-swap | N23 世代热切换 | `capability/generation-swap.ts`：active/incoming 不可变状态机 + 失败回滚 + resolveCurrent | capability 13 suites/229 tests；注入失败不回滚→2 红 |
+| impl-n25-marketplace | N25 五源 + autoUpdate | `capability/source-policy.ts`：8 源闭包、marketplace 启停资格、autoUpdate 版本 fail-closed | source-policy 83/83；恒真/去 fail-closed 两向反证 |
+
+**主控集成修复**：① 10 个新文件 `eslint --fix`（45 处 prettier，纯格式）；② 5 个新 spec 触发 `check-atlas-counts` 超 5% 容差（admin-api spec 486→514、用例 7812→8152），用官方 `--update` 机械同步 12 个数字点；③ N21 状态回写里的 `compliance-baseline.md` 相对路径写错，文档死链守卫当场抓出并改 `../`。守卫链第 1 轮红在 atlas，第 2 轮 `CHAIN_EXIT=0`。
+
+**最终验收（主控独立复跑）**：`test:guards:chain` **CHAIN_EXIT=0**；`npm run lint`(admin-api) EXIT=0；新增 5 spec **143/143 全绿**；本模块 capability/workbench **229 + 82 tests**（agent 各自实测）。全量 admin-api `jest --maxWorkers=2` → **9091 passed / 4 failed**；4 个失败经**隔离 worktree 在基线 HEAD 复跑确证为既有欠账**（4 failed / 46 passed）：2 个是 S3 日志 fail-close 改造（第 51 轮）后测试期望未同步、1 个是写端点授权扫描（capability/activation 的 4 个新端点未带显式 @Roles/@WriteGuard）、1 个是 swagger i18n 英文侧含中文（第 52 轮补的审批短语映射）。均**非本轮引入**，不擅自扩写域修，登记为下一轮候选。
+
+**验收级别**：单测/纯函数 + 真子进程守卫链 + 隔离 worktree 基线对照；**未达** Nest+PG 进程内接线、真实网络/X11、浏览器。遗留缺陷（本轮引入）0。
+
+**提交**：单个原子提交（10 新文件 + 状态回写 + atlas 同步 + 本交接段），保持中间态绿与 `git show` 归因完整。**未 push**。
+
+**后续项**：① 修 4 个既有全量测试失败（S3 测试期望同步、写端点授权标注、i18n 英文映射）；② N19 gate 接线（上批遗留）；③ N10/N23 生成的 generation 接 N18 rewind 围栏与真实 disposer 生命周期；④ N25 的 source 枚举回填实体 + service 单一事实源收敛；⑤ N9 接真实网络探测与 executor-desktop X11 驱动。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 52 轮）：6-agent 并行消费层接线（N3/N13/N14/N17/N19/N27）
 
 **方向来源**：operator「作为项目负责人，编排多个 agent 全面协作推进开发，让 agent 之间都可以协同；必要时先分批 git 提交」。基线验证 `test:guards:chain` EXIT=0、`typecheck:all` EXIT=0；把已验收的 24 轮工作台成果作自洽基线提交 `b1905e61`（controller↔openapi↔i18n↔baseline 强耦合，拆批必产生红中间态），再派发新一批。

@@ -408,7 +408,7 @@ P1≈中、P2≈高（前端+会话模型，是主投入）、P3≈中、P4≈�
 | N2 合并规则 + dump 三栏 | capability resolve 按 §12.2 逐族合并；dump 输出「分层来源/生效值/凭据占位符」三栏，不泄露明文（dsh `dump-config.ts:45-75`） | opencode/magpie | ✅ 已实现（第 3 轮）：scope 逐族合并 + resolve/dump 三栏脱敏（capability/scope/ 与 /capabilities/resolve、dump） |
 | N3 Policy 四语义层 | `override/restrict/fallback/rules` + 无规则默认 ask + 多资源 any-deny 聚合（opencode `policy.ts:28-37,103-104,166-171`） | opencode | ✅ 已实现（第 52 轮）：`scope-engine.ts` 新增 `evaluateAll`/`evaluateSemanticPolicy` + `PolicySemantic` 四语义（override/restrict/fallback/rules，restrict 的 deny 单调锁定），空/非法输入默认 ask；旧 `evaluatePolicy`/`aggregateDecisions` 签名行为逐字不变；scope 2 suites/28 tests 绿、反证有牙。未接入 capability.service 真实链（纯函数层）。 |
 | N4 最小可验证切片（V5） | **P2 前置证伪闸门，2 周**：只选 1 个已有只读能力 + 用现有 SOP draft/publish 承载方案卡 + 现有四眼/digest 确认 + 一页前端（3 业务字段→预览→审批→看产物），真浏览器 e2e 断言"不填 cron/UUID/glue 拿到报表"。不通则后续全白做——**暂不建注册表/Scope 链/Part 模型/编译 prompt/三档** | red | ✅ 已实现（第 1 轮）：preview-validator + 真浏览器 workbench-preview e2e 已落地 |
-| N5 业务结果归因埋点 | capability/session 表加 outcome 字段：基线对照 + 人时节省 + 差错率，做启用组 vs 对照组归因；事后补不出基线 | biz | ⬜ 未实现：capability/session 表无 outcome 字段，基线对照与人时节省埋点均未做 |
+| N5 业务结果归因埋点 | capability/session 表加 outcome 字段：基线对照 + 人时节省 + 差错率，做启用组 vs 对照组归因；事后补不出基线 | biz | ✅ 已实现（第 53 轮复核）：迁移 106 加 `baselineMetric`/`improvement`/`confirmed` 三列（存量 NULL 不回填），`capability-activation.service.record` 写入 + `query` 的 `outcome` 过滤（与 result 正交），真 PG 数据层验证 PASS=37（第 12 轮）。未做：人时节省的自动化采集（需业务样本）。 |
 
 **B. P2 — 工作台与引导链**
 
@@ -429,13 +429,13 @@ P1≈中、P2≈高（前端+会话模型，是主投入）、P3≈中、P4≈�
 |---|---|---|---|
 | N14 在途策略即时失效 | `capability/changed` → interrupt 在途 + 下次工具 check 用新 policy + scopedRules 保住未被通配覆盖的 ask/deny（opencode `session.ts:86`/`policy.ts:204-240`/`run-coordinator.ts:146-186`；dsh `sandbox/mode` `policy-processes.ts:24-34`）。不接此条则"引导在权限框架内"为空 | magpie/opencode/red | 🟡 部分实现（第 52 轮）：运行时代际 + system_configs 持久化 + emit 已落地；本轮补 `workbench/scoped-rules.ts` 纯分类（通配 allow 作废、显式 ask/deny 与作用域不可判定时的 fail-closed 保留），6 例反证有牙。未做：controller/service 实际接线、interrupt 在途工具调用、跨实例 5s TTL 真机。 |
 | N15 运行时能力审计 | `capability_activation_log`（session/能力 id/版本/参数摘要/user_id/IM id），与写操作审计并列；企业必问"本月哪个会话用了财务导出" | zcode/biz | ✅ 已实现（第 9 轮）：capability-activation 审计 + 真 PG 数据层验证 + 用量看板已落地 |
-| N16 发布背书 + 失败归责 | capability 增 `owner/backer/versionPin/attestation`；版本钉死 + 调用可回放；责任分层定位到能力发布者/编译系统/确认人/中台策略；owner 离职孤儿化 → **部门/角色背书 + 所有权移交是自研必需层**（magpie 的 movers/parity 是宿主对自家插件的内部契约，非通用市场治理，不可照搬） | magpie/biz/red | ⬜ 未实现：capability 仅有 version，无 owner/backer/versionPin/attestation 与归责回放 |
+| N16 发布背书 + 失败归责 | capability 增 `owner/backer/versionPin/attestation`；版本钉死 + 调用可回放；责任分层定位到能力发布者/编译系统/确认人/中台策略；owner 离职孤儿化 → **部门/角色背书 + 所有权移交是自研必需层**（magpie 的 movers/parity 是宿主对自家插件的内部契约，非通用市场治理，不可照搬） | magpie/biz/red | ✅ 已实现（第 53 轮复核）：迁移 107 加 `owner`/`backer`/`versionPin`/`attestation` 四列（存量 NULL 不回填），`capability.service` 校验 versionPin 形态与封闭键；前端 `CreateCapabilityPayload` 已补四字段。**未做**：所有权移交的流程 UI（[ops-runbook](agent-workbench-ops-runbook.md) §4 有建议流程）、调用可回放的责任分层定位。 |
 | N17 审批短语（scoped+TTL） | 只借鉴 Octop"一句话审批"UX，整句精确匹配；授权落 once + TTL + 指纹重算，**不做 all 永久授权**（破坏失效语义）；放 P3 观察期，不进 P2 MVP | octop/red | ✅ 已实现（第 52 轮）：`parseApprovalPhrase` + `decideByPhrase`（once+TTL、无 all、指纹重算）已落地；本轮暴露 ADMIN-only `POST /agent/sessions/:id/approvals/:approvalKey/phrase` 路由，decidedBy/指纹均服务端取值、请求体自报一律忽略，agent 66 suites/1054 tests 绿、反证有牙。HTTP filter 真机未测。 |
 | N18 rewind 代际围栏 | 会话/Part 带 generation，回退使旧 generation 的异步写入/通知作废 + 审计"作废 N 任务"（ZCode `branchGeneration` `registry.ts:186-188`）；否则"已撤回对账仍发报表" | zcode/biz | 🟡 部分实现（第 14 轮）：方案卡策略代际 + commit 代际闸已落地，会话/Part generation 与异步写入围栏未做 |
 | N19 Key 权限分级复用 | 本仓已有 readonly/trigger/manage + revoke（`api-key.util.ts:50-54`）；能力调用走 readonly+trigger scope，revoke 联动能力停用；补 rotate/limit（magpie `access.go:612,641-670`） | magpie | 🟡 部分实现（第 52 轮）：rotate/limit 已落地；本轮补 `capability-scope.gate.ts`（token+纯判定：能力调用需 readonly+trigger 双 scope，manage 全集放行，revoke 联动判定），9 例反证有牙。gate 未接线到 activation.service / revoke（主控接线建议已留），未做真实 HTTP 鉴权链。 |
 | N20 成本分摊 + showback | provider 增 showback 计量（token/成功交付双口径）+ 按项目配额 + 软硬阈值告警 + 超支降级（magpie quota/KeySpendCaps） | biz/magpie | 🟡 部分实现（第 18 轮）：调用次数计量/配额/告警/硬阈值 + 前端看板已落地，token 口径与成本分摊因无样本未做 |
-| N21 合规基线 | 等保二/三级、日志留存 6 月不可篡改、数据分类分级 + 公有模型出域管控 | biz | ⬜ 未实现：无等保二/三级、6 月不可篡改留存与数据分类分级/出域管控 |
-| N22 中台团队与 SLA | 平台工程/能力审核/Agent 训练师/SRE 角色；能力审核 SLA ≤1 工作日，否则业务流失 | biz | ⬜ 未实现：无中台角色编制与能力审核 SLA 的代码/流程落点，详见 [ops-runbook](agent-workbench-ops-runbook.md) |
+| N21 合规基线 | 等保二/三级、日志留存 6 月不可篡改、数据分类分级 + 公有模型出域管控 | biz | ⬜ 文档基线已落（第 24 轮）：[compliance-baseline.md](../compliance-baseline.md) 写明等保二/三级、日志留存 6 月不可篡改、数据分类分级与公有模型出域管控的**目标基线**；系统侧尚无对应强制实现（留存策略/不可篡改存储/出域拦截），是建议基线而非已交付能力。 |
+| N22 中台团队与 SLA | 平台工程/能力审核/Agent 训练师/SRE 角色；能力审核 SLA ≤1 工作日，否则业务流失 | biz | ⬜ 建议流程已落（第 24 轮）：[ops-runbook](agent-workbench-ops-runbook.md) 写明四角职责/≤1 工作日审核 SLA/值班四步/所有权移交；仓库当前无中台编制、审核流水线与 SLA 计量实现，是**待建契约**（文档已明示不得当已交付引用）。 |
 
 **D. P4 — 生态与规模**
 
