@@ -1018,7 +1018,8 @@
               "sop_authoring",
               "sop_review",
               "app_scaffold",
-              "chat"
+              "chat",
+              "plan"
             ],
             "type": "string"
           },
@@ -4173,7 +4174,8 @@
               "sop_authoring",
               "sop_review",
               "app_scaffold",
-              "chat"
+              "chat",
+              "plan"
             ],
             "type": "string"
           },

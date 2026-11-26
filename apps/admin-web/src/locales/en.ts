@@ -975,6 +975,7 @@ export default {
   'audit.action.capability_degraded': 'Capability invocation degraded',
   'audit.action.capability_marketplace_toggle_failed': 'Capability marketplace toggle rejected',
   'audit.action.capability_sla_breach': 'Capability review SLA breach',
+  'audit.action.capability_provider_denied': 'Model provider egress denied',
   'audit.action.capability_update': 'Update capability',
   'audit.action.capability_transfer': 'Transfer capability ownership',
   'audit.action.capability_delete': 'Delete capability',

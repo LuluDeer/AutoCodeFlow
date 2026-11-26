@@ -1176,10 +1176,10 @@
     "apps/admin-web/src/pages/audit/index.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 561,
-      "why": "2026-11-04 实测 functionLines=637 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**提额**：A6b 新增审计动作 `task.fire_point_consumed` ⇒ 前端补一行标签映射 ⇒ 559 → 560。2026-11-15 P1-5 新增审计动作 `task_template.update` ⇒ 再补一行标签映射 ⇒ 560 → 561。两行均为功能必需的标签，不是结构恶化。",
+      "maxLines": 562,
+      "why": "2026-11-04 实测 functionLines=637 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**提额**：A6b 新增审计动作 `task.fire_point_consumed` ⇒ 前端补一行标签映射 ⇒ 559 → 560。2026-11-15 P1-5 新增审计动作 `task_template.update` ⇒ 再补一行标签映射 ⇒ 560 → 561。两行均为功能必需的标签，不是结构恶化。 【第69轮(provider_denied audit 标签，Lead 重签)：ACTION_LABEL_KEYS +1 行，561→562；回滚值 561。】",
       "ceiling": {
-        "nonCommentLines": 561,
+        "nonCommentLines": 562,
         "functionLines": 637,
         "ctorParams": 0,
         "exports": 1,

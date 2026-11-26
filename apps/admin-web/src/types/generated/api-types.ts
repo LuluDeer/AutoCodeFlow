@@ -5088,7 +5088,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "ops_watch" | "incident" | "sop_authoring" | "sop_review" | "app_scaffold" | "chat";
+            kind: "ops_watch" | "incident" | "sop_authoring" | "sop_review" | "app_scaffold" | "chat" | "plan";
             /**
              * Format: uuid
              * @description 子会话血缘（sop_review 会话在此串联）
@@ -6233,7 +6233,7 @@ export interface components {
         };
         CreateAgentSessionDto: {
             /** @enum {string} */
-            kind: "ops_watch" | "incident" | "sop_authoring" | "sop_review" | "app_scaffold" | "chat";
+            kind: "ops_watch" | "incident" | "sop_authoring" | "sop_review" | "app_scaffold" | "chat" | "plan";
             scope?: {
                 [key: string]: unknown;
             };

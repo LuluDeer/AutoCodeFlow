@@ -44,7 +44,7 @@ export const AUDIT_RESOURCE_GROUPS: readonly { labelKey: string; resources: read
     ],
   },
   { labelKey: 'audit.group.eventSubscription', resources: ['event_subscription', 'event_subscription_dead_letter'] },
-  { labelKey: 'audit.group.configExecutor', resources: ['config', 'executor', 'capability', 'workbench', 'im_identity'] },
+  { labelKey: 'audit.group.configExecutor', resources: ['config', 'executor', 'capability', 'workbench', 'ai_provider', 'im_identity'] },
   { labelKey: 'audit.group.registry', resources: ['registry', 'registry-package'] },
 ];
 

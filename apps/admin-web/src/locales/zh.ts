@@ -983,6 +983,7 @@ export default {
   'audit.action.capability_degraded': '能力调用降级',
   'audit.action.capability_marketplace_toggle_failed': '能力市场启停被拒',
   'audit.action.capability_sla_breach': '能力审核 SLA 违约',
+  'audit.action.capability_provider_denied': '模型渠道出域被拒',
   'audit.action.capability_update': '更新能力',
   'audit.action.capability_transfer': '移交能力所有权',
   'audit.action.capability_delete': '删除能力',

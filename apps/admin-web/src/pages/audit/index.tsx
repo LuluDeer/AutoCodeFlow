@@ -194,6 +194,7 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'capability.degraded': 'audit.action.capability_degraded',
   'capability.marketplace.toggle_failed': 'audit.action.capability_marketplace_toggle_failed',
   'capability.sla_breach': 'audit.action.capability_sla_breach',
+  'capability.provider_denied': 'audit.action.capability_provider_denied',
   'capability.transfer': 'audit.action.capability_transfer',
   'capability.update': 'audit.action.capability_update',
   'capability.delete': 'audit.action.capability_delete',
