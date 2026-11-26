@@ -1,5 +1,33 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-27 · 工作台改造第 72 轮）：成本归责——诚实标缺 + 价目折算能力（企业买单理由）
+
+**方向来源**：objective 续轮 + 上轮后续项（成本归责）。2 路审计核实关键约束：activation.sessionId 是 Workbench/SOP id 命名空间（与 agent_sessions.id 同为 UUID、无可靠桥），生产实测 139 条 steps tokensIn 全 0（agent-context.ts:126）；全仓无价目配置、dual-meter 类型锁 null。**PM 裁决**：不硬接假 JOIN、不编造 0 元——做"诚实标缺 + 价目折算能力"最小切片：有真实 usage 时能正确归责，无样本时明确标缺。这是企业买单理由的正确地基。
+
+| 切片 | 目标 | 交付 | 验收 |
+|---|---|---|---|
+| impl-token-sample | 诚实采样端口 | `token-sample.port.ts`（零 Nest/ORM，注入式 DS 两精确 select；no_link/zero_sample/insufficient/ok/pruned 判定；SOP id 形状排除不查库、0 不是样本、currencyValue 恒 null）+ dto + spec | 8/8 + 反证（去 SOP 排除→诱饵行被查中真红） |
+| impl-price-conversion | 价目折算 | `price.service.ts`（managed 价目 CRUD，system_configs 零迁移 `acf.showback.price.*`；convertToAmount 零样本/缺价目→null+reason，齐备才 token/1e6×price 6 位小数）+ `price.dto.ts` + dual-meter 顶层三字段扩展 + spec | 23/23 + 反证（零样本返回 0 元真红） |
+| impl-amount-gate | 金额硬闸 | quota-limit/quota.service/quota.dto：`unit='amount'`+`amountHardLimit`；金额不可得比较前 skip（reasons）绝不按 0；旧 invocations 分支逐字不变 | 35/35 + 反证（null 当 0 真红） |
+| 主控集成 | 接线闭环 | activation.module 注册 PriceService + TokenSamplePort(DataSource adapter)；controller PUT/GET price + GET token-sample（ADMIN）；stats.dualBasis 透传 priceReason + 类型扩展；看板金额卡（reason≠OK 显示"未折算"不显示 ¥0）；web-type-drift 登记 2 新类型 | typecheck 0 |
+
+**真 PG e2e `cost-attribution.e2e-spec.ts` 1 passed**：三条副作用——PUT price 真落 system_configs（valueType=json、价目>0）；stats 在零样本下 currencyValue=null/priceReason≠OK（有价目也不编造）；token-sample 对 SOP id 返回 no_link/tokens null（不把 SOP id 当 agent session）。
+
+**主控集成修的涟漪**：① activation.service 的 ActivationStatsDualBasis 两字段锁 null 与 dual-meter 扩展冲突→改 `TokenSample|null`/`number|null`+priceReason；② token-sample.dto 被覆盖导致 MIN_SAMPLES/TOKEN_SAMPLE_NOTE 缺失→补常量；③ controller 加 PriceService/TokenSamplePort @Optional 构造 + AppError/ErrorCode import；④ 11 处 prettier → eslint --fix；⑤ web-type-drift 与 web-type-field-drift 各登记 2 新手写类型（后端空壳 schema 无法派生字段比对）；⑥ 全量首跑两处 suite 崩：service.spec 控制组断言缺 priceReason（补断言）、controller.spec 的 @nestjs/common 替身缺 Injectable/HttpException 且 PriceService 依赖链太深（jest.mock 掉 price.service/token-sample.port 轻量替身）——23/23 复绿。
+
+**边界与诚实声明（重要）**：
+- **金额闸目前永远 fail-open**：stats 行级 currencyValue 未投影（顶层 dualReport 有，但 quota.service 读行级）；当前零样本下行级金额本就 null，fail-open 是正确行为；有真实 usage 后的行级金额折算+闸拦截是明确后续项，不伪造。
+- **token 采样端口已建但只在 ADMIN token-sample 端点被消费**——尚无自动挂到激活/看板的逐行采样；企业看到的是"无可用样本"诚实提示，不是成本数字。
+- **无价目表管理 UI**——PUT/GET price 是 ADMIN API，前端设置页 CRUD 是后续项。
+- 金额折算的 provider/model 关联键在 dual-meter 顶层，未按 project/capability 行级分摊（attributeCost 仍未接线，ALLOCATION_NOTE 诚实声明）；不做份额伪分摊。
+- 价目 key 点分（配置）与折算索引斜分（priceIndexKey）双形态，toPriceMap 统一，避免漂移。
+
+**后续项**：① stats 行级金额投影（有样本后金额闸真拦截）；② 价目表管理 UI + token-sample 挂激活列表；③ 成本 ledger 与 activation.sessionId 关联键重设（需 ADR）；④ 真浏览器 e2e 验看板金额诚实展示。
+
+**提交**：按 objective 分批提交（3 agent 实现 + 集成接线 + 生成物/基线 + 文档交接），不 push。
+
+---
+
 ## 本轮（2026-11-27 · 工作台改造第 71 轮）：方案卡→四眼审批→系统代理发布（ADR-045）
 
 **方向来源**：objective 续轮 + 上轮交接后续项（GCO §5 后三跳）。2 路只读审计确认可复用语义：agent-approvals.request/decide/consume（scope once、argsDigest、指纹原子失效）+ sop.publish（系统身份调即可走完整校验）。PM 裁决先做"方案卡→审批→受控发布"而非成本归责——前者是用户使用理由的最后断点，后者数据关联本身要先重设（activation.sessionId 写的是 SOP id 非 agent session）。ADR-045 固化六步契约与红线：**发布权=指令注入权，业务人员/主管都不直接 publish，主管四眼批准后系统代理发布**。
