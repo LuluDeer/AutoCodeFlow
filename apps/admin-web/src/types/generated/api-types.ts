@@ -155,7 +155,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 列出跨会话的待审批单（含总数、截断与降级标记） */
+        /** 列出待我审批单（含总数、截断与降级标记） */
         get: operations["AgentController_listPendingApprovals"];
         put?: never;
         post?: never;
@@ -1299,8 +1299,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 按应用/任务/关键字/时间/类型查询产物索引（仅管理员）
-         * @description 按应用/任务/文件名关键字/时间范围/扩展名维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。
+         * 分页查询执行产物索引（按归属收窄）
+         * @description 按应用/任务/文件名关键字/时间范围/扩展名维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。ADMIN 全量；role=user 仅见本人属主或本人具 editor+ 项目的产物（无主行不可见）。mine=true / owner=me 再收窄到「属主=我」。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。
          */
         get: operations["ArtifactsController_listArtifactRows"];
         put?: never;
@@ -1764,6 +1764,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/capability-activation/price": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出 managed 价目表（ADMIN） */
+        get: operations["CapabilityActivationController_listPrices"];
+        /** 设置模型 token 价目（ADMIN；managed 配置） */
+        put: operations["CapabilityActivationController_setPrice"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/capability-activation/quota": {
         parameters: {
             query?: never;
@@ -1808,6 +1826,23 @@ export interface paths {
         };
         /** 按 capabilityKey / 项目聚合激活次数（ADMIN） */
         get: operations["CapabilityActivationController_stats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capability-activation/token-sample": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 按 sessionId 采样真实 token（ADMIN；无关联/零样本诚实标缺） */
+        get: operations["CapabilityActivationController_tokenSample"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4070,8 +4105,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 列出执行产物（manifest，仅管理员）
-         * @description 返回执行器终态回调上报并已落库的产物 manifest。需要管理员 JWT（全局 JwtAuthGuard + RolesGuard）。
+         * 列出执行产物（manifest，按归属收窄）
+         * @description 返回执行器终态回调上报并已落库的产物 manifest。ADMIN 全量；role=user 仅见本人属主或本人具 editor+ 项目的执行（无主执行不可见）。
          */
         get: operations["ArtifactsController_list"];
         put?: never;
@@ -4090,8 +4125,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 下载单个执行产物（流式，仅管理员）
-         * @description 将已存储的产物以流式返回给已认证的管理员。强制校验裸文件名（防路径穿越），产物不存在时返回 404。
+         * 下载单个执行产物（流式，按归属收窄）
+         * @description 将已存储的产物以流式返回给已认证用户。ADMIN 全量；role=user 仅见本人属主或本人具 editor+ 项目的产物，且无主产物恒 403。强制校验裸文件名（防路径穿越），产物不存在时返回 404。
          */
         get: operations["ArtifactsController_download"];
         put?: never;
@@ -6133,6 +6168,8 @@ export interface components {
             };
         };
         CommitResultDto: {
+            /** @description ADR-045：发布审批单 key（业务人员提交后由主管四眼批准、系统代理发布）；缺席表示审批发起失败 */
+            approvalKey?: string;
             /** @description 发布是独立审批动作，提交后仍需人工审阅 */
             next: string;
             /** @description 本次提交放行的策略代际（16 位十六进制），供下游会话继承以做在途失效比对 */
@@ -8804,7 +8841,26 @@ export interface components {
              */
             versionId: string;
         };
+        SetPriceDto: {
+            /** @description 3 字母币种代码，如 CNY / USD */
+            currency: string;
+            /**
+             * @description 输入或输出 token
+             * @enum {string}
+             */
+            direction: "in" | "out";
+            /** @description 模型标识 */
+            model: string;
+            /** @description 价目备注（不参与金额折算） */
+            note?: string;
+            /** @description 每百万 token 单价，必须为正的有限数 */
+            pricePerMillionTokens: number;
+            /** @description 模型提供方标识 */
+            provider: string;
+        };
         SetQuotaDto: {
+            /** @description unit='amount' 必填：正数有限金额硬阈，非金额配置忽略 */
+            amountHardLimit?: number;
             /** @description 硬阈值：usage >= hardLimit 记 exceeded */
             hardLimit: number;
             /**
@@ -8816,6 +8872,12 @@ export interface components {
             softLimit: number;
             /** @description projectId 或 capabilityKey */
             target: string;
+            /**
+             * @description 硬阈单位；缺省按调用次数，旧配置零漂移
+             * @default invocations
+             * @enum {string}
+             */
+            unit?: "invocations" | "amount";
             /** @description 告警 webhook URL；缺省回落全局通知配置 */
             webhookUrl?: string;
             windowDays: number;
@@ -12118,6 +12180,10 @@ export interface operations {
                 to?: string;
                 /** @description 按扩展名过滤（小写、不带点；命中文件名末尾的 .<ext>；不在白名单 400 VALIDATION_FAILED） */
                 ext?: "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "pdf" | "zip" | "json" | "txt" | "log" | "md" | "csv" | "xlsx" | "html";
+                /** @description 只看当前登录用户作为任务属主的交付物（true/1 视为开启） */
+                mine?: boolean;
+                /** @description mine 的别名：owner=me 等价于 mine=true；不接受其他用户 id */
+                owner?: "me";
             };
             header?: never;
             path?: never;
@@ -12133,7 +12199,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutionArtifactRowDto"][];
                 };
             };
-            /** @description 调用者不是管理员 */
+            /** @description 调用者未登录或无权访问该产物 */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12950,6 +13016,44 @@ export interface operations {
             };
         };
     };
+    CapabilityActivationController_listPrices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityActivationController_setPrice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPriceDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     CapabilityActivationController_listQuotas: {
         parameters: {
             query?: never;
@@ -13014,6 +13118,25 @@ export interface operations {
                 from?: string;
                 /** @description 仅统计 createdAt <= to（ISO 8601） */
                 to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityActivationController_tokenSample: {
+        parameters: {
+            query?: {
+                sessionId?: string;
             };
             header?: never;
             path?: never;
@@ -16880,7 +17003,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutionArtifactDto"][];
                 };
             };
-            /** @description 调用者不是管理员 */
+            /** @description 调用者无权访问该执行的产物 */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -16923,7 +17046,7 @@ export interface operations {
                     "application/octet-stream": string;
                 };
             };
-            /** @description 调用者不是管理员 */
+            /** @description 调用者无权访问该产物 */
             403: {
                 headers: {
                     [name: string]: unknown;

@@ -3921,6 +3921,11 @@
       },
       "CommitResultDto": {
         "properties": {
+          "approvalKey": {
+            "description": "ADR-045：发布审批单 key（业务人员提交后由主管四眼批准、系统代理发布）；缺席表示审批发起失败",
+            "type": "string",
+            "x-i18n-en": "ADR-045: release approval key (after a business user submits, a supervisor approves under four-eyes and the system agent publishes); absence means the approval request failed"
+          },
           "next": {
             "description": "发布是独立审批动作，提交后仍需人工审阅",
             "type": "string",
@@ -10845,8 +10850,59 @@
         ],
         "type": "object"
       },
+      "SetPriceDto": {
+        "properties": {
+          "currency": {
+            "description": "3 字母币种代码，如 CNY / USD",
+            "type": "string",
+            "x-i18n-en": "3-letter currency code, e.g. CNY / USD"
+          },
+          "direction": {
+            "description": "输入或输出 token",
+            "enum": [
+              "in",
+              "out"
+            ],
+            "type": "string",
+            "x-i18n-en": "Input or output tokens"
+          },
+          "model": {
+            "description": "模型标识",
+            "type": "string",
+            "x-i18n-en": "Model identifier"
+          },
+          "note": {
+            "description": "价目备注（不参与金额折算）",
+            "type": "string",
+            "x-i18n-en": "Price note (not used in amount conversion)"
+          },
+          "pricePerMillionTokens": {
+            "description": "每百万 token 单价，必须为正的有限数",
+            "type": "number",
+            "x-i18n-en": "Price per million tokens; must be a positive finite number"
+          },
+          "provider": {
+            "description": "模型提供方标识",
+            "type": "string",
+            "x-i18n-en": "Model provider identifier"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "direction",
+          "pricePerMillionTokens",
+          "currency"
+        ],
+        "type": "object"
+      },
       "SetQuotaDto": {
         "properties": {
+          "amountHardLimit": {
+            "description": "unit='amount' 必填：正数有限金额硬阈，非金额配置忽略",
+            "type": "number",
+            "x-i18n-en": "Required when unit='amount': positive finite amount hard threshold; ignored by non-amount configurations"
+          },
           "hardLimit": {
             "description": "硬阈值：usage >= hardLimit 记 exceeded",
             "type": "number",
@@ -10870,6 +10926,16 @@
             "description": "projectId 或 capabilityKey",
             "type": "string",
             "x-i18n-en": "projectId or capabilityKey"
+          },
+          "unit": {
+            "default": "invocations",
+            "description": "硬阈单位；缺省按调用次数，旧配置零漂移",
+            "enum": [
+              "invocations",
+              "amount"
+            ],
+            "type": "string",
+            "x-i18n-en": "Hard threshold unit; defaults to call count, legacy configuration has zero drift"
           },
           "webhookUrl": {
             "description": "告警 webhook URL；缺省回落全局通知配置",
@@ -14890,12 +14956,12 @@
             "JWT": []
           }
         ],
-        "summary": "列出跨会话的待审批单（含总数、截断与降级标记）",
+        "summary": "列出待我审批单（含总数、截断与降级标记）",
         "tags": [
           "Agent"
         ],
         "x-i18n-en": {
-          "summary": "List pending approvals across sessions (with the total, truncation and degradation markers)"
+          "summary": "List approvals pending my decision (with total, truncation and degradation flags)"
         }
       }
     },
@@ -18043,7 +18109,7 @@
     },
     "/artifacts": {
       "get": {
-        "description": "按应用/任务/文件名关键字/时间范围/扩展名维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。",
+        "description": "按应用/任务/文件名关键字/时间范围/扩展名维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。ADMIN 全量；role=user 仅见本人属主或本人具 editor+ 项目的产物（无主行不可见）。mine=true / owner=me 再收窄到「属主=我」。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。",
         "operationId": "ArtifactsController_listArtifactRows",
         "parameters": [
           {
@@ -18146,6 +18212,29 @@
               "type": "string"
             },
             "x-i18n-en": "Filter by file extension (lowercase, no dot; matches the trailing .<ext> in the file name; an extension outside the whitelist -> 400 VALIDATION_FAILED)"
+          },
+          {
+            "description": "只看当前登录用户作为任务属主的交付物（true/1 视为开启）",
+            "in": "query",
+            "name": "mine",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "x-i18n-en": "Only show deliverables where the current user is the task owner (true/1 enables)"
+          },
+          {
+            "description": "mine 的别名：owner=me 等价于 mine=true；不接受其他用户 id",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "enum": [
+                "me"
+              ],
+              "type": "string"
+            },
+            "x-i18n-en": "Alias of mine: owner=me is equivalent to mine=true; other user ids are rejected"
           }
         ],
         "responses": {
@@ -18163,8 +18252,8 @@
             "description": ""
           },
           "403": {
-            "description": "调用者不是管理员",
-            "x-i18n-en": "Caller is not an administrator"
+            "description": "调用者未登录或无权访问该产物",
+            "x-i18n-en": "Caller is not signed in or may not access this artifact"
           }
         },
         "security": [
@@ -18172,13 +18261,13 @@
             "JWT": []
           }
         ],
-        "summary": "按应用/任务/关键字/时间/类型查询产物索引（仅管理员）",
+        "summary": "分页查询执行产物索引（按归属收窄）",
         "tags": [
           "Execution Artifacts"
         ],
         "x-i18n-en": {
-          "description": "Page through the execution artifact index (execution_artifacts table; a cross-execution aggregate view) filtered by application, task, file-name keyword, time range and extension. Executions that reached a terminal state before this index existed have no rows here and honestly return empty -- for a per-execution manifest use GET /tasks/executions/:execId/artifacts. Requires an admin JWT.",
-          "summary": "Query the artifact index by app/task/keyword/time-range/type (admin only)"
+          "description": "Paginate the execution artifact index by application/task/filename keyword/time range/extension (execution_artifacts table; includes a cross-execution aggregate view). ADMIN sees everything; role=user sees only artifacts owned by the caller or produced by executions of projects where the caller is editor+. mine=true / owner=me narrows further to owner = me. Legacy executions (finalized before the index existed) have no rows and honestly return empty -- for a per-execution list use GET /tasks/executions/:execId/artifacts.",
+          "summary": "Paginate the execution artifact index (narrowed by ownership)"
         }
       }
     },
@@ -19684,6 +19773,60 @@
         }
       }
     },
+    "/capability-activation/price": {
+      "get": {
+        "operationId": "CapabilityActivationController_listPrices",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "列出 managed 价目表（ADMIN）",
+        "tags": [
+          "Capability Activation"
+        ],
+        "x-i18n-en": {
+          "summary": "List the managed price table (ADMIN)"
+        }
+      },
+      "put": {
+        "operationId": "CapabilityActivationController_setPrice",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPriceDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "设置模型 token 价目（ADMIN；managed 配置）",
+        "tags": [
+          "Capability Activation"
+        ],
+        "x-i18n-en": {
+          "summary": "Set model token pricing (ADMIN; managed configuration)"
+        }
+      }
+    },
     "/capability-activation/quota": {
       "get": {
         "operationId": "CapabilityActivationController_listQuotas",
@@ -19814,6 +19957,38 @@
         ],
         "x-i18n-en": {
           "summary": "Aggregate activation counts by capabilityKey / project (ADMIN)"
+        }
+      }
+    },
+    "/capability-activation/token-sample": {
+      "get": {
+        "operationId": "CapabilityActivationController_tokenSample",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "sessionId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "按 sessionId 采样真实 token（ADMIN；无关联/零样本诚实标缺）",
+        "tags": [
+          "Capability Activation"
+        ],
+        "x-i18n-en": {
+          "summary": "Sample real tokens by sessionId (ADMIN; unlinked or zero-sample cases are honestly marked missing)"
         }
       }
     },
@@ -26775,7 +26950,7 @@
     },
     "/tasks/executions/{execId}/artifacts": {
       "get": {
-        "description": "返回执行器终态回调上报并已落库的产物 manifest。需要管理员 JWT（全局 JwtAuthGuard + RolesGuard）。",
+        "description": "返回执行器终态回调上报并已落库的产物 manifest。ADMIN 全量；role=user 仅见本人属主或本人具 editor+ 项目的执行（无主执行不可见）。",
         "operationId": "ArtifactsController_list",
         "parameters": [
           {
@@ -26804,8 +26979,8 @@
             "description": ""
           },
           "403": {
-            "description": "调用者不是管理员",
-            "x-i18n-en": "Caller is not an administrator"
+            "description": "调用者无权访问该执行的产物",
+            "x-i18n-en": "Caller may not access artifacts of this execution"
           },
           "404": {
             "description": "执行记录不存在",
@@ -26817,19 +26992,19 @@
             "JWT": []
           }
         ],
-        "summary": "列出执行产物（manifest，仅管理员）",
+        "summary": "列出执行产物（manifest，按归属收窄）",
         "tags": [
           "Execution Artifacts"
         ],
         "x-i18n-en": {
-          "description": "Returns the artifact manifest reported by the executor terminal-state callback and already persisted. Requires an admin JWT (global JwtAuthGuard + RolesGuard).",
-          "summary": "List execution artifacts (manifest, admin only)"
+          "description": "Returns the artifact manifest reported by executor terminal callbacks and persisted. ADMIN sees everything; role=user sees only executions owned by the caller or belonging to projects where the caller is editor+ (ownerless executions are invisible).",
+          "summary": "List execution artifacts (manifest, narrowed by ownership)"
         }
       }
     },
     "/tasks/executions/{execId}/artifacts/{name}": {
       "get": {
-        "description": "将已存储的产物以流式返回给已认证的管理员。强制校验裸文件名（防路径穿越），产物不存在时返回 404。",
+        "description": "将已存储的产物以流式返回给已认证用户。ADMIN 全量；role=user 仅见本人属主或本人具 editor+ 项目的产物，且无主产物恒 403。强制校验裸文件名（防路径穿越），产物不存在时返回 404。",
         "operationId": "ArtifactsController_download",
         "parameters": [
           {
@@ -26867,8 +27042,8 @@
             "x-i18n-en": "Artifact binary content (passed through via Res)\n\nArtifact binary content (passed through via Res)"
           },
           "403": {
-            "description": "调用者不是管理员",
-            "x-i18n-en": "Caller is not an administrator"
+            "description": "调用者无权访问该产物",
+            "x-i18n-en": "Caller may not access this artifact"
           },
           "404": {
             "description": "产物不存在",
@@ -26880,13 +27055,13 @@
             "JWT": []
           }
         ],
-        "summary": "下载单个执行产物（流式，仅管理员）",
+        "summary": "下载单个执行产物（流式，按归属收窄）",
         "tags": [
           "Execution Artifacts"
         ],
         "x-i18n-en": {
-          "description": "Stream a stored artifact back to an authenticated administrator. The bare filename is strictly validated (path traversal protection); returns 404 when the artifact does not exist.",
-          "summary": "Download a single execution artifact (streaming, admins only)"
+          "description": "Streams a stored artifact to an authenticated caller. ADMIN sees everything; role=user sees only artifacts owned by the caller or produced by executions of projects where the caller is editor+, and ownerless artifacts always return 403. The bare filename is strictly validated (path traversal defense); a missing artifact returns 404.",
+          "summary": "Download a single execution artifact (streamed, narrowed by ownership)"
         }
       }
     },

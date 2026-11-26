@@ -14,6 +14,7 @@ import {
   ApiBearerAuth,
   ApiOkResponse,
   ApiOperation,
+  ApiQuery,
   ApiTags,
 } from "@nestjs/swagger";
 import { Roles } from "../../common/decorators/roles.decorator";
@@ -133,6 +134,9 @@ export class CapabilityActivationController {
   @ApiOperation({
     summary: "按 sessionId 采样真实 token（ADMIN；无关联/零样本诚实标缺）",
   })
+  // 契约与实现必须同口径：采样允许省略 sessionId（服务层返回 no_link 诚实标缺），
+  // 故显式声明 required:false，避免 openapi 契约写成必填而实现可选（check:query-param-required）。
+  @ApiQuery({ name: "sessionId", required: false })
   async tokenSample(
     @Query("sessionId") sessionId?: string,
   ): Promise<TokenSampleView> {

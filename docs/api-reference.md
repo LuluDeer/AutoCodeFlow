@@ -1443,7 +1443,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 297 个操作，覆盖 256 个路径。
+共 300 个操作，覆盖 258 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1456,7 +1456,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/agent-collab/clarifications` | - |
 | POST | `/agent-collab/llm` | - |
 | POST | `/agent-collab/poll` | - |
-| GET | `/agent/approvals/pending` | 列出跨会话的待审批单（含总数、截断与降级标记） |
+| GET | `/agent/approvals/pending` | 列出待我审批单（含总数、截断与降级标记） |
 | GET | `/agent/budget` | 获取生效的 Agent 预算设置 |
 | POST | `/agent/executions/{execId}/confirm` | 显式确认执行已被业务确认（北极星 business_confirmed 事件源） |
 | GET | `/agent/inbox/counts` | 收件箱各项计数（读不到时为 null，绝不伪装成 0） |
@@ -1529,7 +1529,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/applications/{id}/versions` | 获取应用版本历史 |
 | POST | `/applications/upload` | 上传应用包（zip） |
 | POST | `/applications/webhook` | 版本发布 Webhook |
-| GET | `/artifacts` | 按应用/任务/关键字/时间/类型查询产物索引（仅管理员） |
+| GET | `/artifacts` | 分页查询执行产物索引（按归属收窄） |
 | GET | `/audit` | 分页查询审计日志（仅管理员） |
 | GET | `/audit/actions` | 审计动作清单（去重，仅管理员） |
 | GET | `/audit/export` | 导出审计日志为 CSV（最多 10 000 行，仅管理员） |
@@ -1557,10 +1557,13 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/capabilities/resolve` | 解析 capability 的最终生效配置（JWT 只读） |
 | GET | `/capability-activation` | 过滤 + 分页查询能力激活日志（ADMIN） |
 | POST | `/capability-activation` | 记录一次能力激活（JWT；供 capability/workbench 调用方写入） |
+| GET | `/capability-activation/price` | 列出 managed 价目表（ADMIN） |
+| PUT | `/capability-activation/price` | 设置模型 token 价目（ADMIN；managed 配置） |
 | GET | `/capability-activation/quota` | 列出全部配额配置（ADMIN；无配置返回空数组） |
 | PUT | `/capability-activation/quota` | 创建或更新按项目/能力的配额配置（ADMIN；落 system_configs） |
 | GET | `/capability-activation/quota-status` | 按调用次数计算配额状态（ok/warn/exceeded）并触发软阈值告警（ADMIN） |
 | GET | `/capability-activation/stats` | 按 capabilityKey / 项目聚合激活次数（ADMIN） |
+| GET | `/capability-activation/token-sample` | 按 sessionId 采样真实 token（ADMIN；无关联/零样本诚实标缺） |
 | GET | `/config` | 列出所有配置项 |
 | PUT | `/config` | 创建或更新配置项 |
 | DELETE | `/config/{key}` | 删除配置项 |
@@ -1727,8 +1730,8 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/tasks/batch/resume` | 批量恢复任务 |
 | POST | `/tasks/batch/trigger` | 批量触发任务 |
 | GET | `/tasks/executions/{execId}` | 执行详情（按执行 ID） |
-| GET | `/tasks/executions/{execId}/artifacts` | 列出执行产物（manifest，仅管理员） |
-| GET | `/tasks/executions/{execId}/artifacts/{name}` | 下载单个执行产物（流式，仅管理员） |
+| GET | `/tasks/executions/{execId}/artifacts` | 列出执行产物（manifest，按归属收窄） |
+| GET | `/tasks/executions/{execId}/artifacts/{name}` | 下载单个执行产物（流式，按归属收窄） |
 | GET | `/tasks/executions/{execId}/logs` | 执行日志（按执行 ID） |
 | GET | `/tasks/executions/all` | 全局执行记录 |
 | GET | `/tasks/executions/export` | 导出执行记录为 CSV（流式，仅管理员） |
