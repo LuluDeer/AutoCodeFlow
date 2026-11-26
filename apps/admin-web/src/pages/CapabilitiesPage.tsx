@@ -62,11 +62,19 @@ const GUIDANCE_OPTIONS: Array<{ value: CapabilityGuidance; label: string }> = [
   { value: 'L2', label: 'L2 · 需确认' },
   { value: 'L3', label: 'L3 · 高自治' },
 ];
+/**
+ * N25：选项 value 由 CapabilitySourceType 约束；八源闭包由后端 source-policy
+ * 单一事实源派生，主控统一回填前端派生类型前，新源值用类型断言保持本切片可编译。
+ */
 const SOURCE_OPTIONS: Array<{ value: CapabilitySourceType; label: string }> = [
   { value: 'builtin', label: '内置（builtin）' },
   { value: 'registry', label: '登记处（registry）' },
   { value: 'git', label: '代码库（git）' },
   { value: 'folder', label: '目录（folder）' },
+  { value: 'npm' as CapabilitySourceType, label: 'npm 包（npm）' },
+  { value: 'github' as CapabilitySourceType, label: 'GitHub 仓库（github）' },
+  { value: 'server' as CapabilitySourceType, label: '服务端（server）' },
+  { value: 'mcp:' as CapabilitySourceType, label: 'MCP 服务（mcp:）' },
 ];
 const DECISION_LABEL: Record<string, string> = {
   allow: '允许（allow）',

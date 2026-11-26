@@ -3,10 +3,13 @@
  *
  * ## 定位
  *
- * 这是**纯函数**，不注册任何 MCP 工具、不 import 任何包（零依赖）、不碰 IO。
- * 56 工具面由 `tools.ts` 的 `register*Tools` 注册，本文件**一个工具都不加**——
- * 若把 `tool_search` 注册成第 57 个工具，`test:mcp-tool-surface`（EXPECTED_TOOLS = 56）
- * 立刻红。调用方（未来 CLI / agent）按需拿一份工具清单后自己调 `searchTools`。
+ * 本文件是**零依赖纯函数**（不 import 任何包、不碰 IO），只实现检索判据；
+ * 工具的**注册**在 `tools.ts`——第 52 轮已把 `tool_search` 注册为第 57 个
+ * （`readOnlyHint: true`），handler 读 `server._registeredTools` 真实工具表后调
+ * `searchTools`。运行时工具面基线为 **57**（`admin-hints.test.ts` 的
+ * `EXPECTED_TOOL_COUNT = 57`）；本文件自身不注册工具，但注册边界与基线已落地，
+ * 改动工具数须同步该基线。SDK 内部字段 `_registeredTools` 是已知耦合点，
+ * SDK 升级需复核。
  *
  * ## 契约
  *

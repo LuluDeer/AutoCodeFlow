@@ -23,6 +23,12 @@ import {
 } from "./entities/capability.entity";
 import type { CapabilityAttestation } from "./entities/capability.entity";
 import {
+  canAutoUpdate,
+  canToggleMarketplace,
+  isSupportedSourceType,
+  SUPPORTED_SOURCE_TYPES,
+} from "./source-policy";
+import {
   POLICY_SEMANTIC_VALUES,
   type PolicySemanticValue,
   type ResolveCapabilityDto,
@@ -204,11 +210,8 @@ function assertSourceShape(source: unknown): void {
     invalid("source must be a plain object");
   }
   const t = (source as Partial<CapabilitySource>).type;
-  if (
-    typeof t !== "string" ||
-    !["builtin", "registry", "git", "folder"].includes(t)
-  ) {
-    invalid("source.type must be builtin|registry|git|folder");
+  if (!isSupportedSourceType(t)) {
+    invalid(`source.type must be one of ${SUPPORTED_SOURCE_TYPES.join("|")}`);
   }
 }
 
@@ -526,6 +529,46 @@ export class CapabilityService {
   }
 
   /**
+   * N25 marketplace 启停写口：资格判定唯一委托 source-policy 的
+   * canToggleMarketplace（源闭包 + marketplace 身份 + ref 形态 + 布尔 enabled），
+   * service 不复制任何字面量判据。非法组合零写入 + 失败审计，沿用 update 的
+   * 条件写与既有审计通道，不新开旁路 save。
+   */
+  async toggleMarketplace(
+    id: string,
+    enabled: unknown,
+    actor?: CapabilityActor,
+  ): Promise<Capability> {
+    const cap = await this.findOne(id);
+    if (!canToggleMarketplace(cap.source, enabled)) {
+      await this.writeAudit(
+        "capability.marketplace.toggle_failed",
+        cap,
+        actor,
+        {
+          source: cap.source,
+          enabled,
+          result: "failure",
+          reason:
+            "marketplace toggle requires an eligible source, a <package>@marketplace ref, and a boolean enabled",
+        },
+        "failure",
+      );
+      invalid("marketplace toggle is not eligible for this source/ref/enabled");
+    }
+    return this.update(id, { enabled } as never, actor);
+  }
+
+  /** N25 autoUpdate 只接纯判定；拉取/落库属 external，本切片不实现。 */
+  canAutoUpdateFor(
+    source: unknown,
+    currentVersion: unknown,
+    latestVersion: unknown,
+  ): boolean {
+    return canAutoUpdate(source, currentVersion, latestVersion);
+  }
+
+  /**
    * N16 所有权移交：治理动作审计（capability.transfer）与字段变更审计
    * （capability.update）分层——update 记「哪些列被改」，transfer 记
    * 「谁把 owner/backer 交给谁、谁背书」并带前后值；语义不同，不是重复记录。
@@ -736,6 +779,7 @@ export class CapabilityService {
     cap: Capability,
     actor?: CapabilityActor,
     detail?: Record<string, unknown>,
+    result?: "success" | "failure",
   ): Promise<void> {
     if (!this.audit) return;
     try {
@@ -745,6 +789,7 @@ export class CapabilityService {
         action,
         resource: "capability",
         resourceId: cap.id,
+        ...(result ? { result } : {}),
         detail: {
           key: cap.key,
           kind: cap.kind,

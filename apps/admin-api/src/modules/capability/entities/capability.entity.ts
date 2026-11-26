@@ -6,6 +6,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from "typeorm";
+import type { ExtendedSourceType } from "../source-policy";
 
 /**
  * ADR-040 / P1 Capability 注册表：`capabilities` 表。
@@ -26,7 +27,7 @@ import {
  * - `uq_capabilities_key`：key 唯一（幂等硬闸 + 按 key 点查）。
  * - `idx_capabilities_kind` / `idx_capabilities_visibility`：列表按域/可见性过滤。
  */
-export type CapabilitySourceType = "builtin" | "registry" | "git" | "folder";
+export type CapabilitySourceType = ExtendedSourceType;
 
 export interface CapabilitySource {
   type: CapabilitySourceType;
@@ -73,7 +74,7 @@ export class Capability {
   @Column({ type: "varchar", length: 32, default: "1.0.0" })
   version: string;
 
-  /** { type: builtin|registry|git|folder, ref? }。 */
+  /** N25 八源闭包：{ type: builtin|registry|git|folder|npm|github|server|mcp:, ref? }。 */
   @Column({ type: "jsonb", default: { type: "builtin" } })
   source: CapabilitySource;
 

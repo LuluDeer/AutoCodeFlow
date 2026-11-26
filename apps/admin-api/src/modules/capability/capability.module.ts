@@ -8,6 +8,7 @@ import { CapabilityGenerationRegistry } from "./capability-generation.registry";
 import { ExternalAgentBypassWriteService } from "./external-agent-bypass.service";
 import { ReachabilityProbeService } from "./reachability-probe.service";
 import { safeHttpProbe } from "./reachability-probe.adapter";
+import { InProcessCapabilityService } from "./inprocess-gate.service";
 
 /**
  * ADR-040 / P1：Capability 注册表模块。
@@ -35,6 +36,9 @@ import { safeHttpProbe } from "./reachability-probe.adapter";
       provide: ReachabilityProbeService,
       useFactory: () => new ReachabilityProbeService(safeHttpProbe),
     },
+    // N24：进程内能力网关（判据复用 inprocess-gate.ts 纯函数）；只追加 provider，
+    // 既有四个 provider 与 exports 逐字不动。
+    InProcessCapabilityService,
   ],
   exports: [CapabilityService],
 })

@@ -78,6 +78,25 @@ import {
   assertAttestationShape,
   CapabilityService,
 } from "../capability.service";
+import {
+  SUPPORTED_SOURCE_TYPES,
+  type ExtendedSourceType,
+} from "../source-policy";
+import type { CapabilitySourceType } from "../entities/capability.entity";
+
+type Equal<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false;
+type Expect<T extends true> = T;
+
+/** 编译期反漂移：实体类型与 source-policy 闭包必须逐字同源（不写第二份字面量）。 */
+export type N25EntitySourceTypeIsPolicyClosure = Expect<
+  Equal<CapabilitySourceType, ExtendedSourceType>
+>;
+export type N25SupportedListElementIsPolicyClosure = Expect<
+  Equal<(typeof SUPPORTED_SOURCE_TYPES)[number], ExtendedSourceType>
+>;
 
 interface Row {
   id: string;
@@ -86,7 +105,7 @@ interface Row {
   label: string;
   visibility: string;
   scope: { mode: string; guidance: string };
-  source: { type: string };
+  source: { type: string; ref?: string };
   manifest: Record<string, unknown>;
   [k: string]: unknown;
 }
@@ -189,6 +208,12 @@ const dto = (over: Partial<Record<string, unknown>> = {}) => ({
 
 const svcOf = (repo: ReturnType<typeof makeRepo>) =>
   new CapabilityService(repo as never, null);
+
+const makeAudit = () => ({ log: jest.fn(async () => undefined) });
+const svcWithAudit = (
+  repo: ReturnType<typeof makeRepo>,
+  audit: ReturnType<typeof makeAudit>,
+) => new CapabilityService(repo as never, audit as never);
 
 /** 带 @UpdateDateColumn 的完整行，供条件写测试做前置版本快照。 */
 const seedRow = (over: Partial<Row> = {}): Row => ({
@@ -598,5 +623,132 @@ describe("CapabilityService — attestation / owner / backer / versionPin (N16)"
       versionPin: null,
       attestation: null,
     });
+  });
+});
+
+/** N25：source-policy 八源闭包接入 service / entity / 前端选项的反证。 */
+describe("CapabilityService — N25 source-policy 八源闭包", () => {
+  it("create：四个新源真实 save 且落库 source.type 为新值", async () => {
+    const newTypes = ["npm", "github", "server", "mcp:"] as const;
+    for (const [index, type] of newTypes.entries()) {
+      const repo = makeRepo();
+      const created = await svcOf(repo).create(
+        dto({ key: `n25-${index}`, source: { type } }) as never,
+      );
+
+      expect(repo.save).toHaveBeenCalledTimes(1);
+      expect(repo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ source: { type } }),
+      );
+      expect(created.source).toMatchObject({ type });
+      expect(repo.rows[0]).toMatchObject({ source: { type } });
+    }
+  });
+
+  it("create：未知源 zero save", async () => {
+    const repo = makeRepo();
+    await expect(
+      svcOf(repo).create(dto({ source: { type: "unknown" } }) as never),
+    ).rejects.toMatchObject({ errorCode: "VALIDATION_FAILED" });
+    expect(repo.save).not.toHaveBeenCalled();
+    expect(repo.rows).toHaveLength(0);
+  });
+
+  it("toggleMarketplace：合法 marketplace 源写入 enabled，不走 repo.save", async () => {
+    const repo = makeRepo([
+      seedRow({
+        id: "cap-m",
+        key: "market",
+        source: { type: "npm", ref: "demo@marketplace" },
+      }),
+    ]);
+    const out = await svcOf(repo).toggleMarketplace("cap-m", false);
+
+    expect(repo.save).not.toHaveBeenCalled();
+    expect(repo.lastSet).toEqual(
+      expect.objectContaining({
+        enabled: false,
+        updatedAt: expect.any(Function),
+      }),
+    );
+    expect(repo.rows[0].enabled).toBe(false);
+    expect(out.enabled).toBe(false);
+  });
+
+  it("toggleMarketplace：builtin/folder/server、畸形 ref、非布尔 enabled 零 save + 失败审计", async () => {
+    const cases: Array<{
+      label: string;
+      source: { type: string; ref?: string };
+      enabled: unknown;
+    }> = [
+      {
+        label: "builtin",
+        source: { type: "builtin", ref: "demo@marketplace" },
+        enabled: false,
+      },
+      {
+        label: "folder",
+        source: { type: "folder", ref: "demo@marketplace" },
+        enabled: true,
+      },
+      {
+        label: "server",
+        source: { type: "server", ref: "demo@marketplace" },
+        enabled: false,
+      },
+      {
+        label: "malformed-ref",
+        source: { type: "npm", ref: "demo@not-marketplace" },
+        enabled: false,
+      },
+      {
+        label: "non-boolean-enabled",
+        source: { type: "npm", ref: "demo@marketplace" },
+        enabled: "false",
+      },
+    ];
+
+    for (const item of cases) {
+      const repo = makeRepo([
+        seedRow({ id: "cap-m", key: "market", source: item.source }),
+      ]);
+      const audit = makeAudit();
+
+      await expect(
+        svcWithAudit(repo, audit).toggleMarketplace("cap-m", item.enabled),
+      ).rejects.toMatchObject({ errorCode: "VALIDATION_FAILED" });
+
+      expect(repo.save).not.toHaveBeenCalled();
+      expect(repo.lastSet).toBeNull();
+      expect(repo.rows[0].enabled).toBe(true);
+      expect(audit.log).toHaveBeenCalledTimes(1);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "capability.marketplace.toggle_failed",
+          resource: "capability",
+          resourceId: "cap-m",
+          result: "failure",
+          detail: expect.objectContaining({
+            key: "market",
+            result: "failure",
+            reason: expect.any(String),
+          }),
+        }),
+      );
+    }
+  });
+
+  it("canAutoUpdateFor：只接 source-policy 纯判定，不实现拉取或落库", () => {
+    const repo = makeRepo();
+    const svc = svcOf(repo);
+
+    expect(svc.canAutoUpdateFor({ type: "npm" }, "1.0.0", "1.0.1")).toBe(true);
+    expect(svc.canAutoUpdateFor({ type: "registry" }, "1.0.0", "1.0.1")).toBe(
+      false,
+    );
+    expect(svc.canAutoUpdateFor({ type: "npm" }, "1.0.0", "1.0.0")).toBe(false);
+
+    expect(repo.save).not.toHaveBeenCalled();
+    expect(repo.createQueryBuilder).not.toHaveBeenCalled();
   });
 });
