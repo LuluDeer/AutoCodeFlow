@@ -6019,6 +6019,8 @@ export interface components {
         CommitResultDto: {
             /** @description 发布是独立审批动作，提交后仍需人工审阅 */
             next: string;
+            /** @description 本次提交放行的策略代际（16 位十六进制），供下游会话继承以做在途失效比对 */
+            policyGeneration?: string;
             /** @description 确定性 slug：workbench-<cardHash 前 8> */
             slug: string;
             /** @description 落库的 SOP 行 id */

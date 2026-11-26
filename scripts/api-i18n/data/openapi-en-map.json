@@ -1843,5 +1843,6 @@
   "签名头 X-Hub-Signature-256 与时间戳头 X-AutoCodeFlow-Timestamp 必带，验签失败统一 401；challenge 回显也在验签之后。平台只取 URL 路径参数，body 自报平台一律忽略。": "Signature header X-Hub-Signature-256 and timestamp header X-AutoCodeFlow-Timestamp are required; verification failure uniformly returns 401 and challenge echo also runs after verification. The platform is taken only from the URL path parameter; any platform self-reported in the body is ignored.",
   "要 GET 的地址；缺省为 https://example.com。": "URL to GET; defaults to https://example.com.",
   "飞书事件 schema 版本（2.0 = v2，content 可能是 JSON 串）": "Feishu event schema version (2.0 = v2; content may be a JSON string)",
-  "飞书事件信封（event）；仅在 platform=feishu 时由 adapter 读取，内部取 event.message.content 与 event.sender.sender_id": "Feishu event envelope; read by the adapter only when platform=feishu, internally taking event.message.content and event.sender.sender_id"
+  "飞书事件信封（event）；仅在 platform=feishu 时由 adapter 读取，内部取 event.message.content 与 event.sender.sender_id": "Feishu event envelope; read by the adapter only when platform=feishu, internally taking event.message.content and event.sender.sender_id",
+  "本次提交放行的策略代际（16 位十六进制），供下游会话继承以做在途失效比对": "Policy generation cleared by this commit (16 hex digits), for downstream sessions to inherit for in-flight invalidation comparison."
 }

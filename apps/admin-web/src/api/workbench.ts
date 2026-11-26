@@ -57,6 +57,8 @@ export interface CommitResult {
   slug: string;
   status: 'draft';
   next: string;
+  /** 本次提交放行的策略代际（16 位 hex），供下游会话继承以做在途失效比对。 */
+  policyGeneration?: string;
 }
 
 /**

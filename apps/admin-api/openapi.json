@@ -3829,6 +3829,11 @@
             "type": "string",
             "x-i18n-en": "Publishing is a separate approval action; manual review is still required after submission"
           },
+          "policyGeneration": {
+            "description": "本次提交放行的策略代际（16 位十六进制），供下游会话继承以做在途失效比对",
+            "type": "string",
+            "x-i18n-en": "Policy generation cleared by this commit (16 hex digits), for downstream sessions to inherit for in-flight invalidation comparison."
+          },
           "slug": {
             "description": "确定性 slug：workbench-<cardHash 前 8>",
             "type": "string",

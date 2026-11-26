@@ -203,6 +203,7 @@ describe("Workbench commit — 确认→落库（单测/内存替身）", () => 
       slug,
       status: "draft",
       next: "请在 SOP 页面审阅并发布",
+      policyGeneration: GEN,
     });
     expect(draft).toHaveBeenCalledTimes(1);
 
@@ -309,6 +310,7 @@ describe("Workbench commit — 确认→落库（单测/内存替身）", () => 
       slug: `workbench-${preview.cardHash.slice(0, 8)}`,
       status: "draft",
       next: "请在 SOP 页面审阅并发布",
+      policyGeneration: GEN,
     });
     expect(failingRecord).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledTimes(1);
@@ -350,6 +352,42 @@ describe("Workbench commit — 确认→落库（单测/内存替身）", () => 
     );
     expect(res.status).toBe("draft");
     expect(draft).toHaveBeenCalledTimes(1);
+  });
+
+  it("commit 回带 generation == preview.policyGeneration（16 hex），且取第三闸放行值而非重算", async () => {
+    const input = {
+      ...base,
+      params: { capabilityId: "browser", maxTurns: "7" },
+    };
+    const preview = await controller.preview(input);
+    // 第三闸读到放行值 GEN，第五闸读到不同值；回带必须是前者。
+    const read = jest
+      .spyOn(controller as any, "currentGeneration")
+      .mockResolvedValueOnce(preview.policyGeneration)
+      .mockResolvedValueOnce("ffffffffffffffff");
+
+    const res = await controller.commit(
+      {
+        ...input,
+        expectedCardHash: preview.cardHash,
+        expectedPolicyGeneration: preview.policyGeneration,
+      },
+      user,
+      ip,
+    );
+
+    expect(res.policyGeneration).toBe(preview.policyGeneration);
+    expect(res.policyGeneration).toBe(GEN);
+    expect(res.policyGeneration).toMatch(/^[0-9a-f]{16}$/);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(res).toEqual({
+      sopId: "sop-1",
+      slug: `workbench-${preview.cardHash.slice(0, 8)}`,
+      status: "draft",
+      next: "请在 SOP 页面审阅并发布",
+      policyGeneration: preview.policyGeneration,
+    });
+    read.mockRestore();
   });
 
   it("generation 不匹配 → VALIDATION_FAILED 且 sops.draft 零调用", async () => {

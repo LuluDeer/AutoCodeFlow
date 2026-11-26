@@ -57,6 +57,8 @@
 | [ADR-041](adr-041-scope-guidance-orthogonal.md) | 治理档位 × 引导强度**正交二维**——`scope.mode`(managed/supervised/self_service) × `guidance.level`(L1/L2/L3)；合法矩阵 `managed⇒L≤2`、危险能力⇒L1、默认 Supervised+L2、L3 需授权；否决"同一事物两面"与三套命名漂移；组合矩阵 3×3 全格断言 | Accepted |
 | [ADR-042](adr-042-workbench-vertical-slice.md) | 三端职责 + **纵向切片优先**——Workbench 是第三入口非替换（与现有 56 工具 MCP 反向编排旁路并存）、桌面壳只做窗口/凭证；red V5 证伪切片先用现有 SOP draft/publish 承载方案卡，暂不建注册表/Scope 链/Part 模型/编译 prompt/三档；通过判据=真浏览器 e2e"不填 cron/UUID/glue 拿到报表"；否掉"先建全量注册表" | Accepted |
 
+| [ADR-043](adr-043-inflight-policy-invalidation.md) | 在途策略失效（N14 interrupt）的接线边界——三层已交付(代际 bump + scopedRules + commit 第五闸) + approval policy 实时重读已成立；capability 代际在途中断缺"方案卡→会话 generation 传递契约"(AgentSession 无 generation 字段、workbench 不建会话) ⇒ 暂缓完整接线、固化方案 A(显式传递+setGenerationProvider+作废集合)与重开条件；否决假绿/全局 DENY/混用 approval 指纹 | Accepted |
+
 ## DOC-04 覆盖状态
 
 DOC-04 原目标是把历轮关键决策固化为 ADR-001~010。当前已覆盖到 ADR-039，并补充了后续写作模板与索引规则，因此该项视为已完成；后续新增架构决策按模板继续顺延编号。

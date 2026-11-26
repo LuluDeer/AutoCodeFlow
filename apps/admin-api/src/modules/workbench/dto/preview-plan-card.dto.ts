@@ -161,4 +161,11 @@ export class CommitResultDto {
 
   @ApiProperty({ description: "发布是独立审批动作，提交后仍需人工审阅" })
   next: string;
+
+  @ApiProperty({
+    description:
+      "本次提交放行的策略代际（16 位十六进制），供下游会话继承以做在途失效比对",
+    required: false,
+  })
+  policyGeneration?: string;
 }

@@ -1,5 +1,25 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 60 轮）：ADR-043 固化 N14 interrupt 决策 + 2-agent 并行（commit generation 回带 / N24 进程内权限层）
+
+**方向来源**：objective 续轮。N14 interrupt 连续 4 轮被判"需 ADR 的中等架构决策"而推迟——本轮**主控亲自写 ADR-043**（`docs/adr/adr-043-inflight-policy-invalidation.md`）正式固化：三层已交付（代际 bump + scopedRules + commit 第五闸）、approval policy 实时重读已成立、capability 代际在途中断缺"方案卡→会话 generation 传递契约"（`AgentSession` 无 generation 字段、`workbench` 不建会话 ⇒ 加字段会造无写入方假接线）；推荐方案 A + 否决假绿/全局 DENY/混用 approval 指纹 + 重开触发条件。README 索引 + 两份文档 N14 状态均指向该 ADR，文档守卫绿（六节结构 + ≥3 证据锚点 + 索引恰好 1 行）。
+
+**2-agent 并行（写域互斥）**：
+| 切片 | 交付 | 验收 |
+|---|---|---|
+| impl-commit-generation-echo | `CommitResultDto.policyGeneration?: string` + controller 回带**第三闸已校验的那一个 generation**（不复用第五闸二次读取，避免 bump 窗口不一致）；ADR-043 方案 A 第一步输出锚点 | workbench 8 suites/96 tests；反证摘字段→`Expected GEN / Received undefined`，sha 还原 |
+| impl-n24-inprocess-gate | GCO N24 中间形态进程内权限层：`classifyCapabilityPermission`（**复用** scope-engine `evaluateAll`，未重写策略求值）+ `checkInProcessBudget`（相对单位）+ `degradeOnFailure`（read→cached、write→fail-closed） | capability 18 suites/327 tests（新 39）；managed 未授权/dangerous 静默放行两向反证 |
+
+**主控集成**：7 处 prettier `eslint --fix`；真跑 openapi export + 补 1 条中文映射 → inject/gen:api-types/api-reference 全链；response-schema selftest 31/31（commit DTO 加字段未降覆盖）。
+
+**验收**：守卫链/全量 admin-api/文档守卫/CI 四守卫全绿（详见本轮回执）；ADR 六节结构经 `test:docs` 校准；反证均有牙且 sha 还原。本批引入缺陷 0。
+
+**提交**：单个原子提交（ADR + README/两文档引用 + 4 文件实现 + 生成物 + 交接段）。**未 push**。
+
+**后续项**（ADR-043 方案 A 待独立立项，满足重开条件之一才启动）：① commit generation → 会话 scope 显式传递（>1 真实调用方或 IM 网关上线）→ boundary `setGenerationProvider` → 真 PG e2e；② N8/N18 runtime 接线专项；③ N19 真实停用（破坏性待裁决）；④ N21 等保认证（外部）/分类标签；⑤ N24 P4 进程外（需真实用户规模）。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 59 轮）：4-agent 并行全端聚合回归 + 跨切面审计——可发布态强证据
 
 **方向来源**：objective 续轮。7 轮工作台改造累积大量改动，此前只跑定向测试 + 守卫链，从未做全端聚合回归（历史 R41 做过一次）。本批派 **4 个只读验证 agent 各跑一端 + 跨切面审计**，主控聚合另跑 admin-api 全量与真 PG e2e——这是真正的多 agent 协作（各端并行、主控汇总裁决）。

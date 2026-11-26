@@ -400,11 +400,13 @@ export class WorkbenchController {
       }),
     );
 
+    // 输出锚点：回带第三闸放行的 currentGeneration，不在返回时重算。
     return {
       sopId: saved.id,
       slug: payload.slug,
       status: "draft",
       next: "请在 SOP 页面审阅并发布",
+      policyGeneration: currentGeneration,
     };
   }
 }
