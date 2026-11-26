@@ -728,6 +728,180 @@
       "reason": "待处置（未配对）：KillExecutionFn 是批量终止编排注入的单条 kill 函数签名（函数类型，非对象字面量体），纯前端编排回调类型，后端无对应 schema。",
       "owner": "arch-core",
       "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityKind",
+      "reason": "待处置（未配对）：CapabilityKind 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityVisibility",
+      "reason": "待处置（未配对）：CapabilityVisibility 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityScopeMode",
+      "reason": "待处置（未配对）：CapabilityScopeMode 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityGuidance",
+      "reason": "待处置（未配对）：CapabilityGuidance 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilitySourceType",
+      "reason": "待处置（未配对）：CapabilitySourceType 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityDecision",
+      "reason": "待处置（未配对）：CapabilityDecision 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityFieldRule",
+      "reason": "待处置（未配对）：CapabilityFieldRule 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityScope",
+      "reason": "待处置（未配对）：CapabilityScope 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilitySource",
+      "reason": "待处置（未配对）：CapabilitySource 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapability",
+      "reason": "待处置（未配对）：Capability 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCreateCapabilityPayload",
+      "reason": "待处置（未配对）：CreateCapabilityPayload 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tUpdateCapabilityPayload",
+      "reason": "待处置（未配对）：UpdateCapabilityPayload 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tResolveLayer",
+      "reason": "待处置（未配对）：ResolveLayer 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tResolveCapabilityPayload",
+      "reason": "待处置（未配对）：ResolveCapabilityPayload 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityResolution",
+      "reason": "待处置（未配对）：CapabilityResolution 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tDumpLayerValue",
+      "reason": "待处置（未配对）：DumpLayerValue 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tDumpField",
+      "reason": "待处置（未配对）：DumpField 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityDump",
+      "reason": "待处置（未配对）：CapabilityDump 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tWorkbenchCadence",
+      "reason": "待处置（未配对）：WorkbenchCadence 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tPreviewPlanInput",
+      "reason": "待处置（未配对）：PreviewPlanInput 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tPreviewCard",
+      "reason": "待处置（未配对）：PreviewCard 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tPreviewCheckStatus",
+      "reason": "待处置（未配对）：PreviewCheckStatus 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tPreviewCheck",
+      "reason": "待处置（未配对）：PreviewCheck 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tPreviewPlanResult",
+      "reason": "待处置（未配对）：PreviewPlanResult 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tCommitPlanInput",
+      "reason": "待处置（未配对）：CommitPlanInput 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tCommitResult",
+      "reason": "待处置（未配对）：CommitResult 在生成合同里没有同名 schema ⇒ 无字段可比面（前后端手写契约 DTO，生成合同未产出同名视图模型）。下一迭代要么纳入生成合同，要么按「手写契约 DTO」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tActivationStatsEntry",
+      "owner": "arch-core",
+      "review_by": "2026-12-15",
+      "reason": "待处置（未配对）：ActivationStatsEntry 是 capability-activation stats 的运行时聚合视图模型，生成合同(openapi schema)无同名 DTO ⇒ 无字段可比面。stats 由后端 GROUP BY 动态组装，非持久化实体，按「手写契约 DTO / 视图模型」分组豁免。下一迭代若纳入生成合同再销账。"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tActivationProjectStat",
+      "owner": "arch-core",
+      "review_by": "2026-12-15",
+      "reason": "待处置（未配对）：ActivationProjectStat 是 capability-activation stats 的运行时聚合视图模型，生成合同(openapi schema)无同名 DTO ⇒ 无字段可比面。stats 由后端 GROUP BY 动态组装，非持久化实体，按「手写契约 DTO / 视图模型」分组豁免。下一迭代若纳入生成合同再销账。"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tActivationStats",
+      "owner": "arch-core",
+      "review_by": "2026-12-15",
+      "reason": "待处置（未配对）：ActivationStats 是 capability-activation stats 的运行时聚合视图模型，生成合同(openapi schema)无同名 DTO ⇒ 无字段可比面。stats 由后端 GROUP BY 动态组装，非持久化实体，按「手写契约 DTO / 视图模型」分组豁免。下一迭代若纳入生成合同再销账。"
     }
   ]
 }

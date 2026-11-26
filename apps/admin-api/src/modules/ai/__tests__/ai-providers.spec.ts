@@ -13,6 +13,7 @@ import {
   LEGACY_DEFAULTS,
   legacyProviders,
   normalizeProviderEntry,
+  isModelAllowed,
   parseProvidersJson,
   removeProviderEntry,
   selectableProviders,
@@ -100,6 +101,102 @@ describe("normalizeProviderEntry", () => {
     const res = normalizeProviderEntry({ ...entry(), enabled: false });
     if (res.status === "ok") expect(res.entry.enabled).toBe(false);
   });
+
+  it("模型白/黑名单与 enabled 位：合法形态保留，缺省不生成字段", () => {
+    const res = normalizeProviderEntry(
+      entry({
+        allowedModels: [" gpt-4o ", "qwen-max"],
+        deniedModels: ["bad-model"],
+        modelEnabled: { "gpt-4o": true, "qwen-max": false },
+      }),
+    );
+    expect(res.status).toBe("ok");
+    if (res.status === "ok") {
+      expect(res.entry.allowedModels).toEqual(["gpt-4o", "qwen-max"]);
+      expect(res.entry.deniedModels).toEqual(["bad-model"]);
+      expect(res.entry.modelEnabled).toEqual({
+        "gpt-4o": true,
+        "qwen-max": false,
+      });
+    }
+    const plain = normalizeProviderEntry(entry());
+    if (plain.status === "ok") {
+      expect(plain.entry.allowedModels).toBeUndefined();
+      expect(plain.entry.deniedModels).toBeUndefined();
+      expect(plain.entry.modelEnabled).toBeUndefined();
+    }
+  });
+
+  it("模型名单脏值归一化：非数组/非字符串丢弃，长度上限 100", () => {
+    const res = normalizeProviderEntry({
+      ...entry(),
+      allowedModels: [
+        " a ",
+        "",
+        42,
+        null,
+        "a",
+        ...Array.from({ length: 105 }, (_, i) => `m${i}`),
+      ],
+      deniedModels: "not-an-array" as never,
+      modelEnabled: {
+        ok: false,
+        bad: "false",
+        ...Object.fromEntries(
+          Array.from({ length: 105 }, (_, i) => [`k${i}`, i % 2 === 0]),
+        ),
+      },
+    });
+    expect(res.status).toBe("ok");
+    if (res.status === "ok") {
+      expect(res.entry.allowedModels).toHaveLength(100);
+      expect(res.entry.allowedModels?.[0]).toBe("a");
+      expect(res.entry.allowedModels).not.toContain("42");
+      expect(res.entry.deniedModels).toBeUndefined();
+      expect(Object.keys(res.entry.modelEnabled ?? {})).toHaveLength(100);
+      expect(res.entry.modelEnabled?.ok).toBe(false);
+      expect(res.entry.modelEnabled).not.toHaveProperty("bad");
+    }
+  });
+});
+
+describe("isModelAllowed", () => {
+  it("三判据优先级：denied > allowed 未命中 > modelEnabled=false，其余放行", () => {
+    const restricted = entry({
+      allowedModels: ["a", "b", "x"],
+      deniedModels: ["b", "x"],
+      modelEnabled: { a: false, x: true, y: true },
+    });
+    expect(isModelAllowed(restricted, "a")).toBe(false); // enabled=false
+    expect(isModelAllowed(restricted, "b")).toBe(false); // denied 命中
+    expect(isModelAllowed(restricted, "x")).toBe(false); // denied 优先于 allowed 与 enabled=true
+    expect(isModelAllowed(restricted, "c")).toBe(false); // allowed 非空且未命中
+    expect(isModelAllowed(restricted, "y")).toBe(false); // 同上，modelEnabled=true 不能翻盘
+  });
+
+  it("缺省全放行：空名单/空表/未配置字段均不改变存量行为", () => {
+    expect(isModelAllowed(entry(), "anything")).toBe(true);
+    expect(isModelAllowed(entry({ allowedModels: [] }), "anything")).toBe(true);
+    expect(isModelAllowed(entry({ deniedModels: [] }), "anything")).toBe(true);
+    expect(isModelAllowed(entry({ modelEnabled: {} }), "anything")).toBe(true);
+    expect(isModelAllowed(entry({ deniedModels: ["x"] }), "y")).toBe(true);
+    expect(isModelAllowed(entry({ modelEnabled: { x: true } }), "x")).toBe(
+      true,
+    );
+  });
+
+  it("脏值经归一化后不会误伤：全脏字段等价于不施加限制", () => {
+    const res = normalizeProviderEntry(
+      entry({
+        allowedModels: "bad" as never,
+        deniedModels: [1, {}] as never,
+        modelEnabled: [] as never,
+      }),
+    );
+    expect(res.status).toBe("ok");
+    if (res.status === "ok")
+      expect(isModelAllowed(res.entry, "any-model")).toBe(true);
+  });
 });
 
 describe("parseProvidersJson", () => {
@@ -154,6 +251,21 @@ describe("serialize / mutate", () => {
       "a",
       "b",
     ]);
+  });
+
+  it("模型名单与 enabled 位随序列化往返保留（parseProvidersJson 可复原）", () => {
+    const original = entry({
+      allowedModels: ["a"],
+      deniedModels: ["b"],
+      modelEnabled: { a: true, b: false },
+    });
+    const reparsed = parseProvidersJson(serializeProviders([original]));
+    expect(reparsed.configured).toBe(true);
+    expect(reparsed.entries[0]).toMatchObject({
+      allowedModels: ["a"],
+      deniedModels: ["b"],
+      modelEnabled: { a: true, b: false },
+    });
   });
 
   it("upsert 同 id 覆盖、remove 按 id 删除", () => {

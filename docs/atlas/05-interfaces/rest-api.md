@@ -1,5 +1,5 @@
 # REST 接口地图
-> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-28 · 对应代码: apps/admin-api/src/modules/*（**33** 个 controller 文件，**30** 个路由前缀）
+> 所属: docs/atlas/05-interfaces · 最后核对: 2026-11-25 · 对应代码: apps/admin-api/src/modules/*（**37** 个 controller 文件，**34** 个路由前缀）
 >
 > 路由前缀由 `scripts/check-interface-maps.mjs` 守护：源码里每个 `@Controller("<前缀>")` 都必须在本页出现，缺一即红。
 > 本页是**地图**不是全量清单（全量 240 个操作 / 206 个路径见 [docs/api-reference.md](../../api-reference.md) 附录），但「整个域缺失」属于漂移。
@@ -34,7 +34,7 @@
 
 - `/users`：`POST`(ADMIN)、`GET` 列表(ADMIN)、`GET/PATCH /users/:id`、`DELETE /users/:id`(ADMIN)。
 - `/projects`：CRUD + `GET/POST /:id/members`、`PATCH/DELETE /:id/members/:userId`（写面 ADMIN/Owner）、`GET /projects/me/roles`。
-- `/api-keys`：`GET/POST`、`DELETE /:id`、`POST /:id/revoke`（JWT；API Key 限权访问见 [api-keys 模块](../01-apps/admin-api/modules/api-keys.md)）。
+- `/api-keys`：`GET/POST`、`DELETE /:id`、`POST /:id/revoke`、`POST /:id/rotate`（轮换，ADMIN）、`PATCH /:id/limit`（spendLimit，ADMIN，仅 trigger scope）（JWT；API Key 限权访问见 [api-keys 模块](../01-apps/admin-api/modules/api-keys.md)）。
 
 ## Tasks（核心域，[task 模块](../01-apps/admin-api/modules/task.md)）
 
@@ -183,6 +183,44 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/webhooks/tasks/:taskId` | 外部系统回调触发任务（独立鉴权面） |
+
+## Capabilities（能力注册表）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/capabilities` | 列出能力 |
+| POST | `/capabilities/resolve` | 解析合并后配置 |
+| GET | `/capabilities/:key/dump` | 三栏 dump（分层来源/生效值/凭据占位符） |
+| POST | `/capabilities` | 新建能力 |
+| PATCH | `/capabilities/:id` | 更新能力 |
+| DELETE | `/capabilities/:id` | 删除能力 |
+
+## Workbench（业务工作台）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/workbench/preview` | 方案卡预览 |
+| POST | `/workbench/commit` | 方案卡提交 |
+
+## IM Identity（IM 身份映射前置）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/im-identity` | 列出 IM sender→平台 user 绑定 |
+| POST | `/im-identity/verify-bind` | Gateway sender 验签后绑定平台用户与项目角色（审计双字段） |
+| POST | `/im-identity/scan` | 群聊消息 prompt injection 确定性扫描 |
+| POST | `/im-identity/intake` | IM 意图采集编排（注入扫描→身份解析→角色校验→方案卡预览） |
+
+## Capability Activation（运行时能力审计）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/capability-activation` | 记录一次能力激活（摘要参数、不落明文；append-only） |
+| GET | `/capability-activation` | 按能力/会话/用户/项目/时间过滤查询 |
+| GET | `/capability-activation/stats` | 按能力与项目聚合的用量统计（showback 基础） |
+| PUT | `/capability-activation/quota` | 配置按项目/能力的调用次数软/硬阈值（showback 配额） |
+| GET | `/capability-activation/quota` | 列出所有配额配置 |
+| GET | `/capability-activation/quota-status` | 用量 vs 配额状态（ok/warn/exceeded）+ 软阈值告警 |
 
 ## 相关文档
 

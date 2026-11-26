@@ -1,0 +1,159 @@
+import { client } from './client';
+
+/**
+ * 中台管控 · 能力注册表前端契约。
+ *
+ * 后端来源（admin-api/src/modules/capability）：
+ *   capability.controller.ts    — 6 条路由（list / resolve / dump / create / update / remove）
+ *   dto/create-capability.dto.ts — 创建/更新字段与枚举
+ *   dto/resolve-capability.dto.ts — resolve 入参与 fieldRules 取值
+ *   scope/scope-engine.ts        — DumpField / Decision / FieldRule
+ *
+ * client 的 baseURL 已含 /api（见 api/client.ts），故这里只写相对路径。
+ * 这些 DTO 在 openapi 里没有可直接消费的生成类型，按后端源码手写并逐一对应。
+ */
+
+export type CapabilityKind = 'skill' | 'mcp' | 'agent' | 'provider' | 'template';
+export type CapabilityVisibility = 'global' | 'project' | 'private';
+export type CapabilityScopeMode = 'managed' | 'supervised' | 'self_service';
+export type CapabilityGuidance = 'L1' | 'L2' | 'L3';
+export type CapabilitySourceType = 'builtin' | 'registry' | 'git' | 'folder';
+export type CapabilityDecision = 'allow' | 'ask' | 'deny';
+export type CapabilityFieldRule =
+  | 'replace'
+  | 'keyMerge'
+  | 'append'
+  | 'replaceIfSameKey'
+  | 'policyTighten';
+
+export interface CapabilityScope {
+  mode: CapabilityScopeMode;
+  guidance: CapabilityGuidance;
+}
+
+export interface CapabilitySource {
+  type: CapabilitySourceType;
+  ref?: string;
+}
+
+/** GET /api/capabilities 返回行（对齐 capability.entity.ts）。 */
+export interface Capability {
+  id: string;
+  key: string;
+  kind: string;
+  label: string;
+  description: string | null;
+  version: string;
+  source: CapabilitySource;
+  visibility: CapabilityVisibility;
+  scope: CapabilityScope;
+  manifest: Record<string, unknown>;
+  enabled: boolean;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** POST /api/capabilities 请求体（scope/source 组合由 service 做确定性校验）。 */
+export interface CreateCapabilityPayload {
+  key: string;
+  kind: CapabilityKind;
+  label: string;
+  description?: string;
+  version?: string;
+  source?: CapabilitySource;
+  visibility: CapabilityVisibility;
+  scope?: CapabilityScope;
+  manifest: Record<string, unknown>;
+  enabled?: boolean;
+}
+
+/** PATCH /api/capabilities/:id 请求体（UpdateCapabilityDto = PartialType）。 */
+export type UpdateCapabilityPayload = Partial<CreateCapabilityPayload>;
+
+/** POST /api/capabilities/resolve 的层（高→低）。 */
+export interface ResolveLayer {
+  name: string;
+  config: Record<string, unknown>;
+}
+
+export interface ResolveCapabilityPayload {
+  key: string;
+  layers: ResolveLayer[];
+  fieldRules?: Record<string, CapabilityFieldRule>;
+}
+
+export interface CapabilityResolution {
+  key: string;
+  effective: Record<string, unknown>;
+  decision: CapabilityDecision;
+}
+
+/** GET /api/capabilities/:key/dump 三栏审计行（凭据已由后端脱敏）。 */
+export interface DumpLayerValue {
+  name: string;
+  value: unknown;
+}
+
+export interface DumpField {
+  field: string;
+  layers: DumpLayerValue[];
+  effective: unknown;
+  source: string;
+  rule: CapabilityFieldRule | 'default-replace';
+}
+
+export interface CapabilityDump {
+  key: string;
+  dump: DumpField[];
+}
+
+function parseJsonObject(text: string, fieldName: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(text);
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${fieldName}必须是 JSON 对象。`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+export const capabilitiesApi = {
+  /** GET /capabilities —— 任意登录角色可读。 */
+  list: (signal?: AbortSignal) =>
+    client.get<Capability[]>('/capabilities', signal ? { signal } : undefined),
+
+  /** POST /capabilities —— ADMIN。 */
+  create: (data: CreateCapabilityPayload) =>
+    client.post<Capability>('/capabilities', data),
+
+  /** PATCH /capabilities/:id —— ADMIN。 */
+  update: (id: string, data: UpdateCapabilityPayload) =>
+    client.patch<Capability>(`/capabilities/${encodeURIComponent(id)}`, data),
+
+  /** DELETE /capabilities/:id —— ADMIN。 */
+  remove: (id: string) =>
+    client.delete<{ ok: true }>(`/capabilities/${encodeURIComponent(id)}`),
+
+  /** POST /capabilities/resolve —— JWT 只读。 */
+  resolve: (data: ResolveCapabilityPayload) =>
+    client.post<CapabilityResolution>('/capabilities/resolve', data),
+
+  /**
+   * GET /capabilities/:key/dump —— JWT 只读。
+   * 下层 JSON 作为 query 字符串原样透传，合法性交给后端 parseQueryLayer 裁定；
+   * 前端在页面层先做 JSON.parse 预检，避免把明显非法的值发过去。
+   */
+  dump: (
+    key: string,
+    layers?: { projectLayer?: string; privateLayer?: string },
+  ): Promise<CapabilityDump> => {
+    const query = new URLSearchParams();
+    if (layers?.projectLayer) query.set('projectLayer', layers.projectLayer);
+    if (layers?.privateLayer) query.set('privateLayer', layers.privateLayer);
+    const suffix = query.toString();
+    return client.get<CapabilityDump>(
+      `/capabilities/${encodeURIComponent(key)}/dump${suffix ? `?${suffix}` : ''}`,
+    );
+  },
+};
+
+export { parseJsonObject };

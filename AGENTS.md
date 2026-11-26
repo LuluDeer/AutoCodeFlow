@@ -10,9 +10,10 @@
    - 一次调用即可拿到相关符号的逐字源码 + 调用路径（含 grep 跟不到的动态分发）。
    - 1.6.x 默认**只向客户端暴露 `codegraph_explore` 一个工具**：`codegraph_node/search/callers/callees/impact/files/status` 仍然可用，但默认不列在工具表里（它们返回的内容已并入 explore）。确实需要单独工具时，用 `CODEGRAPH_MCP_TOOLS=explore,node,callers` 之类的环境变量按需放开，或直接用下面的 CLI 等价命令。
    - 若工具存在但处于 deferred 状态，先用工具搜索按名字 `codegraph` 找到它，再加载调用，不要因为没在默认工具列表里就跳过。
-   - `projectPath` 传本仓库根目录的绝对路径（Linux 本机 `/home/yongsheng/project/AutoCodeFlow`，Windows 侧 `E:\softwareData\coding\AutoCodeFlow`），或其下任意子目录，会自动向上找到最近的 `.codegraph/`。
+   - `projectPath` 通常**直接省略**：1.6.x 的 `codegraph_explore` 必填参数只有 `query`，省略即用本会话默认项目/当前索引，不必每次找根目录。仅当查询第二个代码库、或 MCP server 根目录本身没有索引时才传，此时用 `pwd` 现场取本仓库根目录绝对路径（本机 `/data/project/AutoCodeFlow`），不要写死旧机器路径。
    - 它返回的源码视为已 Read，不要重复打开同一文件。
-2. **CLI 兜底（MCP 不可用时，始终可用）**：在仓库根目录执行
+2. **CLI 兜底（MCP 不可用时，始终可用）**：`codegraph` 已在 PATH 中（`$HOME/.local/bin/codegraph` 软链指向本机版本，并已加入 nvm bin），在任意子目录/新会话里**直接执行即可，不需要 find/which 找位置**。在仓库根目录执行
+   - 先 `codegraph --version`（应输出 `1.6.2`）确认可用；若 `command not found` 才排查 PATH，不要每次探查都去找二进制路径
    - `codegraph explore "<符号名/文件名/自然语言问题>"` — 与 MCP 同输出，**默认第一选择**
    - `codegraph node <符号>` — 单符号源码 + caller/callee 链；`codegraph node <文件> --symbols-only` 看文件符号表，`--offset/--limit` 按行号读文件
    - `codegraph query <关键字>` — 只定位符号（比 explore 便宜，适合确认拼写/路径）
@@ -33,7 +34,7 @@
 
 ## 3. 子 agent 派发要求
 
-- 主 agent 派发涉及代码的子任务时，必须在任务指令中显式写明「先用 CodeGraph MCP 探查；MCP 不可用则用 `codegraph explore` CLI」，并给出 `projectPath`，不得假设子 agent 会自动发现本文件。
+- 主 agent 派发涉及代码的子任务时，必须在任务指令中显式写明「先用 CodeGraph MCP 探查；MCP 不可用则用 `codegraph explore` CLI」。默认不传 `projectPath`（用会话默认项目）；仅查第二个代码库时才给出，且用 `pwd` 现场取绝对路径。不得假设子 agent 会自动发现本文件。
 - 子 agent 同样遵守第 1 条的工具优先级。
 
 ## 4. 编排：主 agent 负责切分、串联与收口
@@ -92,5 +93,5 @@
 ## 5. 其他 agent 工具链
 
 - Claude Code：MCP 已在 `~/.claude.json` 注册（`codegraph serve --mcp`，带 `alwaysLoad: true`，否则工具会被 deferred 到工具搜索之后）。
-- Hermes Agent：MCP 在 `~/.hermes/config.yaml` 的 `mcp_servers.codegraph`，`command` 用绝对路径 `/home/yongsheng/.local/bin/codegraph`，避免 PATH 命中 `/www/server/nodejs/*/bin` 下的旧版。
+- Hermes Agent：MCP 在 `~/.hermes/config.yaml` 的 `mcp_servers.codegraph`，`command` 用绝对路径（本机 `~/.local/bin/codegraph`，即 `$HOME/.local/bin/codegraph`，`readlink -f` 指向当前版本），避免 PATH 命中 `/www/server/nodejs/*/bin` 下的旧版；换机器时用 `readlink -f ~/.local/bin/codegraph` 现场取，不要写死别人的家目录。
 - 其他编码 CLI（Codex / Cursor / Gemini CLI / opencode / Kiro / Copilot 等）：如未配置 MCP，执行 `codegraph install -y` 自动注册；只想看配置片段用 `codegraph install --print-config <id>`。注意 `install` 会往 agent 指令文件里写一段 `<!-- CODEGRAPH_START -->` 标记块，本文件已自带等价规则，重复写入只会冗余。

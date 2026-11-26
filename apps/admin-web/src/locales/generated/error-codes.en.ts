@@ -93,6 +93,7 @@ export default {
   'err.ARTIFACT_TOO_LARGE': 'Artifact exceeds the size limit',
   'err.ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN': 'Artifact upload requires a per-executor token bound to this execution (execId={{execId}}); {{nextStep}}',
   'err.BROADCAST_DISPATCH_ALL_FAILED': 'Broadcast dispatch failed on all {{count}} executors: {{failures}}',
+  'err.CAPABILITY_NOT_FOUND': 'Capability not found',
   'err.CONFIG_BOOLEAN_VALUE_INVALID': 'Boolean value must be "true" or "false"',
   'err.CONFIG_HISTORY_NO_ROLLBACK_VALUE': 'History record "{{historyId}}" has no oldValue to roll back to',
   'err.CONFIG_HISTORY_NOT_FOUND': 'History record "{{historyId}}" not found',

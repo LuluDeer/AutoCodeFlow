@@ -107,6 +107,8 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'apikey.revoke': 'audit.action.apikey_revoke',
   'apikey.delete': 'audit.action.apikey_delete',
   'apikey.used': 'audit.action.apikey_used',
+  'apikey.rotate': 'audit.action.apikey_rotate',
+  'apikey.set_spend_limit': 'audit.action.apikey_set_spend_limit',
   'apikey.auth_failure': 'audit.action.apikey_auth_failure',
   'application.create': 'audit.action.application_create',
   'application.update': 'audit.action.application_update',
@@ -188,6 +190,10 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'task.webhook_enable': 'audit.action.task_webhook_enable',
   'task.webhook_rotate': 'audit.action.task_webhook_rotate',
   'task.webhook_disable': 'audit.action.task_webhook_disable',
+  'capability.create': 'audit.action.capability_create',
+  'capability.update': 'audit.action.capability_update',
+  'capability.delete': 'audit.action.capability_delete',
+  'im_identity.bind': 'audit.action.im_identity_bind',
 };
 
 /**

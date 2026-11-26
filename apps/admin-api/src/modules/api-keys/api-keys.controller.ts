@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Req,
   UseGuards,
@@ -15,6 +16,7 @@ import { AppError } from "../../common/errors/app-error";
 import {
   ApiBearerAuth,
   ApiOperation,
+  ApiProperty,
   ApiTags,
   ApiOkResponse,
   ApiCreatedResponse,
@@ -38,13 +40,19 @@ import {
   ApiKeyRevokeResponseDto,
   ApiKeyViewDto,
 } from "./dto/api-key-response.dto";
-import { API_KEY_SCOPES, API_KEY_PLAINTEXT_PREFIX } from "./api-key.util";
+import {
+  API_KEY_SCOPES,
+  API_KEY_PLAINTEXT_PREFIX,
+  MAX_SPEND_LIMIT,
+} from "./api-key.util";
 import { ApiKeyScope } from "./entities/api-key.entity";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import type { Request } from "express";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { UserRole } from "../users/entities/user.entity";
 
 export class CreateApiKeyDto {
   @IsString()
@@ -76,6 +84,27 @@ export class CreateApiKeyDto {
   @Min(1)
   @Max(3650)
   expiresInDays?: number;
+}
+
+/**
+ * N19: PATCH /api-keys/:id/limit 请求体。`spendLimit: null` = 清除上限（恢复
+ * 无限）；省略视为非法（IsOptional 只跳过 null/undefined，但 service 收到
+ * undefined 时按 null 处理）。数值范围与 service 双重校验，上限复用常量。
+ */
+export class SetSpendLimitDto {
+  @ApiProperty({
+    description: "调用次数上限；null = 清除上限（恢复无限）",
+    type: Number,
+    nullable: true,
+    required: false,
+    minimum: 0,
+    maximum: MAX_SPEND_LIMIT,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(MAX_SPEND_LIMIT)
+  spendLimit?: number | null;
 }
 
 /**
@@ -194,6 +223,58 @@ export class ApiKeysController {
       user.id,
       user.username,
       req?.ip,
+    );
+    if (!row) throw new AppError("API_KEY_NOT_FOUND", { apiKeyId: id });
+    return { success: true, apiKey: row };
+  }
+
+  // ─── N19: rotate / spend-limit（ADMIN 面）────────────────────────────────
+
+  /**
+   * N19: 轮换 key —— 返回新明文一次（与 create 同款扁平 {…view, plaintext}），
+   * 旧值当场失效。ADMIN 可操作任意 key（actor 仅用于审计）。
+   */
+  @Roles(UserRole.ADMIN)
+  @Post(":id/rotate")
+  @ApiCreatedResponse({
+    type: ApiKeyCreateResponseDto,
+    description: "新明文一次性回显；旧 key 立即失效",
+  })
+  @ApiOperation({ summary: "轮换 API Key（ADMIN，旧值立即失效）" })
+  async rotate(
+    @Param("id", ParseIntPipe) id: number,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    const result = await this.apiKeysService.rotate(id, {
+      userId: user.id,
+      username: user.username,
+      ip: req?.ip,
+    });
+    if (!result) throw new AppError("API_KEY_NOT_FOUND", { apiKeyId: id });
+    return {
+      ...result.apiKey,
+      plaintext: `${API_KEY_PLAINTEXT_PREFIX}${result.plaintext.slice(API_KEY_PLAINTEXT_PREFIX.length)}`,
+    };
+  }
+
+  /** N19: 设置/清除 trigger scope key 的 spendLimit（null = 无限）。ADMIN 面。 */
+  @Roles(UserRole.ADMIN)
+  @Patch(":id/limit")
+  @ApiOkResponse({ type: ApiKeyRevokeResponseDto })
+  @ApiOperation({
+    summary: "设置 API Key 的 spendLimit（ADMIN，仅 trigger scope）",
+  })
+  async setSpendLimit(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: SetSpendLimitDto,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    const row = await this.apiKeysService.setSpendLimit(
+      id,
+      dto.spendLimit ?? null,
+      { userId: user.id, username: user.username, ip: req?.ip },
     );
     if (!row) throw new AppError("API_KEY_NOT_FOUND", { apiKeyId: id });
     return { success: true, apiKey: row };

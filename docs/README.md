@@ -39,6 +39,7 @@
 | [release-checklist.md](release-checklist.md) | 发版逐项核对 |
 | [rollback-semantics.md](rollback-semantics.md) | 两种 rollback 端点语义对照 |
 | [SECURITY-REDLINE-CHECKLIST.md](SECURITY-REDLINE-CHECKLIST.md) | 安全红线回归清单 |
+| [compliance-baseline.md](compliance-baseline.md) | 合规基线：等保映射、日志留存、分类分级、公有模型出域与待补项 |
 | [DEPENDENCY-REVIEW-LOG.md](DEPENDENCY-REVIEW-LOG.md) | 依赖审计豁免的到期复查记录（常设追加） |
 | [AGENT-SWARM-PLAYBOOK.md](AGENT-SWARM-PLAYBOOK.md) | 多 Agent 审计-修复循环：五域划分 / 写冲突规则 / 验证矩阵 / 未修项 backlog |
 

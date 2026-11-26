@@ -510,6 +510,176 @@ describe("AUTH-03 ApiKeysService", () => {
     });
   });
 
+  // ─── N19: rotate / setSpendLimit ────────────────────────────────────────
+  describe("rotate（N19）", () => {
+    /** 状态化仓库：findOne 按 keyHash 命中；update 列级写回内存行。 */
+    const seed = () => {
+      const oldHash = hashApiKey("acf_old");
+      const db = new Map<number, Record<string, any>>([
+        [
+          9,
+          {
+            id: 9,
+            userId: 42,
+            name: "ci",
+            keyPrefix: "acf_o",
+            keyHash: oldHash,
+            scope: "trigger",
+            scopes: "task:trigger spend:500",
+            expiresAt: null,
+            revokedAt: null,
+            lastUsedAt: null,
+            createdAt: new Date(0),
+          },
+        ],
+      ]);
+      repo.findOne.mockImplementation(async (opts: any) => {
+        const where = opts?.where ?? {};
+        if (where.id !== undefined) return db.get(Number(where.id)) ?? null;
+        if (where.keyHash !== undefined) {
+          for (const row of db.values()) {
+            if (row.keyHash === where.keyHash) return row;
+          }
+          return null;
+        }
+        return null;
+      });
+      repo.update.mockImplementation((async (criteria: any, patch: any) => {
+        const id = Number(criteria?.id ?? criteria);
+        const row = db.get(id);
+        if (row) db.set(id, { ...row, ...patch });
+        return { affected: 1 };
+      }) as any);
+      return { db, oldHash };
+    };
+
+    it("rotate 后旧 key 认证失败（unknown）、新明文认证成功；id/scope/spendLimit 保留", async () => {
+      seed();
+      expect((await svc.authenticate("acf_old")).apiKey?.id).toBe(9);
+
+      const result = await svc.rotate(9, { userId: 7, username: "admin" });
+      expect(result).not.toBeNull();
+      const { apiKey, plaintext } = result!;
+      expect(plaintext).toMatch(/^acf_[0-9a-f]{64}$/);
+      expect(plaintext).not.toBe("acf_old");
+      expect(apiKey.id).toBe(9);
+      expect(apiKey.scope).toBe("trigger");
+      expect(apiKey.spendLimit).toBe(500);
+      expect(apiKey.keyPrefix).toBe(plaintext.slice(0, 8));
+
+      // 旧值立即失效（hash 已被替换）
+      const old = await svc.authenticate("acf_old");
+      expect(old.apiKey).toBeNull();
+      expect(old.failure).toBe("unknown");
+      // 新值可用
+      expect((await svc.authenticate(plaintext)).apiKey?.id).toBe(9);
+      // 明文/新 hash 只经内存，不进审计 detail
+      const logCalls = audit.log.mock.calls as unknown as Array<
+        Array<Record<string, any>>
+      >;
+      const detail = logCalls.find((c) => c[0]?.action === "apikey.rotate")?.[0]
+        ?.detail as Record<string, unknown> | undefined;
+      expect(JSON.stringify(detail ?? {})).not.toContain(plaintext);
+      expect(detail).toMatchObject({ ownerId: 42 });
+    });
+
+    it("列级写只动 keyHash/keyPrefix；不存在返回 null 不写库", async () => {
+      const { db } = seed();
+      const beforeLastUsed = db.get(9)!.lastUsedAt;
+      await svc.rotate(9, { userId: 7 });
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: 9 },
+        { keyHash: expect.any(String), keyPrefix: expect.any(String) },
+      );
+      expect(db.get(9)!.lastUsedAt).toBe(beforeLastUsed);
+
+      repo.findOne.mockResolvedValueOnce(null);
+      expect(await svc.rotate(404, { userId: 7 })).toBeNull();
+    });
+  });
+
+  describe("setSpendLimit（N19）", () => {
+    const triggerRow = (scopes: string | null = "task:trigger") => ({
+      id: 9,
+      userId: 42,
+      name: "k",
+      keyPrefix: "acf_aa",
+      keyHash: "h",
+      scope: "trigger",
+      scopes,
+      expiresAt: null,
+      revokedAt: null,
+      lastUsedAt: null,
+      createdAt: new Date(0),
+    });
+
+    it("trigger key 设置 spendLimit：列级写 scopes 词表、审计、视图回显", async () => {
+      repo.findOne.mockResolvedValueOnce(triggerRow());
+      const view = await svc.setSpendLimit(9, 500, {
+        userId: 7,
+        username: "admin",
+      });
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: 9 },
+        { scopes: "task:trigger spend:500" },
+      );
+      expect(view!.spendLimit).toBe(500);
+      // spend 词不混入对外 scopes 视图
+      expect(view!.scopes).toEqual(["task:trigger"]);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "apikey.set_spend_limit",
+          userId: 7,
+          detail: expect.objectContaining({ spendLimit: 500 }),
+        }),
+      );
+    });
+
+    it("null 清除上限；重复设置替换旧 spend 词，保留 task:trigger", async () => {
+      repo.findOne.mockResolvedValueOnce(triggerRow("task:trigger spend:500"));
+      const cleared = await svc.setSpendLimit(9, null, { userId: 7 });
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: 9 },
+        { scopes: "task:trigger" },
+      );
+      expect(cleared!.spendLimit).toBeNull();
+
+      repo.findOne.mockResolvedValueOnce(triggerRow("task:trigger spend:500"));
+      const reset = await svc.setSpendLimit(9, 80, { userId: 7 });
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: 9 },
+        { scopes: "task:trigger spend:80" },
+      );
+      expect(reset!.spendLimit).toBe(80);
+    });
+
+    it("scope 限制：readonly / manage 不可设 → VALIDATION_FAILED，不写库", async () => {
+      for (const scope of ["readonly", "manage"] as const) {
+        repo.findOne.mockResolvedValueOnce({ ...triggerRow(), scope });
+        await expect(
+          svc.setSpendLimit(9, 100, { userId: 7 }),
+        ).rejects.toMatchObject({ errorCode: "VALIDATION_FAILED" });
+      }
+      expect(repo.update).not.toHaveBeenCalled();
+      expect(audit.log).not.toHaveBeenCalled();
+    });
+
+    it("数值校验：负数 / 非整数 / 超上限 → VALIDATION_FAILED，不写库", async () => {
+      for (const bad of [-1, 1.5, 1_000_000_001]) {
+        repo.findOne.mockResolvedValueOnce(triggerRow());
+        await expect(
+          svc.setSpendLimit(9, bad, { userId: 7 }),
+        ).rejects.toMatchObject({ errorCode: "VALIDATION_FAILED" });
+      }
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it("不存在 → null（控制器 404）", async () => {
+      repo.findOne.mockResolvedValueOnce(null);
+      expect(await svc.setSpendLimit(404, 100, { userId: 7 })).toBeNull();
+    });
+  });
+
   describe("auditAuthFailure", () => {
     it("未命中（unknown）→ 审计退化为前缀（库里没有行，只能记前缀）", async () => {
       await svc.auditAuthFailure("acf_dead", "unknown", "1.2.3.4");

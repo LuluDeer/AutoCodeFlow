@@ -67,6 +67,13 @@ import { ProjectsModule } from "./modules/project/projects.module";
 import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
 // ARCH-25: 任务 runtime 注册表（@Global 描述层，内置 python/node/shell）。
 import { RuntimeModule } from "./modules/runtime/runtime.module";
+// N7: 最小方案卡预览（GCO 证伪切片）——无 DB、无 LLM 的 ADMIN-only 面。
+import { WorkbenchModule } from "./modules/workbench/workbench.module";
+// ADR-040 / P1: Capability 注册表（entity + CRUD + 确定性校验）。
+import { CapabilityModule } from "./modules/capability/capability.module";
+import { ImIdentityModule } from "./modules/im-identity/im-identity.module";
+// N15 / GCO §11: 运行时能力激活审计（独立高频表，不进 audit_logs）。
+import { CapabilityActivationModule } from "./modules/capability-activation/capability-activation.module";
 
 @Module({
   imports: [
@@ -769,6 +776,10 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
     ApiKeysModule,
     ProjectsModule,
     RuntimeModule,
+    WorkbenchModule,
+    CapabilityModule,
+    ImIdentityModule,
+    CapabilityActivationModule,
   ],
   providers: [
     // A-02: apply ThrottlerGuard globally

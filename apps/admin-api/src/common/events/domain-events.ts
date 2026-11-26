@@ -117,6 +117,18 @@ export const DOMAIN_EVENTS = {
    * 收口在 listener（§7 隐私与业务可用性解耦）。
    */
   EXECUTION_CONFIRMED: "execution.confirmed",
+  /**
+   * N14（在途策略即时失效）：能力注册表发生写操作（create/update/remove，
+   * enable-disable 走 update 的 enabled 列）且**落库成功之后**发布。
+   * 唯一消费方是 workbench 的 PolicyGenerationService——它在进程内 bump
+   * 策略代际，使 preview 时拿到的旧 generation 在 commit 闸口即时失效，
+   * 无需重新部署。fail-open：emit 失败/无监听器都不影响 capability 主链。
+   *
+   * 本事件刻意不进 relay 白名单：代际是进程内语义（见
+   * policy-generation.service.ts 的持久化边界注释），跨实例广播会把"本地
+   * 代际"误当全局事实；跨实例一致性是后续增量。
+   */
+  CAPABILITY_CHANGED: "capability.changed",
 } as const;
 
 export type DomainEventName =
@@ -210,6 +222,23 @@ export interface ExecutorAddressDriftedEventPayload {
   previousAddress: string;
   address: string;
   occurredAt: string;
+}
+
+/**
+ * N14: capability.changed 载荷（全原始类型，common 层不 import 实体）。
+ *
+ * 只带「哪个 key 被什么操作改动 + 发生时刻 + schema 版本」——代际注册表只需
+ * 知道"能力面变了"这一事实，具体变更内容仍在 capability 表与审计_log。
+ */
+export interface CapabilityChangedEventPayload {
+  /** 被写入的能力 key（不是行 id；对下游语义更稳定）。 */
+  key: string;
+  /** 写操作：create | update | remove（enable-disable 归入 update）。 */
+  operation: "create" | "update" | "remove" | (string & {});
+  /** 落库后的事件产生时刻（ISO）。 */
+  occurredAt: string;
+  /** 与 EVENT_SCHEMA_VERSION 同口径的载荷主版本。 */
+  schemaVersion: number;
 }
 
 /** 执行终态载荷。execution.completed / execution.failed 共用。 */

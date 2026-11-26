@@ -37,6 +37,9 @@ import {
   SopFromVideoPage,
   AgentSessionsPage,
   InboxPage,
+  WorkbenchPage,
+  CapabilitiesPage,
+  ActivationStatsPage,
 } from './router-pages';
 
 const withSuspense = (children: ReactNode) => (
@@ -91,6 +94,10 @@ export const router = createBrowserRouter(
         // 页面整体为渠道配置表单，路由级门控（同 /audit 模式）
         { path: 'notifications', element: <RequireAdmin>{withSuspense(<NotificationSettingsPage />)}</RequireAdmin> },
         { path: 'audit', element: <RequireAdmin>{withSuspense(<AuditLogPage />)}</RequireAdmin> },
+        // P3 中台管控：能力注册表（CRUD / resolve / dump），与管理面一致整页 ADMIN-only
+        { path: 'capabilities', element: <RequireAdmin>{withSuspense(<CapabilitiesPage />)}</RequireAdmin> },
+        // 能力用量看板：stats 端点为 ADMIN-only，路由门控同 /capabilities
+        { path: 'activation-stats', element: <RequireAdmin>{withSuspense(<ActivationStatsPage />)}</RequireAdmin> },
         { path: 'applications', element: withSuspense(<ApplicationListPage />) },
         { path: 'projects', element: withSuspense(<ProjectsPage />) },
         // P1-2：项目详情统计。置于静态 `projects` 之后；`projects/:id` 单段动态，
@@ -99,6 +106,8 @@ export const router = createBrowserRouter(
         { path: 'applications/:id', element: withSuspense(<ApplicationDetailPage />) },
         { path: 'executor-packages', element: <RequireAdmin>{withSuspense(<ExecutorPackagesPage />)}</RequireAdmin> },
         { path: 'sops', element: <RequireAdmin>{withSuspense(<SopsPage />)}</RequireAdmin> },
+        // 工作台最小验证页：与 /sops 同样的 ADMIN-only 口径（见 router-pages.tsx 说明）
+        { path: 'workbench', element: <RequireAdmin>{withSuspense(<WorkbenchPage />)}</RequireAdmin> },
         {
           path: 'sops/from-video',
           element: <RequireAdmin>{withSuspense(<SopFromVideoPage />)}</RequireAdmin>,

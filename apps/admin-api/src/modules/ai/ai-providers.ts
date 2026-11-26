@@ -52,6 +52,12 @@ export interface AiProviderEntry {
   /** 是否接受 `video_url` 片段（勾选后才允许被"视频理解"用途选中）。 */
   supportsVideo: boolean;
   enabled: boolean;
+  /** 模型白名单：非空时仅名单内模型可用；空/缺省 = 不限。 */
+  allowedModels?: string[];
+  /** 模型黑名单：命中即拒绝，优先级高于白名单与 enabled 位。 */
+  deniedModels?: string[];
+  /** 模型级 enabled 位：显式 false 拒绝，其余不干预。 */
+  modelEnabled?: Record<string, boolean>;
 }
 
 /** 对外视图（设置页/路由预览用）：不含密钥，只给"有没有配"。 */
@@ -127,6 +133,37 @@ function str(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
+/** 模型名单一化：只收字符串、去空白/去重、最多 100 项；脏形态视为未配置。 */
+const MODEL_LIST_LIMIT = 100;
+function normalizeModelList(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of v) {
+    const name = str(item);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+    if (out.length >= MODEL_LIST_LIMIT) break;
+  }
+  return out;
+}
+
+/** 模型 enabled 位一化：只收 boolean 值、最多 100 项；脏形态视为未配置。 */
+function normalizeModelEnabled(
+  v: unknown,
+): Record<string, boolean> | undefined {
+  if (!isPlainObject(v)) return undefined;
+  const out: Record<string, boolean> = {};
+  for (const [rawName, enabled] of Object.entries(v)) {
+    const name = str(rawName);
+    if (!name || typeof enabled !== "boolean") continue;
+    out[name] = enabled;
+    if (Object.keys(out).length >= MODEL_LIST_LIMIT) break;
+  }
+  return out;
+}
+
 /** 单条目的一化（脏值回落 + 形态校验）。 */
 export function normalizeProviderEntry(
   raw: unknown,
@@ -154,6 +191,11 @@ export function normalizeProviderEntry(
   // 半成品条目不该在"保存"时就被拒——接入的人常常先建条目再填地址）
   const baseUrl = str(raw.baseUrl) || base.baseUrl;
 
+  // 新字段缺省时保持 undefined：缺省 = 不施加任何模型级限制（存量行为不变）
+  const allowedModels = normalizeModelList(raw.allowedModels);
+  const deniedModels = normalizeModelList(raw.deniedModels);
+  const modelEnabled = normalizeModelEnabled(raw.modelEnabled);
+
   return {
     status: "ok",
     entry: {
@@ -171,8 +213,25 @@ export function normalizeProviderEntry(
           ? base.supportsVideo
           : raw.supportsVideo === true,
       enabled: raw.enabled !== false,
+      ...(allowedModels !== undefined ? { allowedModels } : {}),
+      ...(deniedModels !== undefined ? { deniedModels } : {}),
+      ...(modelEnabled !== undefined ? { modelEnabled } : {}),
     },
   };
+}
+
+/**
+ * 模型级准入判定（纯函数，无副作用）：
+ *  denied 命中即拒绝 > allowed 非空且未命中即拒绝 > modelEnabled[model]===false 拒绝 > 放行。
+ * 三字段全缺省/空值时全部放行，保持存量行为。
+ */
+export function isModelAllowed(entry: AiProviderEntry, model: string): boolean {
+  const name = str(model);
+  if (entry.deniedModels?.includes(name)) return false;
+  if (entry.allowedModels?.length && !entry.allowedModels.includes(name))
+    return false;
+  if (entry.modelEnabled?.[name] === false) return false;
+  return true;
 }
 
 /**
@@ -284,6 +343,15 @@ export function serializeProviders(
         timeoutMs: e.timeoutMs,
         supportsVideo: e.supportsVideo,
         enabled: e.enabled,
+        ...(e.allowedModels !== undefined
+          ? { allowedModels: e.allowedModels }
+          : {}),
+        ...(e.deniedModels !== undefined
+          ? { deniedModels: e.deniedModels }
+          : {}),
+        ...(e.modelEnabled !== undefined
+          ? { modelEnabled: e.modelEnabled }
+          : {}),
       })),
   );
 }

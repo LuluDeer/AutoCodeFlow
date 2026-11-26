@@ -464,8 +464,21 @@ const ALLOWLIST = [
     reason: "错误码目录分片（同上），值是 {status,zh,en} 对象",
   },
   {
+    name: "CAPABILITY_CODES",
+    reason: "错误码目录分片（同上），值是 {status,zh,en} 对象",
+  },
+  {
     name: "ERROR_CATALOG",
     reason: "错误码总表（…spread 合并 6 个分片）：合并点，不是值域；分片各自已登记",
+  },
+  {
+    name: "DEFAULT_FIELD_RULES",
+    reason:
+      "ADR-040 能力合并引擎的默认字段族规则表（capability.service.ts，`Object.freeze({...})`）：" +
+      "值是合并策略标签 replace/keyMerge/append/replaceIfSameKey/policyTighten，" +
+      "只在 resolveFor/dumpFor 的内存分层合并里决定「同名字段怎么合」，不是任何 DB 列的值域，" +
+      "不会漂移到数据库 schema。其取值域由同文件的 VALID_FIELD_RULES 与 ResolveCapabilityDto.fieldRules 校验兜住；" +
+      "PG 侧无对应 enum，故登记豁免而非映射。",
   },
   {
     name: "DOMAIN_EVENTS",

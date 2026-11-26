@@ -9,7 +9,14 @@ import {
   ApiKeyScope,
   parseApiKeyScopes,
 } from "./entities/api-key.entity";
-import { generateApiKey, hashApiKey } from "./api-key.util";
+import {
+  generateApiKey,
+  hashApiKey,
+  parseSpendLimit,
+  withSpendLimit,
+  withoutSpendLimit,
+  MAX_SPEND_LIMIT,
+} from "./api-key.util";
 import { AuditService } from "../audit/audit.service";
 // R32-A4: 属主账号状态（存在 / 未禁用）是 API Key 凭据的活性条件——
 // 见 authenticate() 头注。
@@ -34,6 +41,16 @@ export interface CreateApiKeyInput {
 export type ApiKeyFailure =
   "unknown" | "expired" | "revoked" | "owner_inactive";
 
+/**
+ * N19: 谁在管理这把 key（rotate/limit 为 ADMIN 面）。审计用；userId 为操作者
+ * （ADMIN），与被操作 key 的属主 userId 不一定相同。
+ */
+export interface ApiKeyActor {
+  userId: number;
+  username?: string | null;
+  ip?: string | null;
+}
+
 export interface ApiKeyView {
   id: number;
   name: string;
@@ -41,6 +58,8 @@ export interface ApiKeyView {
   scope: ApiKeyScope;
   /** NF-01: extra narrow-domain scopes (word list, e.g. "task:trigger"). */
   scopes: string[];
+  /** N19: spend cap; null = 无限。存于 scopes 词表的 `spend:<n>` 词。 */
+  spendLimit: number | null;
   expiresAt: Date | null;
   revokedAt: Date | null;
   lastUsedAt: Date | null;
@@ -196,6 +215,95 @@ export class ApiKeysService {
         ip: ip ?? undefined,
       });
     }
+    return this.toView(row);
+  }
+
+  /**
+   * N19: rotate —— 用新明文替换旧 hash/prefix，旧值立即失效（hash 唯一索引
+   * 指向新值），保留 id / scope / scopes（含 spendLimit）/ 过期与吊销状态。
+   *
+   * 列级 UPDATE 只写 keyHash + keyPrefix：与 revoke/touchLastUsed 同一纪律
+   * （api_keys 是凭据实体，写面只触碰目标列），避免整行 save 回滚并发写入的
+   * lastUsedAt / revokedAt。keyHash 唯一索引保证新 hash 不与存量冲突
+   * （32 随机字节碰撞概率可忽略）。审计不记明文/hash。
+   */
+  async rotate(
+    id: number,
+    actor: ApiKeyActor,
+  ): Promise<{ apiKey: ApiKeyView; plaintext: string } | null> {
+    const row = await this.repo.findOne({ where: { id } });
+    if (!row) return null;
+    const { plaintext, keyPrefix, keyHash } = generateApiKey();
+    // adr-026-exempt: 列级 UPDATE，只改凭据两列；其余列逐字节保留。
+    await this.repo.update({ id }, { keyHash, keyPrefix });
+    row.keyHash = keyHash;
+    row.keyPrefix = keyPrefix;
+    await this.safeAudit({
+      userId: actor.userId,
+      username: actor.username ?? undefined,
+      action: "apikey.rotate",
+      resource: "api_key",
+      resourceId: String(id),
+      detail: {
+        name: row.name,
+        scope: row.scope,
+        keyPrefix,
+        ownerId: row.userId,
+      },
+      ip: actor.ip ?? undefined,
+    });
+    return { apiKey: this.toView(row), plaintext };
+  }
+
+  /**
+   * N19: setSpendLimit —— 给 trigger scope 的 key 设置消费上限；null 清除
+   * （恢复无限）。spendLimit 存进 scopes 词表的 `spend:<n>` 词，复用现有列
+   * （零新增列、零迁移）。列级 UPDATE 只写 scopes 一列。
+   *
+   * 校验：scope ≠ trigger → VALIDATION_FAILED；数值非整数 / 负数 / 超
+   * MAX_SPEND_LIMIT → VALIDATION_FAILED。超限错误码复用既有码，不新增。
+   */
+  async setSpendLimit(
+    id: number,
+    spendLimit: number | null,
+    actor: ApiKeyActor,
+  ): Promise<ApiKeyView | null> {
+    const row = await this.repo.findOne({ where: { id } });
+    if (!row) return null;
+    if (row.scope !== "trigger") {
+      throw new AppError("VALIDATION_FAILED", {
+        detail: "spendLimit 仅可设置在 trigger scope 的 API Key 上",
+      });
+    }
+    if (
+      spendLimit !== null &&
+      (!Number.isSafeInteger(spendLimit) ||
+        spendLimit < 0 ||
+        spendLimit > MAX_SPEND_LIMIT)
+    ) {
+      throw new AppError("VALIDATION_FAILED", {
+        detail: `spendLimit 须为 0..${MAX_SPEND_LIMIT} 的整数或 null（无限）`,
+      });
+    }
+    const scopes = withSpendLimit(row.scopes, spendLimit);
+    // adr-026-exempt: 列级 UPDATE，只改 scopes 一列。
+    await this.repo.update({ id }, { scopes });
+    row.scopes = scopes;
+    await this.safeAudit({
+      userId: actor.userId,
+      username: actor.username ?? undefined,
+      action: "apikey.set_spend_limit",
+      resource: "api_key",
+      resourceId: String(id),
+      detail: {
+        name: row.name,
+        scope: row.scope,
+        keyPrefix: row.keyPrefix,
+        spendLimit,
+        ownerId: row.userId,
+      },
+      ip: actor.ip ?? undefined,
+    });
     return this.toView(row);
   }
 
@@ -358,7 +466,9 @@ export class ApiKeysService {
       name: row.name,
       keyPrefix: row.keyPrefix,
       scope: row.scope,
-      scopes: parseApiKeyScopes(row.scopes),
+      // N19: spend 词是存储记账，不混入对外 scope 词表。
+      scopes: parseApiKeyScopes(withoutSpendLimit(row.scopes)),
+      spendLimit: parseSpendLimit(row.scopes),
       expiresAt: row.expiresAt,
       revokedAt: row.revokedAt,
       lastUsedAt: row.lastUsedAt,

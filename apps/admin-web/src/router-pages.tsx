@@ -38,3 +38,9 @@ export const SopFromVideoPage = lazy(() => import('./pages/SopFromVideoPage'));
 export const AgentSessionsPage = lazy(() => import('./pages/AgentSessionsPage'));
 // P1-4：待办收件箱（聚合部署审批 / Agent 待办 / 卡住 / 积压 / 队列停摆）
 export const InboxPage = lazy(() => import('./pages/InboxPage'));
+// 工作台最小验证页：与 SOP 同属受管操作面，路由级 RequireAdmin
+export const WorkbenchPage = lazy(() => import('./pages/WorkbenchPage'));
+// P3 中台管控：能力注册表（CRUD + resolve + dump），全页 ADMIN-only
+export const CapabilitiesPage = lazy(() => import('./pages/CapabilitiesPage'));
+// 能力用量看板（showback 可见出口），与能力治理页同为 ADMIN-only
+export const ActivationStatsPage = lazy(() => import('./pages/ActivationStatsPage'));

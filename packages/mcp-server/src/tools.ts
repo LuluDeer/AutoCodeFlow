@@ -58,6 +58,9 @@ export { registerAuditTools } from "./tools/audit";
 export { registerExecutorTools } from "./tools/executor";
 export { registerProjectTools } from "./tools/project";
 
+// N27：ToolSearch 纯函数（零依赖、不注册工具）的对外出口。56 工具面不受影响。
+export { searchTools } from "./tool-search";
+
 // task 组（21 个工具）的 6 个子域实现。**只在本文件里 import**（不 re-export）——
 // 对外出口仍是下面那个 `registerTaskTools` 聚合器。
 import { registerTaskDefinitionTools } from "./tools/task-definition";

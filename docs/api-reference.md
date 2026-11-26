@@ -1443,7 +1443,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 271 个操作，覆盖 234 个路径。
+共 291 个操作，覆盖 250 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1494,8 +1494,10 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/api-keys` | 列出我的 API Key（脱敏） |
 | POST | `/api-keys` | 创建 API Key |
 | DELETE | `/api-keys/{id}` | 撤销（软删除）我的 API Key |
+| PATCH | `/api-keys/{id}/limit` | 设置 API Key 的 spendLimit（ADMIN，仅 trigger scope） |
 | DELETE | `/api-keys/{id}/permanent` | 永久删除我的 API Key（仅限已吊销/已过期） |
 | POST | `/api-keys/{id}/revoke` | 撤销我的 API Key（显式别名，幂等） |
+| POST | `/api-keys/{id}/rotate` | 轮换 API Key（ADMIN，旧值立即失效） |
 | GET | `/app-deployments` | 列出部署 |
 | DELETE | `/app-deployments/{id}` | 删除已结束的部署记录（failed/stopped） |
 | GET | `/app-deployments/{id}` | 获取部署详情 |
@@ -1544,6 +1546,18 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/auth/totp/enable` | 启用 TOTP（可选启用 2FA，第 2 步） |
 | POST | `/auth/totp/setup` | 预登记 TOTP 密钥（可选启用 2FA，第 1 步） |
 | POST | `/auth/totp/verify` | 完成 TOTP 登录（第二因子） |
+| GET | `/capabilities` | 列出全部 capability |
+| POST | `/capabilities` | 新建 capability（ADMIN） |
+| DELETE | `/capabilities/{id}` | 删除 capability（ADMIN） |
+| PATCH | `/capabilities/{id}` | 局部更新 capability（ADMIN） |
+| GET | `/capabilities/{key}/dump` | 导出 capability 三栏配置审计（JWT 只读，凭据脱敏） |
+| POST | `/capabilities/resolve` | 解析 capability 的最终生效配置（JWT 只读） |
+| GET | `/capability-activation` | 过滤 + 分页查询能力激活日志（ADMIN） |
+| POST | `/capability-activation` | 记录一次能力激活（JWT；供 capability/workbench 调用方写入） |
+| GET | `/capability-activation/quota` | 列出全部配额配置（ADMIN；无配置返回空数组） |
+| PUT | `/capability-activation/quota` | 创建或更新按项目/能力的配额配置（ADMIN；落 system_configs） |
+| GET | `/capability-activation/quota-status` | 按调用次数计算配额状态（ok/warn/exceeded）并触发软阈值告警（ADMIN） |
+| GET | `/capability-activation/stats` | 按 capabilityKey / 项目聚合激活次数（ADMIN） |
 | GET | `/config` | 列出所有配置项 |
 | PUT | `/config` | 创建或更新配置项 |
 | DELETE | `/config/{key}` | 删除配置项 |
@@ -1607,6 +1621,10 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/health/metrics` | 系统指标（需认证） |
 | GET | `/health/ready` | 就绪检查 |
 | GET | `/health/services` | 服务状态（需认证） |
+| GET | `/im-identity` | 列出 IM 身份绑定（ADMIN） |
+| POST | `/im-identity/intake` | IM 消息入站编排：注入扫描→身份校验→ProjectRole→方案卡预览（ADMIN，只预览不落库） |
+| POST | `/im-identity/scan` | 群聊 @bot 消息 prompt-injection 自检（ADMIN，纯校验） |
+| POST | `/im-identity/verify-bind` | 校验网关发送方签名并绑定平台用户（ADMIN） |
 | GET | `/metrics` | Prometheus 指标端点 |
 | GET | `/metrics/executors` | - |
 | GET | `/metrics/failures` | - |
@@ -1718,5 +1736,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/users/{id}` | 获取用户详情 |
 | PATCH | `/users/{id}` | 更新用户 |
 | POST | `/webhooks/tasks/{taskId}` | 通过入站 Webhook 触发任务 |
+| POST | `/workbench/commit` | 确认方案卡并落成 SOP 草稿（N7 留痕 hash 校验；只 draft，不自动发布） |
+| POST | `/workbench/preview` | 最小方案卡预览 + 确定性校验（N7 反幻觉闸门；不调用 LLM、不落 SOP） |
 
 <!-- API-APPENDIX:END -->

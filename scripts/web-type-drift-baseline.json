@@ -585,6 +585,151 @@
       "key": "apps/admin-web/src/api/users.ts\tUser",
       "owner": "arch-core",
       "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityKind",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityVisibility",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityScopeMode",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityGuidance",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilitySourceType",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityDecision",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityFieldRule",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityScope",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilitySource",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapability",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCreateCapabilityPayload",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tUpdateCapabilityPayload",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tResolveLayer",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tResolveCapabilityPayload",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityResolution",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tDumpLayerValue",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tDumpField",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capabilities.ts\tCapabilityDump",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tWorkbenchCadence",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tPreviewPlanInput",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tPreviewCard",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tPreviewCheckStatus",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tPreviewCheck",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tPreviewPlanResult",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tCommitPlanInput",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/workbench.ts\tCommitResult",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tActivationStatsEntry",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tActivationProjectStat",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tActivationStats",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     }
   ],
   "allowlist": [

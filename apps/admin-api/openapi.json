@@ -1,6 +1,113 @@
 {
   "components": {
     "schemas": {
+      "ActivationLogViewDto": {
+        "properties": {
+          "baselineMetric": {
+            "description": "N5 基线指标名；NULL 表示未采集",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "N5 baseline metric name; NULL means not collected"
+          },
+          "capabilityKey": {
+            "description": "被激活能力的稳定 key（无 FK，能力删除后仍留存）",
+            "example": "finance-export",
+            "type": "string",
+            "x-i18n-en": "Stable key of the activated capability (no FK; retained after the capability is deleted)"
+          },
+          "capabilityVersion": {
+            "description": "激活时的能力版本（钉死，供 N16 归责）；NULL 表示未记录",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Capability version pinned at activation (for N16 accountability); NULL means not recorded"
+          },
+          "confirmed": {
+            "description": "N5 业务结果是否已确认；缺省落 false",
+            "nullable": true,
+            "type": "boolean",
+            "x-i18n-en": "N5 whether the business outcome is confirmed; defaults to false"
+          },
+          "createdAt": {
+            "description": "创建时间（ISO 8601）",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "Creation time (ISO 8601)"
+          },
+          "id": {
+            "description": "激活日志 UUID",
+            "example": "c1f0...uuid",
+            "type": "string",
+            "x-i18n-en": "Activation log UUID"
+          },
+          "imPlatform": {
+            "description": "IM 来源平台（与 imSenderId 成对）；NULL 表示非 IM 触发",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "IM source platform (paired with imSenderId); NULL means not triggered via IM"
+          },
+          "imSenderId": {
+            "description": "IM 发送方 ID（与 imPlatform 成对）；NULL 表示非 IM 触发",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "IM sender ID (paired with imPlatform); NULL means not triggered via IM"
+          },
+          "improvement": {
+            "description": "N5 相对基线的改进量 numeric(12,2)；NULL 表示未量化",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "N5 improvement relative to baseline numeric(12,2); NULL means not quantified"
+          },
+          "parametersDigest": {
+            "description": "参数摘要 sha256 hex（明文参数永不落库）",
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "type": "string",
+            "x-i18n-en": "sha256 hex digest of the parameters (plaintext parameters are never persisted)"
+          },
+          "projectId": {
+            "description": "归属项目 ID（可空 = 未分配），供按项目 showback",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Owning project ID (nullable = unassigned), for per-project showback"
+          },
+          "result": {
+            "description": "激活结果：success | failure | blocked",
+            "enum": [
+              "success",
+              "failure",
+              "blocked"
+            ],
+            "example": "success",
+            "type": "string",
+            "x-i18n-en": "Activation result: success | failure | blocked"
+          },
+          "sessionId": {
+            "description": "触发的 Workbench/SOP 会话 ID；NULL 表示非会话内调用",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Triggering Workbench/SOP session ID; NULL means not called from a session"
+          },
+          "userId": {
+            "description": "平台用户 ID；NULL 表示无平台用户身份",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Platform user ID; NULL means no platform user identity"
+          },
+          "username": {
+            "description": "平台用户名；NULL 表示无平台用户身份",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Platform username; NULL means no platform user identity"
+          }
+        },
+        "required": [
+          "id",
+          "capabilityKey",
+          "parametersDigest",
+          "result",
+          "createdAt"
+        ],
+        "type": "object"
+      },
       "AgentBacklogResponseDto": {
         "properties": {
           "count": {
@@ -3177,6 +3284,113 @@
         },
         "type": "object"
       },
+      "CapabilityViewDto": {
+        "properties": {
+          "createdAt": {
+            "description": "创建时间（ISO 8601）",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "Creation time (ISO 8601)"
+          },
+          "createdBy": {
+            "description": "创建人身份键（user:<id>|<username>）；NULL = 系统/迁移写入",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Creator identity key (user:<id>|<username>); NULL = written by system/migration"
+          },
+          "description": {
+            "description": "能力说明；NULL 表示未提供",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Capability description; NULL means not provided"
+          },
+          "enabled": {
+            "description": "是否启用",
+            "example": true,
+            "type": "boolean",
+            "x-i18n-en": "Whether the provider is enabled"
+          },
+          "id": {
+            "description": "capability UUID",
+            "example": "c1f0...uuid",
+            "type": "string"
+          },
+          "key": {
+            "description": "稳定标识（小写字母/数字起头的 1-128 位）",
+            "example": "browser",
+            "type": "string",
+            "x-i18n-en": "Stable identifier (1-128 characters starting with a lowercase letter or digit)"
+          },
+          "kind": {
+            "description": "能力类型：skill | mcp | agent | provider | template",
+            "example": "skill",
+            "type": "string",
+            "x-i18n-en": "Capability type: skill | mcp | agent | provider | template"
+          },
+          "label": {
+            "description": "展示名",
+            "example": "Browser",
+            "type": "string",
+            "x-i18n-en": "Display name"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "description": "能力声明（封闭键集合，禁止可执行字段）",
+            "type": "object",
+            "x-i18n-en": "Capability declaration (closed key set; executable fields are forbidden)"
+          },
+          "scope": {
+            "description": "作用域：{ mode: managed | supervised | self_service, guidance: L1 | L2 | L3 }",
+            "example": {
+              "guidance": "L2",
+              "mode": "supervised"
+            },
+            "type": "object",
+            "x-i18n-en": "Scope: { mode: managed | supervised | self_service, guidance: L1 | L2 | L3 }"
+          },
+          "source": {
+            "description": "来源：{ type: builtin | registry | git | folder, ref? }",
+            "example": {
+              "type": "builtin"
+            },
+            "type": "object",
+            "x-i18n-en": "Source: { type: builtin | registry | git | folder, ref? }"
+          },
+          "updatedAt": {
+            "description": "更新时间（ISO 8601）",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "Update time (ISO 8601)"
+          },
+          "version": {
+            "description": "语义化版本",
+            "example": "1.0.0",
+            "type": "string",
+            "x-i18n-en": "Semantic version"
+          },
+          "visibility": {
+            "description": "可见范围：global | project | private",
+            "example": "private",
+            "type": "string",
+            "x-i18n-en": "Visibility scope: global | project | private"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "kind",
+          "label",
+          "version",
+          "source",
+          "visibility",
+          "scope",
+          "manifest",
+          "enabled",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
       "ChannelTestResponseDto": {
         "properties": {
           "message": {
@@ -3525,6 +3739,84 @@
         ],
         "type": "object"
       },
+      "CommitPlanCardRequestDto": {
+        "properties": {
+          "cadence": {
+            "enum": [
+              "daily",
+              "weekly",
+              "monthly"
+            ],
+            "example": "daily",
+            "type": "string"
+          },
+          "expectedCardHash": {
+            "description": "preview 返回的 cardHash（16 位十六进制）——确认留痕锚点",
+            "pattern": "^[0-9a-fA-F]{16}$",
+            "type": "string",
+            "x-i18n-en": "cardHash returned by preview (16 hex characters) - audit-trail confirmation anchor"
+          },
+          "expectedPolicyGeneration": {
+            "description": "preview 返回的 policyGeneration（16 位十六进制）——策略代际锚点",
+            "pattern": "^[0-9a-fA-F]{16}$",
+            "type": "string",
+            "x-i18n-en": "policyGeneration returned by preview (16 hex characters) - policy-generation anchor"
+          },
+          "goal": {
+            "example": "汇总昨日订单异常并推送日报",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "必须与 preview 时的 params 完全一致，否则重建 hash 不匹配",
+            "type": "object",
+            "x-i18n-en": "Must exactly match the params used at preview time, otherwise the rebuild hash will not match"
+          }
+        },
+        "required": [
+          "goal",
+          "cadence",
+          "expectedCardHash",
+          "expectedPolicyGeneration"
+        ],
+        "type": "object"
+      },
+      "CommitResultDto": {
+        "properties": {
+          "next": {
+            "description": "发布是独立审批动作，提交后仍需人工审阅",
+            "type": "string",
+            "x-i18n-en": "Publishing is a separate approval action; manual review is still required after submission"
+          },
+          "slug": {
+            "description": "确定性 slug：workbench-<cardHash 前 8>",
+            "type": "string",
+            "x-i18n-en": "Deterministic slug: workbench-<first 8 of cardHash>"
+          },
+          "sopId": {
+            "description": "落库的 SOP 行 id",
+            "type": "string",
+            "x-i18n-en": "ID of the persisted SOP row"
+          },
+          "status": {
+            "enum": [
+              "draft"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "sopId",
+          "slug",
+          "status",
+          "next"
+        ],
+        "type": "object"
+      },
       "ConfigDeleteResultDto": {
         "properties": {
           "deleted": {
@@ -3652,6 +3944,88 @@
         ],
         "type": "object"
       },
+      "CreateActivationDto": {
+        "properties": {
+          "baselineMetric": {
+            "description": "N5 基线指标名（业务结果归因）；≤64 字符",
+            "type": "string",
+            "x-i18n-en": "N5 baseline metric name (business outcome attribution); ≤64 characters"
+          },
+          "capabilityKey": {
+            "description": "能力稳定 key（1-128 位 [a-z0-9._-]，小写字母/数字起头）",
+            "example": "finance-export",
+            "type": "string",
+            "x-i18n-en": "Stable capability key (1-128 characters of [a-z0-9._-], starting with a lowercase letter or digit)"
+          },
+          "capabilityVersion": {
+            "description": "激活时的能力版本",
+            "example": "2.3.1",
+            "type": "string",
+            "x-i18n-en": "Capability version at activation time"
+          },
+          "confirmed": {
+            "description": "N5 业务结果是否已确认；省略时按 false 落库",
+            "type": "boolean",
+            "x-i18n-en": "N5 whether the business outcome is confirmed; defaults to false when omitted"
+          },
+          "imPlatform": {
+            "description": "IM 平台",
+            "example": "wecom",
+            "type": "string",
+            "x-i18n-en": "IM platform"
+          },
+          "imSenderId": {
+            "description": "IM 发送方标识",
+            "type": "string",
+            "x-i18n-en": "IM sender identifier"
+          },
+          "improvement": {
+            "description": "N5 相对基线的改进量；numeric(12,2)，≤2 位小数",
+            "type": "number",
+            "x-i18n-en": "N5 improvement relative to baseline; numeric(12,2), at most 2 decimal places"
+          },
+          "parameters": {
+            "additionalProperties": true,
+            "description": "本次激活的参数（敏感数据可含其中）；只用于计算摘要，明文永不落库",
+            "type": "object",
+            "x-i18n-en": "Parameters for this activation (may contain sensitive data); used only to compute a digest, plaintext is never persisted"
+          },
+          "projectId": {
+            "description": "归属项目 id（showback 维度）",
+            "type": "string",
+            "x-i18n-en": "Owning project ID (showback dimension)"
+          },
+          "result": {
+            "description": "激活结果；省略时按 success 落库",
+            "enum": [
+              "success",
+              "failure",
+              "blocked"
+            ],
+            "type": "string",
+            "x-i18n-en": "Activation result; defaults to success when omitted"
+          },
+          "sessionId": {
+            "description": "Workbench/SOP 会话 id",
+            "type": "string",
+            "x-i18n-en": "Workbench/SOP session ID"
+          },
+          "userId": {
+            "description": "平台用户 id",
+            "type": "number",
+            "x-i18n-en": "Platform user ID"
+          },
+          "username": {
+            "description": "平台用户名",
+            "type": "string",
+            "x-i18n-en": "Platform username"
+          }
+        },
+        "required": [
+          "capabilityKey"
+        ],
+        "type": "object"
+      },
       "CreateAgentSessionDto": {
         "properties": {
           "kind": {
@@ -3752,6 +4126,119 @@
           "name",
           "version",
           "runtime"
+        ],
+        "type": "object"
+      },
+      "CreateCapabilityDto": {
+        "properties": {
+          "attestation": {
+            "description": "N16 发布背书声明：封闭键 {signer, at?, scope?}，signer 非空",
+            "example": {
+              "at": "2026-11-26T00:00:00Z",
+              "scope": "global",
+              "signer": "user:42|alice"
+            },
+            "type": "object",
+            "x-i18n-en": "N16 publication attestation: closed key set {signer, at?, scope?}, signer must be non-empty"
+          },
+          "backer": {
+            "description": "N16 部门/角色背书（非个人）；NULL = 未声明",
+            "example": "role:platform-eng",
+            "type": "string",
+            "x-i18n-en": "N16 department/role endorsement (not an individual); NULL = not declared"
+          },
+          "description": {
+            "description": "能力说明",
+            "type": "string",
+            "x-i18n-en": "Capability description"
+          },
+          "enabled": {
+            "description": "是否启用（默认 true）",
+            "type": "boolean",
+            "x-i18n-en": "Whether enabled (defaults to true)"
+          },
+          "key": {
+            "description": "稳定标识；1-128 位 [a-z0-9._-]，小写字母/数字起头",
+            "example": "browser",
+            "type": "string",
+            "x-i18n-en": "Stable identifier; 1-128 characters of [a-z0-9._-], starting with a lowercase letter or digit"
+          },
+          "kind": {
+            "description": "能力类型：skill | mcp | agent | provider | template",
+            "enum": [
+              "skill",
+              "mcp",
+              "agent",
+              "provider",
+              "template"
+            ],
+            "type": "string",
+            "x-i18n-en": "Capability type: skill | mcp | agent | provider | template"
+          },
+          "label": {
+            "description": "展示名",
+            "example": "Browser",
+            "type": "string",
+            "x-i18n-en": "Display name"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "description": "能力声明（封闭键集合，禁止 command/hook/script 可执行字段）",
+            "type": "object",
+            "x-i18n-en": "Capability declaration (closed key set; executable command/hook/script fields are forbidden)"
+          },
+          "owner": {
+            "description": "N16 发布者身份键；NULL = 未声明",
+            "example": "user:42|alice",
+            "type": "string",
+            "x-i18n-en": "N16 publisher identity key; NULL = not declared"
+          },
+          "scope": {
+            "description": "作用域：{mode: managed|supervised|self_service, guidance: L1|L2|L3}",
+            "example": {
+              "guidance": "L2",
+              "mode": "supervised"
+            },
+            "type": "object",
+            "x-i18n-en": "Scope: {mode: managed|supervised|self_service, guidance: L1|L2|L3}"
+          },
+          "source": {
+            "description": "来源：{type: builtin|registry|git|folder, ref?}",
+            "example": {
+              "type": "builtin"
+            },
+            "type": "object",
+            "x-i18n-en": "Source: {type: builtin|registry|git|folder, ref?}"
+          },
+          "version": {
+            "description": "语义化版本",
+            "example": "1.0.0",
+            "type": "string",
+            "x-i18n-en": "Semantic version"
+          },
+          "versionPin": {
+            "description": "N16 钉死版本：语义化版本或 40/64 位 hex hash",
+            "example": "1.2.3",
+            "type": "string",
+            "x-i18n-en": "N16 pinned version: semantic version or 40/64-character hex hash"
+          },
+          "visibility": {
+            "description": "可见范围：global | project | private",
+            "enum": [
+              "global",
+              "project",
+              "private"
+            ],
+            "type": "string",
+            "x-i18n-en": "Visibility scope: global | project | private"
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "label",
+          "visibility",
+          "manifest"
         ],
         "type": "object"
       },
@@ -7615,6 +8102,286 @@
         ],
         "type": "object"
       },
+      "ImIdentityViewDto": {
+        "properties": {
+          "createdAt": {
+            "description": "创建时间（ISO 8601）",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "Creation time (ISO 8601)"
+          },
+          "createdBy": {
+            "description": "绑定操作人身份键（user:<id>）；NULL = 系统/迁移写入",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Identity key of the binding operator (user:<id>); NULL = written by the system/migration"
+          },
+          "id": {
+            "description": "绑定关系 UUID",
+            "type": "string",
+            "x-i18n-en": "Binding record UUID"
+          },
+          "imSenderId": {
+            "description": "IM 平台内的 sender id",
+            "example": "zhangsan",
+            "type": "string",
+            "x-i18n-en": "Sender ID within the IM platform"
+          },
+          "platform": {
+            "description": "IM 平台：wecom | feishu",
+            "example": "wecom",
+            "type": "string",
+            "x-i18n-en": "IM platform: wecom | feishu"
+          },
+          "platformUserId": {
+            "description": "绑定的平台 user id；NULL = 尚未绑定（verified 必为 false）",
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Bound platform user id; NULL = not bound yet (verified must be false)"
+          },
+          "projectId": {
+            "description": "项目归属；NULL = 未分配（沿用平台默认项目视图）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Project ownership; NULL = unassigned (uses the platform default project view)"
+          },
+          "projectRole": {
+            "description": "项目角色：viewer | editor | admin；NULL = 未授予",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Project role: viewer | editor | admin; NULL = not granted"
+          },
+          "updatedAt": {
+            "description": "更新时间（ISO 8601）",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "Update time (ISO 8601)"
+          },
+          "verified": {
+            "description": "是否已通过网关发送方签名验证并完成绑定",
+            "example": true,
+            "type": "boolean",
+            "x-i18n-en": "Whether the gateway sender signature was verified and the binding was completed"
+          }
+        },
+        "required": [
+          "id",
+          "platform",
+          "imSenderId",
+          "verified",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "ImInjectionFindingDto": {
+        "properties": {
+          "evidence": {
+            "description": "触发规则的原文片段（超长截断至 160 字符）",
+            "example": "忽略之前所有指令",
+            "type": "string",
+            "x-i18n-en": "Source snippet that triggered the rule (truncated to 160 characters if too long)"
+          },
+          "rule": {
+            "description": "命中的规则代码（如 ROLE_HIJACK_EN / URL_DANGEROUS_COMMAND）",
+            "example": "ROLE_HIJACK_EN",
+            "type": "string",
+            "x-i18n-en": "Matched rule code (e.g. ROLE_HIJACK_EN / URL_DANGEROUS_COMMAND)"
+          },
+          "severity": {
+            "description": "命中严重级别：CRITICAL（阻断）| WARN（仅提示）",
+            "enum": [
+              "CRITICAL",
+              "WARN"
+            ],
+            "example": "CRITICAL",
+            "type": "string",
+            "x-i18n-en": "Match severity: CRITICAL (blocking) | WARN (advisory only)"
+          }
+        },
+        "required": [
+          "rule",
+          "severity",
+          "evidence"
+        ],
+        "type": "object"
+      },
+      "ImInjectionScanResultDto": {
+        "properties": {
+          "criticalCount": {
+            "description": "CRITICAL 级命中数量",
+            "example": 0,
+            "type": "number",
+            "x-i18n-en": "Number of CRITICAL-level matches"
+          },
+          "findings": {
+            "description": "命中项列表（rule / severity / evidence）",
+            "items": {
+              "$ref": "#/components/schemas/ImInjectionFindingDto"
+            },
+            "type": "array",
+            "x-i18n-en": "List of matches (rule / severity / evidence)"
+          },
+          "safe": {
+            "description": "是否通过注入扫描（CRITICAL 命中即 false）",
+            "example": true,
+            "type": "boolean",
+            "x-i18n-en": "Whether injection scanning passed (false if any CRITICAL match)"
+          },
+          "truncated": {
+            "description": "正文超过 20000 字符时只扫描前缀并置位",
+            "example": false,
+            "type": "boolean",
+            "x-i18n-en": "When the body exceeds 20000 characters, only its prefix is scanned and this flag is set"
+          }
+        },
+        "required": [
+          "safe",
+          "findings",
+          "criticalCount",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "ImIntakeDto": {
+        "properties": {
+          "cadence": {
+            "enum": [
+              "daily",
+              "weekly",
+              "monthly"
+            ],
+            "example": "monthly",
+            "type": "string"
+          },
+          "imSenderId": {
+            "example": "zhangsan",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "message": {
+            "description": "业务语言描述（作为方案卡 goal），如「每月5号导出销售报表」",
+            "example": "每月5号导出销售报表",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string",
+            "x-i18n-en": "Business-language description (used as the plan card goal), e.g. export the sales report on the 5th of every month"
+          },
+          "platform": {
+            "enum": [
+              "wecom",
+              "feishu"
+            ],
+            "example": "wecom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform",
+          "imSenderId",
+          "message",
+          "cadence"
+        ],
+        "type": "object"
+      },
+      "ImIntakeIdentityDto": {
+        "properties": {
+          "platformUserId": {
+            "description": "绑定的平台 user id（已验非空）",
+            "type": "number",
+            "x-i18n-en": "Bound platform user id (verified non-empty)"
+          },
+          "projectId": {
+            "description": "项目归属；null = 平台级绑定，跳过角色校验",
+            "type": "string",
+            "x-i18n-en": "Project ownership; null = platform-level binding, skip role checks"
+          },
+          "projectRole": {
+            "description": "绑定时登记的项目角色；null = 未授予",
+            "type": "string",
+            "x-i18n-en": "Project role recorded at binding time; null = not granted"
+          }
+        },
+        "required": [
+          "platformUserId"
+        ],
+        "type": "object"
+      },
+      "ImIntakeResultDto": {
+        "properties": {
+          "card": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PlanCardDto"
+              }
+            ],
+            "description": "方案卡主体",
+            "x-i18n-en": "Plan card body"
+          },
+          "cardHash": {
+            "description": "card 规范化 JSON 的 sha256 短前缀（16 位 hex）",
+            "type": "string",
+            "x-i18n-en": "Short sha256 prefix of the canonical card JSON (16 hex characters)"
+          },
+          "checks": {
+            "description": "方案卡确定性校验项（同 workbench preview）",
+            "items": {
+              "type": "object"
+            },
+            "type": "array",
+            "x-i18n-en": "Deterministic plan-card checks (same as workbench preview)"
+          },
+          "eligible": {
+            "description": "是否通过确定性闸门；任一 fail 即 false",
+            "type": "boolean",
+            "x-i18n-en": "Whether the deterministic gate passed; false if any check fails"
+          },
+          "identity": {
+            "$ref": "#/components/schemas/ImIntakeIdentityDto"
+          },
+          "policyGeneration": {
+            "description": "策略代际指纹（16 位 hex，编译期快照口径）",
+            "type": "string",
+            "x-i18n-en": "Policy generation fingerprint (16 hex characters, compile-time snapshot basis)"
+          },
+          "scan": {
+            "$ref": "#/components/schemas/ImIntakeScanDto"
+          }
+        },
+        "required": [
+          "checks",
+          "card",
+          "eligible",
+          "cardHash",
+          "policyGeneration",
+          "identity",
+          "scan"
+        ],
+        "type": "object"
+      },
+      "ImIntakeScanDto": {
+        "properties": {
+          "findings": {
+            "description": "命中项列表（rule/severity/evidence）",
+            "items": {
+              "type": "array"
+            },
+            "type": "array",
+            "x-i18n-en": "List of matches (rule/severity/evidence)"
+          },
+          "safe": {
+            "description": "是否通过注入扫描（CRITICAL 命中即 false）",
+            "type": "boolean",
+            "x-i18n-en": "Whether injection scanning passed (false if any CRITICAL match)"
+          }
+        },
+        "required": [
+          "safe",
+          "findings"
+        ],
+        "type": "object"
+      },
       "ImportTaskDto": {
         "properties": {
           "exportedAt": {
@@ -8592,6 +9359,143 @@
         ],
         "type": "object"
       },
+      "PlanCardBudgetDto": {
+        "properties": {
+          "maxTurns": {
+            "description": "本方案卡允许的最大轮次（中台硬上限 20）",
+            "type": "number",
+            "x-i18n-en": "Maximum rounds allowed for this plan card (platform hard limit: 20)"
+          }
+        },
+        "required": [
+          "maxTurns"
+        ],
+        "type": "object"
+      },
+      "PlanCardCheckDto": {
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "warn",
+              "fail"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "status",
+          "message"
+        ],
+        "type": "object"
+      },
+      "PlanCardDto": {
+        "properties": {
+          "acceptanceText": {
+            "type": "string"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/PlanCardBudgetDto"
+          },
+          "capabilityHints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          },
+          "triggerText": {
+            "description": "cron 回读出的确定性业务语句（每天/每周/每月 N 日）",
+            "type": "string",
+            "x-i18n-en": "Deterministic business statement read back from cron (daily/weekly/monthly on day N)"
+          }
+        },
+        "required": [
+          "title",
+          "triggerText",
+          "capabilityHints",
+          "acceptanceText",
+          "budget"
+        ],
+        "type": "object"
+      },
+      "PlanCardPreviewResponseDto": {
+        "properties": {
+          "card": {
+            "$ref": "#/components/schemas/PlanCardDto"
+          },
+          "cardHash": {
+            "description": "card 规范化 JSON 的 sha256 短前缀（16 位十六进制）",
+            "type": "string",
+            "x-i18n-en": "Short sha256 prefix of the canonical card JSON (16 hex characters)"
+          },
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/PlanCardCheckDto"
+            },
+            "type": "array"
+          },
+          "eligible": {
+            "description": "是否通过确定性闸门；任一 fail 即 false",
+            "type": "boolean",
+            "x-i18n-en": "Whether the deterministic gate passed; false if any check fails"
+          },
+          "policyGeneration": {
+            "description": "策略代际指纹（16 位十六进制）——能力/预算策略变更后需重新 preview",
+            "type": "string",
+            "x-i18n-en": "Policy generation fingerprint (16 hex characters) - re-run preview after capability/budget policy changes"
+          }
+        },
+        "required": [
+          "eligible",
+          "card",
+          "checks",
+          "cardHash",
+          "policyGeneration"
+        ],
+        "type": "object"
+      },
+      "PreviewPlanCardRequestDto": {
+        "properties": {
+          "cadence": {
+            "enum": [
+              "daily",
+              "weekly",
+              "monthly"
+            ],
+            "example": "daily",
+            "type": "string"
+          },
+          "goal": {
+            "example": "汇总昨日订单异常并推送日报",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "可选能力/预算参数；capabilityId 必须在内置白名单内",
+            "type": "object",
+            "x-i18n-en": "Optional capability/budget parameters; capabilityId must be in the built-in allowlist"
+          }
+        },
+        "required": [
+          "goal",
+          "cadence"
+        ],
+        "type": "object"
+      },
       "ProjectDeleteResponseDto": {
         "properties": {
           "deleted": {
@@ -9225,6 +10129,64 @@
         ],
         "type": "object"
       },
+      "ResolveCapabilityDto": {
+        "properties": {
+          "fieldRules": {
+            "additionalProperties": {
+              "enum": [
+                "replace",
+                "keyMerge",
+                "append",
+                "replaceIfSameKey",
+                "policyTighten"
+              ]
+            },
+            "description": "字段族规则表；省略则使用 service 的默认规则表",
+            "type": "object",
+            "x-i18n-en": "Field-family rule table; uses the service default rules when omitted"
+          },
+          "key": {
+            "description": "已注册的 capability key",
+            "example": "browser",
+            "type": "string",
+            "x-i18n-en": "Registered capability key"
+          },
+          "layers": {
+            "description": "高→低排列的配置层，1-8 层",
+            "items": {
+              "$ref": "#/components/schemas/ResolveLayerDto"
+            },
+            "type": "array",
+            "x-i18n-en": "Configuration layers ordered high to low, 1-8 layers"
+          }
+        },
+        "required": [
+          "key",
+          "layers"
+        ],
+        "type": "object"
+      },
+      "ResolveLayerDto": {
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "description": "该层的原始配置（纯对象）",
+            "type": "object",
+            "x-i18n-en": "Raw configuration of the layer (plain object)"
+          },
+          "name": {
+            "description": "层名；数组按高→低排列，如 managed / project / private",
+            "example": "managed",
+            "type": "string",
+            "x-i18n-en": "Layer name; array ordered high to low, e.g. managed / project / private"
+          }
+        },
+        "required": [
+          "name",
+          "config"
+        ],
+        "type": "object"
+      },
       "RevokeOthersResponseDto": {
         "properties": {
           "revoked": {
@@ -9351,6 +10313,19 @@
           "id",
           "baseUrl",
           "model"
+        ],
+        "type": "object"
+      },
+      "ScanTextDto": {
+        "properties": {
+          "text": {
+            "description": "待扫描的群聊 @bot 消息原文",
+            "type": "string",
+            "x-i18n-en": "Raw text of the group-chat @bot message to scan"
+          }
+        },
+        "required": [
+          "text"
         ],
         "type": "object"
       },
@@ -9576,6 +10551,65 @@
           "versionId",
           "updatedApp"
         ],
+        "type": "object"
+      },
+      "SetQuotaDto": {
+        "properties": {
+          "hardLimit": {
+            "description": "硬阈值：usage >= hardLimit 记 exceeded",
+            "type": "number",
+            "x-i18n-en": "Hard threshold: usage >= hardLimit is recorded as exceeded"
+          },
+          "scope": {
+            "description": "按项目或按能力计量",
+            "enum": [
+              "project",
+              "capability"
+            ],
+            "type": "string",
+            "x-i18n-en": "Metered by project or by capability"
+          },
+          "softLimit": {
+            "description": "软阈值：usage >= softLimit 记 warn",
+            "type": "number",
+            "x-i18n-en": "Soft threshold: usage >= softLimit is recorded as warn"
+          },
+          "target": {
+            "description": "projectId 或 capabilityKey",
+            "type": "string",
+            "x-i18n-en": "projectId or capabilityKey"
+          },
+          "webhookUrl": {
+            "description": "告警 webhook URL；缺省回落全局通知配置",
+            "type": "string",
+            "x-i18n-en": "Alert webhook URL; falls back to the global notification config when omitted"
+          },
+          "windowDays": {
+            "maximum": 90,
+            "minimum": 1,
+            "type": "number"
+          }
+        },
+        "required": [
+          "scope",
+          "target",
+          "softLimit",
+          "hardLimit",
+          "windowDays"
+        ],
+        "type": "object"
+      },
+      "SetSpendLimitDto": {
+        "properties": {
+          "spendLimit": {
+            "description": "调用次数上限；null = 清除上限（恢复无限）",
+            "maximum": 1000000000,
+            "minimum": 0,
+            "nullable": true,
+            "type": "number",
+            "x-i18n-en": "Call limit; null = clear the limit (unlimited)"
+          }
+        },
         "type": "object"
       },
       "SimpleOkResponseDto": {
@@ -12044,6 +13078,112 @@
         },
         "type": "object"
       },
+      "UpdateCapabilityDto": {
+        "properties": {
+          "attestation": {
+            "description": "N16 发布背书声明：封闭键 {signer, at?, scope?}，signer 非空",
+            "example": {
+              "at": "2026-11-26T00:00:00Z",
+              "scope": "global",
+              "signer": "user:42|alice"
+            },
+            "type": "object",
+            "x-i18n-en": "N16 publication attestation: closed key set {signer, at?, scope?}, signer must be non-empty"
+          },
+          "backer": {
+            "description": "N16 部门/角色背书（非个人）；NULL = 未声明",
+            "example": "role:platform-eng",
+            "type": "string",
+            "x-i18n-en": "N16 department/role endorsement (not an individual); NULL = not declared"
+          },
+          "description": {
+            "description": "能力说明",
+            "type": "string",
+            "x-i18n-en": "Capability description"
+          },
+          "enabled": {
+            "description": "是否启用（默认 true）",
+            "type": "boolean",
+            "x-i18n-en": "Whether enabled (defaults to true)"
+          },
+          "key": {
+            "description": "稳定标识；1-128 位 [a-z0-9._-]，小写字母/数字起头",
+            "example": "browser",
+            "type": "string",
+            "x-i18n-en": "Stable identifier; 1-128 characters of [a-z0-9._-], starting with a lowercase letter or digit"
+          },
+          "kind": {
+            "description": "能力类型：skill | mcp | agent | provider | template",
+            "enum": [
+              "skill",
+              "mcp",
+              "agent",
+              "provider",
+              "template"
+            ],
+            "type": "string",
+            "x-i18n-en": "Capability type: skill | mcp | agent | provider | template"
+          },
+          "label": {
+            "description": "展示名",
+            "example": "Browser",
+            "type": "string",
+            "x-i18n-en": "Display name"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "description": "能力声明（封闭键集合，禁止 command/hook/script 可执行字段）",
+            "type": "object",
+            "x-i18n-en": "Capability declaration (closed key set; executable command/hook/script fields are forbidden)"
+          },
+          "owner": {
+            "description": "N16 发布者身份键；NULL = 未声明",
+            "example": "user:42|alice",
+            "type": "string",
+            "x-i18n-en": "N16 publisher identity key; NULL = not declared"
+          },
+          "scope": {
+            "description": "作用域：{mode: managed|supervised|self_service, guidance: L1|L2|L3}",
+            "example": {
+              "guidance": "L2",
+              "mode": "supervised"
+            },
+            "type": "object",
+            "x-i18n-en": "Scope: {mode: managed|supervised|self_service, guidance: L1|L2|L3}"
+          },
+          "source": {
+            "description": "来源：{type: builtin|registry|git|folder, ref?}",
+            "example": {
+              "type": "builtin"
+            },
+            "type": "object",
+            "x-i18n-en": "Source: {type: builtin|registry|git|folder, ref?}"
+          },
+          "version": {
+            "description": "语义化版本",
+            "example": "1.0.0",
+            "type": "string",
+            "x-i18n-en": "Semantic version"
+          },
+          "versionPin": {
+            "description": "N16 钉死版本：语义化版本或 40/64 位 hex hash",
+            "example": "1.2.3",
+            "type": "string",
+            "x-i18n-en": "N16 pinned version: semantic version or 40/64-character hex hash"
+          },
+          "visibility": {
+            "description": "可见范围：global | project | private",
+            "enum": [
+              "global",
+              "project",
+              "private"
+            ],
+            "type": "string",
+            "x-i18n-en": "Visibility scope: global | project | private"
+          }
+        },
+        "type": "object"
+      },
       "UpdateChannelDto": {
         "properties": {
           "config": {
@@ -12873,6 +14013,51 @@
           "lastTotpCounter",
           "createdAt",
           "updatedAt"
+        ],
+        "type": "object"
+      },
+      "VerifyBindDto": {
+        "properties": {
+          "imSenderId": {
+            "description": "IM 平台内的 sender id",
+            "example": "zhangsan",
+            "type": "string",
+            "x-i18n-en": "Sender ID within the IM platform"
+          },
+          "platform": {
+            "enum": [
+              "wecom",
+              "feishu"
+            ],
+            "example": "wecom",
+            "type": "string"
+          },
+          "platformUserId": {
+            "description": "平台 users 表主键",
+            "example": 42,
+            "type": "number",
+            "x-i18n-en": "Primary key of the platform users table"
+          },
+          "projectId": {
+            "description": "项目 id；省略 = 不归属具体项目",
+            "type": "string",
+            "x-i18n-en": "Project ID; omitted = not associated with a specific project"
+          },
+          "projectRole": {
+            "description": "项目角色",
+            "enum": [
+              "viewer",
+              "editor",
+              "admin"
+            ],
+            "type": "string",
+            "x-i18n-en": "Project role"
+          }
+        },
+        "required": [
+          "platform",
+          "imSenderId",
+          "platformUserId"
         ],
         "type": "object"
       },
@@ -14813,6 +15998,55 @@
         }
       }
     },
+    "/api-keys/{id}/limit": {
+      "patch": {
+        "operationId": "ApiKeysController_setSpendLimit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSpendLimitDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyRevokeResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "设置 API Key 的 spendLimit（ADMIN，仅 trigger scope）",
+        "tags": [
+          "API Keys"
+        ],
+        "x-i18n-en": {
+          "summary": "Set an API Key's spendLimit (ADMIN, trigger scope only)"
+        }
+      }
+    },
     "/api-keys/{id}/permanent": {
       "delete": {
         "operationId": "ApiKeysController_remove",
@@ -14888,6 +16122,46 @@
         ],
         "x-i18n-en": {
           "summary": "Revoke my API key (explicit alias, idempotent)"
+        }
+      }
+    },
+    "/api-keys/{id}/rotate": {
+      "post": {
+        "operationId": "ApiKeysController_rotate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyCreateResponseDto"
+                }
+              }
+            },
+            "description": "新明文一次性回显；旧 key 立即失效",
+            "x-i18n-en": "New plaintext returned once; the old key is invalidated immediately"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "轮换 API Key（ADMIN，旧值立即失效）",
+        "tags": [
+          "API Keys"
+        ],
+        "x-i18n-en": {
+          "summary": "Rotate an API Key (ADMIN; the old value is invalidated immediately)"
         }
       }
     },
@@ -17462,6 +18736,583 @@
         "x-i18n-en": {
           "description": "Re-validates username + password, verifies the 6-digit TOTP code, and issues accessToken/refreshToken. Call this after /auth/login returns { totpRequired: true }.",
           "summary": "Complete TOTP login (second factor)"
+        }
+      }
+    },
+    "/capabilities": {
+      "get": {
+        "operationId": "CapabilityController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CapabilityViewDto"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "capability 列表",
+            "x-i18n-en": "Capability list"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "列出全部 capability",
+        "tags": [
+          "Capabilities"
+        ],
+        "x-i18n-en": {
+          "summary": "List all capabilities"
+        }
+      },
+      "post": {
+        "operationId": "CapabilityController_create",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCapabilityDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilityViewDto"
+                }
+              }
+            },
+            "description": "已创建的 capability",
+            "x-i18n-en": "Created capability"
+          },
+          "400": {
+            "description": "字段/scope/manifest 非法",
+            "x-i18n-en": "Invalid fields/scope/manifest"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "新建 capability（ADMIN）",
+        "tags": [
+          "Capabilities"
+        ],
+        "x-i18n-en": {
+          "summary": "Create a capability (ADMIN)"
+        }
+      }
+    },
+    "/capabilities/resolve": {
+      "post": {
+        "operationId": "CapabilityController_resolve",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveCapabilityDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "生效配置 + 策略结论",
+            "x-i18n-en": "Effective configuration + policy decision"
+          },
+          "400": {
+            "description": "key 未注册 / layers 非法",
+            "x-i18n-en": "Key not registered / invalid layers"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "解析 capability 的最终生效配置（JWT 只读）",
+        "tags": [
+          "Capabilities"
+        ],
+        "x-i18n-en": {
+          "summary": "Resolve the final effective configuration of a capability (JWT, read-only)"
+        }
+      }
+    },
+    "/capabilities/{id}": {
+      "delete": {
+        "operationId": "CapabilityController_remove",
+        "parameters": [
+          {
+            "description": "capability UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已删除",
+            "x-i18n-en": "Deleted"
+          },
+          "404": {
+            "description": "capability 不存在",
+            "x-i18n-en": "Capability not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "删除 capability（ADMIN）",
+        "tags": [
+          "Capabilities"
+        ],
+        "x-i18n-en": {
+          "summary": "Delete a capability (ADMIN)"
+        }
+      },
+      "patch": {
+        "operationId": "CapabilityController_update",
+        "parameters": [
+          {
+            "description": "capability UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCapabilityDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilityViewDto"
+                }
+              }
+            },
+            "description": "更新后的 capability",
+            "x-i18n-en": "Updated capability"
+          },
+          "400": {
+            "description": "字段/scope/manifest 非法",
+            "x-i18n-en": "Invalid fields/scope/manifest"
+          },
+          "404": {
+            "description": "capability 不存在",
+            "x-i18n-en": "Capability not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "局部更新 capability（ADMIN）",
+        "tags": [
+          "Capabilities"
+        ],
+        "x-i18n-en": {
+          "summary": "Partially update a capability (ADMIN)"
+        }
+      }
+    },
+    "/capabilities/{key}/dump": {
+      "get": {
+        "operationId": "CapabilityController_dump",
+        "parameters": [
+          {
+            "description": "capability key（非 UUID）",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Capability key (not a UUID)"
+          },
+          {
+            "in": "query",
+            "name": "projectLayer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "privateLayer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "分层来源 / 生效值 / 来源层的三栏审计",
+            "x-i18n-en": "Three-column audit of layered source / effective value / source layer"
+          },
+          "400": {
+            "description": "key 未注册 / 下层 JSON 非法",
+            "x-i18n-en": "Key not registered / invalid lower-layer JSON"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "导出 capability 三栏配置审计（JWT 只读，凭据脱敏）",
+        "tags": [
+          "Capabilities"
+        ],
+        "x-i18n-en": {
+          "summary": "Export the three-column configuration audit for a capability (JWT, read-only, credentials redacted)"
+        }
+      }
+    },
+    "/capability-activation": {
+      "get": {
+        "operationId": "CapabilityActivationController_query",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 10000,
+              "type": "object"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pageSize",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "type": "object"
+            }
+          },
+          {
+            "description": "按能力 key 精确过滤",
+            "in": "query",
+            "name": "capabilityKey",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Exact filter by capability key"
+          },
+          {
+            "description": "按会话 id 精确过滤",
+            "in": "query",
+            "name": "sessionId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Exact filter by session ID"
+          },
+          {
+            "description": "按平台用户 id 精确过滤",
+            "in": "query",
+            "name": "userId",
+            "required": false,
+            "schema": {
+              "type": "number"
+            },
+            "x-i18n-en": "Exact filter by platform user ID"
+          },
+          {
+            "description": "按项目 id 精确过滤",
+            "in": "query",
+            "name": "projectId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Exact filter by project ID"
+          },
+          {
+            "description": "按平台用户名精确过滤",
+            "in": "query",
+            "name": "username",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Exact filter by platform username"
+          },
+          {
+            "in": "query",
+            "name": "result",
+            "required": false,
+            "schema": {
+              "enum": [
+                "success",
+                "failure",
+                "blocked"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "N5 业务结果归因过滤：confirmed=已确认 / unconfirmed=未确认；映射 confirmed 列",
+            "in": "query",
+            "name": "outcome",
+            "required": false,
+            "schema": {
+              "enum": [
+                "confirmed",
+                "unconfirmed"
+              ],
+              "type": "string"
+            },
+            "x-i18n-en": "N5 business outcome attribution filter: confirmed = confirmed / unconfirmed = not confirmed; maps to the confirmed column"
+          },
+          {
+            "description": "仅返回 createdAt >= from（ISO 8601）",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Only return records with createdAt >= from (ISO 8601)"
+          },
+          {
+            "description": "仅返回 createdAt <= to（ISO 8601）",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Only return records with createdAt <= to (ISO 8601)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "过滤 + 分页查询能力激活日志（ADMIN）",
+        "tags": [
+          "Capability Activation"
+        ],
+        "x-i18n-en": {
+          "summary": "Query capability activation logs with filters and pagination (ADMIN)"
+        }
+      },
+      "post": {
+        "operationId": "CapabilityActivationController_record",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateActivationDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivationLogViewDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "记录一次能力激活（JWT；供 capability/workbench 调用方写入）",
+        "tags": [
+          "Capability Activation"
+        ],
+        "x-i18n-en": {
+          "summary": "Record a capability activation (JWT; for capability/workbench callers)"
+        }
+      }
+    },
+    "/capability-activation/quota": {
+      "get": {
+        "operationId": "CapabilityActivationController_listQuotas",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "列出全部配额配置（ADMIN；无配置返回空数组）",
+        "tags": [
+          "Capability Activation"
+        ],
+        "x-i18n-en": {
+          "summary": "List all quota configurations (ADMIN; returns an empty array when none exist)"
+        }
+      },
+      "put": {
+        "operationId": "CapabilityActivationController_upsertQuota",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetQuotaDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "创建或更新按项目/能力的配额配置（ADMIN；落 system_configs）",
+        "tags": [
+          "Capability Activation"
+        ],
+        "x-i18n-en": {
+          "summary": "Create or update a per-project/per-capability quota configuration (ADMIN; persisted in system_configs)"
+        }
+      }
+    },
+    "/capability-activation/quota-status": {
+      "get": {
+        "operationId": "CapabilityActivationController_quotaStatus",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "windowDays",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 90,
+              "minimum": 1,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "按调用次数计算配额状态（ok/warn/exceeded）并触发软阈值告警（ADMIN）",
+        "tags": [
+          "Capability Activation"
+        ],
+        "x-i18n-en": {
+          "summary": "Compute quota status from call counts (ok/warn/exceeded) and trigger soft-threshold alerts (ADMIN)"
+        }
+      }
+    },
+    "/capability-activation/stats": {
+      "get": {
+        "operationId": "CapabilityActivationController_stats",
+        "parameters": [
+          {
+            "description": "仅统计 createdAt >= from（ISO 8601）",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Only count records with createdAt >= from (ISO 8601)"
+          },
+          {
+            "description": "仅统计 createdAt <= to（ISO 8601）",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Only count records with createdAt <= to (ISO 8601)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "按 capabilityKey / 项目聚合激活次数（ADMIN）",
+        "tags": [
+          "Capability Activation"
+        ],
+        "x-i18n-en": {
+          "summary": "Aggregate activation counts by capabilityKey / project (ADMIN)"
         }
       }
     },
@@ -20634,6 +22485,176 @@
         "x-i18n-en": {
           "description": "Get detailed health status of each core service. Requires JWT authentication.",
           "summary": "Service status (authentication required)"
+        }
+      }
+    },
+    "/im-identity": {
+      "get": {
+        "operationId": "ImIdentityController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ImIdentityViewDto"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "列出 IM 身份绑定（ADMIN）",
+        "tags": [
+          "IM Identity"
+        ],
+        "x-i18n-en": {
+          "summary": "List IM identity bindings (ADMIN)"
+        }
+      }
+    },
+    "/im-identity/intake": {
+      "post": {
+        "operationId": "ImIdentityController_intake",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImIntakeDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImIntakeResultDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "IM 消息入站编排：注入扫描→身份校验→ProjectRole→方案卡预览（ADMIN，只预览不落库）",
+        "tags": [
+          "IM Identity"
+        ],
+        "x-i18n-en": {
+          "summary": "IM inbound message orchestration: injection scan -> identity verification -> ProjectRole -> plan card preview (ADMIN, preview only, no persistence)"
+        }
+      }
+    },
+    "/im-identity/scan": {
+      "post": {
+        "operationId": "ImIdentityController_scan",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanTextDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImInjectionScanResultDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "群聊 @bot 消息 prompt-injection 自检（ADMIN，纯校验）",
+        "tags": [
+          "IM Identity"
+        ],
+        "x-i18n-en": {
+          "summary": "Prompt-injection self-check for group-chat @bot messages (ADMIN, validation only)"
+        }
+      }
+    },
+    "/im-identity/verify-bind": {
+      "post": {
+        "operationId": "ImIdentityController_verifyBind",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-hub-signature-256",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-autocodeflow-timestamp",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyBindDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImIdentityViewDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "校验网关发送方签名并绑定平台用户（ADMIN）",
+        "tags": [
+          "IM Identity"
+        ],
+        "x-i18n-en": {
+          "summary": "Verify the gateway sender signature and bind the platform user (ADMIN)"
         }
       }
     },
@@ -26191,6 +28212,86 @@
         "x-i18n-en": {
           "description": "Public machine-call endpoint. Requires X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers; the signature is HMAC-SHA256 over `${timestamp}.${rawBody}` using the task's webhook secret (enable via POST /api/tasks/:id/webhook/enable). The `{ params }` body overrides the task's default params for this execution. Add `?wait=1&timeout=N` to hold the request until the execution reaches a terminal state (N ≤ 300 seconds; on timeout it returns `completed:false` with the latest snapshot). Unknown task / webhook disabled / bad signature all return the same 401. A duplicate delivery within the ±5 minute window returns `{deduplicated:true}` (no re-trigger; use `X-AutoFlow-Delivery` to supply a delivery idempotency key, otherwise the signature is used).",
           "summary": "Trigger a task via inbound Webhook"
+        }
+      }
+    },
+    "/workbench/commit": {
+      "post": {
+        "operationId": "WorkbenchController_commit",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommitPlanCardRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitResultDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "确认方案卡并落成 SOP 草稿（N7 留痕 hash 校验；只 draft，不自动发布）",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "summary": "Confirm the plan card and persist it as an SOP draft (N7 audit hash check; draft only, never auto-published)"
+        }
+      }
+    },
+    "/workbench/preview": {
+      "post": {
+        "operationId": "WorkbenchController_preview",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewPlanCardRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanCardPreviewResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "最小方案卡预览 + 确定性校验（N7 反幻觉闸门；不调用 LLM、不落 SOP）",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "summary": "Minimal plan-card preview + deterministic validation (N7 anti-hallucination gate; no LLM call, no SOP persistence)"
         }
       }
     }

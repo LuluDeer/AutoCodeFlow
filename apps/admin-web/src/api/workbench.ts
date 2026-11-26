@@ -1,0 +1,78 @@
+import { client } from './client';
+
+/** 业务侧频率（界面只呈现中文标签，这里保留后端契约的英文枚举值）。 */
+export type WorkbenchCadence = 'daily' | 'weekly' | 'monthly';
+
+export interface PreviewPlanInput {
+  goal: string;
+  cadence: WorkbenchCadence;
+  params?: Record<string, string>;
+}
+
+export interface PreviewCard {
+  title: string;
+  triggerText: string;
+  capabilityHints: string[];
+  acceptanceText: string;
+  budget: { maxTurns: number };
+}
+
+export type PreviewCheckStatus = 'ok' | 'warn' | 'fail';
+
+export interface PreviewCheck {
+  field: string;
+  status: PreviewCheckStatus;
+  message: string;
+}
+
+export interface PreviewPlanResult {
+  card: PreviewCard;
+  checks: PreviewCheck[];
+  eligible: boolean;
+  cardHash: string;
+  /** 方案卡当前的策略代际（16 hex）：commit 必须原样回填，作为策略未被改动的校验锚点。 */
+  policyGeneration: string;
+}
+
+/**
+ * POST /api/workbench/commit 入参（对齐 admin-api CommitPlanCardRequestDto）。
+ *
+ * 刻意不带 card 内容：服务端只用 goal/cadence/params 重建 card 并重算 hash，
+ * 再与 expectedCardHash 比对；同时重算当前策略代际并与 expectedPolicyGeneration 比对，
+ * 两者任一失配服务端都会拒绝（表单被改 / 策略在预览后变更）。
+ * 前端必须把 preview 返回的 cardHash 与 policyGeneration 原样回填，
+ * 且 goal/cadence/params 与预览时逐字一致。
+ */
+export interface CommitPlanInput {
+  goal: string;
+  cadence: WorkbenchCadence;
+  params?: Record<string, string>;
+  expectedCardHash: string;
+  expectedPolicyGeneration: string;
+}
+
+/** POST /api/workbench/commit 响应（对齐 CommitResultDto）：只落 draft，不自动发布。 */
+export interface CommitResult {
+  sopId: string;
+  slug: string;
+  status: 'draft';
+  next: string;
+}
+
+/**
+ * 方案预览：client 的 baseURL 已含 /api（见 api/client.ts:14-29），
+ * 因此这里只写相对路径，实际请求为 POST /api/workbench/preview。
+ */
+export function previewPlan(input: PreviewPlanInput): Promise<PreviewPlanResult> {
+  return client.post<PreviewPlanResult>('/workbench/preview', input);
+}
+
+/**
+ * 确认方案并落 SOP 草稿：相对路径 → POST /api/workbench/commit。
+ * 失败由调用方 catch（拦截器已按错误码弹过 toast 的会去重，页面侧给内联兜底）。
+ */
+export function commitPlan(input: CommitPlanInput): Promise<CommitResult> {
+  return client.post<CommitResult>('/workbench/commit', input);
+}
+
+export const workbenchApi = { preview: previewPlan, commit: commitPlan };

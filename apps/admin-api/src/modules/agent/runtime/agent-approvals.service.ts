@@ -8,6 +8,8 @@ import {
   type AgentApprovalStatus,
 } from "../entities/agent-approval.entity";
 import type { AgentEventInput } from "../entities/agent-event.entity";
+// N17：一句话审批的解析口径（纯函数，唯一事实源）。
+import { parseApprovalPhrase } from "./approval-phrases";
 // R9：23505 **按约束名归因**（只认 `UQ_agent_approvals_approvalKey`；见 util 头注）。
 import {
   AGENT_UNIQUE_CONSTRAINTS,
@@ -477,6 +479,68 @@ export class AgentApprovalsService {
       await this.deriveSessionGrant(row);
     }
     return row;
+  }
+
+  /**
+   * N17：**一句话审批**的处置入口（scoped + TTL + 指纹重算）。
+   *
+   * 与既有 `decide` 的分工：`decide` 是「已经知道要给 granted 还是 denied」的
+   * 底层条件写；本方法多两步——
+   *   ① `parseApprovalPhrase` 把整句短语解析成 `allow` / `deny` / `reset`；
+   *   ② **处置前比对策略指纹**：行上记的是申请时的策略，调用方传入的是当前
+   *      策略（`tool-executor` / controller 从权威 `AgentBoundaryService` 取值）。
+   *      不一致（或行上没有指纹）⇒ 拒绝，且**不调用 decide**，库里不动。
+   *
+   * 为什么指纹比对放在 `decide` **之前**而不是之后：`decide` 一旦命中就把
+   * pending 翻成 granted/denied（一次性消费），那之后再说「策略变了」已经
+   * 太晚——状态已经变了，下一次来的人拿到的是 ALREADY_DECIDED，而不是
+   * 「策略已变请重新申请」。fail-closed 必须在写之前。
+   *
+   * `reset` 是合法短语，但 once + TTL 模型下没有对应的授权动作：显式抛错，
+   * 让「识别到但不支持」与「根本没识别」在错误码上可区分。
+   *
+   * 一次性消费由 `decide` 的条件写 `status='pending'` 保证：同一张单第二次
+   * 调用会撞上 `AGENT_APPROVAL_ALREADY_DECIDED`（409），不产生第二份授权。
+   */
+  async decideByPhrase(
+    approvalKey: string,
+    phrase: string,
+    decidedBy: string,
+    policyFingerprint: string,
+  ): Promise<AgentApproval | null> {
+    const parsed = parseApprovalPhrase(phrase);
+    if (!parsed) {
+      throw new AppError("VALIDATION_FAILED", {
+        detail:
+          "无法识别的审批短语（仅接受 allow / allow once / 允许 / 批准 / deny / 拒绝 / reset）",
+      });
+    }
+    if (parsed.kind === "reset") {
+      throw new AppError("VALIDATION_FAILED", {
+        detail:
+          "reset 不对应一次性授权决策（无 all 永久授权）；请用 allow 或 deny 处置",
+      });
+    }
+
+    const row = await this.findByKey(approvalKey);
+    if (!row) {
+      throw new AppError("AGENT_APPROVAL_NOT_FOUND", { approvalKey });
+    }
+    // 缺指纹（存量行）与指纹不一致同判：证不了「授权依据的策略没变」就拒。
+    // 与 consume/findActiveSessionGrant 的 fail-closed 口径完全一致。
+    if (!row.policyFingerprint || row.policyFingerprint !== policyFingerprint) {
+      throw new AppError("VALIDATION_FAILED", {
+        detail:
+          `审批所依据的策略已变更（记录=${row.policyFingerprint ?? "NULL"}，` +
+          `当前=${policyFingerprint}）——请用当前策略重新申请并审批`,
+      });
+    }
+
+    return this.decide(
+      approvalKey,
+      parsed.kind === "allow" ? "granted" : "denied",
+      decidedBy,
+    );
   }
 
   /**

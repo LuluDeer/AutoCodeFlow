@@ -1,7 +1,7 @@
 # 架构决策记录（ADR）索引
 
 > 固化历轮开发中“代价高昂才学到”的架构/契约决策。每篇 ADR 记录：背景、决策、后果、被否掉的替代方案。
-> 状态：Accepted（现行）/ Proposed（待拍板）/ Superseded（被 ADR-xxx 取代）。新决策按序号追加。最后核对：2026-11-24。
+> 状态：Accepted（现行）/ Proposed（待拍板）/ Superseded（被 ADR-xxx 取代）。新决策按序号追加。最后核对：2026-11-26。
 
 ## 写作规则
 
@@ -53,6 +53,9 @@
 | [ADR-037](adr-037-heartbeat-lower-bound-atomic.md) | 心跳 `runningTaskCount` 的**服务端下限并入同一条 UPDATE**（原子化，消除 count→write 的 TOCTOU）；**否掉**两条热门方案：B「下限改读占坑数」会永久饥饿（I2）、C「claim 与建行同事务」前提不成立（执行行总在占坑前已存在，`scheduler.service.ts:2855` → `task.processor.ts:326`）⇒ 无迁移、无开关、不动派发事务 | Accepted |
 | [ADR-038](adr-038-broadcast-occupancy-vs-heartbeat-floor.md) | **同一计数列上的两种相反语义**：广播扇出按每台 `+1`（`executor.service.ts:6034`）但只有一行执行记录（`:5852-5855`）⇒ 未持行目标 `计数1/行数0`（真 PG 实证）；ADR-037 的心跳下限按**行数**取大 ⇒ 看不见广播占坑、会把它抹掉，而 `:6020-6026` 又**依赖**心跳覆写纠正广播少计 ⇒ 两者在同一列上互相抵消 ⇒ **容量少计、可被多派单播**。推荐**方案 B**（独立列 `broadcastReservedCount`，容量 = 两列之和，心跳下限仍只管单播行数）；否掉 A（行语义崩塌）/ C（把超卖写成已声明）/ D（热路径 join + TTL 清理） | Accepted（已实现，步骤 1–5 全部完成） |
 | [ADR-039](adr-039-execute-transaction-boundary.md) | `execute` 能否安全再拆？**结论：没有事务可拆** —— `execute`（`tool-executor.service.ts:275` 起，503 行）内**零显式事务**，正确性建立在「单语句 CAS（`agent-approvals.service.ts:788-826`）+ 幂等条件写 + 严格因果顺序（闸门→领取→副作用→台账）」上；否掉 C（凭空引入两个事务 ⇒ 重复执行/审批单永久作废/漏结清，且**三者都静默**）、D（把审批链搬协作者，被 R99 硬裁决禁止）；B 只能抽三个**拒绝**分支（CAS 抽不出去，收益 25–35 行）。⇒ 有界性记入本 ADR，建议**关闭 backlog `execute-further-slimming`** | Accepted（结论=不值得拆） |
+| [ADR-040](adr-040-capability-and-merge-rules.md) | Capability 统一模型的**逐字段族合并规则**——标量同名替换 / map 按 key / permission·skill·plugin 追加 / command·MCP 同名整替换 / policy 只收紧 / 无规则默认 ask；`managed` 靠 managed policy 名单 + 引擎不可 disable，**不靠 `scope.locked`**；dump 三栏（分层来源/生效值/凭据占位符）；每族 selftest 反证用例 | Accepted |
+| [ADR-041](adr-041-scope-guidance-orthogonal.md) | 治理档位 × 引导强度**正交二维**——`scope.mode`(managed/supervised/self_service) × `guidance.level`(L1/L2/L3)；合法矩阵 `managed⇒L≤2`、危险能力⇒L1、默认 Supervised+L2、L3 需授权；否决"同一事物两面"与三套命名漂移；组合矩阵 3×3 全格断言 | Accepted |
+| [ADR-042](adr-042-workbench-vertical-slice.md) | 三端职责 + **纵向切片优先**——Workbench 是第三入口非替换（与现有 56 工具 MCP 反向编排旁路并存）、桌面壳只做窗口/凭证；red V5 证伪切片先用现有 SOP draft/publish 承载方案卡，暂不建注册表/Scope 链/Part 模型/编译 prompt/三档；通过判据=真浏览器 e2e"不填 cron/UUID/glue 拿到报表"；否掉"先建全量注册表" | Accepted |
 
 ## DOC-04 覆盖状态
 
