@@ -8,11 +8,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ActivationStatsPage from '../pages/ActivationStatsPage';
 import {
   getActivationStats,
+  getQuotaStatus,
   type ActivationStats,
 } from '../api/capability-activation';
 
 vi.mock('../api/capability-activation', () => ({
   getActivationStats: vi.fn(),
+  getQuotaStatus: vi.fn(),
 }));
 
 /** 用可点击的假时间选择器替代真实控件的弹层交互，只验证 onChange → 重取链路。 */
@@ -63,6 +65,7 @@ function renderPage() {
 
 beforeEach(() => {
   vi.mocked(getActivationStats).mockReset().mockResolvedValue(SAMPLE);
+  vi.mocked(getQuotaStatus).mockReset().mockResolvedValue([]);
 });
 
 afterEach(() => {

@@ -41,6 +41,23 @@ type MeterAmountProjection = {
   priceReason?: string;
 };
 
+/** 金额不可得的中文说明：明确硬闸跳过，绝不说"未超限/0 元"。 */
+function amountUnavailableNote(reason?: string): string {
+  const byReason: Record<string, string> = {
+    NO_TOKEN_SAMPLE: "无可用 token 样本",
+    PRICE_MISSING: "缺模型价目",
+    INVALID_TOKEN_COUNT: "token 样本非法",
+    INVALID_PRICE: "价目配置非法",
+    NO_SESSION_ID: "激活未关联会话",
+    SOP_ID_NAMESPACE: "会话 id 非 agent 会话命名空间",
+    NO_AGENT_SESSION_ROW: "未命中 agent 会话",
+    ALL_STEPS_ZERO: "provider 实测 token 全为 0",
+    BELOW_MIN_SAMPLES: "token 样本不足",
+  };
+  const detail = reason ? (byReason[reason] ?? reason) : "金额不可得";
+  return `${detail}，金额硬闸已跳过（未与 0 比较、未作触顶判定）。`;
+}
+
 /**
  * N20：按项目/能力的配额配置 + showback 状态 + 软阈值 webhook 告警。
  *
@@ -151,6 +168,10 @@ export class QuotaService implements QuotaHardLimitGate {
         if (meterRow?.priceReason) row.priceReason = meterRow.priceReason;
         if (cfg.amountHardLimit !== undefined) {
           row.amountHardLimit = cfg.amountHardLimit;
+        }
+        // 金额不可得必须显式说明"硬闸跳过"——静默 fail-open 会被误读成"未超限"。
+        if (row.amount === null) {
+          row.amountNote = amountUnavailableNote(row.priceReason);
         }
       }
       return row;

@@ -61,6 +61,11 @@ export interface QuotaStatusRow {
   amount?: number | null;
   /** 金额不可得原因（零样本 / 缺价目 / 折算失败），透传给审计 detail。 */
   priceReason?: string;
+  /**
+   * 金额不可得时的中文说明：明确"硬闸已跳过，未与 0 比较"，
+   * 避免管理员把静默 fail-open 误读成"未超限"。金额可得时缺席。
+   */
+  amountNote?: string;
   /** 金额硬阈副本；缺席时纯函数回退到 hardLimit 以兼容直接构造的测试行。 */
   amountHardLimit?: number;
 }

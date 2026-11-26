@@ -19,12 +19,138 @@ import type { ColumnsType } from 'antd/es/table';
 import { useQuery } from '@tanstack/react-query';
 import {
   getActivationStats,
+  getQuotaStatus,
   type ActivationProjectStat,
   type ActivationStatsEntry,
+  type QuotaStatusRow,
 } from '../api/capability-activation';
 
 const { Text, Title } = Typography;
 const DEFAULT_DAYS = 30;
+
+const QUOTA_STATUS_LABEL: Record<QuotaStatusRow['status'], string> = {
+  ok: '正常',
+  warn: '预警',
+  exceeded: '已超限',
+};
+
+const QUOTA_STATUS_COLOR: Record<QuotaStatusRow['status'], string> = {
+  ok: 'success',
+  warn: 'warning',
+  exceeded: 'error',
+};
+
+/** 只有有限数才是可得金额；null/undefined/NaN/Infinity 一律走诚实缺口文案。 */
+function usableAmount(row: QuotaStatusRow): number | null {
+  return typeof row.amount === 'number' && Number.isFinite(row.amount)
+    ? row.amount
+    : null;
+}
+
+function formatAmount(row: QuotaStatusRow, amount: number): string {
+  const value = Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
+  return row.currency ? `${row.currency} ${value}` : value;
+}
+
+function amountUnavailableDetail(row: QuotaStatusRow): string {
+  const parts: string[] = [];
+  if (row.amountNote?.trim()) parts.push(row.amountNote.trim());
+  if (row.priceReason) parts.push(`原因：${row.priceReason}`);
+  if (parts.length === 0) parts.push('零样本或缺价目');
+  if (!parts.some((part) => part.includes('未与 0 比较'))) {
+    parts.push('未与 0 比较');
+  }
+  return parts.join(' / ');
+}
+
+/** 配额状态面板：金额闸不可得时明说"硬闸已跳过"，绝不退化成 0 元/未超限。 */
+function QuotaStatusPanel({ windowDays }: { windowDays: number }) {
+  const { data, error, isFetching, refetch } = useQuery({
+    queryKey: ['capability-activation-quota-status', windowDays],
+    queryFn: () => getQuotaStatus(windowDays),
+  });
+  const rows = data ?? [];
+
+  const columns: ColumnsType<QuotaStatusRow> = [
+    {
+      title: '范围',
+      key: 'scope',
+      render: (_value, row) => `${row.scope} / ${row.target}`,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      render: (status: QuotaStatusRow['status']) => (
+        <Tag
+          color={QUOTA_STATUS_COLOR[status] ?? 'default'}
+          data-testid="quota-status-badge"
+        >
+          {QUOTA_STATUS_LABEL[status] ?? status}
+        </Tag>
+      ),
+    },
+    {
+      title: '用量 / 硬阈',
+      key: 'usage',
+      render: (_value, row) => `${row.usage} / ${row.hardLimit}`,
+    },
+    {
+      title: '计量单位',
+      dataIndex: 'unit',
+      key: 'unit',
+      render: (unit: QuotaStatusRow['unit']) => unit ?? 'invocations',
+    },
+    {
+      title: '金额 / 闸说明',
+      key: 'gate',
+      render: (_value, row) => {
+        if (row.unit !== 'amount') {
+          return <Text type="secondary">按调用次数判定</Text>;
+        }
+        const amount = usableAmount(row);
+        if (amount === null) {
+          return (
+            <Space orientation="vertical" size={0}>
+              <Text type="warning">金额不可得，硬闸已跳过</Text>
+              <Text type="secondary">{amountUnavailableDetail(row)}</Text>
+            </Space>
+          );
+        }
+        return <Text>{formatAmount(row, amount)}</Text>;
+      },
+    },
+  ];
+
+  return (
+    <Card title="配额状态" style={{ marginTop: 16 }}>
+      <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+        <Space wrap>
+          <Text>统计窗口：近 {windowDays} 天</Text>
+          {isFetching ? <Text type="secondary">正在更新配额状态…</Text> : null}
+        </Space>
+        {error ? (
+          <Alert
+            type="error"
+            title="配额状态加载失败，请稍后重试。"
+            action={<Button onClick={() => void refetch()}>重试</Button>}
+          />
+        ) : null}
+        {!error && rows.length === 0 ? (
+          <Empty description="暂无配额状态记录" />
+        ) : null}
+        {!error && rows.length > 0 ? (
+          <Table<QuotaStatusRow>
+            rowKey={(row) => `${row.scope}:${row.target}:${row.unit ?? 'invocations'}`}
+            columns={columns}
+            dataSource={rows}
+            pagination={false}
+          />
+        ) : null}
+      </Space>
+    </Card>
+  );
+}
 
 /**
  * 能力用量看板：showback 的可见出口。默认近 30 天，时间窗变化即重新聚合；
@@ -37,6 +163,11 @@ export default function ActivationStatsPage() {
   ]);
   const from = range[0].toISOString();
   const to = range[1].toISOString();
+  // 与配额 API 的 windowDays（1..90）共用当前统计窗，避免两处口径漂移。
+  const windowDays = Math.max(
+    1,
+    Math.min(90, range[1].diff(range[0], 'day') + 1),
+  );
 
   const { data, error, isFetching, refetch } = useQuery({
     queryKey: ['capability-activation-stats', from, to],
@@ -192,6 +323,8 @@ export default function ActivationStatsPage() {
           </Col>
         </Row>
       ) : null}
+
+      <QuotaStatusPanel windowDays={windowDays} />
     </div>
   );
 }

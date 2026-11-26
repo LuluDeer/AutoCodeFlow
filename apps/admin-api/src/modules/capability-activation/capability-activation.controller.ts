@@ -113,7 +113,8 @@ export class CapabilityActivationController {
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "设置模型 token 价目（ADMIN；managed 配置）" })
   async setPrice(@Body() dto: SetPriceDto): Promise<unknown> {
-    if (!this.prices) throw new Error("成本归责依赖未装配（PriceService/TokenSamplePort）");
+    if (!this.prices)
+      throw new Error("成本归责依赖未装配（PriceService/TokenSamplePort）");
     return this.prices.set(dto);
   }
 
@@ -121,7 +122,8 @@ export class CapabilityActivationController {
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "列出 managed 价目表（ADMIN）" })
   async listPrices(): Promise<unknown> {
-    if (!this.prices) throw new Error("成本归责依赖未装配（PriceService/TokenSamplePort）");
+    if (!this.prices)
+      throw new Error("成本归责依赖未装配（PriceService/TokenSamplePort）");
     return this.prices.getByPrefix();
   }
 

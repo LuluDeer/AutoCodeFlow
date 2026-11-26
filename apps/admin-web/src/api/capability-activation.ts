@@ -1,4 +1,5 @@
 import { client } from './client';
+import type { operations } from '../types/generated/api-types';
 
 /**
  * GET /api/capability-activation/stats 的返回结构（对齐 admin-api
@@ -62,5 +63,52 @@ export function getActivationStats(
 ): Promise<ActivationStats> {
   return client.get<ActivationStats>('/capability-activation/stats', {
     params: { from, to },
+  });
+}
+
+/**
+ * GET /api/capability-activation/quota-status 的查询参数。
+ * 从 generated 的 operation 派生，避免 query 契约漂移（windowDays 1..90）。
+ */
+export type QuotaStatusQuery = NonNullable<
+  operations['CapabilityActivationController_quotaStatus']['parameters']['query']
+>;
+
+export type QuotaScope = 'project' | 'capability';
+export type QuotaUnit = 'invocations' | 'amount';
+export type QuotaStatusLevel = 'ok' | 'warn' | 'exceeded';
+
+/**
+ * quota-status 单行。generated 目前只暴露 operation（响应 content 为 never），
+ * 且 SetQuotaDto schema 尚未含 unit/amountHardLimit，故按 admin-api DTO 手写本行面，
+ * 字段名逐一对齐；amountNote 为主控补充的可选中文说明，缺席时前端自行解释 priceReason。
+ *
+ * 金额不可得时 amount 必须是 null/undefined，绝不能按 0 回退（显示层同理）。
+ */
+export interface QuotaStatusRow {
+  scope: QuotaScope;
+  target: string;
+  softLimit: number;
+  hardLimit: number;
+  usage: number;
+  status: QuotaStatusLevel;
+  windowDays: number;
+  unit?: QuotaUnit;
+  amount?: number | null;
+  /** 主控/后端可能透出的币种；没有就不猜测货币符号。 */
+  currency?: string;
+  priceReason?: string;
+  amountNote?: string;
+  amountHardLimit?: number;
+}
+
+/**
+ * 配额状态：client baseURL 已含 /api，只写相对路径。
+ * windowDays 恒随请求下发（缺省 30），便于测试与审计都看到实际时间窗。
+ */
+export function getQuotaStatus(windowDays = 30): Promise<QuotaStatusRow[]> {
+  const params: QuotaStatusQuery = { windowDays };
+  return client.get<QuotaStatusRow[]>('/capability-activation/quota-status', {
+    params,
   });
 }
