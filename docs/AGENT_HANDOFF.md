@@ -18,7 +18,9 @@
 - 前端行类型因 generated 该端点 `content?: never` 且 SetQuotaDto schema 缺 unit/amountHardLimit，按后端 DTO 手写并登记，非生成派生——纳入生成合同后销账。
 - 验收最高级别：后端 e2e 第 3 级（真 PG+真 Nest+真 HTTP）+ 前端组件单测；未做浏览器真机。
 
-**后续项**：① activation.sessionId 关联键重设 ADR（加独立 agentSessionId 列，让 token 按项目/能力诚实归责，金额闸真拦截）；② 价目表管理 UI；③ 真浏览器 e2e 验配额面板与金额诚实展示。
+**集成期发现（未纳入本轮交付）**：工作树曾出现两个来源不明的未跟踪 e2e spec（前端 `publish-approval-chain.spec.ts` 断言尚未实现的发布审批卡 UI，真浏览器 5 failed/1 passed；后端 `publish-approval-inbox.e2e-spec.ts` 自身装配 bug `new AgentApprovalsService()` 无 repo，6 failed）——均非本轮工作组产物、断言未实现功能或有夹具 bug，已清理，不混入交付以免门禁红。前端发布审批卡 UX 与其 e2e 是明确后续项，届时按真实实现重做夹具。
+
+**后续项**：① activation.sessionId 关联键重设 ADR（加独立 agentSessionId 列，让 token 按项目/能力诚实归责，金额闸真拦截）；② 价目表管理 UI + 前端发布审批卡 UX；③ 真浏览器 e2e 验配额面板与金额诚实展示（及发布审批卡）。
 
 **提交**：按 objective 分批提交（前端+后端 + 基线登记 + 交接），不 push。
 
