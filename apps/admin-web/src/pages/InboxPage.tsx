@@ -32,6 +32,7 @@ import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
 import InboxFilterBar, { type InboxFilterMode } from '../components/inbox/InboxFilterBar';
+import PublishApprovalCard, { PUBLISH_TOOL_NAME } from './inbox/PublishApprovalCard';
 import { Modal as ConfirmModal } from '../utils/modal';
 import { message } from '../utils/toast';
 import { showApiError } from '../utils/error';
@@ -186,7 +187,7 @@ function inboxSubtitleText(item: InboxItem, t: ReturnType<typeof useTranslation>
   return item.subtitle;
 }
 
-type InboxActingAction = 'approve' | 'reject' | 'deny' | 'resume';
+type InboxActingAction = 'approve' | 'reject' | 'grant' | 'deny' | 'resume';
 
 interface InboxRowActionsProps {
   item: InboxItem;
@@ -331,6 +332,7 @@ interface InboxRowProps {
   userId: number | null | undefined;
   onApprove: (item: InboxItem) => void;
   onReject: (item: InboxItem) => void;
+  onGrant: (item: InboxItem) => void;
   onDeny: (item: InboxItem) => void;
   onResume: (item: InboxItem) => void;
 }
@@ -343,11 +345,32 @@ interface InboxRowProps {
  * 只剩 4 行，下一个加个小节的人会先撞墙再拆，那时改动面已经更大。
  * 外提的是**纯版式**：动作回调仍由页面注入，`InboxRowActions` 的权限/动作块一行未动。
  */
-function InboxRow({ item, canWrite, actingId, actingAction, userId, onApprove, onReject, onDeny, onResume }: InboxRowProps) {
+function InboxRow({ item, canWrite, actingId, actingAction, userId, onApprove, onReject, onGrant, onDeny, onResume }: InboxRowProps) {
   const { t } = useTranslation();
   const { token } = theme.useToken();
   const subtitle = inboxSubtitleText(item, t);
   const title = inboxTitleText(item, t);
+  // ADR-045：发布审批行（`sop_publish`）走专用卡——通用行只有「会话标题 · 工具名 ·
+  // 理由」，主管看不到被批的是哪份方案、批下去会发生什么。判定只看工具名（逐工具
+  // 审批闸，不随全局策略放宽），其余小节/行的版式与文案一行未动。
+  // 分支放在模块级 `InboxRow` 里而不是页面组件体：`check:size-caps` 的度量单元是
+  // 函数体（默认导出已 296 行，离 300 红线只剩 4 行）。
+  if (item.section === 'agentApprovals' && item.approval?.toolName === PUBLISH_TOOL_NAME) {
+    return (
+      <div data-testid={`inbox-row-${item.section}`}>
+        <PublishApprovalCard
+          item={item}
+          title={title}
+          timeText={item.waitingSince ? formatRelativeTime(item.waitingSince, t) : t('inbox.noTimeInfo')}
+          canWrite={canWrite}
+          actingId={actingId}
+          actingAction={actingAction}
+          onGrant={onGrant}
+          onDeny={onDeny}
+        />
+      </div>
+    );
+  }
   return (
     <div
       data-testid={`inbox-row-${item.section}`}
@@ -393,6 +416,64 @@ function InboxRow({ item, canWrite, actingId, actingAction, userId, onApprove, o
       </Space>
     </div>
   );
+}
+
+/** 页面内 `t` 的类型（模块级写动作辅助函数共用，避免各处重复写 ReturnType）。 */
+type InboxT = ReturnType<typeof useTranslation>['t'];
+
+/**
+ * 二次确认 → 执行 → 刷新（收件箱所有写动作的唯一通道）。
+ *
+ * 模块级而不是页面闭包：页面组件体是 `check:size-caps` 的度量单元（300 行红线），
+ * 通道本体与「当前是谁在操作」无关，留在外面不会让页面继续变胖。
+ *
+ * 409 = 竞争后此行已变化：关闭旧确认框并重取（错误留在原位重试其余错误）。
+ */
+function confirmThenWith(
+  t: InboxT,
+  title: string,
+  action: () => Promise<void>,
+  options: { danger?: boolean; onDone: () => void },
+): void {
+  ConfirmModal.confirm({
+    title,
+    okText: t('inbox.action.confirm'),
+    cancelText: t('inbox.action.cancel'),
+    okButtonProps: options.danger ? { danger: true } : undefined,
+    onOk: async () => {
+      try {
+        await action();
+      } catch (err) {
+        showApiError(err);
+        if ((err as { __status?: number } | null)?.__status !== 409) throw err;
+      }
+      options.onDone();
+    },
+  });
+}
+
+/**
+ * ADR-045：发布审批卡的「批准」。
+ *
+ * 与「拒绝」同款走二次确认（grant 有副作用且不可撤销），文案复用审批页词条
+ * （`agents.approval.*`）——同一件事在收件箱与会话页说同一句话。服务端四眼
+ * （`release-four-eyes`）仍会拦「自批」，前端提示只是把红线说清楚。
+ */
+function grantPublishApproval(
+  item: InboxItem,
+  t: InboxT,
+  confirm: (title: string, action: () => Promise<void>) => void,
+): void {
+  const { session, approval } = item;
+  if (!session || !approval) return;
+  confirm(t('agents.approval.confirmTitle', { tool: approval.toolName }), async () => {
+    const result = await agentApi.grantApproval(session.id, approval.approvalKey);
+    if (result.ok && result.approval.status === 'granted') {
+      message.success(t('agents.approval.grantOk', { key: approval.approvalKey }));
+    } else {
+      message.warning(t('inbox.approvalState', { status: agentApprovalStatusLabel(result.approval.status, t) }));
+    }
+  });
 }
 
 export default function InboxPage() {
@@ -445,25 +526,10 @@ export default function InboxPage() {
 
   // ── 写动作 ────────────────────────────────────────────────────────────────
 
-  const confirmThen = (title: string, action: () => Promise<void>, danger = false) => {
-    ConfirmModal.confirm({
-      title,
-      okText: t('inbox.action.confirm'),
-      cancelText: t('inbox.action.cancel'),
-      okButtonProps: danger ? { danger: true } : undefined,
-      onOk: async () => {
-        try {
-          await action();
-        } catch (err) {
-          showApiError(err);
-          // 竞争后的 409 表示此行已变化：关闭旧确认框并重取，其他错误留在原位重试。
-          if ((err as { __status?: number } | null)?.__status !== 409) throw err;
-        }
-        dispatchInboxRefresh();
-        await reload();
-      },
-    });
-  };
+  // 二次确认 → 执行 → 刷新：通道本体在模块级 `confirmThenWith`（页面组件体是
+  // `check:size-caps` 的度量单元，这里只绑当前身份/刷新回调）。
+  const confirmThen = (title: string, action: () => Promise<void>, danger = false) =>
+    confirmThenWith(t, title, action, { danger, onDone: () => { dispatchInboxRefresh(); void reload(); } });
 
   const handleApprove = (item: InboxItem) => {
     const dep = item.deployment;
@@ -497,6 +563,9 @@ export default function InboxPage() {
       setActingAction(null);
     }
   };
+
+  // ADR-045：发布审批卡的「批准」——判定与文案在模块级 `grantPublishApproval`。
+  const handleGrant = (item: InboxItem) => grantPublishApproval(item, t, confirmThen);
 
   const handleDeny = ({ session, approval, title }: InboxItem) => {
     if (!session || !approval) return;
@@ -540,6 +609,7 @@ export default function InboxPage() {
       userId={user?.id}
       onApprove={handleApprove}
       onReject={openReject}
+      onGrant={handleGrant}
       onDeny={handleDeny}
       onResume={handleResume}
     />

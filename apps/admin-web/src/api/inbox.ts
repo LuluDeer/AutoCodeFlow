@@ -351,6 +351,10 @@ function pendingApprovalOf(row: AgentPendingApprovalRow): AgentApproval {
     decidedAt: null,
     consumedAt: null,
     createdAt: row.createdAt,
+    // ADR-045：预览与参数摘要**原样透传**（后端已脱敏 + 截断，前端不再加工）。
+    // 两者都可能是 `null`（旧单 / 本次调用无参数）⇒ 页面显示降级文案，不臆造内容。
+    preview: row.preview ?? null,
+    argsDigest: row.argsDigest ?? null,
   };
 }
 

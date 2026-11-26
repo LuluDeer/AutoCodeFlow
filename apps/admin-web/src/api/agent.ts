@@ -117,6 +117,29 @@ export interface AgentApproval {
   /** 领取（副作用真的开始执行）时刻。null = 未执行，或该列上线前的历史行。 */
   consumedAt: string | null;
   createdAt: string;
+  /**
+   * ADR-045：审批单**自带**的参数预览（写入侧已脱敏 + 已截断的 JSON 信封
+   * `{ truncated, args }`）；`null` = 本列上线前的旧单，或本次调用没有参数。
+   *
+   * 与后端 DTO 同源：`apps/admin-api/src/modules/agent/dto/agent-inbox.dto.ts`
+   * 的 `AgentPendingApprovalItemDto.preview`（`GET /agent/approvals/pending` 透出，
+   * 不新增序列化面）。**`null` 不是「没有参数」**，是「不知道」——渲染侧必须降级
+   * 文案而不是留白（留白会被读成「这次调用没带参数」）。
+   *
+   * ⚠️ 声明为**可选 + 可空**（而不是必填 `string | null`）：灰度期旧后端 / 旧响应
+   * 里这两列可能整个缺席，必填会让「按旧契约构造审批单」的调用点被迫编造一个
+   * `null`（那正是本仓要消灭的假事实）。收件箱装配路径 `pendingApprovalOf` 恒
+   * 显式填 `?? null`，所以**页面侧读到的永远是 `string | null`**。
+   */
+  preview?: string | null;
+  /**
+   * ADR-045：被批参数的完整摘要 `sha256(canonicalJson(args))`（64 位 hex）；
+   * `null` = 本列上线前的旧单（可选语义同上）。
+   *
+   * 与后端 DTO 同源：`AgentPendingApprovalItemDto.argsDigest`。审批键只留 16 位
+   * 前缀，不足以做「批的就是这次调用」的对账，摘要才是校验锚点。
+   */
+  argsDigest?: string | null;
 }
 
 /** 审批单处置响应（agent.controller decideApproval）。 */

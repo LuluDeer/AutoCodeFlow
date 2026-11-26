@@ -59,6 +59,13 @@ export interface CommitResult {
   next: string;
   /** 本次提交放行的策略代际（16 位 hex），供下游会话继承以做在途失效比对。 */
   policyGeneration?: string;
+  /**
+   * ADR-045：发布审批单 key（业务人员提交后由主管四眼批准、系统代理发布）。
+   * 与后端 `CommitResultDto.approvalKey` 同源（`required: false`）——
+   * **缺席表示审批发起失败**（fail-open），不是「这次不需要审批」；
+   * 页面必须「有则渲染、无则整块不渲染」，绝不在缺席时编造「已提交审批」。
+   */
+  approvalKey?: string;
 }
 
 /**

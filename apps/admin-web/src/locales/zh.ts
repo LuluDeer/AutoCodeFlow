@@ -4062,6 +4062,9 @@ export default {
   'agents.col.consumedAt': '执行时刻',
   'agents.approval.grant': '批准',
   'agents.approval.deny': '拒绝',
+  // ── ADR-045：发布审批单的四眼红线（批准 = 同意发布；执行者是系统代理；不得自批）──
+  'agents.approval.fourEyesPublish':
+    '发布审批：批准即表示同意发布，实际发布由系统代理（agent:tool-call）执行；主管不得批准自己提交的发布。',
   // ── WEB-4（P2）：审批单的决策依据——全文理由 + 只读入参 + 批准前二次确认 ──
   'agents.approval.argsEmpty': '未记录入参（旧审批单）',
   // ── S1-C3：审批单自带的参数摘要与预览（服务端已脱敏 + 截断 2KB）──
@@ -4280,6 +4283,11 @@ export default {
   'taskForm.field.applicationId_colon': '关联应用（可选）：',
   'taskForm.section.glueTitle_colon': 'Glue 脚本（可选）：',
   // ── P1-4 待办收件箱 ──────────────────────────────────────────────
+  // ── ADR-045：工作台提交方案卡后的四眼审批状态 ──
+  'workbench.approval.alert': '这份方案已进入四眼审批：主管批准后才会发布，当前仍未执行。',
+  'workbench.approval.status': '已提交四眼审批，等待主管批准',
+  'workbench.approval.keyLabel': '审批单标识：',
+  'workbench.approval.link': '去待我审批',
   'inbox.title': '待办收件箱',
   'inbox.description': '处理部署审批和等待人工的会话，也可查看卡住会话、调度积压和队列状态。放行 Agent 工具调用前，请打开对应审批单核对参数。',
   'inbox.section.deployments': '部署审批',
@@ -4303,6 +4311,21 @@ export default {
   'inbox.action.reject': '拒绝',
   'inbox.action.reviewApproval': '查看审批',
   'inbox.action.deny': '拒绝',
+  // ── ADR-045：收件箱里的发布审批卡（被批对象 + 四眼红线 + 参数摘要 + 核对入口）──
+  'inbox.publish.tag': '发布审批',
+  // 标点并进词条值（i18n-punctuation-guard 口径）：组件里不再拼中文全角冒号。
+  'inbox.publish.previewWithSummary': '被批对象：{{summary}}',
+  'inbox.publish.previewUnavailable':
+    '被批对象摘要不可用（旧审批单，或本次调用没有可展示的参数）；请到审批页核对原文。',
+  'inbox.publish.sopId': 'SOP {{sopId}}',
+  'inbox.publish.bumpPatch': '修订版本',
+  'inbox.publish.bumpMinor': '小版本',
+  'inbox.publish.bumpMajor': '大版本',
+  'inbox.publish.cardHash': '方案卡 {{hash}}',
+  'inbox.publish.contentHash': '内容指纹 {{hash}}',
+  'inbox.publish.fourEyes':
+    '批准即表示同意发布；实际发布由系统代理（agent:tool-call）执行；主管不得批准自己提交的发布。',
+  'inbox.publish.review': '去审批页核对参数',
   'inbox.action.resume': '接管/恢复',
   'inbox.action.viewDetail': '查看详情',
   'inbox.action.viewSession': '查看会话',

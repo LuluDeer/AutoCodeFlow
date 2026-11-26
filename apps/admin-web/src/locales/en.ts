@@ -4074,6 +4074,9 @@ export default {
   'agents.col.consumedAt': 'Executed at',
   'agents.approval.grant': 'Approve',
   'agents.approval.deny': 'Deny',
+  // ── ADR-045: four-eyes rule for publish approvals (approve = agree to publish; the system agent executes; no self-approval) ──
+  'agents.approval.fourEyesPublish':
+    'Publish approval: approving means you agree to publish; the system agent (agent:tool-call) performs the publish; a supervisor cannot approve a publish they submitted.',
   // ── WEB-4 (P2): decision basis for approvals — full reason + read-only args + confirm before grant ──
   'agents.approval.argsEmpty': 'No arguments recorded (legacy approval)',
   // ── S1-C3: the approval's own args digest + preview (server-side sanitized, 2KB cap) ──
@@ -4289,6 +4292,12 @@ export default {
   'taskForm.field.applicationId_colon': 'Linked Application (optional): ',
   'taskForm.section.glueTitle_colon': 'Glue Script (optional): ',
   // ── P1-4 Inbox ──────────────────────────────────────────────────
+  // ── ADR-045: four-eyes approval status shown after a plan card is committed ──
+  'workbench.approval.alert':
+    'This plan is now in four-eyes approval: it is published only after a supervisor approves, and nothing has run yet.',
+  'workbench.approval.status': 'Submitted for four-eyes approval; waiting for a supervisor',
+  'workbench.approval.keyLabel': 'Approval key: ',
+  'workbench.approval.link': 'Go to my approvals',
   'inbox.title': 'Inbox',
   'inbox.description': 'Handle deployment approvals and waiting sessions, or inspect stalled sessions, backlog and queue health. Open the approval request to review the parameters before granting an Agent tool call.',
   'inbox.section.deployments': 'Deployment approvals',
@@ -4312,6 +4321,20 @@ export default {
   'inbox.action.reject': 'Reject',
   'inbox.action.reviewApproval': 'Review approval',
   'inbox.action.deny': 'Deny',
+  // ── ADR-045: publish approval card in the inbox (target + four-eyes rule + args digest + review link) ──
+  'inbox.publish.tag': 'Publish approval',
+  'inbox.publish.previewWithSummary': 'Target: {{summary}}',
+  'inbox.publish.previewUnavailable':
+    'Target summary unavailable (legacy approval, or this call carried no displayable arguments); check the original on the approval page.',
+  'inbox.publish.sopId': 'SOP {{sopId}}',
+  'inbox.publish.bumpPatch': 'patch release',
+  'inbox.publish.bumpMinor': 'minor release',
+  'inbox.publish.bumpMajor': 'major release',
+  'inbox.publish.cardHash': 'plan card {{hash}}',
+  'inbox.publish.contentHash': 'content fingerprint {{hash}}',
+  'inbox.publish.fourEyes':
+    'Approving means you agree to publish; the system agent (agent:tool-call) performs the publish; a supervisor cannot approve a publish they submitted.',
+  'inbox.publish.review': 'Review parameters on the approval page',
   'inbox.action.resume': 'Resume',
   'inbox.action.viewDetail': 'View detail',
   'inbox.action.viewSession': 'View session',

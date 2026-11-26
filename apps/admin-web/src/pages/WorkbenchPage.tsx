@@ -7,6 +7,7 @@ import {
   type PreviewPlanResult,
   type WorkbenchCadence,
 } from '../api/workbench';
+import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../store/auth';
 
 interface ConfirmRecord {
@@ -84,6 +85,7 @@ function parseParams(raw: string): Record<string, string> {
 }
 
 export default function WorkbenchPage() {
+  const { t } = useTranslation();
   const [goal, setGoal] = useState('');
   const [cadence, setCadence] = useState<WorkbenchCadence>('daily');
   const [paramText, setParamText] = useState('');
@@ -101,6 +103,8 @@ export default function WorkbenchPage() {
 
   const hasFail = result?.checks.some((c) => c.status === 'fail') ?? false;
   const canConfirm = Boolean(result?.eligible) && !hasFail;
+  // ADR-045：发布审批单标识（缺席/空串 = 审批发起失败 ⇒ 下面整块不渲染）。
+  const approvalKey = commitResult?.approvalKey?.trim() ?? '';
 
   async function handlePreview() {
     if (!goal.trim()) {
@@ -282,6 +286,26 @@ export default function WorkbenchPage() {
             <div data-testid="workbench-commit-slug">标识名：{commitResult.slug}</div>
             <div>后续步骤：{commitResult.next}</div>
             <a href={`/sops?sop=${encodeURIComponent(commitResult.sopId)}`}>去 SOP 页审阅</a>
+            {approvalKey ? (
+              <div data-testid="workbench-commit-approval" style={{ marginTop: 4 }}>
+                <Alert
+                  type="info"
+                  showIcon
+                  title={t('workbench.approval.alert')}
+                  style={{ marginBottom: 8 }}
+                />
+                <div data-testid="workbench-approval-status">{t('workbench.approval.status')}</div>
+                <div>
+                  {t('workbench.approval.keyLabel')}
+                  <Typography.Text code data-testid="workbench-approval-key">
+                    {approvalKey}
+                  </Typography.Text>
+                </div>
+                <a data-testid="workbench-approval-link" href="/inbox">
+                  {t('workbench.approval.link')}
+                </a>
+              </div>
+            ) : null}
           </Space>
         </Card>
       ) : null}

@@ -568,12 +568,22 @@ export default function AgentSessionsPage() {
       dataIndex: 'toolName',
       width: 180,
       render: (v: string, a) => (
-        <Space size={4}>
-          <Tag color={AGENT_APPROVAL_STATUS_COLOR[a.status] ?? 'default'}>
-            {agentApprovalStatusLabel(a.status, t)}
-          </Tag>
-          <Text style={{ fontSize: 12 }}>{v}</Text>
-        </Space>
+        <div>
+          <Space size={4}>
+            <Tag color={AGENT_APPROVAL_STATUS_COLOR[a.status] ?? 'default'}>
+              {agentApprovalStatusLabel(a.status, t)}
+            </Tag>
+            <Text style={{ fontSize: 12 }}>{v}</Text>
+          </Space>
+          {/* ADR-045：发布审批单加一行四眼提示——批准 = 同意发布，执行者是系统代理，
+              主管不得自批（服务端 release-four-eyes 强制）。判定只看工具名，
+              grant/deny 流程与入参解析一行未动。 */}
+          {v === 'sop_publish' ? (
+            <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
+              {t('agents.approval.fourEyesPublish')}
+            </Text>
+          ) : null}
+        </div>
       ),
     },
     {
