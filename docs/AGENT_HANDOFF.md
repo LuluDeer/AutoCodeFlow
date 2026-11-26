@@ -1,5 +1,38 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 68 轮）：用户场景裁决——ADR-044 企业管控+客户端自主 + 3 切片落地
+
+**方向来源**：用户明确最终场景「企业有统一权限管控 + 客户端保留普通 agent 工作台自主权」，并授权自主裁决 + 参考 `/data/project/opensource`。先用 workflow 并行 4 路 agent 深挖 opensource 五项目（opencode/ZCode/magpie/Octop/dsh）的 scope/policy/能力市场/HITL 机制，逐条带 file:line；主控据此**自主裁决**上一轮遗留的 needs_adr/needs_decision 六项，固化为 [ADR-044](adr/adr-044-enterprise-control-client-autonomy.md)，并把其中可独立落地的 3 个切片并行实现。
+
+**统一裁决（ADR-044）**：硬边界走引擎级 restrict deny（不可被 `scope.locked`/CLI flag/项目 allow/客户端 `enabled:false` 撤销）；客户端自主限白名单内追加（能力/接收人/挂载）；在途失效走"事件 invalidate + wait 门禁 + 读时 epoch"（非定时轮询）；Plan 是闸门只收紧 + 放行回原模式（非独立权限系统）；进程外隔离留给第三方不可信能力。
+
+| 切片 | 目标 | 交付 | 验收 |
+|---|---|---|---|
+| 主控 | N21 来源白名单+分级 | `source-policy.ts:assertOriginAllowed`（禁 userinfo/headers/白名单外 scheme、fail-closed 不回公网；`public/internal/sensitive`，sensitive 禁公网 host）+ `assertSourceShape` 接线 | 89/89；反证（isPublicHost 恒 false→sensitive 用例真红） |
+| impl-n11-plan-identity | N11 Plan 接 loop | `plan-agent-gate.ts`（闸门 deny 优先、destructive 恒拒、read 回原模式不裸跑、allowedPrompts 意图级不落规则）+ runtime 经 `narrowPlanTools` 收窄 + plan kind 进 `AGENT_SESSION_KINDS`/`AGENT_KINDS`/工具只读面 | 17/17 + 123 回归；反证 13 真红还原 |
+| impl-n22-sla-alert | N22 告警 consumer | `sla-alert.consumer.ts`（managed 固定渠道只追加接收人、项目 `enabled:false` 关不掉中台告警、无渠道 fail-closed）+ `sla-alert.sink.ts` 适配 NotificationService + module 注册 + `capability.sla_breach` 审计 | 7/7 + 双反证；审计无 URL/密钥明文 |
+
+**主控集成**：
+1. ADR-044 六节结构 + 9 条证据锚点 + README 索引 1 行（文档守卫绿）。
+2. N11 三项同步：`AGENT_KINDS` 加 plan（指标标签测试 16/16）、`toolsForSessionKind('plan')` 只读面、size-caps 重签 agent-runtime 996→998/684→699 + tool-registry 1108→1111（eslint --fix 折行，why 诚实写回滚值）。
+3. N22：`capability.module.ts` 注册 SlaNotificationSink（useFactory 注入 NotificationService）+ SlaAlertConsumer（注入 AuditService）；四个 `action: SLA_BREACH_AUDIT_ACTION` 常量引用改字面量（audit guard 只认字面量，历史教训）→ 扫到 95 个；文档 94→95 + 前端标签/zh/en 三处同步。
+4. 40 处 prettier（N11/N22 agent 新文件）→ `eslint --fix src` 全量格式修正，语义不变。
+5. enum-drift：N11 `REASONS` const-object 登记 ALLOWLIST（plan gate 判定原因码、非持久化，带理由）。
+
+**验收（分级，不越级上报）**：`npm run test:guards:chain` **CHAIN_EXIT=0**；admin-api 全量 `564 suites / 9443 passed`（exit 0）；admin-web 全量 `371 files / 3065 passed`（exit 0，首跑 1 例 `task-list-keyset-paging` 偶发 flake、单跑 19/19 绿、重跑全量 0 failed——历史并发状态泄漏，非本轮回归）；workbench 真 PG 全链 e2e `1 passed`；双端 typecheck 0 错、lint:api 0。各切片最高级别=单测/内存替身（N21 纯函数+反证、N11 含 runtime 内存替身、N22 假 sink/audit/logger）。**本轮自主裁决基于 5 个开源项目实证，非拍脑袋**；每个裁决的 file:line 证据在 ADR-044 与本次 workflow 报告里。
+
+**边界与诚实声明（重要）**：
+- **N22 consumer 已备但无生产触发点**——`consume()` 需调用方传 collection/sink/policy，触发点（cron/端点）与审核记录数据源属外部组织契约（中台编制/审核流水线），本轮**不造假接线**，SLA 告警端到端未生效；已写进 strategy N22 状态。
+- N11：plan 进入/退出与审批单落库的端到端联动、`baseDecision` 真实注入仍待接；本轮只交付闸门与暴露面收窄。
+- N21：provider.use 级模型出域硬开关仍是下一步（ADR-044 步 2），本轮只做来源白名单+分级底座；等保认证 external。
+- N14 方案 A / N24 P4 / N26 独立 CLI：ADR-044 已裁决方向，但重开条件/触发条件/产品形态未到，按 ADR-043/044 保持边界，不硬做半成品。
+
+**后续项**：① ADR-044 步 2——provider.use 出域硬开关接 `ai-providers.ts`/`ai-route.ts`（managed restrict deny + 模型从目录消失）；② N22 触发点接线（需审核记录数据源/组织契约）；③ N14 方案 A 按 ADR-043 重开条件、N11 baseDecision 注入、N26 独立 CLI——均需明确触发条件；④ N24 P4 待第三方不可信能力出现。
+
+**提交**：按 objective 分批提交（ADR+实现一批 + 集成同步一批 + 文档交接一批），不 push。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 67 轮）：审计盲区补核——N24/N25 接线 + 10 项 done 滞后纠错
 
 **方向来源**：objective 续轮。前两轮审计只覆盖 N1/N8/N9/N11/N18/N23/N10/N19/N21/N14/N26/N5/N16/N20/N22/N24?……共 15 项，**strategy §12.3 另有 12 项（N2/N3/N4/N6/N7/N12/N13/N15/N17/N24/N25/N27）从未在本 objective 下沿调用链核实**。本轮先用 workflow 并行 3 路只读审计（audit-E/F/G）补核这 12 项，锁定 2 个新 real_gap（N24/N25）+ 10 项标称 done 但文档"未做"声明滞后的纠错点。按写域互斥派 2 个 agent 实现：N24 独占 capability.module.ts（加 provider），N25 不碰 module.ts（只改 service/entity/前端），零冲突。
