@@ -261,7 +261,7 @@ GCO 是上一版 [agent-workbench-strategy.md](agent-workbench-strategy.md) 的*
 - **N11 Plan 做成 agent 身份**：不是 UX 折叠开关，换 MemoryFileSystem + PermissionService；allowedPrompts 意图级批准 = 一次 SOP 发布 scope=once。【状态：✅ 已实现（第 55 轮）：`agent/runtime/plan-agent.ts` 纯状态机——enterPlanMode 切只读身份（tier ≤ read + MemoryFileSystem）、allowedPrompts 意图级、exitPlanMode 只接受 once；未接真实 agent loop/toolsForSessionKind 过滤】
 - **N14 在途策略即时失效**：`capability/changed` → interrupt 在途 + 下次 check 用新 policy + scopedRules 保 ask/deny。【状态：🟡 部分实现（第 56 轮）：代际持久化/emit + scopedRules 纯分类（`workbench/scoped-rules.ts:101`）已接 commit 第五闸（`workbench.controller.ts:103,317-321`，quota 后/draft 前；通配 allow 作废即拒、显式 ask/deny 保留，6 例反证 + workbench 8 suites/95 tests）；**未做**：interrupt 在途工具调用、跨实例 5s TTL 真机】
 - **N18 rewind 代际围栏**：会话/Part 带 generation，回退使旧异步写入/通知作废 + 审计"作废 N 任务"。【状态：✅ 已实现（第 54 轮纯判定 + 第 65 轮服务端接线）：N10 Part generation + `rewind-fence.ts` 纯判定；第 65 轮补 `rewind-runner.ts`（代际只读服务端、作废组不扇出、字面量 `workbench.rewind` 审计含 invalidatedCount）+ `POST /workbench/rewind`，5/5 单测 + 反证。边界：生产默认 EmptyWriteSource fail-closed、未接 agent runtime 真实在途 source】
-- **N24 进程外隔离定位修正**：中间形态（P1/P2）先做进程内能力权限层 + 预算 + 失败降级；slots/streams 背压与进程外 host 留 P4（magpie `host.go:455-511`）。【状态：⬜ 未实现：能力层无 slots/streams 双限流、坏版本回退与进程外 host】
+- **N24 进程外隔离定位修正**：中间形态（P1/P2）先做进程内能力权限层 + 预算 + 失败降级；slots/streams 背压与进程外 host 留 P4（magpie `host.go:455-511`）。【状态：✅ 中间形态已实现（第 67 轮）：`backpressure.ts` slots/streams 双限流纯状态机 + `inprocess-gate.service.ts`（classify→budget→degrade 严格顺序、`capability.degraded` 审计）+ module 注册；14/14 + capability 287 tests + 双反证。**未做（P4 needs_adr）**：进程外 host / IPC、坏版本回退（需 ADR）；上限当前为可覆盖进程内默认常量，生产取值待配置收口】
 
 ### 11.4 最小可验证切片（P2 前置证伪闸门，来自 red V5）
 
