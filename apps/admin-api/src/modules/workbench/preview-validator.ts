@@ -312,6 +312,8 @@ export interface DraftPayloadFromCard {
   title: string;
   frontMatterYaml: string;
   bodyMarkdown: string;
+  /** ADR-045：发布审批锚定用的结构化 front-matter（与 YAML 同源） */
+  frontMatter: SopFrontMatter;
 }
 
 /**
@@ -371,5 +373,6 @@ export function buildDraftPayloadFromCard(
     title: card.title,
     frontMatterYaml,
     bodyMarkdown,
+    frontMatter,
   };
 }

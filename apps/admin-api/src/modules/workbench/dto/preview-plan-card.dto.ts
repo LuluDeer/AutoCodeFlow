@@ -175,6 +175,13 @@ export class CommitResultDto {
 
   @ApiProperty({
     description:
+      "ADR-045：发布审批单 key（业务人员提交后由主管四眼批准、系统代理发布）；缺席表示审批发起失败",
+    required: false,
+  })
+  approvalKey?: string;
+
+  @ApiProperty({
+    description:
       "本次提交放行的策略代际（16 位十六进制），供下游会话继承以做在途失效比对",
     required: false,
   })

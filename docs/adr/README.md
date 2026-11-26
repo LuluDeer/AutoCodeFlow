@@ -59,6 +59,7 @@
 
 | [ADR-043](adr-043-inflight-policy-invalidation.md) | 在途策略失效（N14 interrupt）的接线边界——三层已交付(代际 bump + scopedRules + commit 第五闸) + approval policy 实时重读已成立；capability 代际在途中断缺"方案卡→会话 generation 传递契约"(AgentSession 无 generation 字段、workbench 不建会话) ⇒ 暂缓完整接线、固化方案 A(显式传递+setGenerationProvider+作废集合)与重开条件；否决假绿/全局 DENY/混用 approval 指纹 | Accepted |
 | [ADR-044](adr-044-enterprise-control-client-autonomy.md) | 企业管控 + 客户端自主工作台的治理边界——硬边界走引擎级 restrict deny（不可被 scope.locked/CLI flag/项目 allow/客户端 enabled:false 撤销），客户端自主限白名单内追加；N21 出域+分级标签/N11 Plan 闸门只收紧/N14 事件 invalidate+wait/N22 中台渠道只追加接收人/N26 CLI 共用策略引擎/N24 P4 待第三方能力触发| Accepted |
+| [ADR-045](adr-045-sop-release-four-eyes.md) | 方案卡发布的四眼审批与系统代理发布——业务人员 commit 落 draft 后建 sop_publish 审批单（session.createdBy=user:username 作四眼申请人、contentHash 锚定），主管 grant 端点四眼强制自批校验（phrase 端点禁用），系统代理 consume+publish(publishedBy=agent:tool-call)；业务人员永不拿 publish 权，发布权=指令注入权是 ADR-044 硬边界 | Accepted |
 
 ## DOC-04 覆盖状态
 

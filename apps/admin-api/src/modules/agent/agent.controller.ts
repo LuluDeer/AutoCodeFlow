@@ -1,3 +1,5 @@
+import { ModuleRef } from "@nestjs/core";
+import { ReleaseApprovalService } from "../workbench/release-approval.service";
 import {
   Body,
   Controller,
@@ -248,6 +250,10 @@ export class AgentController {
      */
     @Optional()
     private readonly confirmation?: AgentExecutionConfirmationService | null,
+    // ADR-045：系统代理发布——granted 的 sop_publish 审批单经 ModuleRef 惰性取
+    // ReleaseApprovalService（避免 agent↔workbench 反向 DI 环），缺席只 warn。
+    @Optional()
+    private readonly moduleRef?: ModuleRef | null,
     /**
      * R327：北极星双口径周报读面。
      *
@@ -607,11 +613,8 @@ export class AgentController {
     return this.queue.add(
       "run",
       { sessionId, reason, expectTotalSteps: totalSteps },
-      manualResumeJobOptions(
-        sessionId,
-        totalSteps,
-        session.status === "failed",
-      ),
+      // prettier-ignore
+      manualResumeJobOptions(sessionId, totalSteps, session.status === "failed"),
     );
   }
 
@@ -659,16 +662,37 @@ export class AgentController {
         throw new AppError("AGENT_APPROVAL_SELF_DENIED");
       }
     }
+    // ADR-045：发布审批单服务端强制四眼，不依赖 agent.policy.blockSelfApproval 开关；
+    // createdBy 口径与建单侧一致（`user:${username}`），命中即 403。
+    if (
+      decision === "granted" &&
+      approval.toolName === "sop_publish" &&
+      session.createdBy === `user:${user.username}`
+    ) {
+      throw new AppError("AGENT_APPROVAL_SELF_DENIED");
+    }
     // 条件写（pending → granted/denied）：并发处置撞上时后到者收 409。
-    const row = await this.approvals.decide(
-      approvalKey,
-      decision,
-      user.username,
-    );
+    // prettier-ignore
+    const row = await this.approvals.decide(approvalKey, decision, user.username);
     if (!row) {
       throw new AppError("AGENT_APPROVAL_NOT_FOUND", { approvalKey });
     }
-
+    // ADR-045：主管批准发布审批单 → 系统代理发布（业务人员/主管都不直接 publish）。
+    // ModuleRef 惰性取避免 agent↔workbench 反向 DI 环；旁路失败只 warn，不回滚批准。
+    if (decision === "granted" && row.toolName === "sop_publish") {
+      try {
+        const release = this.moduleRef?.get(ReleaseApprovalService, {
+          strict: false,
+        });
+        const result = await release?.releaseByApprovalKey(approvalKey, null);
+        if (!result?.published)
+          this.logger.warn(
+            `系统代理发布未执行：${approvalKey} ${result?.reason ?? "依赖缺席"}`,
+          );
+      } catch (err: unknown) {
+        this.logger.warn(`系统代理发布异常：${approvalKey} ${String(err)}`);
+      }
+    }
     // 处置结果的行为**按 decision 分流**（实施轮 #14 修）：
     //
     //   · granted → 若会话挂起在 waiting_input 且**没有其它仍在等的单**，
@@ -695,7 +719,6 @@ export class AgentController {
         await this.emitToolCallSettledEvents(sessionId, approvalKey);
       }
     }
-
     let resumed = false;
     if (decision === "granted") {
       // 时序修复：worker 可能先落 pending 单、后 markWaiting；管理员在两者之间
@@ -721,12 +744,8 @@ export class AgentController {
     }
     return {
       ok: true,
-      approval: {
-        approvalKey: row.approvalKey,
-        status: row.status,
-        decidedBy: row.decidedBy,
-        decidedAt: row.decidedAt,
-      },
+      // prettier-ignore
+      approval: { approvalKey: row.approvalKey, status: row.status, decidedBy: row.decidedBy, decidedAt: row.decidedAt },
       resumed,
     };
   }
@@ -913,6 +932,13 @@ export class AgentController {
     }
     if (approval.sessionId !== session.id) {
       throw new AppError("AGENT_APPROVAL_SESSION_MISMATCH", { sessionId: id });
+    }
+    // ADR-045：发布审批单禁用 phrase 路径——phrase 整条无自批校验，申请人可绕过四眼。
+    // 在指纹重算与 decideByPhrase 之前显式拒绝，发布审批只能走 grant 端点。
+    if (approval.toolName === "sop_publish") {
+      throw new AppError("VALIDATION_FAILED", {
+        detail: "发布审批必须用 grant 端点、不支持短语",
+      });
     }
 
     // 指纹口径与闸门/落库侧同一份 computeApprovalPolicyFingerprint：读的是

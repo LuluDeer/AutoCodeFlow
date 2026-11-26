@@ -74,6 +74,8 @@ import {
   type WorkbenchViewer,
   PartProjectionService,
 } from "./part-projection.service";
+import { ReleaseApprovalService } from "./release-approval.service";
+import { sopContentHash } from "../sop/sop-frontmatter";
 
 /** 极简框架替身可能没有 @Optional / @Inject；缺席时降级 no-op，手动 new 不受影响。 */
 const Optional: (...args: any[]) => any =
@@ -191,6 +193,10 @@ export class WorkbenchController {
     // 新端点报 DEPENDENCY_UNAVAILABLE；上面 preview/commit/rewind 的装配与闸门不变。
     @Optional()
     private readonly partProjection?: PartProjectionService | null,
+    // ADR-045：发布审批编排。@Optional 缺席（老单测/裁剪部署）⇒ 不发起审批，
+    // commit 仍只落 draft，既有五闸与返回值逐字不变。
+    @Optional()
+    private readonly releaseApproval?: ReleaseApprovalService | null,
   ) {}
 
   /**
@@ -416,13 +422,41 @@ export class WorkbenchController {
       }),
     );
 
+    // ADR-045：draft 落库后发起发布审批（业务人员不直接 publish，主管四眼后
+    // 系统代理发布）。fail-open：审批发起异常只 warn、draft 保留，approvalKey
+    // 缺席即"审批未发起"，前端提示重试；既有五闸与 draft 调用逐字不动。
+    let approvalKey: string | undefined;
+    if (this.releaseApproval && user?.username) {
+      try {
+        const contentHash = sopContentHash(
+          payload.frontMatter,
+          payload.bodyMarkdown,
+        );
+        const req = await this.releaseApproval.requestRelease({
+          sopId: saved.id,
+          cardHash: rebuilt.cardHash,
+          contentHash,
+          username: user.username,
+        });
+        approvalKey = req.approvalKey;
+      } catch (err: unknown) {
+        this.logger.warn(
+          `发布审批发起失败（draft 已保留）：sopId=${saved.id} — ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     // 输出锚点：回带第三闸放行的 currentGeneration，不在返回时重算。
     return {
       sopId: saved.id,
       slug: payload.slug,
       status: "draft",
-      next: "请在 SOP 页面审阅并发布",
+      next: approvalKey
+        ? "方案卡已提交发布审批，待主管四眼批准"
+        : "请在 SOP 页面审阅并发布",
       policyGeneration: currentGeneration,
+      ...(approvalKey ? { approvalKey } : {}),
     };
   }
 

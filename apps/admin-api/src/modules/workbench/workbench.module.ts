@@ -4,6 +4,17 @@ import { ModuleRef } from "@nestjs/core";
 import { AuditModule } from "../audit/audit.module";
 import { AuditService } from "../audit/audit.service";
 import { AgentSessionService } from "../agent/runtime/agent-session.service";
+import { AgentApprovalsService } from "../agent/runtime/agent-approvals.service";
+import { SopService } from "../sop/sop.service";
+import { ConfigService } from "@nestjs/config";
+import {
+  RELEASE_APPROVALS_PORT,
+  RELEASE_POLICY_PORT,
+  RELEASE_SESSIONS_PORT,
+  RELEASE_SOPS_PORT,
+  ReleaseApprovalService,
+} from "./release-approval.service";
+import { releasePolicyAdapter } from "./release-policy.adapter";
 import { ConfigCacheSyncService } from "../config/config-cache-sync.service";
 import { SystemConfigModule } from "../config/config.module";
 import { SystemConfigService } from "../config/config.service";
@@ -97,6 +108,46 @@ import { WorkbenchBlobStore } from "./workbench-blob.store";
       useClass: EmptyRewindAsyncWriteSource,
     },
     RewindRunner,
+    // ADR-045：发布审批四端口。ModuleRef strict:false 惰性取全局装配的
+    // AgentApprovalsService / SopService（不反向改 AgentModule exports）；
+    // 会话端口复用已 import 的 AgentSessionService；策略指纹按 phrase 同口径适配。
+    {
+      provide: RELEASE_APPROVALS_PORT,
+      inject: [ModuleRef],
+      useFactory: (moduleRef: ModuleRef) =>
+        moduleRef.get(AgentApprovalsService, { strict: false }),
+    },
+    {
+      provide: RELEASE_SESSIONS_PORT,
+      inject: [ModuleRef],
+      useFactory: (moduleRef: ModuleRef) => ({
+        create: (input: never) =>
+          moduleRef.get(AgentSessionService, { strict: false }).create(input),
+      }),
+    },
+    {
+      provide: RELEASE_SOPS_PORT,
+      inject: [ModuleRef],
+      useFactory: (moduleRef: ModuleRef) => {
+        const sops = () => moduleRef.get(SopService, { strict: false });
+        return {
+          findDraft: async (id: string) => {
+            const sop = await sops().getSop(id);
+            return {
+              frontMatterJson: sop?.frontMatterJson ?? null,
+              bodyMarkdown: sop?.bodyMarkdown ?? null,
+            };
+          },
+          publish: (input: never) => sops().publish(input),
+        };
+      },
+    },
+    {
+      provide: RELEASE_POLICY_PORT,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => releasePolicyAdapter(config),
+    },
+    ReleaseApprovalService,
     WorkbenchBlobStore,
     PartProjectionService,
     // N10：Part 源缺省是进程内服务端 Map；owner 判定走 ModuleRef 惰性取
