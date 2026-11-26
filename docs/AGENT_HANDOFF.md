@@ -1,5 +1,27 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 62 轮）：workflow 4-agent 系统性目标核查 + 4-agent 并行接线（N13/N12/N20/N22）
+
+**方向来源**：objective 续轮。前几轮我据单点印象判断"剩余都是外部依赖"——本轮改用 **workflow 并行 4 个只读审计 agent**，各自沿 CodeGraph 调用链（含被调模块，避免上轮"聚焦主文件漏看 ai-route"的误判）逐条核实两份文档 N1-N27 的"未做"声明。结果纠正了过度悲观判断：22 条核查里 **16 条是 real_gap（纯函数/状态机已备、只有测试调用者、无生产接线，可独立实现）**、1 条 done、2 条外部依赖、2 条需 ADR、1 条需裁决。**大量可落地工作此前被我误判为外部依赖**——这是本轮最重要的方法论产出。
+
+**4 个写域互斥 agent 并行接线**（基于核查证据，非印象）：
+| 切片 | 目标 | 产出 | 验收 |
+|---|---|---|---|
+| wire-n13-variant | N13 续 | `provider/model#variant` 接进 RouteOverride，reasoningEffort 在 RouteResolution **暴露不透传**（下游 provider 支持不统一，不虚构参数） | ai 21 suites/301 tests；畸形 ref/控制组反证 |
+| wire-n12-budget | N12 续 | `outputBudgetFor` 接进 buildPreview，方案卡加 `relativeUnits`/`budgetBasis`（RU 相对单位、无 token 样本），**N7 maxTurns 截断逐字保留** | workbench 8 suites/99 tests；钳制反证 |
+| wire-n20-stats | N20 续 | `meterActivations` 接进 stats，返回可选 `dualBasis`（invocations/successfulDeliveries，token/currency 恒 null）；既有三态字段不变 | capability-activation 8 suites/82 tests；误计 failure 反证 |
+| wire-n22-sla | N22 续 | `sla-assessment.ts` 逐条调 evaluateSla 产出违约判定 + 汇总，nowMs 注入、不虚构时钟；**告警渠道发送待裁决**（只产判定不发包） | capability 19 suites/339 tests；恒 met 变异 8 红 |
+
+**协同**：wire-n20 反证注入窗口期主动通知 wire-n22 避让、后者重跑确认——agent 间再次自主协同。
+
+**主控集成**：7 处 prettier `eslint --fix`；真跑 openapi export + 补 2 条 i18n 映射 → inject/gen:api-types/api-reference 全链；response-schema selftest 31/31。
+
+**后续项（核查锁定的剩余 12 条 real_gap 中未做者）**：N1 外部 agent 配置落盘、N3 四语义接 capability.service、N8 steer-inbox 接 agent loop、N9 reachability→X11/fromVideo 降级、N18 rewind 接 controller/审计、N10 blob 存储/share 鉴权、N11 plan-agent 接 agent loop、N23 generation-swap 接 disposer、N16 所有权移交、N19 scope 真实消费点、N21 出域开关/分类标签、N26 CLI 真实启动。**这些都不依赖外部条件，可继续派 agent。** 外部/ADR/裁决类（N5 人时样本、N6 真 IM 凭证、N14 ADR-043、N24 P4、N25 实体枚举、N19 真实停用、N21 等保认证）维持原边界。
+
+**提交**：单个原子提交（4 实现 + 生成物 + 交接段）。**未 push**。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 60 轮）：ADR-043 固化 N14 interrupt 决策 + 2-agent 并行（commit generation 回带 / N24 进程内权限层）
 
 **方向来源**：objective 续轮。N14 interrupt 连续 4 轮被判"需 ADR 的中等架构决策"而推迟——本轮**主控亲自写 ADR-043**（`docs/adr/adr-043-inflight-policy-invalidation.md`）正式固化：三层已交付（代际 bump + scopedRules + commit 第五闸）、approval policy 实时重读已成立、capability 代际在途中断缺"方案卡→会话 generation 传递契约"（`AgentSession` 无 generation 字段、`workbench` 不建会话 ⇒ 加字段会造无写入方假接线）；推荐方案 A + 否决假绿/全局 DENY/混用 approval 指纹 + 重开触发条件。README 索引 + 两份文档 N14 状态均指向该 ADR，文档守卫绿（六节结构 + ≥3 证据锚点 + 索引恰好 1 行）。

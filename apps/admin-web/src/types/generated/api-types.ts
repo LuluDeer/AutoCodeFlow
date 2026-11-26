@@ -8225,8 +8225,12 @@ export interface components {
             totalPages: number;
         };
         PlanCardBudgetDto: {
+            /** @description 相对预算口径说明与钳制理由（无 token 样本、不折算真实成本） */
+            budgetBasis?: string;
             /** @description 本方案卡允许的最大轮次（中台硬上限 20） */
             maxTurns: number;
+            /** @description 相对预算单位（RU）；无 token 样本，仅按轮次与能力提示投影，不折算真实成本 */
+            relativeUnits?: number;
         };
         PlanCardCheckDto: {
             field: string;

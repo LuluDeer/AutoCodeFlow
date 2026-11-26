@@ -9442,10 +9442,20 @@
       },
       "PlanCardBudgetDto": {
         "properties": {
+          "budgetBasis": {
+            "description": "相对预算口径说明与钳制理由（无 token 样本、不折算真实成本）",
+            "type": "string",
+            "x-i18n-en": "Relative budget basis and clamping rationale (no token sample, not converted to real cost)."
+          },
           "maxTurns": {
             "description": "本方案卡允许的最大轮次（中台硬上限 20）",
             "type": "number",
             "x-i18n-en": "Maximum rounds allowed for this plan card (platform hard limit: 20)"
+          },
+          "relativeUnits": {
+            "description": "相对预算单位（RU）；无 token 样本，仅按轮次与能力提示投影，不折算真实成本",
+            "type": "number",
+            "x-i18n-en": "Relative budget unit (RU); no token sample available, projected only from turns and capability hints, not converted to real cost."
           }
         },
         "required": [

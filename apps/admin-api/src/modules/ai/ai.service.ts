@@ -52,6 +52,7 @@ import {
   type RouteOverride,
   type RouteResolution,
 } from "./ai-route";
+import { parseProviderModelVariant } from "./provider-ref";
 
 // ═══════════════════════════════════════════════════════════════════
 // P1（agent-and-deployment）：多模态消息契约
@@ -602,14 +603,29 @@ export class AiService {
       ]);
 
     const requested = (providerOverride ?? "").trim();
+    // N13 续：请求级引用支持方案卡形态 `provider/model#variant`。纯 provider id
+    // （如 "qwen"）不含 `/#`，不拆分，行为逐字不变；含 `/` 或 `#` 的交给
+    // provider-ref 的纯函数拆分。畸形引用解析为 null，原串保留给 resolveAiRoute
+    // 按 unknown_provider 拒绝——不猜、不回落、不改写配置覆盖。
+    const ref = /[/#]/.test(requested)
+      ? parseProviderModelVariant(requested)
+      : null;
+    const requestedProvider = ref?.provider ?? requested;
+    const refModel = ref?.model;
+    const refVariant = ref?.variant;
+
     const override: RouteOverride = {
       // 请求级覆盖 > 配置覆盖 > 全局缺省（顺序即优先级）
       ...(requested
-        ? { provider: requested }
+        ? { provider: requestedProvider }
         : provider.trim()
           ? { provider: provider.trim() }
           : {}),
-      ...(model.trim() ? { model: model.trim() } : {}),
+      ...(refModel
+        ? { model: refModel }
+        : model.trim()
+          ? { model: model.trim() }
+          : {}),
       ...(numOrUndefined(maxTokens) !== undefined
         ? { maxTokens: numOrUndefined(maxTokens) }
         : {}),
@@ -619,6 +635,7 @@ export class AiService {
       ...(numOrUndefined(temperature) !== undefined
         ? { temperature: numOrUndefined(temperature) }
         : {}),
+      ...(refVariant !== undefined ? { variant: refVariant } : {}),
     };
 
     const resolved = resolveAiRoute({

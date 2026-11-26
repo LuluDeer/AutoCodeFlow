@@ -37,6 +37,7 @@
  */
 
 import type { AiProviderEntry, AiPurpose } from "./ai-providers";
+import { resolveReasoningEffort } from "./provider-ref";
 
 /**
  * Agent 路由的输出令牌下限。
@@ -58,6 +59,8 @@ export interface RouteOverride {
   timeoutMs?: number;
   /** 只在**显式配置**时下发（不猜 provider 的默认温度）。 */
   temperature?: number;
+  /** 方案卡引用的变体段（`provider/model#variant`），承载推理强度语义。 */
+  variant?: string;
 }
 
 export interface RouteContext {
@@ -79,6 +82,14 @@ export interface ResolvedRoute {
   maxTokens: number;
   timeoutMs: number;
   temperature?: number;
+  /**
+   * 由 variant 解析出的推理强度语义，无 variant 或未知 variant 时缺席。
+   *
+   * 本层只暴露该值，不写进 provider 请求体：OpenAI 兼容下游对此参数的支持
+   * 并不统一（部分端点认 `reasoning_effort`，部分完全不接受），由 provider
+   * 适配层按端点能力决定透传方式，避免在通用请求体上塞一个下游不认识的字段。
+   */
+  reasoningEffort?: "low" | "medium" | "high";
   transport: "openai" | "ollama";
   /** 该条目是否声明支持视频（视频用途必然为 true）。 */
   supportsVideo: boolean;
@@ -230,6 +241,9 @@ export function resolveAiRoute(ctx: RouteContext): RouteResolution {
     override.temperature <= 2
       ? override.temperature
       : undefined;
+  // 复用 provider-ref 的纯函数：variant 只承载 low / medium / high 三种语义，
+  // 其余（缺席、未知词）返回 null ⇒ 不暴露字段，保持无 variant 时路由形状不变。
+  const reasoningEffort = resolveReasoningEffort(override.variant);
 
   return {
     status: "ok",
@@ -242,6 +256,7 @@ export function resolveAiRoute(ctx: RouteContext): RouteResolution {
       maxTokens,
       timeoutMs,
       ...(temperature !== undefined ? { temperature } : {}),
+      ...(reasoningEffort !== null ? { reasoningEffort } : {}),
       transport: entry.transport,
       supportsVideo: entry.supportsVideo,
       notes,

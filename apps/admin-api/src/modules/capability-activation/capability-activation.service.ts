@@ -28,6 +28,14 @@ import {
   type CapabilityScopeGate,
   type CapabilityScopeSet,
 } from "./capability-scope.gate";
+import {
+  meterActivations,
+  type CapabilityMeterRow,
+  type DualMeterBasis,
+  type MeasurementNote,
+  type ProjectMeterRow,
+  type RawActivationLog,
+} from "./dual-meter";
 
 /** 深度钳位：与 agent 域 canonicalJson 同款，避免恶意深嵌套参数爆栈。 */
 const STABLE_MAX_DEPTH = 32;
@@ -89,11 +97,39 @@ export interface ActivationProjectStat {
   count: number;
 }
 
+/**
+ * N20 双口径统计（新增可选字段，既有 total/byCapability/byProject 逐字不变）。
+ *
+ * invocations = result ∈ {success,failure,blocked} 的调用次数；
+ * successfulDeliveries = 仅 result=success 的次数；token/货币值恒 null。
+ */
+export interface ActivationStatsDualBasis {
+  readonly basis: DualMeterBasis;
+  readonly invocations: number;
+  readonly successfulDeliveries: number;
+  readonly skipped: number;
+  readonly byCapability: CapabilityMeterRow[];
+  readonly byProject: ProjectMeterRow[];
+  readonly note: MeasurementNote;
+  readonly tokenSample: null;
+  readonly currencyValue: null;
+  readonly allocationNote: string;
+}
+
 export interface ActivationStats {
   total: number;
   byCapability: ActivationStatsEntry[];
   byProject: ActivationProjectStat[];
+  /** N20：双口径计数；缺席即旧契约，前端既有看板不依赖此字段。 */
+  dualBasis?: ActivationStatsDualBasis;
 }
+
+/**
+ * N20：attributeCost 需要外部权重（相对份额）输入，当前没有业务权重来源；
+ * 本批只暴露可复算计数，不编造分摊结果。
+ */
+const ALLOCATION_NOTE =
+  "attributeCost 未接线：相对份额分摊需外部权重配置，当前无业务权重来源；本字段只提供可复算的双口径计数。";
 
 function toDate(value: string): Date {
   return new Date(value);
@@ -283,6 +319,21 @@ export class CapabilityActivationService {
     this.applyWindow(projQb, options.from, options.to);
     const projRows: Record<string, string | null>[] = await projQb.getRawMany();
 
+    // N20 双口径：同一时间窗内取逐行最小投影（capabilityKey/projectId/result），
+    // 复用 meterActivations 计数，避免与 SQL 三态各写一套口径。对账关系：
+    // invocations = byCapability.count 合计 = success+failure+blocked；
+    // successfulDeliveries = 三态里的 success 合计，failure/blocked 只进 invocations。
+    // meterActivations 对非法 result 计 skipped，合法集合与 SQL 三态一致。
+    const dualQb = this.repo
+      .createQueryBuilder("log")
+      .select("log.capabilityKey", "capabilityKey")
+      .addSelect("log.projectId", "projectId")
+      .addSelect("log.result", "result");
+    this.applyWindow(dualQb, options.from, options.to);
+    const dualReport = meterActivations(
+      (await dualQb.getRawMany()) as RawActivationLog[],
+    );
+
     const byCapability = capRows.map((r) => ({
       capabilityKey: String(r.capabilityKey),
       count: Number(r.count),
@@ -297,6 +348,18 @@ export class CapabilityActivationService {
         projectId: r.projectId === null ? null : String(r.projectId),
         count: Number(r.count),
       })),
+      dualBasis: {
+        basis: dualReport.basis,
+        invocations: dualReport.total.invocations,
+        successfulDeliveries: dualReport.total.successfulDeliveries,
+        skipped: dualReport.total.skipped,
+        byCapability: dualReport.byCapability,
+        byProject: dualReport.byProject,
+        note: dualReport.note,
+        tokenSample: dualReport.tokenSample,
+        currencyValue: dualReport.currencyValue,
+        allocationNote: ALLOCATION_NOTE,
+      },
     };
   }
 

@@ -521,3 +521,119 @@ describe("模型硬策略闸门（N13：isModelAllowed 接入真实路由链）"
     expect(h.calls[0].cfg.timeout).toBe(60_000);
   });
 });
+
+describe("方案卡引用 variant 接入路由（N13 续）", () => {
+  const variantCtx = () => ({
+    "ai.provider": "variant-p",
+    "ai.providers": JSON.stringify([
+      {
+        id: "variant-p",
+        label: "变体测试档",
+        baseUrl: "https://api.example.com/v1",
+        model: "base-model",
+        maxTokens: 512,
+        timeoutMs: 30_000,
+        supportsVideo: true,
+        enabled: true,
+      },
+    ]),
+    "ai.providers.variant-p.apiKey": "sk-variant",
+  });
+
+  const routeFor = (h: Harness, provider?: string): Promise<any> =>
+    (h.service as any).routeFor("agent", provider);
+
+  const askVariant = (h: Harness, provider?: string) =>
+    h.service.chatMultimodal({
+      messages: [{ role: "user", content: "hi" }],
+      ...(provider ? { provider } : {}),
+    });
+
+  it("provider/model#high → 拆分出 provider/model/variant，reasoningEffort=high", async () => {
+    const h = await harness(variantCtx());
+    const res = await routeFor(h, "variant-p/alt-model#high");
+    expect(res.status).toBe("ok");
+    expect(res.route.provider).toBe("variant-p");
+    expect(res.route.model).toBe("alt-model");
+    expect(res.route.reasoningEffort).toBe("high");
+  });
+
+  it("low / medium 恒等映射，未知 variant 不暴露推理强度", async () => {
+    const h = await harness(variantCtx());
+    const low = await routeFor(h, "variant-p/alt-model#low");
+    expect(low.status).toBe("ok");
+    expect(low.route.reasoningEffort).toBe("low");
+    const medium = await routeFor(h, "variant-p/alt-model#medium");
+    expect(medium.status).toBe("ok");
+    expect(medium.route.reasoningEffort).toBe("medium");
+    const unknown = await routeFor(h, "variant-p/alt-model#turbo");
+    expect(unknown.status).toBe("ok");
+    expect(unknown.route.reasoningEffort).toBeUndefined();
+  });
+
+  it("畸形引用 → unknown_provider 拒绝，一个请求都不发", async () => {
+    for (const broken of [
+      "variant-p/",
+      "#high",
+      "variant-p/alt-model#",
+      "variant-p/base/model#high",
+    ]) {
+      const h = await harness(variantCtx());
+      const res = await routeFor(h, broken);
+      expect(res.status).toBe("error");
+      expect(res.reason).toBe("unknown_provider");
+    }
+    const h = await harness(variantCtx());
+    await askVariant(h, "variant-p/alt-model#");
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("控制组：纯 provider id 无 variant → 路由与请求体逐字不变", async () => {
+    const h = await harness(variantCtx());
+    const res = await routeFor(h, "variant-p");
+    expect(res.status).toBe("ok");
+    expect(res.route.provider).toBe("variant-p");
+    expect(res.route.model).toBe("base-model");
+    expect(res.route.reasoningEffort).toBeUndefined();
+    expect(
+      Object.prototype.hasOwnProperty.call(res.route, "reasoningEffort"),
+    ).toBe(false);
+
+    await askVariant(h, "variant-p");
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].body.model).toBe("base-model");
+    expect(h.calls[0].body.max_tokens).toBe(2048);
+    expect(h.calls[0].cfg.timeout).toBe(60_000);
+    expect(
+      Object.prototype.hasOwnProperty.call(h.calls[0].body, "reasoning_effort"),
+    ).toBe(false);
+  });
+
+  it("variant 引用指定的模型同样过 isModelAllowed 闸门", async () => {
+    const h = await harness({
+      ...variantCtx(),
+      "ai.providers": JSON.stringify([
+        {
+          id: "variant-p",
+          label: "变体测试档",
+          baseUrl: "https://api.example.com/v1",
+          model: "base-model",
+          maxTokens: 512,
+          timeoutMs: 30_000,
+          enabled: true,
+          deniedModels: ["banned-model"],
+        },
+      ]),
+    });
+    let caught: any;
+    try {
+      await askVariant(h, "variant-p/banned-model#high");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeTruthy();
+    expect(caught.errorCode).toBe("AI_PROVIDER_INVALID");
+    expect(caught.message).toContain("banned-model");
+    expect(h.calls).toHaveLength(0);
+  });
+});

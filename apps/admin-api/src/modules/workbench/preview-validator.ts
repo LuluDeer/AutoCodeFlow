@@ -9,6 +9,7 @@ import {
   type SopCapability,
   type SopFrontMatter,
 } from "../sop/sop-frontmatter";
+import { outputBudgetFor } from "./context-budget";
 import type {
   PlanCardBudgetDto,
   PlanCardCheckDto,
@@ -263,6 +264,15 @@ export function buildPreview(dto: PreviewPlanCardRequestDto): PreviewResult {
     acceptanceText: `完成「${clip(goal, 80)}」并留存可复核结果。`,
     budget,
   };
+
+  // N12：只消费 context-budget 的投影结果，不在本文件重算 RU。
+  // 轮次/能力仍由上面的 N7 闸门决定；这里追加的是相对预算口径，不虚构 token。
+  const relativeBudget = outputBudgetFor(card);
+  budget.relativeUnits = relativeBudget.units;
+  budget.budgetBasis = [
+    "无 token 样本，按相对预算单位（RU）计，不折算真实成本",
+    ...relativeBudget.reasons,
+  ].join("；");
 
   return { eligible, card, checks, cardHash: computeCardHash(card) };
 }

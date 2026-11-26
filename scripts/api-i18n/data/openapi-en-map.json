@@ -1844,5 +1844,7 @@
   "要 GET 的地址；缺省为 https://example.com。": "URL to GET; defaults to https://example.com.",
   "飞书事件 schema 版本（2.0 = v2，content 可能是 JSON 串）": "Feishu event schema version (2.0 = v2; content may be a JSON string)",
   "飞书事件信封（event）；仅在 platform=feishu 时由 adapter 读取，内部取 event.message.content 与 event.sender.sender_id": "Feishu event envelope; read by the adapter only when platform=feishu, internally taking event.message.content and event.sender.sender_id",
-  "本次提交放行的策略代际（16 位十六进制），供下游会话继承以做在途失效比对": "Policy generation cleared by this commit (16 hex digits), for downstream sessions to inherit for in-flight invalidation comparison."
+  "本次提交放行的策略代际（16 位十六进制），供下游会话继承以做在途失效比对": "Policy generation cleared by this commit (16 hex digits), for downstream sessions to inherit for in-flight invalidation comparison.",
+  "相对预算单位（RU）；无 token 样本，仅按轮次与能力提示投影，不折算真实成本": "Relative budget unit (RU); no token sample available, projected only from turns and capability hints, not converted to real cost.",
+  "相对预算口径说明与钳制理由（无 token 样本、不折算真实成本）": "Relative budget basis and clamping rationale (no token sample, not converted to real cost)."
 }

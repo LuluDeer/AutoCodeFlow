@@ -113,8 +113,15 @@ import {
 import { DomainEventBus } from "../../../common/services/domain-event-bus.service";
 import { SopService } from "../../sop/sop.service";
 import {
+  OUTPUT_BUDGET_DEFAULT_TURNS,
+  OUTPUT_BUDGET_UNITS_CAP,
+  outputBudgetFor,
+} from "../context-budget";
+import {
   PREVIEW_CAPABILITY_WHITELIST,
+  PREVIEW_DEFAULT_MAX_TURNS,
   PREVIEW_MAX_TURNS_CAP,
+  buildPreview,
   cadenceToTriggerText,
   computeCardHash,
   computePolicyGeneration,
@@ -328,5 +335,92 @@ describe("Workbench preview — N14 运行时代际（单测/内存替身）", (
     expect(after.policyGeneration).toMatch(/^[0-9a-f]{16}$/);
     expect(after.policyGeneration).not.toBe(before.policyGeneration);
     expect(after.cardHash).toBe(before.cardHash);
+  });
+});
+
+/** N12：把 context-budget 的相对预算投影接进 buildPreview 的反证（单测/内存替身）。 */
+describe("Workbench preview — N12 相对预算接线（单测/内存替身）", () => {
+  const controller = new WorkbenchController();
+
+  it("缺省预算：RU 取默认轮次投影，口径明确无 token 样本且不折算真实成本", async () => {
+    const res = await controller.preview({
+      goal: "默认相对预算",
+      cadence: "daily",
+    });
+
+    expect(res.card.budget.maxTurns).toBe(PREVIEW_DEFAULT_MAX_TURNS);
+    expect(res.card.budget.relativeUnits).toBe(OUTPUT_BUDGET_DEFAULT_TURNS * 4);
+    expect(res.card.budget.relativeUnits).toBe(outputBudgetFor(res.card).units);
+    expect(res.card.budget.budgetBasis).toContain("无 token 样本");
+    expect(res.card.budget.budgetBasis).toContain("不折算真实成本");
+    expect(res.card.budget.budgetBasis).toContain(
+      "单位为相对预算单位（RU），不折算真实 token",
+    );
+  });
+
+  it("改大 maxTurns：RU 按公式增长，N7 截断到 20 后不再放大且 warn 保留", async () => {
+    const small = await controller.preview({
+      goal: "预算增长",
+      cadence: "daily",
+      params: { maxTurns: "1" },
+    });
+    const mid = await controller.preview({
+      goal: "预算增长",
+      cadence: "daily",
+      params: { maxTurns: "10" },
+    });
+    const huge = await controller.preview({
+      goal: "预算增长",
+      cadence: "daily",
+      params: { maxTurns: "999" },
+    });
+
+    expect(small.card.budget.relativeUnits).toBe(4);
+    expect(mid.card.budget.relativeUnits).toBe(40);
+    expect(huge.card.budget.relativeUnits).toBe(PREVIEW_MAX_TURNS_CAP * 4);
+    expect(huge.card.budget.relativeUnits).toBeLessThanOrEqual(
+      OUTPUT_BUDGET_UNITS_CAP,
+    );
+    expect(huge.eligible).toBe(true);
+    expect(huge.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: "budget.maxTurns", status: "warn" }),
+      ]),
+    );
+    for (const res of [small, mid, huge]) {
+      expect(res.card.budget.relativeUnits).toBe(
+        outputBudgetFor(res.card).units,
+      );
+    }
+  });
+
+  it("RU 总上限：三轮次加三能力触发 100 钳制，钳制理由进入预算口径", () => {
+    const verdict = outputBudgetFor({
+      budget: { maxTurns: 999 },
+      capabilityHints: ["browser", "gui", "filesystem"],
+    });
+
+    expect(verdict.maxTurns).toBe(PREVIEW_MAX_TURNS_CAP);
+    expect(verdict.units).toBe(OUTPUT_BUDGET_UNITS_CAP);
+    expect(verdict.units).toBe(100);
+    expect(verdict.clamped).toBe(true);
+    expect(verdict.reasons).toContain(
+      "相对预算 104 RU 超过上限 100 RU，已钳制为 100 RU",
+    );
+
+    const preview = buildPreview({
+      goal: "钳制口径",
+      cadence: "daily",
+      params: { capabilityId: "browser", maxTurns: "999" },
+    });
+    expect(preview.card.budget.relativeUnits).toBe(
+      outputBudgetFor(preview.card).units,
+    );
+    expect(preview.card.budget.budgetBasis).toContain(
+      "maxTurns=20 在轮次上限 20 内",
+    );
+    expect(preview.card.budget.budgetBasis).toContain(
+      "能力 browser 计入 1 项附加预算（每项 8 RU）",
+    );
   });
 });

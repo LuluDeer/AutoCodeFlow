@@ -149,11 +149,14 @@ function makeRepo() {
     },
     createQueryBuilder() {
       let groupField = "";
+      const selected: string[] = [];
       const qb: Record<string, unknown> = {
-        select() {
+        select(field: string) {
+          selected.push(field);
           return qb;
         },
-        addSelect() {
+        addSelect(field: string) {
+          selected.push(field);
           return qb;
         },
         groupBy(field: string) {
@@ -176,6 +179,15 @@ function makeRepo() {
           return qb;
         },
         async getRawMany() {
+          // N20 双口径取的是逐行最小投影（无 GROUP BY、含 log.result），
+          // 与两条 GROUP BY 查询区分开，交给真实 meterActivations 计数。
+          if (!groupField && selected.includes("log.result")) {
+            return rows.map((r) => ({
+              capabilityKey: r.capabilityKey,
+              projectId: r.projectId ?? null,
+              result: r.result,
+            }));
+          }
           if (groupField.includes("capabilityKey")) {
             const map = new Map<
               string,
@@ -526,6 +538,116 @@ describe("N15 · stats 聚合", () => {
     ).toBe(1);
     expect(stats.byProject.find((e) => e.projectId === "p1")?.count).toBe(2);
     expect(stats.byProject.find((e) => e.projectId === null)?.count).toBe(1);
+  });
+});
+
+describe("N20 · stats 双口径接线", () => {
+  it("混合 success/failure/blocked：三态字段逐字不变，成功交付只计 success", async () => {
+    const repo = makeRepo();
+    const service = svcOf(repo);
+    await service.record({
+      capabilityKey: "finance-export",
+      parameters: {},
+      projectId: "p1",
+      result: "success",
+    });
+    await service.record({
+      capabilityKey: "finance-export",
+      parameters: {},
+      projectId: "p1",
+      result: "failure",
+    });
+    await service.record({
+      capabilityKey: "finance-export",
+      parameters: {},
+      result: "blocked",
+    });
+    await service.record({
+      capabilityKey: "file-import",
+      parameters: {},
+      projectId: "p2",
+      result: "success",
+    });
+
+    const stats = await service.stats();
+
+    // 既有三态契约（前端看板依赖）逐字不变。
+    expect(stats.total).toBe(4);
+    expect(
+      stats.byCapability.find((e) => e.capabilityKey === "finance-export"),
+    ).toEqual({
+      capabilityKey: "finance-export",
+      count: 3,
+      success: 1,
+      failure: 1,
+      blocked: 1,
+    });
+    expect(
+      stats.byCapability.find((e) => e.capabilityKey === "file-import"),
+    ).toEqual({
+      capabilityKey: "file-import",
+      count: 1,
+      success: 1,
+      failure: 0,
+      blocked: 0,
+    });
+    expect(stats.byProject.find((e) => e.projectId === "p1")).toEqual({
+      projectId: "p1",
+      count: 2,
+    });
+    expect(stats.byProject.find((e) => e.projectId === null)).toEqual({
+      projectId: null,
+      count: 1,
+    });
+
+    // 新字段：invocations 对账三态合计，successfulDeliveries 只取 success。
+    expect(stats.dualBasis).toMatchObject({
+      basis: "invocations+successfulDeliveries",
+      invocations: 4,
+      successfulDeliveries: 2,
+      skipped: 0,
+      note: "无 token 样本，不产出 token/货币值；仅调用次数与成功交付次数两个可复算口径",
+      tokenSample: null,
+      currencyValue: null,
+    });
+    expect(stats.dualBasis?.byCapability).toEqual([
+      {
+        capabilityKey: "finance-export",
+        invocations: 3,
+        successfulDeliveries: 1,
+      },
+      {
+        capabilityKey: "file-import",
+        invocations: 1,
+        successfulDeliveries: 1,
+      },
+    ]);
+    expect(stats.dualBasis?.byProject).toEqual([
+      { projectId: "p1", invocations: 2, successfulDeliveries: 1 },
+      { projectId: null, invocations: 1, successfulDeliveries: 0 },
+      { projectId: "p2", invocations: 1, successfulDeliveries: 1 },
+    ]);
+    expect(stats.dualBasis?.allocationNote).toContain("attributeCost 未接线");
+  });
+
+  it("控制组：空数据下三态为空，双口径全 0 且 token/货币仍为 null", async () => {
+    const stats = await svcOf(makeRepo()).stats();
+    expect(stats.total).toBe(0);
+    expect(stats.byCapability).toEqual([]);
+    expect(stats.byProject).toEqual([]);
+    expect(stats.dualBasis).toEqual({
+      basis: "invocations+successfulDeliveries",
+      invocations: 0,
+      successfulDeliveries: 0,
+      skipped: 0,
+      byCapability: [],
+      byProject: [],
+      note: "无 token 样本，不产出 token/货币值；仅调用次数与成功交付次数两个可复算口径",
+      tokenSample: null,
+      currencyValue: null,
+      allocationNote:
+        "attributeCost 未接线：相对份额分摊需外部权重配置，当前无业务权重来源；本字段只提供可复算的双口径计数。",
+    });
   });
 });
 
