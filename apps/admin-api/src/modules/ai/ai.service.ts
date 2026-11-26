@@ -1,8 +1,19 @@
-import { Injectable, Logger } from "@nestjs/common";
+/**
+ * ALLOW: ADR-044 provider.use 出域硬开关（deny 名单/审计/视图标记）使本文件非注释行 927>900；
+ * 出域判据与审计已外提 ai-egress.util.ts，剩余为不可再拆的接线；size-caps 绝对基线上限 98 已满。
+ */
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import * as nodeCron from "node-cron";
 import { SystemConfigService } from "../config/config.service";
+import { AuditService } from "../audit/audit.service";
+import {
+  isDeniedForUse,
+  parseDeniedProviderIds,
+  providerDeniedAuditDetail,
+  type ProviderViewWithDeny,
+} from "./ai-egress.util";
 // 与任务写边界同一份 cron 规范化（裸 n/step 等价改写），语法口径不漂移
 import { normalizeCron5Field } from "../task/cron-normalize.util";
 import {
@@ -204,6 +215,8 @@ export class AiService {
   constructor(
     private config: ConfigService,
     private systemConfig: SystemConfigService,
+    // ADR-044：出域 deny 审计（末尾 @Optional，缺席时 fail-open 不崩）
+    @Optional() private readonly audit?: AuditService | null,
   ) {
     this.secretsCrypto = new SecretsCryptoService(config);
   }
@@ -583,15 +596,32 @@ export class AiService {
   }
 
   /** 解析某个用途的生效路由（未启用/能力不符都如实返回原因）。 */
+  /**
+   * ADR-044 / provider.use：中台 managed 出域 deny 名单（system_configs）。
+   * fail-open：读不到/畸形一律视为空名单（不把所有 provider 都 deny），
+   *  deny 语义由 resolveAiRoute 的 restrict 分支强制，项目 allow 不可推翻。
+   */
+  private async loadDeniedProviders(): Promise<readonly string[]> {
+    try {
+      return parseDeniedProviderIds(
+        (await this.systemConfig.findOne("ai.provider.use.denied"))?.value,
+      );
+    } catch {
+      return [];
+    }
+  }
+
   private async routeFor(
     purpose: AiPurpose,
     providerOverride?: string,
   ): Promise<RouteResolution> {
-    const [{ entries, keys }, globalProvider, prefix] = await Promise.all([
-      this.loadProviders(),
-      this.getAiConfig("provider", "disabled"),
-      Promise.resolve(`routes.${purpose}`),
-    ]);
+    const [{ entries, keys }, globalProvider, prefix, deniedProviderIds] =
+      await Promise.all([
+        this.loadProviders(),
+        this.getAiConfig("provider", "disabled"),
+        Promise.resolve(`routes.${purpose}`),
+        this.loadDeniedProviders(),
+      ]);
 
     const [provider, model, maxTokens, timeoutMs, temperature] =
       await Promise.all([
@@ -644,7 +674,21 @@ export class AiService {
       providers: entries,
       keys,
       override,
+      deniedProviderIds,
     });
+
+    // ADR-044：出域 deny 写审计（fail-open 只 warn，detail 不含密钥）。
+    if (resolved.status === "error" && resolved.reason === "provider_denied") {
+      void this.audit
+        ?.log({
+          action: "capability.provider_denied",
+          resource: "ai_provider",
+          resourceId: (override.provider ?? "").trim().toLowerCase(),
+          detail: providerDeniedAuditDetail(override.provider ?? "", purpose),
+          result: "failure",
+        })
+        .catch((err) => this.logger.warn(`deny 审计失败：${String(err)}`));
+    }
 
     // N13 模型硬策略闸门：resolveAiRoute 只负责选路，白/黑名单与
     // modelEnabled 由 isModelAllowed 判定（唯一实现在 ai-providers.ts）。
@@ -667,15 +711,20 @@ export class AiService {
 
   /** 供设置页显示：注册表条目 + 每个条目是否已配密钥（永不回传密钥值）。 */
   async listProviderViews(): Promise<{
-    providers: Array<AiProviderEntry & { hasApiKey: boolean; legacy: boolean }>;
+    providers: Array<AiProviderEntry & ProviderViewWithDeny>;
     errors: string[];
   }> {
-    const { entries, keys, legacy, errors } = await this.loadProviders();
+    const [{ entries, keys, legacy, errors }, denied] = await Promise.all([
+      this.loadProviders(),
+      this.loadDeniedProviders(),
+    ]);
+    const deniedSet = new Set(denied);
     return {
       providers: entries.map((e) => ({
         ...e,
         hasApiKey: !!keys[e.id],
         legacy,
+        deniedForUse: isDeniedForUse(e.id, deniedSet),
       })),
       errors,
     };

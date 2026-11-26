@@ -31,6 +31,11 @@
  * **回落**（见 `legacyDefaults`），所以升级不需要改 .env。
  */
 
+import {
+  evaluateAll,
+  type SemanticPolicyLayer,
+} from "../capability/scope/scope-engine";
+
 /** 用途：分析（失败日志/健康/排程）、Agent 推理、视频理解（转 SOP）。 */
 export const AI_PURPOSES = ["analysis", "agent", "video"] as const;
 export type AiPurpose = (typeof AI_PURPOSES)[number];
@@ -369,12 +374,58 @@ export function toProviderViews(
   }));
 }
 
-/** 可按用途选用的条目（启用 + 该用途要求的能力）。 */
+/** provider 出域准入结论：deny 只由本函数产出，调用方不得改写判据。 */
+export type ProviderUseVerdict =
+  { allowed: true } | { allowed: false; reason: "provider_denied" };
+
+/**
+ * deny 名单归一：非数组 / 含非字符串元素 ⇒ fail-open 视为未配置（空名单），
+ * 绝不把「写坏的一条」解释成「全部 provider 都禁止出域」。
+ */
+function normalizeDeniedProviderIds(
+  value: readonly string[] | undefined,
+): Set<string> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids = new Set<string>();
+  for (const raw of value) {
+    if (typeof raw !== "string") return undefined;
+    const id = raw.trim().toLowerCase();
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * provider.use 硬准入（纯函数）：managed deny 命中即 deny；
+ * policyLayers 若提供则复用 scope-engine.evaluateAll 的 restrict 单调语义，
+ * 对 `provider:<id>` 的 `use` 动作做 any-deny，项目层 allow 不得翻盘。
+ */
+export function providerUseVerdict(
+  entry: AiProviderEntry,
+  deniedProviderIds?: readonly string[],
+  policyLayers?: readonly SemanticPolicyLayer[],
+): ProviderUseVerdict {
+  const id = str(entry?.id).toLowerCase();
+  const denied = normalizeDeniedProviderIds(deniedProviderIds);
+  if (denied?.has(id)) return { allowed: false, reason: "provider_denied" };
+  if (Array.isArray(policyLayers) && policyLayers.length > 0) {
+    const decision = evaluateAll(policyLayers, [
+      { resource: `provider:${id}`, action: "use" },
+    ]);
+    if (decision === "deny")
+      return { allowed: false, reason: "provider_denied" };
+  }
+  return { allowed: true };
+}
+
+/** 可按用途选用的条目（启用 + 该用途要求的能力 + 未被出域策略禁止）。 */
 export function selectableProviders(
   entries: readonly AiProviderEntry[],
   purpose: AiPurpose,
+  deniedProviderIds?: readonly string[],
 ): AiProviderEntry[] {
   return entries.filter((e) => {
+    if (!providerUseVerdict(e, deniedProviderIds).allowed) return false;
     if (!e.enabled) return false;
     if (purpose === "video") return e.supportsVideo;
     // analysis / agent 都要求能出文本；agent 另外要 tool-calling 面

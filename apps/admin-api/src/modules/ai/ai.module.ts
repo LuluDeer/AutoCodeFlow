@@ -5,6 +5,7 @@ import { AiService } from "./ai.service";
 import { AiAnalysisService } from "./ai-analysis.service";
 import { AiController } from "./ai.controller";
 import { SystemConfigModule } from "../config/config.module";
+import { AuditModule } from "../audit/audit.module";
 // 视频转 SOP（推理质量轮）：媒体落盘 + 签名直链 + 草稿生成
 import { AiMedia } from "./entities/ai-media.entity";
 import { AiMediaService } from "./ai-media.service";
@@ -19,6 +20,8 @@ import { AiMediaRetentionService } from "./ai-media-retention.service";
 @Module({
   imports: [
     SystemConfigModule,
+    // ADR-044 / provider.use：出域 deny 命中时写审计（capability.provider_denied）
+    AuditModule,
     TypeOrmModule.forFeature([AiMedia, AiSopSession]),
   ],
   controllers: [

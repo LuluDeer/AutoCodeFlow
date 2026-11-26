@@ -37,6 +37,8 @@
  */
 
 import type { AiProviderEntry, AiPurpose } from "./ai-providers";
+import { providerUseVerdict } from "./ai-providers";
+import type { SemanticPolicyLayer } from "../capability/scope/scope-engine";
 import { resolveReasoningEffort } from "./provider-ref";
 
 /**
@@ -70,6 +72,10 @@ export interface RouteContext {
   providers: readonly AiProviderEntry[];
   /** provider id → apiKey（注册表不存密钥）。 */
   keys: Readonly<Record<string, string | undefined>>;
+  /** 中台出域硬开关：被 deny 的 provider 不可被项目 allow 推翻。 */
+  deniedProviderIds?: readonly string[];
+  /** 可选策略层：交给 scope-engine 做 provider.use 的 any-deny 判定。 */
+  policyLayers?: readonly SemanticPolicyLayer[];
   override?: RouteOverride;
 }
 
@@ -105,6 +111,7 @@ export type RouteResolution =
         | "disabled"
         | "unknown_provider"
         | "provider_disabled"
+        | "provider_denied"
         | "capability_missing"
         | "missing_key"
         | "invalid_config";
@@ -145,6 +152,17 @@ export function resolveAiRoute(ctx: RouteContext): RouteResolution {
       status: "error",
       reason: "provider_disabled",
       message: `provider「${providerId}」已被禁用`,
+    };
+  }
+
+  // ── 中台出域硬开关（不回落、不静默换 provider）──────────────────
+  if (
+    !providerUseVerdict(entry, ctx.deniedProviderIds, ctx.policyLayers).allowed
+  ) {
+    return {
+      status: "error",
+      reason: "provider_denied",
+      message: `provider「${providerId}」被中台出域策略禁止（managed deny 不可被项目 allow 推翻）`,
     };
   }
 
