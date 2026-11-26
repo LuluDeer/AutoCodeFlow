@@ -14,6 +14,7 @@ import {
   ApiTags,
 } from "@nestjs/swagger";
 import { Roles } from "../../common/decorators/roles.decorator";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import {
   ActivationQueryDto,
@@ -32,14 +33,13 @@ import { QuotaService } from "./quota.service";
 /**
  * N15 / GCO §11：运行时能力激活日志端点。
  *
- * 全部走全局 JwtAuthGuard（见 capability.controller 同款约定，不叠加
- * @WriteGuard；route-authz-matrix 禁止 @Roles 与 @WriteGuard 共存）。
+ * 全部走全局 JwtAuthGuard（见 capability.controller 同款约定）。
  *
- *  POST /api/capability-activation          写入一条激活（JWT 可用；内部调用方）
+ *  POST /api/capability-activation          写入一条激活（JWT；内部调用方；@WriteGuard authenticated 显式登记）
  *  GET  /api/capability-activation          过滤 + 分页查询（ADMIN）
  *  GET  /api/capability-activation/stats    按能力/项目聚合（ADMIN）
  *
- *  N20 showback（同前缀子路径，沿用 ADMIN + JwtAuthGuard，不叠加 WriteGuard）：
+ *  N20 showback（同前缀子路径，沿用 ADMIN + JwtAuthGuard）：
  *  PUT  /api/capability-activation/quota         upsert 配额配置（ADMIN）
  *  GET  /api/capability-activation/quota         列出配额配置（ADMIN）
  *  GET  /api/capability-activation/quota-status  配额状态 + 软阈值告警（ADMIN）
@@ -47,6 +47,8 @@ import { QuotaService } from "./quota.service";
  * **无 PATCH / DELETE**：append-only 在路由层即封死。
  *
  * 读取先按简单 ADMIN 处理；项目 admin 的按项目授权是下一轮增强（见回报）。
+ * record 是 append-only 审计面，用 @WriteGuard(authenticated) 保留 JWT 调用方写入语义；
+ * route-authz-matrix 禁止同一 handler 上 @Roles 与 @WriteGuard 共存。
  */
 @ApiTags("Capability Activation")
 @ApiBearerAuth("JWT")
@@ -57,7 +59,12 @@ export class CapabilityActivationController {
     private readonly quota: QuotaService,
   ) {}
 
+  /**
+   * append-only 审计写入：JWT 登录即可（供 capability/workbench 调用方写入）；
+   * 无资源归属校验，也不收窄为 ADMIN-only。
+   */
   @Post()
+  @WriteGuard("capability-activation", { scope: "authenticated" })
   @HttpCode(201)
   @ApiOperation({
     summary: "记录一次能力激活（JWT；供 capability/workbench 调用方写入）",

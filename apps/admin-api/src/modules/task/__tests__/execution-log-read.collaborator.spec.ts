@@ -486,8 +486,10 @@ describe("getExecutionLogs · S3 指针权威后端", () => {
 
     expect(resolveS3Storage).toHaveBeenCalledTimes(1);
     expect(fixture.getStream).not.toHaveBeenCalled();
+    // 第 51 轮改中文文案；上方 expectDependencyUnavailable 同时断言
+    // 503 + errorCode + params，避免只匹配文案的脆弱性。
     expect(fixture.warn).toHaveBeenCalledWith(
-      expect.stringContaining("S3 log storage is not configured"),
+      expect.stringContaining("S3 日志存储未配置"),
     );
     expect(fixture.createQueryBuilder).not.toHaveBeenCalled();
     expect(fixture.count).not.toHaveBeenCalled();

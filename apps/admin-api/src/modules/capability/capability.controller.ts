@@ -18,6 +18,7 @@ import {
   ApiTags,
 } from "@nestjs/swagger";
 import { Roles } from "../../common/decorators/roles.decorator";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
@@ -40,14 +41,15 @@ import { CapabilityViewDto } from "./dto/capability-view.dto";
  * ADR-040 / P1：Capability 注册表端点（管理台，全部走全局 JwtAuthGuard）。
  *
  *  GET    /api/capabilities                 列表（JWT 可读，任意登录角色）
- *  POST   /api/capabilities/resolve         合并查询（JWT 只读，任意登录角色）
+ *  POST   /api/capabilities/resolve         合并查询（JWT 只读，任意登录角色；@WriteGuard authenticated 仅登记写面）
  *  GET    /api/capabilities/:key/dump       三栏审计（JWT 只读，凭据脱敏）
  *  POST   /api/capabilities                 新建（ADMIN）
  *  PATCH  /api/capabilities/:id             局部更新（ADMIN，合并后重跑确定性校验）
  *  DELETE /api/capabilities/:id             删除（ADMIN）
  *
- * 写端点用 @Roles(ADMIN) 角色门控（全站 JwtAuthGuard + RolesGuard 全局生效），
- * 不叠加 @WriteGuard（route-authz-matrix 禁止 @Roles 与 @WriteGuard 共存）。
+ * 真正写状态的端点用 @Roles(ADMIN) 角色门控（全站 JwtAuthGuard + RolesGuard 全局生效）；
+ * resolve 是语义只读的 POST，WriteScope 无 read，故用 @WriteGuard(authenticated) 显式登记既有 JWT 契约，
+ * 不收窄为 ADMIN。route-authz-matrix 禁止同一 handler 上 @Roles 与 @WriteGuard 共存。
  */
 @ApiTags("Capabilities")
 @ApiBearerAuth("JWT")
@@ -66,7 +68,12 @@ export class CapabilityController {
     return this.svc.findAll();
   }
 
+  /**
+   * 语义只读：POST 仅因 layers/rules 请求体复杂而不用 GET；service.resolveFor 只查注册表并计算，不落库。
+   * 保持原「任意登录用户可读」契约：不加 ADMIN；WriteScope 无 read，故用 authenticated 做写面显式登记。
+   */
   @Post("resolve")
+  @WriteGuard("capability-resolution", { scope: "authenticated" })
   @HttpCode(200)
   @ApiOperation({ summary: "解析 capability 的最终生效配置（JWT 只读）" })
   @ApiResponse({ status: 200, description: "生效配置 + 策略结论" })

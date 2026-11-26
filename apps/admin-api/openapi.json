@@ -2826,7 +2826,7 @@
             "maxLength": 64,
             "minLength": 1,
             "type": "string",
-            "x-i18n-en": "Approval phrase, exact whole-sentence match (leading/trailing whitespace and English case normalized): allow / allow once / 允许 / 批准 / deny / 拒绝 / reset. reset is unsupported under the once+TTL model and returns a validation failure."
+            "x-i18n-en": "Approval phrase, exact whole-sentence match (leading/trailing whitespace and English case normalized): allow or its Chinese-language equivalent / allow once / approve or its Chinese-language equivalent / deny or its Chinese-language equivalent / reset. reset is unsupported under the once+TTL model and returns a validation failure."
           }
         },
         "required": [
@@ -15202,7 +15202,7 @@
           "Agent"
         ],
         "x-i18n-en": {
-          "description": "Accepted phrases: allow / allow once / 允许 / 批准 / deny / 拒绝. The decider is the current logged-in admin and the policy fingerprint is recomputed from the server's current policy snapshot; any self-reported value in the request body is ignored.",
+          "description": "Accepted phrases: allow or its Chinese-language equivalent / allow once / approve or its Chinese-language equivalent / deny or its Chinese-language equivalent. The decider is the current logged-in admin and the policy fingerprint is recomputed from the server's current policy snapshot; any self-reported value in the request body is ignored.",
           "summary": "Dispose an Agent approval with a phrase (one-time authorization)."
         }
       }

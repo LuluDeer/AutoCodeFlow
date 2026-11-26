@@ -1,5 +1,27 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 54 轮）：5-agent 并行——4 个既有全量失败清零 + N8/N18 纯状态机
+
+**方向来源**：objective 续轮。上批（第 53 轮）全量 admin-api 暴露 4 个失败并经隔离 worktree 在基线 HEAD 确证为**既有欠账**（非上批引入）。本批按 AGENTS §4.4「低级别高置信缺陷升到可复现最高级再修」派 3 个 agent 修这 4 个，另派 2 个推进 N8/N18 纯状态机，写域严格互斥。
+
+| 切片 | 性质 | 产出 | 验收 |
+|---|---|---|---|
+| fix-s3-test-expectations | 修 2 failed | 两个 S3 测试按第 51 轮 fail-close 新语义重写（503 + `DEPENDENCY_UNAVAILABLE` + DB 零调用），保留 DB 回落探针防回退 | 2 suites/37 tests；反向注入旧回落→4 failed、改回英文文案→1 failed，sha 还原 |
+| fix-write-guard-endpoints | 修 1 failed | `resolve`/`record` 两 POST 端点加 `@WriteGuard("…",{scope:"authenticated"})`——精确表达「登录 JWT、无资源归属」，未收窄 ADMIN、未破坏只读契约 | 14 suites/238 tests；删声明→write-guard 点名两端点，sha 还原 |
+| fix-i18n-en-cjk | 修 1 failed | 第 52 轮补的 2 条英文映射里残留中文协议词（允许/批准/拒绝）改英文表达，键一字未动 | i18n spec 4/4；改回 CJK→spec 红，sha 还原 |
+| impl-n18-rewind-fence | N18 | `workbench/rewind-fence.ts` 纯判定——**复用** N10 的 `isStaleGeneration`（未重写比较），旧代异步写作废 + `invalidatedCount` | workbench 7 suites/89 tests；屏蔽判定→3 failed，sha 还原 |
+| impl-n8-park-drain | N8 | `agent/runtime/steer-inbox.ts` 纯状态机（park/drain 步边界/pendingWake 不复活死意图） | agent-runtime 31 suites/526 tests（新 spec 21）；双向反证→7 条红，sha 还原 |
+
+**主控集成**：① 1 处 prettier；② 真跑 openapi export + inject（DB 认证正常），openapi 仅 2 处 `x-i18n-en` 变化（授权元数据不进契约，符合 agent 判断），api-reference/consumer-routes/api-i18n 全绿；③ N8/N18 状态回写两份文档（仍 🟡 —— 纯状态机未接真实循环/审计）。
+
+**验收（主控独立复跑）**：`test:guards:chain` **CHAIN_EXIT=0**；全量 admin-api `jest --maxWorkers=2` → **API_FULL_EXIT=0，540 suites / 9123 passed / 6 skipped**（上批 4 failed 全部转绿）。**一处诚实记录**：首次全量跑时我在 jest 执行期间并发重写 openapi，导致 i18n spec 读到瞬间态报 1 failed；无并发写入重跑即 0 failed——是环境竞态非缺陷，已确认 openapi 无 CJK 残留。验收级别：单测/纯函数 + 真子进程守卫链 + 全量 jest；未达 Nest+PG 进程内接线、浏览器。本批引入缺陷 0。
+
+**提交**：单个原子提交（9 文件 + openapi 同步 + 状态回写 + 交接段），保持中间态绿与 `git show` 归因完整。**未 push**。
+
+**后续项**：① N19 gate 接线（第 52 轮遗留）；② N18/N8 接真实 agent runtime 循环与审计写入；③ N1 外部 agent 旁路、N6 真 IM adapter、N11 plan agent 身份；④ N25 source 枚举回填实体。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 53 轮）：5-agent 并行数据层扩展（N9/N10/N12/N23/N25）+ 4 项状态回写
 
 **方向来源**：objective 续轮——继续编排多 agent 协作推进两份开发文档。基线 HEAD `967aa7fb` 干净、上批守卫链绿。本批从 strategy §12.3 剩余 ⬜ 目标里挑 5 个「纯数据/纯函数层、写域互斥、单测可验收」的切片；另有 4 项（N5/N16/N21/N22）经 CodeGraph 核对**代码/文档早已落地、只是状态列滞后**，主控直接回写（其中 N21/N22 诚实标注为「建议基线/流程」而非已交付系统能力）。

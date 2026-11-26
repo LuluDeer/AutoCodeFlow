@@ -9,13 +9,14 @@
  *     ends up marked SUCCESS.
  *   - getExecutionLogs on an S3-stored execution gunzips and slices the
  *     decoded lines; pagination metadata reflects the full content.
- *   - getExecutionLogs falls back to DB rows when S3 get throws.
+ *   - getExecutionLogs fails closed with 503 when S3 get throws (no DB fallback).
  *   - Default (driver=db) keeps writing to execution_log_lines — no S3 calls.
  *   - The lazy S3LogStorage resolver only constructs once even when both
  *     callback and read paths go through resolveS3Storage().
  */
 import { Readable } from "node:stream";
 import { gzipSync, gunzipSync } from "node:zlib";
+import { ServiceUnavailableException } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { DataSource } from "typeorm";
@@ -38,6 +39,7 @@ import { NotificationService } from "../../notification/notification.service";
 import { AuditService } from "../../audit/audit.service";
 // SEC-02: secrets 加密服务（降级明文，日志链路用例语义零变化）
 import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.service";
+import { ErrorCode } from "../../../common/errors/error-codes";
 
 const minioClient = {
   bucketExists: jest.fn(),
@@ -368,7 +370,7 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
     expect(logLineRepo.createQueryBuilder).not.toHaveBeenCalled();
   });
 
-  it("getExecutionLogs falls back to DB rows when S3 get throws", async () => {
+  it("getExecutionLogs fails closed with 503 when S3 get throws (no DB fallback)", async () => {
     minioClient.getObject.mockRejectedValueOnce(
       new Error("NoSuchKey: missing"),
     );
@@ -379,7 +381,8 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
       logObjectKey: "execution-logs/e-missing.log.gz",
     };
     execRepo.findOne.mockResolvedValue(exec);
-    const fallbackQb: any = {
+    // 保留 DB 回落桩当探针：实现若退回旧语义会 resolve 出这两行 ⇒ 本例转红。
+    const wouldBeFallbackQb: any = {
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
@@ -390,14 +393,30 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
         { lineNumber: 1, content: "fallback-B" },
       ]),
     };
-    logLineRepo.createQueryBuilder.mockReturnValue(fallbackQb);
-    logLineRepo.count.mockResolvedValue(2);
+    logLineRepo.createQueryBuilder.mockReturnValue(wouldBeFallbackQb);
     logLineRepo.count.mockResolvedValue(2);
 
-    const result = await service.getExecutionLogs("e-missing", 0);
-    expect(result.lines).toEqual(["fallback-A", "fallback-B"]);
-    expect(result.totalLines).toBe(2);
-    expect(result.hasMore).toBe(false);
+    let caught: unknown;
+    try {
+      await service.getExecutionLogs("e-missing", 0);
+    } catch (err) {
+      caught = err;
+    }
+    // 第 51 轮契约：S3 指针是权威后端 ⇒ 503 fail-close，不伪装空日志。
+    expect(caught).toBeInstanceOf(ServiceUnavailableException);
+    // errorCode + 中文文案双断言，避免只匹配文案的脆弱性。
+    expect(caught).toMatchObject({
+      errorCode: ErrorCode.DEPENDENCY_UNAVAILABLE,
+      params: {
+        executionId: "e-missing",
+        dependency: "s3_log_storage",
+      },
+      message: "依赖服务暂不可用，请稍后重试",
+    });
+    expect((caught as ServiceUnavailableException).getStatus()).toBe(503);
+    // 反向判据：回落 DB ⇒ 两个零调用断言立刻红。
+    expect(logLineRepo.createQueryBuilder).not.toHaveBeenCalled();
+    expect(logLineRepo.count).not.toHaveBeenCalled();
     expect(minioClient.getObject).toHaveBeenCalledTimes(1);
   });
 
