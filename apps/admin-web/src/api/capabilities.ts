@@ -1,3 +1,4 @@
+import type { components } from '../types/generated/api-types';
 import { client } from './client';
 
 /**
@@ -84,10 +85,15 @@ export interface ResolveLayer {
   config: Record<string, unknown>;
 }
 
+/** 四语义策略层：只影响 decision 判定，不参与配置合并。合同派生，随 openapi 自动同步。 */
+export type SemanticPolicyLayer = components['schemas']['SemanticPolicyLayerDto'];
+
 export interface ResolveCapabilityPayload {
   key: string;
   layers: ResolveLayer[];
   fieldRules?: Record<string, CapabilityFieldRule>;
+  /** 可选四语义层（1-8 层）：传入时 decision 由 evaluateAll 判定。 */
+  semanticLayers?: SemanticPolicyLayer[];
 }
 
 export interface CapabilityResolution {

@@ -1,5 +1,25 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 63 轮）：3-agent 并行接线 N3/N16/N26（核查缺口续做）
+
+**方向来源**：objective 续轮，继续消化第 62 轮 workflow 核查锁定的 12 条 real_gap。本批挑 3 个写域完全互斥、规模可控的：N3（四语义接 capability.service）、N16（所有权移交端点）、N26（CLI 分发真实启动）。再次坚持"agent 质疑 + 主控裁决"纪律。
+
+| 切片 | 交付 | 验收 |
+|---|---|---|
+| wire-n3-semantics | `ResolveCapabilityDto.semanticLayers?`（1-8 层，四语义受控）+ `resolveFor` 传入时走 `evaluateAll` 判 decision，`effective` 仍按 fieldRules 合并，**省略时旧 evaluatePolicy 逐字不变** | capability 20 suites/349 tests；restrict deny 锁定/兼容/非法输入反证 |
+| wire-n16-transfer | ADMIN-only `POST /capabilities/:id/transfer` + `TransferCapabilityDto`（owner/backer 双签必填），复用 `svc.update` 无新增 service 方法 | capability 20 suites/348 tests；缺 backer→400、patch 键严格 [backer,owner]、角色守卫反证 |
+| wire-n26-cli-launch | `index.ts` 接 `parseCliDispatch(process.argv.slice(2))`：`--web` 沿用桌面壳（不建第二套 UI）、`--tui/--agent` 诚实降级（仓库无独立入口，不虚构 launcher）、冲突旗标 log 后走 default；**default 模式 405 行逐字不变** | desktop 65 selftest（cli-dispatch 80 断言 + 4 反证）、tsc 0；priority 冲突不崩 |
+
+**主控裁决**：① N16 agent 提出"是否写 `capability.transfer` 审计"——裁决留下一批（审计入口是 service 私有注入，本批 service 被 N3 独占，不强行扩写域；当前 `svc.update` 既有 `capability.update` 落证足够，专门 transfer 审计待 service 空出后补）；② N26 tui/agent 真实启动需独立入口，本批按仓库现状诚实降级，不虚构。两处都是"不造半成品"的正确边界判断。
+
+**主控集成**：5 处 prettier；真跑 openapi export + 补 9 条 i18n 映射 → inject/gen:api-types/api-reference 全链；response-schema 基线 270→271 官方上探（新端点+schema 提升覆盖）。
+
+**后续项**（核查锁定剩余 real_gap，均不依赖外部条件）：N1 配置落盘、N8 steer-inbox 接 agent loop、N9 reachability→X11/fromVideo 降级、N18 rewind 接 controller/审计、N10 blob/share、N11 plan-agent 接 loop、N23 disposer、N19 scope 消费点、N21 出域开关/分类标签、N16 transfer 专门审计、N26 TUI/Agent 真实入口。外部/ADR/裁决类（N5 样本、N6 凭证、N14 ADR-043、N24 P4、N25 枚举、N19 真实停用、N21 等保认证）维持原边界。
+
+**提交**：单个原子提交（3 实现 + 生成物 + 交接段）。**未 push**。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 62 轮）：workflow 4-agent 系统性目标核查 + 4-agent 并行接线（N13/N12/N20/N22）
 
 **方向来源**：objective 续轮。前几轮我据单点印象判断"剩余都是外部依赖"——本轮改用 **workflow 并行 4 个只读审计 agent**，各自沿 CodeGraph 调用链（含被调模块，避免上轮"聚焦主文件漏看 ai-route"的误判）逐条核实两份文档 N1-N27 的"未做"声明。结果纠正了过度悲观判断：22 条核查里 **16 条是 real_gap（纯函数/状态机已备、只有测试调用者、无生产接线，可独立实现）**、1 条 done、2 条外部依赖、2 条需 ADR、1 条需裁决。**大量可落地工作此前被我误判为外部依赖**——这是本轮最重要的方法论产出。

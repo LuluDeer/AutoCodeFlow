@@ -25,6 +25,7 @@ import { resolveUiLanguage, UI_LANGUAGE_DEFAULT } from './ui-language';
 import { uiText } from './ui-texts';
 import * as path from 'path';
 import log, { applyLogLevel, initLogCleanup } from './logger';
+import { parseCliDispatch } from './cli-dispatch';
 
 /**
  * i18n-DESK-01：主进程侧读取「界面语言」设置的唯一入口。
@@ -168,6 +169,22 @@ app.on('before-quit', (e) => {
     app.quit(); // 子进程已退出，真正退出
   });
 });
+
+// N26 CLI 分发接线：只依据 --web/--tui/--agent 记一条模式日志，随后统一走既有
+// whenReady 桌面壳流程（窗口 + renderer 内嵌 Web 内容，不新建第二套 UI）。仓库暂无
+// 独立 TUI/Agent CLI 入口，故这两个旗标如实降级为默认桌面壳；冲突旗标由纯判定层
+// fail-closed 为 null，同样明确记录并走默认启动，绝不让应用启动失败。
+// 无分发旗标时这里零日志、零新行为，下方启动流程逐字保持原样。
+const cliDispatch = parseCliDispatch(process.argv.slice(2));
+if (cliDispatch === null) {
+  log.warn('CLI 分发参数冲突：同时出现多个分发旗标，按默认桌面壳模式启动。');
+} else if (cliDispatch.mode === 'web') {
+  log.info('CLI 分发模式：web，沿用现有桌面壳窗口与内嵌 Web 内容。');
+} else if (cliDispatch.mode === 'tui') {
+  log.info('CLI 分发模式：tui，仓库暂无独立 TUI CLI 入口，降级为默认桌面壳启动。');
+} else if (cliDispatch.mode === 'agent') {
+  log.info('CLI 分发模式：agent，仓库暂无独立 Agent CLI 入口，降级为默认桌面壳启动。');
+}
 
 app.whenReady().then(async () => {
   // 移除默认菜单栏（File/Edit/View 等），Linux/Windows 上会显示原生菜单

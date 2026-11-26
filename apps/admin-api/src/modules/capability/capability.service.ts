@@ -22,11 +22,16 @@ import {
   CapabilitySource,
 } from "./entities/capability.entity";
 import type { CapabilityAttestation } from "./entities/capability.entity";
-import type { ResolveCapabilityDto } from "./dto/resolve-capability.dto";
+import {
+  POLICY_SEMANTIC_VALUES,
+  type PolicySemanticValue,
+  type ResolveCapabilityDto,
+} from "./dto/resolve-capability.dto";
 import {
   DEFAULT_POLICY_FIELD,
   MANAGED_LAYER,
   dumpConfig,
+  evaluateAll,
   evaluatePolicy,
   mergeConfig,
   type ConfigLayer,
@@ -34,6 +39,7 @@ import {
   type DumpField,
   type FieldRule,
   type FieldRules,
+  type SemanticPolicyLayer,
 } from "./scope/scope-engine";
 
 /** key 形态：小写字母/数字起头，1-128 位 [a-z0-9._-]。 */
@@ -109,6 +115,10 @@ const VALID_FIELD_RULES: ReadonlySet<FieldRule> = new Set<FieldRule>([
   "replaceIfSameKey",
   "policyTighten",
 ]);
+
+/** 四语义白名单：取值与 DTO / scope-engine 的 PolicySemantic 共用单一来源。 */
+const VALID_POLICY_SEMANTICS: ReadonlySet<PolicySemanticValue> =
+  new Set<PolicySemanticValue>(POLICY_SEMANTIC_VALUES);
 
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -298,7 +308,8 @@ export class CapabilityService {
   /**
    * POST /api/capabilities/resolve —— 只读查询：这条能力在给定层叠下的最终生效配置。
    * 层由调用方按高→低提供；key 必须已注册（findAll 对账），防止任意 JSON 被当配置探针。
-   * decision 以 capability key 为 resource、'*' 为 action 求值，managed deny 不被下层放行。
+   * decision 以 capability key 为 resource、'*' 为 action 求值：未传 semanticLayers
+   * 走旧 evaluatePolicy（managed deny 不被下层放行）；传入则交 scope-engine 四语义求值。
    */
   async resolveFor(dto: ResolveCapabilityDto): Promise<CapabilityResolution> {
     const key = dto?.key;
@@ -311,11 +322,15 @@ export class CapabilityService {
     }
     const layers = this.assertLayers(dto.layers);
     const rules = this.assertFieldRules(dto.fieldRules);
+    const semanticLayers = this.assertSemanticLayers(dto.semanticLayers);
     const effective = mergeConfig(layers, rules);
     const policyField =
       Object.keys(rules).find((field) => rules[field] === "policyTighten") ??
       DEFAULT_POLICY_FIELD;
-    const decision = evaluatePolicy(layers, key, "*", policyField);
+    // 四语义只判定 decision，不改配置合并规则（effective 仍出自 mergeConfig）。
+    const decision = semanticLayers
+      ? evaluateAll(semanticLayers, [{ resource: key, action: "*" }])
+      : evaluatePolicy(layers, key, "*", policyField);
     return { key, effective, decision };
   }
 
@@ -548,6 +563,43 @@ export class CapabilityService {
         invalid(`layers[${index}].config must be a plain object`);
       }
       return { name: layer.name, config: layer.config };
+    });
+  }
+
+  /**
+   * 可选四语义策略层守卫：省略返回 undefined（旧 decision 路径逐字不变），
+   * 传入则逐层校验 name / semantic / config，非法即 400，供 evaluateAll 直接消费。
+   */
+  private assertSemanticLayers(
+    layers: unknown,
+  ): SemanticPolicyLayer[] | undefined {
+    if (layers === undefined || layers === null) return undefined;
+    if (!Array.isArray(layers) || layers.length < 1) {
+      invalid("semanticLayers must be a non-empty array");
+    }
+    if (layers.length > 8) {
+      invalid("semanticLayers must not exceed 8");
+    }
+    return layers.map((layer, index) => {
+      if (!isPlainRecord(layer)) {
+        invalid(`semanticLayers[${index}] must be a plain object`);
+      }
+      if (typeof layer.name !== "string" || layer.name.length === 0) {
+        invalid(`semanticLayers[${index}].name must be a non-empty string`);
+      }
+      if (!VALID_POLICY_SEMANTICS.has(layer.semantic as PolicySemanticValue)) {
+        invalid(
+          `semanticLayers[${index}].semantic must be one of ${POLICY_SEMANTIC_VALUES.join("|")}`,
+        );
+      }
+      if (!isPlainRecord(layer.config)) {
+        invalid(`semanticLayers[${index}].config must be a plain object`);
+      }
+      return {
+        name: layer.name,
+        semantic: layer.semantic as SemanticPolicyLayer["semantic"],
+        config: layer.config,
+      };
     });
   }
 

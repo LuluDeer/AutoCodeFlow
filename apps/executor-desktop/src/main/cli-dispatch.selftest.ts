@@ -102,6 +102,58 @@ function expectRed(label: string, detector: () => void): void {
   check(red, `${label}：反证变体必须转红（否则判据没牙）`);
 }
 
+interface StartupOutcome {
+  startup: 'desktop-shell';
+  log: string | null;
+}
+
+type StartupResolver = (parsed: Result) => StartupOutcome;
+
+/**
+ * 启动层降级语义（index.ts 接线的行为模型）：仓库没有独立 TUI/Agent CLI 入口，
+ * 因此任何已解析 mode 都落到既有桌面壳，只以日志区分；冲突 null 同样走默认启动，
+ * default 零日志、零新行为。决策本身不抛错，也不凭空构造 launcher。
+ */
+function fallbackStartup(parsed: Result): StartupOutcome {
+  if (parsed === null) {
+    return { startup: 'desktop-shell', log: 'CLI 分发参数冲突：按默认桌面壳模式启动' };
+  }
+  switch (parsed.mode) {
+    case 'web':
+      return { startup: 'desktop-shell', log: 'CLI 分发模式：web，沿用现有桌面壳窗口' };
+    case 'tui':
+      return { startup: 'desktop-shell', log: 'CLI 分发模式：tui，降级为默认桌面壳启动' };
+    case 'agent':
+      return { startup: 'desktop-shell', log: 'CLI 分发模式：agent，降级为默认桌面壳启动' };
+    case 'default':
+      return { startup: 'desktop-shell', log: null };
+  }
+}
+
+/** 接线判据：三种 mode + 冲突 + default 都不得跳出既有桌面壳，日志如实标注。 */
+function assertLifecycleFallback(resolve: StartupResolver): void {
+  const cases: Array<{ argv: string[]; keywords: string[] }> = [
+    { argv: [], keywords: [] },
+    { argv: ['--web'], keywords: ['web'] },
+    { argv: ['--tui'], keywords: ['tui', '降级'] },
+    { argv: ['--agent'], keywords: ['agent', '降级'] },
+    { argv: ['--web', '--tui'], keywords: ['冲突'] },
+  ];
+  for (const item of cases) {
+    const outcome = resolve(parseCliDispatch([...item.argv]));
+    check(outcome.startup === 'desktop-shell', `必须落到既有桌面壳：${item.argv.join(' ')}`);
+    if (item.keywords.length === 0) {
+      check(outcome.log === null, 'default 模式零日志、零新行为');
+      continue;
+    }
+    check(outcome.log !== null, `非 default 必须留下模式日志：${item.argv.join(' ')}`);
+    if (outcome.log === null) continue;
+    for (const keyword of item.keywords) {
+      check(outcome.log.includes(keyword), `日志须含「${keyword}」：${item.argv.join(' ')}`);
+    }
+  }
+}
+
 function main(): void {
   console.log('\n=== cli-dispatch selftest ===\n');
 
@@ -129,8 +181,19 @@ function main(): void {
   expectRed('default 分支误带旗标（显式旗标漏传）', () => assertExplicitFlagsConsumed(badDefaultLeak));
   expectRed('default 分支凭空造旗标', () => assertDefaultClean(badDefaultFabricate));
 
+  // ── 接线层：解析结果驱动降级决策，任何分支都不崩、不新建第二套 UI ──
+  assertLifecycleFallback(fallbackStartup);
+  expectRed('无 launcher 时误直接启动 TUI', () =>
+    assertLifecycleFallback((parsed) => {
+      if (parsed?.mode === 'tui') throw new Error('虚构的 TUI launcher 不存在却被直接调用');
+      return fallbackStartup(parsed);
+    }),
+  );
+
   check(FLAGS.length === 3, '分发模式集合封闭');
-  console.log(`cli-dispatch.selftest: all assertions passed (${assertions} assertions, 3 counterfactuals)`);
+  console.log(
+    `cli-dispatch.selftest: all assertions passed (${assertions} assertions, 4 counterfactuals)`,
+  );
 }
 
 main();

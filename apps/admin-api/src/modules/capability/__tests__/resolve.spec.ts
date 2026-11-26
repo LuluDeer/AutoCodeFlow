@@ -64,7 +64,10 @@ jest.mock("../dto/create-capability.dto", () => ({
   CAPABILITY_VISIBILITIES: ["global", "project", "private"],
 }));
 
+import { plainToInstance } from "class-transformer";
+import { validateSync } from "class-validator";
 import { CapabilityService, DEFAULT_FIELD_RULES } from "../capability.service";
+import { ResolveCapabilityDto } from "../dto/resolve-capability.dto";
 import { REDACTED } from "../scope/scope-engine";
 
 interface Row {
@@ -314,5 +317,146 @@ describe("CapabilityService resolve / dump (ADR-040 / P1)", () => {
     await expect(svc.dumpFor("browser", "{not-json")).rejects.toMatchObject({
       errorCode: "VALIDATION_FAILED",
     });
+  });
+
+  it("N3 接线反证：restrict 层 deny 不被下层 override 撤销，旧路径同 layers 为 allow", async () => {
+    const svc = svcOf(makeRepo(SEED));
+    const layers = [
+      {
+        name: "managed",
+        config: { timeout: 100, policy: { rules: { browser: "allow" } } },
+      },
+      {
+        name: "private",
+        config: { timeout: 200, policy: { rules: { browser: "allow" } } },
+      },
+    ];
+
+    // 控制组：不传 semanticLayers ⇒ 旧 evaluatePolicy ⇒ allow。
+    const legacy = await svc.resolveFor({ key: "browser", layers } as never);
+    expect(legacy.decision).toBe("allow");
+
+    const wired = await svc.resolveFor({
+      key: "browser",
+      layers,
+      semanticLayers: [
+        {
+          name: "managed",
+          semantic: "restrict",
+          config: { policy: { rules: { browser: "deny" } } },
+        },
+        {
+          name: "private",
+          semantic: "override",
+          config: { policy: { rules: { browser: "allow" } } },
+        },
+      ],
+    } as never);
+    // 若 lockedDeny 被 override 撤销，或 decision 仍走旧路径，本例转 allow ⇒ 红。
+    expect(wired.decision).toBe("deny");
+    expect(wired.effective.timeout).toBe(200); // effective 仍来自 mergeConfig
+  });
+
+  it("N3 向后兼容反证：不传 semanticLayers 时旧 decision 逐字不变", async () => {
+    const svc = svcOf(makeRepo(SEED));
+    const layers = [
+      { name: "managed", config: { policy: { rules: { browser: "deny" } } } },
+      { name: "project", config: { policy: { rules: { browser: "allow" } } } },
+    ];
+    const denied = await svc.resolveFor({ key: "browser", layers } as never);
+    expect(denied.decision).toBe("deny");
+
+    const asked = await svc.resolveFor({
+      key: "browser",
+      layers: [
+        { name: "managed", config: { policy: { rules: { other: "allow" } } } },
+      ],
+    } as never);
+    expect(asked.decision).toBe("ask");
+
+    // 同一 layers 上叠加 override allow：旧路径 deny，四语义路径 allow（真接管）。
+    const overridden = await svc.resolveFor({
+      key: "browser",
+      layers,
+      semanticLayers: [
+        {
+          name: "project",
+          semantic: "override",
+          config: { policy: { rules: { browser: "allow" } } },
+        },
+      ],
+    } as never);
+    expect(overridden.decision).toBe("allow");
+  });
+
+  it("N3 控制组：四语义各层全 allow ⇒ decision=allow", async () => {
+    const svc = svcOf(makeRepo(SEED));
+    const res = await svc.resolveFor({
+      key: "browser",
+      layers: [
+        { name: "managed", config: { timeout: 150 } },
+        { name: "private", config: { timeout: 300 } },
+      ],
+      semanticLayers: [
+        {
+          name: "managed",
+          semantic: "restrict",
+          config: { policy: { rules: { browser: "allow" } } },
+        },
+        {
+          name: "project",
+          semantic: "override",
+          config: { policy: { rules: { browser: "allow" } } },
+        },
+        {
+          name: "private",
+          semantic: "fallback",
+          config: { policy: { rules: { browser: "allow" } } },
+        },
+        {
+          name: "bounds",
+          semantic: "rules",
+          config: { policy: { rules: { browser: "allow" } } },
+        },
+      ],
+    } as never);
+    expect(res.decision).toBe("allow");
+    expect(res.effective.timeout).toBe(300);
+  });
+
+  it("N3 非法 semanticLayers → VALIDATION_FAILED（空数组 / semantic 越界 / config 非对象）", async () => {
+    const svc = svcOf(makeRepo(SEED));
+    const base = { key: "browser", layers: [{ name: "managed", config: {} }] };
+    await expect(
+      svc.resolveFor({ ...base, semanticLayers: [] } as never),
+    ).rejects.toMatchObject({ errorCode: "VALIDATION_FAILED" });
+    await expect(
+      svc.resolveFor({
+        ...base,
+        semanticLayers: [{ name: "managed", semantic: "bogus", config: {} }],
+      } as never),
+    ).rejects.toMatchObject({ errorCode: "VALIDATION_FAILED" });
+    await expect(
+      svc.resolveFor({
+        ...base,
+        semanticLayers: [
+          { name: "managed", semantic: "restrict", config: ["bad"] },
+        ],
+      } as never),
+    ).rejects.toMatchObject({ errorCode: "VALIDATION_FAILED" });
+  });
+
+  it("N3 DTO 反证：semantic 越界 / config 非对象经装饰器校验报错", () => {
+    const dto = plainToInstance(ResolveCapabilityDto, {
+      key: "browser",
+      layers: [{ name: "managed", config: {} }],
+      semanticLayers: [{ name: "managed", semantic: "bogus", config: [] }],
+    });
+    const errors = validateSync(dto);
+    const layersError = errors.find((e) => e.property === "semanticLayers");
+    expect(layersError).toBeDefined();
+    expect(layersError!.children![0].children!.map((c) => c.property)).toEqual(
+      expect.arrayContaining(["semantic", "config"]),
+    );
   });
 });

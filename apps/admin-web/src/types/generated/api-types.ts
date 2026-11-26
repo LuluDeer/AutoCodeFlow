@@ -1695,6 +1695,23 @@ export interface paths {
         patch: operations["CapabilityController_update"];
         trace?: never;
     };
+    "/capabilities/{id}/transfer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 移交 capability 所有权（ADMIN；新 owner + backer 双签） */
+        post: operations["CapabilityController_transfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/capabilities/{key}/dump": {
         parameters: {
             query?: never;
@@ -8498,6 +8515,8 @@ export interface components {
             key: string;
             /** @description 高→低排列的配置层，1-8 层 */
             layers: components["schemas"]["ResolveLayerDto"][];
+            /** @description 可选四语义策略层，1-8 层；传入时 decision 由 scope-engine 的 evaluateAll 判定，effective 仍按 fieldRules 合并；省略则沿用旧 evaluatePolicy 判定 */
+            semanticLayers?: components["schemas"]["SemanticPolicyLayerDto"][];
         };
         ResolveLayerDto: {
             /** @description 该层的原始配置（纯对象） */
@@ -8586,6 +8605,22 @@ export interface components {
             totalScheduledTasks: number;
             /** @description process.uptime() 秒数 */
             uptime: number;
+        };
+        SemanticPolicyLayerDto: {
+            /** @description 该层的原始配置（纯对象） */
+            config: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description 语义策略层名；数组按高→低排列
+             * @example managed
+             */
+            name: string;
+            /**
+             * @description 本层与已解析上层的合并语义：override 同名替换 / restrict 的 deny 单调锁定 / fallback 仅上层无命中时生效 / rules 与上层取更紧
+             * @enum {string}
+             */
+            semantic: "override" | "restrict" | "fallback" | "rules";
         };
         SendNotificationDto: {
             channels?: ("email" | "dingtalk" | "wecom" | "slack" | "webhook" | "feishu")[];
@@ -9573,6 +9608,18 @@ export interface components {
             password: string;
             /** @example admin */
             username: string;
+        };
+        TransferCapabilityDto: {
+            /**
+             * @description 新部门/角色背书（必填非空字符串，最长 128 字符；非个人）
+             * @example role:platform-eng
+             */
+            backer: string;
+            /**
+             * @description 新发布者身份键（必填非空字符串，最长 128 字符）
+             * @example user:42|alice
+             */
+            owner: string;
         };
         TriggerTaskDto: {
             /** @description 提前触发并消耗下一个 cron 计划落点：登记后到该落点时刻调度器跳过一次（一次性），并留痕。缺省 false ⇒ 行为不变（手动触发不覆盖计划落点）。仅 cron 任务可用；已有未消耗登记时返回 409。 */
@@ -12602,6 +12649,54 @@ export interface operations {
             };
             /** @description 字段/scope/manifest 非法 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description capability 不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    CapabilityController_transfer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description capability UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferCapabilityDto"];
+            };
+        };
+        responses: {
+            /** @description 移交后的 capability */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityViewDto"];
+                };
+            };
+            /** @description owner/backer 缺失、空串或非字符串（须双签） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 非 ADMIN 无权移交 */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

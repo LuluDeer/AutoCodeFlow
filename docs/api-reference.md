@@ -1443,7 +1443,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 293 个操作，覆盖 252 个路径。
+共 294 个操作，覆盖 253 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1551,6 +1551,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/capabilities` | 新建 capability（ADMIN） |
 | DELETE | `/capabilities/{id}` | 删除 capability（ADMIN） |
 | PATCH | `/capabilities/{id}` | 局部更新 capability（ADMIN） |
+| POST | `/capabilities/{id}/transfer` | 移交 capability 所有权（ADMIN；新 owner + backer 双签） |
 | GET | `/capabilities/{key}/dump` | 导出 capability 三栏配置审计（JWT 只读，凭据脱敏） |
 | POST | `/capabilities/resolve` | 解析 capability 的最终生效配置（JWT 只读） |
 | GET | `/capability-activation` | 过滤 + 分页查询能力激活日志（ADMIN） |

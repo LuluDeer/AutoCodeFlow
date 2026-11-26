@@ -1846,5 +1846,14 @@
   "飞书事件信封（event）；仅在 platform=feishu 时由 adapter 读取，内部取 event.message.content 与 event.sender.sender_id": "Feishu event envelope; read by the adapter only when platform=feishu, internally taking event.message.content and event.sender.sender_id",
   "本次提交放行的策略代际（16 位十六进制），供下游会话继承以做在途失效比对": "Policy generation cleared by this commit (16 hex digits), for downstream sessions to inherit for in-flight invalidation comparison.",
   "相对预算单位（RU）；无 token 样本，仅按轮次与能力提示投影，不折算真实成本": "Relative budget unit (RU); no token sample available, projected only from turns and capability hints, not converted to real cost.",
-  "相对预算口径说明与钳制理由（无 token 样本、不折算真实成本）": "Relative budget basis and clamping rationale (no token sample, not converted to real cost)."
+  "相对预算口径说明与钳制理由（无 token 样本、不折算真实成本）": "Relative budget basis and clamping rationale (no token sample, not converted to real cost).",
+  "语义策略层名；数组按高→低排列": "Semantic policy layer name; array ordered highest to lowest",
+  "本层与已解析上层的合并语义：override 同名替换 / restrict 的 deny 单调锁定 / fallback 仅上层无命中时生效 / rules 与上层取更紧": "Merge semantics with already-resolved upper layers: override replaces same-name values / restrict locks deny monotonically / fallback applies only when no upper match / rules tightens against upper layers",
+  "可选四语义策略层，1-8 层；传入时 decision 由 scope-engine 的 evaluateAll 判定，effective 仍按 fieldRules 合并；省略则沿用旧 evaluatePolicy 判定": "Optional four-semantic policy layers, 1-8 entries; when provided the decision is evaluated by scope-engine evaluateAll while effective config still merges by fieldRules; when omitted the legacy evaluatePolicy decision path is used",
+  "新发布者身份键（必填非空字符串，最长 128 字符）": "New publisher identity key (required non-empty string, max 128 characters)",
+  "新部门/角色背书（必填非空字符串，最长 128 字符；非个人）": "New department/role backer (required non-empty string, max 128 characters; not an individual)",
+  "移交 capability 所有权（ADMIN；新 owner + backer 双签）": "Transfer capability ownership (ADMIN; new owner + backer dual sign-off)",
+  "移交后的 capability": "The capability after transfer",
+  "owner/backer 缺失、空串或非字符串（须双签）": "owner/backer missing, empty, or non-string (dual sign-off required)",
+  "非 ADMIN 无权移交": "Non-ADMIN users cannot transfer ownership"
 }

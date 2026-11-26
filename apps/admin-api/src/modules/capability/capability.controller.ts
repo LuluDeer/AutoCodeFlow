@@ -35,6 +35,7 @@ import {
   UpdateCapabilityDto,
 } from "./dto/create-capability.dto";
 import { ResolveCapabilityDto } from "./dto/resolve-capability.dto";
+import { TransferCapabilityDto } from "./dto/transfer-capability.dto";
 import { CapabilityViewDto } from "./dto/capability-view.dto";
 
 /**
@@ -46,6 +47,7 @@ import { CapabilityViewDto } from "./dto/capability-view.dto";
  *  POST   /api/capabilities                 新建（ADMIN）
  *  PATCH  /api/capabilities/:id             局部更新（ADMIN，合并后重跑确定性校验）
  *  DELETE /api/capabilities/:id             删除（ADMIN）
+ *  POST   /api/capabilities/:id/transfer    所有权移交（ADMIN，新 owner + backer 双签）
  *
  * 真正写状态的端点用 @Roles(ADMIN) 角色门控（全站 JwtAuthGuard + RolesGuard 全局生效）；
  * resolve 是语义只读的 POST，WriteScope 无 read，故用 @WriteGuard(authenticated) 显式登记既有 JWT 契约，
@@ -137,6 +139,41 @@ export class CapabilityController {
     @CurrentUser() user: AuthUser,
   ): Promise<Capability> {
     return this.svc.update(id, dto, this.actor(user));
+  }
+
+  /**
+   * N16 所有权移交：ADMIN-only 中台管控动作。新 owner + backer 双签由 DTO 形态闸
+   * 强制（缺任一字段 400）；字段写入复用 svc.update 的合并校验、乐观锁与既有审计，
+   * 不引入旁路写库。
+   */
+  @Post(":id/transfer")
+  @Roles(UserRole.ADMIN)
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "移交 capability 所有权（ADMIN；新 owner + backer 双签）",
+  })
+  @ApiParam({ name: "id", description: "capability UUID" })
+  @ApiResponse({
+    status: 200,
+    description: "移交后的 capability",
+    type: CapabilityViewDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: "owner/backer 缺失、空串或非字符串（须双签）",
+  })
+  @ApiResponse({ status: 403, description: "非 ADMIN 无权移交" })
+  @ApiResponse({ status: 404, description: "capability 不存在" })
+  transfer(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @Body() dto: TransferCapabilityDto,
+    @CurrentUser() user: AuthUser,
+  ): Promise<Capability> {
+    return this.svc.update(
+      id,
+      { owner: dto.owner, backer: dto.backer },
+      this.actor(user),
+    );
   }
 
   @Delete(":id")

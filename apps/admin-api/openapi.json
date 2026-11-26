@@ -10249,6 +10249,14 @@
             },
             "type": "array",
             "x-i18n-en": "Configuration layers ordered high to low, 1-8 layers"
+          },
+          "semanticLayers": {
+            "description": "可选四语义策略层，1-8 层；传入时 decision 由 scope-engine 的 evaluateAll 判定，effective 仍按 fieldRules 合并；省略则沿用旧 evaluatePolicy 判定",
+            "items": {
+              "$ref": "#/components/schemas/SemanticPolicyLayerDto"
+            },
+            "type": "array",
+            "x-i18n-en": "Optional four-semantic policy layers, 1-8 entries; when provided the decision is evaluated by scope-engine evaluateAll while effective config still merges by fieldRules; when omitted the legacy evaluatePolicy decision path is used"
           }
         },
         "required": [
@@ -10456,6 +10464,39 @@
           "runningTaskCount",
           "totalScheduledTasks",
           "uptime"
+        ],
+        "type": "object"
+      },
+      "SemanticPolicyLayerDto": {
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "description": "该层的原始配置（纯对象）",
+            "type": "object",
+            "x-i18n-en": "Raw configuration of the layer (plain object)"
+          },
+          "name": {
+            "description": "语义策略层名；数组按高→低排列",
+            "example": "managed",
+            "type": "string",
+            "x-i18n-en": "Semantic policy layer name; array ordered highest to lowest"
+          },
+          "semantic": {
+            "description": "本层与已解析上层的合并语义：override 同名替换 / restrict 的 deny 单调锁定 / fallback 仅上层无命中时生效 / rules 与上层取更紧",
+            "enum": [
+              "override",
+              "restrict",
+              "fallback",
+              "rules"
+            ],
+            "type": "string",
+            "x-i18n-en": "Merge semantics with already-resolved upper layers: override replaces same-name values / restrict locks deny monotonically / fallback applies only when no upper match / rules tightens against upper layers"
+          }
+        },
+        "required": [
+          "name",
+          "semantic",
+          "config"
         ],
         "type": "object"
       },
@@ -13062,6 +13103,29 @@
           "username",
           "password",
           "code"
+        ],
+        "type": "object"
+      },
+      "TransferCapabilityDto": {
+        "properties": {
+          "backer": {
+            "description": "新部门/角色背书（必填非空字符串，最长 128 字符；非个人）",
+            "example": "role:platform-eng",
+            "maxLength": 128,
+            "type": "string",
+            "x-i18n-en": "New department/role backer (required non-empty string, max 128 characters; not an individual)"
+          },
+          "owner": {
+            "description": "新发布者身份键（必填非空字符串，最长 128 字符）",
+            "example": "user:42|alice",
+            "maxLength": 128,
+            "type": "string",
+            "x-i18n-en": "New publisher identity key (required non-empty string, max 128 characters)"
+          }
+        },
+        "required": [
+          "owner",
+          "backer"
         ],
         "type": "object"
       },
@@ -19096,6 +19160,69 @@
         ],
         "x-i18n-en": {
           "summary": "Partially update a capability (ADMIN)"
+        }
+      }
+    },
+    "/capabilities/{id}/transfer": {
+      "post": {
+        "operationId": "CapabilityController_transfer",
+        "parameters": [
+          {
+            "description": "capability UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferCapabilityDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilityViewDto"
+                }
+              }
+            },
+            "description": "移交后的 capability",
+            "x-i18n-en": "The capability after transfer"
+          },
+          "400": {
+            "description": "owner/backer 缺失、空串或非字符串（须双签）",
+            "x-i18n-en": "owner/backer missing, empty, or non-string (dual sign-off required)"
+          },
+          "403": {
+            "description": "非 ADMIN 无权移交",
+            "x-i18n-en": "Non-ADMIN users cannot transfer ownership"
+          },
+          "404": {
+            "description": "capability 不存在",
+            "x-i18n-en": "Capability not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "移交 capability 所有权（ADMIN；新 owner + backer 双签）",
+        "tags": [
+          "Capabilities"
+        ],
+        "x-i18n-en": {
+          "summary": "Transfer capability ownership (ADMIN; new owner + backer dual sign-off)"
         }
       }
     },
