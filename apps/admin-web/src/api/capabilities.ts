@@ -18,7 +18,9 @@ export type CapabilityKind = 'skill' | 'mcp' | 'agent' | 'provider' | 'template'
 export type CapabilityVisibility = 'global' | 'project' | 'private';
 export type CapabilityScopeMode = 'managed' | 'supervised' | 'self_service';
 export type CapabilityGuidance = 'L1' | 'L2' | 'L3';
-export type CapabilitySourceType = 'builtin' | 'registry' | 'git' | 'folder';
+// N25：与后端 capability.entity.ts 的 CapabilitySourceType（派生自 source-policy 的
+// ExtendedSourceType）同源的 8 源闭包；后端空壳 schema 无法生成精确类型，故此处手写。
+export type CapabilitySourceType = 'builtin' | 'registry' | 'git' | 'folder' | 'npm' | 'github' | 'server' | 'mcp:';
 export type CapabilityDecision = 'allow' | 'ask' | 'deny';
 export type CapabilityFieldRule =
   | 'replace'

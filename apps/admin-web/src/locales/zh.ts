@@ -980,6 +980,8 @@ export default {
   'audit.action.subscription_delete': '删除事件订阅',
   'audit.action.subscription_deadLetter_delete': '删除订阅死信',
   'audit.action.capability_create': '创建能力',
+  'audit.action.capability_degraded': '能力调用降级',
+  'audit.action.capability_marketplace_toggle_failed': '能力市场启停被拒',
   'audit.action.capability_update': '更新能力',
   'audit.action.capability_transfer': '移交能力所有权',
   'audit.action.capability_delete': '删除能力',
