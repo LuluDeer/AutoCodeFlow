@@ -5,6 +5,9 @@ import { Capability } from "./entities/capability.entity";
 import { CapabilityService } from "./capability.service";
 import { CapabilityController } from "./capability.controller";
 import { CapabilityGenerationRegistry } from "./capability-generation.registry";
+import { ExternalAgentBypassWriteService } from "./external-agent-bypass.service";
+import { ReachabilityProbeService } from "./reachability-probe.service";
+import { safeHttpProbe } from "./reachability-probe.adapter";
 
 /**
  * ADR-040 / P1：Capability 注册表模块。
@@ -15,11 +18,24 @@ import { CapabilityGenerationRegistry } from "./capability-generation.registry";
  *
  * N23：registry provider 持有 generation swap 状态机；DomainEventModule 是 @Global，
  * bus 在 registry 内 @Optional 注入。生命周期钩子只做订阅/退订，不改 resolve 契约。
+ *
+ * N1/N9（第 66 轮）：bypass 写 service（外部 agent 配置原子改写）与 reachability
+ * probe service（SSRF 校验式安全探测，默认适配器只校验不发包）注册为 provider。
+ * CapabilityService 第 4 参 @Optional 注入 probe，缺席时 resolve/dump 降级字段缺席、
+ * 主链逐字不变。
  */
 @Module({
   imports: [TypeOrmModule.forFeature([Capability]), AuditModule],
   controllers: [CapabilityController],
-  providers: [CapabilityService, CapabilityGenerationRegistry],
+  providers: [
+    CapabilityService,
+    CapabilityGenerationRegistry,
+    ExternalAgentBypassWriteService,
+    {
+      provide: ReachabilityProbeService,
+      useFactory: () => new ReachabilityProbeService(safeHttpProbe),
+    },
+  ],
   exports: [CapabilityService],
 })
 export class CapabilityModule implements OnModuleInit, OnModuleDestroy {

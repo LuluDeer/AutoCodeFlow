@@ -3,6 +3,7 @@ import { ModuleRef } from "@nestjs/core";
 
 import { AuditModule } from "../audit/audit.module";
 import { AuditService } from "../audit/audit.service";
+import { AgentSessionService } from "../agent/runtime/agent-session.service";
 import { ConfigCacheSyncService } from "../config/config-cache-sync.service";
 import { SystemConfigModule } from "../config/config.module";
 import { SystemConfigService } from "../config/config.service";
@@ -27,6 +28,12 @@ import {
   REWIND_GENERATION_SOURCE,
   RewindRunner,
 } from "./rewind-runner";
+import {
+  InMemoryWorkbenchPartProvider,
+  PartProjectionService,
+  WorkbenchPartProvider,
+} from "./part-projection.service";
+import { WorkbenchBlobStore } from "./workbench-blob.store";
 
 /**
  * 最小方案卡面：preview 纯内存；commit 先过硬阈闸（超限 429、不落 draft），
@@ -90,6 +97,39 @@ import {
       useClass: EmptyRewindAsyncWriteSource,
     },
     RewindRunner,
+    WorkbenchBlobStore,
+    PartProjectionService,
+    // N10：Part 源缺省是进程内服务端 Map；owner 判定走 ModuleRef 惰性取
+    // AgentSessionService（AppModule 已装配 AgentModule）。取不到就 fail-closed
+    // 返回 false，不在裁剪部署里静默把私有 Part 放开。
+    {
+      provide: WorkbenchPartProvider,
+      inject: [ModuleRef],
+      useFactory: (moduleRef: ModuleRef): WorkbenchPartProvider => {
+        const local = new InMemoryWorkbenchPartProvider();
+        return {
+          getPart: (partId: string) => local.getPart(partId),
+          listParts: (sessionId: string) => local.listParts(sessionId),
+          savePart: (part) => local.savePart(part),
+          isOwner: async (sessionId, viewer) => {
+            if (!viewer) return false;
+            try {
+              const sessions = moduleRef.get(AgentSessionService, {
+                strict: false,
+              });
+              const row = await sessions.findById(sessionId);
+              if (!row?.createdBy) return false;
+              return (
+                row.createdBy === `user:${viewer.id}` ||
+                row.createdBy === `user:${viewer.username}`
+              );
+            } catch {
+              return false;
+            }
+          },
+        };
+      },
+    },
   ],
 })
 export class WorkbenchModule {}

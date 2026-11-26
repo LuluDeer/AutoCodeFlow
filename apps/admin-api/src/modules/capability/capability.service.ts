@@ -41,6 +41,8 @@ import {
   type FieldRules,
   type SemanticPolicyLayer,
 } from "./scope/scope-engine";
+import { ReachabilityProbeService } from "./reachability-probe.service";
+import type { DegradePath, ReachabilityCapability } from "./reachability";
 
 /** key 形态：小写字母/数字起头，1-128 位 [a-z0-9._-]。 */
 const KEY_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/;
@@ -268,12 +270,20 @@ export interface CapabilityResolution {
   key: string;
   effective: Record<string, unknown>;
   decision: Decision;
+  /** N9：可达性降级编排标记；探测口缺席时不写该字段（旧响应逐字不变）。 */
+  degradePath?: DegradePath;
+  /** N9：降级原因提示，格式「可达性分级:降级编排标记」。 */
+  degradationHint?: string;
 }
 
 /** GET /:key/dump 响应：scope-engine 产出的三栏审计行。 */
 export interface CapabilityDump {
   key: string;
   dump: DumpField[];
+  /** N9：与 resolve 同口径的降级编排标记（可选）。 */
+  degradePath?: DegradePath;
+  /** N9：降级原因提示（可选）。 */
+  degradationHint?: string;
 }
 
 /**
@@ -293,6 +303,9 @@ export class CapabilityService {
     // N14: DomainEventModule 是 @Global，生产自动注入；内存单测缺席不崩（fail-open）。
     @Optional()
     private readonly bus: DomainEventBus | null = null,
+    // N9：探测口 @Optional，内存单测缺席不崩（既有 resolve/dump 响应不变）。
+    @Optional()
+    private readonly probe: ReachabilityProbeService | null = null,
   ) {}
 
   async findAll(): Promise<Capability[]> {
@@ -331,7 +344,12 @@ export class CapabilityService {
     const decision = semanticLayers
       ? evaluateAll(semanticLayers, [{ resource: key, action: "*" }])
       : evaluatePolicy(layers, key, "*", policyField);
-    return { key, effective, decision };
+    const resolution: CapabilityResolution = { key, effective, decision };
+    await this.attachDegradation(
+      resolution,
+      caps.find((c) => c.key === key),
+    );
+    return resolution;
   }
 
   /**
@@ -365,7 +383,30 @@ export class CapabilityService {
     const priv = this.parseQueryLayer(privateLayer, "privateLayer");
     if (priv !== null) layers.push({ name: "private", config: priv });
 
-    return { key, dump: dumpConfig(layers, { ...DEFAULT_FIELD_RULES }) };
+    const result: CapabilityDump = {
+      key,
+      dump: dumpConfig(layers, { ...DEFAULT_FIELD_RULES }),
+    };
+    await this.attachDegradation(result, cap);
+    return result;
+  }
+
+  /**
+   * N9：把一次探测的分级/降级标记增量挂到响应上。
+   * 探测口缺席或探测链异常时静默跳过——resolve/dump 主链与既有响应形状不变。
+   */
+  private async attachDegradation(
+    target: CapabilityResolution | CapabilityDump,
+    capability: ReachabilityCapability | null | undefined,
+  ): Promise<void> {
+    if (!this.probe) return;
+    try {
+      const assessment = await this.probe.assess(capability);
+      target.degradePath = assessment.degradePath;
+      target.degradationHint = assessment.degradationHint;
+    } catch {
+      // fail-open：探测失败只让降级字段缺席，不把 resolve/dump 变成 500。
+    }
   }
 
   async create(

@@ -69,6 +69,11 @@ import type { PlanCardDto } from "./dto/preview-plan-card.dto";
 import { classifyScopedRules, type ScopedRule } from "./scoped-rules";
 import { RewindRunner } from "./rewind-runner";
 import { RewindRequestDto, RewindResultDto } from "./dto/rewind.dto";
+import {
+  type ProjectedPart,
+  type WorkbenchViewer,
+  PartProjectionService,
+} from "./part-projection.service";
 
 /** 极简框架替身可能没有 @Optional / @Inject；缺席时降级 no-op，手动 new 不受影响。 */
 const Optional: (...args: any[]) => any =
@@ -183,6 +188,10 @@ export class WorkbenchController {
     // DEPENDENCY_UNAVAILABLE；既有 preview/commit 的装配与四道闸逐字不变。
     @Optional()
     private readonly rewindRunner?: RewindRunner | null,
+    // N10：Part 投影 / blob 消费口。@Optional 缺席（手动 new / 裁剪部署）⇒
+    // 新端点报 DEPENDENCY_UNAVAILABLE；上面 preview/commit/rewind 的装配与闸门不变。
+    @Optional()
+    private readonly partProjection?: PartProjectionService | null,
   ) {}
 
   /**
@@ -441,5 +450,37 @@ export class WorkbenchController {
       executedWriteIds: result.executedWriteIds,
       generation: result.generation,
     };
+  }
+
+  @Post("part/project")
+  @ApiOperation({
+    summary:
+      "N10：按服务端 Part 与会话归属投影可见面（大字段仅在可见时从 blob 读回）",
+  })
+  async projectPart(
+    @Body() dto: { partId?: string },
+    @CurrentUser() user: WorkbenchViewer | undefined,
+  ): Promise<ProjectedPart | null> {
+    if (!this.partProjection) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    const partId = String(dto?.partId ?? "").trim();
+    if (!partId) {
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail: "partId 不能为空",
+      });
+    }
+    // currentGeneration 走既有服务端注册表；客户端只给 partId，不能带大字段/代际/share。
+    const projected = await this.partProjection.projectById(
+      partId,
+      await this.currentGeneration(),
+      user,
+    );
+    if (!projected) {
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail: "Part 不存在",
+      });
+    }
+    return projected;
   }
 }

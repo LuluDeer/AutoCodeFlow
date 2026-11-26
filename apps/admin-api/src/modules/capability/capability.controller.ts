@@ -35,7 +35,11 @@ import {
   CreateCapabilityDto,
   UpdateCapabilityDto,
 } from "./dto/create-capability.dto";
-import { ResolveCapabilityDto } from "./dto/resolve-capability.dto";
+import {
+  CapabilityDumpResponseDto,
+  CapabilityResolutionResponseDto,
+  ResolveCapabilityDto,
+} from "./dto/resolve-capability.dto";
 import { TransferCapabilityDto } from "./dto/transfer-capability.dto";
 import { CapabilityViewDto } from "./dto/capability-view.dto";
 import { CapabilityGenerationRegistry } from "./capability-generation.registry";
@@ -84,7 +88,11 @@ export class CapabilityController {
   @WriteGuard("capability-resolution", { scope: "authenticated" })
   @HttpCode(200)
   @ApiOperation({ summary: "解析 capability 的最终生效配置（JWT 只读）" })
-  @ApiResponse({ status: 200, description: "生效配置 + 策略结论" })
+  @ApiResponse({
+    status: 200,
+    description: "生效配置 + 策略结论 + 可选的可达性降级标记",
+    type: CapabilityResolutionResponseDto,
+  })
   @ApiResponse({ status: 400, description: "key 未注册 / layers 非法" })
   resolve(@Body() dto: ResolveCapabilityDto): Promise<CapabilityResolution> {
     // N23：优先读 generation swap 当前代；空态回退 service（既有 resolve 逐字不变）。
@@ -103,7 +111,8 @@ export class CapabilityController {
   @ApiQuery({ name: "privateLayer", required: false, type: String })
   @ApiResponse({
     status: 200,
-    description: "分层来源 / 生效值 / 来源层的三栏审计",
+    description: "分层来源 / 生效值 / 来源层的三栏审计 + 可选的可达性降级标记",
+    type: CapabilityDumpResponseDto,
   })
   @ApiResponse({ status: 400, description: "key 未注册 / 下层 JSON 非法" })
   dump(

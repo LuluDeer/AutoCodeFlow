@@ -119,3 +119,52 @@ export class ResolveCapabilityDto {
   @Type(() => SemanticPolicyLayerDto)
   semanticLayers?: SemanticPolicyLayerDto[];
 }
+
+/** N9：resolve / dump 响应共用的可达性降级字段（均为可选，旧响应不变）。 */
+export class CapabilityDegradationDto {
+  @ApiPropertyOptional({
+    enum: ["direct", "x11+fromVideo", "unknown"],
+    description:
+      "能力可达性降级编排标记：direct 直连、x11+fromVideo 走 X11 桌面与录屏转写、unknown 为 fail-closed",
+  })
+  degradePath?: "direct" | "x11+fromVideo" | "unknown";
+
+  @ApiPropertyOptional({
+    example: "unreachable:x11+fromVideo",
+    description: "降级原因提示，格式为「可达性分级:降级编排标记」",
+  })
+  degradationHint?: string;
+}
+
+/** N9：POST /api/capabilities/resolve 响应契约（追加可选降级字段）。 */
+export class CapabilityResolutionResponseDto extends CapabilityDegradationDto {
+  @ApiProperty({ example: "browser", description: "已注册的 capability key" })
+  key: string;
+
+  @ApiProperty({
+    type: "object",
+    additionalProperties: true,
+    description: "按字段族规则合并后的生效配置",
+  })
+  effective: Record<string, unknown>;
+
+  @ApiProperty({
+    type: "object",
+    additionalProperties: true,
+    description: "以 capability key 为资源的策略结论",
+  })
+  decision: Record<string, unknown>;
+}
+
+/** N9：GET /api/capabilities/:key/dump 响应契约（追加可选降级字段）。 */
+export class CapabilityDumpResponseDto extends CapabilityDegradationDto {
+  @ApiProperty({ example: "browser", description: "已注册的 capability key" })
+  key: string;
+
+  @ApiProperty({
+    type: "array",
+    items: { type: "object" },
+    description: "分层来源 / 生效值 / 来源层的三栏审计行",
+  })
+  dump: unknown[];
+}
