@@ -1,5 +1,29 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-27 · 工作台改造第 73 轮）：成本归责可观测性——金额闸跳过要透明
+
+**方向来源**：objective 续轮 + 上轮诚实边界（金额闸永远 fail-open 因行级金额不可投影）。PM 复核：activation log 无 token 列、sessionId 是 SOP id 命名空间，行级金额按项目/能力归责必然是全局金额的错误分摊（伪归责），违反上轮"不做份额伪分摊"承诺——**不硬推行级投影**。改做更有价值且诚实的可观测性：让管理员看清"金额闸为何没拦"，而不是静默 fail-open 被误读成"未超限"。
+
+| 切片 | 目标 | 交付 | 验收 |
+|---|---|---|---|
+| impl-quota-dashboard | 前端配额面板 | admin-web 加 getQuotaStatus API + ActivationStatsPage 配额状态 Table；金额行只有有限数才显示金额，否则"金额不可得/硬闸已跳过"＋原因，无 ¥0.00；invocations 行三态徽标 | 22/22 + 反证（注入 `amount ?? 0` 真红） |
+| 主控后端 | 跳过原因显式化 | quota.dto QuotaStatusRow 加 amountNote；quota.status 对 amount=null 行生成中文说明（按 priceReason 映射：零样本/缺价目/非法…+"硬闸已跳过，未与 0 比较、未作触顶判定"） | typecheck 0 |
+
+**真 PG e2e `quota-observability.e2e-spec.ts` 1 passed**：PUT unit=amount quota → GET quota-status 断言该行 unit=amount、amount=null、amountNote 含"硬闸已跳过"/"未与 0 比较"、不含"未超限"（首跑文案含"未视为未超限"被简单子串断言误判→改"未作触顶判定"消除歧义）。
+
+**主控集成**：web-type-drift 与 field-drift 各登记 5 个新手写类型（QuotaStatusQuery/QuotaScope/QuotaUnit/QuotaStatusLevel/QuotaStatusRow，后端生成契约该端点 content?:never 且 SetQuotaDto schema 缺 unit/amountHardLimit）；size-caps 未破顶；i18n 标点守卫抓到 `join('；')` 全角分号字面量→改 `join(' / ')`；两处 controller prettier 折行 eslint --fix。全守卫链 EXIT=0；admin-api 572/9519、admin-web 374/3076。
+
+**边界与诚实声明**：
+- **金额闸仍 fail-open**（行级金额未投影）——本轮不改变这一正确状态，只让它可观测；真拦截需先有"token 按 project/capability 落库"的数据基础（需 ADR + 迁移）。
+- 前端行类型因 generated 该端点 `content?: never` 且 SetQuotaDto schema 缺 unit/amountHardLimit，按后端 DTO 手写并登记，非生成派生——纳入生成合同后销账。
+- 验收最高级别：后端 e2e 第 3 级（真 PG+真 Nest+真 HTTP）+ 前端组件单测；未做浏览器真机。
+
+**后续项**：① activation.sessionId 关联键重设 ADR（加独立 agentSessionId 列，让 token 按项目/能力诚实归责，金额闸真拦截）；② 价目表管理 UI；③ 真浏览器 e2e 验配额面板与金额诚实展示。
+
+**提交**：按 objective 分批提交（前端+后端 + 基线登记 + 交接），不 push。
+
+---
+
 ## 本轮（2026-11-27 · 工作台改造第 72 轮）：成本归责——诚实标缺 + 价目折算能力（企业买单理由）
 
 **方向来源**：objective 续轮 + 上轮后续项（成本归责）。2 路审计核实关键约束：activation.sessionId 是 Workbench/SOP id 命名空间（与 agent_sessions.id 同为 UUID、无可靠桥），生产实测 139 条 steps tokensIn 全 0（agent-context.ts:126）；全仓无价目配置、dual-meter 类型锁 null。**PM 裁决**：不硬接假 JOIN、不编造 0 元——做"诚实标缺 + 价目折算能力"最小切片：有真实 usage 时能正确归责，无样本时明确标缺。这是企业买单理由的正确地基。
