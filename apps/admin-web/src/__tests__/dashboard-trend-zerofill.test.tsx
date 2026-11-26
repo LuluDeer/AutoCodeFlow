@@ -14,17 +14,16 @@
 import { describe, it, expect } from 'vitest';
 import { buildTrendSeries } from '../utils/trendSeries';
 
-/** 与 recentDateKeys 同构的「今天」键（YYYY-MM-DD，本地时区） */
-const todayKey = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
+/** 与 recentDateKeys（KpiSparkline，生产函数用 UTC 日桶）同构的键。
+ *  后端 metrics.service.getDailyTrend 按 UTC 截断、PG 默认 UTC，故这里必须用
+ *  UTC 口径；曾用本地 getDate() 导致 UTC+8 凌晨 00:00–08:00 跨日窗口错位。 */
+const keyOf = (d: Date) =>
+  `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 
-const daysAgoKey = (n: number) => {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
+const todayKey = () => keyOf(new Date());
+
+const daysAgoKey = (n: number) =>
+  keyOf(new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate() - n)));
 
 describe('buildTrendSeries（A6 趋势补零，生产函数）', () => {
   it('稀疏行补齐为完整日期轴：长度 = days，缺失日 success/failed = 0、rate = null', () => {
