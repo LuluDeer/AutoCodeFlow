@@ -27,23 +27,25 @@
 
 ## 3. 当前验证状态
 
-主 agent 最新实跑数字（**2026-11-25 按 CI 真实命令串行复演**，覆盖 R5–R40 累积改动；本表取代旧口径，历史 flake 归因保留在下方说明段）：
+主 agent 最新实跑数字（**2026-11-26 全端聚合回归**，覆盖工作台改造 R1–R58 累积改动；4 路验证 agent 各跑一端 + 主控聚合，全部真实退出码；下方历史 flake 归因保留）：
 
 | 项目 | 数字 | 结果 |
 |---|---|---|
-| admin-api 全量测试（`--maxWorkers=2`） | 511 suites passed（2 skipped）/ 8651 tests passed（6 skipped） | exit 0 |
-| CI 复演·admin-api-test 全 4 分片（`--shard=N/4`） | 128/127/127/128 suites（R41 复演：2841/1670/2218/1922 tests），全部 exit 0 | exit 0 |
-| admin-web 全量测试（`vitest run`） | 367 files / 3029 passed（1 skipped） | exit 0 |
-| CI 复演·SDK job（`npx jest`） | 6 suites / 151 passed | exit 0 |
-| CI 复演·Docs job（`npm run test:docs`） | 四守卫 selftest + 主跑全绿 | exit 0 |
-| executor-node 全量（`--runInBand`） | 64 suites / 1875 passed（13 skipped） | exit 0 |
-| executor-python 全量（`pytest`，覆盖率门槛 86%） | 87.32% 覆盖，达标 | exit 0 |
+| admin-api 全量测试（`--maxWorkers=2`） | 550 suites passed（2 skipped）/ 9275 tests passed（6 skipped） | exit 0 |
+| admin-web 全量测试（`vitest run`） | 371 files / 3060 passed（1 skipped） | exit 0 |
+| executor-node 全量（`npx jest`） | 64 suites / 1877 passed（13 skipped） | exit 0 |
+| executor-python 全量（`pytest`，覆盖率门槛 86%） | 2010 passed（3 skipped）/ 87.32% 覆盖，达标 | exit 0 |
 | acf-cli 全量（`vitest run`） | 16 files / 466 passed | exit 0 |
-| executor-desktop 全量（`test:main` + `test:renderer`） | 主进程 + renderer selftest 全通过 | exit 0 |
-| mcp-server 全量（`vitest run`） | 11 files / 348 passed | exit 0 |
+| mcp-server 全量（`vitest run`） | 12 files / 370 passed（57 工具） | exit 0 |
+| node-sdk 全量（`npx jest`） | 6 suites / 151 passed | exit 0 |
+| executor-desktop 全量（`test:main` + `test:renderer`） | 65 main selftest + 306 renderer 断言全通过 | exit 0 |
+| workbench 全链真 PG e2e | 1 passed（preview→commit→quota 落库副作用断言） | exit 0 |
+| 跨切面审计 | 错误码中英同步 / 路由授权矩阵 293 routes / consumer-routes 293 组合 / 文档 263 链接零死链 | exit 0 |
 | `typecheck:all` | 8 个端 | exit 0 |
-| `test:guards:chain` | 全守卫链 130 段 | exit 0 |
+| `test:guards:chain` | 全守卫链（含 e2e 迁移就绪守卫） | exit 0 |
 | north-star-health | 静态 5/5（真库 6/6） | exit 0 |
+
+> **历史口径（2026-11-25 R41 五端聚合）**：admin-api 511/8651、admin-web 367/3029、executor-node 64/1875、python 87.32%、cli 466、mcp 348、sdk 151 —— 本轮 2026-11-26 聚合**各端不低于历史基线，多数增长**（工作台改造 58 轮新增能力 + 测试）。CI 四分片口径（128/127/127/128 suites）仍是 CI job 的权威复演，本表为 `--maxWorkers=2` 本地口径。
 | 真浏览器深链 e2e（真 Chrome 158，系统 Chrome 通道） | 4 passed / 0 failed，pageerror=[] | exit 0 |
 | 真浏览器 + 真后端 e2e（R436，历史） | 真 PG/后端 dist/系统 Chrome：确认端点→漏斗落行→看板真读→反证 1→0→1 | 1 passed / exit 0，无 mock、pageerror=[] |
 | 迁移独立库往返（R433/R441，历史） | 146 up → 幂等 → revert ×2 → 清理 | 全 exit 0 |

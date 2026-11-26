@@ -1,5 +1,28 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 59 轮）：4-agent 并行全端聚合回归 + 跨切面审计——可发布态强证据
+
+**方向来源**：objective 续轮。7 轮工作台改造累积大量改动，此前只跑定向测试 + 守卫链，从未做全端聚合回归（历史 R41 做过一次）。本批派 **4 个只读验证 agent 各跑一端 + 跨切面审计**，主控聚合另跑 admin-api 全量与真 PG e2e——这是真正的多 agent 协作（各端并行、主控汇总裁决）。
+
+| 验证 agent | 范围 | 实测 |
+|---|---|---|
+| verify-web | admin-web 全量 | 371 files / 3060 passed / 1 skipped，exit 0（较 R41 基线 +4 files / +31 tests） |
+| verify-executors | executor-node + python | node 64 suites/1877 passed；python 2010 passed/87.32% 覆盖；双 exit 0 |
+| verify-packages | desktop + mcp + sdk + cli | 5/5 exit 0：desktop 65 main selftest + 306 renderer 断言、mcp 12 files/370（57 工具）、sdk 6/151、cli 16/466 |
+| audit-cross-surface | 错误码/路由/消费者/文档 4 面 | 全自洽、零问题：三新码中英齐备、新路由授权声明正确、26 新增 openapi path 无孤儿、263 链接零死链 |
+
+**主控聚合**：admin-api 全量 `550 suites / 9275 passed` exit 0；真 PG workbench 全链 e2e `1 passed` exit 0；PROJECT-STATUS 验证数字表更新为 2026-11-26 全端实测口径（历史 R41 数字保留并标注）。
+
+**架构决策记录（N14 interrupt 第 4 次评估）**：本轮深入探查后确认——`capability.changed` 当前仅 `PolicyGenerationService` 一个订阅者（bump 代际）；`boundary.check()` 每次重读 **approval policy**（故"下次 check 用新 approval policy"已成立），缺的是 **capability 代际维度的在途中断**；而 `AgentSession` **不携带 generation**，完整 interrupt 需要「会话 generation 字段（数据模型+迁移）+ 事件订阅标记 + 工具执行前闸」三方交叉改动。判定为**需要独立 ADR 的中等架构决策**，不在 goal loop 里仓促派并行 agent 做半成品（前几轮已刻意推迟 3 次）。同理 N8/N18 完整 runtime 接线（热路径 9 调用方 + 双跑防护 + 审批重放）也留独立专项。**这不是遗漏，是负责任的规模判断。**
+
+**验收级别**：真子进程全端单测（8 端）+ 真 PG 进程内 e2e（最高级）+ 真子进程守卫链 + 静态跨切面审计。全部 exit 0、指标不低于基线。本批为只读验证 + 文档更新，**零代码改动、缺陷 0**。
+
+**提交**：PROJECT-STATUS 数字表 + 本交接段（原子提交）。**未 push**。
+
+**后续项**：① N14 interrupt 需 ADR 立项（会话 generation 字段 + 事件标记 + 执行前闸）；② N8/N18 runtime 接线独立专项；③ N19 真实能力停用（破坏性待裁决）；④ N21 等保认证（外部）/分类分级标签；⑤ N24 P4 隔离（需真实用户规模触发）。**全端可发布态已确认。**
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 58 轮）：真 PG e2e 暴露测试库迁移落后 + 2-agent 并行守卫/文档核查
 
 **方向来源**：objective 续轮。前几轮多数目标已做到纯函数/接线层，核心 agent loop 接线风险过高（上批已留专项）。本批先做**最高级验收**判断实质进度——6 轮新代码叠加后首次复跑真 PG 全链 e2e。
