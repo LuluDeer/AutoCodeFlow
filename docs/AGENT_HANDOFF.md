@@ -1,5 +1,32 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-27 · 工作台改造第 71 轮）：方案卡→四眼审批→系统代理发布（ADR-045）
+
+**方向来源**：objective 续轮 + 上轮交接后续项（GCO §5 后三跳）。2 路只读审计确认可复用语义：agent-approvals.request/decide/consume（scope once、argsDigest、指纹原子失效）+ sop.publish（系统身份调即可走完整校验）。PM 裁决先做"方案卡→审批→受控发布"而非成本归责——前者是用户使用理由的最后断点，后者数据关联本身要先重设（activation.sessionId 写的是 SOP id 非 agent session）。ADR-045 固化六步契约与红线：**发布权=指令注入权，业务人员/主管都不直接 publish，主管四眼批准后系统代理发布**。
+
+| 切片 | 目标 | 交付 | 验收 |
+|---|---|---|---|
+| impl-release-approval | 发布编排 | `release-approval.service.ts`（requestRelease 建 sop_review session(createdBy=user:username)+sop_publish 审批单(contentHash/cardHash 锚定) + releaseByApprovalKey/releaseIfApproved：重读 draft 比对 contentHash→consume(指纹)→publish(publishedBy=agent:tool-call)）+ 10 单测 | 10/10 + 双反证（去 contentHash 比对/consume 恒真→真红） |
+| impl-release-four-eyes | 四眼强化 | agent.controller：grant 路径对 sop_publish 强制服务端自批校验（不依赖 blockSelfApproval 配置）、phrase 端点禁用 sop_publish；6 单测 | 6/6 + 双反证；size-caps 等价压缩未破基线 |
+| 主控集成 | 接线闭环 | workbench.module 四端口 useFactory(ModuleRef 惰性取真服务)；preview-validator DraftPayloadFromCard 带 frontMatter；commit 末尾 requestRelease(fail-open，返回 approvalKey)；agent.controller decide 后 granted+sop_publish 经 ModuleRef 调系统代理发布；release-policy.adapter 按 phrase 同口径算指纹 | DI 冒烟 2/2（无循环依赖）；typecheck 0 |
+
+**真 PG e2e `release-approval.e2e-spec.ts` 1 passed**：审批状态机真库流转——request 落 once/argsDigest/policyFingerprint → decide(granted) 条件写 → consume(指纹匹配) 真落 consumedAt/decidedBy → 二次 consume false（once 幂等）。单测覆盖 contentHash 锚定与 publishedBy 系统身份（真 AgentApprovalsService + 内存 repo）。
+
+**主控集成修的涟漪**：① agent.controller 为 ADR-045 系统代理发布加 ModuleRef + decide 后触发，size-caps 914→931/94→110 重签（why 含回滚值，prettier 折行 +2）；② 18 处 prettier（新 service/controller）`eslint --fix`；③ mutation-residue 对 truncated 标记与 fail-closed 常量共 9 行加 `mutation-residue-ok:` 带理由标注（非变异体）；④ 全量首跑 `preview-validator.spec` suite 崩——release-approval.service 用 `@Inject()` 而该 spec 的 @nestjs/common 替身未导出 Inject（N19 Req 同类问题）→ 按仓库范式加 `NestInject ?? noop` 降级 const，生产语义不变，16/16 复绿。
+
+**边界与诚实声明**：
+- **系统代理发布触发**是 controller decide 后同步调用（ModuleRef 惰性取，旁路失败只 warn 不回滚批准）；进程内 args 缓存丢失（重启/跨实例）⇒ releaseByApprovalKey fail-closed 不发布，需人工按审批单重提（不猜内容 hash）。跨实例发布可靠性留 P4。
+- 主管 approve 后**前端尚无"待我审批发布卡"UX**——审批单在 /inbox 可见（toolName=sop_publish），但专用审批卡渲染是后续项；本轮打通后端链与真库副作用，未做浏览器真机。
+- phrase 禁用 sop_publish 是红线（phrase 整条无自批校验）——已单测钉死；非发布 phrase 行为逐字不变。
+- 既有四眼配置（blockSelfApproval 默认 false）对非发布审批逐字不变；发布审批强制四眼不依赖配置。
+- SopService.publish 内部校验/body scan/CAS/audit、AgentApprovals 状态机、五道闸、RolesGuard 全部逐字未动。
+
+**后续项**：① 成本归责（activation.sessionId 关联键需重设 + 价目表 + ledger，数据已落库 agent_steps）；② 前端发布审批卡与"待我审批"UX；③ 跨实例 args 缓存持久化（P4）；④ 真浏览器 e2e 验三页 DOM 与发布审批链。
+
+**提交**：按 objective 分批提交（ADR+实现 + 集成接线 + 生成物/基线 + 文档交接），不 push。
+
+---
+
 ## 本轮（2026-11-27 · 工作台改造第 70 轮）：业务人员身份可达——GCO §5 杀手锏旅程对用户开放
 
 **方向来源**：objective 续轮 + 上轮 PM 盘点裁决（blocks_usage 断点：业务人员三页全 ADMIN-only、交付物无归属字段）。先跑 2 路只读审计确认权限契约与红线，主控据 ADR-044 裁决：以**既有归属底座**（`AgentSession.createdBy` / `tasks.ownerUserId` / `ProjectRole.hasProjectRole`）收窄，不新造权限体系、不放开任何管理写面。
