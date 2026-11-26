@@ -730,6 +730,16 @@
       "key": "apps/admin-web/src/api/capability-activation.ts\tActivationStats",
       "owner": "arch-core",
       "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tPriceReason",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tActivationStatsDualBasis",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     }
   ],
   "allowlist": [

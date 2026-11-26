@@ -854,6 +854,18 @@
       "owner": "arch-core",
       "review_by": "2026-12-15",
       "reason": "待处置（未配对）：ActivationStats 是 capability-activation stats 的运行时聚合视图模型，生成合同(openapi schema)无同名 DTO ⇒ 无字段可比面。stats 由后端 GROUP BY 动态组装，非持久化实体，按「手写契约 DTO / 视图模型」分组豁免。下一迭代若纳入生成合同再销账。"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tPriceReason",
+      "owner": "arch-core",
+      "review_by": "2026-12-15",
+      "reason": "待处置（未配对）：PriceReason 是成本归责金额折算的判定枚举（前端只读展示，后端 dual-meter 顶层字段），openapi 无同名 schema ⇒ 无字段可比面。视图模型枚举，按「手写契约 DTO」分组豁免。"
+    },
+    {
+      "key": "apps/admin-web/src/api/capability-activation.ts\tActivationStatsDualBasis",
+      "owner": "arch-core",
+      "review_by": "2026-12-15",
+      "reason": "待处置（未配对）：ActivationStatsDualBasis 是 stats 双口径视图模型（含 priceReason/金额位），后端运行时组装非持久化实体，openapi 无同名 DTO ⇒ 无字段可比面。按「手写契约 DTO / 视图模型」分组豁免，纳入生成合同后销账。"
     }
   ]
 }
