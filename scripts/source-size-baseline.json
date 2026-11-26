@@ -1835,11 +1835,11 @@
     "apps/admin-api/src/modules/agent/agent.controller.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 914,
-      "why": "第65轮续(N8 steer 接线，Lead 集成重签)：实测 nonCommentLines=914(>硬上限 900)、最长函数 decideApproval@L637=94、branchDensity=16.5、exports=3，均在各自阈值内；新增 POST /sessions/:id/steer 端点 + SteerInboxService @Optional 末尾注入(N8)。回滚值：删除该端点后为既有 900 以下。",
+      "maxLines": 931,
+      "why": "第65轮续(N8 steer 接线，Lead 集成重签)：实测 nonCommentLines=914(>硬上限 900)、最长函数 decideApproval@L637=94、branchDensity=16.5、exports=3，均在各自阈值内；新增 POST /sessions/:id/steer 端点 + SteerInboxService @Optional 末尾注入(N8)。回滚值：删除该端点后为既有 900 以下。 【第71轮(ADR-045 系统代理发布，Lead 重签)：decideApproval 批准 sop_publish 后经 ModuleRef 惰性取 ReleaseApprovalService 发布(+14 行，最长函数 decideApproval 94→108)+构造末尾 @Optional ModuleRef(+2)；既有配置四眼/phrase 禁用/审批 service 逐字不动，发布旁路失败只 warn。回滚值 914/94。】 【第71轮 prettier 折行 +2 行(929→931/108→110)，ADR-045 系统代理发布代码格式；回滚值 929/108。】",
       "ceiling": {
-        "nonCommentLines": 914,
-        "functionLines": 94,
+        "nonCommentLines": 931,
+        "functionLines": 110,
         "ctorParams": 0,
         "exports": 3,
         "branchDensity": 16.5
