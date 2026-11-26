@@ -172,11 +172,11 @@
     "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 996,
-      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【R65 代签（Lead 已批准）：**共享类型 import**（replay 决策上下文类型），内联字面量会把这个形状写两份 —— 正是 ADR-031 要消灭的「两处各自推导」⇒ 986→**987**；**回滚值 986**。】 【第65轮续(N8 steer 接线，Lead 集成重签)：runtime run() 每轮 LLM 前经 steerInbox.drainAtStepBoundary 注入步边界意图(+注入口 setSteerInbox)，nonCommentLines 987→996、最长函数 run@L520 684→696；既有预算/审批重放/双跑防护逐字未动，反证真红还原。回滚值 987/684。】",
+      "maxLines": 998,
+      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【R65 代签（Lead 已批准）：**共享类型 import**（replay 决策上下文类型），内联字面量会把这个形状写两份 —— 正是 ADR-031 要消灭的「两处各自推导」⇒ 986→**987**；**回滚值 986**。】 【第65轮续(N8 steer 接线，Lead 集成重签)：runtime run() 每轮 LLM 前经 steerInbox.drainAtStepBoundary 注入步边界意图(+注入口 setSteerInbox)，nonCommentLines 987→996、最长函数 run@L520 684→696；既有预算/审批重放/双跑防护逐字未动，反证真红还原。回滚值 987/684。】 【第68轮续(N11 plan 身份接线，Lead 集成重签)：availableTools 之后经 narrowPlanTools 按 plan 身份再收窄(1 行 import+let 改写+1 行调用)，nonCommentLines 996→998、最长函数 run@L522 684→699；预算/审批重放/steer drain/双跑防护逐字未动，反证 13 真红还原。回滚值 996/696。】",
       "ceiling": {
-        "nonCommentLines": 996,
-        "functionLines": 696,
+        "nonCommentLines": 998,
+        "functionLines": 699,
         "ctorParams": 0,
         "exports": 10,
         "branchDensity": 23.2
@@ -245,10 +245,10 @@
     "apps/admin-api/src/modules/agent/tools/tool-registry.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1108,
-      "why": "2026-11-04 实测 nonCommentLines=1108 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1111,
+      "why": "2026-11-04 实测 nonCommentLines=1108 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【第68轮(N11 plan kind，Lead 重签)：SESSION_TOOL_ALLOWLIST 增 plan 只读条目(+1 行)，与 ops_watch 同款纯只读面；回滚值 1108。】 【第68轮 prettier：plan 只读条目按 eslint --fix 折为多行(1109→1111)，仅格式；回滚值 1109。】",
       "ceiling": {
-        "nonCommentLines": 1108,
+        "nonCommentLines": 1111,
         "functionLines": 24,
         "ctorParams": 0,
         "exports": 9,

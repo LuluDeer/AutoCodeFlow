@@ -454,6 +454,14 @@ const ALLOWLIST = [
     reason: "错误码目录分片（同上），值是 {status,zh,en} 对象",
   },
   {
+    name: "REASONS",
+    reason:
+      "N11/ADR-044 Plan 闸门判定原因码（plan-agent-gate.ts 的 const-object）：只在 gate 判定的返回 reason 与单测断言里流转，" +
+      "描述「为何拒绝/放行」（destructive_denied_in_plan / plan_write_denied / allowed_prompt_once 等），" +
+      "不落 DB 列、无 PG enum 可比。审计 detail 记录的是判定结论而非这些内部码；" +
+      "闸门只收紧语义由 plan-agent-gate.spec.ts 的反证（恒 allow→13 红）守护。",
+  },
+  {
     name: "TASK_CODES",
     reason: "错误码目录分片（同上），值是 {status,zh,en} 对象",
   },
