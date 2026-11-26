@@ -1,5 +1,37 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-26 · 工作台改造第 66 轮）：3-agent 并行接线 N1/N9/N10（上批 real_gap 收尾）
+
+**方向来源**：objective 续轮。上批 workflow 审计锁定 8 个 real_gap，第 65 轮做了 5 个；本批收尾剩余 3 个（N1/N9/N10）。主控先 CodeGraph 复核三个纯函数仍只有测试调用者（上批结论在 N23/N18 接线后仍成立），再按**写域严格互斥**派 3 个 agent：N1 只建新 service/spec（不碰 module.ts）、N9 改 capability.service/controller/dto（不碰 module.ts）、N10 独占 workbench 模块；capability.module.ts 由主控集成时统一接线，避免三 agent 写域冲突。
+
+| 切片 | 目标 | 交付 | 验收 |
+|---|---|---|---|
+| impl-n1-bypass-write | N1 配置落盘 | `external-agent-bypass.service.ts`（注入式 fs/path、读→指针→单 key 改写→changed 才 tmp+rename 原子写回、失败清理 tmp、changed=false 零写） | 14/14 + 既有 17/17；反证 10 红 4 绿还原 |
+| impl-n9-reachability | N9 探测接线 | `reachability-probe.service.ts`（注入 ProbeFn→复用纯函数）+ DTO 可选 `degradePath`/`degradationHint` 经 resolve/dump 返回 | 6/6 + capability 13 suites/268 tests；反证 5 红 1 绿还原 |
+| impl-n10-blob-share | N10 blob/投影 | `workbench-blob.store.ts`（S3LogStorage.fromConfig、未配 s3 内存降级）+ `part-projection.service.ts`（大字段→BlobRef、isPartVisible+owner、12 类投影）+ `POST /workbench/part/project` | 5/5 + workbench 10 suites/109 tests；双反证 |
+
+**主控集成**：
+1. `capability.module.ts` 统一注册 N1 service + N9 probe service；N9 生产 adapter 用 `reachability-probe.adapter.ts`（**SSRF 校验式、只校验不发包**——resolve/dump 是高频只读端点，真实 HEAD 探测的延迟/副作用/SSRF 放大属 external，由部署方 override ProbeFn）。白名单能力配合法 http(s) source.ref → reachable/direct；内网 ERP 无 API（capability://）→ unknown，GUI 能力降级 x11+fromVideo。
+2. `lint:api` 9 处 prettier（agent 新文件 + adapter）→ `eslint --fix` 4 文件。
+3. openapi 生成链：N10 新端点 + N9 DTO 中文描述 → 真 PG 导出 + 8 条 i18n 映射 + `gen:api-types`/`gen:api-reference`；response-schema 273→275 官方 `--update` 上探。
+4. `check:user-facing-language`：N10 一条英文 Error 文案改中文（`workbench blob not found`→`工作台分片不存在`）。
+5. `check:web-type-field-drift`：前端手写 `CapabilityResolution`/`CapabilityDump` 补 N9 新增两字段（让手写类型跟上生成合同），删 field-drift 基线 2 条陈旧"未配对"登记（**web-type-drift 的 allowlist 不动**——那 2 条是手写类型登记，删了反变"新增手写未登记"红；此坑本轮踩过一次已纠正）。
+6. **集成疏漏自查**：改中文 Error 文案后 N10 spec 的 `/not found/` 断言未同步 → admin-api 全量首跑 1 failed；同步为 `/不存在/` 后全量重跑 0 failed（已留痕，非产品缺陷）。
+
+**验收（分级，不越级上报）**：`npm run test:guards:chain` **CHAIN_EXIT=0**；admin-api 全量 `560 suites / 9394 passed`（exit 0，重跑确认）；admin-web 全量 `371 files / 3065 passed`（exit 0）；workbench 真 PG 全链 e2e `1 passed`（preview→commit→硬阈值拦截落库副作用）；双端 typecheck 0 错、lint:api 0。各切片最高级别=单测/内存替身（N1 断言真实文件字节+tmp write→rename 顺序、N9 真 probe service+假 probe、N10 含 S3 静态替身），**未达**真 PG/Nest DI 进程内、真 S3、真机 X11/内网 ERP、share token 完整鉴权。本批引入缺陷 0（1 处集成文案断言疏漏已自查修复）。
+
+**边界与诚实声明**：
+- N1：让真实 Claude Code/Cursor/Codex 进程读到新配置生效属 external，未做。
+- N9：生产 adapter 以 SSRF 校验结果作可达性证据、**不发真实 HTTP 请求**（resolve/dump 零网络副作用）；真实内网 ERP 探测/X11 实跑由部署方 override ProbeFn。
+- N10：share token 签发/比对/轮换/撤销完整流程未做（可见性由 isPartVisible+owner 决定，token 仍是标记位）；默认 Part 源进程内 Map、未接跨进程持久化；孤立 blob 回收未挂 cron（已暴露 `removeBlob` 接线点）。
+- 三个 agent 用「框架替身降级 const」沿用本仓 jest CJS 范式；N10 owner 判定经 ModuleRef 惰性取 AgentSessionService.createdBy，取不到按 false（私有 Part 保持隐藏）。
+
+**后续项**：① 两份方案剩余真缺口多属 needs_adr（N11 plan 身份 / N21 分级标签+出域 / N14 方案 A 重开）与 needs_decision（N26 独立 CLI / N22 SLA 告警渠道），需先立 ADR/产品裁决再切 real_gap，不可硬做假接线；② N10 的 share token 完整鉴权、跨进程 Part 持久化、blob 回收 cron 是明确后续切片；③ N5 等外部业务样本。
+
+**提交**：按 objective 分批提交（实现一批 + 集成同步一批 + 文档交接一批），不 push。
+
+---
+
 ## 本轮（2026-11-26 · 工作台改造第 65 轮）：workflow 审计驱动 5-agent 并行接线（N8/N16/N18/N19/N23）
 
 **方向来源**：objective 续轮——项目负责人编排多 agent 协同推进两份方案文档。先跑 `workflow` 并行 4 路只读审计（audit-A~D）沿 CodeGraph 调用链（含被调模块）逐条核实 N1–N27 的"未做/部分实现"声明，锁出 8 个可独立落地的 real_gap；主控 CodeGraph 逐字确认关键符号签名与写域边界后，按**写域严格互斥**挑 5 个切片并行派实现 agent，agent 间无契约重叠故未用 send_message（本批契约均指向现成被调模块，非彼此）。N1/N9 因与 N23 共用 `capability.module.ts` 留下一批，避免写域冲突。
