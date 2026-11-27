@@ -21,6 +21,9 @@
  *  · audit_logs 有 action='sop_publish.release_succeeded' 且 resourceId=approvalKey
  */
 const { test, expect } = require('@playwright/test');
+// openLegacyFlow：WorkbenchPage 的 LegacyFlow 默认折叠，goal/频率等控件都在展开区。
+// helper 实际位于 apps/admin-web/e2e/workbench-legacy.helper.ts（相对本文件 ../）。
+import { openLegacyFlow } from '../workbench-legacy.helper';
 const { createRequire } = require('module');
 const path = require('path');
 
@@ -226,8 +229,11 @@ test('R5 真栈发布审批链：业务提交 → 主管批准 → 真库副作�
     await page.goto(`${BASE}/workbench`);
     await expect(page.getByTestId('workbench-page')).toBeVisible();
 
+    // LegacyFlow 默认折叠：先展开 Advanced，再填 goal / 选执行频率。
+    await openLegacyFlow(page);
     await page.getByPlaceholder('例如：每周汇总项目状态并生成报告').fill(GOAL);
-    await page.locator('[data-testid="workbench-page"] .ant-select').first().click();
+    // 左侧会话栏也有 .ant-select；按标签锁定方案草稿区的频率 combobox。
+    await page.getByText('执行频率').locator('..').getByRole('combobox').click();
     await page
       .locator('.ant-select-item-option-content')
       .getByText('每月', { exact: true })

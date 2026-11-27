@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { renderWorkbenchWithLegacy } from './workbench-legacy-helper';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import '../i18n';
@@ -94,11 +95,15 @@ describe('WORK-BUSINESS：Workbench 提交成功后的诚实 CTA', () => {
   const commitOk = { sopId: 'sop-1', slug: 'slug-1', status: 'draft', approvalStatus: 'submitted' } as never;
   const btn = (label: string) => screen.getByText(label).closest('button') as HTMLButtonElement;
 
+  // 新 IA：LegacyFlow 默认折叠，提交结果与 CTA 位于展开后的 Advanced/LegacyFlow。
+  // 语义按 WorkbenchSubmitSection 现状核验：USER 不出现 /sops（显示 workbench-submitted-for-review），
+  // ADMIN submitted 保留 /sops?sop= 深链；文案/结构适配在 helper，断言语义不变。
+
   async function submit(role: string) {
     useAuthStore.setState({ user: { id: 1, username: 'u', role } });
     vi.mocked(previewPlan).mockReset().mockResolvedValue(okResult as never);
     vi.mocked(commitPlan).mockReset().mockResolvedValue(commitOk);
-    render(<WorkbenchPage />);
+    renderWorkbenchWithLegacy(<WorkbenchPage />);
     fireEvent.change(screen.getByPlaceholderText(zhDict['workbench.goal.placeholder']), { target: { value: '目标' } });
     fireEvent.click(btn(zhDict['workbench.preview.action']));
     await screen.findByText(okResult.card.title);
@@ -190,7 +195,7 @@ describe('WORK-BUSINESS / Writer B：运行我的草稿（受限起草会话）'
       toolCallCount: 2, approvals: { pending: 1, approved: 0, denied: 0 },
       artifacts: [{ id: 'a1', name: 'report.md', size: 100, createdAt: '2026-01-01T00:00:00Z' }],
     } as never);
-    render(<WorkbenchPage />);
+    renderWorkbenchWithLegacy(<WorkbenchPage />);
     fireEvent.change(screen.getByPlaceholderText(zhDict['workbench.goal.placeholder']), { target: { value: '目标' } });
     fireEvent.click(btn(zhDict['workbench.preview.action']));
     await screen.findByText(okResult.card.title);
@@ -207,6 +212,8 @@ describe('WORK-BUSINESS / Writer B：运行我的草稿（受限起草会话）'
     expect(vi.mocked(createWorkbenchSession)).toHaveBeenCalledWith({
       sopId: 'sop-1', goal: '目标', expectedCardHash: 'abcdef0123456789',
     });
+    // 产品改造：创建会话请求体不再带 kind；严格参数断言之外再显式锁死缺席。
+    expect(vi.mocked(createWorkbenchSession).mock.calls[0][0]).not.toHaveProperty('kind');
     expect(screen.getByTestId('workbench-session-id').textContent).toContain('sess-1');
     expect(screen.getByTestId('workbench-session-tool-calls').textContent).toContain('2');
     expect(screen.getByTestId('workbench-session-artifacts').textContent).toContain('report.md');

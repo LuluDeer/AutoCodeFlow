@@ -42,7 +42,7 @@ describe('PERF-06 源码层：SSE 追加必须批量 + join 必须缓存', () =>
 
   it('存在 rAF 合并刷新（一帧最多一次 state 更新）', () => {
     expect(CODE).toContain('requestAnimationFrame');
-    expect(CODE).toContain('pendingStreamLinesRef');
+    expect(CODE).toContain('pendingRowsRef');
     expect(CODE).toContain('streamFlushRafRef');
     // 缓冲非空才 setState（空帧不产生无谓渲染）
     expect(CODE).toMatch(/if \(batch\.length === 0\) return;/);
@@ -51,7 +51,7 @@ describe('PERF-06 源码层：SSE 追加必须批量 + join 必须缓存', () =>
   it('卸载/换执行时取消挂起的 rAF 并清空缓冲', () => {
     // 不取消的话，卸载后回调仍会 setState（React 警告 + 白做一次拷贝）
     expect(CODE).toContain('cancelAnimationFrame(streamFlushRafRef.current)');
-    expect(CODE).toMatch(/pendingStreamLinesRef\.current = \[\];/);
+    expect(CODE).toMatch(/pendingRowsRef\.current = \[\];/);
   });
 
   it('join 走 useMemo，依赖只有 streamLines 与 data?.logs', () => {

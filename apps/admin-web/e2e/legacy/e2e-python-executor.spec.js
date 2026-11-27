@@ -39,7 +39,8 @@ async function apiCreateTask(request, payload) {
   const tok = await apiLogin(request);
   const r = await request.post(`${API}/api/tasks`, {
     headers: { Authorization: `Bearer ${tok}` },
-    data: payload,
+    // 迁移 0110 起任务默认 PAUSED；本夹具要触发执行，必须显式 ACTIVE。
+    data: { status: 'active', ...payload },
   });
   const d = await r.json();
   if (!d.data?.id) throw new Error(`创建任务失败: ${r.status()} ${JSON.stringify(d).slice(0, 200)}`);

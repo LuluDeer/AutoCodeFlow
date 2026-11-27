@@ -6,7 +6,7 @@
  *  - 懒加载 chunk 失效（发版后旧 hash）渲染「版本已更新，请刷新」提示。
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import RouteErrorBoundary, { isChunkLoadError, isOfflineNow } from '../components/RouteErrorBoundary';
 
@@ -58,17 +58,24 @@ describe('NETOPT-4 RouteErrorBoundary（路由级错误兜底）', () => {
     renderThrowingRoute(new Error('页面级渲染失败'));
 
     expect(screen.getByText('页面出错了')).toBeTruthy();
-    expect(screen.getByText('页面级渲染失败')).toBeTruthy();
+    // 本轮改造把原始 message/statusText/stack 收进「技术详情」，默认只展示
+    // 自然语言状态标签；语义仍是「i18n 兜底 + 可查看原始错误」。
+    expect(screen.getByText('页面加载失败')).toBeTruthy();
     // react-router 默认边界的调试页标题不得出现
     expect(screen.queryByText(/Unexpected Application Error/)).toBeNull();
+    fireEvent.click(screen.getByText('技术详情'));
+    // 技术详情同时带 message + stack，按子串匹配保留「原始错误可见」语义
+    expect(screen.getByText(/页面级渲染失败/)).toBeTruthy();
   });
 
   it('非 Error 抛出物（字符串）同样走 i18n 兜底', () => {
     renderThrowingRoute('裸字符串错误');
 
     expect(screen.getByText('页面出错了')).toBeTruthy();
-    expect(screen.getByText('未知错误')).toBeTruthy();
+    expect(screen.getByText('页面加载失败')).toBeTruthy();
     expect(screen.queryByText(/Unexpected Application Error/)).toBeNull();
+    fireEvent.click(screen.getByText('技术详情'));
+    expect(screen.getByText('未知错误')).toBeTruthy();
   });
 
   it('chunk 拉取失败（Vite ESM 形态）渲染「版本已更新，请刷新」提示与刷新按钮', () => {

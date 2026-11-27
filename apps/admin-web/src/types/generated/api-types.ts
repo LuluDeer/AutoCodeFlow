@@ -5114,6 +5114,18 @@ export interface components {
             /** @description 平台用户名；NULL 表示无平台用户身份 */
             username?: string | null;
         };
+        AgentApprovalDecisionResponseDto: {
+            /** @description 处置后的审批单行快照（含最新 status / decidedBy / decidedAt） */
+            approval: {
+                [key: string]: unknown;
+            } | null;
+            /** @description 处置是否成功（成功恒为 true，失败由错误码表示） */
+            ok: boolean;
+            /** @description 本次处置未自动恢复会话的原因（如会话状态不符、仍有 pending 单、重读/审批查询/入队失败）；成功恢复时省略 */
+            resumeReason?: string;
+            /** @description 本次处置是否把会话重新入队恢复（与 grant/deny 端点同口径：仅允许且会话挂起等待审批、无其它 pending 单时为 true） */
+            resumed: boolean;
+        };
         AgentBacklogResponseDto: {
             /** @description 积压条数（= sessionIds.length） */
             count: number;
@@ -5246,16 +5258,18 @@ export interface components {
         };
         AgentMessageResponseDto: {
             /**
-             * @description 本次动作：steered=注入运行中会话；enqueued=重新入队 agent-jobs
+             * @description 本次动作：steered=注入运行中会话；enqueued=重新入队 agent-jobs；rejected_terminal=会话已是终态，消息未写入、不触发续跑
              * @enum {string}
              */
-            action: "steered" | "enqueued";
+            action: "steered" | "enqueued" | "rejected_terminal";
+            /** @description 仅 action=rejected_terminal 时出现：终态拒绝续跑的原因（可直接展示） */
+            reason?: string;
             /**
              * Format: uuid
              * @description 会话 id
              */
             sessionId: string;
-            /** @description 写消息后的会话状态（running=已注入 steer；pending=已重新入队） */
+            /** @description 写消息后的会话状态（running=已注入 steer；pending=已重新入队；终态拒绝时保持原状态） */
             status: string;
             /** @description 新写入的用户步序号 */
             stepSeq: number;
@@ -6288,16 +6302,6 @@ export interface components {
              */
             phrase: string;
         };
-        ApprovalPhraseResponseDto: {
-            /** @description 处置后的审批单行快照（含最新 status / decidedBy / decidedAt） */
-            approval: {
-                [key: string]: unknown;
-            } | null;
-            /** @description 处置是否成功（成功恒为 true，失败由错误码表示） */
-            ok: boolean;
-            /** @description 本次处置是否把会话重新入队恢复（与 grant/deny 端点同口径：仅允许且会话挂起等待审批、无其它 pending 单时为 true） */
-            resumed: boolean;
-        };
         ArtifactManifestItemDto: {
             /** @description 产物文件名（裸文件名，不含任何路径分隔符） */
             name: string;
@@ -7185,11 +7189,6 @@ export interface components {
                 [key: string]: unknown;
             };
             /**
-             * @description 会话类型覆盖；不传时服务端根据 prompt 推导（chat / sop_authoring / plan）
-             * @enum {string}
-             */
-            kind?: "chat" | "sop_authoring" | "plan";
-            /**
              * @description 用户给工作台的初始指令（作为首条 user AgentStep 落库）
              * @example 帮我分析昨天的订单异常并起草一份日报 SOP
              */
@@ -7226,6 +7225,8 @@ export interface components {
              * @enum {string}
              */
             decision: "grant" | "deny" | "withdraw";
+            /** @description 处置附言（可选；不参与服务端判定，仅供前端展示/排查，最长 500 字） */
+            note?: string;
         };
         DeleteTaskResponseDto: {
             deleted: boolean;
@@ -11067,8 +11068,15 @@ export interface components {
             status: string;
         };
         WorkbenchSessionActionResponseDto: {
+            /**
+             * @description 动作结果码；终态追消息被拒时为 rejected_terminal
+             * @enum {string}
+             */
+            action?: "rejected_terminal";
             /** @description 操作是否成功 */
             ok: boolean;
+            /** @description 失败/拒绝原因（可直接展示）；ok=false 时给出 */
+            reason?: string;
             /** @description 是否触发了会话恢复入队 */
             resumed?: boolean;
             /** @description 会话 id */
@@ -11693,14 +11701,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description 审批处置结果（含 deny 后自动恢复失败原因） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["AgentApprovalDecisionResponseDto"];
                 };
             };
         };
@@ -11717,14 +11724,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description 审批处置结果（含 deny 后自动恢复失败原因） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["AgentApprovalDecisionResponseDto"];
                 };
             };
         };
@@ -11750,7 +11756,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApprovalPhraseResponseDto"];
+                    "application/json": components["schemas"]["AgentApprovalDecisionResponseDto"];
                 };
             };
         };

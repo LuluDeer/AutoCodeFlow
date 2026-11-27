@@ -7,6 +7,12 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, Input, Popover, Space, Tag, Tooltip, Typography } from 'antd';
 import { PaperClipOutlined, SendOutlined, StopOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import {
+  getDesktopBridge,
+  normalizePickedFiles,
+  type DesktopBridge,
+  type DesktopPickedFile,
+} from '../../api/desktop-bridge';
 import type { ComposerCadence } from '../../pages/workbench/types-public';
 
 const { Text } = Typography;
@@ -51,6 +57,8 @@ export default function WorkbenchComposer({
   const [cadence, setCadence] = useState<ComposerCadence>(initialCadence);
   const [params, setParams] = useState<Array<{ key: string; value: string }>>([]);
   const [attachmentNames, setAttachmentNames] = useState<string[]>([]);
+  const [textPreviews, setTextPreviews] = useState<DesktopPickedFile[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -72,7 +80,32 @@ export default function WorkbenchComposer({
     setPrompt('');
     setParams([]);
     setAttachmentNames([]);
+    setTextPreviews([]);
+    setAttachmentError(null);
     if (fileRef.current) fileRef.current.value = '';
+  };
+
+  const pickDesktopFiles = async (bridge: DesktopBridge) => {
+    setAttachmentError(null);
+    try {
+      const picked = normalizePickedFiles(await bridge.pickLocalFiles());
+      if (picked.length === 0) return;
+      setAttachmentNames((prev) => [...prev, ...picked.map((file) => file.name)]);
+      // textPreview 只进本地展示状态；submit 的契约里没有它，也不会进入 context/prompt。
+      setTextPreviews((prev) => [...prev, ...picked.filter((file) => file.textPreview)]);
+    } catch {
+      setAttachmentError(t('workbench.attach.pickFailed'));
+    }
+  };
+
+  const handleAttachClick = () => {
+    const bridge = getDesktopBridge();
+    if (bridge) {
+      void pickDesktopFiles(bridge);
+      return;
+    }
+    setAttachmentError(null);
+    fileRef.current?.click();
   };
 
   const kvEditor = (
@@ -146,6 +179,26 @@ export default function WorkbenchComposer({
         </Space>
       ) : null}
 
+      {textPreviews.length > 0 ? (
+        <div data-testid="workbench-composer-text-previews" style={{ marginTop: 6 }}>
+          {textPreviews.map((file, index) => (
+            <Text
+              key={`${file.name}:${index}`}
+              type="secondary"
+              style={{ display: 'block', fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+            >
+              {t('workbench.attach.previewLabel', { name: file.name })}: {file.textPreview?.slice(0, 240)}
+            </Text>
+          ))}
+        </div>
+      ) : null}
+
+      {attachmentError ? (
+        <Text type="danger" style={{ fontSize: 11 }} data-testid="workbench-composer-attach-error">
+          {attachmentError}
+        </Text>
+      ) : null}
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
         <Space size={4} wrap>
           <Popover content={kvEditor} title={t('workbench.params.title')} trigger="click" placement="topLeft">
@@ -157,7 +210,7 @@ export default function WorkbenchComposer({
               type="text"
               icon={<PaperClipOutlined aria-hidden />}
               disabled={disabled}
-              onClick={() => fileRef.current?.click()}
+              onClick={handleAttachClick}
             >
               {t('workbench.attach.button')}
             </Button>

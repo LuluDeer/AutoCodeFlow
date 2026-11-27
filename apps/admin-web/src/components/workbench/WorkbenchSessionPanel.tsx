@@ -13,26 +13,16 @@
  * 诚实文案：启动会话是受限的起草会话，不是发布 SOP；状态由后端推进，
  * 前端不硬编码/锁定为 pending。
  */
-import { Alert, Button, Card, Space, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Collapse, Space, Tag, Typography } from 'antd';
 import { useTranslation } from 'react-i18next';
 import '../../i18n';
+import { sessionStatusLabel } from './statusLabel';
 
 /** 与后端 status 取值对齐；未知状态照原样显示（不编造）。 */
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'waiting_input', 'completed']);
 
-/** 状态 → 字面文案（字面 t() 分支，避免动态 t(key) 被 i18n 缺键守卫判不可判）。 */
-export function sessionStatusLabel(t: (k: string) => string, status: string): string {
-  switch (status) {
-    case 'pending': return t('workbench.session.status.pending');
-    case 'running': return t('workbench.session.status.running');
-    case 'succeeded':
-    case 'completed': return t('workbench.session.status.succeeded');
-    case 'failed': return t('workbench.session.status.failed');
-    case 'waiting_input': return t('workbench.session.status.waiting_input');
-    case 'cancelled': return t('workbench.session.status.cancelled');
-    default: return status;
-  }
-}
+/** 兼容既有调用方：状态文案实现已统一收敛到 statusLabel.ts。 */
+export { sessionStatusLabel };
 
 export interface WorkbenchSessionView {
   sessionId: string;
@@ -197,16 +187,32 @@ export default function WorkbenchSessionPanel({ session }: { session: WorkbenchS
           />
         )}
         <div data-testid="workbench-session-steps">
-          <Typography.Text type="secondary">{t('workbench.session.steps', { count: session.stepCount })}</Typography.Text>
-          {session.steps.length > 0 ? (
-            <div style={{ marginTop: 4 }}>
-              {session.steps.map((step) => (
-                <Typography.Paragraph key={step.seq} style={{ marginBottom: 2, fontSize: 12 }}>
-                  <Typography.Text code>{step.seq}</Typography.Text> · {step.role} · {step.contentPreview}
-                </Typography.Paragraph>
-              ))}
-            </div>
-          ) : null}
+          <Collapse
+            ghost
+            size="small"
+            items={[{
+              key: 'steps',
+              label: (
+                <Space size={6} wrap>
+                  <Typography.Text type="secondary">
+                    {t('workbench.session.steps', { count: session.stepCount })}
+                  </Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                    {t('workbench.session.stepsSummaryHint')}
+                  </Typography.Text>
+                </Space>
+              ),
+              children: session.steps.length > 0 ? (
+                <div style={{ marginTop: 4 }}>
+                  {session.steps.map((step) => (
+                    <Typography.Paragraph key={step.seq} style={{ marginBottom: 2, fontSize: 12 }}>
+                      <Typography.Text code>{step.seq}</Typography.Text> · {step.role} · {step.contentPreview}
+                    </Typography.Paragraph>
+                  ))}
+                </div>
+              ) : null,
+            }]}
+          />
         </div>
         <div data-testid="workbench-session-tool-calls">
           {t('workbench.session.toolCalls', { count: session.toolCallCount })}

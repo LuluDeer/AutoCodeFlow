@@ -81,8 +81,8 @@ describe('UX-07：ADMIN 门控的「加载中 / 加载失败 / 无权限」三�
     ).toBe(true);
     // 且必须能看到真实失败原因（否则用户无从判断是网络还是权限问题）
     expect(screen.getByText('Network Error')).toBeTruthy();
-    // 兜底出口：回控制台
-    expect(screen.getByText(zhDict['requireAdmin.back'])).toBeTruthy();
+    // 兜底出口：回到按角色的首页（本轮从写死 /dashboard 改为 homePathForRole）
+    expect(screen.getByText(zhDict['requireAdmin.backHome'])).toBeTruthy();
     // 失败时不应放行内容
     expect(screen.queryByTestId('admin-content')).toBeNull();
     // 也不该谎报 403（用户其实可能是有权限的管理员）

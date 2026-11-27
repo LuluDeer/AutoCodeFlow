@@ -27,6 +27,7 @@ import type {
   WorkbenchSessionDetail,
 } from '../../pages/workbench/types-public';
 import { formatBytes, formatTime, parseArtifactUrl } from '../../pages/workbench/format';
+import { artifactPreviewErrorLabel } from './statusLabel';
 import { ApprovalList } from './WorkbenchTimeline';
 
 const { Text, Paragraph } = Typography;
@@ -147,7 +148,12 @@ export default function WorkbenchInspector({
       key: 'approvals',
       label: t('workbench.inspector.approvals', { count: approvals.length }),
       children: approvals.length > 0 ? (
-        <ApprovalList items={approvals} actingKey={actingKey} onDecide={onDecide} />
+        <ApprovalList
+          items={approvals}
+          toolCalls={detail?.toolCalls ?? []}
+          actingKey={actingKey}
+          onDecide={onDecide}
+        />
       ) : <Text type="secondary">{t('workbench.inspector.noApprovals')}</Text>,
     },
     {
@@ -250,7 +256,20 @@ export default function WorkbenchInspector({
         destroyOnHidden
       >
         {preview.loading ? <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div> : null}
-        {preview.error ? <Alert type="error" showIcon title={preview.error} /> : null}
+        {preview.error ? (
+          <Space orientation="vertical" size={4} style={{ width: '100%' }}>
+            <Alert type="error" showIcon title={artifactPreviewErrorLabel(t, preview.error)} />
+            <Collapse
+              ghost
+              size="small"
+              items={[{
+                key: 'artifact-error-detail',
+                label: <Text type="secondary" style={{ fontSize: 11 }}>{t('statusLabel.technicalDetails')}</Text>,
+                children: <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11 }}>{preview.error}</pre>,
+              }]}
+            />
+          </Space>
+        ) : null}
         {preview.data ? (
           <div>
             <Paragraph type="secondary" style={{ fontSize: 12 }}>

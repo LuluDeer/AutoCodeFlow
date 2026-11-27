@@ -4,8 +4,17 @@ import { PlusOutlined, MinusOutlined, AimOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { DagGraph } from '../dag-layout';
 import type { LiveExecutionStatus } from './dagLiveStatus';
+import { BRAND_GRADIENT, DESIGN_TOKENS } from '../../theme/tokens';
 
 const { Text } = Typography;
+
+/** 当前节点高亮阴影：品牌绿单源（tokens.ts BRAND_GRADIENT → DESIGN_TOKENS.accent 兜底），不再写 antd 蓝字面量。 */
+const BRAND_GREEN_HEX = BRAND_GRADIENT.match(/#[0-9a-f]{6}/i)?.[0] ?? DESIGN_TOKENS.accent;
+const BRAND_GREEN_RGB = BRAND_GREEN_HEX.slice(1)
+  .match(/[0-9a-f]{2}/gi)!
+  .map((channel) => parseInt(channel, 16))
+  .join(',');
+const CURRENT_NODE_SHADOW = `0 0 0 2px rgba(${BRAND_GREEN_RGB},0.25)`;
 
 /** 依赖 DAG 的可平移/缩放/高亮画布（DOM 节点 + SVG 连线，无第三方图库）。 */
 export default function DagCanvas({
@@ -160,15 +169,18 @@ export default function DagCanvas({
                 key={node.id}
                 data-testid={`dag-node-${node.id}`}
                 data-live-status={live ?? ''}
-                tabIndex={0}
-                role="button"
+                tabIndex={isCurrent ? -1 : 0}
+                role={isCurrent ? undefined : 'button'}
                 aria-label={`${node.name} — ${statusLabel(live ?? node.status)}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   if (!movedRef.current) setSelected(node.id);
                 }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelected(node.id); }
+                onKeyDown={isCurrent ? undefined : (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onNavigate(node.id);
+                  }
                 }}
                 onDoubleClick={(e) => { e.stopPropagation(); onNavigate(node.id); }}
                 title={t('depGraph.nodeNavigate')}
@@ -185,7 +197,7 @@ export default function DagCanvas({
                   cursor: 'pointer',
                   overflow: 'hidden',
                   opacity: active ? 1 : 0.4,
-                  boxShadow: selected === node.id ? `0 0 0 2px ${token.colorPrimaryBorder}` : undefined,
+                  boxShadow: isCurrent ? CURRENT_NODE_SHADOW : undefined,
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>

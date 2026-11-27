@@ -14,6 +14,7 @@
  * no executor is started, so the session is expected to remain non-terminal.
  */
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { openLegacyFlow } from './workbench-legacy.helper';
 
 const ADMIN_USER = process.env.E2E_INITIAL_ADMIN_USERNAME ?? 'admin';
 const ADMIN_PASS = process.env.E2E_INITIAL_ADMIN_PASSWORD ?? 'admin123';
@@ -192,6 +193,8 @@ test('USER full journey: create user via API -> real UI login -> workbench commi
   await page.goto('/workbench');
   await expect(page.getByTestId('workbench-page')).toBeVisible();
   const goal = `Level4 真栈验收：汇总昨日订单异常并推送日报 ${suffix}`;
+  // LegacyFlow is collapsed by default; open Advanced before touching the legacy form.
+  await openLegacyFlow(page);
   await page.getByPlaceholder('例如：每周汇总项目状态并生成报告').fill(goal);
   // 频率下拉定位到 legacy 方案草稿区（左侧会话栏也有 .ant-select，不能用全局 first()）。
   await page.getByText('执行频率').locator('..').getByRole('combobox').click();

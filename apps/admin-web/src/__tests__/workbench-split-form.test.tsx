@@ -3,7 +3,8 @@
  * 验收级别：单测 / 内存替身（api/workbench 全 mock，不触网、不落真库）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { renderWorkbenchWithLegacy } from './workbench-legacy-helper';
 import { setLanguage } from '../i18n';
 import WorkbenchPage from '../pages/WorkbenchPage';
 import {
@@ -90,7 +91,7 @@ const button = (label: string): HTMLButtonElement =>
   screen.getByText(label).closest('button') as HTMLButtonElement;
 
 async function preview() {
-  render(<WorkbenchPage />);
+  renderWorkbenchWithLegacy(<WorkbenchPage />);
   fireEvent.change(screen.getByPlaceholderText('例如：每周汇总项目状态并生成报告'), {
     target: { value: GOAL },
   });

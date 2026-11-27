@@ -44,6 +44,34 @@ vi.mock('../api/applications', () => ({
 vi.mock('../api/auth', () => ({
   authApi: { me: vi.fn() },
 }));
+
+// ENTRY_LIMIT 夹具：临时让 computeSections 产出过量非白名单页面条目，并把 action 组挪到末尾，
+// 这样旧口径 action:/tasks/new 会被预算截断，新口径 action:new-task 因白名单优先而保留。
+const { mockBudgetFixture } = vi.hoisted(() => ({ mockBudgetFixture: { active: false } }));
+vi.mock('../components/palette-sections', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../components/palette-sections')>();
+  return {
+    ...actual,
+    computeSections: (input: Parameters<typeof actual.computeSections>[0]) => {
+      const sections = actual.computeSections(input);
+      if (!mockBudgetFixture.active) return sections;
+      const filler = Array.from({ length: 150 }, (_, i) => ({
+        key: `filler-${i}`,
+        id: `filler-${i}`,
+        title: `filler-${i}`,
+        description: 'filler',
+        icon: null,
+      }));
+      return [
+        ...sections
+          .filter((s) => s.kind !== 'action')
+          .map((s) => (s.kind === 'page' ? { ...s, statics: [...(s.statics ?? []), ...filler] } : s)),
+        ...sections.filter((s) => s.kind === 'action'),
+      ];
+    },
+  };
+});
+
 const mockedTasks = vi.mocked(tasksApi, true);
 const mockedExecutors = vi.mocked(executorsApi, true);
 const mockedApps = vi.mocked(applicationsApi, true);
@@ -337,6 +365,22 @@ describe('CommandPalette — 分组渲染与跳转', () => {
     expect(screen.getByText('bulk-executor-4')).toBeTruthy();
     expect(screen.queryByText('bulk-executor-5')).toBeNull();
     expect(screen.queryByText('bulk-executor-7')).toBeNull();
+  });
+
+  it('ENTRY_LIMIT 截断时常用命令优先保留，非常用条目被裁掉', () => {
+    mockBudgetFixture.active = true;
+    try {
+      renderPalette();
+      // 150 个 filler 先占满非白名单名额；旧口径下 action:/tasks/new 会被挤出预算
+      expect(screen.getByText('新建任务')).toBeTruthy();
+      expect(screen.getByText('创建应用')).toBeTruthy();
+      expect(screen.getByText('控制台')).toBeTruthy();
+      expect(screen.getByText('待办收件箱')).toBeTruthy();
+      expect(screen.getByText('filler-0')).toBeTruthy();
+      expect(screen.queryByText('filler-149')).toBeNull();
+    } finally {
+      mockBudgetFixture.active = false;
+    }
   });
 
   it('UI-11 静态动作：零输入即可见（操作分组不参与过滤），键盘 Enter 直达新建任务', async () => {
@@ -677,8 +721,9 @@ describe('CommandPalette — P1-6 管理页面分组（UX 审计）', () => {
     expect(screen.queryByText('SOP')).toBeNull();
     expect(screen.queryByText('Agent 会话')).toBeNull();
     expect(screen.queryByText('执行器包')).toBeNull();
-    // 普通用户可达页面仍在列
-    expect(screen.getByText('项目')).toBeTruthy();
+    // 普通用户只看到侧栏也可见的页面（角色死路修复后不再列 /projects）。
+    expect(screen.getByText('待办收件箱')).toBeTruthy();
     expect(screen.getByText('设置')).toBeTruthy();
+    expect(screen.queryByText('项目')).toBeNull();
   });
 });

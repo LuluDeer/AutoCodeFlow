@@ -9,7 +9,8 @@
  *   · 三态都不再读取/渲染硬编码中文 `next`，枚举只用稳定码。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { screen, cleanup, fireEvent } from '@testing-library/react';
+import { renderWorkbenchWithLegacy } from './workbench-legacy-helper';
 import '../i18n';
 import WorkbenchPage from '../pages/WorkbenchPage';
 import { previewPlan, commitPlan } from '../api/workbench';
@@ -75,7 +76,7 @@ const button = (label: string): HTMLButtonElement =>
   screen.getByText(label).closest('button') as HTMLButtonElement;
 
 async function submitCommit() {
-  render(<WorkbenchPage />);
+  renderWorkbenchWithLegacy(<WorkbenchPage />);
   fireEvent.change(screen.getByPlaceholderText('例如：每周汇总项目状态并生成报告'), {
     target: { value: '每周汇总项目状态' },
   });

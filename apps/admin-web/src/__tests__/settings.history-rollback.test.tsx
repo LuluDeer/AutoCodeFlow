@@ -1,9 +1,10 @@
 /**
- * FEAT-08 settings 页变更历史回滚测试：
- * - 管理员：每行渲染「回滚」，创建条目（oldValue 为 null）禁用并 Tooltip 说明；
- * - 确认（Popconfirm）后调用 configApi.rollback(id)，成功后刷新历史列表与
+ * FEAT-08 / IA-SETTINGS settings 页变更历史回滚测试：
+ * - 管理员可回滚：每行渲染「回滚」，创建条目（oldValue 为 null）禁用并 Tooltip 说明；
+ *   确认（Popconfirm）后调用 configApi.rollback(id)，成功后刷新历史列表与
  *   当前配置读面（invalidate 触发 getHistory/findAll 重查）并提示成功；
- * - 非管理员：不渲染回滚入口（沿用页面 R4「不可见或禁用」先例，不做无谓 403）。
+ * - 非管理员无配置 Tab/无入口：账号 Tab 之外不渲染系统配置，既不打开历史抽屉，
+ *   也不发 ADMIN-only 配置请求。
  *
  * 隔离 api 层（对齐 settings.ai.test 先例）；antd 汉字按钮会自动插空格，
  * 按钮定位用 querySelector + textContent 归一化匹配（同 notification-settings.test 注2）。
@@ -145,7 +146,7 @@ async function openHistoryAsAdmin() {
   return { modal, row };
 }
 
-describe('settings 变更历史回滚（FEAT-08）', () => {
+describe('管理员：配置变更历史可回滚（FEAT-08）', () => {
   it('管理员：每行渲染「回滚」，创建条目（oldValue null）禁用并带 Tooltip 说明，其余启用', async () => {
     const { modal } = await openHistoryAsAdmin();
 
@@ -233,24 +234,6 @@ describe('settings 变更历史回滚（FEAT-08）', () => {
     expect(await screen.findByText('配置已被并发修改')).toBeTruthy();
   });
 
-  it('非管理员：不渲染回滚入口，也不发起回滚请求', async () => {
-    useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
-    renderSettings();
-    fireEvent.click(screen.getByText('系统配置'));
-    const keyCell = await screen.findByText('feature.x');
-    const row = keyCell.closest('tr') as HTMLElement;
-    const historyBtn = row.querySelector('button .anticon-history')?.closest('button') as HTMLButtonElement;
-    fireEvent.click(historyBtn);
-    await screen.findByText('变更历史：feature.x');
-
-    // 无任何「回滚」按钮，仅剩取消等非回滚按钮
-    const rollbackBtns = (Array.from(document.body.querySelectorAll('button')) as HTMLButtonElement[]).filter(
-      (b) => (b.textContent ?? '').replace(/\s/g, '') === '回滚',
-    );
-    expect(rollbackBtns).toHaveLength(0);
-    expect(configApi.rollback).not.toHaveBeenCalled();
-  });
-
   it('确认取消（Popconfirm 取消）不发起回滚', async () => {
     // antd message 挂在 body 上、不随组件 cleanup 卸载，先清掉上一用例的
     // 「已回滚」残留，避免误判本用例的失败提示语义
@@ -274,5 +257,27 @@ describe('settings 变更历史回滚（FEAT-08）', () => {
     // jsdom 下不等待动画，仅断言行为语义）
     await waitFor(() => expect(configApi.rollback).not.toHaveBeenCalled());
     expect(screen.queryByText('已回滚')).toBeNull();
+  });
+});
+
+describe('非管理员：无配置 Tab/无回滚入口（IA-SETTINGS）', () => {
+  it('非管理员：只有账号 Tab，无系统配置/历史入口，且不发 ADMIN-only 配置请求', async () => {
+    useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
+    renderSettings();
+    const accountTab = await screen.findByRole('tab', { name: /安全.*API Keys/ });
+    expect(accountTab.getAttribute('aria-selected')).toBe('true');
+
+    expect(screen.queryByRole('tab', { name: '系统配置' })).toBeNull();
+    expect(screen.queryByText('feature.x')).toBeNull();
+    expect(screen.queryByText('变更历史：feature.x')).toBeNull();
+    expect(document.querySelector('button .anticon-history')).toBeNull();
+    const rollbackBtns = (Array.from(document.body.querySelectorAll('button')) as HTMLButtonElement[]).filter(
+      (b) => (b.textContent ?? '').replace(/\s/g, '') === '回滚',
+    );
+    expect(rollbackBtns).toHaveLength(0);
+
+    expect(configApi.findAll).not.toHaveBeenCalled();
+    expect(configApi.getHistory).not.toHaveBeenCalled();
+    expect(configApi.rollback).not.toHaveBeenCalled();
   });
 });

@@ -3,7 +3,8 @@
  * 验收级别：单测 / 内存替身（api/workbench 全 mock，不触网、不落真库）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { screen, cleanup, fireEvent } from '@testing-library/react';
+import { renderWorkbenchWithLegacy } from './workbench-legacy-helper';
 import { setLanguage } from '../i18n';
 import WorkbenchPage from '../pages/WorkbenchPage';
 import {
@@ -99,7 +100,7 @@ function button(label: string): HTMLButtonElement {
 }
 
 async function submitCommit() {
-  render(<WorkbenchPage />);
+  renderWorkbenchWithLegacy(<WorkbenchPage />);
   fireEvent.change(screen.getByPlaceholderText('例如：每周汇总项目状态并生成报告'), {
     target: { value: 'weekly report' },
   });
@@ -136,7 +137,7 @@ describe('workbench resume - refresh', () => {
     window.localStorage.setItem('workbench.sessionId', OTHER_SESSION_ID);
     window.history.replaceState({}, '', `/workbench?session=${SESSION_ID}`);
 
-    render(<WorkbenchPage />);
+    renderWorkbenchWithLegacy(<WorkbenchPage />);
 
     await screen.findByTestId('workbench-session-panel');
     expect(getWorkbenchSession).toHaveBeenCalledWith(SESSION_ID);
@@ -147,7 +148,7 @@ describe('workbench resume - refresh', () => {
   it('URL 丢失时从 localStorage 恢复会话面板', async () => {
     window.localStorage.setItem('workbench.sessionId', SESSION_ID);
 
-    render(<WorkbenchPage />);
+    renderWorkbenchWithLegacy(<WorkbenchPage />);
 
     await screen.findByTestId('workbench-session-panel');
     expect(getWorkbenchSession).toHaveBeenCalledWith(SESSION_ID);
@@ -164,6 +165,8 @@ describe('workbench resume - refresh', () => {
       goal: 'weekly report',
       expectedCardHash: okResult.cardHash,
     });
+    // 产品改造：创建会话请求体不再带 kind；严格参数断言之外再显式锁死缺席。
+    expect(vi.mocked(createWorkbenchSession).mock.calls[0][0]).not.toHaveProperty('kind');
     expect(new URL(window.location.href).searchParams.get('session')).toBe(SESSION_ID);
     expect(window.localStorage.getItem('workbench.sessionId')).toBe(SESSION_ID);
   });
@@ -179,7 +182,7 @@ describe('workbench resume - refresh', () => {
       total: 1,
     });
 
-    render(<WorkbenchPage />);
+    renderWorkbenchWithLegacy(<WorkbenchPage />);
 
     const restore = await screen.findByTestId('workbench-session-restore');
     fireEvent.click(restore);

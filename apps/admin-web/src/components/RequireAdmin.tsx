@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { useAuthStore, isAdminUser } from '../store/auth';
+import { homePathForRole } from '../routes/route-registry';
 import { authApi } from '../api/auth';
 import { getErrMsg } from '../utils/error';
 // UI-08 收尾：路由门控的加载态从裸 Spin 换成页面骨架屏（与全站加载形态统一）
@@ -58,8 +59,8 @@ export default function RequireAdmin({ children }: { children: ReactNode }) {
             >
               {t('requireAdmin.retry')}
             </Button>,
-            <Button key="back" onClick={() => nav('/dashboard', { replace: true })}>
-              {t('requireAdmin.back')}
+            <Button key="back" onClick={() => nav(homePathForRole(user?.role), { replace: true })}>
+              {t('requireAdmin.backHome')}
             </Button>,
           ]}
         />
@@ -84,8 +85,8 @@ export default function RequireAdmin({ children }: { children: ReactNode }) {
           </>
         }
         extra={
-          <Button type="primary" onClick={() => nav('/dashboard', { replace: true })}>
-            {t('requireAdmin.back')}
+          <Button type="primary" onClick={() => nav(homePathForRole(user?.role), { replace: true })}>
+            {t('requireAdmin.backHome')}
           </Button>
         }
       />

@@ -12,7 +12,8 @@
  * 验收级别：单测 / 内存替身（`api/workbench` 被 mock，HTTP 边界不触网）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { screen, cleanup, fireEvent } from '@testing-library/react';
+import { renderWorkbenchWithLegacy } from './workbench-legacy-helper';
 import { setLanguage } from '../i18n';
 import WorkbenchPage from '../pages/WorkbenchPage';
 import { previewPlan, commitPlan } from '../api/workbench';
@@ -74,7 +75,7 @@ const button = (label: string): HTMLButtonElement =>
   screen.getByText(label).closest('button') as HTMLButtonElement;
 
 async function submitCommit() {
-  render(<WorkbenchPage />);
+  renderWorkbenchWithLegacy(<WorkbenchPage />);
   fireEvent.change(screen.getByPlaceholderText('例如：每周汇总项目状态并生成报告'), {
     target: { value: '每周汇总项目状态' },
   });
@@ -171,10 +172,15 @@ describe('ADR-045 工作台提交后的四眼审批状态', () => {
     await setLanguage('en');
     vi.mocked(commitPlan).mockResolvedValue({ ...commitOk, approvalStatus: 'failed' });
     // 英文界面下中文选择器不再成立，走英文 label 的同一条用户路径。
-    render(<WorkbenchPage />);
-    fireEvent.change(screen.getAllByRole('textbox')[0], {
-      target: { value: 'Weekly project status summary' },
-    });
+    renderWorkbenchWithLegacy(<WorkbenchPage />);
+    // 英文界面下中文选择器不再成立；用英文占位符精确定位 LegacyFlow 的目标输入框，
+    // 避免默认展开后 textbox[0] 命中三栏 shell 的对话输入框（新 IA 的 DOM 顺序变化）。
+    fireEvent.change(
+      screen.getByPlaceholderText('E.g., summarize project status every week and generate a report'),
+      {
+        target: { value: 'Weekly project status summary' },
+      },
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Preview plan' }));
     await screen.findByText(okResult.card.title);
     fireEvent.click(screen.getByRole('button', { name: 'Confirm plan' }));

@@ -1,22 +1,37 @@
 /**
- * Center timeline: markdown steps, collapsible tool cards, live delta
- * indicators, phase/status chips, and inline approval decisions.
+ * 主时间线：步骤、工具调用、审批卡、错误/等待提示统一在中间栏可读。
+ *
+ * ApprovalList 同时被 Timeline 与 Inspector 消费：主时间线内联是默认审批入口，
+ * 移动端抽屉收起时也能直接批准/拒绝；Inspector 保留镜像供管理员对照产物。
  */
 import { useState } from 'react';
 import { Alert, Button, Collapse, Space, Tag, Typography } from 'antd';
-import { DownOutlined, LoadingOutlined, RightOutlined } from '@ant-design/icons';
+import {
+  DownOutlined,
+  LoadingOutlined,
+  RightOutlined,
+} from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import MarkdownView from '../MarkdownView';
+import { clip, formatTime, statusTone } from '../../pages/workbench/format';
+import {
+  approvalStatusLabel,
+  sessionStatusLabel,
+  toolStatusLabel,
+} from './statusLabel';
 import type {
-  WorkbenchApprovalItem,
   WorkbenchApprovalDecision,
+  WorkbenchApprovalItem,
   WorkbenchSessionDetail,
   WorkbenchStep,
   WorkbenchToolCall,
 } from '../../pages/workbench/types-public';
-import { clip, formatTime, statusTone } from '../../pages/workbench/format';
 
 const { Text } = Typography;
+
+/** 后端契约尚未把 callId/argsRaw 写进共享 DTO：此处只读扩展字段，缺则静默降级。 */
+type ApprovalWithCall = WorkbenchApprovalItem & { callId?: string | null };
+type ToolCallWithRaw = WorkbenchToolCall & { callId?: string | null; argsRaw?: unknown };
 
 function stepRoleLabel(t: (k: string) => string, role: string): string {
   switch (role) {
@@ -29,30 +44,34 @@ function stepRoleLabel(t: (k: string) => string, role: string): string {
   }
 }
 
-function toolStatusLabel(t: (k: string) => string, status: string): string {
-  switch (status) {
-    case 'ok':
-    case 'success':
-    case 'succeeded':
-    case 'completed': return t('workbench.tool.status.ok');
-    case 'running':
-    case 'pending': return t('workbench.tool.status.running');
-    case 'error':
-    case 'failed': return t('workbench.tool.status.error');
-    default: return status;
+/**
+ * 用 callId（不是数组序号、不是同名工具猜测）关联审批单与工具调用，
+ * 从 argsRaw 抽出 shell command / terminal_send.text。解析失败返回 null，
+ * 调用方不渲染任何占位垃圾。
+ */
+function approvalCommandOf(
+  approval: WorkbenchApprovalItem,
+  toolCalls: readonly WorkbenchToolCall[],
+): string | null {
+  const callId = (approval as ApprovalWithCall).callId;
+  if (!callId) return null;
+  const call = toolCalls.find((item) => (item as ToolCallWithRaw).callId === callId);
+  if (!call) return null;
+  let args: unknown = (call as ToolCallWithRaw).argsRaw;
+  if (typeof args === 'string') {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      return null;
+    }
   }
-}
-
-function approvalStatusLabel(t: (k: string) => string, status: string): string {
-  switch (status) {
-    case 'pending': return t('workbench.approval.status.pending');
-    case 'granted':
-    case 'approved': return t('workbench.approval.status.granted');
-    case 'denied': return t('workbench.approval.status.denied');
-    case 'consumed': return t('workbench.approval.status.consumed');
-    case 'expired': return t('workbench.approval.status.expired');
-    default: return status;
-  }
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
+  const raw = args as Record<string, unknown>;
+  const command = typeof raw.command === 'string' ? raw.command : null;
+  const text = typeof raw.text === 'string' ? raw.text : null;
+  const candidate = call.toolName === 'terminal_send' ? (text ?? command) : (command ?? text);
+  if (!candidate || !candidate.trim()) return null;
+  return clip(candidate.trim(), 200);
 }
 
 function toolDuration(call: WorkbenchToolCall): string | null {
@@ -133,10 +152,12 @@ function ToolCard({ call }: { call: WorkbenchToolCall }) {
 
 function ApprovalCard({
   item,
+  command,
   acting,
   onDecide,
 }: {
   item: WorkbenchApprovalItem;
+  command: string | null;
   acting: boolean;
   onDecide: (key: string, decision: WorkbenchApprovalDecision) => void;
 }) {
@@ -151,6 +172,14 @@ function ApprovalCard({
         <Text strong style={{ fontSize: 13 }}>{item.toolName}</Text>
         <Tag color={statusTone(item.status)}>{approvalStatusLabel(t, item.status)}</Tag>
       </div>
+      {command ? (
+        <Text
+          data-testid="workbench-approval-command"
+          style={{ fontSize: 12, display: 'block', marginBottom: 6, wordBreak: 'break-all' }}
+        >
+          {t('workbench.approval.willRun', { command })}
+        </Text>
+      ) : null}
       {item.reason ? (
         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
           {item.reason}
@@ -212,7 +241,7 @@ export interface WorkbenchTimelineProps {
 }
 
 export default function WorkbenchTimeline({
-  detail, live, onRetry,
+  detail, live, actingKey, onDecide, onRetry,
 }: WorkbenchTimelineProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(true);
@@ -230,7 +259,7 @@ export default function WorkbenchTimeline({
         >
           {expanded ? t('workbench.timeline.collapse') : t('workbench.timeline.expand')}
         </Button>
-        <Tag color={statusTone(detail.status)}>{detail.status}</Tag>
+        <Tag color={statusTone(detail.status)}>{sessionStatusLabel(t, detail.status)}</Tag>
         {detail.phase ? <Tag>{detail.phase}</Tag> : null}
         {live ? (
           <Tag icon={<LoadingOutlined />} color="processing">{t('workbench.timeline.live')}</Tag>
@@ -256,6 +285,13 @@ export default function WorkbenchTimeline({
       {detail.waitingFor ? (
         <Alert type="warning" showIcon title={detail.waitingFor} style={{ marginBottom: 10 }} />
       ) : null}
+      {/* 默认审批入口：折叠抽屉/移动端也能处置，Inspector 只保留镜像。 */}
+      <ApprovalList
+        items={detail.approvalItems}
+        toolCalls={detail.toolCalls}
+        actingKey={actingKey}
+        onDecide={onDecide}
+      />
       {isTerminal && detail.conclusion ? (
         <Alert
           type="info"
@@ -293,20 +329,23 @@ export default function WorkbenchTimeline({
 
 export function ApprovalList({
   items,
+  toolCalls = [],
   actingKey,
   onDecide,
 }: {
   items: WorkbenchApprovalItem[];
+  toolCalls?: readonly WorkbenchToolCall[];
   actingKey: string | null;
   onDecide: (key: string, decision: WorkbenchApprovalDecision) => void;
 }) {
   if (items.length === 0) return null;
   return (
-    <Space orientation="vertical" size={8} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={8} style={{ width: '100%', marginBottom: 10 }}>
       {items.map((item) => (
         <ApprovalCard
           key={item.approvalKey}
           item={item}
+          command={approvalCommandOf(item, toolCalls)}
           acting={actingKey === item.approvalKey}
           onDecide={onDecide}
         />

@@ -182,7 +182,6 @@ export function listWorkbenchSessions(params?: { page?: number; pageSize?: numbe
 export function createWorkbenchChatSession(input: {
   prompt: string;
   title?: string;
-  kind?: 'chat' | 'sop_authoring' | 'plan';
   context?: Record<string, unknown>;
 }): Promise<{
   sessionId: string;
@@ -190,7 +189,14 @@ export function createWorkbenchChatSession(input: {
   kind: string;
   initialStepPersisted: boolean;
 }> {
-  return client.post('/workbench/chat-sessions', input);
+  // 后端 CreateWorkbenchChatSessionDto 已删除 kind 且 forbidNonWhitelisted=true：
+  // 只透出白名单字段，旧调用方即便多塞字段也不会把 400 带到线上。
+  const { prompt, title, context } = input;
+  return client.post('/workbench/chat-sessions', {
+    prompt,
+    ...(title ? { title } : {}),
+    ...(context ? { context } : {}),
+  });
 }
 
 export function postWorkbenchMessage(

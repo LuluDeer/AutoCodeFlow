@@ -1,7 +1,7 @@
 /**
  * SEC-03: LoginPage 两步验证分支测试。
  * 契约：login 返回 200 + { totpRequired: true } 时进入动态码阶段（不发跳转）；
- * verifyLogin 成功后写 store 并跳转 dashboard；未启用用户路径零变化。
+ * verifyLogin 成功后写 store；响应无 role 时先回壳层索引路由由 profile 补全后再决定首页；未启用用户路径零变化。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
@@ -89,7 +89,7 @@ describe('SEC-03 LoginPage TOTP 分支', () => {
     } as never);
     renderLogin();
     fillAndSubmit();
-    await waitFor(() => expect(mockNav).toHaveBeenCalledWith('/dashboard', { replace: true }));
+    await waitFor(() => expect(mockNav).toHaveBeenCalledWith('/', { replace: true }));
     expect(useAuthStore.getState().token).toBe('at');
     expect(authApi.verifyLogin).not.toHaveBeenCalled();
   });
@@ -123,7 +123,7 @@ describe('SEC-03 LoginPage TOTP 分支', () => {
         code: '287082',
       }),
     );
-    await waitFor(() => expect(mockNav).toHaveBeenCalledWith('/dashboard', { replace: true }));
+    await waitFor(() => expect(mockNav).toHaveBeenCalledWith('/', { replace: true }));
     expect(useAuthStore.getState().token).toBe('at2');
     expect(useAuthStore.getState().refreshToken).toBe('rt2');
   });

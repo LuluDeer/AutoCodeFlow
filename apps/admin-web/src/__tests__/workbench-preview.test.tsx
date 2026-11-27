@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { renderWorkbenchWithLegacy } from './workbench-legacy-helper';
 import '../i18n';
 import WorkbenchPage from '../pages/WorkbenchPage';
 import { previewPlan, commitPlan } from '../api/workbench';
@@ -61,7 +62,7 @@ const button = (label: string): HTMLButtonElement =>
   screen.getByText(label).closest('button') as HTMLButtonElement;
 
 async function previewWithGoal(goal = '每周汇总项目状态') {
-  render(<WorkbenchPage />);
+  renderWorkbenchWithLegacy(<WorkbenchPage />);
   fireEvent.change(screen.getByPlaceholderText('例如：每周汇总项目状态并生成报告'), {
     target: { value: goal },
   });
@@ -81,7 +82,7 @@ afterEach(() => {
 
 describe('工作台最小验证页', () => {
   it('表单只呈现业务字段，不出现运行时术语', () => {
-    render(<WorkbenchPage />);
+    renderWorkbenchWithLegacy(<WorkbenchPage />);
     expect(screen.getByText('业务目标')).toBeTruthy();
     expect(screen.getByText('执行频率')).toBeTruthy();
     expect(screen.getByText('可选参数')).toBeTruthy();

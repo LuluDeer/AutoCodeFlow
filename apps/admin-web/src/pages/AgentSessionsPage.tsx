@@ -44,6 +44,7 @@ import AgentStepProgress from '../components/AgentStepProgress';
 import { useAgentSessionDetail } from '../hooks/useAgentSessionDetail';
 import { isSessionPathSegment } from '../utils/agentSessionUrl';
 import { agentApi } from '../api/agent';
+import type { AgentSessionStreamStatus, AgentLiveState } from '../hooks/useAgentSessionLiveSession';
 // SOPS-TIME-01：startedAt 列与 SopsPage 同走 formatDateTime（locale 感知 + 空值 '—'）
 import { formatDateTime } from '../utils/timeFormat';
 // UX-06：裸枚举收敛到共享词表（status/kind/工具状态/角色/层级 唯一事实源）
@@ -52,6 +53,7 @@ import {
   agentKindLabel,
   agentStatusLabel,
   agentStepRoleLabel,
+  agentToolStatusLabel,
 } from '../utils/agent-label';
 // P3 审计：Agent 会话/工具状态 → Tag color 映射收敛到单一事实源
 import { AGENT_APPROVAL_STATUS_COLOR, AGENT_SESSION_STATUS_COLOR } from '../utils/status-color';
@@ -104,6 +106,73 @@ function actorLabel(
 function statusTag(status: string, t: import('i18next').TFunction) {
   return (
     <Tag color={AGENT_SESSION_STATUS_COLOR[status] ?? 'default'}>{agentStatusLabel(status, t)}</Tag>
+  );
+}
+
+/** SSE 流状态 → 复用已有 workbench/dashboard 流状态键（不改 locales）。 */
+const STREAM_STATUS_T: Record<AgentSessionStreamStatus, string> = {
+  live: 'dashboard.stream.live',
+  reconnecting: 'dashboard.stream.reconnecting',
+  polling: 'workbench.stream.fallback',
+  connecting: 'dashboard.stream.connecting',
+};
+const STREAM_STATUS_COLOR: Record<AgentSessionStreamStatus, string> = {
+  live: 'green', reconnecting: 'orange', polling: 'orange', connecting: 'blue',
+};
+const STREAM_DISCONNECTED = new Set<AgentSessionStreamStatus>(['reconnecting', 'polling']);
+
+/** 实时横幅的一枚 chip；text 已按当前语言求值，页面只负责画。 */
+interface LiveChip { key: string; text: string; color?: string }
+
+/** 把 SSE 增量整理成 chips + 正文：数据驱动，页面不重复判定同一状态。 */
+function liveBannerModel(status: AgentSessionStreamStatus, live: AgentLiveState, t: import('i18next').TFunction) {
+  const chips: LiveChip[] = [
+    { key: 'status', text: t(STREAM_STATUS_T[status]), color: STREAM_STATUS_COLOR[status] },
+  ];
+  if (STREAM_DISCONNECTED.has(status)) chips.push({ key: 'fallback', text: t('workbench.stream.fallback') });
+  if (live.phase) chips.push({ key: 'phase', text: live.phase });
+  if (live.truncated) chips.push({ key: 'truncated', text: 'truncated · hasMore' });
+  if (live.toolCalls.length) {
+    chips.push({ key: 'tool-count', text: t('agents.tab.tools', { count: live.toolCalls.length }) });
+    for (const tc of live.toolCalls) {
+      chips.push({ key: tc.key, text: `${tc.toolName} · ${tc.status ? agentToolStatusLabel(tc.status, t) : tc.status}` });
+    }
+  }
+  if (live.approvals.length) {
+    chips.push({ key: 'approval-count', text: t('agents.tab.approvals', { count: live.approvals.length }) });
+    for (const a of live.approvals) {
+      chips.push({ key: a.key, text: `${a.key} · ${a.status ? agentApprovalStatusLabel(a.status, t) : a.status}` });
+    }
+  }
+  const role = t('agents.role.assistant');
+  const body = [
+    live.reasoning && `${role} · reasoning:\n${live.reasoning}`,
+    live.content && `${role}:\n${live.content}`,
+  ].filter(Boolean).join('\n');
+  return { chips, body };
+}
+
+/** 实时状态横幅：把 SSE 增量（token/reasoning/phase、工具调用、审批）与连接状态
+ * 折叠进详情抽屉顶部。所有文案复用既有 locale 键；权威表仍由 REST detail 渲染，
+ * 这里只画「本刷新窗口之后」的增量，避免同一帧被渲染两遍。 */
+function AgentSessionLiveBanner({ status, live, t }: {
+  status: AgentSessionStreamStatus;
+  live: AgentLiveState;
+  t: import('i18next').TFunction;
+}) {
+  const { chips, body } = liveBannerModel(status, live, t);
+  if (chips.length === 1 && !body) return null;
+  return (
+    <Paragraph style={{ marginBottom: 8 }}>
+      <Space size={8} wrap>
+        {chips.map(c => <Tag key={c.key} color={c.color} role={c.key === 'status' ? 'status' : undefined}>{c.text}</Tag>)}
+      </Space>
+      {body && (
+        <pre style={{ maxHeight: 160, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12, padding: 8, borderRadius: 6, background: 'var(--color-fill-quaternary, rgba(127,127,127,0.08))', fontFamily: 'var(--font-mono)' }}>
+          {body}
+        </pre>
+      )}
+    </Paragraph>
   );
 }
 
@@ -275,7 +344,8 @@ export default function AgentSessionsPage() {
   const [loadError, setLoadError] = useState<unknown>(null);
   const [budget, setBudget] = useState<AgentBudget | null>(null);
   const validId = sessionId !== null && isSessionPathSegment(sessionId) ? sessionId : null;
-  const { detail: payload, approvals, detailState, detailError, approvalsState, refresh: refreshDetail } = useAgentSessionDetail(validId);
+  const { detail: payload, approvals, detailState, detailError, approvalsState, refresh: refreshDetail,
+    live, streamStatus } = useAgentSessionDetail(validId);
   const detail = payload?.session ?? items.find(s => s.id === validId) ?? null;
   const steps = payload?.steps ?? [];
   const toolCalls = payload?.toolCalls;
@@ -972,6 +1042,7 @@ export default function AgentSessionsPage() {
                 <Button size="small" icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportTranscript()}>{t('agents.exportTranscript')}</Button>
               </Space>
             </Paragraph>
+            <AgentSessionLiveBanner status={streamStatus} live={live} t={t} />
             {/* R171 体量压缩：单文本 Paragraph 5 行折 1 行（等价；本文件基线只减不增）。 */}
             {detail.waitingFor && <Paragraph><Text type="warning">⏳ {detail.waitingFor}</Text></Paragraph>}
             {detail.errorMessage && <Paragraph><Text type="danger">{detail.errorMessage}</Text></Paragraph>}

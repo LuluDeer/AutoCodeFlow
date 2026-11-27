@@ -46,6 +46,7 @@ const TASK_DETAIL = [
   stripComments(read('pages/task-detail/ExecutionsTab.tsx')),
 ].join('\n');
 const DAG = stripComments(read('components/TaskDependencyGraph.tsx'));
+const DAG_CANVAS = stripComments(read('components/task-dag/DagCanvas.tsx'));
 const DASHBOARD = stripComments(read('pages/DashboardPage.tsx'));
 const MAIN_LAYOUT = stripComments(read('layouts/MainLayout.tsx'));
 const LOGIN = stripComments(read('pages/LoginPage.tsx'));
@@ -100,19 +101,29 @@ describe('D-P2-04: Dashboard SSE 状态点色走语义 token', () => {
   });
 });
 
-describe('D-P2-05: DAG 可点击节点键盘可达', () => {
-  it('节点 div 带 tabIndex 与 onKeyDown（Enter/Space 触发）', () => {
-    expect(DAG).toContain('tabIndex={n.isCurrent ? -1 : 0}');
-    expect(DAG).toContain('onKeyDown');
-    expect(DAG).toContain("e.key === 'Enter'");
-    expect(DAG).toContain("e.key === ' '");
+describe('D-P2-05: DAG 可点击节点键盘可达（真实实现 DagCanvas）', () => {
+  it('非当前节点 button/tabIndex=0，Enter/Space 绑定与双击同源的导航', () => {
+    expect(DAG_CANVAS).toContain('tabIndex={isCurrent ? -1 : 0}');
+    expect(DAG_CANVAS).toContain("role={isCurrent ? undefined : 'button'}");
+    expect(DAG_CANVAS).toContain('onKeyDown');
+    expect(DAG_CANVAS).toContain("e.key === 'Enter'");
+    expect(DAG_CANVAS).toContain("e.key === ' '");
+    expect(DAG_CANVAS).toContain('e.preventDefault()');
+    // 键盘分支与 onDoubleClick 必须调用同一个 onNavigate(node.id)，不能只 setSelected。
+    expect(DAG_CANVAS.match(/onNavigate\(node\.id\)/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(DAG_CANVAS).toContain('onDoubleClick');
   });
 });
 
-describe('D-P2-06: DAG 当前节点阴影为品牌绿，不再旧 antd 蓝', () => {
-  it('不再出现旧蓝 rgba(22,119,255', () => {
-    expect(DAG).not.toContain('rgba(22,119,255');
-    expect(DAG).toContain('rgba(34,197,94,0.25)');
+describe('D-P2-06: DAG 当前节点阴影为品牌绿（真实实现 DagCanvas），不再旧 antd 蓝', () => {
+  it('品牌绿来自 tokens.ts 单源，不再出现旧蓝 rgba(22,119,255', () => {
+    expect(DAG_CANVAS).not.toContain('rgba(22,119,255');
+    expect(DAG_CANVAS).not.toContain('token.colorPrimaryBorder');
+    expect(DAG_CANVAS).toContain("from '../../theme/tokens'");
+    expect(DAG_CANVAS).toContain('BRAND_GRADIENT');
+    expect(DAG_CANVAS).toContain('DESIGN_TOKENS.accent');
+    expect(DAG_CANVAS).toContain('CURRENT_NODE_SHADOW');
+    expect(DAG_CANVAS).toContain('rgba(${BRAND_GREEN_RGB},0.25)');
   });
 });
 

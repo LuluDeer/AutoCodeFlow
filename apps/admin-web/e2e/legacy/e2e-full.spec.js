@@ -758,7 +758,9 @@ async function apiCreateTask(request, payload) {
   const tok = await apiLogin(request);
   const r = await request.post(`${API}/api/tasks`, {
     headers: { Authorization: `Bearer ${tok}` },
-    data: payload,
+    // 迁移 0110 起任务默认 PAUSED；这些 e2e 任务是显式要触发执行的夹具，
+    // 必须按新默认语义显式 ACTIVE，否则 TaskProcessor 的 B-11 闸会正确跳过派发。
+    data: { status: "active", ...payload },
   });
   const d = await r.json();
   if (!d.data?.id) throw new Error(`API 创建任务失败: ${r.status()} ${JSON.stringify(d).slice(0, 200)}`);
@@ -777,8 +779,9 @@ test('17. RBAC — admin 访问 /notifications 正常且菜单入口可见', asy
   await page.goto(`${BASE}/dashboard`);
   await page.waitForLoadState('networkidle');
   // 侧边菜单含「通知」入口（R6 起该入口 ADMIN-only；P1-6 分组化后
-  // 位于「治理」分组内，先展开分组再断言子项可见）
-  await page.locator('.ant-menu').getByText('治理', { exact: true }).click();
+  // 「通知」被划入「系统」分组——route-registry.ts: ADMIN_SHELL_GROUPS
+  // g-adm-system paths 含 /notifications，zh locale nav.group.system = 系统）。
+  await page.locator('.ant-menu').getByText('系统', { exact: true }).click();
   await expect(page.locator('.ant-menu').getByText('通知', { exact: true })).toBeVisible({ timeout: 10000 });
   console.log('  ✓ admin 菜单含通知入口');
   // 路由可访问：渲染 NotificationSettingsPage 特有区块，而非 RequireAdmin 403
@@ -820,39 +823,74 @@ test('19. RBAC — 普通用户 /users /audit /executor-packages /executors/inst
   await page.screenshot({ path: '/tmp/e2e-19-rbac-403.png' });
 });
 
-// ── 20. settings AI Tab — 普通用户降级只读提示且不发 /ai/config 请求 ────────
-test('20. settings AI Tab — 普通用户降级提示且零 /ai/config 请求', async ({ page, request }) => {
+// ── 20. settings RBAC — 普通用户只有账号 Tab，零 ADMIN-only AI 请求 ────────
+test('20. settings RBAC — 普通用户仅见账号 Tab 且零 AI 管理请求', async ({ page, request }) => {
   await ensureE2EUser(request);
   await loginAs(page, E2E_USER, E2E_USER_PASS);
   const aiRequests = [];
-  page.on('request', (req) => { if (req.url().includes('/ai/config')) aiRequests.push(req.url()); });
+  page.on('request', (req) => {
+    const url = req.url();
+    // IA-SETTINGS 后 AI 管理面有两条 ADMIN-only 读端点：旧 /config 与新 providers。
+    // 两条都必须零请求——不能因为产品换了面板就放宽零请求口径。
+    if (url.includes('/api/ai/config') || url.includes('/api/ai/providers')) aiRequests.push(url);
+  });
   await page.goto(`${BASE}/settings`);
   await page.waitForLoadState('networkidle');
-  // 页面级降级横幅
-  await expect(page.getByText('您以普通用户身份查看')).toBeVisible({ timeout: 10000 });
-  // 共享 Token Tab 对非 admin 不渲染（R4 收紧矩阵）
-  await expect(page.getByRole('tab', { name: /执行器 Token/ })).toHaveCount(0);
-  // 切到 AI Tab → 只读降级提示（R7）
-  await page.getByRole('tab', { name: /AI 配置/ }).click();
-  await expect(page.getByText('仅管理员可查看和配置 AI 分析')).toBeVisible();
+
+  // 普通用户收敛到唯一「安全设置 / API Keys」账号 Tab：AI/系统配置/Token 都不渲染。
+  const accountTab = page.getByRole('tab', { name: /安全设置\s*\/\s*API Keys/ });
+  await expect(accountTab).toBeVisible({ timeout: 10000 });
+  await expect(accountTab, '账号 Tab 应为默认选中').toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab'), '普通用户只应有一个账号 Tab').toHaveCount(1);
+  await expect(page.getByRole('tab', { name: 'AI 配置', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: '执行器 Token', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: '系统配置', exact: true })).toHaveCount(0);
+
+  // 旧 AI 降级横幅/表单与新模型接入面板都不该出现在普通用户页面。
+  await expect(page.getByText('仅管理员可查看和配置 AI 分析')).toHaveCount(0);
+  await expect(page.getByText('AI 提供商', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('模型接入与分配', { exact: true })).toHaveCount(0);
+
+  // 账号表单必须真实可读（不是只剩一个空 Tab）。
+  await expect(page.getByText(/管理账号的密码、两步验证与登录会话/)).toBeVisible();
+  await expect(page.getByText('API Keys（限权机器凭证）', { exact: true })).toBeVisible();
+
+  // 给异步读请求留出窗口；两条 AI 管理端点都不能被普通用户页面触发。
   await page.waitForTimeout(1500);
-  expect(aiRequests, `普通用户不应发起 /ai/config 请求: ${aiRequests.join(', ')}`).toHaveLength(0);
-  console.log('  ✓ AI Tab 降级提示渲染，/ai/config 请求数=0');
+  expect(aiRequests, `普通用户不应发起 AI 管理请求: ${aiRequests.join(', ')}`).toHaveLength(0);
+  console.log('  ✓ 普通用户仅见账号 Tab，/api/ai/config 与 /api/ai/providers 请求数均为 0');
   await page.screenshot({ path: '/tmp/e2e-20-settings-ai-user.png' });
 });
 
-// ── 21. settings AI Tab — admin 正常读取（GET /ai/config 200 + 表单渲染）────
-test('21. settings AI Tab — admin 正常发起 GET /ai/config 并渲染表单', async ({ page }) => {
+// ── 21. settings AI — admin 读取模型接入面板且表单可读 ──────────────────────
+test('21. settings AI — admin 读取 AiProvidersSettings 并渲染可编辑表单', async ({ page }) => {
   await login(page);
   await page.goto(`${BASE}/settings`);
   await page.waitForLoadState('networkidle');
-  await expect(page.getByRole('tab', { name: /执行器 Token/ })).toBeVisible();
-  const respPromise = page.waitForResponse((r) => r.url().includes('/api/ai/config') && r.request().method() === 'GET');
-  await page.getByRole('tab', { name: /AI 配置/ }).click();
+  await expect(page.getByRole('tab', { name: '执行器 Token', exact: true })).toBeVisible();
+
+  // 当前 AI Tab 的主面是 AiProvidersSettings（旧 /ai/config 表单折叠在 details 内），
+  // 故以 GET /api/ai/providers 200 为权威证据；waitForResponse 必须在点击前注册。
+  const respPromise = page.waitForResponse(
+    (r) => r.url().includes('/api/ai/providers') && r.request().method() === 'GET',
+    { timeout: 15000 },
+  );
+  await page.getByRole('tab', { name: 'AI 配置', exact: true }).click();
   const resp = await respPromise;
-  expect(resp.status()).toBe(200);
-  await expect(page.getByText('AI 提供商')).toBeVisible({ timeout: 10000 });
-  console.log('  ✓ admin AI Tab 正常请求 GET /ai/config(200) 且表单渲染');
+  expect(resp.status(), `admin 读取模型接入注册表应 200，实际 ${resp.status()}`).toBe(200);
+
+  // 面板正文可读：标题 + 用途分配区。
+  await expect(page.getByText('模型接入与分配', { exact: true })).toBeVisible({ timeout: 10000 });
+  await expect(page.getByText('按用途选用模型', { exact: true })).toBeVisible();
+
+  // 表单可读：点「接入模型」打开编辑 Modal，逐字段可见（不放宽为只看卡片标题）。
+  await page.getByRole('button', { name: '接入模型', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.getByText('标识（小写字母/数字/._-）', { exact: true })).toBeVisible();
+  await expect(page.getByText('baseUrl（OpenAI 兼容端点）', { exact: true })).toBeVisible();
+  await expect(page.getByText('模型名', { exact: true })).toBeVisible();
+  await expect(page.getByText('API Key', { exact: true })).toBeVisible();
+  console.log('  ✓ admin AI Tab 读取 GET /api/ai/providers(200) 且接入表单可读');
   await page.screenshot({ path: '/tmp/e2e-21-settings-ai-admin.png' });
 });
 
@@ -1291,7 +1329,7 @@ test('29. UI 向导建 pinned 任务 → 触发执行 executorAddress=绑定执�
   const tok = await apiLogin(request);
   const patchR = await request.patch(`${API}/api/tasks/${created.id}`, {
     headers: { Authorization: `Bearer ${tok}` },
-    data: { glueSource: PIN_GLUE, glueLanguage: 'javascript', maxRetry: 0 },
+    data: { glueSource: PIN_GLUE, glueLanguage: 'javascript', maxRetry: 0, status: 'active' },
   });
   expect(patchR.ok()).toBeTruthy();
 

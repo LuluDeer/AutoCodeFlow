@@ -5,7 +5,7 @@
  * T1 的 CSS `@media (prefers-reduced-motion: reduce)` 兜底管不到显式
  * `behavior: 'smooth'`（CSSOM 显式值优先），故四个调用点统一读系统偏好降级为 auto。
  * T2 的 Div role=button 不自带原生按钮的默认行为，Space 仍会滚页面——
- * 先 preventDefault 再导航，与 TaskDependencyGraph 的既有先例一致。
+ * 先 preventDefault 再导航，与 DagCanvas 的既有先例一致。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -206,7 +206,7 @@ describe('Space 键不滚页面（role=button 自绘卡片）', () => {
     for (const rel of [
       'components/dashboard/ExecutorHeatBars.tsx',
       'components/dashboard/FailureTopList.tsx',
-      'components/TaskDependencyGraph.tsx',
+      'components/task-dag/DagCanvas.tsx',
     ]) {
       const src = read(rel);
       expect(src, `${rel} 缺少 role button 声明`).toMatch(/role=("button"|\{[^}]*'button')/);
@@ -214,5 +214,9 @@ describe('Space 键不滚页面（role=button 自绘卡片）', () => {
     }
     expect(read('components/dashboard/ExecutorHeatBars.tsx')).toContain("if (e.key === ' ') e.preventDefault();");
     expect(read('components/dashboard/FailureTopList.tsx')).toContain("if (e.key === ' ') e.preventDefault();");
+    const dagCanvas = read('components/task-dag/DagCanvas.tsx');
+    expect(dagCanvas).toContain("e.key === ' '");
+    expect(dagCanvas).toContain('onNavigate(node.id)');
+    expect(dagCanvas).toContain('onDoubleClick');
   });
 });

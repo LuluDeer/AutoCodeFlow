@@ -24,7 +24,10 @@ const packagesPageSource = read('../pages/ExecutorPackagesPage.tsx');
 const applicationsSource = read('../api/applications.ts');
 const baseline = JSON.parse(
   read('../../../../scripts/web-type-field-drift-baseline.json'),
-) as { drift: Array<{ key: string; reason: string }> };
+) as {
+  drift: Array<{ key: string; reason: string }>;
+  notPairs: Array<{ key: string; reason: string }>;
+};
 
 const derived = (source: string, field: string, schema: string, dto: string) =>
   source.includes(
@@ -95,9 +98,11 @@ describe('type-debt：契约字段派生回生成 schema', () => {
     expect([app.ownerUserId, app.projectId, app.webhookSecret]).toEqual([7, null, 'secret']);
   });
 
-  it('基线已收缩 17 条派生字段；后端契约缺位但已消费的 extra 保留并改说明', () => {
-    const keys = new Set(baseline.drift.map((e) => e.key));
-    const shrunk = [
+  it('22 条已处置 key 全部从基线移除（drift / notPairs 均不得复活）', () => {
+    const keys = new Set(
+      [...baseline.drift, ...baseline.notPairs].map((e) => e.key),
+    );
+    const disposed = [
       'apps/admin-web/src/api/users.ts\tUser\tmissing:isActive',
       'apps/admin-web/src/api/users.ts\tUser\tmissing:totpEnabled',
       'apps/admin-web/src/api/users.ts\tUser\tmissing:lastTotpCounter',
@@ -115,17 +120,17 @@ describe('type-debt：契约字段派生回生成 schema', () => {
       'apps/admin-web/src/api/applications.ts\tApplication\tmissing:packageUrl',
       'apps/admin-web/src/api/applications.ts\tApplication\tmissing:projectId',
       'apps/admin-web/src/api/applications.ts\tApplication\tmissing:webhookSecret',
-    ];
-    expect(shrunk.every((k) => !keys.has(k))).toBe(true);
-    const retained = [
       'apps/admin-web/src/api/executor-packages.ts\tExecutorPackage\textra:changelog',
       'apps/admin-web/src/api/applications.ts\tAppReleaseRow\textra:createdAt',
       'apps/admin-web/src/api/applications.ts\tAppReleaseRow\textra:sourceDeploymentId',
       'apps/admin-web/src/api/applications.ts\tAppReleaseRow\textra:status',
       'apps/admin-web/src/api/applications.ts\tAppReleaseRow\textra:synthetic',
     ];
-    for (const key of retained) {
-      expect(baseline.drift.find((e) => e.key === key)?.reason).toContain('已消费·待后端补契约');
-    }
+    expect(disposed).toHaveLength(22);
+    const stillPresent = disposed.filter((k) => keys.has(k));
+    expect(
+      stillPresent,
+      `以下已处置 key 仍留在基线里（禁止把已处置条目加回 drift）：\n${stillPresent.join('\n')}`,
+    ).toEqual([]);
   });
 });

@@ -38,7 +38,8 @@
  * ## 本文件钉住的行为（每条都能失败）
  *
  *  ① Token 读失败 → 页内 StateError（不是空转圈）+ 重试重新请求。
- *  ② 非管理员：Token Tab 整块不渲染（后端 R4 收紧，连 GET 都不发）。
+ *  ② 非管理员只有账号 Tab（安全 + 本人 API Keys）：ADMIN-only 的 Token/AI/配置/
+ *     事件订阅/遥测/价目 Tab 全部不渲染，也不发对应请求；
  *  ③ 生成 Token：成功 → 成功 toast + 读面刷新（重新 GET）；失败 → 错误 toast。
  *  ④ Token 已存在 → 默认打码、显隐切换、复制成功/失败两种反馈。
  *  ⑤ 新增配置：必填校验拦住空表单 → 保存成功 → added toast + 列表刷新 +
@@ -56,11 +57,10 @@
  *
  * ## 一处**诚实的未覆盖**（不编造假用例）
  *
- * `TokenSection` 内 `if (!isAdmin)` 那条只读分支（源码 127-138 行）在
- * SettingsPage 的调用形态下**不可达**：`tabs` 数组本身就把 token Tab 从非管理员
- * 的列表里剔除了（index.tsx:907-909），故该分支只在把 TokenSection 单独渲染时
- * 才会命中，而它未导出。本文件因此改为钉住**可观测的等价契约**——非管理员
- * 连 Tab 都没有、且不发 GET——而不是硬凑一条走不到的分支。
+ * `TokenSection` 内 `if (!isAdmin)` 那条只读分支（源码 127-138 行）在当前
+ * SettingsPage 调用形态下不可达：tabs 数组本身就把所有 ADMIN-only Tab 从非管理员
+ * 的列表里剔除了（index.tsx:957-1025）。本文件因此钉住**可观测的等价契约**——
+ * 非管理员只有账号 Tab、不发任何 ADMIN-only 请求——而不是硬凑走不到的分支。
  *
  * 隔离方式对齐既有先例：模块级 mock `../api/config` 与 `../api/ai`、
  * QueryClientProvider 包裹、MemoryRouter、jsdom 的 ResizeObserver/matchMedia shim。
@@ -215,6 +215,7 @@ beforeEach(() => {
   vi.mocked(aiApi.getConfig)
     .mockReset()
     .mockResolvedValue({ provider: 'disabled', hasApiKey: false } as never);
+  vi.mocked(aiApi.listProviders).mockClear();
   vi.mocked(aiApi.saveConfig).mockReset().mockResolvedValue({ ok: true } as never);
   vi.mocked(aiApi.testConfig)
     .mockReset()
@@ -380,19 +381,23 @@ describe('设置页：执行器 Token 分支', () => {
     });
   });
 
-  it('② 非管理员：Token Tab 整块不渲染，且不发起 GET /config/executor-shared-token', async () => {
+  it('② 非管理员：只有账号 Tab，ADMIN-only Tab 与请求全部消失', async () => {
     useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
     renderSettings();
-    // 非管理员首个 Tab 是「AI 配置」，token Tab 不存在
-    await waitFor(() =>
-      expect(screen.getByRole('tab', { name: /AI 配置/ }).getAttribute('aria-selected')).toBe(
-        'true',
-      ),
-    );
-    expect(screen.queryByRole('tab', { name: /执行器 Token/ })).toBeNull();
+    const accountTab = await screen.findByRole('tab', { name: /安全.*API Keys/ });
+    expect(accountTab.getAttribute('aria-selected')).toBe('true');
+
+    for (const name of [/执行器 Token/, /AI 配置/, '系统配置', /事件订阅/, /遥测/, /价目表?/]) {
+      expect(screen.queryByRole('tab', { name })).toBeNull();
+    }
     expect(screen.queryByText('执行器共享 Token')).toBeNull();
-    // 关键：不发会 403 的 GET
+    // 关键：不发任何 ADMIN-only 的 GET
     expect(configApi.getExecutorToken).not.toHaveBeenCalled();
+    expect(configApi.findAll).not.toHaveBeenCalled();
+    expect(configApi.getHistory).not.toHaveBeenCalled();
+    expect(configApi.rollback).not.toHaveBeenCalled();
+    expect(aiApi.getConfig).not.toHaveBeenCalled();
+    expect(aiApi.listProviders).not.toHaveBeenCalled();
   });
 
   it('③ 生成 Token：确认后调 generateExecutorToken，成功提示并刷新读面', async () => {
@@ -746,12 +751,20 @@ describe('设置页：变更历史读失败', () => {
 });
 
 describe('设置页：AI 配置保存成功与连通性测试', () => {
+  /** 定位旧配置 Form.Item name=provider 的下拉：用 label 收窄到 AI 提供商，不再抓页面首个 .ant-select。 */
+  const providerSelect = async (): Promise<HTMLElement> => {
+    const label = await screen.findByText('AI 提供商');
+    const item = label.closest('.ant-form-item') as HTMLElement | null;
+    const select = item?.querySelector('.ant-select') as HTMLElement | null;
+    expect(select, '未找到 Form.Item name=provider 的 AI 提供商下拉').toBeTruthy();
+    return select!;
+  };
+
   /** 把 provider 切到 openai（只有非 disabled 才渲染「测试连通性」按钮）。 */
   const switchToOpenai = async () => {
-    const providerSelect = document.querySelector('.ant-select') as HTMLElement;
-    expect(providerSelect, '未找到 provider 下拉').toBeTruthy();
+    const select = await providerSelect();
     await act(async () => {
-      fireEvent.mouseDown(providerSelect);
+      fireEvent.mouseDown(select);
     });
     const option = await waitFor(() => {
       const el = Array.from(document.querySelectorAll('.ant-select-item-option-content')).find((o) =>
@@ -885,11 +898,13 @@ describe('设置页：?tab= 深链与 Tab 切换', () => {
     });
   });
 
-  it('㉔ 非管理员：?tab=token 非法（该 Tab 不渲染）→ 回退到 AI 配置', async () => {
+  it('㉔ 非管理员：?tab=token 非法（ADMIN-only Tab 不渲染）→ 回退到账号 Tab', async () => {
     useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
     renderSettings(['/settings?tab=token']);
 
-    const aiTab = await screen.findByRole('tab', { name: /AI 配置/ });
-    expect(aiTab.getAttribute('aria-selected')).toBe('true');
+    const accountTab = await screen.findByRole('tab', { name: /安全.*API Keys/ });
+    expect(accountTab.getAttribute('aria-selected')).toBe('true');
+    expect(screen.queryByRole('tab', { name: /执行器 Token/ })).toBeNull();
+    expect(configApi.getExecutorToken).not.toHaveBeenCalled();
   });
 });

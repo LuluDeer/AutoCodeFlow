@@ -1,14 +1,15 @@
 /**
- * R6 settings 页 AI 区块降级测试：
- * GET/POST /ai/config 收紧为 ADMIN-only 后，非管理员访问「AI 配置」Tab 必须
- * 降级为只读提示——不发起会 403 的 GET 请求、不渲染配置表单；
- * 管理员则正常发起查询并渲染表单。
+ * R6 / IA-SETTINGS：settings 页 AI 区块契约。
+ * GET/POST /ai/config、/ai/providers 收紧为 ADMIN-only 后，非管理员只保留账号 Tab
+ * （安全 + 本人的 API Keys）——AI Tab 不存在，不发任何 ADMIN-only 请求；
+ * 管理员仍可进入 AI 配置并渲染表单。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import SettingsPage, { AI_NUMBER_FIELDS, isValidAiNumber } from '../pages/settings/index';
 import { aiApi } from '../api/ai';
+import { configApi } from '../api/config';
 import { MemoryRouter } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 
@@ -80,6 +81,7 @@ const fakeAiConfig = {
 
 beforeEach(() => {
   vi.mocked(aiApi.getConfig).mockReset().mockResolvedValue(fakeAiConfig as never);
+  vi.mocked(aiApi.listProviders).mockClear();
   useAuthStore.setState({ user: null });
 });
 
@@ -99,21 +101,28 @@ function renderSettings() {
 }
 
 describe('settings 页 AI 配置区块（R6 ADMIN-only 降级）', () => {
-  it('非管理员：AI Tab 降级为只读提示，不发起 GET /ai/config，不渲染表单', async () => {
+  it('非管理员：只有账号 Tab，无 AI Tab，不发 ADMIN-only 请求', async () => {
     useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
     renderSettings();
-    // 非管理员下 AI 是首个 Tab，默认激活
-    expect(await screen.findByText('仅管理员可查看和配置 AI 分析')).toBeTruthy();
+    expect(await screen.findByRole('tab', { name: /安全.*API Keys/ })).toBeTruthy();
+    expect(screen.queryByRole('tab', { name: /AI 配置/ })).toBeNull();
+    expect(screen.queryByRole('tab', { name: /系统配置/ })).toBeNull();
+    expect(screen.queryByText('仅管理员可查看和配置 AI 分析')).toBeNull();
     expect(screen.queryByText('保存配置')).toBeNull();
     expect(screen.queryByText('AI 提供商')).toBeNull();
     expect(aiApi.getConfig).not.toHaveBeenCalled();
+    expect(aiApi.listProviders).not.toHaveBeenCalled();
+    expect(configApi.findAll).not.toHaveBeenCalled();
+    expect(configApi.getExecutorToken).not.toHaveBeenCalled();
+    expect(configApi.getHistory).not.toHaveBeenCalled();
+    expect(configApi.rollback).not.toHaveBeenCalled();
   });
 
   it('管理员：正常发起 GET /ai/config 并渲染配置表单', async () => {
     useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
     renderSettings();
     // 管理员首个 Tab 是执行器 Token，需切到 AI 配置
-    fireEvent.click(screen.getByText('AI 配置'));
+    fireEvent.click(screen.getByRole('tab', { name: /AI 配置/ }));
     await waitFor(() => expect(aiApi.getConfig).toHaveBeenCalled());
     expect(await screen.findByText('保存配置')).toBeTruthy();
   });
@@ -125,7 +134,7 @@ describe('settings 页 AI 配置区块（R6 ADMIN-only 降级）', () => {
       Object.assign(new Error('bad'), { response: { data: { message: 'AI 配置校验未通过' } } }),
     );
     renderSettings();
-    fireEvent.click(screen.getByText('AI 配置'));
+    fireEvent.click(screen.getByRole('tab', { name: /AI 配置/ }));
     await screen.findByText('保存配置');
 
     fireEvent.click(screen.getByText('保存配置'));

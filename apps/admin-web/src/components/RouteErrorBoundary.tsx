@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useRouteError, isRouteErrorResponse } from 'react-router-dom';
-import { Button, Result, Space, Typography } from 'antd';
+import { Button, Collapse, Result, Space, Typography } from 'antd';
 import { message } from '../utils/toast';
 import { ReloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { copyText } from '../utils/clipboard';
+import { routeErrorLabel } from './workbench/statusLabel';
 import '../i18n';
 
 const { Text } = Typography;
@@ -80,8 +81,10 @@ export default function RouteErrorBoundary() {
     );
   }
 
+  let routeStatus: number | string = 0;
   let messageText = t('errorFallback.unknownError');
   if (isRouteErrorResponse(error)) {
+    routeStatus = error.status;
     messageText = `${error.status} ${error.statusText ?? ''}`.trim();
   } else if (error instanceof Error) {
     messageText = error.message;
@@ -110,9 +113,20 @@ export default function RouteErrorBoundary() {
       status="error"
       title={t('errorFallback.title')}
       subTitle={
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          {messageText}
-        </Text>
+        <Space orientation="vertical" size={8} style={{ width: '100%', maxWidth: 640 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {routeErrorLabel(t, routeStatus)}
+          </Text>
+          <Collapse
+            ghost
+            size="small"
+            items={[{
+              key: 'technical-details',
+              label: <Text type="secondary" style={{ fontSize: 11 }}>{t('statusLabel.technicalDetails')}</Text>,
+              children: <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11 }}>{errorText}</pre>,
+            }]}
+          />
+        </Space>
       }
       extra={
         <Space wrap>

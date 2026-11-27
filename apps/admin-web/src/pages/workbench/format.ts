@@ -1,5 +1,7 @@
 /** Display-only helpers for the workbench UI. No network access, no side effects. */
 
+import { formatDateTime, formatShortTime } from '../../utils/timeFormat';
+
 /** Human-readable byte size (base 1024). */
 export function formatBytes(size: number): string {
   if (!Number.isFinite(size) || size < 0) return '-';
@@ -16,20 +18,24 @@ export function formatBytes(size: number): string {
 
 /** Server timestamps may be ISO strings, Date objects or absent. */
 export function formatTime(value: unknown): string {
-  if (value instanceof Date) return value.toLocaleString();
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? String(value) : formatDateTime(value);
+  }
   if (typeof value !== 'string' || !value) return '-';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return formatDateTime(date);
 }
 
 /** Short relative-ish label for the session rail (date + time when available). */
 export function formatSessionTime(value: unknown): string {
-  if (value instanceof Date) return value.toLocaleString();
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? String(value) : formatShortTime(value);
+  }
   if (typeof value !== 'string' || !value) return '-';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return formatShortTime(date);
 }
 
 /** Status → semantic dot color; unknown states stay neutral (never invented). */

@@ -122,3 +122,21 @@ export function formatDateTime(value: TimeInput): string {
   const date = toDate(value);
   return date ? date.toLocaleString(currentLocale()) : FALLBACK;
 }
+
+/**
+ * 短日期时间（月/日 + 时:分）→ 与 formatDateTime 同源 locale。
+ * workbench session rail 等紧凑展示面此前直接 `toLocaleString(undefined, …)`，
+ * 会跟随浏览器语言而非 i18n；收敛到此处后 zh/en 输出稳定，且仍由
+ * currentLocale() 单一来源决定。非法/空值口径与 formatDateTime 一致（FALLBACK）。
+ */
+export function formatShortTime(value: TimeInput): string {
+  const date = toDate(value);
+  if (!date) return FALLBACK;
+
+  return date.toLocaleString(currentLocale(), {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}

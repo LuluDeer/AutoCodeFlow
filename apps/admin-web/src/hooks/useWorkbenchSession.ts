@@ -430,6 +430,16 @@ export function useWorkbenchSession(
     return t('workbench.action.failed');
   }, [t]);
 
+  /** controller 以 ok:false 拒绝终态会话追加消息（不抛错）——必须显式报错。 */
+  const isTerminalRejection = (result: unknown): boolean => {
+    if (!result || typeof result !== 'object') return false;
+    const obj = result as { ok?: unknown; action?: unknown; reason?: unknown; status?: unknown };
+    if (obj.ok !== false) return false;
+    if (obj.action === 'rejected_terminal' || obj.reason === 'rejected_terminal') return true;
+    const reason = typeof obj.reason === 'string' ? obj.reason.toLowerCase() : '';
+    return reason.includes('terminal') || reason.includes('closed');
+  };
+
   const start = useCallback(async () => {
     const anchor = getAnchor();
     if (!anchor || startingRef.current || typeof createWorkbenchSession !== 'function') return;
@@ -484,12 +494,16 @@ export function useWorkbenchSession(
     if (!detailRef.current || typeof postWorkbenchMessage !== 'function') return;
     setActionError(null);
     try {
-      await postWorkbenchMessage(detailRef.current.sessionId, { content, mode });
+      const result = await postWorkbenchMessage(detailRef.current.sessionId, { content, mode });
+      if (isTerminalRejection(result)) {
+        setActionError(t('workbench.session.terminalReject'));
+        return;
+      }
       await refreshActive();
     } catch (err: unknown) {
       setActionError(actionErrorText(err));
     }
-  }, [actionErrorText, refreshActive]);
+  }, [actionErrorText, refreshActive, t]);
 
   const cancel = useCallback(async () => {
     if (!detailRef.current || typeof cancelWorkbenchSession !== 'function') return;
@@ -510,12 +524,21 @@ export function useWorkbenchSession(
     if (!detailRef.current || typeof decideWorkbenchApproval !== 'function') return;
     setActionError(null);
     try {
-      await decideWorkbenchApproval(detailRef.current.sessionId, approvalKey, { decision, note });
+      const result = await decideWorkbenchApproval(detailRef.current.sessionId, approvalKey, { decision, note });
+      // applied=false ⇒ 后端回 ok:false（审批单不存在/会话不匹配/已处置）。
+      // 不刷新成假成功：如实把失败写进 actionError（见 sendMessage 的同类处理）。
+      if (result && result.ok === false) {
+        const backendReason = (result as { reason?: unknown }).reason;
+        const reason = typeof backendReason === 'string' ? backendReason.trim() : '';
+        // 后端 reason 原样展示；无 reason 时复用既有审批失败文案，不改 locales。
+        setActionError(reason || t('agents.approval.decideFailed', { key: approvalKey }));
+        return;
+      }
       await refreshActive();
     } catch (err: unknown) {
       setActionError(actionErrorText(err));
     }
-  }, [actionErrorText, refreshActive]);
+  }, [actionErrorText, refreshActive, t]);
 
   const restore = useCallback((id: string) => {
     if (!isSessionId(id)) return;

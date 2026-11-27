@@ -9,6 +9,7 @@ import { authApi } from '../api/auth';
 // AUTH-04：SSO 整页跳转需与 axios client 同源 base（不走 client 实例）
 import { getApiBaseUrl } from '../api/client';
 import { useAuthStore, type AuthUser } from '../store/auth';
+import { homePathForRole } from '../routes/route-registry';
 import { getErrMsg } from '../utils/error';
 // UX-AUDIT：SSO 可用性探测（含失败提示/重试）外提为 hook，守住本函数体行数天花板。
 import { useSsoStatus } from '../hooks/useSsoStatus';
@@ -67,9 +68,13 @@ export default function LoginPage() {
       return;
     }
     setAuth(res.accessToken, res.refreshToken, res.user ?? { id: 0, username: credentials.username });
-    // 401 登出跳转带 ?redirect=（仅接受站内路径，防开放重定向）——优先回跳原页面
+    // 401 登出跳转带 ?redirect=（仅接受站内路径，防开放重定向）——优先回跳原页面；
+    // 无 redirect 且 role 已确定时直接按 homePathForRole 落到角色首页；
+    // role 未随登录响应返回时先回壳层索引路由，由 MainLayout 拉 /auth/profile，
+    // 再由 RoleHomeRedirect 在 role 落定后决定首页，避免把 ADMIN 首帧送进 /workbench。
     const redirect = new URLSearchParams(window.location.search).get('redirect');
-    nav(redirect && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/dashboard', { replace: true });
+    const roleHome = res.user?.role ? homePathForRole(res.user.role) : '/';
+    nav(redirect && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : roleHome, { replace: true });
   };
 
   const handleLogin = async (values: { username: string; password: string }) => {

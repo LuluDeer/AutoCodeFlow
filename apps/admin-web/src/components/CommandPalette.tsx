@@ -202,8 +202,57 @@ const PAGE_NAV_ICON: Record<string, ReactNode> = {
   '/agent-sessions': <RobotOutlined />, '/workbench': <AppstoreOutlined />, '/inbox': <MailOutlined />,
 };
 
-const getPageNavActions = (t: TFunction): StaticAction[] =>
-  paletteRoutes(true).map((route) => ({
+/** 单一条目模型：全面板最多 120 条，按稳定 id 去重，常用命令永不被裁掉。 */
+const ENTRY_LIMIT = 120;
+const COMMON_ENTRY_IDS: ReadonlySet<string> = new Set([
+  'action:new-task', 'action:new-application',
+  'page:/workbench', 'page:/tasks', 'page:/inbox', 'page:/dashboard',
+]);
+
+function stableEntryId(kind: EntityKind, action: StaticAction | undefined, item: PaletteItem | undefined): string {
+  let id = 'unknown';
+  if (action) id = kind === 'action' ? action.id || id : action.to || action.id || id;
+  else if (item) id = item.id || item.key || id;
+  return `${kind}:${id}`;
+}
+
+function applyEntryBudget(sections: Section[]): Section[] {
+  const ids = sections.flatMap((s) => [
+    ...(s.statics ?? []).map((a) => stableEntryId(s.kind, a, undefined)),
+    ...s.items.map((i) => stableEntryId(s.kind, undefined, i)),
+  ]);
+  const unique = [...new Set(ids)];
+  const ordered = [...unique.filter((id) => COMMON_ENTRY_IDS.has(id)), ...unique.filter((id) => !COMMON_ENTRY_IDS.has(id))];
+  const keep = new Set(ordered.slice(0, ENTRY_LIMIT));
+  let offset = 0;
+  return sections.map((s) => {
+    const statics = s.statics?.filter((a) => keep.has(stableEntryId(s.kind, a, undefined)));
+    const items = s.items.filter((i) => keep.has(stableEntryId(s.kind, undefined, i)));
+    const next = { ...s, statics, items, offset };
+    offset += (statics?.length ?? 0) + items.length;
+    return next;
+  });
+}
+
+/** ⌘K 打开时后台预取静态命令的搜索索引：微任务执行、不请求网络、不触碰焦点。 */
+function useWarmSearchIndex(open: boolean, isAdmin: boolean, t: TFunction) {
+  const ref = useRef(new Map<string, string>());
+  useEffect(() => {
+    if (!open) return;
+    const warm = () => {
+      const index = new Map<string, string>();
+      for (const a of getStaticActions(t, isAdmin)) index.set(`action:${a.id}`, `${a.title} ${a.description}`.toLowerCase());
+      for (const r of paletteRoutes(isAdmin)) index.set(`page:${r.path}`, `${t(r.labelKey)} ${t(r.descriptionKey)}`.toLowerCase());
+      ref.current = index;
+    };
+    const timer = window.setTimeout(warm, 0);
+    return () => window.clearTimeout(timer);
+  }, [open, isAdmin, t]);
+  return ref;
+}
+
+const getPageNavActions = (t: TFunction, isAdmin: boolean): StaticAction[] =>
+  paletteRoutes(isAdmin).map((route) => ({
     key: `nav-${route.path.slice(1)}`,
     id: `nav-${route.path.slice(1)}`,
     title: t(route.labelKey),
@@ -237,6 +286,7 @@ export default function CommandPalette({
   const user = useAuthStore((s) => s.user);
   /** R5 角色门控：admin-only 静态动作/行内动作按此出键（对齐 ApplicationListPage） */
   const isAdmin = isAdminUser(user);
+  const searchIndexRef = useWarmSearchIndex(open, isAdmin, t);
   const [keyword, setKeyword] = useState('');
   const debouncedKeyword = useDebounce(keyword, DEBOUNCE_MS);
   /** UX-AUDIT：加载失败后手动重试的触发键（递增即重跑四路请求）。 */
@@ -378,22 +428,13 @@ export default function CommandPalette({
   // P1-6：静态页面导航——角色过滤后始终出现在「管理页面」分组；
   // 有关键词时再按标题/描述客户端包含匹配收窄，零输入时列出全部可达页面。
   const pageNavActions = useMemo(
-    () =>
-      getPageNavActions(t)
-        .filter((a) => !a.adminOnly || isAdmin)
-        .filter(
-          (a) =>
-            !kwLower ||
-            (a.title || '').toLowerCase().includes(kwLower) ||
-            (a.description || '').toLowerCase().includes(kwLower),
-        ),
+    () => getPageNavActions(t, isAdmin).filter((a) => !kwLower || (searchIndexRef.current.get(`page:${a.to ?? ''}`) ?? `${a.title} ${a.description}`.toLowerCase()).includes(kwLower)),
     [isAdmin, t, kwLower],
   );
 
-  // 客户端包含匹配（小写化）已返回页数据，每组截断前 5 条，并计算扁平索引偏移。
-  // 归并逻辑抽到模块级 computeSections（纯派生），组件体只持有依赖数组。
+  // 单一模型：稳定 id 去重 + 全面板上限 120 + 常用命令白名单；分组偏移同步重算。
   const sections = useMemo<Section[]>(
-    () => computeSections({ results, kwLower, visibleActions, pageNavActions }),
+    () => applyEntryBudget(computeSections({ results, kwLower, visibleActions, pageNavActions })),
     [results, kwLower, visibleActions, pageNavActions],
   );
 
@@ -428,7 +469,6 @@ export default function CommandPalette({
       if (kind === 'task') nav(`/tasks/${item.id}`);
       else if (kind === 'executor') nav(`/executors/${item.id}`);
       else if (kind === 'application') nav(`/applications/${item.id}`);
-      else if (kind === 'action') nav(`/tasks/new`);
       else nav(`/tasks/${item.taskId}/executions/${item.id}`);
       onOpenChange(false);
     },

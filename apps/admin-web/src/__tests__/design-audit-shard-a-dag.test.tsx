@@ -1,83 +1,109 @@
 /**
  * D-设计审计 2026-09-22 分片A — 依赖 DAG 键盘可达回归。
  *
- * D-P2-05：可点击节点（div onClick）此前无 tabIndex/onKeyDown，键盘用户无法
- * 跳转到上下游任务。补 tabIndex=0 + Enter/Space 触发。
+ * D-P2-05：真实实现已落在 DagCanvas；非当前节点是可聚焦 button，
+ * Enter/Space 必须先 preventDefault 再触发与双击一致的 onNavigate('/tasks/:id')，
+ * 当前节点退出 Tab 序列且不挂键盘导航，但仍可被指针选中。
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import TaskDependencyGraph from '../components/TaskDependencyGraph';
-import { tasksApi, type Task } from '../api/tasks';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import DagCanvas from '../components/task-dag/DagCanvas';
+import type { DagGraph } from '../components/dag-layout';
 
 const navigateMock = vi.fn();
 
-vi.mock('../api/tasks', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../api/tasks')>();
-  return { ...actual, tasksApi: { ...actual.tasksApi, list: vi.fn(), listAll: vi.fn(), batchTrigger: vi.fn() } };
-});
-vi.mock('react-router-dom', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('react-router-dom')>();
-  return { ...actual, useNavigate: () => navigateMock };
-});
+const graph: DagGraph = {
+  nodes: [
+    { id: 'up', name: '上游任务', status: 'active', layer: 0, isCurrent: false },
+    { id: 'cur', name: '当前任务', status: 'paused', layer: 1, isCurrent: true },
+  ],
+  edges: [{ from: 'up', to: 'cur' }],
+  cycle: false,
+  truncated: false,
+};
 
-const task = (id: string, name: string, status: string, deps?: Record<string, string>): Partial<Task> =>
-  ({ id, name, status, ...(deps ? { dependencies: deps } : {}) });
+const positions = new Map([
+  ['up', { x: 16, y: 16, w: 160, h: 72 }],
+  ['cur', { x: 240, y: 16, w: 160, h: 72 }],
+]);
 
 function renderGraph(taskId: string) {
   return render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <MemoryRouter>
-        <TaskDependencyGraph taskId={taskId} />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <DagCanvas
+      graph={graph}
+      positions={positions}
+      width={416}
+      height={104}
+      statusOf={() => undefined}
+      statusLabel={() => 'active'}
+      statusColor={() => '#22C55E'}
+      currentTaskId={taskId}
+      onNavigate={(id) => navigateMock(`/tasks/${id}`)}
+    />,
   );
 }
 
-describe('D-P2-05: DAG 可点击节点键盘可达', () => {
-  beforeEach(() => {
-    navigateMock.mockClear();
-    vi.mocked(tasksApi.listAll).mockReset().mockResolvedValue({
-      items: [
-        task('up', '上游任务', 'active'),
-        task('cur', '当前任务', 'paused', { d1: 'up' }),
-      ],
-      total: 2, page: 1, pageSize: 100,
-    } as never);
-  });
+/** 捕获 document 气泡阶段的 defaultPrevented，证明 Space 不会滚页。 */
+function keyDownAndAssertPrevented(nodeEl: HTMLElement, key: 'Enter' | ' ') {
+  let prevented: boolean | undefined;
+  const listener = (e: KeyboardEvent) => {
+    if (e.key === key) prevented = e.defaultPrevented;
+  };
+  document.addEventListener('keydown', listener);
+  fireEvent.keyDown(nodeEl, { key });
+  document.removeEventListener('keydown', listener);
+  expect(prevented, `${key} 未触发 keydown`).toBe(true);
+}
 
-  it('非当前节点是可聚焦的 button（tabIndex=0 + role=button）', async () => {
+beforeEach(() => navigateMock.mockClear());
+afterEach(cleanup);
+
+describe('D-P2-05: DAG 可点击节点键盘可达（DagCanvas）', () => {
+  it('非当前节点是可聚焦的 button（tabIndex=0 + role=button）', () => {
     renderGraph('cur');
-    const upstream = await screen.findByText('上游任务');
-    const nodeEl = upstream.closest('div[role="button"]') as HTMLElement;
-    expect(nodeEl).toBeTruthy();
+    const nodeEl = screen.getByTestId('dag-node-up');
+    expect(nodeEl.getAttribute('role')).toBe('button');
     expect(nodeEl.getAttribute('tabIndex')).toBe('0');
   });
 
-  it('在节点上按 Enter → 跳转到该任务', async () => {
+  it('在节点上按 Enter → preventDefault 后跳转到该任务', () => {
     renderGraph('cur');
-    const upstream = await screen.findByText('上游任务');
-    const nodeEl = upstream.closest('div[role="button"]') as HTMLElement;
-    fireEvent.keyDown(nodeEl, { key: 'Enter' });
+    const nodeEl = screen.getByTestId('dag-node-up');
+    keyDownAndAssertPrevented(nodeEl, 'Enter');
     expect(navigateMock).toHaveBeenCalledWith('/tasks/up');
   });
 
-  it('在节点上按 Space → 跳转到该任务', async () => {
+  it('在节点上按 Space → preventDefault 后跳转到该任务', () => {
     renderGraph('cur');
-    const upstream = await screen.findByText('上游任务');
-    const nodeEl = upstream.closest('div[role="button"]') as HTMLElement;
-    fireEvent.keyDown(nodeEl, { key: ' ' });
+    const nodeEl = screen.getByTestId('dag-node-up');
+    keyDownAndAssertPrevented(nodeEl, ' ');
     expect(navigateMock).toHaveBeenCalledWith('/tasks/up');
   });
 
-  it('当前节点不可聚焦（tabIndex=-1，不响应键盘）', async () => {
+  it('键盘导航与双击导航等价（同一 onNavigate 契约）', () => {
     renderGraph('cur');
-    const current = await screen.findByText('当前任务');
-    const nodeEl = current.closest('div[role="button"], div[tabindex]') as HTMLElement;
-    expect(nodeEl).toBeTruthy();
-    // 当前节点：role 为 undefined，tabIndex=-1
+    const nodeEl = screen.getByTestId('dag-node-up');
+    keyDownAndAssertPrevented(nodeEl, 'Enter');
+    expect(navigateMock).toHaveBeenCalledWith('/tasks/up');
+    navigateMock.mockClear();
+    fireEvent.doubleClick(nodeEl);
+    expect(navigateMock).toHaveBeenCalledWith('/tasks/up');
+  });
+
+  it('当前节点不可聚焦（tabIndex=-1，role=undefined，不响应键盘）', () => {
+    renderGraph('cur');
+    const nodeEl = screen.getByTestId('dag-node-cur');
     expect(nodeEl.getAttribute('role')).toBeNull();
     expect(nodeEl.getAttribute('tabIndex')).toBe('-1');
+    fireEvent.keyDown(nodeEl, { key: 'Enter' });
+    fireEvent.keyDown(nodeEl, { key: ' ' });
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it('当前节点阴影为 tokens.ts 品牌绿（rgba(34,197,94,0.25)），非 antd 蓝', () => {
+    renderGraph('cur');
+    const nodeEl = screen.getByTestId('dag-node-cur');
+    expect(nodeEl.style.boxShadow).toContain('rgba(34, 197, 94, 0.25)');
+    expect(nodeEl.style.boxShadow).not.toContain('22, 119, 255');
   });
 });

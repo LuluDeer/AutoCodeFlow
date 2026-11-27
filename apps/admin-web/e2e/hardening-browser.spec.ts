@@ -16,6 +16,7 @@
  * real network response, or both.
  */
 import { test, expect, type APIRequestContext, type Download, type Page } from '@playwright/test';
+import { openLegacyFlow } from './workbench-legacy.helper';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import * as fs from 'node:fs';
@@ -213,8 +214,10 @@ async function appendLogLines(request: APIRequestContext, execId: string, fromLi
 async function runWorkbenchDraft(page: Page, goal: string): Promise<{ sopId: string; sessionId: string }> {
   await page.goto('/workbench');
   await expect(page.getByTestId('workbench-page')).toBeVisible();
+  await openLegacyFlow(page);
   await page.getByPlaceholder('例如：每周汇总项目状态并生成报告').fill(goal);
-  await page.locator('[data-testid="workbench-page"] .ant-select').first().click();
+  // 频率下拉定位到 legacy 方案草稿区（左侧会话栏也有 .ant-select，不能用全局 first()）。
+  await page.getByText('执行频率').locator('..').getByRole('combobox').click();
   await page.locator('.ant-select-item-option-content').getByText('每周', { exact: true }).click();
   await page.getByRole('button', { name: /预\s*览\s*方\s*案/ }).click();
   await expect(page.getByRole('heading', { name: /^方案卡：/ })).toBeVisible({ timeout: 30_000 });
@@ -287,6 +290,7 @@ test('workbench refresh resume keeps polling real backend', async ({ page, reque
       }
     });
     await page.reload();
+    await openLegacyFlow(page);
     await expect(page.getByTestId('workbench-session-panel')).toBeVisible({ timeout: 30_000 });
     const restoredId = await page.getByTestId('workbench-session-id').innerText();
     assertBrowser(
@@ -354,6 +358,7 @@ test('workbench artifact entry reaches real backend', async ({ page, request }) 
     // The session polling effect stops on terminal status. Fixture keeps it
     // running, but reload once so the panel reads the new artifact immediately.
     await page.reload();
+    await openLegacyFlow(page);
     const link = page.getByTestId('workbench-session-artifact-link');
     await expect(link).toBeVisible({ timeout: 30_000 });
     const href = await link.getAttribute('href');

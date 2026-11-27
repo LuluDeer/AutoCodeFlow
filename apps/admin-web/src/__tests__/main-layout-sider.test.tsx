@@ -77,9 +77,9 @@ function clickGroup(label: string) {
 }
 
 describe('UI-03 侧边栏分组 IA（P1-6 新 IA）', () => {
-  it('渲染六个场景分组：自动化/节点/应用/组织/治理/辅助', () => {
+  it('渲染五个场景分组：自动化/辅助/节点/治理/系统', () => {
     renderLayout();
-    for (const group of ['自动化', '节点', '应用', '组织', '治理', '辅助']) {
+    for (const group of ['自动化', '辅助', '节点', '治理', '系统']) {
       expect(screen.getByText(group)).toBeTruthy();
     }
   });
@@ -87,7 +87,7 @@ describe('UI-03 侧边栏分组 IA（P1-6 新 IA）', () => {
   it('高频直达入口（控制台/执行记录）不包折叠组，展开分组即见全部页面项', async () => {
     renderLayout();
     // 展开默认收起的分组（受控 openKeys——点击分组标题）；自动化组默认展开
-    for (const group of ['节点', '应用', '组织', '治理', '辅助']) {
+    for (const group of ['节点', '治理', '系统', '辅助']) {
       clickGroup(group);
     }
     // 一级页面项（分组内）——用菜单容器内标题节点断言，避开头部同名词干扰
@@ -109,10 +109,7 @@ describe('UI-03 侧边栏分组 IA（P1-6 新 IA）', () => {
       id: 2, username: 'bob', role: 'user',
     });
     renderLayout();
-    // 展开组织/治理/节点分组后，普通用户仍不应看到 admin-only 子项
-    clickGroup('组织');
-    clickGroup('治理');
-    clickGroup('节点');
+    // USER 外壳是四个平级直达项，没有 ADMIN 分组；admin-only 子项仍不应出现。
     expect(screen.queryByText('审计')).toBeNull();
     expect(screen.queryByText('用户')).toBeNull();
     expect(screen.queryByText('通知')).toBeNull();
@@ -139,11 +136,11 @@ describe('UI-03 折叠态与持久化', () => {
   });
 
   it('readMenuOpenKeys 过滤非法残留键并回退默认展开（自动化组）', () => {
-    expect(readMenuOpenKeys(['g-tasks', 'g-executors', 'g-system'])).toEqual(['g-tasks']);
-    localStorage.setItem('autoflow-menu-open-keys', JSON.stringify(['g-tasks', 'g-ghost', 42]));
-    expect(readMenuOpenKeys(['g-tasks', 'g-executors', 'g-assist', 'g-gov', 'g-org', 'g-applications'])).toEqual(['g-tasks']);
+    expect(readMenuOpenKeys(['g-adm-work', 'g-adm-nodes', 'g-adm-system'])).toEqual(['g-adm-work']);
+    localStorage.setItem('autoflow-menu-open-keys', JSON.stringify(['g-adm-work', 'g-ghost', 42]));
+    expect(readMenuOpenKeys(['g-adm-work', 'g-adm-delivery', 'g-adm-nodes', 'g-adm-gov', 'g-adm-system'])).toEqual(['g-adm-work']);
     localStorage.setItem('autoflow-menu-open-keys', 'not-json{');
-    expect(readMenuOpenKeys(['g-tasks', 'g-executors'])).toEqual(['g-tasks']);
+    expect(readMenuOpenKeys(['g-adm-work', 'g-adm-nodes'])).toEqual(['g-adm-work']);
   });
 
   it('分组展开/收起持久化到 localStorage', async () => {
@@ -151,19 +148,19 @@ describe('UI-03 折叠态与持久化', () => {
     // 默认展开：自动化组。NAV-EXPAND-01：深链所属分组会在会话内被自动展开，
     // 但**不写入持久化**——持久化层只反映用户动作；深链自动展开每次路由都会
     // 重新应用，无需落盘。
-    expect(readMenuOpenKeys(['g-tasks', 'g-executors', 'g-applications', 'g-org', 'g-gov', 'g-assist']))
-      .toEqual(['g-tasks']);
-    // 点击「自动化」收起 → 持久化不再含 g-tasks
+    expect(readMenuOpenKeys(['g-adm-work', 'g-adm-nodes', 'g-adm-delivery', 'g-adm-gov', 'g-adm-system']))
+      .toEqual(['g-adm-work']);
+    // 点击「自动化」收起 → 持久化不再含默认展开键
     clickGroup('自动化');
     await waitFor(() => {
       const saved = JSON.parse(localStorage.getItem('autoflow-menu-open-keys') || '[]');
-      expect(saved).not.toContain('g-tasks');
+      expect(saved).not.toContain('g-adm-work');
     });
-    // 再次点击「自动化」展开 → 持久化重新包含 g-tasks
+    // 再次点击「自动化」展开 → 持久化重新包含默认展开键
     clickGroup('自动化');
     await waitFor(() => {
       const saved = JSON.parse(localStorage.getItem('autoflow-menu-open-keys') || '[]');
-      expect(saved).toContain('g-tasks');
+      expect(saved).toContain('g-adm-work');
     });
   });
 

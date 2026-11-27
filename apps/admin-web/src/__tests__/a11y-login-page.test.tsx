@@ -138,7 +138,7 @@ describe('UI-12 LoginPage — 表单语义', () => {
     // 键盘完成提交（原生表单语义：输入框内 Enter 触发 submit）
     await user.keyboard('pw123456{Enter}');
     await waitFor(() => expect(authApi.login).toHaveBeenCalledTimes(1));
-    expect(mockNav).toHaveBeenCalledWith('/dashboard', { replace: true });
+    expect(mockNav).toHaveBeenCalledWith('/', { replace: true });
   });
 });
 
