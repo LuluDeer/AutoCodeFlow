@@ -495,6 +495,9 @@ export default function InboxPage() {
 
   const [sections, setSections] = useState<InboxSections | null>(null);
   const [loading, setLoading] = useState(true);
+  // WEBUX-H1：顶层读失败不能只靠 toast——toast 一闪而过，页面会停在没有说明的
+  // 空白/旧态。保留原始 error 交给页内 StateError（带重试 + 复制技术详情）。
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [actingId, setActingId] = useState<string | null>(null);
   const [actingAction, setActingAction] = useState<InboxActingAction | null>(null);
   const [filterMode, setFilterMode] = useState<InboxFilterMode>('all');
@@ -514,14 +517,17 @@ export default function InboxPage() {
     abortRef.current = controller;
     const seq = guard.next();
     setLoading(true);
+    setLoadError(null);
     try {
       const next = await loadInbox(controller.signal);
       if (!guard.isLatest(seq)) return;
+      setLoadError(null);
       setSections(next);
     } catch (err) {
       // 已被新 reload 取代 / 卸载中止：不弹错误、不写 sections。
       if (!guard.isLatest(seq) || controller.signal.aborted) return;
       showApiError(err);
+      setLoadError(err);
     } finally {
       if (guard.isLatest(seq)) setLoading(false);
     }
@@ -690,11 +696,14 @@ export default function InboxPage() {
                     {queueStall.degradedCounts ? ` · ${t('agents.queueStall.countsPartialHint')}` : ''}
                     {queueStall.degraded ? ` · ${t('inbox.queueStall.degraded')}` : ''}
                   </Text>
-                  <div style={{ marginTop: 8 }}>
-                    <Link to="/agent-sessions">
-                      {t('inbox.queueStall.viewSessions')}
-                    </Link>
-                  </div>
+                  {/* WEBUX：/agent-sessions 是 ADMIN-only 路由；业务用户看到链接只会撞 403。 */}
+                  {canFollowDetailUrl('/agent-sessions', canWrite) && (
+                    <div style={{ marginTop: 8 }}>
+                      <Link to="/agent-sessions">
+                        {t('inbox.queueStall.viewSessions')}
+                      </Link>
+                    </div>
+                  )}
                 </div>
               }
             />
@@ -731,7 +740,13 @@ export default function InboxPage() {
         extra={<Button icon={<ReloadOutlined />} onClick={() => void reload()} loading={loading}>{t('inbox.action.refresh')}</Button>}
       />
 
-      {loading && !sections ? (
+      {sections === null && loadError ? (
+        <StateError
+          error={loadError}
+          title={t('inbox.loadFailed')}
+          onRetry={() => void reload()}
+        />
+      ) : loading && !sections ? (
         <PageSkeleton variant="cards" rows={4} />
       ) : allClear ? (
         <Empty

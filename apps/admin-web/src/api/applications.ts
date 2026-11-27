@@ -33,6 +33,13 @@ export interface Application {
   mutexGroupId?: string | null;
   createdAt: string;
   updatedAt: string;
+  // WEB-TYPE-FIELD-DRIFT 收缩：归属/包地址字段按 api/tasks.ts 的 Task 先例逐项
+  // 从 ApplicationResponseDto 派生（optional 兼容旧响应缺席）。ownerUserId/
+  // projectId/webhookSecret 是后端已下发的归属契约面，packageUrl 为当前包地址。
+  ownerUserId?: components['schemas']['ApplicationResponseDto']['ownerUserId'];
+  packageUrl?: components['schemas']['ApplicationResponseDto']['packageUrl'];
+  projectId?: components['schemas']['ApplicationResponseDto']['projectId'];
+  webhookSecret?: components['schemas']['ApplicationResponseDto']['webhookSecret'];
 }
 
 /** MUTEX-01: 应用互斥组。N-15 scope——device=单点互斥（同设备×同组串行，
@@ -122,45 +129,35 @@ export interface AppReleaseDevice {
 }
 
 /**
+ * DEP-01：统一发布追溯行的生成契约底座。
+ * 单独抽成别名，让 `AppReleaseRow` 保持 interface（既有 name-drift 基线形状不变），
+ * 同时字段事实源仍是生成 schema，而不是手抄后端 DTO。
+ */
+type AppReleaseRowGenerated = Omit<
+  components['schemas']['AppReleaseRowDto'],
+  'devices'
+>;
+
+/**
  * DEP-01：统一发布追溯行（GET /applications/:id/releases）。
  * 一行 = 一次版本发布：版本快照（application_versions）+ 该版本最近一次部署
- * （app_deployments）两语义面合并。与后端 dto/app-release.dto.ts 逐字段对齐。
+ * （app_deployments）两语义面合并。行形状以生成 schema 为唯一事实源。
+ *
+ * WEB-TYPE-FIELD-DRIFT：当前 `api-types.ts` 尚未重导 sourceDeploymentId/status/
+ * createdAt/synthetic 四字段，先用「生成 schema ∩ 同型 fallback」让当前工作树
+ * TS/vitest 保持绿；主控重导后同一声明自动切到后端生成类型，无需再改手写字段。
+ * `devices` 保持可选：旧后端（R3-A 前）不带该键，是前端兼容面而非合成契约。
  */
-export interface AppReleaseRow {
-  /** application_versions.id；纯部署历史（无版本快照行）时 null */
-  id: string | null;
-  version: string | null;
-  /** 部署当时的包地址（snapshot.packageUrl，不回退应用当前值）；无快照 null */
-  packageUrl: string | null;
-  gitCommit: string | null;
-  /** 该版本最近一次部署完成时刻（deployedAt ?? createdAt 最大值）；无部署 null */
-  deployedAt: string | null;
-  latestDeploymentId: string | null;
-  /** 最近一次部署状态（pending/deploying/running/stopped/failed/upgrading）；无部署 null */
-  deploymentStatus: string | null;
-  /** 该版本累计部署次数（同版本多实例/多次部署各计一次） */
-  deploymentCount: number;
-  executorAddress: string | null;
-  /** 执行模式 once/daemon/scheduled；无部署 null */
-  runMode: string | null;
-  /** 触发方式（推导语义：upgrade/manual/unknown）；无部署 null */
-  triggerType: 'upgrade' | 'manual' | 'unknown' | null;
-  /** 操作人：application_versions.createdBy——当前恒 null（来源缺失如实标注） */
-  operator: string | null;
-  operatorSource: 'application_versions.createdBy';
-  operatorMissingReason: string;
-  sourceDeploymentId: string | null;
-  /** application_versions.status（released/deploying/failed）；纯部署行时为部署状态字符串 */
-  status: string;
-  /** 版本行创建时刻（快照诞生时间）；纯部署行时为 deployedAt */
-  createdAt: string | null;
-  /** 部署记录合成行（从未保存版本快照的历史数据，deployedVersion=null 归一 version=null） */
-  synthetic: boolean;
-  /**
-   * R3-A（§4.3）：正在运行或本地保留该版本的设备（设备上报事实聚合）。
-   * 旧后端（R3-A 前）不带该键——可选以兼容过渡期；无设备上报时为空数组。
-   */
-  devices?: AppReleaseDevice[];
+export interface AppReleaseRow extends AppReleaseRowGenerated {
+  devices?: components['schemas']['AppReleaseRowDto']['devices'];
+  sourceDeploymentId: (AppReleaseRowGenerated & {
+    sourceDeploymentId: string | null;
+  })['sourceDeploymentId'];
+  status: (AppReleaseRowGenerated & { status: string })['status'];
+  createdAt: (AppReleaseRowGenerated & {
+    createdAt: string | null;
+  })['createdAt'];
+  synthetic: (AppReleaseRowGenerated & { synthetic: boolean })['synthetic'];
 }
 
 export interface AppReleasesPage {

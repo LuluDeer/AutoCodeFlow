@@ -113,9 +113,7 @@ export default {
   'dashboard.scope.groupProject.desc': 'Filtered by the project selected in the top bar; the values change when you switch projects.',
   'dashboard.scope.groupGlobal.title': 'Global scope (fleet & scheduler)',
   'dashboard.scope.groupGlobal.desc': 'Fleet/scheduler-wide statistics; not filtered by the current project.',
-  'nav.install': 'Install wizard',
   'nav.new': 'New',
-  'nav.edit': 'Edit',
   'nav.user': 'User',
   'nav.role.admin': 'Administrator',
   'nav.role.user': 'Standard user',
@@ -4715,11 +4713,18 @@ export default {
   'nav.capabilities': 'Capability governance',
   'nav.activationStats': 'Capability usage',
   'nav.workbench': 'Workbench',
+  // WEBUX: readable breadcrumb / registry names for already-shipped deep-link pages.
+  'nav.fromVideo': 'SOP from video',
+  'nav.executorInstall': 'Executor install',
+  'nav.taskEdit': 'Edit task',
 
   // UX-AUDIT (positioning-ux-overhaul): new copy for the business-user journey fixes.
   'palette.pageNav.capabilitiesDesc': 'Capability registry and governance',
   'palette.pageNav.activationStatsDesc': 'Capability usage and ownership',
   'palette.pageNav.workbenchDesc': 'Natural-language workbench (describe a goal and preview a plan)',
+  'palette.pageNav.fromVideoDesc': 'Upload a screen recording to draft an SOP',
+  'palette.pageNav.executorInstallDesc': 'Executor install wizard and join command',
+  'palette.pageNav.taskEditDesc': 'Edit the configuration of an existing task',
   'palette.candidateTruncated': 'Showing only the first {{shown}} of {{total}} matches — refine your search, or open the full list',
   'palette.viewFullList': 'View full list',
   'palette.retry': 'Retry',

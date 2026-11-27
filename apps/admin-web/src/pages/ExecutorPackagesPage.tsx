@@ -26,6 +26,7 @@ import {
   listPackages, deletePackage, pushPackage,
   deprecatePackage, activatePackage, downloadPackage,
 } from '../api/executor-packages';
+import type { ExecutorPackage } from '../api/executor-packages';
 import { executorsApi } from '../api/executors';
 import { getErrMsg, showApiError } from '../utils/error';
 // UI 打磨：时间列统一走 timeFormat 工具（对齐 ProjectsPage/ApplicationListPage 用法）
@@ -46,11 +47,6 @@ import '../i18n';
 
 const { Text } = Typography;
 
-interface PkgRow {
-  id: string; name: string; version: string; type: string;
-  platform?: string; status: string; fileSize?: number;
-  uploadedBy?: string; createdAt: string; originalFilename?: string;
-}
 interface Executor { id: string; name: string; address: string; status: string; executorVersion?: string; }
 interface PushResult { executorId: string; address: string; success: boolean; error?: string; queued?: boolean; commandId?: string; status?: 'queued' | 'success' | 'error'; }
 
@@ -130,7 +126,7 @@ export default function ExecutorPackagesPage() {
   const statusTags = STATUS_TAG(t);
   // 包类型选项的展示名走 i18n（复用 install.type.* 既有词条；筛选与上传弹窗共用）。
   const typeOptions = packageTypeOptions(t);
-  const [rows, setRows] = useState<PkgRow[]>([]);
+  const [rows, setRows] = useState<ExecutorPackage[]>([]);
   const [total, setTotal] = useState(0);
   /**
    * keyset 分支专有的「下一页」令牌。`null` = 末页；关掉开关时恒为 `null`
@@ -203,7 +199,7 @@ export default function ExecutorPackagesPage() {
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
 
-  const [pushTarget, setPushTarget] = useState<PkgRow | null>(null);
+  const [pushTarget, setPushTarget] = useState<ExecutorPackage | null>(null);
   const [executors, setExecutors] = useState<Executor[]>([]);
   // P3-12（executor lifecycle audit）：执行器列表拉取失败必须与「机群为空」
   // 区分——旧实现 catch 里直接 setExecutors([])，弹窗断言「暂无在线调度机」，
@@ -405,7 +401,7 @@ export default function ExecutorPackagesPage() {
     }
   };
 
-  const handleOpenPush = async (pkg: PkgRow) => {
+  const handleOpenPush = async (pkg: ExecutorPackage) => {
     setPushTarget(pkg);
     setPushResults(null);
     setPushAll(true);
@@ -539,7 +535,7 @@ export default function ExecutorPackagesPage() {
   // （findLatest 只取 ACTIVE），单击误触的后果不显性；激活同理（重新进入候选集）。
   // 两个动作都可逆，确认文案如实注明。对照同文件 handleDelete 的 confirm 形态
   // （onOk rethrow 保持确认框打开可重试，失败经 showApiError 归一提示）。
-  const handleStatusToggle = (pkg: PkgRow) => {
+  const handleStatusToggle = (pkg: ExecutorPackage) => {
     // B-3：行级 pending 防双击——确认框打开期间即占位，重复点击不再连开确认框
     if (togglingId) return;
     setTogglingId(pkg.id);
@@ -571,7 +567,7 @@ export default function ExecutorPackagesPage() {
 
   // download 路由在 JwtAuthGuard 后，<a href> 无法携带 Authorization（会 401），
   // 改为带 JWT 的 axios blob 请求下载
-  const handleDownload = async (pkg: PkgRow) => {
+  const handleDownload = async (pkg: ExecutorPackage) => {
     setDownloadingId(pkg.id);
     try {
       await downloadPackage(pkg.id, pkg.originalFilename ?? `${pkg.name}-${pkg.version}`);
@@ -582,10 +578,10 @@ export default function ExecutorPackagesPage() {
     }
   };
 
-  const columns: ColumnsType<PkgRow> = [
+  const columns: ColumnsType<ExecutorPackage> = [
     {
       title: t('execPkg.col.name'), dataIndex: 'name',
-      render: (n: string, r: PkgRow) => (
+      render: (n: string, r: ExecutorPackage) => (
         // UI 打磨：名称/原始文件名单行 ellipsis——弹性列内 minWidth:0 + display:block 让省略号生效
         <div style={{ minWidth: 0 }}>
           <Text strong style={{ display: 'block' }} ellipsis={{ tooltip: n }}>{n}</Text>
@@ -648,7 +644,7 @@ export default function ExecutorPackagesPage() {
     },
     {
       title: t('execPkg.col.actions'), key: 'actions', width: 160, align: 'center' as const, fixed: 'right' as const,
-      render: (_: unknown, row: PkgRow) => (
+      render: (_: unknown, row: ExecutorPackage) => (
         // A11Y-ICON-01（对齐 TaskListPage 既有惯例）：纯图标按钮必须补
         // aria-label——antd Tooltip 不自动注入 aria-label，读屏此前只能念出
         // 图标自带的英文 aria-label（cloud-download/send/…）。
@@ -786,7 +782,7 @@ export default function ExecutorPackagesPage() {
         </Space>
       )}
 
-      <Table<PkgRow>
+      <Table<ExecutorPackage>
         rowKey="id" columns={columns} dataSource={rows} size="small"
         rowSelection={{
           selectedRowKeys: selectedIds,

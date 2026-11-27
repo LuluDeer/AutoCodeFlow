@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
+import type { components } from '../types/generated/api-types';
 
 export interface AuthUser {
   id: number;
@@ -7,15 +8,15 @@ export interface AuthUser {
   email?: string;
   role?: string;
   /**
-   * R138-A1：两步验证开关状态（GET /auth/profile 的 AuthUser 增量字段）。
+   * R138-A1 / WEB-TYPE-FIELD-DRIFT：两步验证开关（GET /auth/profile 的增量字段，
+   * 生成契约见 UserResponseDto.totpEnabled——AuthProfileDto 未单独声明该列）。
    *
    * 它是**服务端状态**，不是本地 UI 开关：安全设置页的 TOTP 卡片据此决定渲染
-   * 「开始绑定」还是「关闭入口」。此前这里没有声明该字段，页面用
-   * `(user as { totpEnabled?: boolean })` 绕过类型——而 enable/disable 成功后
-   * 只发了一条指向不存在的 queryKey `['auth-profile']` 的失效（静默空操作），
-   * store 永远是旧值，卡片停在旧分支。字段显式声明 + 写后回写 store 才是闭环。
+   * 「开始绑定」还是「关闭入口」。字段类型从生成 schema 派生后，页面可直接读
+   * `user.totpEnabled`，无需类型逃逸断言；enable/disable 成功仍以服务端确认值
+   * 回写 store，构成闭环。
    */
-  totpEnabled?: boolean;
+  totpEnabled?: components['schemas']['UserResponseDto']['totpEnabled'];
 }
 
 /**

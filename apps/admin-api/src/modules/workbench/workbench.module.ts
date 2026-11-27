@@ -56,8 +56,77 @@ import {
 import { WorkbenchBlobStore } from "./workbench-blob.store";
 import {
   WORKBENCH_SESSIONS_PORT,
+  type WorkbenchSessionSummary,
   type WorkbenchSessionsPort,
 } from "./workbench-sessions.port";
+
+type WorkbenchSessionDetailRead = Omit<WorkbenchSessionSummary, "artifacts"> & {
+  toolCalls: Array<{
+    toolName: string;
+    status: string;
+    errorSummary: string | null;
+    createdAt: Date | string | null;
+  }>;
+  approvalItems: Array<{
+    approvalKey: string;
+    toolName: string;
+    status: string;
+    reason: string | null;
+    decidedBy: string | null;
+    createdAt: Date | string | null;
+  }>;
+  artifacts: Array<{
+    id: string;
+    name: string;
+    size: number;
+    createdAt: Date | string | null;
+    downloadUrl: string | null;
+  }>;
+};
+
+type WorkbenchSessionsRuntimePort = WorkbenchSessionsPort & {
+  readSummary(id: string): Promise<WorkbenchSessionDetailRead>;
+  listOwn(input: {
+    createdBy: string;
+    createdByAlias?: string | null;
+    page: number;
+    pageSize: number;
+  }): Promise<{
+    items: Array<{
+      sessionId: string;
+      status: string;
+      title: string | null;
+      createdAt: Date | string | null;
+      sopId: string | null;
+    }>;
+    total: number;
+  }>;
+};
+
+function clipText(value: unknown, max = 200): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.length > max ? `${trimmed.slice(0, max)}...` : trimmed;
+}
+
+function toolErrorSummary(row: {
+  errorMessage?: unknown;
+  resultJson?: unknown;
+}): string | null {
+  const direct = clipText(row.errorMessage);
+  if (direct) return direct;
+  const result = row.resultJson;
+  if (!result || typeof result !== "object") return null;
+  const body = result as Record<string, unknown>;
+  return clipText(body.error ?? body.message ?? body.detail);
+}
+
+function artifactDownloadUrl(executionId: unknown, name: unknown): string | null {
+  if (typeof executionId !== "string" || !executionId) return null;
+  if (typeof name !== "string" || !name) return null;
+  return `/api/tasks/executions/${encodeURIComponent(executionId)}/artifacts/${encodeURIComponent(name)}`;
+}
 
 /**
  * 最小方案卡面：preview 纯内存；commit 先过硬阈闸（超限 429、不落 draft），
@@ -243,7 +312,7 @@ import {
     {
       provide: WORKBENCH_SESSIONS_PORT,
       inject: [ModuleRef],
-      useFactory: (moduleRef: ModuleRef): WorkbenchSessionsPort => {
+      useFactory: (moduleRef: ModuleRef): WorkbenchSessionsRuntimePort => {
         // 惰性取真服务：与 RELEASE_* 端口同款时机约束——useFactory 在模块
         // 实例化期执行，那时 AgentModule 的 provider 可能还是空壳；调用时才 get。
         const sessions = () =>
@@ -267,6 +336,41 @@ import {
             );
           },
           findById: (id) => sessions().findById(id),
+          listOwn: async ({ createdBy, createdByAlias, page, pageSize }) => {
+            const dataSource = moduleRef.get(DataSource, { strict: false });
+            const safePage = Math.max(1, Math.trunc(Number(page) || 1));
+            const safePageSize = Math.min(20, Math.max(1, Math.trunc(Number(pageSize) || 20)));
+            const offset = (safePage - 1) * safePageSize;
+            const alias = createdByAlias || createdBy;
+            const where = `s."createdBy" IN ($1, $2) AND s.kind = 'sop_authoring'`;
+            const [rows, totalRows] = await Promise.all([
+              dataSource.query(
+                `SELECT s.id, s.status, s.title, s."createdAt",
+                        s."scopeJson"::jsonb -> 'sops' ->> 0 AS "sopId"
+                   FROM agent_sessions s
+                  WHERE ${where}
+                  ORDER BY s."createdAt" DESC, s.id DESC
+                  LIMIT $3 OFFSET $4`,
+                [createdBy, alias, safePageSize, offset],
+              ),
+              dataSource.query(
+                `SELECT COUNT(*)::int AS total
+                   FROM agent_sessions s
+                  WHERE ${where}`,
+                [createdBy, alias],
+              ),
+            ]);
+            return {
+              items: rows.map((row: Record<string, unknown>) => ({
+                sessionId: String(row.id),
+                status: String(row.status),
+                title: row.title == null ? null : String(row.title),
+                createdAt: row.createdAt ?? null,
+                sopId: row.sopId == null ? null : String(row.sopId),
+              })),
+              total: Number(totalRows?.[0]?.total ?? 0),
+            };
+          },
           readSummary: async (id) => {
             const svc = sessions();
             const [steps, toolCalls, approvals] = await Promise.all([
@@ -284,11 +388,12 @@ import {
               name: string;
               size: number;
               createdAt: Date | string | null;
+              downloadUrl: string | null;
             }> = [];
             try {
               const dataSource = moduleRef.get(DataSource, { strict: false });
               const rows = await dataSource.query(
-                `SELECT a.id, a.name, a.size, a."createdAt"
+                `SELECT a.id, a.name, a.size, a."createdAt", a."executionId"
                    FROM execution_artifacts a
                    JOIN task_executions e ON e.id = a."executionId"
                   WHERE e."agentSessionId" = $1
@@ -296,11 +401,12 @@ import {
                   LIMIT 20`,
                 [id],
               );
-              artifacts = rows.map((r) => ({
+              artifacts = rows.map((r: Record<string, unknown>) => ({
                 id: String(r.id),
                 name: String(r.name),
                 size: Number(r.size),
                 createdAt: r.createdAt ?? null,
+                downloadUrl: artifactDownloadUrl(r.executionId, r.name),
               }));
             } catch {
               // 读面降级：产物摘要缺席必须可见（空数组），不伪造内容。
@@ -321,7 +427,21 @@ import {
                 createdAt: s.createdAt ?? null,
               })),
               toolCallCount: toolCalls.length,
+              toolCalls: toolCalls.map((tc) => ({
+                toolName: String(tc.toolName),
+                status: String(tc.status),
+                errorSummary: toolErrorSummary(tc),
+                createdAt: tc.createdAt ?? null,
+              })),
               approvals: approvalCounts,
+              approvalItems: approvals.map((a) => ({
+                approvalKey: String(a.approvalKey),
+                toolName: String(a.toolName),
+                status: String(a.status),
+                reason: clipText(a.reason),
+                decidedBy: a.decidedBy ?? null,
+                createdAt: a.createdAt ?? null,
+              })),
               artifacts,
             };
           },

@@ -20,6 +20,16 @@ export interface User {
   role: string;
   createdAt: string;
   updatedAt: string;
+  // WEB-TYPE-FIELD-DRIFT 收缩：读面字段逐项从 UserResponseDto 派生（与 api/tasks.ts
+  // 的 Task/TaskExecution 同款先例）。optional 只表达「旧响应可能缺席」，类型语义
+  // 仍由生成 schema 单一持有；页面据此直接读 isActive/totpEnabled，不再用本地
+  // interface 扩展或 `as { totpEnabled?: boolean }` 断言绕过契约。
+  isActive?: components['schemas']['UserResponseDto']['isActive'];
+  totpEnabled?: components['schemas']['UserResponseDto']['totpEnabled'];
+  lastTotpCounter?: components['schemas']['UserResponseDto']['lastTotpCounter'];
+  lockedUntil?: components['schemas']['UserResponseDto']['lockedUntil'];
+  loginFailCount?: components['schemas']['UserResponseDto']['loginFailCount'];
+  sessionVersion?: components['schemas']['UserResponseDto']['sessionVersion'];
 }
 
 

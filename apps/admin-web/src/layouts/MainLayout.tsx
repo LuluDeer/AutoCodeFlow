@@ -52,6 +52,7 @@ import { useAuthStore } from '../store/auth';
 import { getErrMsg } from '../utils/error';
 import { authApi } from '../api/auth';
 import { logoutRemote } from '../api/logout';
+import { menuRoutes, ROUTE_BY_PATH, type RouteDescriptor } from '../routes/route-registry';
 // WEB-2：命令面板/快捷键速查只在用户真的唤起时才需要——改成按需 chunk，
 // 不再整块塞进 entry（首屏 24 个资源里少两个大依赖，HTTP/1.1 下少一波）。
 const CommandPalette = lazy(() => import('../components/CommandPalette'));
@@ -139,13 +140,16 @@ const THEME_BUTTON_META: Record<ThemeMode, { icon: ReactNode; labelKey: string; 
   system: { icon: <DesktopOutlined />, labelKey: 'nav.theme.system', ariaKey: 'nav.theme.system.aria' },
 };
 
-// P1-6：菜单 IA（扁平化 + 场景分组）。
-// - 控制台、执行记录是高频直达入口，不再包「单子项折叠组」（消除双击路径）；
-// - 原「系统」杂烩拆为 组织 / 治理 / 辅助 三组，每组 ≤3 项；
-// - 分组节点不再挂图标（图标只留给叶子页面项），从构造上去掉父子同图标；
-// - 分组键不带 '/'，页面键以路由开头；渲染时按角色过滤（R5 RBAC）。
-// 分组用 antd Menu 的 submenu 形态（非 type:'group'），保证分组可折叠/展开并持久化。
-// UI-10：label 由 buildMenuItems(t) 在组件内构造（语言切换即时生效）。
+/**
+ * P1-6：菜单 IA（扁平化 + 场景分组）。
+ * - 控制台、执行记录、收件箱是高频直达入口，不包折叠组；
+ * - 原「系统」杂烩拆为 组织 / 治理 / 辅助 三组，每组 ≤3 项（治理除外，既有 IA 不动）；
+ * - 分组节点不挂图标（图标只留给叶子页面项），从构造上去掉父子同图标；
+ * - NAV-UNIFY：叶子路径、标签、角色门槛、是否可见**全部来自 route-registry 的
+ *   menuRoutes(isAdmin)*。这里只保留「分组归属/顺序/图标」这类纯渲染信息，
+ *   不再手写第二份菜单或第二份 adminOnly 集合；新增页面只要登记进注册表，
+ *   没有声明分组时会作为直达一级入口自动出现。
+ */
 interface MenuLeaf {
   key: string;
   icon: ReactNode;
@@ -158,81 +162,65 @@ interface MenuGroup {
 }
 type MenuEntry = MenuLeaf | MenuGroup;
 
-function buildMenuItems(t: (k: string) => string): MenuEntry[] {
-  return [
-    // 直达一级入口（无子分组）
-    { key: '/dashboard', icon: <DashboardOutlined />, label: t('nav.dashboard') },
-    {
-      key: 'g-tasks',
-      label: t('nav.group.tasks'),
-      children: [
-        { key: '/tasks', icon: <ThunderboltOutlined />, label: t('nav.tasks') },
-        { key: '/task-templates', icon: <FileTextOutlined />, label: t('nav.taskTemplates') },
-        { key: '/artifacts', icon: <FolderOpenOutlined />, label: t('nav.artifacts') },
-      ],
-    },
-    { key: '/executions', icon: <HistoryOutlined />, label: t('nav.executions') },
-    // UX-AUDIT：待办收件箱对所有登录用户开放（只读视图），此前只在命令面板可搜到、
-    // 侧栏无入口， ApprovalQueueCard 又把业务用户引到这里 ⇒ 找不到页面。
-    { key: '/inbox', icon: <MailOutlined />, label: t('inbox.title') },
-    {
-      key: 'g-executors',
-      label: t('nav.group.executors'),
-      children: [
-        { key: '/executors', icon: <ClusterOutlined />, label: t('nav.executors') },
-        { key: '/executor-packages', icon: <DatabaseOutlined />, label: t('nav.executorPackages') },
-      ],
-    },
-    {
-      key: 'g-applications',
-      label: t('nav.group.applications'),
-      children: [
-        { key: '/applications', icon: <AppstoreOutlined />, label: t('nav.applications') },
-        { key: '/registry', icon: <DatabaseOutlined />, label: t('nav.registry') },
-      ],
-    },
-    // 组织：成员与项目
-    {
-      key: 'g-org',
-      label: t('nav.group.org'),
-      children: [
-        { key: '/users', icon: <UserOutlined />, label: t('nav.users') },
-        { key: '/projects', icon: <TeamOutlined />, label: t('nav.projects') },
-      ],
-    },
-    // 治理：审计 / 通知 / 设置
-    {
-      key: 'g-gov',
-      label: t('nav.group.gov'),
-      children: [
-        { key: '/audit', icon: <AuditOutlined />, label: t('nav.audit') },
-        // P3 中台管控：文案走 nav.* 词条，随语言切换
-        { key: '/capabilities', icon: <SafetyCertificateOutlined />, label: t('nav.capabilities') },
-        { key: '/activation-stats', icon: <DashboardOutlined />, label: t('nav.activationStats') },
-        { key: '/notifications', icon: <BellOutlined />, label: t('nav.notifications') },
-        { key: '/settings', icon: <SettingOutlined />, label: t('nav.settings') },
-      ],
-    },
-    // 辅助：SOP / Agent 会话
-    {
-      key: 'g-assist',
-      label: t('nav.group.assist'),
-      children: [
-        { key: '/sops', icon: <FileTextOutlined />, label: t('nav.sops') },
-        { key: '/agent-sessions', icon: <RobotOutlined />, label: t('nav.agents') },
-        // 工作台最小验证页：属于辅助操作面，菜单与路由同为 ADMIN 口径。
-        // 文案走 nav.* 词条，随语言切换。
-        { key: '/workbench', icon: <AppstoreOutlined />, label: t('nav.workbench') },
-      ],
-    },
-  ];
-}
+const MENU_GROUP_LABEL_KEY: Readonly<Record<string, string>> = {
+  'g-tasks': 'nav.group.tasks', 'g-executors': 'nav.group.executors', 'g-applications': 'nav.group.applications',
+  'g-org': 'nav.group.org', 'g-gov': 'nav.group.gov', 'g-assist': 'nav.group.assist',
+};
 
-// UX-AUDIT / NAV-UNIFY：ADMIN-only 菜单集合改由共享路由注册表派生，
-// 不再在此手写一份（原手抄列表漏了 inbox 口径、且和 CommandPalette 各自漂移）。
-// 保留常量名与导出形态，既有测试/同仓消费方无需改动。
-import { ADMIN_ONLY_PATHS } from '../routes/route-registry';
-const ADMIN_ONLY_MENU_KEYS: ReadonlySet<string> = ADMIN_ONLY_PATHS;
+const MENU_GROUP_FOR_PATH: Readonly<Record<string, string>> = {
+  '/tasks': 'g-tasks', '/task-templates': 'g-tasks', '/artifacts': 'g-tasks',
+  '/executors': 'g-executors', '/executor-packages': 'g-executors',
+  '/applications': 'g-applications', '/registry': 'g-applications',
+  '/users': 'g-org', '/projects': 'g-org',
+  '/audit': 'g-gov', '/capabilities': 'g-gov', '/activation-stats': 'g-gov', '/notifications': 'g-gov', '/settings': 'g-gov',
+  '/sops': 'g-assist', '/agent-sessions': 'g-assist', '/workbench': 'g-assist',
+};
+
+const MENU_ICON: Readonly<Record<string, ReactNode>> = {
+  '/dashboard': <DashboardOutlined />, '/tasks': <ThunderboltOutlined />, '/task-templates': <FileTextOutlined />, '/artifacts': <FolderOpenOutlined />,
+  '/executions': <HistoryOutlined />, '/inbox': <MailOutlined />, '/executors': <ClusterOutlined />, '/executor-packages': <DatabaseOutlined />,
+  '/applications': <AppstoreOutlined />, '/registry': <DatabaseOutlined />, '/users': <UserOutlined />, '/projects': <TeamOutlined />,
+  '/audit': <AuditOutlined />, '/capabilities': <SafetyCertificateOutlined />, '/activation-stats': <DashboardOutlined />,
+  '/notifications': <BellOutlined />, '/settings': <SettingOutlined />, '/sops': <FileTextOutlined />,
+  '/agent-sessions': <RobotOutlined />, '/workbench': <AppstoreOutlined />,
+};
+
+function buildMenuItems(t: (k: string) => string, routes: readonly RouteDescriptor[]): MenuEntry[] {
+  const leafByPath = new Map<string, MenuLeaf>();
+  const grouped = new Map<string, MenuLeaf[]>(
+    Object.keys(MENU_GROUP_LABEL_KEY).map((key) => [key, []]),
+  );
+
+  for (const route of routes) {
+    const leaf: MenuLeaf = {
+      key: route.path,
+      icon: MENU_ICON[route.path] ?? <AppstoreOutlined />,
+      label: t(route.labelKey),
+    };
+    leafByPath.set(route.path, leaf);
+    const groupKey = MENU_GROUP_FOR_PATH[route.path];
+    if (groupKey) grouped.get(groupKey)?.push(leaf);
+  }
+
+  // 分组插在其第一条可见叶子出现的位置；组内顺序仍由注册表顺序决定。
+  const emittedGroups = new Set<string>();
+  const items: MenuEntry[] = [];
+  for (const route of routes) {
+    const groupKey = MENU_GROUP_FOR_PATH[route.path];
+    if (!groupKey) {
+      const leaf = leafByPath.get(route.path);
+      if (leaf) items.push(leaf);
+      continue;
+    }
+    if (emittedGroups.has(groupKey)) continue;
+    emittedGroups.add(groupKey);
+    const children = grouped.get(groupKey) ?? [];
+    if (children.length) {
+      items.push({ key: groupKey, label: t(MENU_GROUP_LABEL_KEY[groupKey]), children });
+    }
+  }
+  return items;
+}
 
 // F-12（DEEP_REVIEW 0ef3bbe）: 实时时钟提取为独立 memoized 子组件。
 // 此前 setInterval 每秒触发 MainLayout 整棵组件树重渲；现在时钟自管 state
@@ -386,19 +374,10 @@ export default function MainLayout() {
   // F-12: 实时时钟已提取为 <Clock /> 独立 memoized 组件（自管 setInterval），
   // 不再在此处维护 currentTime state，避免每秒重渲整个 Layout。
 
-  // 按角色过滤菜单：ADMIN-only 项对普通用户隐藏（UI-03：顶层恒为分组，逐层过滤）。
-  // R6 回归守卫：isAdmin 放行条件必须在分组化改造后保留——无条件过滤会把
-  // 「通知设置/用户管理/审计日志/执行器包」对管理员一并藏掉（e2e-17 实证）。
-  // UI-10：菜单项 label 经 t() 构造（语言切换即时生效）；过滤在构造后展开无关。
-  const allMenuItems = buildMenuItems(t);
-  const menuItems = allMenuItems
-    .map((entry) => {
-      // 直达一级入口（叶子）原样保留；分组按角色裁掉 ADMIN-only 子项
-      if (!('children' in entry)) return entry;
-      const children = isAdmin ? entry.children : entry.children.filter((c) => !ADMIN_ONLY_MENU_KEYS.has(c.key));
-      return { ...entry, children };
-    })
-    .filter((entry) => !('children' in entry) || entry.children.length > 0);
+  // 按角色过滤菜单：叶子可见性/文案/角色门槛来自 route-registry 的 menuRoutes，
+  // 本层只按 MENU_GROUP_FOR_PATH 组装分组，不再维护第二份 adminOnly 路径集合。
+  // R6 回归守卫：ADMIN-only 路由由注册表 adminOnly 统一过滤，管理员仍全部可见。
+  const menuItems = buildMenuItems(t, menuRoutes(isAdmin));
 
 
 
@@ -474,6 +453,8 @@ export default function MainLayout() {
   }, [selectedGroupKey]);
 
   // Build breadcrumb items from the current path（UI-10：名称走 i18n key）
+  // NAV-UNIFY：能精确命中注册表的路径段优先用 descriptor.labelKey（与菜单/面板同源）；
+  // 动态段（:id）与未登记段才用下面这张段名表兜底，避免裸英文路径段。
   const ROUTE_NAMES: Record<string, string> = {
     dashboard: t('nav.dashboard'),
     applications: t('nav.applications'),
@@ -491,9 +472,13 @@ export default function MainLayout() {
     settings: t('nav.settings'),
     sops: t('nav.sops'),
     'agent-sessions': t('nav.agents'),
-    install: t('nav.install'),
+    capabilities: t('nav.capabilities'),
+    'activation-stats': t('nav.activationStats'),
+    workbench: t('nav.workbench'),
+    'from-video': t('nav.fromVideo'),
+    install: t('nav.executorInstall'),
     new: t('nav.new'),
-    edit: t('nav.edit'),
+    edit: t('nav.taskEdit'),
   };
   const pathSegments = location.pathname.split('/').filter(Boolean);
   const breadcrumbItems = [
@@ -501,7 +486,10 @@ export default function MainLayout() {
     ...pathSegments.map((seg, idx) => {
       const isLast = idx === pathSegments.length - 1;
       const path = '/' + pathSegments.slice(0, idx + 1).join('/');
-      const label = ROUTE_NAMES[seg] || (seg.length <= 12 ? seg : `${seg.slice(0, 8)}…`);
+      const descriptor = ROUTE_BY_PATH.get(path);
+      const label = descriptor
+        ? t(descriptor.labelKey)
+        : ROUTE_NAMES[seg] || (seg.length <= 12 ? seg : `${seg.slice(0, 8)}…`);
       return isLast
         ? { title: label }
         : { title: <Link to={path}>{label}</Link> };

@@ -318,9 +318,37 @@ export class AppReleaseRowDto {
   operatorSource: "deployments.operator" | "application_versions.createdBy";
 
   @ApiProperty({
+    nullable: true,
     description: "operator 为 null 时的原因（RELEASE_OPERATOR_MISSING_REASON）",
   })
   operatorMissingReason: string;
+
+  @ApiProperty({
+    nullable: true,
+    format: "uuid",
+    description:
+      "生成该版本快照的来源部署行 id；纯部署行取最近一次部署行 id（深链命中键之一）",
+  })
+  sourceDeploymentId: string | null;
+
+  @ApiProperty({
+    description:
+      "application_versions.status（released/deploying/failed）；纯部署行时为部署状态字符串",
+  })
+  status: string;
+
+  @ApiProperty({
+    nullable: true,
+    format: "date-time",
+    description: "版本行创建时刻（快照诞生时间）；纯部署行时为部署完成时刻",
+  })
+  createdAt: string | null;
+
+  @ApiProperty({
+    description:
+      "是否由部署记录合成（应用从未为本次部署保存版本快照，如心跳先到的竞态）",
+  })
+  synthetic: boolean;
 
   @ApiProperty({
     type: () => [AppReleaseDeviceDto],

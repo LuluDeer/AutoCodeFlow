@@ -64,10 +64,6 @@ const ROLE_LABELS = (t: (k: string) => string): Record<string, string> => ({
   user: t('users.role.user'),
 });
 
-interface UserWithActive extends User {
-  isActive?: boolean;
-}
-
 /**
  * P1-1（对齐后端 ad5bdef4 isActive 写面）：行内启用/禁用开关（桌面状态列与
  * 移动端卡片共用）。交互口径对齐 TaskListPage 行内启停 Switch：
@@ -79,11 +75,11 @@ interface UserWithActive extends User {
  *     呈现，与状态列 Tag 的既有口径一致。
  */
 function UserActiveSwitch(props: {
-  user: UserWithActive;
+  user: User;
   /** 该行请求在途（开关 loading，防重复提交；口径同删除按钮 mutation.variables 精确到行） */
   busy: boolean;
   isSelf: boolean;
-  onToggle: (user: UserWithActive, next: boolean) => void;
+  onToggle: (user: User, next: boolean) => void;
 }) {
   const { t } = useTranslation();
   const { user, busy, isSelf, onToggle } = props;
@@ -129,10 +125,10 @@ export default function UserManagementPage() {
     return Number.isInteger(ps) && ps > 0 ? ps : 20;
   });
   const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [editing, setEditing] = useState<UserWithActive | null>(null);
+  const [editing, setEditing] = useState<User | null>(null);
   const [createForm] = Form.useForm();
   const [resetPwdModalOpen, setResetPwdModalOpen] = useState(false);
-  const [resetPwdUser, setResetPwdUser] = useState<UserWithActive | null>(null);
+  const [resetPwdUser, setResetPwdUser] = useState<User | null>(null);
   const [resetPwdForm] = Form.useForm();
 
   // SECURITY §3.1：两张表单各自的强度计实时读密码字段（字段级订阅，
@@ -160,7 +156,7 @@ export default function UserManagementPage() {
       usersApi.list(page, pageSize, signal, debouncedSearch || undefined),
   });
 
-  const users: UserWithActive[] = data?.list ?? [];
+  const users: User[] = data?.list ?? [];
   const total: number = data?.total ?? 0;
 
   // URL-SYNC-02（审计 P2）：双向同步——外部深链/前进后退现在会真正生效。
@@ -230,7 +226,7 @@ export default function UserManagementPage() {
    * unhandled rejection。
    */
   const toggleActive = useCallback(
-    (user: UserWithActive, next: boolean) => {
+    (user: User, next: boolean) => {
       if (next) {
         setActiveMutation.mutate({ id: user.id, isActive: true });
         return;
@@ -300,7 +296,7 @@ export default function UserManagementPage() {
   }, [createForm]);
 
   const openEdit = useCallback(
-    (user: UserWithActive) => {
+    (user: User) => {
       setEditing(user);
       createForm.setFieldsValue({
         username: user.username,
@@ -337,7 +333,7 @@ export default function UserManagementPage() {
   }, [createForm, editing, createMutation, updateMutation, t]);
 
   const handleResetPwd = useCallback(
-    (user: UserWithActive) => {
+    (user: User) => {
       setResetPwdUser(user);
       resetPwdForm.resetFields();
       setResetPwdModalOpen(true);
@@ -401,7 +397,7 @@ export default function UserManagementPage() {
       dataIndex: 'isActive',
       key: 'isActive',
       width: 130,
-      render: (isActive: boolean | undefined, record: UserWithActive) => (
+      render: (isActive: boolean | undefined, record: User) => (
         <Space size={6}>
           <UserActiveSwitch
             user={record}
@@ -436,7 +432,7 @@ export default function UserManagementPage() {
       // email 列抢空间导致按钮组换行；fixed right + scroll.x 成对
       width: 240,
       fixed: 'right' as const,
-      render: (_: unknown, record: UserWithActive) => (
+      render: (_: unknown, record: User) => (
         <Space size="small">
           <Button
             type="link"
@@ -520,7 +516,7 @@ export default function UserManagementPage() {
                   ? <PageSkeleton variant="table" rows={4} />
                   : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={debouncedSearch ? t('users.empty.noMatch') : t('users.empty.none')} />
               ) : (
-                users.map((record: UserWithActive) => (
+                users.map((record: User) => (
                   <Card key={record.id} size="small">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                       <Typography.Text strong style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{record.username}</Typography.Text>

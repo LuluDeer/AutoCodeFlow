@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
+import PageFallback from './PageFallback';
 
 // Route guard: requires an active session (refreshToken) to render children
 // F-06（DEEP_REVIEW @0ef3bbe，注释更正）：token 与 refreshToken 实际都经
@@ -14,6 +15,15 @@ export default function PrivateRoute({ children }: { children: ReactNode }) {
   // request when the persisted access token has expired.
   const refreshToken = useAuthStore((state) => state.refreshToken);
   const hasHydrated = useAuthStore((state) => state._hasHydrated);
-  if (!hasHydrated) return null;
+  // UX-FIRST-FRAME：persist 恢复前 refreshToken 仍是初始值 null，直接判会话会把
+  // 已登录用户弹到 /login；旧实现返回 null 则首帧纯白。两种都不对——hydration
+  // 未完成时渲染与路由 lazy 同款骨架屏，完成后再决定放行/跳登录。
+  if (!hasHydrated) {
+    return (
+      <div data-testid="private-route-hydration-fallback" aria-busy="true">
+        <PageFallback />
+      </div>
+    );
+  }
   return refreshToken ? <>{children}</> : <Navigate to="/login" replace />;
 }

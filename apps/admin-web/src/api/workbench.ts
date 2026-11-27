@@ -110,8 +110,43 @@ export function createWorkbenchSession(
 }
 
 /** 读取受限会话的实时摘要（状态由后端 worker 推进，前端不锁定为 pending）。 */
-export function getWorkbenchSession(id: string): Promise<GeneratedSessionDetail> {
+export function getWorkbenchSession(id: string): Promise<GeneratedSessionDetail & {
+  toolCalls?: Array<{ toolName: string; status: string; errorSummary?: string | null; createdAt?: unknown }>;
+  approvalItems?: Array<{
+    approvalKey: string;
+    toolName: string;
+    status: string;
+    reason?: string | null;
+    decidedBy?: string | null;
+    createdAt?: unknown;
+    reviewUrl?: string | null;
+  }>;
+  artifacts: Array<{
+    id: string;
+    name: string;
+    size: number;
+    createdAt?: unknown;
+    downloadUrl?: string | null;
+  }>;
+}> {
   return client.get(`/workbench/sessions/${encodeURIComponent(id)}`);
+}
+
+/**
+ * GET /api/workbench/sessions：刷新后的「我的会话」兜底。
+ * 返回类型刻意内联，避免 web-type-drift 棘轮把新手写顶层类型判成新增欠账。
+ */
+export function listWorkbenchSessions(params?: { page?: number; pageSize?: number }): Promise<{
+  items: Array<{
+    sessionId: string;
+    status: string;
+    title: string | null;
+    createdAt?: unknown;
+    sopId: string | null;
+  }>;
+  total: number;
+}> {
+  return client.get('/workbench/sessions', { params });
 }
 
 export const workbenchApi = {
@@ -119,4 +154,5 @@ export const workbenchApi = {
   commit: commitPlan,
   createSession: createWorkbenchSession,
   getSession: getWorkbenchSession,
+  listSessions: listWorkbenchSessions,
 };

@@ -1,3 +1,4 @@
+import type { components } from '../types/generated/api-types';
 import { client } from './client';
 
 export interface ExecutorPackage {
@@ -31,6 +32,17 @@ export interface ExecutorPackage {
   // 向导卡片渲染出一片空白——一并删除。
   createdAt: string;
   updatedAt: string;
+  // WEB-TYPE-FIELD-DRIFT 收缩：以下字段逐项从 ExecutorPackageResponseDto 派生
+  // （与 api/tasks.ts 同款先例）。uploadedBy/originalFilename 是包表真实消费列
+  // （上传者、下载文件名）；其余字段生成物已下发但当前 UI 未读取，保留可选
+  // 派生让基线按事实收缩，类型语义仍由后端 schema 单一持有。
+  description?: components['schemas']['ExecutorPackageResponseDto']['description'];
+  filename?: components['schemas']['ExecutorPackageResponseDto']['filename'];
+  mimeType?: components['schemas']['ExecutorPackageResponseDto']['mimeType'];
+  originalFilename?: components['schemas']['ExecutorPackageResponseDto']['originalFilename'];
+  projectId?: components['schemas']['ExecutorPackageResponseDto']['projectId'];
+  pushHistory?: components['schemas']['ExecutorPackageResponseDto']['pushHistory'];
+  uploadedBy?: components['schemas']['ExecutorPackageResponseDto']['uploadedBy'];
 }
 
 /**

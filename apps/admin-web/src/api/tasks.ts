@@ -237,6 +237,12 @@ export interface Task {
    * 同上：读模型手写字段，不可删。
    */
   codeSource?: 'git' | 'glue' | 'application_zip' | null;
+  // WEB-TYPE-FIELD-DRIFT 收缩：以下字段不再靠 baseline 冻结，字段类型直接从
+  // TaskResponseDto 派生；声明为 optional 保持存量调用方兼容，读面形状随生成物走。
+  deletedAt?: components['schemas']['TaskResponseDto']['deletedAt'];
+  ownerUserId?: components['schemas']['TaskResponseDto']['ownerUserId'];
+  project?: components['schemas']['TaskResponseDto']['project'];
+  webhookSecret?: components['schemas']['TaskResponseDto']['webhookSecret'];
   createdAt: string;
   updatedAt: string;
 }
@@ -318,6 +324,20 @@ export interface TaskExecution {
    * 后端 DTO 可能尚未回传该列：整个字段可缺省，消费方必须容忍 undefined。
    */
   result?: unknown;
+  // WEB-TYPE-FIELD-DRIFT 收缩：执行读面字段逐项从 TaskExecutionResponseDto 派生，
+  // optional 只表达「旧响应可能缺席」，类型语义仍由生成 schema 单一持有。
+  artifacts?: components['schemas']['TaskExecutionResponseDto']['artifacts'];
+  attemptSeq?: components['schemas']['TaskExecutionResponseDto']['attemptSeq'];
+  depsFiredAt?: components['schemas']['TaskExecutionResponseDto']['depsFiredAt'];
+  executeMode?: components['schemas']['TaskExecutionResponseDto']['executeMode'];
+  isBroadcast?: components['schemas']['TaskExecutionResponseDto']['isBroadcast'];
+  logObjectKey?: components['schemas']['TaskExecutionResponseDto']['logObjectKey'];
+  logStorage?: components['schemas']['TaskExecutionResponseDto']['logStorage'];
+  mutexGroupId?: components['schemas']['TaskExecutionResponseDto']['mutexGroupId'];
+  retryKind?: components['schemas']['TaskExecutionResponseDto']['retryKind'];
+  retryUserCount?: components['schemas']['TaskExecutionResponseDto']['retryUserCount'];
+  task?: components['schemas']['TaskExecutionResponseDto']['task'];
+  version?: components['schemas']['TaskExecutionResponseDto']['version'];
   createdAt: string;
 }
 

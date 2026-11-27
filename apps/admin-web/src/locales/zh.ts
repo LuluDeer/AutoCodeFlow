@@ -119,9 +119,7 @@ export default {
   'dashboard.scope.groupProject.desc': '以下指标按顶栏当前选中项目过滤；切换项目后数值随之变化。',
   'dashboard.scope.groupGlobal.title': '全局口径（机队/调度）',
   'dashboard.scope.groupGlobal.desc': '以下指标为机队/调度全局统计，不随当前项目过滤。',
-  'nav.install': '安装向导',
   'nav.new': '新建',
-  'nav.edit': '编辑',
   'nav.user': '用户',
   'nav.role.admin': '管理员',
   'nav.role.user': '普通用户',
@@ -4708,11 +4706,18 @@ export default {
   'nav.capabilities': '能力治理',
   'nav.activationStats': '能力用量',
   'nav.workbench': '工作台',
+  // WEBUX：已上线深链页的面包屑/注册表可读名称（不再显示英文路径段）。
+  'nav.fromVideo': '视频转 SOP',
+  'nav.executorInstall': '执行器安装',
+  'nav.taskEdit': '编辑任务',
 
   // UX-AUDIT（positioning-ux-overhaul）：业务用户旅程修复新增词条。
   'palette.pageNav.capabilitiesDesc': '能力注册与治理',
   'palette.pageNav.activationStatsDesc': '能力用量与归属',
   'palette.pageNav.workbenchDesc': '自然语言工作台（描述需求、预览方案）',
+  'palette.pageNav.fromVideoDesc': '上传录屏生成 SOP 草稿',
+  'palette.pageNav.executorInstallDesc': '执行器安装向导与接入命令',
+  'palette.pageNav.taskEditDesc': '编辑已上线任务的配置',
   'palette.candidateTruncated': '仅显示前 {{shown}} 条候选结果（共 {{total}} 条匹配）——请继续输入以缩小范围，或到完整列表页查看',
   'palette.viewFullList': '查看完整列表',
   'palette.retry': '重试',

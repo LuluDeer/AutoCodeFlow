@@ -138,8 +138,9 @@ export function TotpCard() {
     },
   });
 
-  // totpEnabled 由 GET /auth/profile 返回（AuthUser 增量字段，旧数据 undefined 视为未启用）。
-  // R138-A1：字段已在 AuthUser 上显式声明，不再需要 as 逃逸类型。
+  // totpEnabled 由 GET /auth/profile 返回（生成契约见 UserResponseDto.totpEnabled；
+  // 旧数据 undefined 视为未启用）。WEB-TYPE-FIELD-DRIFT：AuthUser 字段已从生成
+  // schema 派生，页面直接读，不再需要 as 逃逸类型断言。
   const enabled = user?.totpEnabled === true;
 
   if (enabled) {

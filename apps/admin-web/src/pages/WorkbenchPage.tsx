@@ -1,34 +1,22 @@
 import { useCallback, useRef, useState } from 'react';
-import { Alert, Button, Card, Input, Select, Space, Tag, Typography } from 'antd';
-import {
-  previewPlan,
-  commitPlan,
-  type CommitResult,
-  type PreviewPlanResult,
-  type WorkbenchCadence,
-} from '../api/workbench';
-import WorkbenchSessionAction from '../components/workbench/WorkbenchSessionAction';
-import { sessionAnchor, useWorkbenchSession } from '../hooks/useWorkbenchSession';
+import { Alert, Button, Card, Input, Select, Space, Typography } from 'antd';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '../store/auth';
-
-
-interface ConfirmRecord {
-  cardHash: string;
-  policyGeneration: string;
-  at: string;
-  user: string;
-}
-
-/**
- * 预览时真正提交给后端的入参。确认阶段必须复用它（而不是重新读表单），
- * 否则用户预览后又改了输入框，服务端重建的 hash 会与 expectedCardHash 不一致。
- */
-interface SubmittedInput {
-  goal: string;
-  cadence: WorkbenchCadence;
-  params?: Record<string, string>;
-}
+import type { WorkbenchCadence } from '../api/workbench';
+import WorkbenchPlanSection from '../components/workbench/WorkbenchPlanSection';
+import WorkbenchRecordsSection from '../components/workbench/WorkbenchRecordsSection';
+import WorkbenchSessionAction from '../components/workbench/WorkbenchSessionAction';
+import WorkbenchSubmitSection from '../components/workbench/WorkbenchSubmitSection';
+import {
+  WorkbenchSessionListCard,
+  WorkbenchSessionRestoreCard,
+} from '../components/workbench/WorkbenchSessionPanel';
+import { useWorkbenchForm } from '../hooks/workbench-form';
+import {
+  readWorkbenchAnchor,
+  sessionAnchor,
+  useWorkbenchSession,
+  type WorkbenchAnchor,
+} from '../hooks/useWorkbenchSession';
 
 type Translate = import('i18next').TFunction;
 
@@ -38,171 +26,32 @@ const cadenceOptions = (t: Translate): Array<{ value: WorkbenchCadence; label: s
   { value: 'monthly', label: t('workbench.cadence.monthly') },
 ];
 
-function checkLabel(t: Translate, status: string): string {
-  switch (status) {
-    case 'ok':
-      return t('workbench.check.ok');
-    case 'warn':
-      return t('workbench.check.warn');
-    case 'fail':
-      return t('workbench.check.fail');
-    default:
-      return status;
-  }
-}
-const CHECK_COLOR = { ok: 'green', warn: 'orange', fail: 'red' } as const;
-
-/**
- * commit 失败时从后端响应体取业务文案：generation 失配的中文说明放在 detail，
- * 不能让固定兜底文案把它吃掉。client 拦截器 reject 的是响应体（带 __status 标），
- * 也可能是原始 Error；只认后端响应形态，避免把本地 Error 的 message 当成后端文案。
- */
-function pickBackendErrorMessage(err: unknown): string | null {
-  if (!err || typeof err !== 'object') return null;
-  const body = err as Record<string, unknown>;
-  const nested = body.response;
-  const nestedData =
-    nested && typeof nested === 'object'
-      ? (nested as Record<string, unknown>).data
-      : undefined;
-  const fromResponse =
-    nestedData && typeof nestedData === 'object'
-      ? (nestedData as Record<string, unknown>)
-      : null;
-  const looksLikeApiError =
-    'detail' in body || 'errorCode' in body || '__status' in body || fromResponse !== null;
-  if (!looksLikeApiError) return null;
-
-  const asText = (value: unknown): string => {
-    if (typeof value === 'string') return value.trim();
-    if (Array.isArray(value)) {
-      return value.filter((x): x is string => typeof x === 'string' && !!x.trim()).join('; ').trim();
-    }
-    return '';
-  };
-  for (const source of [body, fromResponse]) {
-    if (!source) continue;
-    const text = asText(source.detail) || asText(source.message) || asText(source.error);
-    if (text) return text;
-  }
-  return null;
-}
-
-/** 可选参数：一行「键=值」，中英文逗号均可分隔；解析失败的分段静默忽略。 */
-function parseParams(raw: string): Record<string, string> {
-  const params: Record<string, string> = {};
-  for (const part of raw.split(/[,，]/)) {
-    const pair = part.trim();
-    const eq = pair.indexOf('=');
-    if (eq <= 0) continue;
-    params[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
-  }
-  return params;
-}
-
 export default function WorkbenchPage() {
   const { t } = useTranslation();
-  const [goal, setGoal] = useState('');
-  const [cadence, setCadence] = useState<WorkbenchCadence>('daily');
-  const [paramText, setParamText] = useState('');
-  const [result, setResult] = useState<PreviewPlanResult | null>(null);
-  const [submittedInput, setSubmittedInput] = useState<SubmittedInput | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [previewing, setPreviewing] = useState(false);
-  const [committing, setCommitting] = useState(false);
-  const [commitError, setCommitError] = useState<string | null>(null);
-  const [commitResult, setCommitResult] = useState<CommitResult | null>(null);
-  const [records, setRecords] = useState<ConfirmRecord[]>([]);
-  const user = useAuthStore((s) => s.user);
-  // UX-AUDIT：/sops 为 ADMIN-only。业务用户提交后不得被引导到 403 墙——
-  // 用一句诚实的话说明「已提交审阅、草稿未运行、等待通知」，管理员保留原链接。
-  const isAdmin = user?.role === 'admin';
-  // 真正的互斥锁：state 更新在同一 tick 的两次点击之间可能还没生效，用 ref 兜住防重复提交。
-  const committingRef = useRef(false);
+  // 惰性转发 session.reset：form hook 必须先于会话 hook 调用（要先拿到
+  // commitResult/result/submittedInput 算锚点），点击预览时才解引用当前 reset。
+  const sessionResetRef = useRef<() => void>(() => {});
+  const {
+    goal, setGoal,
+    cadence, setCadence,
+    paramText, setParamText,
+    result, submittedInput,
+    error, previewing, handlePreview,
+    canConfirm, committing, commitError, commitResult, handleConfirm,
+    records, approvalStatus, approvalKey, isAdmin,
+  } = useWorkbenchForm({ onPreviewStart: () => sessionResetRef.current() });
 
-  const hasFail = result?.checks.some((c) => c.status === 'fail') ?? false;
-  const canConfirm = Boolean(result?.eligible) && !hasFail;
-  // ADR-045：发布审批单标识（仅 submitted 时有；空串按缺席处理）。
-  const approvalKey = commitResult?.approvalKey?.trim() ?? '';
-  // 三态稳定码驱动界面：后端必填；老后端未回带时按 key 保守回退，绝不冒充「已提交」。
-  const approvalStatus: CommitResult['approvalStatus'] =
-    commitResult?.approvalStatus ?? (approvalKey ? 'submitted' : 'not_requested');
-
-  // Writer B：受限起草会话编排外提为 hook（轮询/错误/创建），页面只消费状态。
-  const anchor = sessionAnchor(commitResult, result?.cardHash, submittedInput?.goal);
-  const sessionCtl = useWorkbenchSession(useCallback(() => anchor, [anchor]));
-  const { sessionId, session, error: sessionError, starting: startingSession, start: startSession, reset: resetSession } = sessionCtl;
-
-  async function handlePreview() {
-    if (!goal.trim()) { setError(t('workbench.goalRequired')); return; }
-    setPreviewing(true);
-    setError(null);
-    setResult(null);
-    setSubmittedInput(null);
-    setCommitResult(null);
-    setCommitError(null);
-    // Writer B：新一轮预览清空上一轮会话面板，避免展示过期草稿的会话。
-    resetSession();
-    try {
-      const params = parseParams(paramText);
-      const input: SubmittedInput = { goal: goal.trim(), cadence, ...(Object.keys(params).length > 0 ? { params } : {}) };
-      const data = await previewPlan(input);
-      setResult(data);
-      setSubmittedInput(input);
-    } catch {
-      setError(t('workbench.previewFailed'));
-    } finally {
-      setPreviewing(false);
-    }
-  }
-
-  async function handleConfirm() {
-    if (!result || !canConfirm || committingRef.current) return;
-    // 没有 cardHash / policyGeneration 就没有校验锚点：绝不发写请求，给出可操作的提示。
-    if (!result.cardHash || !result.policyGeneration || !submittedInput) {
-      setCommitError(t('workbench.missingIds'));
-      return;
-    }
-    committingRef.current = true;
-    setCommitting(true);
-    setCommitError(null);
-    setCommitResult(null);
-    // 与 cardHash 同源：都取 preview 时的 result + submittedInput，表单后来被改也不会误提交。
-    const { cardHash, policyGeneration } = result;
-    try {
-      const saved = await commitPlan({
-        ...submittedInput,
-        expectedCardHash: cardHash,
-        expectedPolicyGeneration: policyGeneration,
-      });
-      setCommitResult(saved);
-      // 确认记录锚定本次实际放行的策略代际：优先取 commit 回带值（第三闸已校验），
-      // 缺省时回退 preview 值以兼容旧后端；即便与 preview 不同也只记值、不报错，
-      // 因为提交已成功落库，不能制造「成功却报错」的矛盾。
-      const recordedGeneration = saved.policyGeneration ?? policyGeneration;
-      // 本地确认记录仅作 UX 反馈；真正的落库结果是上面的 commitResult。
-      setRecords((prev) => [
-        {
-          cardHash,
-          policyGeneration: recordedGeneration,
-          at: new Date().toISOString(),
-          user: user?.username ?? t('workbench.currentUser'),
-        },
-        ...prev,
-      ]);
-    } catch (err: unknown) {
-      // generation 失配等后端业务错误把中文原因写在 detail，内联 Alert 必须透出。
-      const detail = pickBackendErrorMessage(err);
-      setCommitError(
-        detail
-          ? t('workbench.confirmFailedDetail', { detail })
-          : t('workbench.confirmFailed'),
-      );
-    } finally {
-      committingRef.current = false;
-      setCommitting(false);
-    }
-  }
+  // Writer B：刷新后表单与 preview/commitResult 内存态都没了：优先用落盘锚点，
+  // URL/localStorage 中的 sessionId 则由 hook 自己恢复，运行按钮与会话面板因此不依赖内存。
+  const [restoredAnchor] = useState<WorkbenchAnchor | null>(() => readWorkbenchAnchor());
+  const activeAnchor = sessionAnchor(commitResult, result?.cardHash, submittedInput?.goal) ?? restoredAnchor;
+  const sessionCtl = useWorkbenchSession(useCallback(() => activeAnchor, [activeAnchor]));
+  sessionResetRef.current = sessionCtl.reset;
+  const {
+    sessionId, session, error: sessionError, starting: startingSession,
+    start: startSession, restore: restoreSession,
+    sessions, sessionsState, sessionsError, reloadSessions,
+  } = sessionCtl;
 
   return (
     <div data-testid="workbench-page">
@@ -247,153 +96,48 @@ export default function WorkbenchPage() {
       {error ? <Alert type="error" showIcon title={error} style={{ marginBottom: 16 }} /> : null}
 
       {result ? (
-        <Card title={t('workbench.preview.title')} style={{ marginBottom: 16 }}>
-          <Typography.Title level={4}>{result.card.title}</Typography.Title>
-          <p>{t('workbench.card.trigger', { text: result.card.triggerText })}</p>
-          <div style={{ marginBottom: 8 }}>
-            {t('workbench.card.hints')}
-            {result.card.capabilityHints.map((hint, i) => (
-              <Tag key={`${hint}-${i}`} color="blue">{hint}</Tag>
-            ))}
-          </div>
-          <p>{t('workbench.card.acceptance', { text: result.card.acceptanceText })}</p>
-          <p>{t('workbench.card.budget', { max: result.card.budget.maxTurns })}</p>
-          <div style={{ marginBottom: 8 }}>
-            {t('workbench.card.checks')}
-            {result.checks.map((check, i) => (
-              <Tag key={`${check.field}-${i}`} color={CHECK_COLOR[check.status]}>
-                {checkLabel(t, check.status)} · {check.field} · {check.message}
-              </Tag>
-            ))}
-          </div>
-          {!result.eligible ? (
-            <Alert
-              type="warning"
-              showIcon
-              title={t('workbench.notEligible')}
-              style={{ marginBottom: 12 }}
-            />
-          ) : null}
-          <Button
-            type="primary"
-            loading={committing}
-            disabled={!canConfirm || committing}
-            onClick={() => void handleConfirm()}
-          >
-            {t('workbench.confirm.action')}
-          </Button>
-          {!canConfirm && result.eligible ? (
-            <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
-              {t('workbench.hasFail')}
-            </Typography.Text>
-          ) : null}
-          {commitError ? (
-            <Alert type="error" showIcon title={commitError} style={{ marginTop: 12 }} />
-          ) : null}
-        </Card>
+        <WorkbenchPlanSection
+          result={result}
+          canConfirm={canConfirm}
+          committing={committing}
+          commitError={commitError}
+          onConfirm={() => void handleConfirm()}
+        />
       ) : null}
 
       {commitResult ? (
-        <Card title={t('workbench.confirm.title')} data-testid="workbench-commit-success" style={{ marginBottom: 16 }}>
-          {approvalStatus === 'failed' ? (
-            <Alert
-              type="warning"
-              showIcon
-              title={t('workbench.commit.approvalFailed')}
-              style={{ marginBottom: 12 }}
+        <WorkbenchSubmitSection
+          commitResult={commitResult}
+          approvalStatus={approvalStatus}
+          approvalKey={approvalKey}
+          isAdmin={isAdmin}
+          sessionAction={approvalStatus === 'submitted' ? (
+            <WorkbenchSessionAction
+              error={sessionError} starting={startingSession} sessionId={sessionId}
+              session={session} onStart={() => void startSession()}
             />
-          ) : approvalStatus === 'not_requested' ? (
-            <Alert
-              type="info"
-              showIcon
-              title={t('workbench.commit.approvalNotRequested')}
-              style={{ marginBottom: 12 }}
-            />
-          ) : approvalStatus === 'submitted' ? (
-            <Alert
-              type="success"
-              showIcon
-              title={t('workbench.confirm.success')}
-              style={{ marginBottom: 12 }}
-            />
-          ) : (
-            <Alert
-              type="warning"
-              showIcon
-              title={t('workbench.commit.approvalUnknown')}
-              style={{ marginBottom: 12 }}
-            />
-          )}
-          <Space orientation="vertical" size="small">
-            <div>
-              <Typography.Text type="secondary">{t('workbench.status.label')}</Typography.Text>
-              <Tag color="orange">{t('workbench.status.draft')}</Tag>
-            </div>
-            <div>{t('workbench.sopId', { id: commitResult.sopId })}</div>
-            <div data-testid="workbench-commit-slug">{t('workbench.slug', { slug: commitResult.slug })}</div>
-            {approvalStatus === 'submitted' ? (
-              <div>{t('workbench.approval.submittedNext')}</div>
-            ) : null}
-            {!isAdmin ? (
-              // 业务用户：不链接 ADMIN-only 的 /sops，也不出现仅管理员可用的审批单深链。
-              <div data-testid="workbench-submitted-for-review">{t('workbench.submittedForReview')}</div>
-            ) : approvalStatus === 'submitted' ? (
-              <a href={`/sops?sop=${encodeURIComponent(commitResult.sopId)}`}>{t('workbench.sopLink')}</a>
-            ) : approvalStatus === 'failed' ? (
-              <div>{t('workbench.approval.failedNoSopLink')}</div>
-            ) : (
-              <div>{t('workbench.sopLink.textOnly')}</div>
-            )}
-            {/* Writer B：受限起草会话——提交成功即可用，不发布 SOP。 */}
-            {approvalStatus === 'submitted' && (
-              <WorkbenchSessionAction
-                error={sessionError} starting={startingSession} sessionId={sessionId}
-                session={session} onStart={() => void startSession()}
-              />
-            )}
-            {isAdmin && approvalStatus === 'submitted' && approvalKey ? (
-              <div data-testid="workbench-commit-approval" style={{ marginTop: 4 }}>
-                <Alert
-                  type="info"
-                  showIcon
-                  title={t('workbench.approval.alert')}
-                  style={{ marginBottom: 8 }}
-                />
-                <div data-testid="workbench-approval-status">{t('workbench.approval.status')}</div>
-                <div>
-                  {t('workbench.approval.keyLabel')}
-                  <Typography.Text code data-testid="workbench-approval-key">
-                    {approvalKey}
-                  </Typography.Text>
-                </div>
-                <a data-testid="workbench-approval-link" href="/inbox">
-                  {t('workbench.approval.link')}
-                </a>
-              </div>
-            ) : null}
-          </Space>
-        </Card>
+          ) : null}
+        />
       ) : null}
 
-      {records.length > 0 ? (
-        <Card title={t('workbench.history.title')}>
-          <Space orientation="vertical">
-            {records.map((record, i) => (
-              <div
-                key={`${record.cardHash}-${i}`}
-                data-testid="workbench-confirm-record"
-                data-generation={record.policyGeneration}
-              >
-                <span>{t('workbench.history.note')}</span>
-                <span>{t('workbench.history.cardHash', { hash: record.cardHash })}</span>
-                <span>{t('workbench.history.generation', { generation: record.policyGeneration.slice(0, 8) })}</span>
-                <span>{t('workbench.history.time', { time: record.at })}</span>
-                <span>{t('workbench.history.user', { user: record.user })}</span>
-              </div>
-            ))}
-          </Space>
-        </Card>
+      {!commitResult && (sessionId || session || activeAnchor) ? (
+        <WorkbenchSessionRestoreCard
+          sessionId={sessionId}
+          session={session}
+          error={sessionError}
+          starting={startingSession}
+          onStart={() => void startSession()}
+        />
       ) : null}
+      <WorkbenchSessionListCard
+        sessions={sessions}
+        state={sessionsState}
+        error={sessionsError}
+        onRestore={restoreSession}
+        onReload={reloadSessions}
+      />
+
+      <WorkbenchRecordsSection records={records} />
     </div>
   );
 }

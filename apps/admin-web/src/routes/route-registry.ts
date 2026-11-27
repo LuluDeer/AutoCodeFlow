@@ -51,6 +51,9 @@ export const ROUTES: readonly RouteDescriptor[] = [
   { path: '/task-templates', labelKey: 'nav.taskTemplates', descriptionKey: 'palette.pageNav.taskTemplatesDesc', sidebar: true, palette: true, adminOnly: false },
   { path: '/artifacts', labelKey: 'nav.artifacts', descriptionKey: 'palette.pageNav.artifactsDesc', sidebar: true, palette: true, adminOnly: false },
   { path: '/executions', labelKey: 'nav.executions', descriptionKey: 'palette.pageNav.executionsDesc', sidebar: true, palette: true, adminOnly: false },
+  // UX-AUDIT：/inbox 对业务人员开放（只读），此前仅命令面板可见且误标 adminOnly，
+  // 侧栏无入口 ⇒ ApprovalQueueCard 把用户引到「找不到」的页面。现在统一为全角色可见。
+  { path: '/inbox', labelKey: 'inbox.title', descriptionKey: 'inbox.description', sidebar: true, palette: true, adminOnly: false },
   { path: '/executors', labelKey: 'nav.executors', descriptionKey: 'palette.pageNav.executorsDesc', sidebar: true, palette: true, adminOnly: false },
   { path: '/executor-packages', labelKey: 'nav.executorPackages', descriptionKey: 'palette.pageNav.executorPackagesDesc', sidebar: true, palette: true, adminOnly: true },
   { path: '/applications', labelKey: 'nav.applications', descriptionKey: 'palette.pageNav.applicationsDesc', sidebar: true, palette: true, adminOnly: false },
@@ -65,9 +68,12 @@ export const ROUTES: readonly RouteDescriptor[] = [
   { path: '/sops', labelKey: 'nav.sops', descriptionKey: 'palette.pageNav.sopsDesc', sidebar: true, palette: true, adminOnly: true },
   { path: '/agent-sessions', labelKey: 'nav.agents', descriptionKey: 'palette.pageNav.agentsDesc', sidebar: true, palette: true, adminOnly: true },
   { path: '/workbench', labelKey: 'nav.workbench', descriptionKey: 'palette.pageNav.workbenchDesc', sidebar: true, palette: true, adminOnly: false },
-  // UX-AUDIT：/inbox 对业务人员开放（只读），此前仅命令面板可见且误标 adminOnly，
-  // 侧栏无入口 ⇒ ApprovalQueueCard 把用户引到「找不到」的页面。现在统一为全角色可见。
-  { path: '/inbox', labelKey: 'inbox.title', descriptionKey: 'inbox.description', sidebar: true, palette: true, adminOnly: false },
+  // 以下页面已上线但属于深链/向导页：进注册表是为了让角色判定与面包屑名称
+  // 与侧栏、命令面板共用同一份事实源；sidebar=false 避免侧栏出现重复入口。
+  { path: '/sops/from-video', labelKey: 'nav.fromVideo', descriptionKey: 'palette.pageNav.fromVideoDesc', sidebar: false, palette: true, adminOnly: true },
+  { path: '/executors/install', labelKey: 'nav.executorInstall', descriptionKey: 'palette.pageNav.executorInstallDesc', sidebar: false, palette: true, adminOnly: true },
+  // 动态段用 router.tsx 的 path 模式登记；palette=false（命令面板无法给出合法的 :id）。
+  { path: '/tasks/:id/edit', labelKey: 'nav.taskEdit', descriptionKey: 'palette.pageNav.taskEditDesc', sidebar: false, palette: false, adminOnly: false },
 ];
 
 /** 路径 → 描述符，便于按路径查角色门槛。 */

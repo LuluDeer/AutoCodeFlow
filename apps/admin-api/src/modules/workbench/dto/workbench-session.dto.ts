@@ -10,13 +10,17 @@
  *   会话与当时提交的那张方案卡锚在一起（写入 context.cardHash）。
  */
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { Type } from "class-transformer";
 import {
+  IsInt,
   IsObject,
   IsOptional,
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
+  Min,
 } from "class-validator";
 
 export class CreateWorkbenchSessionDto {
@@ -68,6 +72,52 @@ export class WorkbenchSessionCreateResponseDto {
   toolCount?: number;
 }
 
+/** GET /workbench/sessions 的查询面：只有 page/pageSize，禁止透传归属/角色字段。 */
+export class ListWorkbenchSessionsQueryDto {
+  @ApiPropertyOptional({ type: Number, minimum: 1, maximum: 10000 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10000)
+  page?: number;
+
+  @ApiPropertyOptional({ type: Number, minimum: 1, maximum: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(20)
+  pageSize?: number;
+}
+
+/** 「我的会话」列表行：只投影恢复所需的最小字段，不携带 scope/context。 */
+export class WorkbenchSessionListItemDto {
+  @ApiProperty({ format: "uuid" })
+  sessionId: string;
+
+  @ApiProperty()
+  status: string;
+
+  @ApiProperty({ nullable: true })
+  title: string | null;
+
+  @ApiProperty({ nullable: true })
+  createdAt: Date | string | null;
+
+  @ApiProperty({ nullable: true })
+  sopId: string | null;
+}
+
+/** GET /workbench/sessions 响应信封。 */
+export class WorkbenchSessionListResponseDto {
+  @ApiProperty({ type: [WorkbenchSessionListItemDto] })
+  items: WorkbenchSessionListItemDto[];
+
+  @ApiProperty()
+  total: number;
+}
+
 /** 会话步骤摘要（读回 DTO 的嵌套项，显式类以保证 openapi 出精确类型）。 */
 export class WorkbenchSessionStepDto {
   @ApiProperty({ description: "步骤序号" })
@@ -96,6 +146,49 @@ export class WorkbenchSessionArtifactDto {
 
   @ApiPropertyOptional({ description: "产物创建时间", nullable: true })
   createdAt: Date | string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  downloadUrl: string | null;
+}
+
+/** 工具调用摘要：只给审计面最小事实，不回传 args/result。 */
+export class WorkbenchSessionToolCallDto {
+  @ApiProperty()
+  toolName: string;
+
+  @ApiProperty()
+  status: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  errorSummary: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  createdAt: Date | string | null;
+}
+
+/** 审批单摘要：沿用现有审批键/状态，不引入任何处置写能力。 */
+export class WorkbenchSessionApprovalDto {
+  @ApiProperty()
+  approvalKey: string;
+
+  @ApiProperty()
+  toolName: string;
+
+  @ApiProperty()
+  status: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  reason: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  decidedBy: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  createdAt: Date | string | null;
+
+  /** ADMIN 指向既有审批 UI；USER 恒 null（不绕开四眼）。 */
+  @ApiPropertyOptional({ nullable: true })
+  reviewUrl: string | null;
 }
 
 /** 读回 DTO：会话状态 + 步骤/审批摘要（不返回完整正文，避免大字段误传）。 */
@@ -131,8 +224,14 @@ export class WorkbenchSessionDetailResponseDto {
   @ApiProperty({ description: "工具调用总数" })
   toolCallCount: number;
 
+  @ApiProperty({ type: [WorkbenchSessionToolCallDto] })
+  toolCalls: WorkbenchSessionToolCallDto[];
+
   @ApiProperty({ description: "审批单状态计数（pending/granted/consumed/denied/expired）", additionalProperties: { type: "number" } })
   approvals: Record<string, number>;
+
+  @ApiProperty({ type: [WorkbenchSessionApprovalDto] })
+  approvalItems: WorkbenchSessionApprovalDto[];
 
   @ApiProperty({
     description: "会话关联的产物（若可判定；无则空数组）",

@@ -7,6 +7,7 @@ import {
   Logger,
   Optional as NestOptional,
   Param as NestParam,
+  Query as NestQuery,
   Post,
   Get as NestGet,
   UseGuards,
@@ -84,13 +85,59 @@ import { sopContentHash } from "../sop/sop-frontmatter";
 import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
 import {
   CreateWorkbenchSessionDto,
+  ListWorkbenchSessionsQueryDto,
   WorkbenchSessionCreateResponseDto,
   WorkbenchSessionDetailResponseDto,
+  WorkbenchSessionListResponseDto,
 } from "./dto/workbench-session.dto";
 import {
   WORKBENCH_SESSIONS_PORT,
+  type WorkbenchSessionSummary,
   type WorkbenchSessionsPort,
 } from "./workbench-sessions.port";
+
+/** 读回摘要的增强投影：模块适配器提供，控制器对老替身缺字段做安全回落。 */
+type WorkbenchSessionDetailRead = Omit<WorkbenchSessionSummary, "artifacts"> & {
+  toolCalls?: Array<{
+    toolName: string;
+    status: string;
+    errorSummary: string | null;
+    createdAt: Date | string | null;
+  }>;
+  approvalItems?: Array<{
+    approvalKey: string;
+    toolName: string;
+    status: string;
+    reason: string | null;
+    decidedBy: string | null;
+    createdAt: Date | string | null;
+  }>;
+  artifacts: Array<{
+    id: string;
+    name: string;
+    size: number;
+    createdAt: Date | string | null;
+    downloadUrl?: string | null;
+  }>;
+};
+
+type WorkbenchSessionsWithResume = WorkbenchSessionsPort & {
+  listOwn(input: {
+    createdBy: string;
+    createdByAlias?: string | null;
+    page: number;
+    pageSize: number;
+  }): Promise<{
+    items: Array<{
+      sessionId: string;
+      status: string;
+      title: string | null;
+      createdAt: Date | string | null;
+      sopId: string | null;
+    }>;
+    total: number;
+  }>;
+};
 
 /** 极简框架替身可能没有 @Optional / @Inject；缺席时降级 no-op，手动 new 不受影响。 */
 const Optional: (...args: any[]) => any =
@@ -102,6 +149,9 @@ const Get: (...args: any[]) => any =
   typeof NestGet === "function" ? NestGet : () => () => undefined;
 const Param: (...args: any[]) => any =
   typeof NestParam === "function" ? NestParam : () => () => undefined;
+/** 同 Get/Param：极简框架替身缺席 @Query 时降级 no-op，只影响元数据。 */
+const Query: (...args: any[]) => any =
+  typeof NestQuery === "function" ? NestQuery : () => () => undefined;
 
 /** 与 sop.controller.ts:100 auditUserId 同口径：非有限数一律 null。 */
 function auditUserId(user?: { id: number | string }): number | null {
@@ -683,6 +733,44 @@ export class WorkbenchController {
    *
    * 一步入队：与 agent.controller.ts:497-530 同口径（jobId=sessionId 去重、attempts=1）。
    */
+  /**
+   * 刷新恢复兜底：只列**当前登录用户自己创建**的工作台会话。
+   * 查询 DTO 只开放 page/pageSize；createdBy/kind/scope 一律不可由客户端指定。
+   */
+  @Get("sessions")
+  @ApiOperation({ summary: "列出当前用户创建的工作台会话" })
+  @Roles(UserRole.ADMIN, UserRole.USER)
+  @ApiOkResponse({ type: WorkbenchSessionListResponseDto })
+  async listSessions(
+    @Query() query: ListWorkbenchSessionsQueryDto,
+    @CurrentUser() user: { id: number | string; username?: string } | undefined,
+  ): Promise<WorkbenchSessionListResponseDto> {
+    const sessions = this.sessions as WorkbenchSessionsWithResume | null | undefined;
+    if (!sessions?.listOwn) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    const userId = Number(user?.id);
+    if (!Number.isFinite(userId)) {
+      throw new AppError(ErrorCode.USER_NOT_FOUND, {});
+    }
+    const result = await sessions.listOwn({
+      createdBy: `user:${userId}`,
+      createdByAlias: user?.username ? `user:${user.username}` : null,
+      page: query.page ?? 1,
+      pageSize: query.pageSize ?? 20,
+    });
+    return {
+      items: result.items.map((item) => ({
+        sessionId: String(item.sessionId),
+        status: String(item.status),
+        title: item.title ?? null,
+        createdAt: item.createdAt ?? null,
+        sopId: item.sopId ?? null,
+      })),
+      total: Number(result.total),
+    };
+  }
+
   @Post("sessions")
   @ApiOperation({
     summary: "运行我的 SOP 草稿：创建限权 Agent 会话并入 agent-jobs 队列",
@@ -780,7 +868,10 @@ export class WorkbenchController {
     // 工作台读面只服务 sop_authoring 且 scope 指向 SOP 的会话——管理员建的
     // ops_watch/incident 等会话不走这条业务用户路径。
     const scope = (session.scopeJson ?? {}) as Record<string, unknown>;
-    const summary = await this.sessions.readSummary(id);
+    const summary = (await this.sessions.readSummary(
+      id,
+    )) as WorkbenchSessionDetailRead;
+    const reviewBase = `/agent-sessions?session=${encodeURIComponent(id)}&tab=approvals`;
     return {
       sessionId: session.id,
       kind: session.kind,
@@ -789,6 +880,30 @@ export class WorkbenchController {
       scope,
       ...(session.title ? { title: session.title } : {}),
       ...summary,
+      toolCalls: (summary.toolCalls ?? []).map((tc) => ({
+        toolName: String(tc.toolName),
+        status: String(tc.status),
+        errorSummary: tc.errorSummary ?? null,
+        createdAt: tc.createdAt ?? null,
+      })),
+      approvalItems: (summary.approvalItems ?? []).map((item) => ({
+        approvalKey: String(item.approvalKey),
+        toolName: String(item.toolName),
+        status: String(item.status),
+        reason: item.reason ?? null,
+        decidedBy: item.decidedBy ?? null,
+        createdAt: item.createdAt ?? null,
+        reviewUrl: isAdmin
+          ? `${reviewBase}&approvalKey=${encodeURIComponent(item.approvalKey)}`
+          : null,
+      })),
+      artifacts: (summary.artifacts ?? []).map((artifact) => ({
+        id: String(artifact.id),
+        name: String(artifact.name),
+        size: Number(artifact.size),
+        createdAt: artifact.createdAt ?? null,
+        downloadUrl: artifact.downloadUrl ?? null,
+      })),
     };
   }
 }
