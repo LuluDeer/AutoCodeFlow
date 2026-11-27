@@ -60,7 +60,7 @@
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `VITE_API_URL_INTERNAL` | `http://admin-api:3105` | nginx 反代注入前端的内部 API 地址 |
+| `VITE_API_URL_INTERNAL` | `/api` | 前端 bundle 的同源 API 入口（Vite dev proxy / nginx 反代均保留 `/api` 前缀，后端 `setGlobalPrefix('api')` 恒开）。不要填裸 `http://host:3105`（会绕过代理并 404）或 Docker 服务名（浏览器不可解析）；留空时前端 fallback 也是 `/api` |
 | `VITE_API_URL_EXTERNAL` | 空 | 外部直连地址（可选） |
 | `REACT_APP_API_URL` | `http://localhost:3105` | 旧变量名，compose 注入 admin-web 容器 |
 

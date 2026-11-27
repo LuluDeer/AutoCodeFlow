@@ -82,8 +82,7 @@ npx playwright test -c playwright.e2e.config.js     # e2e-full.spec.js 全场景
 
 | 变量 | 说明 |
 |---|---|
-| `VITE_API_URL` | （.env.example 基础项）API 地址，开发环境默认代理到 localhost:3105 |
-| `VITE_API_URL_INTERNAL` | 内部 API 地址；vite.config.ts define 缺省注入 http://localhost:3105，client.ts 代码兜底 '/api'（开发期 /api 走 Vite proxy → 3105） |
+| `VITE_API_URL_INTERNAL` | 内部 API 地址；模板值 `/api`（或留空走 `client.ts` fallback），开发期经 Vite proxy、部署经 nginx 反代到后端；后端全局 `/api` 前缀不可省，裸 URL 会让登录 404 |
 | `VITE_API_URL_EXTERNAL` | 公网地址（可空）；localStorage `autoflow_use_external_api` 切换 |
 | `VITE_PORT` | 开发服务器端口，默认 5176 |
 | `VITE_APP_TITLE` | 应用标题 |

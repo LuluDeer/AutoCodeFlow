@@ -9,7 +9,7 @@ AutoCodeFlow 管理后台前端 SPA，基于 React 19 + Vite 8 + Ant Design 6 + 
 ```bash
 cd apps/admin-web
 npm install
-cp .env.example .env    # 按需修改 API 地址
+cp .env.example .env    # 模板内 VITE_API_URL_INTERNAL=/api（同源反代），不要改成裸 URL
 npm run dev             # 启动开发服务器，默认 http://localhost:5176
 ```
 
@@ -136,4 +136,4 @@ npx playwright test
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `VITE_API_BASE_URL` | Admin API 地址 | `http://localhost:3105` |
+| `VITE_API_URL_INTERNAL` | Admin API 同源入口（dev 经 Vite proxy、部署经 nginx 反代到后端；后端全局 `/api` 前缀不可省，裸 URL 会让登录 404） | `/api`（留空同效） |

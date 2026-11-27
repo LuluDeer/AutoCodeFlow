@@ -39,7 +39,7 @@ const API_URL_EXTERNAL = import.meta.env.VITE_API_URL_EXTERNAL || '';
 ```
 
 - `setApiEnvironment/getApiEnvironment/getAvailableEnvironments` 负责切换与读取；timeout 30000
-- vite.config.ts 另用 `define` 注入 `process.env.VITE_API_URL_*`（缺省 `http://localhost:3105`）
+- `define` 注入 `process.env.VITE_API_URL_*` 的旧块已移除（消费方一律是 `import.meta.env`）；`VITE_API_URL_INTERNAL` 模板值必须是 `/api` 或留空，裸 URL 会让登录 404
 - 开发期 `/api` 由 Vite proxy 转发到 `http://localhost:3105`（vite.config.ts server.proxy）
 
 ### 请求/响应拦截器

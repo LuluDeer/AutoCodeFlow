@@ -1,37 +1,38 @@
 # 全链 E2E 测试（根级 Playwright）
-> 所属: docs/atlas/07-testing · 最后核对: 2026-10-29 · 对应代码: `playwright.e2e.config.js`、`apps/admin-web/e2e/legacy/e2e-full.spec.js`、`apps/admin-web/e2e/legacy/e2e-python-executor.spec.js`、`apps/admin-web/e2e/legacy/e2e-ui09-mobile.spec.js`、`scripts/e2e-full.sh`
+> 所属: docs/atlas/07-testing · 最后核对: 2026-11-26 · 对应代码: `playwright.e2e.config.js`、`apps/admin-web/e2e/legacy/e2e-full.spec.js`、`apps/admin-web/e2e/legacy/e2e-python-executor.spec.js`、`apps/admin-web/e2e/legacy/e2e-ui09-mobile.spec.js`、`apps/admin-web/e2e/legacy/e2e-release-chain-fullstack.spec.js`、`scripts/e2e-full.sh`
 
-> **本轮整篇重核（第 3 轮 docs-truth 登记项）**：旧版（2026-09-13）写「45 个 `test()` / describe 4 组 /
-> 用例编号 1–45 / ui09 用例 45–46」，**四处全过期**。逐文件点数的真值见下表：**51 个 `test()` 声明、
-> 9 个 describe 组**（`e2e-full.spec.js` 内 7 组 19 例，另两份各 1 组）。少的 3 例不是「被删」，是旧清单**从来没收录**（46 pull 派发 / 47 token 轮换 /
+> **本轮整篇重核（第 3 轮 docs-truth 登记项；R5 补 1 例真栈合体）**：旧版（2026-09-13）写「45 个 `test()` / describe 4 组 /
+> 用例编号 1–45 / ui09 用例 45–46」，**四处全过期**。逐文件点数的真值见下表：**52 个 `test()` 声明、
+> 9 个 describe 组**（`e2e-full.spec.js` 内 7 组 19 例，另两份各 1 组，R5 真栈合体 1 例无 describe 组）。少的 3 例不是「被删」，是旧清单**从来没收录**（46 pull 派发 / 47 token 轮换 /
 > E-3 解释器匹配，E-45 补齐后重编号）；另外 `security-redline-rbac`、`-ssrf` 两组旧文里的编号
 > 整体错了一位（旧写 36–40 / 41–43，实际 37–41 / 42–44）。
 
 ## 入口只有一个，先分清「不是入口」的两份副本
 
-- **唯一入口**：`playwright.e2e.config.js` —— `testDir: 'apps/admin-web/e2e/legacy'` + `testMatch: '**/e2e-*.spec.js'`。该目录下除三份 spec 只有一个 `package.json`（内容 `{"type":"commonjs"}`，用来隔离 admin-web 根 `"type":"module"`，否则 CJS `require` 会被按 ESM 加载而炸）。
-- `scripts/e2e-full.sh` 用 `--config=../../playwright.e2e.config.js` 一次跑完这三份；CI 的 `e2e-full` / `e2e-full-windows` 都只走这个入口（互斥对侧：`apps/admin-web/playwright.config.ts` 用 `testIgnore: '**/legacy/**'` 排除 legacy，见下节分工表）。
+- **唯一入口**：`playwright.e2e.config.js` —— `testDir: 'apps/admin-web/e2e/legacy'` + `testMatch: '**/e2e-*.spec.js'`。该目录下除四份 spec 只有一个 `package.json`（内容 `{"type":"commonjs"}`，用来隔离 admin-web 根 `"type":"module"`，否则 CJS `require` 会被按 ESM 加载而炸）。
+- `scripts/e2e-full.sh` 用 `--config=../../playwright.e2e.config.js` 一次跑完这四份；CI 的 `e2e-full` / `e2e-full-windows` 都只走这个入口（互斥对侧：`apps/admin-web/playwright.config.ts` 用 `testIgnore: '**/legacy/**'` 排除 legacy，见下节分工表）。
 - **`apps/admin-web/e2e-full.spec.js`（顶层，601 行 / 16 个 `test()` / 0 个 describe）不是入口**：它不在根级 `testDir` 内；`apps/admin-web/playwright.config.ts` 的 `testDir: './e2e'` 也圈不到它；`apps/admin-web/playwright.e2e.config.cjs` 的 `testMatch` 是 `**/e2e-full.spec.cjs`（`.cjs`，不匹配 `.js`）。内容是停在用例 16 的旧快照（`git log` 停在 R14/R15 那批），没有 RBAC / SSRF / 私服 / pull / token 轮换 / 解释器匹配任何一组。**任何入口都不执行它，统计例数绝不能用它当来源。**
 - **`apps/admin-web/e2e/e2e-ui09-mobile.spec.js` 是又一份同名副本**（1 个 `test()`，断言 TaskFormPage sticky 提交条，与 legacy 版断言不同）：它会被 admin-web 权威套件（`playwright.config.ts`，`testDir: './e2e'`）在**手动** `npx playwright test` 时拾取，但不经 `e2e-full.sh`、也不在 CI，**同样不计入根级全链例数**。
 
-## 用例总数（2026-10-29 逐文件静态点数）
+## 用例总数（2026-11-26 逐文件静态点数；R5 真栈合体 +1）
 
 | spec（均在 `apps/admin-web/e2e/legacy/`） | describe 组 | `test()` 声明 | 条件 `test.skip()` | 说明 |
 |---|---|---|---|---|
 | `e2e-full.spec.js` | 7 | **48** | 5 | 编号 1–47 连续 + 1 个 `E-3`；5 处 skip **全在用例体内**（运行时条件跳，不是声明） |
 | `e2e-python-executor.spec.js` | 1 | **1** | 1 | skip 在 describe 体层：`E2E_PYTHON_EXECUTOR_AVAILABLE!=1` 时整组跳 |
 | `e2e-ui09-mobile.spec.js` | 1 | **2** | 1 | skip 在用例体内：API seed 不出执行记录时跳「执行详情」 |
-| **合计（入口口径）** | **9** | **51** | **7** | 别名：`e2e-full.spec.js` 内部 = 顶层 29 例 + 7 组 19 例 |
+| `e2e-release-chain-fullstack.spec.js`（R5） | 0 | **1** | 0 | 第 74–78 轮发布审批链的**真后端+真浏览器**合体验收；无条件跳 |
+| **合计（入口口径）** | **9** | **52** | **7** | 别名：`e2e-full.spec.js` 内部 = 顶层 29 例 + 7 组 19 例 |
 
-> 合计行的 **9 / 51** 不是手抄的：`scripts/check-atlas-counts.mjs` 的第 ⑤ 项判据会逐份点数这三份
+> 合计行的 **9 / 52** 不是手抄的：`scripts/check-atlas-counts.mjs` 的第 ⑤ 项判据会逐份点数这四份
 > spec 的**行首** `test(` / `test.only(` 声明（排除 `test.skip(` 与注释），与本行不一致即红、
-> 解析不到本行也红。加/删用例后跑 `npm run check:atlas-counts` 即可知道该把 51 改成多少。
+> 解析不到本行也红。加/删用例后跑 `npm run check:atlas-counts` 即可知道该把 52 改成多少。
 
 默认实跑的用例数（不是声明数）：
 
-- 不启用私服（`E2E_PRIVATE_REGISTRY` 未设）→ 用例 45 条件跳过，**实跑 50 例**；
-- 本地没起 executor-python（`E2E_PYTHON_EXECUTOR_AVAILABLE!=1`）→ 再少 1 例（E-18 整组 skip），**49 例**；
-- CI 两个 e2e job 都装了 python 3.12（E-18 / L-5），故 **CI 基线 50 例**；46 / 47 / E-3 的 skip 是「共享 token 注册失败」的运行时报错面，不属默认跳过。
+- 不启用私服（`E2E_PRIVATE_REGISTRY` 未设）→ 用例 45 条件跳过，**实跑 51 例**；
+- 本地没起 executor-python（`E2E_PYTHON_EXECUTOR_AVAILABLE!=1`）→ 再少 1 例（E-18 整组 skip），**50 例**；
+- CI 两个 e2e job 都装了 python 3.12（E-18 / L-5），故 **CI 基线 51 例**；46 / 47 / E-3 的 skip 是「共享 token 注册失败」的运行时报错面，不属默认跳过。
 
 ## 顶层业务用例（无 describe，29 例，编号 1–29）
 

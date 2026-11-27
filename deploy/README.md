@@ -234,7 +234,8 @@ set $admin_api_upstream admin-api:3105;
 - `/api/health` 的 `status` 在**没有任何在线执行器**时是 `unhealthy`
   （`HEALTH_EXECUTOR_ONLINE_RATIO_MIN=0.5`），`/api/health/ready` 仍为
   `ready`。这是预期，不是故障——第一台执行器上线后自动转 healthy。
-- `admin-web` 镜像构建时 `VITE_API_URL_INTERNAL` 指向容器内 `admin-api:3105`，
-  前端走同源 `/api`，因此换域名**不需要重建前端**。
+- `admin-web` 镜像构建**不注入** `VITE_API_URL_INTERNAL`，浏览器 bundle 走
+  `client.ts` 的 `/api` fallback（同源经 nginx 反代到 `admin-api:3105`），因此换域名
+  **不需要重建前端**；compose 的 `environment` 是运行期注入，改不了已构建 bundle。
 - 改 `CORS_ORIGINS` / `ADMIN_WEB_ORIGIN` / `ADMIN_API_URL` / `API_BASE_URL`
   后要重建 admin-api 容器：`$DC up -d admin-api`。

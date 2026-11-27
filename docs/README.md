@@ -94,6 +94,7 @@
 | [PLAN-CLAIMS.md](PLAN-CLAIMS.md) | **多会话并行认领唯一事实源**（含迁移时间戳分配表）；历史轮次/里程碑/审计复盘已迁至 [plan/rounds/](plan/rounds/README.md) |
 | [OPEN-DECISIONS.md](OPEN-DECISIONS.md) | **待决策清单**（需人拍板的事，带证据出处与选项代价；不含已完成工作） |
 | [PROJECT-STATUS.md](PROJECT-STATUS.md) | **项目状态总览**（R290–R475 共 73 轮收口快照：交付地图 / 验证数字 / 未决项 / 发布与接手指引，已随 v2.3.0 合入 `main`） |
+| [COMMIT-PLAN-r75-r88.md](COMMIT-PLAN-r75-r88.md) | **工作台改造第 75–88 轮提交方案**（develop 未提交改动的 7 原子单元 + 3 独立组、拓扑序与逐组验证命令；方案就绪、未执行提交） |
 | [plan/ttfv-funnel-instrumentation.md](plan/ttfv-funnel-instrumentation.md) | **TTFV 首次成功漏斗埋点方案**（安装→首成功的事件模型/口径/隐私/分阶段落地） |
 | [plan/approval-lost-wakeup-fix.md](plan/approval-lost-wakeup-fix.md) | R296 审批 granted 丢失唤醒竞态的专项修复方案（方案穷举/反证/实施/验收；R322/R323 已按 E-pure+独立 dedup 命名空间落地，真库验证闭环） |
 | [plan/north-star-business-confirmed.md](plan/north-star-business-confirmed.md) | R324 北极星「被业务确认」判据 PM 拍板（严格判据 D / 双口径过渡 / 隐私解耦；纯决策文档） |

@@ -1,13 +1,15 @@
-# 项目状态总览（R290–R475 收口 + 第4轮真机补验快照）
+# 项目状态总览（R290–R475 已发布 + 工作台改造第 75–84 轮 develop 待提交快照）
 
-> **受众**：接手维护者 / 发布决策者 · **状态**：内部 · **最后核对**：2026-11-25
-> 一页看懂这批改动的整体状态：73 轮交付地图、当前验证数字、已知未决项、发布与接手指引。本文是阶段性快照，不替代各专项文档。**R290–R475 共 73 轮改动（R459 按主题分 11 组提交 + R475 追加 5 组提交）已合入 `main` 并随 `v2.3.0`（2026-11-22）发布；一次性验收/复演报告已归档至 `docs/archive/{reviews,verifies}/`。**
+> **受众**：接手维护者 / 发布决策者 · **状态**：内部 · **最后核对**：2026-11-27
+> 一页看懂这批改动的整体状态：交付地图、当前验证数字、已知未决项、发布与接手指引。本文是阶段性快照，不替代各专项文档。**R290–R475 共 73 轮改动已合入 `main` 并随 `v2.3.0`（2026-11-22）发布；工作台改造第 75–84 轮（10 轮）在 `develop` 上、未提交未发布，逐轮事实源见 [AGENT_HANDOFF.md](AGENT_HANDOFF.md) 头部。**
 > **第4轮真机补验（2026-11-24，HEAD=`4c531991`）**：此前「无 X/无 Chrome」系未导出 `XAUTHORITY` 的误判，图形环境打通后完成中台 Chrome + 桌面 Electron 双端真机补验（中台 8/8、桌面除 1 P1 外全过），返修 1 个 P1（桌面历史页日志查看器关闭后焦点归还）并真机复验；另补真机白屏量化归因（Xwayland 无 WM 的合成器 first-paint 迟到约 28s，属环境税、非产品缺陷）。最新逐轮事实源见 [AGENT_HANDOFF.md](AGENT_HANDOFF.md) 头部。
 > **数字口径**：轮次/项数均由命令实测（`git status --short | wc -l`、`ls docs/plan/*.md | wc -l`），不手写估计——历史快照的手写值曾漂移，本版已按实测校正。
 
 ---
 
 ## 1. 一句话状态
+
+**工作台改造第 75–84 轮（10 轮）在 `develop` 上待提交**（未发布）：围绕 objective「面向程序员/业务人员/老板」补齐三类受众主路径——业务人员方案卡发布链（批准必达跨进程恢复 + 发布失败一键重试）、老板驾驶舱（审批/价值/成本/TTFV 四卡 + gate_off 诚实化 + 角色化按 isAdmin 渲染）、程序员首次体验（VITE_API_URL 裸路径陷阱修复 + i18n 222 处硬编码中文迁移让 CI 门禁转绿）；并做两轮系统性质量收口（真栈 e2e 首次打通第 74–78 轮成果；CI-only 门禁体检抓 3 个被守卫链掩盖的红灯 lint:i18n/test:agent/test:sop 并纳入防复发）。功能可落地方向已接近穷尽，本轮转向收口固化而非制造低价值改动。10 轮全端实测见 §3、剩余项「为什么不做」见 §4。以下为已发布的 R290–R475 基线状态：
 
 **R290–R475 共 73 轮改动**（R459 按主题分 11 组入库 + R475 追加 5 组；含 2 个新迁移、13 个新脚本；`docs/plan/` 保留 8 篇活跃方案/口径/runbook，其余 17 篇一次性验收/复演报告已归档至 `docs/archive/{reviews,verifies}/`）已合入 `main` 并随 **`v2.3.0`** 发布。整批在「admin-api/admin-web 全量测试 + 全守卫链 + typecheck 8 端 + 迁移 up/幂等/down 全链（dev 与 :prod 双路径真机复演）+ 北极星健康自检 + **真浏览器+真后端端到端**」下全绿。R458–R475 补齐 demo 三句产品承诺真跑验证（成功执行/失败可诊断/零代码模板）、CLI flag 与示例配置一致性守卫、SDK 编程式集成冒烟测试，并经两轮独立 review 修复 7+ 真实缺口。R436/R437 补上最后一层覆盖（看板与生产启用路径真栈端到端）；R439 把两个真栈 e2e 接入 CI；R440/R441 空库复演 CI 精确序列与 `:prod` 迁移路径（无 dev/prod 分叉）。R442–R452 清掉全量回归的 4 处并发 flake、拍板升主三阈值并贯通脚本→API→看板→真栈回归闸、补齐 W4 留存与 SOP 成功率/接管率两个 ROADMAP 先行指标。R453–R457 把指标脚本 selftest 接入 CI、新建先行指标健康度判定（`evaluateHealth`，无样本不算达标）+ 一条命令采集入口（`metrics-health-collect`）。**至此 ROADMAP 先行指标全部有可复算实现或明确放弃结论，主体产品线已收口；但仍留有自主可落地项——第4轮真机补验暴露的返修/复验（P1 焦点归还已返修并复验）、以及 ADR-024 后端流式导出端点、ADR-031 步骤 3/5 体量重构等既有明确下一步的工作，均不依赖外部输入即可推进。**「剩余全部依赖外部输入」仅指升主阈值达标本、模板转化率埋点等确需生产样本或外部系统的项，不是全部未决项。
 
@@ -25,25 +27,39 @@
 | **先行指标补全线** | R451–R452 / R455–R457 | [W4 实例留存](plan/w4-retention.md) ≥40%、[SOP 成功率/人工接管率](plan/sop-success-rate.md) ≥90%/≤10% 可复算脚本（复用漏斗/SOP 数据，零 DDL）；[健康度判定](plan/metrics-health.md)（`evaluateHealth`，无样本不算达标）+ [一条命令采集](plan/metrics-health-collect.md)（`metrics-health-collect`，fail-closed）；升主三阈值（R448–R450）贯通脚本→API→看板→真栈回归闸 | 纯函数 selftest + 真库造数对账 + 真浏览器+真后端（升主看板 R450）；指标脚本 selftest 已接 CI（R453/R455） |
 | **首次体验验证线** | R458–R475 | [demo 真栈验收报告](archive/reviews/demo-first-experience-review.md)——三句产品承诺逐句真跑（成功执行/失败可诊断/零代码模板）；CLI flag 对账守卫 `check-cli-doc-flags`、示例配置/代码守卫 `check-examples-code`、SDK 编程式集成冒烟测试；两轮独立多 agent review 修复 7+ 真实缺口（含 SDK env 串扰、失败分类假绿、静态锚点假绿）；R475 分 5 组提交 | 真 docker compose 全栈真跑（R461 exit 0 两次含幂等）+ 静态守卫 selftest + SDK 进程内集成；未真跑生产环境 |
 
+### 工作台改造第 75–95 轮（develop 待提交，objective 面向三类受众）
+
+> 21 轮交付按受众分组；逐轮细节见 [AGENT_HANDOFF.md](AGENT_HANDOFF.md) 头部倒序段。全部为 develop 未提交改动，**未发布**。
+
+| 受众 / 主题 | 轮次 | 关键产物 | 最高验收级别 |
+|---|---|---|---|
+| **业务人员 · 发布链** | 75 / 78 / 90 / 92 | 批准必达跨进程恢复（argsDigest 对账）+ 发布失败一键重试（consume 前白名单）+ 审批三态诚实化（不再假成功+死路）+ 失败跨角色闭环（管理员 audit 重新发起审批，不绕四眼） | 真 PG e2e 第 3 级 + 真栈 e2e 第 4 级（R79 复验） |
+| **老板 · 驾驶舱与成本** | 76 / 77 / 81 / 84 / 91 / 93 / 94 | 四卡首屏（审批/价值/成本/TTFV）+ 诚实标缺 + 角色化（USER 只见审批卡，不看 ADMIN 三卡）+ TTFV 真实口径上屏 + gate_off 诚实化 + 价目表管理 UI + 顶层折算出数 + 时间窗口径 | 真 PG 出数 3.5/OK 第 3 级；驾驶舱 e2e 第 4 级（传输层 mock） |
+| **程序员 · 首次体验** | 80 / 82 | VITE_API_URL 裸路径陷阱修复（配置+文档+守卫）+ i18n 222 处硬编码中文迁移（CI `lint:i18n` 转绿） | 组件级第 2 级 + CI 门禁 EXIT 0 |
+| **质量与可靠性** | 79 / 83 / 86 / 87 / 88 | 真栈 e2e 打通第 74–78 轮成果（51 passed）+ CI-only 门禁体检（抓 lint:i18n/test:agent/test:sop 三红灯纳入链）+ 跨实例真双进程 selftest 37 断言 + 审批跨实例恢复真双实例 e2e | 真栈第 4 级 + 真进程第 3 级 |
+
 ## 3. 当前验证状态
 
-主 agent 最新实跑数字（**2026-11-26 全端聚合回归**，覆盖工作台改造 R1–R58 累积改动；4 路验证 agent 各跑一端 + 主控聚合，全部真实退出码；下方历史 flake 归因保留）：
+主 agent 最新实跑数字（**2026-11-27 全端聚合回归**：R290–R475 已发布基线 + 工作台改造第 75–84 轮 develop 累积改动；admin-api/admin-web/guards 由主控本会话实测，其余 7 端由验证 agent 本会话真跑，全部真实退出码）：
 
 | 项目 | 数字 | 结果 |
 |---|---|---|
-| admin-api 全量测试（`--maxWorkers=2`） | 551 suites passed（2 skipped）/ 9315 tests passed（6 skipped） | exit 0 |
-| admin-web 全量测试（`vitest run`） | 371 files / 3061 passed（1 skipped） | exit 0 |
+| admin-api 全量测试（`--maxWorkers=2`） | 582 suites passed（2 skipped）/ 9613 tests passed（6 skipped） | exit 0 |
+| admin-web 全量测试（`vitest run`） | 387 files / 3192 passed（1 skipped） | exit 0 |
 | executor-node 全量（`npx jest`） | 64 suites / 1877 passed（13 skipped） | exit 0 |
-| executor-python 全量（`pytest`，覆盖率门槛 86%） | 2010 passed（3 skipped）/ 87.32% 覆盖，达标 | exit 0 |
+| executor-python 全量（`node scripts/py.mjs ... pytest -q`，用仓库 .venv） | 2010 passed（3 skipped）/ 87.32% 覆盖，达标 | exit 0 |
 | acf-cli 全量（`vitest run`） | 16 files / 466 passed | exit 0 |
 | mcp-server 全量（`vitest run`） | 12 files / 370 passed（57 工具） | exit 0 |
 | node-sdk 全量（`npx jest`） | 6 suites / 151 passed | exit 0 |
 | executor-desktop 全量（`test:main` + `test:renderer`） | 65 main selftest + 306 renderer 断言全通过 | exit 0 |
-| workbench 全链真 PG e2e | 1 passed（preview→commit→quota 落库副作用断言） | exit 0 |
-| 跨切面审计 | 错误码中英同步 / 路由授权矩阵 293 routes / consumer-routes 293 组合 / 文档 263 链接零死链 | exit 0 |
-| `typecheck:all` | 8 个端 | exit 0 |
-| `test:guards:chain` | 全守卫链（含 e2e 迁移就绪守卫） | exit 0 |
-| north-star-health | 静态 5/5（真库 6/6） | exit 0 |
+| 跨切面审计 | 错误码中英同步 / 路由授权矩阵 / consumer-routes / 文档链接零死链 | exit 0 |
+| `typecheck:all` | 8 个端（api/specs/node/cli/mcp/node-sdk/desktop/web） | exit 0 |
+| `test:guards:chain` | 全守卫链（含 e2e 迁移就绪守卫 + 本会话新增 `test:agent`/`test:sop`） | exit 0 |
+| `lint:i18n`（CI 门禁，链外） | 222→0 硬编码中文，zh/en 各 4168 键 parity | exit 0 |
+| **跨实例 selftest（第 13 轮加固）** | 真双 admin-api 进程 + 真 PG/Redis：multi-instance 17/17 + outbox 7/7 + outbox-dup 13/13 = **37 断言全绿**；覆盖 leader election 恰 1、配置读穿、SKIP LOCKED claim 零重叠、双实例事件零重复 | exit 0 |
+| **审批跨实例恢复 e2e（第 14 轮补缺口）** | 两真 Nest 实例共享 PG/Redis：appA 申请+批准（Map 有 key）、appB 空 Map 走 findByKey 持久化恢复 → `sop_versions` 恰 1 行 `published_by='agent:tool-call'`、`agent_approvals.status='consumed'`；篡改反证零版本行 | exit 0（2/2） |
+| **真栈全链 e2e（`bash scripts/e2e-full.sh`，第 12 轮复验）** | **52 声明 / 51 passed / 1 skipped / 0 failed（2.8m）**；真 PG（时间戳命名的临时 e2e 库）+ 真 Redis + admin-api + executor-node/python + admin-web vite + 真 Chromium，零 page.route；R5 发布链真库副作用 + 网络证据 `apiResponses=120, bad=[]` | exit 0 |
+| north-star-health | 静态 5/5（真库 6/6，本会话未重跑，引用旧值） | exit 0 |
 
 > **历史口径（2026-11-25 R41 五端聚合）**：admin-api 511/8651、admin-web 367/3029、executor-node 64/1875、python 87.32%、cli 466、mcp 348、sdk 151 —— 本轮 2026-11-26 聚合**各端不低于历史基线，多数增长**（工作台改造 58 轮新增能力 + 测试）。CI 四分片口径（128/127/127/128 suites）仍是 CI job 的权威复演，本表为 `--maxWorkers=2` 本地口径。
 | 真浏览器深链 e2e（真 Chrome 158，系统 Chrome 通道） | 4 passed / 0 failed，pageerror=[] | exit 0 |
@@ -63,6 +79,12 @@
 | 指标接入运营看板 / 定时巡检 | W4/SOP 指标与健康度已可复算（脚本级），但看板接入与定时巡检需生产数据验证价值——生产未启用漏斗时每帧都是 no_data，无意义 | [健康度采集](plan/metrics-health-collect.md)；生产启用并积累样本后重开 |
 | A2 四个 Python 库处置 | 仓内三个有等价实现、零外部需求证据；删会丢 `R134-A1` 回归用例与 tag 史。维持不发布等 `check-publishable-wiring` 的 `review_by`（2026-12-15）到期再拍（届时选「冻结 + README 标注」成本最低） | [OPEN-DECISIONS A2](OPEN-DECISIONS.md)；`review_by` 到期变红时重开 |
 | D7 限流 12000/min | 该值是推算值（100 台 × 60/min 留 2 倍余量），需真机压测确认（需真实 execution token/UUID）——属测量问题，用改分桶语义回答方向错误；per-IP 名额表 + body-parser 前置闸已封住放大器 | [OPEN-DECISIONS D7](OPEN-DECISIONS.md)；目标拓扑含 >200 台共享出口时先调 env 再压测 |
+| 成本归责真实金额（老板看板出数） | **顶层总账单已闭环（第 91/93 轮）**：价目表管理 UI + `convertToAmount` 接进 stats，真 PG 验证配价目+非零 token → `currencyValue=3.5/priceReason=OK`；零样本仍诚实标缺。**剩余**：按项目/能力行级归责需外部业务权重来源（没有，做份额分摊即伪归责）+ 关联键 ADR（sessionId 写 SOP id）+ 生产 `capability_activation_log` 迁移 0105 + 真实 provider 配置（外部 API/运维），完整约 8–11 人日 | [AGENT_HANDOFF.md](AGENT_HANDOFF.md) 第 91/93 轮；**重开条件**：operator 对按项目归责的 8–11 人日立项拍板，或有 design partner 提供真实 provider 环境 |
+| 完整北极星严格值三态 DTO | **第 81 轮 gate_off 最小切片已覆盖用户可见冲突**；剩余 no_data/ok 细分是过度工程：严格值 SQL 有行则 `confirmed_events>=1`，「闸门开但零确认」的 no_data 数值仍应显示 0（不像 TTFV 可 null），加独立 dataStatus 只多一个「换标签的 0」，却要完整 openapi 重导出 + 4 处 tsc 夹具 + enum-drift + 对账脚本同步 | [AGENT_HANDOFF.md](AGENT_HANDOFF.md) 第 81 轮；**重开条件**：产品要求严格值独立可观测 或 代理值也需状态语义 |
+| TTFV 真 PG 对账（脚本 FIELD_PATHS 接 ttfv） | **用户价值 0 感知**：第 77 轮已上屏、第 81 轮已消除同屏冲突、第 4 级浏览器 e2e 已绿；权威口径已有逐字同源断言 + 口径哨。对账要改 6 处 + 双 CLI 适配 + 触碰全局 telemetry gate（有并行污染风险），约 0.5–1 人日，收益是后端/QA 回归护栏而非用户可见 | [AGENT_HANDOFF.md](AGENT_HANDOFF.md) 第 77 轮；**重开条件**：telemetry 真开启积累样本后，或口径出现真库类型/边界漂移证据 |
+| 安装包瘦身（≤100MB） | ROADMAP P1 唯一未做项，仓库零实现；按需下载 runtime + 真机验证成本高，且 electron-builder 仍打 executor-node/uv/agent-worker/playwright | [ROADMAP.md](ROADMAP.md) P1；**重开条件**：有明确 design partner 真机体积诉求 |
+| ~~审批单跨实例恢复的真双实例验证~~ | **第 14 轮已关闭**：新增 `release-cross-instance.e2e-spec.ts`，两真 Nest 实例共享 PG/Redis，appB 空 Map + findByKey spy 证明走持久化恢复，真库副作用 + 篡改反证 2/2 全绿；边界：两实例同一 OS 进程（DI 容器级隔离），非两 OS 进程 | [AGENT_HANDOFF.md](AGENT_HANDOFF.md) 第 88 轮；如需 OS 进程级证据另起多主机轮 |
+| 真跨主机拓扑 / 生产环境实测 | 第 13/14 轮跨实例验证是**单宿主双进程/双实例**，非多主机；生产 PG16 vs 本机 PG18 差异、真机长稳、通知渠道实测、私有仓库集成均未覆盖 | [ROADMAP.md](ROADMAP.md) P2；**重开条件**：有目标部署拓扑/真机环境时按 runbook 执行 |
 
 ## 5. 发布 / 接手指引
 
