@@ -1,5 +1,30 @@
 # AutoCodeFlow Agent Handoff
 
+## 本轮（2026-11-27 · 空降负责人纠偏轮）：定位纠偏 + 业务用户 403 死路闭环 + 工作台会话能力落地
+
+**方向来源**：objective 明确「外部空降负责人、不要盲信 md、项目定位有问题/功能没实现/体验不好、允许大刀阔斧」。先派 5 路**只读**侦察（定位、UX、未完成功能、参考项目、验证可信度），再按用户可验收路径切成 3 个写域并行实现（admin-web / admin-api / docs），主会话负责集成与定级验收。**结论：此前「功能可落地接近穷尽」不成立**——业务用户主路径系统性撞 ADMIN-only 403 墙、旗舰工作台只有 preview/commit 草稿无可运行会话、README 自我矛盾（「面向开发者」vs「面向业务人员/老板」）、文档宣称的「全绿」无留存日志佐证（仅有的两份归档日志实为红灯）。
+
+| 交付 | 内容 | 验收 |
+|---|---|---|
+| impl-authz-deadends (admin-web) | 新 `src/routes/route-registry.ts` 作为侧栏/命令面板/角色门槛**单一事实源**；`/inbox` 全角色可见；Dashboard 创建入口 USER→`/workbench`、ADMIN 不变；Workbench commit 成功 USER 不再指向 ADMIN-only `/sops`（改为诚实「已提交四眼审阅、草稿未运行」）；Inbox 四条深链按角色隐藏；命令面板截断提示+重试；AI 分析成功仅在真结果时提示；SSO 失败 toast+重试；硬编码占位/术语 i18n 化；403 人类标题 | web 379 files / **3122 passed** + tsc/i18n/eslint/size-caps 全绿 |
+| impl-workbench-session (admin-api) | `POST /api/workbench/sessions` + `GET /api/workbench/sessions/:id`，`@Roles(ADMIN,USER)`；服务端校验本人 draft SOP（他人 403/非 draft 400），会话钉死 `kind=sop_authoring`、`scope={sops:[sopId]}`、`createdBy=user:<id>`、`triggerSource=workbench`；DTO 白名单无 kind/scope 越权字段；`AgentSessionService`+真 `agent-jobs` 队列惰性装配（fail-fast，无假端口）；步骤/审批/产物读回摘要 | 模块 18 suites/**170 tests** + **真 PG 5/5（第 3 级）**：A 建会话库行字段断言、`queue.getJob` 命中 1 job、worker 真推进到 running；B 403/404 零副作用；越权字段 400；清理复查 0 残留 |
+| impl-workbench-ui (admin-web) | `api/workbench.ts` + `hooks/useWorkbenchSession.ts` + `components/workbench/{WorkbenchSessionPanel,WorkbenchSessionAction}.tsx`：commit 后「运行我的草稿」→ 2s 轮询（卸载清理/终态停）→ 状态/步骤/工具调用/审批/产物面板；403/400/404/503 本地化错误+重试；文案明确「受限起草会话」而非「已发布」 | 34 条新测试（含会话行为）+ 全量 3122 通过 |
+| impl-positioning (docs) | README 三语首屏重写为**单一人格（开发/运维）+单一承诺（给 AI 代理真实桌面之手，留下可审计证据）**；纠偏 4 类虚假宣称（replayable→可审计时间线无步骤回放、AI 规划→确定性方案卡脚手架、MCP 56→57、Jaeger OTLP 未导出）；新 `docs/POSITIONING.md` 能力矩阵（Shipped/Partial/Emerging）；ADR-044 修正「只在四页迭代」的过期描述并标注阶段 B/C 进行中 | `check-docs --check` **7/7**；README.en/zh 由源 README.md 重生成、readme-sync 逐字节过 |
+| 主控集成 | DTO 增强为显式嵌套类→`openapi:export`（API-I18N 19+7 条映射补齐）→`gen:api-types`；前端 API 客户端改用**生成类型**（消除 Writer 遗留的手写 `createdBy: number` 与后端 `string\|null` 的类型漂移）；openapi 纯增量 282 行、x-i18n-en 2016→2043、两个新端点在册 | 5 守卫（web-type-drift / field-drift / openapi-response-schema / api-i18n --check / docs）全 EXIT=0；tsc 双端 0；`check-size-caps`/`check-guards-wired` 0 |
+
+**定级与诚实边界**：
+- **最终定级：浏览器/真机第 4 级已补齐**——`scripts/fullstack-verify-workbench.sh` + `apps/admin-web/e2e/workbench-session-fullstack.spec.ts` 用一次性 PG/Redis + 真 admin-api(:3105) + 真 vite(:5176) + 真 chromium 跑通业务用户全旅程（ADMIN 建 USER → USER 浏览器登录 → 侧栏/⌘K 无 admin-only 死链 → UI preview→commit → 「运行我的草稿」→ 实时面板读回真后端状态 → API readback 校验 kind/scope/creator）。**机器可读证据**：`artifacts/verification/fullstack-workbench-20261127-141458/{report.json,spec-evidence.json,playwright-results.json,commands.txt,workbench-panel-success.png}`（exit 0、Playwright 1/1、命令与退出码、API 断言逐条在册）；无 mock、无 executor、无 `.env` 生产库污染、容器 trap 清理。此证据**取代**「未做第 4 级」的旧边界。
+- 会话在测试栈里终态为 `failed`，原因是 throwaway 栈 `AI_PROVIDER=disabled` 且无 LLM 路由/执行器（`route_unavailable`），**非本轮代码缺陷**；L4 只断言「会话已创建、已入队、读回真状态」，**未断言 agent 终局成功**（已记入 report.json gaps）。面板对终态有本地化提示，不会卡在「运行中」。
+- 外部审计发现验证基建本质是**大型文档一致性 linter**：守卫链 ~130 脚本多为文本断言，`check-guard-liveness` 只覆盖 20/~85 个 check-*；归档日志实为红灯。本轮报告只引用**自己实跑**的命令与输出，不引用历史「CHAIN_EXIT=0/9613 passed」自述。
+- 首次自行复跑真 PG e2e 用错 admin 口令得 401（5/5 红）——是调用方错误，读 `.env` 的真口令后 5/5 绿，如实记录。
+- 工作台会话是 `sop_authoring` 受限起草会话，**不是发布**：草稿仍需主管四眼批准 + 系统代理发布（ADR-045 不变）。阶段 B（新建会话）本轮落地，阶段 C（会话内工具过程/审批/产物的桌面端深度集成）仍未做；桌面窗口仍加载中台页面，非本地会话管理器。
+- 定位纠偏只改了 README 首屏/宣称与 ADR-044，**未改** ROADMAP/PROJECT-STATUS 内部日志（它们是过程记录非外部承诺）；业务人员「老板驾驶舱」仍依赖成本/TTFV 数据基础（需外部输入）。
+- 分支 `feat/positioning-ux-overhaul` 上实现，**未提交、未 push**。
+
+**提交**：按 4 个原子单元分批（admin-web 角色门控与 UX / admin-api 会话端点与 openapi 生成物 / admin-web 会话 UI / 定位文档与 ADR），不 push。
+
+---
+
 ## 本轮（2026-11-27 · 工作台改造第 96 轮）：客户端侧启动——desktop 独立工作台窗口阶段 A（真机第 4 级）
 
 **方向来源**：objective 本轮明确扩展「**中台和客户端两边都要搞**」。前 21 轮全在中台，客户端（executor-desktop/node/python）从未触及。operator 进一步明确产品形态：**只有 desktop 有工作台给业务人员当 agent 用、可新建会话、也可接入中台高级操作；node/python 只做 headless 执行器模式**。形态经确认选「独立工作台窗口，与执行器四页隔离」（化解之前 strategy/ADR-042「桌面壳只做窗口+凭证、四页不改、不重走 V2 重写」的顾虑）。

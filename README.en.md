@@ -6,10 +6,25 @@
   <img src="docs/assets/banner-en.png" alt="AutoCodeFlow — the open-source automation runtime" width="100%">
 </p>
 
-<p align="center">
-  Schedule scripts · Give AI agents hands on a real desktop ·<br/>
-  Keep every run observable, auditable and replayable.
-</p>
+**AutoCodeFlow gives AI agents hands on real desktops and leaves an auditable trail of what they did.** It is a self-hosted automation runtime for one primary persona: the developer / ops engineer who needs scheduled scripts and agent actions to be observable and verifiable on machines inside their own network.
+
+```bash
+git clone https://github.com/LuluDeer/AutoCodeFlow.git && cd AutoCodeFlow && ./scripts/demo.sh
+```
+
+One command starts an isolated local stack (own `.env` untouched), seeds demo tasks and SOPs, triggers a run and prints the UI URL and admin password. First run builds images (~3–8 min). Details: [quickstart](docs/quickstart.md) · [positioning brief](docs/POSITIONING.md).
+
+### What it is / What it is not
+
+| It is (today) | It is not (yet) |
+|---|---|
+| A scheduler + executor fleet for scripts and desktop GUI actions, with logs, retries and an **auditable timeline** built from stored run timestamps | A step-by-step **replay** engine — the timeline maps created/start/end times, it does not reconstruct individual steps |
+| A **deterministic plan-card scaffold**: goal + cadence produce a rule-checked SOP draft with acceptance `task_status=success` | An **AI planner** that autonomously designs an approach — `buildPreview` is template-based and calls no LLM |
+| An admin-review workflow where a **commit creates a draft that an admin must publish** before it goes live | A self-publishing agent loop; nothing reaches production without a human publish step |
+| An emerging **business-user workbench** (separate isolated desktop window + central `/workbench` web page) | A finished business-user product — window and URL shipped; in-session capabilities are still being implemented |
+| Structured `[trace]` logs with W3C `traceparent` propagated admin → executor → callback | A Jaeger-backed trace UI today — spans stay in-process; **OTLP export is planned**, not wired |
+
+> Stable work to scripts, long-tail work to agents, every action auditable. Business-user workflows are an emerging capability, not a finished promise.
 
 ## 🧭 What it is
 
@@ -236,7 +251,7 @@ flowchart LR
 | **Control plane** (`admin-api`, `admin-web`) | scheduling decisions, queueing and concurrency gates, run records, audit, approvals, notifications | task state, run timeline, streaming logs, the list of things waiting for a decision |
 | **Execution plane** (`executor-node` / `-python` / `-desktop`) | claim work, install dependencies, execute, report status / logs / artifacts | executor online + heartbeat, load, affinity-tag hits, desktop screenshots |
 | **Agent sessions** | multi-round reason → tool → observe, a tool allowlist per session kind, clarifications | each step's kind and cost, and a tool call parked at the approval gate |
-| **Storage** | PostgreSQL as the fact source, Redis for queues, artifacts on disk | a replayable timeline: the run record is the fact, the console is a projection of it |
+| **Storage** | PostgreSQL as the fact source, Redis for queues, artifacts on disk | an **auditable timeline**: the run record is the fact, the console is a projection of it (created/start/end times; no step replay) |
 
 **Interaction paths**
 
@@ -276,7 +291,7 @@ create task
 | **Alerting** | WeCom, DingTalk, Slack webhooks, SMTP email; rules, silences, HMAC-signed webhooks |
 | **Security** | Project-scoped RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs, two-person deploy approval, optional bubblewrap sandbox for Python tasks (secure overlay) |
 | **AI** | OpenAI / Ollama / Qwen for failure root-cause analysis, schedule suggestions and app health checks; MCP server for agents |
-| **Tooling** | `acf` CLI (69 subcommands), Node/Python SDKs, MCP server (56 tools), VitePress docs site |
+| **Tooling** | `acf` CLI (69 subcommands), Node/Python SDKs, MCP server (57 tools), VitePress docs site |
 
 ## 🚀 Quick start
 
@@ -429,7 +444,7 @@ Capability matrix and known divergences: [SDK guide](docs/sdk-guide.md). Runnabl
 - **API key (recommended for a long-lived server)** — admin web → **System → Settings → API Keys → New API Key**, pick `readonly` / `trigger` / `manage`, and copy the `acf_…` plaintext **once** (only its hash is stored). Keys never expire unless you set a validity; revocation applies on the next call. An API key is a strict subset of a JWT, but no MCP tool touches the credential/user/config endpoints, so it is enough here.
 - **User JWT (needed for ADMIN-only tools)** — there is no "copy my token" button in the web UI; run `acf login` and read `token` (15 min) from `~/.config/acf-cli/config.json`. Add `AUTOCODEFLOW_API_REFRESH_TOKEN` (the `refreshToken` field, 30 days) so the server refreshes on 401 instead of needing a restart.
 
-56 tools cover tasks, executions, executors, app deployments, SOPs, audit and approvals; permissions are enforced server-side from the API-key scope or the JWT role.
+57 tools cover tasks, executions, executors, app deployments, SOPs, audit and approvals; permissions are enforced server-side from the API-key scope or the JWT role.
 See [packages/mcp-server/README.md](packages/mcp-server/README.md) and the [MCP tools map](docs/atlas/05-interfaces/mcp-tools.md).
 
 ## 📦 Tech stack
@@ -458,7 +473,7 @@ AutoCodeFlow/
 │   └── registry-pypi/        private PyPI registry (FastAPI)
 ├── packages/
 │   ├── acf-cli/              the acf command line tool (@autocodeflow/cli)
-│   ├── mcp-server/           MCP server for AI agents (56 tools)
+│   ├── mcp-server/           MCP server for AI agents (57 tools)
 │   ├── autocodeflow-node-sdk/ Node.js SDK (@autocodeflow/sdk)
 │   ├── autoflow-sdk/         Python SDK (autoflow-sdk)
 │   ├── autocodeflow-ai/      Python AI helper library (0.3.2, frozen in-repo)
@@ -506,7 +521,7 @@ enforced by the `DOC-GOV` CI guard (`scripts/docs/check-docs.mjs`: dead links / 
 - **Credentials** — scoped API keys, per-execution callback tokens, executor shared-token rotation, TOTP 2FA, OIDC SSO.
 - **Isolation** — optional bubblewrap sandbox for Python tasks (secure overlay: user namespaces, read-only root, private tmp) and a child-process env allowlist.
 - **Network** — all outbound requests go through an SSRF guard with DNS pinning (private ranges denied by default, opt-in per integration).
-- **Audit** — full operation audit trail, two-person approval for deployments, replayable configuration history.
+- **Audit** — full operation audit trail, two-person approval for deployments, auditable configuration history (no step replay).
 - **Supply chain** — dependency review log, secret scanning (gitleaks), multi-arch image build gate, release hygiene audit.
 
 Please report vulnerabilities privately per [SECURITY.md](SECURITY.md) instead of opening a public issue.
