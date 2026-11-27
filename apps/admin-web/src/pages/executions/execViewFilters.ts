@@ -8,6 +8,7 @@ import dayjs, { type Dayjs } from 'dayjs';
 
 export interface ExecViewFilters {
   q: string;
+  /** 逗号分隔的状态数组（导出/列表请求直接透传；空数组表示无筛选）。 */
   status?: string;
   executor: string;
   runtime?: string;
@@ -39,7 +40,7 @@ export function isExecViewFilters(f: unknown): f is ExecViewFilters {
 /** 当前筛选 / 分页输入（页面状态直出，快照前不需复制）。 */
 export interface ExecFilterInputs {
   search: string;
-  statusFilter: string | undefined;
+  statusFilter: string[] | undefined;
   executorFilter: string;
   runtimeFilter: string | undefined;
   triggerTypeFilter: string | undefined;
@@ -51,7 +52,7 @@ export interface ExecFilterInputs {
 export function snapshotExecFilters(inputs: ExecFilterInputs): ExecViewFilters {
   return {
     q: inputs.search,
-    status: inputs.statusFilter,
+    status: inputs.statusFilter?.length ? inputs.statusFilter.join(',') : undefined,
     executor: inputs.executorFilter,
     runtime: inputs.runtimeFilter,
     triggerType: inputs.triggerTypeFilter,
@@ -65,7 +66,8 @@ export function snapshotExecFilters(inputs: ExecFilterInputs): ExecViewFilters {
 /** 回填视图口径所需的状态 setter（页面注入，模块不持有 React 状态）。 */
 export interface ExecFilterSetters {
   setSearch: (v: string) => void;
-  setStatusFilter: (v: string | undefined) => void;
+  /** 接收已解析的状态数组（深链/视图快照写入统一传数组）。 */
+  setStatusFilter: (v: string[] | undefined) => void;
   setExecutorFilter: (v: string) => void;
   setRuntimeFilter: (v: string | undefined) => void;
   setTriggerTypeFilter: (v: string | undefined) => void;
@@ -77,7 +79,11 @@ export interface ExecFilterSetters {
 /** 把快照口径回填到状态；时间区间任一时刻非法 → 空区间。 */
 export function restoreExecFilters(setters: ExecFilterSetters, f: ExecViewFilters): void {
   setters.setSearch(f.q);
-  setters.setStatusFilter(f.status);
+  setters.setStatusFilter(
+    typeof f.status === 'string'
+      ? f.status.split(',').map((s) => s.trim()).filter(Boolean)
+      : undefined,
+  );
   setters.setExecutorFilter(f.executor);
   setters.setRuntimeFilter(f.runtime);
   setters.setTriggerTypeFilter(f.triggerType);

@@ -1,15 +1,9 @@
 import { useCallback, useRef, useState } from 'react';
-import { Alert, Button, Card, Input, Select, Space, Typography } from 'antd';
+import { Button, Card } from 'antd';
 import { useTranslation } from 'react-i18next';
-import type { WorkbenchCadence } from '../api/workbench';
-import WorkbenchPlanSection from '../components/workbench/WorkbenchPlanSection';
-import WorkbenchRecordsSection from '../components/workbench/WorkbenchRecordsSection';
-import WorkbenchSessionAction from '../components/workbench/WorkbenchSessionAction';
-import WorkbenchSubmitSection from '../components/workbench/WorkbenchSubmitSection';
-import {
-  WorkbenchSessionListCard,
-  WorkbenchSessionRestoreCard,
-} from '../components/workbench/WorkbenchSessionPanel';
+import WorkbenchInspector from '../components/workbench/WorkbenchInspector';
+import WorkbenchSessionRail from '../components/workbench/WorkbenchSessionRail';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { useWorkbenchForm } from '../hooks/workbench-form';
 import {
   readWorkbenchAnchor,
@@ -17,127 +11,183 @@ import {
   useWorkbenchSession,
   type WorkbenchAnchor,
 } from '../hooks/useWorkbenchSession';
+import LegacyFlow from './workbench/LegacyFlow';
+import WorkbenchCenter from './workbench/WorkbenchCenter';
+import WorkbenchShell from './workbench/WorkbenchShell';
+import type { ComposerDraft } from '../components/workbench/WorkbenchComposer';
+import type { ComposerCadence } from './workbench/types-public';
 
-type Translate = import('i18next').TFunction;
-
-const cadenceOptions = (t: Translate): Array<{ value: WorkbenchCadence; label: string }> => [
-  { value: 'daily', label: t('workbench.cadence.daily') },
-  { value: 'weekly', label: t('workbench.cadence.weekly') },
-  { value: 'monthly', label: t('workbench.cadence.monthly') },
-];
+type Starter = { prompt: string; kind: 'chat' | 'sop_authoring' | 'plan'; cadence: ComposerCadence; token: number };
+const EMPTY_STARTER: Starter = { prompt: '', kind: 'chat', cadence: 'once', token: 0 };
+const TERMINAL = ['succeeded', 'completed', 'failed', 'cancelled'];
 
 export default function WorkbenchPage() {
   const { t } = useTranslation();
-  // 惰性转发 session.reset：form hook 必须先于会话 hook 调用（要先拿到
-  // commitResult/result/submittedInput 算锚点），点击预览时才解引用当前 reset。
-  const sessionResetRef = useRef<() => void>(() => {});
-  const {
-    goal, setGoal,
-    cadence, setCadence,
-    paramText, setParamText,
-    result, submittedInput,
-    error, previewing, handlePreview,
-    canConfirm, committing, commitError, commitResult, handleConfirm,
-    records, approvalStatus, approvalKey, isAdmin,
-  } = useWorkbenchForm({ onPreviewStart: () => sessionResetRef.current() });
+  const isMobile = useIsMobile();
+  const [railOpen, setRailOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(!isMobile);
+  const [legacyOpen, setLegacyOpen] = useState(true);
+  const [actingKey, setActingKey] = useState<string | null>(null);
+  const [starter, setStarter] = useState<Starter>(EMPTY_STARTER);
 
-  // Writer B：刷新后表单与 preview/commitResult 内存态都没了：优先用落盘锚点，
-  // URL/localStorage 中的 sessionId 则由 hook 自己恢复，运行按钮与会话面板因此不依赖内存。
+  // Lazy forward of session.reset: the form hook must run first (it computes
+  // the commit anchor needed by the session hook).
+  const sessionResetRef = useRef<() => void>(() => {});
+  const form = useWorkbenchForm({ onPreviewStart: () => sessionResetRef.current() });
   const [restoredAnchor] = useState<WorkbenchAnchor | null>(() => readWorkbenchAnchor());
-  const activeAnchor = sessionAnchor(commitResult, result?.cardHash, submittedInput?.goal) ?? restoredAnchor;
+  const activeAnchor = sessionAnchor(
+    form.commitResult,
+    form.result?.cardHash,
+    form.submittedInput?.goal,
+  ) ?? restoredAnchor;
   const sessionCtl = useWorkbenchSession(useCallback(() => activeAnchor, [activeAnchor]));
   sessionResetRef.current = sessionCtl.reset;
-  const {
-    sessionId, session, error: sessionError, starting: startingSession,
-    start: startSession, restore: restoreSession,
-    sessions, sessionsState, sessionsError, reloadSessions,
-  } = sessionCtl;
+
+  const { detail, streamStatus, sessionId, session } = sessionCtl;
+  const running = Boolean(detail && !TERMINAL.includes(detail.status));
+  const isLive = streamStatus === 'live' && running;
+
+  const handleNew = () => {
+    sessionCtl.reset();
+    setStarter((prev) => ({ ...EMPTY_STARTER, token: prev.token + 1 }));
+    if (isMobile) setRailOpen(false);
+  };
+
+  const handleStarter = (value: Omit<Starter, 'token'>) => {
+    setStarter((prev) => ({ ...value, token: prev.token + 1 }));
+    if (isMobile) setRailOpen(false);
+  };
+
+  const handleSend = (draft: ComposerDraft) => {
+    const context: Record<string, unknown> = {};
+    if (draft.cadence !== 'once') context.cadence = draft.cadence;
+    if (Object.keys(draft.params).length > 0) context.params = draft.params;
+    if (draft.attachmentNames.length > 0) context.attachments = draft.attachmentNames;
+    if (!sessionId || detail && TERMINAL.includes(detail.status)) {
+      void sessionCtl.startChat({
+        prompt: draft.prompt,
+        kind: starter.kind === 'chat' ? undefined : starter.kind,
+        ...(Object.keys(context).length > 0 ? { context } : {}),
+      });
+    } else {
+      void sessionCtl.sendMessage(draft.prompt, 'followup');
+    }
+  };
+
+  const handleDecide = (key: string, decision: 'grant' | 'deny' | 'withdraw') => {
+    setActingKey(key);
+    void sessionCtl.decideApproval(key, decision).finally(() => setActingKey(null));
+  };
+
+  const handleRetry = (text: string) => {
+    if (sessionId) void sessionCtl.sendMessage(text, 'followup');
+  };
+
+  const rail = (
+    <WorkbenchSessionRail
+      sessions={sessionCtl.sessions}
+      state={sessionCtl.sessionsState}
+      error={sessionCtl.sessionsError}
+      activeId={sessionId}
+      onNew={handleNew}
+      onStarter={handleStarter}
+      onRestore={(id) => { sessionCtl.restore(id); if (isMobile) setRailOpen(false); }}
+      onReload={sessionCtl.reloadSessions}
+    />
+  );
+
+  const inspector = (
+    <WorkbenchInspector
+      detail={detail}
+      actingKey={actingKey}
+      onDecide={handleDecide}
+      verification={{ cardHash: form.result?.cardHash, policyGeneration: form.result?.policyGeneration }}
+    />
+  );
+
+  const center = (
+    <WorkbenchCenter
+      detail={detail}
+      live={isLive}
+      running={running}
+      sending={sessionCtl.startingChat}
+      actingKey={actingKey}
+      starterPrompt={starter.prompt}
+      starterCadence={starter.cadence}
+      seedToken={starter.token}
+      onSend={handleSend}
+      onCancel={() => void sessionCtl.cancel()}
+      onDecide={handleDecide}
+      onRetry={handleRetry}
+    />
+  );
 
   return (
-    <div data-testid="workbench-page">
-      <Typography.Title level={3}>{t('workbench.page.title')}</Typography.Title>
-      <Typography.Paragraph type="secondary">
-        {t('workbench.page.desc')}
-      </Typography.Paragraph>
-
-      <Card title={t('workbench.card.business')} style={{ marginBottom: 16 }}>
-        <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
-          <div>
-            <div style={{ marginBottom: 4 }}>{t('workbench.field.goal')}</div>
-            <Input
-              placeholder={t('workbench.goal.placeholder')}
-              value={goal}
-              onChange={(e) => setGoal(e.target.value)}
-            />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>{t('workbench.field.cadence')}</div>
-            <Select<WorkbenchCadence>
-              value={cadence}
-              onChange={setCadence}
-              options={cadenceOptions(t)}
-              style={{ width: 200 }}
-            />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>{t('workbench.field.params')}</div>
-            <Input
-              placeholder={t('workbench.params.placeholder')}
-              value={paramText}
-              onChange={(e) => setParamText(e.target.value)}
-            />
-          </div>
-          <Button type="primary" loading={previewing} onClick={() => void handlePreview()}>
-            {t('workbench.preview.action')}
-          </Button>
-        </Space>
-      </Card>
-
-      {error ? <Alert type="error" showIcon title={error} style={{ marginBottom: 16 }} /> : null}
-
-      {result ? (
-        <WorkbenchPlanSection
-          result={result}
-          canConfirm={canConfirm}
-          committing={committing}
-          commitError={commitError}
-          onConfirm={() => void handleConfirm()}
-        />
-      ) : null}
-
-      {commitResult ? (
-        <WorkbenchSubmitSection
-          commitResult={commitResult}
-          approvalStatus={approvalStatus}
-          approvalKey={approvalKey}
-          isAdmin={isAdmin}
-          sessionAction={approvalStatus === 'submitted' ? (
-            <WorkbenchSessionAction
-              error={sessionError} starting={startingSession} sessionId={sessionId}
-              session={session} onStart={() => void startSession()}
-            />
-          ) : null}
-        />
-      ) : null}
-
-      {!commitResult && (sessionId || session || activeAnchor) ? (
-        <WorkbenchSessionRestoreCard
-          sessionId={sessionId}
-          session={session}
-          error={sessionError}
-          starting={startingSession}
-          onStart={() => void startSession()}
-        />
-      ) : null}
-      <WorkbenchSessionListCard
-        sessions={sessions}
-        state={sessionsState}
-        error={sessionsError}
-        onRestore={restoreSession}
-        onReload={reloadSessions}
+    <div data-testid="workbench-page" style={{ padding: 16, minHeight: 0 }}>
+      <WorkbenchShell
+        isMobile={isMobile}
+        railOpen={railOpen}
+        inspectorOpen={inspectorOpen}
+        rail={rail}
+        center={center}
+        inspector={inspector}
+        error={sessionCtl.error ?? sessionCtl.actionError}
+        fallback={streamStatus === 'polling' && Boolean(detail)}
+        onOpenRail={() => setRailOpen(true)}
+        onCloseRail={() => setRailOpen(false)}
+        onToggleInspector={() => setInspectorOpen((v) => !v)}
+        onCloseInspector={() => setInspectorOpen(false)}
       />
 
-      <WorkbenchRecordsSection records={records} />
+      <Card
+        size="small"
+        title={
+          <Button
+            type="link"
+            size="small"
+            onClick={() => setLegacyOpen((v) => !v)}
+            data-testid="workbench-legacy-toggle"
+          >
+            {t('workbench.legacy.title')} {legacyOpen ? '▲' : '▼'}
+          </Button>
+        }
+        style={{ marginTop: 16 }}
+      >
+        {legacyOpen ? (
+          <LegacyFlow
+            goal={form.goal}
+            setGoal={form.setGoal}
+            cadence={form.cadence}
+            setCadence={form.setCadence}
+            paramText={form.paramText}
+            setParamText={form.setParamText}
+            result={form.result}
+            canConfirm={form.canConfirm}
+            committing={form.committing}
+            commitError={form.commitError}
+            handleConfirm={() => void form.handleConfirm()}
+            commitResult={form.commitResult}
+            approvalStatus={form.approvalStatus}
+            approvalKey={form.approvalKey}
+            isAdmin={form.isAdmin}
+            error={form.error}
+            previewing={form.previewing}
+            handlePreview={() => void form.handlePreview()}
+            records={form.records}
+            sessionError={sessionCtl.error}
+            startingSession={sessionCtl.starting}
+            sessionId={sessionId}
+            session={session}
+            activeAnchor={activeAnchor}
+            startSession={() => void sessionCtl.start()}
+            sessions={sessionCtl.sessions}
+            sessionsState={sessionCtl.sessionsState}
+            sessionsError={sessionCtl.sessionsError}
+            restoreSession={sessionCtl.restore}
+            reloadSessions={sessionCtl.reloadSessions}
+          />
+        ) : null}
+      </Card>
     </div>
   );
 }

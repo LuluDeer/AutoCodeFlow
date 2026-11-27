@@ -173,10 +173,21 @@ const pagerBtn = (label: '上一页' | '下一页'): HTMLButtonElement => {
   return btn!;
 };
 
-/** 打开「稳定翻页」开关（antd Switch 渲染成 role="switch" 的 button）。 */
+/**
+ * 打开「稳定翻页」说明弹层并在其中启用游标分页（原 Switch 已改为能力保留的弹层按钮）。
+ *
+ * antd Popover 打开后 DOM 中同时存在触发按钮和弹层里的启用按钮，两者可访问名均为
+ * 「稳定翻页」；弹层渲染在 document.body 末尾（与触发按钮不同容器），故取最后一个
+ * 匹配项即为弹层内的启用按钮，避免 `findByRole` 因多匹配抛错或误点触发按钮把弹层关掉。
+ */
 async function enableStablePaging() {
-  const sw = await screen.findByRole('switch');
-  fireEvent.click(sw);
+  // 用 getAllBy* 等待触发按钮出现（首屏渲染），不要用 findByRole（多匹配时会抛错）
+  const triggers = await screen.findAllByRole('button', { name: /稳定翻页/ });
+  fireEvent.click(triggers[0]);
+  // 弹层内容在触发按钮之后追加，取最后一个「稳定翻页」按钮 = 弹层里启用按钮
+  const matches = await screen.findAllByRole('button', { name: /稳定翻页/ });
+  const enable = matches[matches.length - 1];
+  fireEvent.click(enable);
   // 切换会把游标栈重置成 keyset 起点并重取一次
   await waitFor(() => {
     expect(lastParams().cursor).toBe('');
@@ -208,14 +219,17 @@ describe('ExecutionsPage keyset 分页：默认路径零风险', () => {
     expect(findBtn(document.body, '下一页')).toBeNull();
   });
 
-  it('开关具备可访问名（aria-label），可被键盘/AT 定位', async () => {
+  it('稳定翻页能力可通过说明弹层发现（不再是无标签的开发者开关）', async () => {
     mockedTasks.allExecutions.mockResolvedValue(offsetFixture([exec({})]));
     renderPage();
     await screen.findByText('成功');
 
-    const sw = screen.getByRole('switch');
-    expect(sw.getAttribute('aria-label')).toBe('稳定翻页（游标分页，深翻页不受数据变动影响）');
-    expect(sw.getAttribute('aria-checked')).toBe('false');
+    // 初始渲染时只有触发按钮（弹层未打开），此处 getByRole 不会多匹配
+    const trigger = screen.getAllByRole('button', { name: /稳定翻页/ })[0];
+    expect(trigger).toBeTruthy();
+    fireEvent.click(trigger);
+    expect((await screen.findAllByText(/游标分页/)).length).toBeGreaterThan(0);
+    expect('cursor' in lastParams()).toBe(false);
   });
 });
 

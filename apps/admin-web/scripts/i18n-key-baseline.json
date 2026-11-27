@@ -32,6 +32,8 @@
     "pages/settings/SecuritySettings.tsx",
     "pages/settings/index.tsx",
     "pages/task-list-columns.tsx",
+    "components/workbench/WorkbenchSessionRail.tsx",
+    "layouts/buildShellMenu.tsx",
     "utils/agent-label.ts",
     "utils/cron-desc.ts",
     "utils/error.ts",

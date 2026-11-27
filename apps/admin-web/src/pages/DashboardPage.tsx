@@ -29,12 +29,9 @@ import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
 import RecentFailuresCard from '../components/dashboard/RecentFailuresCard';
 import KpiRow from '../components/dashboard/KpiRow';
 import TrendChart from '../components/dashboard/TrendChart';
-import ApprovalQueueCard from '../components/dashboard/ApprovalQueueCard';
-import CostPostureCard from '../components/dashboard/CostPostureCard';
 import { buildTrendSeries } from '../utils/trendSeries';
+import { ExecutiveCockpitSection } from '../layouts/ExecutiveCockpitSection';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
-import NorthStarCard from '../components/dashboard/NorthStarCard';
-import TtfvCard from '../components/dashboard/TtfvCard';
 import DashboardOnboardingSection from '../components/onboarding/DashboardOnboardingSection';
 import { useMetricsStream, useMetricsStreamDegraded, type MetricsStreamStatus } from '../hooks/useMetricsStream';
 import { useProjectFilter } from '../hooks/useProjectFilter';
@@ -353,6 +350,8 @@ export default function DashboardPage() {
         onOpenExecutions={() => nav('/executions')}
       />
 
+      {/* IA-DASHBOARD：清晰分层——运行脉搏 / 经营成本；不再是一整面卡片墙。 */}
+      <Text strong style={{ fontSize: 15, marginTop: 4 }}>{t('dashboard.title')}</Text>
       {/* P2-1 口径分组（随当前项目）：任务/执行类聚合，请求带 projectId，切项目数值变化。 */}
       <ScopeSectionHeader scope="project" testId="scope-group-project" />
 
@@ -367,14 +366,7 @@ export default function DashboardPage() {
         sparkTrend={sparkTrend}
       />
 
-      {/* 老板驾驶舱：首屏聚合待审批、成本诚实标缺与北极星价值（全局口径）。 */}
-      <div data-testid="boss-cockpit" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <Text strong style={{ fontSize: 15 }}>{t('dashboard.cockpit.title')}</Text>
-        <Row gutter={[16, 16]} align="stretch">
-          <Col xs={24} sm={12} xl={6}><ApprovalQueueCard /></Col>
-          {isAdmin && <><Col xs={24} sm={12} xl={6}><CostPostureCard /></Col><Col xs={24} sm={12} xl={6}><NorthStarCard /></Col><Col xs={24} sm={12} xl={6}><TtfvCard /></Col></>}
-        </Row>
-      </div>
+      <ExecutiveCockpitSection isAdmin={isAdmin} />
 
       {/* 趋势图 */}
       <Card

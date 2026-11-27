@@ -193,7 +193,8 @@ test('USER full journey: create user via API -> real UI login -> workbench commi
   await expect(page.getByTestId('workbench-page')).toBeVisible();
   const goal = `Level4 真栈验收：汇总昨日订单异常并推送日报 ${suffix}`;
   await page.getByPlaceholder('例如：每周汇总项目状态并生成报告').fill(goal);
-  await page.locator('[data-testid="workbench-page"] .ant-select').first().click();
+  // 频率下拉定位到 legacy 方案草稿区（左侧会话栏也有 .ant-select，不能用全局 first()）。
+  await page.getByText('执行频率').locator('..').getByRole('combobox').click();
   await page.locator('.ant-select-item-option-content').getByText('每周', { exact: true }).click();
   await page.getByRole('button', { name: /预\s*览\s*方\s*案/ }).click();
   await expect(page.getByRole('heading', { name: /^方案卡：/ })).toBeVisible({ timeout: 30_000 });

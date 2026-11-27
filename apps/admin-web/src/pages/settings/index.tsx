@@ -945,68 +945,84 @@ function AiConfigTab() {
 export default function SettingsPage() {
   const isAdmin = useIsAdmin();
   const { t } = useTranslation();
-  // D-P2-14（设计审计 2026-09-22）：Tabs 此前非受控——刷新/深链/前进后退永远回到
-  // 第一个 Tab，用户在「事件订阅」改完配置一刷新就丢了位置。改走 ?tab=（与
-  // ExecutionDetailPage 同源范式）：按当前渲染的 tabs key 集合归一，非法/缺失回退
-  // 到第一个 Tab（admin=token，普通用户=ai），与旧的非受控默认行为一致。
+  // D-P2-14：Tabs 用 ?tab= 深链；默认第一个 Tab——
+  // ADMIN 保持原顺序（token），USER 直接落到「安全 / API Keys」账号设置。
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const tabs = [
-    // R4 收紧矩阵：共享 Token 读/生成 ADMIN-only，非管理员直接不渲染该 Tab
-    ...(isAdmin
-      ? [{ key: 'token', label: <Space><KeyOutlined aria-hidden />{t('sysSettings.tab.token')}</Space>, children: <TokenSection /> }]
-      : []),
-    {
-      key: 'ai',
-      label: <Space><RobotOutlined aria-hidden />{t('sysSettings.tab.ai')}</Space>,
-      children: (
-        <>
-          <AiConfigTab />
-          {/* N11 同理：provider 读面回显 baseUrl/模型拓扑、写面能改出站目标 → ADMIN-only */}
-          {isAdmin ? <AiProvidersSettings /> : null}
-        </>
-      ),
-    },
-    {
-      key: 'config',
-      label: t('sysSettings.tab.config'),
-      children: <SystemConfigTab />,
-    },
-    // SEC-03: 安全设置（TOTP + 会话管理）——所有登录用户可用（仅涉及本人账号），
-    // 置于末位 Tab：不改变既有 Tab 排序/默认激活行为（settings.ai 等既有测试依赖）
-    {
-      key: 'security',
-      label: <Space><SafetyCertificateOutlined aria-hidden />{t('sysSettings.tab.security')}</Space>,
-      children: <SecuritySettings />,
-    },
-    // R311: TTFV 授权（opt-in 匿名统计）——紧随安全设置；端点为 ADMIN-only，
-    // 但设置页本身就是管理面，Tab 常量呈现，后端守卫负责最终鉴权。
-    {
-      key: 'telemetry',
-      label: <Space><BarChartOutlined aria-hidden />{t('sysSettings.tab.telemetry')}</Space>,
-      children: <TelemetrySettings />,
-    },
-    // AUTH-03: 限权 API Key 管理（CI/CD 机器认证）——所有登录用户管理本人 Key；
-    // 放在安全设置之后，不改变既有 Tab 默认激活行为
-    {
-      key: 'api-keys',
-      label: <Space><ApiOutlined aria-hidden />{t('sysSettings.tab.apikeys')}</Space>,
-      children: <ApiKeysSettings />,
-    },
-    // FEAT-15: 事件订阅（webhook 出站 + 死信 replay）——ADMIN 看全部、普通用户
-    // 看自己的 + 系统级（后端读面语义），置于末位不改变既有 Tab 默认激活行为
-    {
-      key: 'event-subscriptions',
-      label: <Space><BellOutlined aria-hidden />{t('sysSettings.tab.events')}</Space>,
-      children: <EventSubscriptionsSettings />,
-    },
-    // N20 成本线 P1：价目表置于末位，保持既有 Tab 排序与 ?tab= 默认回退不变。
-    {
-      key: 'price',
-      label: <Space><DollarOutlined aria-hidden />{t('sysSettings.tab.price')}</Space>,
-      children: <PriceSettings />,
-    },
-  ];
+  /**
+   * IA-SETTINGS：USER 只保留账号相关面（安全 + 本人的 API Keys），
+   * ADMIN-only 的配置/AI/遥测/价目/事件订阅/共享 Token 全部不渲染，
+   * 避免用户撞 403 或看到与本人无关的锁死页。
+   */
+  const tabs = isAdmin
+    ? [
+        { key: 'token', label: <Space><KeyOutlined aria-hidden />{t('sysSettings.tab.token')}</Space>, children: <TokenSection /> },
+        {
+          key: 'ai',
+          label: <Space><RobotOutlined aria-hidden />{t('sysSettings.tab.ai')}</Space>,
+          children: (
+            <>
+              {/* 单一 provider 面：新注册表是默认且唯一的编辑入口。 */}
+              <AiProvidersSettings />
+              {/* 旧配置仍可读，但显式折叠并 warning，避免新旧两套表单并排误导。 */}
+              <details style={{ marginTop: 16 }}>
+                <summary style={{ cursor: 'pointer', fontSize: 13 }}>
+                  <Space size={6}>
+                    <SafetyCertificateOutlined aria-hidden />
+                    {t('sysSettings.tab.ai')} · {t('aiProviders.legacy')}
+                  </Space>
+                </summary>
+                <Alert
+                  type="warning"
+                  showIcon
+                  title={t('aiProviders.legacyHint')}
+                  style={{ marginTop: 8 }}
+                />
+                <div style={{ marginTop: 8 }}><AiConfigTab /></div>
+              </details>
+            </>
+          ),
+        },
+        { key: 'config', label: t('sysSettings.tab.config'), children: <SystemConfigTab /> },
+        {
+          key: 'security',
+          label: <Space><SafetyCertificateOutlined aria-hidden />{t('sysSettings.tab.security')}</Space>,
+          children: <SecuritySettings />,
+        },
+        {
+          key: 'api-keys',
+          label: <Space><ApiOutlined aria-hidden />{t('sysSettings.tab.apikeys')}</Space>,
+          children: <ApiKeysSettings />,
+        },
+        {
+          key: 'event-subscriptions',
+          label: <Space><BellOutlined aria-hidden />{t('sysSettings.tab.events')}</Space>,
+          children: <EventSubscriptionsSettings />,
+        },
+        {
+          key: 'telemetry',
+          label: <Space><BarChartOutlined aria-hidden />{t('sysSettings.tab.telemetry')}</Space>,
+          children: <TelemetrySettings />,
+        },
+        {
+          key: 'price',
+          label: <Space><DollarOutlined aria-hidden />{t('sysSettings.tab.price')}</Space>,
+          children: <PriceSettings />,
+        },
+      ]
+    : [
+        {
+          key: 'account',
+          label: <Space><SafetyCertificateOutlined aria-hidden />{t('sysSettings.tab.security')} / {t('sysSettings.tab.apikeys')}</Space>,
+          children: (
+            <>
+              <SecuritySettings />
+              <div style={{ marginTop: 16 }}>{t('sysSettings.tab.apikeys')}</div>
+              <ApiKeysSettings />
+            </>
+          ),
+        },
+      ];
 
   // D-P2-14：按渲染出的 tabs key 归一 ?tab=，命中其一才采用，否则回退首个 Tab。
   const tabKeys = tabs.map((tb) => tb.key);
@@ -1022,14 +1038,6 @@ export default function SettingsPage() {
         title={t('sysSettings.title')}
         description={t('sysSettings.description')}
       />
-      {!isAdmin && (
-        <Alert
-          type="info"
-          showIcon
-          title={t('sysSettings.nonAdminTip')}
-          style={{ marginBottom: 16 }}
-        />
-      )}
       <Tabs
         activeKey={activeKey}
         onChange={(key) => {

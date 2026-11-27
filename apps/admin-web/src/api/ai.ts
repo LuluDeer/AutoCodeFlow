@@ -75,6 +75,10 @@ export interface AiProviderView {
   hasApiKey: boolean;
   /** true = 由旧配置键合成（尚未写入注册表）。 */
   legacy: boolean;
+  deniedForUse?: boolean;
+  allowedModels?: string[];
+  deniedModels?: string[];
+  modelEnabled?: Record<string, boolean>;
 }
 
 export interface AiProviderAdminView {

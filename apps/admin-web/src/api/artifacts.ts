@@ -42,6 +42,12 @@ export interface ExecutionArtifact {
   sha256: string;
 }
 
+/** 有界产物预览响应（对齐后端 ArtifactPreviewResponseDto；generated 类型可能滞后）。 */
+export type ArtifactPreview = components['schemas']['ArtifactPreviewResponseDto'];
+
+/** 有界产物预览默认上限（后端默认 64 KiB，允许 1024..262144）。 */
+export const ARTIFACT_PREVIEW_MAX_BYTES = 65_536;
+
 export const artifactsApi = {
   /**
    * 读取某次执行的产物清单
@@ -90,6 +96,17 @@ export const artifactsApi = {
    */
   listIndex: (query: ArtifactIndexQuery, signal?: AbortSignal) =>
     client.get<PageResult<ArtifactRow>>('/artifacts', { params: query, signal }),
+
+  previewArtifact: (
+    execId: string,
+    name: string,
+    maxBytes: number = ARTIFACT_PREVIEW_MAX_BYTES,
+    signal?: AbortSignal,
+  ) =>
+    client.get<ArtifactPreview>(
+      `/tasks/executions/${execId}/artifacts/${encodeURIComponent(name)}/preview`,
+      { params: { maxBytes }, signal },
+    ) as Promise<ArtifactPreview>,
 
   /**
    * 取产物原始字节（预览用；与 downloadArtifact 同一下载端点，区别是不触发保存、

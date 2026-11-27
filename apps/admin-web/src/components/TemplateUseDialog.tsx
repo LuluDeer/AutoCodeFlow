@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Form, Input, Modal } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
@@ -6,23 +6,26 @@ import { taskTemplatesApi, type TaskTemplate } from '../api/task-templates';
 import { queryKeys } from '../api/queries';
 import { showApiError } from '../utils/error';
 import { message } from '../utils/toast';
+import ManifestParamsFields from './template-use/ManifestParamsFields';
+import RawParamsEditor from './template-use/RawParamsEditor';
+import {
+  buildInstantiateOverlay,
+  initialParamValue,
+  normalizeParam,
+  readManifestParams,
+  type ManifestParam,
+  type SupportedParamType,
+} from './template-use/manifestParams';
 
 /** 与 admin-api `TASK_NAME_MAX_LENGTH` 对齐（DB varchar(255)，按码点计）。 */
 const TASK_NAME_MAX_LENGTH = 255;
-
-/** 控制字符（C0 + DEL + 格式字符）。与后端 `IsTaskName` 的判据同源。 */
 const CONTROL_CHARS_RE = /[\p{Cc}\p{Cf}]/gu;
 
-/** 本地时间戳 `yyyyMMdd-HHmmss`（用本地时区，降低连续创建撞名的概率）。 */
 function localStamp(now: Date): string {
   const pad = (n: number): string => String(n).padStart(2, '0');
   return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 }
 
-/**
- * 「使用模板」弹窗的默认任务名：`<模板名>-yyyyMMdd-HHmmss`。
- * 必须开箱即可提交：消掉控制字符、首尾空白与超长，清空后回退 `task`。
- */
 function defaultTaskName(templateName: string, now: Date = new Date()): string {
   const suffix = `-${localStamp(now)}`;
   const base = templateName.replace(CONTROL_CHARS_RE, ' ').trim() || 'task';
@@ -37,23 +40,35 @@ interface TemplateUseDialogProps {
   onCreated: (id: string, name: string) => void;
 }
 
-/**
- * 「使用模板」= 直接实例化（POST /task-templates/:id/instantiate）。
- *
- * 从 TaskTemplatesPage 抽出以控制页面组件函数体体量；表单状态、同步锁与
- * 提交语义与原内联实现保持一致：失败（如 409 重名）弹窗保持打开并保留输入，
- * 成功后失效任务缓存并由父级跳转任务详情。
- */
+type ParamEntry = { name: string; param: ManifestParam; type: SupportedParamType };
+
+/** 「使用模板」：采集任务名 + 清单声明的 params，实例化时以 body overlay 透传。 */
 export default function TemplateUseDialog({ template, onClose, onCreated }: TemplateUseDialogProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [form] = Form.useForm<{ name: string }>();
+  const [form] = Form.useForm<{ name: string; params?: Record<string, unknown> }>();
   const [submitting, setSubmitting] = useState(false);
+  const [rawParams, setRawParams] = useState('{}');
+  const [rawError, setRawError] = useState<string | null>(null);
   const submittingRef = useRef(false);
 
+  const manifestParams = useMemo(() => readManifestParams(template?.config), [template]);
+  const entries = useMemo<ParamEntry[]>(() => {
+    if (!manifestParams) return [];
+    return Object.entries(manifestParams)
+      .map(([name, param]) => ({ name, param, type: normalizeParam(name, param) }))
+      .filter((entry): entry is ParamEntry => entry.type !== null);
+  }, [manifestParams]);
+  const useRawEditor = !!manifestParams && entries.length === 0;
+
   useEffect(() => {
-    if (template) form.setFieldsValue({ name: defaultTaskName(template.name) });
-  }, [template, form]);
+    if (!template) return;
+    const defaults: Record<string, unknown> = {};
+    for (const entry of entries) defaults[entry.name] = initialParamValue(entry.param, entry.type);
+    form.setFieldsValue({ name: defaultTaskName(template.name), params: defaults });
+    setRawParams('{}');
+    setRawError(null);
+  }, [template, entries, form]);
 
   const close = () => {
     submittingRef.current = false;
@@ -63,34 +78,51 @@ export default function TemplateUseDialog({ template, onClose, onCreated }: Temp
   };
 
   const handleCancel = () => {
-    // 请求在途时不允许关闭：避免用户以为已取消、实际任务已创建。
     if (submittingRef.current) return;
     close();
   };
 
+  const parseRawParams = (): Record<string, unknown> | null => {
+    try {
+      const parsed: unknown = JSON.parse(rawParams);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        setRawError(t('templates.useDialog.rawParamsObject'));
+        return null;
+      }
+      setRawError(null);
+      return parsed as Record<string, unknown>;
+    } catch {
+      setRawError(t('templates.useDialog.rawParamsInvalid'));
+      return null;
+    }
+  };
+
   const handleConfirm = async () => {
     if (!template || submittingRef.current) return;
-    let values: { name?: string };
+    let values: { name?: string; params?: Record<string, unknown> };
     try {
       values = await form.validateFields();
     } catch {
-      // 校验错误（required/whitespace）由 Form.Item 内联红字呈现，不发请求。
       return;
     }
     const name = (values.name ?? '').trim();
     if (!name) return;
 
+    const params = useRawEditor ? parseRawParams() : (values.params ?? {});
+    if (!params) return;
+
     submittingRef.current = true;
     setSubmitting(true);
     try {
-      const created = await taskTemplatesApi.instantiate(template.id, { name });
+      const created = await taskTemplatesApi.instantiate(
+        template.id,
+        buildInstantiateOverlay(name, params),
+      );
       message.success(t('templates.useDialog.created', { name: created.name ?? name }));
       close();
-      // 任务列表/统计缓存立即失效，返回列表时能看到刚创建的任务。
       void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all });
       onCreated(created.id, created.name ?? name);
     } catch (err: unknown) {
-      // 409 重名等后端拒因经 getErrMsg 透出（拦截器已弹过的错误会被去重）。
       showApiError(err, t('templates.useDialog.fail'));
     } finally {
       submittingRef.current = false;
@@ -113,7 +145,7 @@ export default function TemplateUseDialog({ template, onClose, onCreated }: Temp
       keyboard={!submitting}
       mask={{ closable: !submitting }}
       destroyOnHidden
-      width={520}
+      width={560}
     >
       {template && (
         <>
@@ -124,11 +156,7 @@ export default function TemplateUseDialog({ template, onClose, onCreated }: Temp
             <Form.Item
               name="name"
               label={t('templates.useDialog.name')}
-              rules={[{
-                required: true,
-                whitespace: true,
-                message: t('templates.useDialog.nameRequired'),
-              }]}
+              rules={[{ required: true, whitespace: true, message: t('templates.useDialog.nameRequired') }]}
             >
               <Input
                 data-testid="instantiate-name-input"
@@ -137,7 +165,16 @@ export default function TemplateUseDialog({ template, onClose, onCreated }: Temp
                 autoFocus
               />
             </Form.Item>
+            {manifestParams && <ManifestParamsFields entries={entries} />}
           </Form>
+          {useRawEditor && (
+            <RawParamsEditor
+              value={rawParams}
+              onChange={(v) => { setRawParams(v); setRawError(null); }}
+              entries={entries}
+              error={rawError}
+            />
+          )}
           <span>{t('templates.useDialog.hint')}</span>
         </>
       )}

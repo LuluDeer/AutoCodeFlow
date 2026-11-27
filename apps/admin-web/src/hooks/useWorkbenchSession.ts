@@ -1,20 +1,32 @@
 /**
- * UX-AUDIT / Writer B：工作台受限起草会话的状态编排（创建 + 轮询 + 错误 + 刷新恢复）。
+ * Workbench session orchestration: creation, live SSE timeline, error/recovery,
+ * and refresh restoration.
  *
- * 恢复事实源优先级：URL query `session` > localStorage；两者都缺时才回落到
- * 「我的会话」列表（GET /workbench/sessions）由用户显式选择。锚点/commitResult
- * 也落盘，刷新后运行按钮不再完全依赖内存表单态。
+ * Recovery source priority: URL query `session` > localStorage; when both are
+ * missing the user picks from "my sessions" (GET /workbench/sessions).
+ *
+ * Live updates use SSE (`createSseClient` + short-lived ticket) with dynamic
+ * `fromSeq` resume. REST polling is a fallback that starts ONLY when the stream
+ * reports a reconnect/error state, and stops again once the stream is live.
+ * Every effect owns its client and aborts it on cleanup, so switching sessions
+ * can never leave two streams behind.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as workbenchApiModule from '../api/workbench';
 import type { CommitResult } from '../api/workbench';
-import {
-  isTerminalSession,
-  type WorkbenchSessionView,
-} from '../components/workbench/WorkbenchSessionPanel';
+import type { WorkbenchSessionView } from '../components/workbench/WorkbenchSessionPanel';
+import type { WorkbenchStreamStatus } from '../pages/workbench/stream';
+import { useWorkbenchLiveSession } from './workbench/useWorkbenchLiveSession';
+import type {
+  WorkbenchApprovalDecision,
+  WorkbenchCreateChatInput,
+  WorkbenchMessageMode,
+  WorkbenchSessionDetail,
+  WorkbenchSessionListItem,
+} from '../pages/workbench/types-public';
 
-/** 命名空间取值兼容旧测试的部分 mock：缺失导出就是 undefined，而不是抛"No export is defined"。 */
+/** Namespace lookups tolerate partial mocks: a missing export is undefined, never a throw. */
 type WorkbenchApiModule = typeof workbenchApiModule;
 function pickApi<K extends keyof WorkbenchApiModule>(key: K): WorkbenchApiModule[K] | undefined {
   return Object.prototype.hasOwnProperty.call(workbenchApiModule, key)
@@ -24,9 +36,11 @@ function pickApi<K extends keyof WorkbenchApiModule>(key: K): WorkbenchApiModule
 const createWorkbenchSession = pickApi('createWorkbenchSession');
 const getWorkbenchSession = pickApi('getWorkbenchSession');
 const listWorkbenchSessions = pickApi('listWorkbenchSessions');
+const createWorkbenchChatSession = pickApi('createWorkbenchChatSession');
+const postWorkbenchMessage = pickApi('postWorkbenchMessage');
+const cancelWorkbenchSession = pickApi('cancelWorkbenchSession');
+const decideWorkbenchApproval = pickApi('decideWorkbenchApproval');
 
-/** 会话轮询间隔（毫秒）。终态或卸载即停止。 */
-const SESSION_POLL_MS = 2000;
 const SESSION_QUERY_KEY = 'session';
 const SESSION_STORAGE_KEY = 'workbench.sessionId';
 const ANCHOR_STORAGE_KEY = 'workbench.anchor';
@@ -38,32 +52,35 @@ export interface WorkbenchAnchor {
   expectedCardHash: string;
 }
 
-export interface WorkbenchSessionListItem {
-  sessionId: string;
-  status: string;
-  title: string | null;
-  createdAt?: unknown;
-  sopId: string | null;
-}
-
 type SessionListState = 'idle' | 'loading' | 'ready' | 'error';
 
 export interface UseWorkbenchSessionResult {
   sessionId: string | null;
   session: WorkbenchSessionView | null;
+  detail: WorkbenchSessionDetail | null;
+  streamStatus: WorkbenchStreamStatus;
   error: string | null;
+  actionError: string | null;
   starting: boolean;
+  startingChat: boolean;
   sessions: WorkbenchSessionListItem[];
   sessionsState: SessionListState;
   sessionsError: string | null;
   start: () => Promise<void>;
+  startChat: (input: WorkbenchCreateChatInput) => Promise<void>;
+  sendMessage: (content: string, mode?: WorkbenchMessageMode) => Promise<void>;
+  cancel: () => Promise<void>;
+  decideApproval: (
+    approvalKey: string,
+    decision: WorkbenchApprovalDecision,
+    note?: string,
+  ) => Promise<void>;
   restore: (id: string) => void;
   reloadSessions: () => void;
   reset: () => void;
 }
 
 function isSessionId(value: unknown): value is string {
-  // 服务端 UUID 是生产形态；保留 fixture/旧链路的不透明 id（同源 agentSessionUrl 同口径）。
   return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
 }
 
@@ -79,7 +96,7 @@ function writeStorage(key: string, value: string): void {
   try {
     window.localStorage.setItem(key, value);
   } catch {
-    // 隐私模式/配额耗尽：URL query 仍是优先恢复路径，不把它变成致命错误。
+    // Private mode / quota exhaustion: URL query is still the primary path.
   }
 }
 
@@ -87,11 +104,10 @@ function removeStorage(key: string): void {
   try {
     window.localStorage.removeItem(key);
   } catch {
-    // 同上。
+    // Same as above.
   }
 }
 
-/** URL query 优先；非法/空 query 才回落 localStorage。 */
 export function readSessionId(): string | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -99,7 +115,7 @@ export function readSessionId(): string | null {
     const fromUrl = url.searchParams.get(SESSION_QUERY_KEY);
     if (isSessionId(fromUrl)) return fromUrl;
   } catch {
-    // 畸形 URL：继续尝试 localStorage。
+    // Malformed URL: fall through to localStorage.
   }
   const stored = readStorage(SESSION_STORAGE_KEY);
   return isSessionId(stored) ? stored : null;
@@ -112,7 +128,7 @@ export function persistSessionId(id: string): void {
     url.searchParams.set(SESSION_QUERY_KEY, id);
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
   } catch {
-    // 历史 API 不可用时仍保留 localStorage 兜底。
+    // History API unavailable: localStorage fallback still applies.
   }
   writeStorage(SESSION_STORAGE_KEY, id);
 }
@@ -130,7 +146,7 @@ export function clearSessionId(): void {
         );
       }
     } catch {
-      // 同上。
+      // Same as above.
     }
   }
   removeStorage(SESSION_STORAGE_KEY);
@@ -202,21 +218,145 @@ export function clearWorkbenchCommit(): void {
   removeStorage(COMMIT_STORAGE_KEY);
 }
 
+function asIso(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (value instanceof Date) return value.toISOString();
+  return null;
+}
+
+type SessionSnapshot = Awaited<ReturnType<NonNullable<typeof getWorkbenchSession>>>;
+
+function normalizeDetail(sessionId: string, raw: SessionSnapshot): WorkbenchSessionDetail {
+  return {
+    sessionId,
+    title: raw.title ?? null,
+    kind: raw.kind ?? 'chat',
+    status: raw.status ?? 'pending',
+    conclusion: raw.conclusion,
+    errorMessage: raw.errorMessage ?? null,
+    waitingFor: raw.waitingFor ?? null,
+    createdAt: asIso(raw.createdAt),
+    updatedAt: asIso(raw.updatedAt),
+    stepCount: raw.stepCount,
+    steps: (raw.steps ?? []).map((s) => ({
+      seq: s.seq,
+      role: s.role,
+      content: s.content ?? null,
+      contentPreview: s.contentPreview ?? null,
+      createdAt: asIso(s.createdAt),
+    })),
+    toolCallCount: raw.toolCallCount,
+    toolCalls: (raw.toolCalls ?? []).map((c) => {
+      // Generated schema does not declare `id` yet, but the API may send one.
+      const call = c as typeof c & { id?: string };
+      return {
+        id: call.id,
+        toolName: call.toolName,
+        status: call.status,
+        argsPreview: call.argsPreview ?? null,
+        outputPreview: call.outputPreview ?? null,
+        errorSummary: call.errorSummary ?? null,
+        createdAt: asIso(call.createdAt),
+        stateChangedAt: asIso(call.stateChangedAt),
+      };
+    }),
+    approvals: (raw as { approvals?: Record<string, number> }).approvals ?? {},
+    approvalItems: (raw.approvalItems ?? []).map((a) => ({
+      approvalKey: a.approvalKey,
+      toolName: a.toolName,
+      status: a.status,
+      reason: a.reason ?? null,
+      argsDigest: a.argsDigest ?? null,
+      decidedBy: a.decidedBy ?? null,
+      createdAt: asIso(a.createdAt),
+      canDecide: a.canDecide ?? false,
+      canWithdraw: a.canWithdraw ?? false,
+      reviewUrl: a.reviewUrl ?? null,
+    })),
+    artifacts: (raw.artifacts ?? []).map((a) => ({
+      id: a.id,
+      name: a.name,
+      size: a.size,
+      createdAt: asIso(a.createdAt),
+      downloadUrl: a.downloadUrl ?? null,
+      previewUrl: a.previewUrl ?? null,
+    })),
+  };
+}
+
+/** Keep the legacy session panel fed from the same live snapshot. */
+function projectToView(detail: WorkbenchSessionDetail): WorkbenchSessionView {
+  return {
+    sessionId: detail.sessionId,
+    kind: detail.kind,
+    status: detail.status,
+    stepCount: detail.stepCount ?? detail.steps.length,
+    steps: detail.steps.map((s) => ({
+      seq: s.seq,
+      role: s.role,
+      contentPreview: s.content ?? s.contentPreview ?? null,
+      createdAt: s.createdAt,
+    })),
+    toolCallCount: detail.toolCallCount ?? detail.toolCalls.length,
+    toolCalls: detail.toolCalls.map((c) => ({
+      toolName: c.toolName,
+      status: c.status,
+      errorSummary: c.errorSummary,
+      createdAt: c.createdAt,
+    })),
+    approvals: detail.approvals ?? {},
+    approvalItems: detail.approvalItems.map((a) => ({
+      approvalKey: a.approvalKey,
+      toolName: a.toolName,
+      status: a.status,
+      reason: a.reason,
+      decidedBy: a.decidedBy,
+      createdAt: a.createdAt,
+      reviewUrl: a.reviewUrl,
+    })),
+    artifacts: detail.artifacts.map((a) => ({
+      id: a.id,
+      name: a.name,
+      size: a.size,
+      createdAt: a.createdAt,
+      downloadUrl: a.downloadUrl,
+    })),
+  };
+}
+
+function errorCode(err: unknown): number | undefined {
+  const obj = err as { __status?: number; status?: number; response?: { status?: number } } | null;
+  return obj?.__status ?? obj?.status ?? obj?.response?.status;
+}
+
 /**
- * @param getAnchor 返回创建会话所需的 (sopId, goal, cardHash)；无锚点时返回 null。
+ * @param getAnchor Returns the (sopId, goal, cardHash) needed by the legacy
+ * draft-session flow; null when no draft anchor exists.
  */
 export function useWorkbenchSession(
   getAnchor: () => WorkbenchAnchor | null,
 ): UseWorkbenchSessionResult {
   const { t } = useTranslation();
   const [sessionId, setSessionId] = useState<string | null>(() => readSessionId());
+  const [detail, setDetailState] = useState<WorkbenchSessionDetail | null>(null);
   const [session, setSession] = useState<WorkbenchSessionView | null>(null);
+  const [streamStatus, setStreamStatus] = useState<WorkbenchStreamStatus>('connecting');
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [startingChat, setStartingChat] = useState(false);
   const [sessions, setSessions] = useState<WorkbenchSessionListItem[]>([]);
   const [sessionsState, setSessionsState] = useState<SessionListState>('idle');
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const startingRef = useRef(false);
+  const detailRef = useRef<WorkbenchSessionDetail | null>(null);
+  const lastSeqRef = useRef(0);
+
+  const setDetail = useCallback((next: WorkbenchSessionDetail | null) => {
+    detailRef.current = next;
+    setDetailState(next);
+    setSession(next ? projectToView(next) : null);
+  }, []);
 
   const reloadSessions = useCallback(() => {
     if (typeof listWorkbenchSessions !== 'function') return;
@@ -225,9 +365,9 @@ export function useWorkbenchSession(
     setSessionsError(null);
     void (async () => {
       try {
-        const list = await listWorkbenchSessions({ page: 1, pageSize: 20 });
+        const list = await listWorkbenchSessions({ page: 1, pageSize: 50 });
         if (!alive) return;
-        setSessions(list.items);
+        setSessions(list.items as WorkbenchSessionListItem[]);
         setSessionsState('ready');
       } catch {
         if (!alive) return;
@@ -251,45 +391,43 @@ export function useWorkbenchSession(
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  useEffect(() => {
-    if (!sessionId || typeof getWorkbenchSession !== 'function') return;
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      try {
-        const next = await getWorkbenchSession(sessionId);
-        if (!alive) return;
-        setSession(next);
-        if (isTerminalSession(next.status)) return; // 终态：不再排下一次
-      } catch (err: unknown) {
-        if (!alive) return;
-        const status = err as { __status?: number; status?: number; response?: { status?: number } } | null;
-        const code = status?.__status ?? status?.status ?? status?.response?.status;
-        if (code === 403 || code === 404) {
-          // 失效/越权恢复：明确清掉本地锚点，绝不继续轮询别人的会话。
-          clearSessionId();
-          setSession(null);
-          setSessionId(null);
-          setError(t('workbench.session.createFail.notFound'));
-          return;
-        }
-        // 其它读失败保留上一份快照；下次继续。
-      }
-      if (alive) timer = setTimeout(poll, SESSION_POLL_MS);
-    };
-    void poll();
-    return () => { alive = false; if (timer) clearTimeout(timer); };
-  }, [sessionId, t]);
+  // SSE primary + polling fallback owned by a dedicated collaborator hook.
+  const fetchDetail = useCallback(async (id: string): Promise<WorkbenchSessionDetail | null> => {
+    if (typeof getWorkbenchSession !== 'function') return null;
+    return normalizeDetail(id, await getWorkbenchSession(id));
+  }, []);
+
+  const onUnauthorized = useCallback(() => {
+    clearSessionId();
+    setDetail(null);
+    setSessionId(null);
+    setError(t('workbench.session.createFail.notFound'));
+  }, [setDetail, t]);
+
+  useWorkbenchLiveSession({
+    sessionId,
+    detailRef,
+    lastSeqRef,
+    setDetail,
+    setStreamStatus,
+    fetchDetail,
+    onUnauthorized,
+  });
 
   const errorText = useCallback((err: unknown): string => {
-    const status = err as { __status?: number; status?: number; response?: { status?: number } } | null;
-    const code = status?.__status ?? status?.status ?? status?.response?.status;
-    // 字面 t() 分支（动态 t(key) 会被 i18n 缺键守卫判不可判）。
+    const code = errorCode(err);
     if (code === 403) return t('workbench.session.createFail.forbidden');
     if (code === 400) return t('workbench.session.createFail.notDraft');
     if (code === 404) return t('workbench.session.createFail.notFound');
     if (code === 503) return t('workbench.session.createFail.unavailable');
     return t('workbench.session.createFailed', { reason: t('common.operateFailed') });
+  }, [t]);
+
+  const actionErrorText = useCallback((err: unknown): string => {
+    const code = errorCode(err);
+    if (code === 403) return t('workbench.action.forbidden');
+    if (code === 404) return t('workbench.session.createFail.notFound');
+    return t('workbench.action.failed');
   }, [t]);
 
   const start = useCallback(async () => {
@@ -313,37 +451,115 @@ export function useWorkbenchSession(
     }
   }, [getAnchor, errorText, reloadSessions]);
 
+  const startChat = useCallback(async (input: WorkbenchCreateChatInput) => {
+    if (startingRef.current || typeof createWorkbenchChatSession !== 'function') return;
+    startingRef.current = true;
+    setStartingChat(true);
+    setActionError(null);
+    try {
+      const created = await createWorkbenchChatSession(input);
+      if (!isSessionId(created.sessionId)) throw new Error('invalid session id');
+      persistSessionId(created.sessionId);
+      setSessionId(created.sessionId);
+      reloadSessions();
+    } catch (err: unknown) {
+      setActionError(actionErrorText(err));
+    } finally {
+      startingRef.current = false;
+      setStartingChat(false);
+    }
+  }, [actionErrorText, reloadSessions]);
+
+  const refreshActive = useCallback(async () => {
+    if (!detailRef.current || typeof getWorkbenchSession !== 'function') return;
+    try {
+      const raw = await getWorkbenchSession(detailRef.current.sessionId);
+      setDetail(normalizeDetail(detailRef.current.sessionId, raw));
+    } catch {
+      // SSE will deliver the authoritative state; avoid a duplicate error toast.
+    }
+  }, [setDetail]);
+
+  const sendMessage = useCallback(async (content: string, mode: WorkbenchMessageMode = 'followup') => {
+    if (!detailRef.current || typeof postWorkbenchMessage !== 'function') return;
+    setActionError(null);
+    try {
+      await postWorkbenchMessage(detailRef.current.sessionId, { content, mode });
+      await refreshActive();
+    } catch (err: unknown) {
+      setActionError(actionErrorText(err));
+    }
+  }, [actionErrorText, refreshActive]);
+
+  const cancel = useCallback(async () => {
+    if (!detailRef.current || typeof cancelWorkbenchSession !== 'function') return;
+    setActionError(null);
+    try {
+      await cancelWorkbenchSession(detailRef.current.sessionId);
+      await refreshActive();
+    } catch (err: unknown) {
+      setActionError(actionErrorText(err));
+    }
+  }, [actionErrorText, refreshActive]);
+
+  const decideApproval = useCallback(async (
+    approvalKey: string,
+    decision: WorkbenchApprovalDecision,
+    note?: string,
+  ) => {
+    if (!detailRef.current || typeof decideWorkbenchApproval !== 'function') return;
+    setActionError(null);
+    try {
+      await decideWorkbenchApproval(detailRef.current.sessionId, approvalKey, { decision, note });
+      await refreshActive();
+    } catch (err: unknown) {
+      setActionError(actionErrorText(err));
+    }
+  }, [actionErrorText, refreshActive]);
+
   const restore = useCallback((id: string) => {
     if (!isSessionId(id)) return;
     persistSessionId(id);
     setSessionId(id);
-    setSession(null);
+    setDetail(null);
     setError(null);
-  }, []);
+    setActionError(null);
+    lastSeqRef.current = 0;
+  }, [setDetail]);
 
   const reset = useCallback(() => {
     clearSessionId();
     setSessionId(null);
-    setSession(null);
+    setDetail(null);
     setError(null);
-  }, []);
+    setActionError(null);
+    lastSeqRef.current = 0;
+  }, [setDetail]);
 
   return {
     sessionId,
     session,
+    detail,
+    streamStatus,
     error,
+    actionError,
     starting,
+    startingChat,
     sessions,
     sessionsState,
     sessionsError,
     start,
+    startChat,
+    sendMessage,
+    cancel,
+    decideApproval,
     restore,
     reloadSessions,
     reset,
   };
 }
 
-/** 供页面判断锚点齐备（commitResult / result / submittedInput 三者齐全且已 submitted）。 */
+/** For page logic that needs to know if a preview/commit anchor is complete. */
 export function sessionAnchor(
   commit: CommitResult | null,
   cardHash: string | undefined,

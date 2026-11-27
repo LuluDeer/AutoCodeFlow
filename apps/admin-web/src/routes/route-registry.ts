@@ -105,3 +105,48 @@ export function paletteRoutes(isAdmin: boolean): readonly RouteDescriptor[] {
 export const ADMIN_ONLY_PATHS: ReadonlySet<string> = new Set(
   ROUTES.filter((r) => r.adminOnly).map((r) => r.path),
 );
+
+/**
+ * IA-ROLE：角色化导航外壳的单一事实源。
+ *
+ * `menuRoutes` 仍保留「全部已登记的非隐藏页面」，供既有契约/命令面板校验；
+ * 侧栏渲染消费 `shellMenuRoutes`：USER 只暴露四个一级入口（无单子分组），
+ * ADMIN 收敛为五个域，低频管理页藏在分组/命令面板而不是删路由。
+ */
+const USER_SHELL_PATHS: ReadonlySet<string> = new Set([
+  '/workbench',
+  '/executions',
+  '/inbox',
+  '/settings',
+]);
+
+/** ADMIN 外壳分组（顺序即侧栏顺序；每组最多 3 项，空组由消费方跳过）。 */
+export const ADMIN_SHELL_GROUPS: ReadonlyArray<{
+  key: string;
+  labelKey: string;
+  paths: readonly string[];
+}> = [
+  { key: 'g-adm-work', labelKey: 'nav.group.tasks', paths: ['/tasks', '/task-templates', '/dashboard'] },
+  { key: 'g-adm-delivery', labelKey: 'nav.group.assist', paths: ['/executions', '/artifacts', '/inbox'] },
+  { key: 'g-adm-nodes', labelKey: 'nav.group.executors', paths: ['/executors', '/executor-packages', '/applications'] },
+  { key: 'g-adm-gov', labelKey: 'nav.group.org', paths: ['/users', '/projects', '/audit'] },
+  { key: 'g-adm-system', labelKey: 'nav.group.gov', paths: ['/capabilities', '/notifications', '/settings'] },
+];
+
+const ADMIN_SHELL_PATHS: ReadonlySet<string> = new Set([
+  '/workbench',
+  ...ADMIN_SHELL_GROUPS.flatMap((group) => group.paths),
+]);
+
+/** 按角色返回真正渲染在侧栏的路由集合。 */
+export function shellMenuRoutes(isAdmin: boolean): readonly RouteDescriptor[] {
+  if (isAdmin) {
+    return ROUTES.filter((r) => r.sidebar && ADMIN_SHELL_PATHS.has(r.path));
+  }
+  return ROUTES.filter((r) => r.sidebar && USER_SHELL_PATHS.has(r.path));
+}
+
+/** 首页按角色落到各自默认工作台（role 尚未补齐时按非 ADMIN 安全处理）。 */
+export function homePathForRole(role: string | undefined): string {
+  return role === 'admin' ? '/dashboard' : '/workbench';
+}

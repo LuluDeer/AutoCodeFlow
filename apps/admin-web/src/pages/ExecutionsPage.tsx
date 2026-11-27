@@ -43,7 +43,6 @@ import PageHeader from '../components/PageHeader';
 // UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
-import { StablePagingSwitch } from '../components/StablePagingSwitch';
 // MOBILE-CARD-01：≤768px 时表格 → 卡片列表（结构级降级，CSS 做不到）
 import { useIsMobile } from '../hooks/useIsMobile';
 // P1-17（UX 审计）：触发方式列此前直接输出后端裸 token（cron/manual/fixed_rate），
@@ -79,6 +78,12 @@ import {
 import { reportBatchKillOutcome } from './executions/execBatchReport';
 import { buildExecColumns } from './executions/execTableColumns';
 import ExecutionsBatchKillButton from '../components/executions/ExecutionsBatchKillButton';
+import {
+  parseStatusFilter,
+  formatStatusFilter,
+  selectValueFor,
+} from './executions/statusFilter';
+import PagingModePopover from './executions/PagingModePopover';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -237,7 +242,7 @@ export default function ExecutionsPage() {
     const ps = Number(searchParams.get('pageSize'));
     return Number.isInteger(ps) && ps > 0 ? ps : 20;
   });
-  const [statusFilter, setStatusFilter] = useState<string | undefined>(() => searchParams.get('status') || undefined);
+  const [statuses, setStatuses] = useState<string[]>(() => parseStatusFilter(searchParams.get('status') ?? undefined));
   const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [executorFilter, setExecutorFilter] = useState(() => searchParams.get('executor') || '');
   const [runtimeFilter, setRuntimeFilter] = useState<string | undefined>(() => searchParams.get('runtime') || undefined);
@@ -327,7 +332,7 @@ export default function ExecutionsPage() {
   // 翻页/筛选变化后当前页数据会变，跨页选中行不再可见——清空选中防误比
   useEffect(() => {
     setSelectedIds([]);
-  }, [page, pageSize, statusFilter, search, executorFilter, runtimeFilter, triggerTypeFilter, timeRange, cursorState, backendProjectId]);
+  }, [page, pageSize, statuses, search, executorFilter, runtimeFilter, triggerTypeFilter, timeRange, cursorState, backendProjectId]);
 
   const handleKill = async (r: TaskExecution) => {
     setKillingId(r.id);
@@ -376,7 +381,7 @@ export default function ExecutionsPage() {
     restoreExecFilters(
       {
         setSearch,
-        setStatusFilter,
+        setStatusFilter: (v) => setStatuses(v ?? []),
         setExecutorFilter,
         setRuntimeFilter,
         setTriggerTypeFilter,
@@ -394,7 +399,7 @@ export default function ExecutionsPage() {
     execViews.save(
       name,
       snapshotExecFilters({
-        search, statusFilter, executorFilter, runtimeFilter, triggerTypeFilter, timeRange, page, pageSize,
+        search, statusFilter: statuses, executorFilter, runtimeFilter, triggerTypeFilter, timeRange, page, pageSize,
       }),
     );
 
@@ -436,7 +441,7 @@ export default function ExecutionsPage() {
     {
       page,
       pageSize,
-      status: statusFilter,
+      status: formatStatusFilter(statuses),
       q: debouncedSearch,
       executor: executorFilter,
       runtime: runtimeFilter,
@@ -448,7 +453,7 @@ export default function ExecutionsPage() {
     {
       page: (v) => { setPage(v); resetCursorStack(stablePaging); },
       pageSize: (v) => { setPageSize(v); resetCursorStack(stablePaging); },
-      status: (v) => { setStatusFilter(v); resetCursorStack(stablePaging); },
+      status: (v) => { setStatuses(parseStatusFilter(v)); resetCursorStack(stablePaging); },
       q: (v) => { setSearch(v); resetCursorStack(stablePaging); },
       executor: (v) => { setExecutorFilter(v); resetCursorStack(stablePaging); },
       runtime: (v) => { setRuntimeFilter(v); setPage(1); resetCursorStack(stablePaging); },
@@ -476,7 +481,7 @@ export default function ExecutionsPage() {
     {
       page,
       pageSize,
-      status: statusFilter,
+      status: formatStatusFilter(statuses),
       taskName: debouncedSearch || undefined,
       executorAddress: executorFilter || undefined,
       startTime: timeRange?.[0]?.toISOString(),
@@ -573,7 +578,7 @@ export default function ExecutionsPage() {
     setCursorState((s) => (s.index > 0 ? { ...s, index: s.index - 1 } : s));
   };
 
-  const hasFilters = !!(search || statusFilter || executorFilter || runtimeFilter || triggerTypeFilter || timeRange);
+  const hasFilters = !!(search || statuses.length > 0 || executorFilter || runtimeFilter || triggerTypeFilter || timeRange);
 
   // F-48（UIAUDIT P3）：越界页（如 ?page=999）——本页无行但 total>0 时，旧文案
   // 「暂无执行记录 共 17452 条」自相矛盾（数据明明存在，只是请求页越过了末页）。
@@ -623,7 +628,7 @@ export default function ExecutionsPage() {
 
   const clearFilters = () => {
     setSearch('');
-    setStatusFilter(undefined);
+    setStatuses([]);
     setExecutorFilter('');
     setRuntimeFilter(undefined);
     setTriggerTypeFilter(undefined);
@@ -655,7 +660,7 @@ export default function ExecutionsPage() {
    *
    * | 页面 state        | 请求参数          | 后端语义                    |
    * |-------------------|-------------------|-----------------------------|
-   * | `statusFilter`    | `status`          | 等值                        |
+   * | `statuses`    | `status`          | 等值                        |
    * | `debouncedSearch` | `taskName`        | **模糊**匹配任务名          |
    * | `executorFilter`  | `executorAddress` | **模糊**匹配执行器地址      |
    * | `runtimeFilter`   | `runtime`         | 等值匹配任务运行时（tasks.runtime） |
@@ -692,7 +697,7 @@ export default function ExecutionsPage() {
     const hide = message.loading(t('execs.exportAll.running'), 0);
     try {
       await tasksApi.exportExecutions({
-        status: statusFilter || undefined,
+        status: formatStatusFilter(statuses) || undefined,
         taskName: debouncedSearch || undefined,
         executorAddress: executorFilter || undefined,
         startTime: timeRange?.[0]?.toISOString(),
@@ -857,12 +862,18 @@ export default function ExecutionsPage() {
           style={{ width: 200, maxWidth: '100%' }}
         />
         <Select
+          mode="multiple"
           placeholder={t('execs.statusAll')}
           allowClear
-          style={{ width: 148, maxWidth: '100%' }}
-          value={statusFilter}
-          onChange={v => { setStatusFilter(v); setPage(1); resetCursorStack(stablePaging); }}
+          style={{ width: 200, maxWidth: '100%' }}
+          value={selectValueFor(statuses)}
+          onChange={(v) => {
+            setStatuses((v as string[]).map(String));
+            setPage(1);
+            resetCursorStack(stablePaging);
+          }}
           suffixIcon={<FilterOutlined />}
+          maxTagCount="responsive"
           options={[
             { value: 'pending',   label: t('execs.status.pending') },
             { value: 'running',   label: t('execs.status.running') },
@@ -917,13 +928,9 @@ export default function ExecutionsPage() {
         {hasFilters && (
           <Button size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
         )}
-        {/* §2.1：稳定翻页开关（默认关闭）。
-            用 antd Switch——它本身就是 role="switch" + 原生 button 语义，
-            Tab 可聚焦、Space/Enter 可切换，无需再补键盘处理；aria-label 给出
-            可访问名（开关没有可见文字标签时，纯靠旁边的文字不构成可访问名）。
-            关闭时不发任何 cursor 参数，后端与页面行为都回到改动前。 */}
+        {/* 游标分页能力保留，但入口收敛为高级说明，不再占筛选栏主视觉 */}
         <div style={{ marginLeft: 'auto' }}>
-          <StablePagingSwitch checked={stablePaging} onChange={toggleStablePaging} label={t('execs.stablePaging')} hint={t('execs.stablePaging.hint')} ariaLabel={t('execs.stablePaging.aria')} />
+          <PagingModePopover stablePaging={stablePaging} onChange={toggleStablePaging} />
         </div>
       </Space>
 

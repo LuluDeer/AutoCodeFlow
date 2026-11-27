@@ -12,39 +12,22 @@ import {
   useCallback,
   lazy,
   Suspense,
-  memo,
   type ReactNode,
 } from 'react';
 import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip, Select } from 'antd';
 import type { MenuProps } from 'antd';
 import { message } from '../utils/toast';
 import {
-  DashboardOutlined,
-  AppstoreOutlined,
-  ThunderboltOutlined,
-  FileTextOutlined,
-  ClusterOutlined,
-  HistoryOutlined,
-  SettingOutlined,
-  UserOutlined,
   LogoutOutlined,
-  BellOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  AuditOutlined,
-  TeamOutlined,
-  DatabaseOutlined,
   HomeOutlined,
   SearchOutlined,
   SunOutlined,
   MoonOutlined,
   DesktopOutlined,
   TranslationOutlined,
-  RobotOutlined,
-  FolderOpenOutlined,
-  MailOutlined,
   MoreOutlined,
-  SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -52,7 +35,8 @@ import { useAuthStore } from '../store/auth';
 import { getErrMsg } from '../utils/error';
 import { authApi } from '../api/auth';
 import { logoutRemote } from '../api/logout';
-import { menuRoutes, ROUTE_BY_PATH, type RouteDescriptor } from '../routes/route-registry';
+import { ROUTE_BY_PATH } from '../routes/route-registry';
+import { buildShellMenu } from './buildShellMenu';
 // WEB-2：命令面板/快捷键速查只在用户真的唤起时才需要——改成按需 chunk，
 // 不再整块塞进 entry（首屏 24 个资源里少两个大依赖，HTTP/1.1 下少一波）。
 const CommandPalette = lazy(() => import('../components/CommandPalette'));
@@ -67,9 +51,9 @@ import { useThemeStore } from '../theme/store';
 // D-P2-16（设计审计）：品牌渐变唯一事实源（Logo / 用户头像共用）
 import { BRAND_GRADIENT, LAYOUT_TOKENS } from '../theme/tokens';
 import type { ThemeMode } from '../theme/store';
-// BELL-01：通知铃升级为近期失败速览面板（组件内含未读红点逻辑）
+// IA-HEADER：通知铃为统一收件箱入口（无重复失败速览面板）
 import NotificationBell from '../components/NotificationBell';
-// P1-4：待办收件箱顶栏入口（聚合审批/接管待办计数），同通知铃按 ADMIN 门控
+// P1-4：待办收件箱顶栏入口（聚合审批/接管待办计数），全角色可见
 import InboxBadge from '../components/InboxBadge';
 // BRAND（2026-11-02）：狐狸是中台的**产品形象**（侧边栏标志位），六边形留给托盘与
 // 状态指示——分层见 design-system/brand/README.md §4。
@@ -89,9 +73,8 @@ const { Text } = Typography;
 // 无需 zustand 重量级方案；key 命名对齐 autoflow-theme 惯例）
 const SIDER_COLLAPSED_KEY = 'autoflow-sider-collapsed';
 const MENU_OPEN_KEYS_KEY = 'autoflow-menu-open-keys';
-// 默认展开「自动化」组（计划书指定），首次进入即见高频入口；
-// 控制台 / 执行记录为直达一级入口，不需要分组展开态。
-const DEFAULT_OPEN_KEYS = ['g-tasks'];
+// 默认展开 ADMIN 第一域；USER 外壳无分组，此键会被 readMenuOpenKeys 过滤掉。
+const DEFAULT_OPEN_KEYS = ['g-adm-work'];
 
 // F-25（DEEP_REVIEW 0ef3bbe）：按平台动态显示搜索快捷键（Mac ⌘K / 其他 Ctrl K），
 // 与 CommandPalette 实际监听的 metaKey||ctrlKey 保持一致。判定逻辑抽到
@@ -140,119 +123,6 @@ const THEME_BUTTON_META: Record<ThemeMode, { icon: ReactNode; labelKey: string; 
   system: { icon: <DesktopOutlined />, labelKey: 'nav.theme.system', ariaKey: 'nav.theme.system.aria' },
 };
 
-/**
- * P1-6：菜单 IA（扁平化 + 场景分组）。
- * - 控制台、执行记录、收件箱是高频直达入口，不包折叠组；
- * - 原「系统」杂烩拆为 组织 / 治理 / 辅助 三组，每组 ≤3 项（治理除外，既有 IA 不动）；
- * - 分组节点不挂图标（图标只留给叶子页面项），从构造上去掉父子同图标；
- * - NAV-UNIFY：叶子路径、标签、角色门槛、是否可见**全部来自 route-registry 的
- *   menuRoutes(isAdmin)*。这里只保留「分组归属/顺序/图标」这类纯渲染信息，
- *   不再手写第二份菜单或第二份 adminOnly 集合；新增页面只要登记进注册表，
- *   没有声明分组时会作为直达一级入口自动出现。
- */
-interface MenuLeaf {
-  key: string;
-  icon: ReactNode;
-  label: string;
-}
-interface MenuGroup {
-  key: string;
-  label: string;
-  children: MenuLeaf[];
-}
-type MenuEntry = MenuLeaf | MenuGroup;
-
-const MENU_GROUP_LABEL_KEY: Readonly<Record<string, string>> = {
-  'g-tasks': 'nav.group.tasks', 'g-executors': 'nav.group.executors', 'g-applications': 'nav.group.applications',
-  'g-org': 'nav.group.org', 'g-gov': 'nav.group.gov', 'g-assist': 'nav.group.assist',
-};
-
-const MENU_GROUP_FOR_PATH: Readonly<Record<string, string>> = {
-  '/tasks': 'g-tasks', '/task-templates': 'g-tasks', '/artifacts': 'g-tasks',
-  '/executors': 'g-executors', '/executor-packages': 'g-executors',
-  '/applications': 'g-applications', '/registry': 'g-applications',
-  '/users': 'g-org', '/projects': 'g-org',
-  '/audit': 'g-gov', '/capabilities': 'g-gov', '/activation-stats': 'g-gov', '/notifications': 'g-gov', '/settings': 'g-gov',
-  '/sops': 'g-assist', '/agent-sessions': 'g-assist', '/workbench': 'g-assist',
-};
-
-const MENU_ICON: Readonly<Record<string, ReactNode>> = {
-  '/dashboard': <DashboardOutlined />, '/tasks': <ThunderboltOutlined />, '/task-templates': <FileTextOutlined />, '/artifacts': <FolderOpenOutlined />,
-  '/executions': <HistoryOutlined />, '/inbox': <MailOutlined />, '/executors': <ClusterOutlined />, '/executor-packages': <DatabaseOutlined />,
-  '/applications': <AppstoreOutlined />, '/registry': <DatabaseOutlined />, '/users': <UserOutlined />, '/projects': <TeamOutlined />,
-  '/audit': <AuditOutlined />, '/capabilities': <SafetyCertificateOutlined />, '/activation-stats': <DashboardOutlined />,
-  '/notifications': <BellOutlined />, '/settings': <SettingOutlined />, '/sops': <FileTextOutlined />,
-  '/agent-sessions': <RobotOutlined />, '/workbench': <AppstoreOutlined />,
-};
-
-function buildMenuItems(t: (k: string) => string, routes: readonly RouteDescriptor[]): MenuEntry[] {
-  const leafByPath = new Map<string, MenuLeaf>();
-  const grouped = new Map<string, MenuLeaf[]>(
-    Object.keys(MENU_GROUP_LABEL_KEY).map((key) => [key, []]),
-  );
-
-  for (const route of routes) {
-    const leaf: MenuLeaf = {
-      key: route.path,
-      icon: MENU_ICON[route.path] ?? <AppstoreOutlined />,
-      label: t(route.labelKey),
-    };
-    leafByPath.set(route.path, leaf);
-    const groupKey = MENU_GROUP_FOR_PATH[route.path];
-    if (groupKey) grouped.get(groupKey)?.push(leaf);
-  }
-
-  // 分组插在其第一条可见叶子出现的位置；组内顺序仍由注册表顺序决定。
-  const emittedGroups = new Set<string>();
-  const items: MenuEntry[] = [];
-  for (const route of routes) {
-    const groupKey = MENU_GROUP_FOR_PATH[route.path];
-    if (!groupKey) {
-      const leaf = leafByPath.get(route.path);
-      if (leaf) items.push(leaf);
-      continue;
-    }
-    if (emittedGroups.has(groupKey)) continue;
-    emittedGroups.add(groupKey);
-    const children = grouped.get(groupKey) ?? [];
-    if (children.length) {
-      items.push({ key: groupKey, label: t(MENU_GROUP_LABEL_KEY[groupKey]), children });
-    }
-  }
-  return items;
-}
-
-// F-12（DEEP_REVIEW 0ef3bbe）: 实时时钟提取为独立 memoized 子组件。
-// 此前 setInterval 每秒触发 MainLayout 整棵组件树重渲；现在时钟自管 state
-// 和 interval，只自身每秒重渲，不波及父 Layout。locale 从 i18n.language
-// 动态获取（不再硬编码 zh-CN）。
-const Clock = memo(function Clock({
-  colorText,
-  colorTextSecondary,
-}: {
-  colorText: string;
-  colorTextSecondary: string;
-}) {
-  const { i18n } = useTranslation();
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  // 豁免说明（时间格式收敛 2026-10-03）：表头实时挂钟刻意不走 utils/timeFormat——
-  // 它是每秒刷新的紧凑展示（时:分 + 「x月x日 周x」），需要自定义 Intl 选项，
-  // formatDateTime/formatDate 的完整时间戳形态不适用。locale 仍取自 i18n.language
-  // （与 currentLocale() 同源），不跟随浏览器默认。
-  const locale = i18n.language || 'zh-CN';
-  const timeStr = now.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
-  const dateStr = now.toLocaleDateString(locale, { month: 'short', day: 'numeric', weekday: 'short' });
-  return (
-    <div className="header-time" aria-hidden="true" style={{ textAlign: 'right', marginRight: 8, lineHeight: 1.3 }}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: colorText }}>{timeStr}</div>
-      <div style={{ fontSize: 11, color: colorTextSecondary }}>{dateStr}</div>
-    </div>
-  );
-});
 
 /**
  * P1-21（UX 审计）：哪些路由由页面自身通过 PageHeader 的 breadcrumb prop 渲染语义面包屑。
@@ -371,16 +241,8 @@ export default function MainLayout() {
       });
   }, [user?.role, setUser, setProfileError, t]);
 
-  // F-12: 实时时钟已提取为 <Clock /> 独立 memoized 组件（自管 setInterval），
-  // 不再在此处维护 currentTime state，避免每秒重渲整个 Layout。
-
-  // 按角色过滤菜单：叶子可见性/文案/角色门槛来自 route-registry 的 menuRoutes，
-  // 本层只按 MENU_GROUP_FOR_PATH 组装分组，不再维护第二份 adminOnly 路径集合。
-  // R6 回归守卫：ADMIN-only 路由由注册表 adminOnly 统一过滤，管理员仍全部可见。
-  const menuItems = buildMenuItems(t, menuRoutes(isAdmin));
-
-
-
+  // IA-ROLE：按角色装配侧栏；USER 四个平级入口，ADMIN 五个域（命令面板兜底全路由）。
+  const menuItems = buildShellMenu(t, isAdmin);
   // UI-03：分组折叠/展开持久化——受控 openKeys + onOpenKeys 回写 localStorage。
   // 初始值读持久化（残留脏键被 readMenuOpenKeys 过滤），否则默认展开任务/执行。
   const [openKeys, setOpenKeysState] = useState<string[]>(() => readMenuOpenKeys(menuItems.map((g) => g.key)));
@@ -586,7 +448,7 @@ export default function MainLayout() {
           type="button"
           aria-label={t('nav.logo.aria')}
           data-testid="logo-home-button"
-          onClick={() => nav('/dashboard')}
+          onClick={() => nav(isAdmin ? '/dashboard' : '/workbench')}
           style={{
             width: '100%',
             height: LAYOUT_TOKENS.headerHeight,
@@ -721,10 +583,7 @@ export default function MainLayout() {
               ]}
             />
 
-            {/* 时间显示（UI-09：≤768px 隐藏——头部仅留高频操作按钮）
-                UI-12：纯装饰信息，对读屏隐藏（每分每秒变化会持续打断朗读）
-                F-12：提取为 memoized <Clock />，自管 setInterval 不波及父 Layout */}
-            <Clock colorText={token.colorText} colorTextSecondary={token.colorTextSecondary} />
+            {/* IA-HEADER：装饰性时钟与重复失败速览面板已移除；统一从 Inbox 进入待办/信号。 */}
 
             {/* UI-02：明暗主题切换——light → dark → system 三态循环，
                 图标随当前态变化，aria-label 随态更新（可达性）。
@@ -797,12 +656,10 @@ export default function MainLayout() {
             {/* F-24（DEEP_REVIEW 0ef3bbe）：原帮助按钮无 onClick（纯摆设、有 aria-label 却无行为），
                 且项目无文档/关于落地页——按评审建议移除该占位按钮，避免误导。 */}
 
-            {/* 通知按钮：R6 起 /notifications 为 ADMIN-only（路由门控），
-                对普通用户隐藏该快捷入口，避免点击后落入 403 页。
-                BELL-01：升级为近期失败速览面板（未读红点 + 面板内跳转），
-                此前是零反馈的纯跳转。 */}
-            {isAdmin && <InboxBadge />}
-            {isAdmin && <NotificationBell />}
+            {/* IA-HEADER：InboxBadge 对全角色显示；通知铃收敛为统一收件箱入口，
+                不再在顶栏提供第二套失败处置/通知渠道跳转。 */}
+            <InboxBadge />
+            <NotificationBell />
 
             {/* 用户头像下拉 */}
             <Dropdown

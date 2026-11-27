@@ -1,22 +1,20 @@
 /**
- * P1-3「产物库」产物预览弹窗。
- *
- * 能力分级（与后端契约一致，不夸大）：
- *  - 图片（png/jpg/...）：内联 <img>；
- *  - 文本类（txt/log/json/csv/...）：内联只读 <pre>；
- *  - 其他类型（二进制/压缩包/未知后缀）：不做内联预览，提示走下载。
- *
- * 预览走 download 同源端点取 blob（JWT 在 Authorization 头，<a href> 直链 401），
- * objectURL 在弹窗关闭/切换/卸载时 revoke，避免泄漏。
+ * 产物预览弹窗：优先调用有界 JSON 预览端点（默认 64 KiB），绝不把整文件
+ * blob 读进标签页内存。图片/二进制只展示元数据 + 安全下载入口。
  */
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Modal, Spin, Typography, theme } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { artifactsApi, type ArtifactRow } from '../api/artifacts';
-import { previewKind } from '../utils/artifactLibrary';
+import {
+  artifactsApi,
+  type ArtifactPreview,
+  type ArtifactRow,
+} from '../api/artifacts';
 import { getErrMsg, showApiError } from '../utils/error';
 import { message } from '../utils/toast';
+import { formatArtifactSize } from '../utils/artifactSize';
+import { isPreviewTruncated, previewContent } from './artifact-preview/previewHelpers';
 
 const { Text, Paragraph } = Typography;
 
@@ -27,9 +25,7 @@ interface ArtifactPreviewModalProps {
 
 type PreviewState =
   | { status: 'loading' }
-  | { status: 'image'; url: string }
-  | { status: 'text'; content: string }
-  | { status: 'none' }
+  | { status: 'ready'; preview: ArtifactPreview }
   | { status: 'error'; message: string };
 
 export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewModalProps) {
@@ -37,43 +33,21 @@ export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewMo
   const { token } = theme.useToken();
   const [state, setState] = useState<PreviewState>({ status: 'loading' });
   const [downloading, setDownloading] = useState(false);
-  const objectUrlRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-
-  const revokeUrl = () => {
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-      objectUrlRef.current = null;
-    }
-  };
 
   useEffect(() => {
     if (!row) return;
-    const kind = previewKind(row.name);
-    if (kind === 'none') {
-      setState({ status: 'none' });
-      return;
-    }
-
     let cancelled = false;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
-    revokeUrl();
     setState({ status: 'loading' });
 
     artifactsApi
-      .fetchBlob(row.executionId, row.name, controller.signal)
-      .then(async (blob) => {
+      .previewArtifact(row.executionId, row.name, undefined, controller.signal)
+      .then((preview) => {
         if (cancelled) return;
-        if (kind === 'image') {
-          const url = URL.createObjectURL(blob);
-          objectUrlRef.current = url;
-          setState({ status: 'image', url });
-        } else {
-          const content = await blob.text();
-          setState({ status: 'text', content });
-        }
+        setState({ status: 'ready', preview });
       })
       .catch((err: unknown) => {
         if (cancelled || controller.signal.aborted) return;
@@ -86,7 +60,6 @@ export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewMo
     return () => {
       cancelled = true;
       controller.abort();
-      revokeUrl();
     };
   }, [row, t]);
 
@@ -104,58 +77,75 @@ export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewMo
   };
 
   const renderBody = () => {
-    switch (state.status) {
-      case 'loading':
-        return (
-          <div style={{ textAlign: 'center', padding: 40 }}>
-            <Spin />
-          </div>
-        );
-      case 'image':
-        return (
-          <img
-            src={state.url}
-            alt={row?.name}
-            style={{ maxWidth: '100%', maxHeight: '60vh', objectFit: 'contain' }}
-          />
-        );
-      case 'text':
-        return (
-          <pre
-            style={{
-              maxHeight: '50vh',
-              overflow: 'auto',
-              margin: 0,
-              padding: 12,
-              background: token.colorFillTertiary,
-              border: `1px solid ${token.colorBorderSecondary}`,
-              borderRadius: 8,
-              fontSize: 12,
-              fontFamily: 'var(--font-mono)',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-            }}
-          >
-            {state.content}
-          </pre>
-        );
-      case 'none':
-        return (
+    if (state.status === 'loading') {
+      return <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>;
+    }
+    if (state.status === 'error') {
+      const title = t('artifactLibrary.preview.loadFailed');
+      return (
+        <Alert
+          type="error"
+          showIcon
+          title={title}
+          description={state.message === title ? undefined : state.message}
+        />
+      );
+    }
+
+    const preview = state.preview;
+    return (
+      <div>
+        {preview.kind === 'image' ? (
           <Alert
             type="info"
             showIcon
             title={t('artifactLibrary.preview.unsupportedTitle')}
-            description={t('artifactLibrary.preview.unsupportedDesc')}
+            description={`${t('artifactLibrary.preview.imageDesc')} ${formatArtifactSize(preview.size)}`}
           />
-        );
-      case 'error': {
-        const title = t('artifactLibrary.preview.loadFailed');
-        const description = state.message === title ? undefined : state.message;
-        return <Alert type="error" showIcon title={title} description={description} />;
-      }
-      default:
-        return null;
-    }
+        ) : preview.kind === 'text' ? (
+          <>
+            {isPreviewTruncated(preview) && (
+              <Alert
+                type="warning"
+                showIcon
+                title={t('artifactLibrary.preview.truncatedTitle')}
+                style={{ marginBottom: 8 }}
+              />
+            )}
+            <pre
+              style={{
+                maxHeight: '50vh',
+                overflow: 'auto',
+                margin: 0,
+                padding: 12,
+                background: token.colorFillTertiary,
+                border: `1px solid ${token.colorBorderSecondary}`,
+                borderRadius: 8,
+                fontSize: 12,
+                fontFamily: 'var(--font-mono)',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
+              {previewContent(preview)}
+            </pre>
+          </>
+        ) : (
+          <Alert
+            type="info"
+            showIcon
+            title={t('artifactLibrary.preview.unsupportedTitle')}
+            description={`${t('artifactLibrary.preview.unsupportedDesc')} ${formatArtifactSize(preview.size)}`}
+          />
+        )}
+        <Paragraph type="secondary" style={{ marginTop: 12, fontSize: 12, marginBottom: 0 }}>
+          {t('artifactLibrary.preview.meta', {
+            mimeType: preview.mimeType,
+            size: formatArtifactSize(preview.size),
+          })}
+        </Paragraph>
+      </div>
+    );
   };
 
   return (
@@ -178,7 +168,7 @@ export default function ArtifactPreviewModal({ row, onClose }: ArtifactPreviewMo
         )}
       </div>
       {renderBody()}
-      {row && state.status !== 'error' && (
+      {row && state.status === 'ready' && (
         <Paragraph type="secondary" style={{ marginTop: 12, fontSize: 12, marginBottom: 0 }}>
           {t('artifactLibrary.preview.sha256')}: {row.sha256}
         </Paragraph>

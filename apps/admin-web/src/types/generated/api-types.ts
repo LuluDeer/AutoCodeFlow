@@ -390,6 +390,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/sessions/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 取消（中止）Agent 会话
+         * @description DB 条件写把非终态会话置为 aborted（幂等，不覆盖已有结论），并通过 Redis 与本地事件通道通知正在运行的 worker 停止；终态会话保持原状态，aborted 字段返回 false。
+         */
+        post: operations["AgentInteractionController_cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/sessions/{id}/export": {
         parameters: {
             query?: never;
@@ -401,6 +421,26 @@ export interface paths {
         get: operations["AgentController_exportSession"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/sessions/{id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 追加用户消息并续跑 Agent 会话
+         * @description 持久化一条 user 步（正文服务端统一脱敏）后，按会话状态注入运行中的步边界（steered）或转 pending 重新入队 agent-jobs（enqueued）。会话仍有未处置审批单时不自动恢复，消息以 steer 形式等待处置。
+         */
+        post: operations["AgentInteractionController_postMessage"];
         delete?: never;
         options?: never;
         head?: never;
@@ -435,6 +475,26 @@ export interface paths {
         put?: never;
         /** 向 waiting_input 会话追加 steer 意图（下一轮步边界注入） */
         post: operations["AgentController_steer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/sessions/{id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Agent 会话事件 SSE 流
+         * @description 按 seq 重放持久事件后转入实时推送：先发 synced 边界帧，再有 token/reasoning/tool_call/phase/status 增量帧；每 15 秒发送心跳注释帧。断线重连传 fromSeq 从上次的 seq 续传，队列溢出时收到 resync_required 后应主动重连。
+         */
+        get: operations["AgentInteractionController_streamSession"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -691,7 +751,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 用示例提示词测试当前 AI 配置 */
+        /** 连通性自检：按指定模型接入/用途真实请求一次并返回结构化诊断 */
         post: operations["AiController_testConfig"];
         delete?: never;
         options?: never;
@@ -2113,8 +2173,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 执行终态 SSE 流（FEAT-16）
-         * @description Server-Sent Events 流，从进程内领域事件总线转发执行终态事件（execution.completed / execution.failed / execution.killed）。载荷：ExecutionTerminalEventPayload。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。
+         * 执行终态 SSE 流（按任务归属过滤，FEAT-16）
+         * @description Server-Sent Events 流，从领域事件总线转发执行终态事件（execution.completed / execution.failed / execution.killed）。载荷：ExecutionTerminalEventPayload。ADMIN 转发全量；普通 USER 只转发其属主任务或具备 editor+ 角色的项目内任务的事件，无权任务的事件（含 taskName/errorMessage/logHead）一律丢弃，且建连时解析一次可见集合、事件热路径零数据库查询。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。
          */
         get: operations["ExecutionsStreamController_stream"];
         put?: never;
@@ -4037,6 +4097,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/tasks/dag/trigger-roots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 按 DAG 只触发根节点
+         * @description 传入任务子图（taskIds）与可选参数覆盖，仅触发子图内零前驱的根节点；非根节点由根执行成功后经依赖扇出自动触发，本端点返回 dagRunId、实际触发的 rootTaskIds、被跳过的 skippedDependentTaskIds，以及每个根节点的执行结果。dagRunId 注入根执行 params._dagRunId，供同批次依赖判定使用。
+         */
+        post: operations["TaskDagChainController_triggerRoots"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tasks/executions/all": {
         parameters: {
             query?: never;
@@ -4129,6 +4209,26 @@ export interface paths {
          * @description 将已存储的产物以流式返回给已认证用户。ADMIN 全量；role=user 仅见本人属主或本人具 editor+ 项目的产物，且无主产物恒 403。强制校验裸文件名（防路径穿越），产物不存在时返回 404。
          */
         get: operations["ArtifactsController_download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/executions/{execId}/artifacts/{name}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 有界预览单个执行产物（文本 UTF-8 / 图片与二进制仅元数据）
+         * @description 按与下载相同的归属校验读取产物开头做有界预览。ADMIN 全量；普通用户仅见本人属主或本人具 editor+ 项目的执行产物，无主产物恒 403。maxBytes 默认 65536、可取 1024..262144；文本（text/*、json、xml）按 UTF-8 返回 content，图片/二进制 content=null 且不会读取文件内容。超出上限时 truncated=true，文件路径穿越与非 UUID 执行 ID 一律 400。
+         */
+        get: operations["ArtifactsController_preview"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4719,6 +4819,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workbench/chat-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 发起工作台对话会话（prompt-first，无需先提交 SOP）
+         * @description 以一句 prompt 直接创建 Agent 会话并将该 prompt 作为首条用户消息落库、入 agent-jobs 队列。会话类型由服务端从 prompt 推导（对话/起草 SOP/受限计划），请求体不能指定 kind/scope/createdBy/triggerSource。
+         */
+        post: operations["WorkbenchSessionController_createChatSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workbench/commit": {
         parameters: {
             query?: never;
@@ -4862,6 +4982,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workbench/sessions/{id}/approvals/{approvalKey}/decide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 处置工作台会话的审批单
+         * @description grant/deny 仅管理员可用且受四眼原则约束（申请人不可批准自己发起的操作）；withdraw 允许会话创建者撤回自己的待批单。三种处置都会恢复会话执行。
+         */
+        post: operations["WorkbenchSessionController_decideApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workbench/sessions/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 请求中止工作台会话
+         * @description 向正在运行的会话发出协作式中止请求；是否命中由会话运行态决定。仅创建者或管理员可调用。
+         */
+        post: operations["WorkbenchSessionController_cancelSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workbench/sessions/{id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 向工作台会话追加用户消息并恢复执行
+         * @description 正文落为 role=user 的 AgentStep；运行中的会话走 step 边界注入，挂起的会话重新入队。仅会话创建者或管理员可调用。
+         */
+        post: operations["WorkbenchSessionController_postMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workbench/sessions/{id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 工作台会话事件时间线 SSE 流
+         * @description 会话事件 SSE 流。EventSource 无法设置请求头时，可先 POST /auth/sse-ticket 换取 30 秒短效票据，再用 ?ticket= 建流；也支持常规 Authorization: Bearer。断线可用 ?fromSeq= 从上一次事件序号续传。仅会话创建者或管理员可读。
+         */
+        get: operations["WorkbenchSessionController_streamSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4929,6 +5129,17 @@ export interface components {
             maxTokens: number;
             maxToolCalls: number;
             wallClockMs: number;
+        };
+        AgentCancelResponseDto: {
+            /** @description 本次请求是否把会话置为 aborted；false 表示会话此前已是终态，没有覆盖既有结论 */
+            aborted: boolean;
+            /**
+             * Format: uuid
+             * @description 会话 id
+             */
+            sessionId: string;
+            /** @description 取消后的会话状态（终态会话保持原状态） */
+            status: string;
         };
         AgentCollabAckReplyDto: {
             address: string;
@@ -5023,6 +5234,31 @@ export interface components {
             sizeBytes: number;
             /** @description 'executor:<id>' 或 'user:<id>' */
             uploadedBy: string;
+        };
+        AgentMessageDto: {
+            /** @description 用户消息正文（写入前由服务端统一脱敏，长度 1..4000） */
+            content: string;
+            /**
+             * @description 追加方式：followup=作为下一轮输入（默认）；steer=运行中注入步边界。非法值判 400。
+             * @enum {string}
+             */
+            mode?: "followup" | "steer";
+        };
+        AgentMessageResponseDto: {
+            /**
+             * @description 本次动作：steered=注入运行中会话；enqueued=重新入队 agent-jobs
+             * @enum {string}
+             */
+            action: "steered" | "enqueued";
+            /**
+             * Format: uuid
+             * @description 会话 id
+             */
+            sessionId: string;
+            /** @description 写消息后的会话状态（running=已注入 steer；pending=已重新入队） */
+            status: string;
+            /** @description 新写入的用户步序号 */
+            stepSeq: number;
         };
         AgentNorthStarConfirmedDto: {
             totals: components["schemas"]["AgentNorthStarConfirmedTotalsDto"];
@@ -5392,11 +5628,181 @@ export interface components {
             /** @enum {boolean} */
             ok: true;
         };
-        AiTestResponseDto: {
-            /** @description 样例提示词的回复文本，或降级状态下的提示信息 */
-            message: string;
-            /** @description provider 被禁用或返回空响应时为 false */
-            ok: boolean;
+        AiProviderAdminViewDto: {
+            /** @description 注册表解析过程中发现的配置错误列表 */
+            errors: string[];
+            /** @description 已注册的模型接入列表（脱敏视图） */
+            providers: components["schemas"]["AiProviderViewDto"][];
+            /** @description 各业务用途当前路由配置 */
+            routes: components["schemas"]["AiRoutesViewDto"];
+        };
+        AiProviderViewDto: {
+            /** @description 允许调用的模型白名单 */
+            allowedModels?: string[];
+            /** @description 接口基础地址 */
+            baseUrl: string;
+            /** @description 是否被中台出域策略禁止使用 */
+            deniedForUse?: boolean;
+            /** @description 禁止调用的模型黑名单 */
+            deniedModels?: string[];
+            /** @description 是否启用该模型接入 */
+            enabled: boolean;
+            /** @description 是否已配置密钥（永不回传密钥明文） */
+            hasApiKey: boolean;
+            /** @description 模型接入唯一编号 */
+            id: string;
+            /** @description 展示名称 */
+            label: string;
+            /** @description 是否由旧版配置键自动合成 */
+            legacy: boolean;
+            /** @description 默认最大输出令牌数 */
+            maxTokens: number;
+            /** @description 默认模型名称 */
+            model: string;
+            /** @description 按模型名称单独控制的启停状态映射 */
+            modelEnabled?: {
+                [key: string]: boolean;
+            };
+            /** @description 是否支持视频理解输入 */
+            supportsVideo: boolean;
+            /** @description 默认请求超时毫秒数 */
+            timeoutMs: number;
+            /**
+             * @description 出站协议类型
+             * @enum {string}
+             */
+            transport: "openai" | "ollama";
+        };
+        AiRouteAssignmentViewDto: {
+            /** @description 覆盖的最大输出令牌数（字符串编码） */
+            maxTokens: string;
+            /** @description 覆盖的模型名称；空字符串表示使用接入默认模型 */
+            model: string;
+            /** @description 指向的模型接入编号；空字符串表示跟随全局默认 */
+            provider: string;
+            /** @description 覆盖的超时毫秒数（字符串编码） */
+            timeoutMs: string;
+        };
+        AiRoutesViewDto: {
+            /** @description 智能体推理用途路由配置 */
+            agent: components["schemas"]["AiRouteAssignmentViewDto"];
+            /** @description 分析用途路由配置 */
+            analysis: components["schemas"]["AiRouteAssignmentViewDto"];
+            /** @description 视频理解用途路由配置 */
+            video: components["schemas"]["AiRouteAssignmentViewDto"];
+        };
+        AiSopSessionDraftDto: {
+            /** @description 模型显式列出的假设清单 */
+            assumptions: string[];
+            /** @description 步骤正文内容 */
+            bodyMarkdown: string;
+            /** @description 前置元数据配置文件内容 */
+            frontMatterYaml: string;
+            /** @description 生成该草稿所用模型名称 */
+            model: string;
+            /** @description 生成该草稿所用模型接入编号 */
+            provider: string;
+            /** @description 标准化唯一标识 */
+            slug: string;
+            /** @description 草稿标题 */
+            title: string;
+        };
+        AiSopSessionListItemDto: {
+            /**
+             * Format: date-time
+             * @description 会话创建时间
+             */
+            createdAt: string;
+            /** @description 会话编号 */
+            id: string;
+            /** @description 已关联的录屏数量 */
+            mediaCount: number;
+            /** @description 会话状态 */
+            status: string;
+            /** @description 草稿标题，尚未出稿时为空 */
+            title: string | null;
+            /**
+             * Format: date-time
+             * @description 会话最近更新时间
+             */
+            updatedAt: string;
+        };
+        AiSopSessionListResponseDto: {
+            /** @description 会话摘要列表（按更新时间倒序） */
+            items: components["schemas"]["AiSopSessionListItemDto"][];
+            /** @description 会话总数 */
+            total: number;
+        };
+        AiSopSessionMediaRefDto: {
+            /** @description 签名直链过期时间戳（毫秒） */
+            expiresAt?: number;
+            /** @description 媒体文件编号 */
+            mediaId: string;
+            /** @description 原始文件名 */
+            name: string;
+            /** @description 已签发的直链地址（会话内复用） */
+            url?: string;
+        };
+        AiSopSessionMessageDto: {
+            /**
+             * @description 助手本轮执行的动作类型（追问或产出草稿）
+             * @enum {string}
+             */
+            action?: "ask" | "draft";
+            /** @description 消息时间戳 */
+            at: string;
+            /** @description 本轮附带的视频媒体编号列表 */
+            mediaIds?: string[];
+            /**
+             * @description 消息发送角色
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            /** @description 消息正文内容 */
+            text: string;
+        };
+        AiSopSessionUsageDto: {
+            /** @description 命中前缀缓存的输入令牌数 */
+            cachedTokens?: number;
+            /** @description 输入令牌数 */
+            tokensIn: number;
+            /** @description 输出令牌数 */
+            tokensOut: number;
+        };
+        AiSopSessionViewDto: {
+            /**
+             * Format: date-time
+             * @description 会话创建时间
+             */
+            createdAt: string;
+            /** @description 当前生成的草稿对象，尚未出稿时为空 */
+            draft: components["schemas"]["AiSopSessionDraftDto"] | null;
+            /** @description 会话编号 */
+            id: string;
+            /** @description 最近一轮推理令牌用量 */
+            lastTurnUsage?: components["schemas"]["AiSopSessionUsageDto"];
+            /** @description 会话关联的录屏媒体列表 */
+            media: components["schemas"]["AiSopSessionMediaRefDto"][];
+            /** @description 会话消息历史列表 */
+            messages: components["schemas"]["AiSopSessionMessageDto"][];
+            /** @description 本轮模型是否要求补录视频 */
+            needsVideo?: boolean;
+            /** @description 会话绑定的模型接入编号，缺省时为空 */
+            provider: string | null;
+            /** @description 累计已追问次数 */
+            questionsAsked: number;
+            /** @description 剩余可追问次数 */
+            remainingQuestions: number;
+            /**
+             * @description 会话状态（进行中、已出草稿或已保存）
+             * @enum {string}
+             */
+            status: "active" | "drafted" | "saved";
+            /**
+             * Format: date-time
+             * @description 会话最近更新时间
+             */
+            updatedAt: string;
         };
         AlertmanagerAlertDto: {
             /**
@@ -5900,6 +6306,23 @@ export interface components {
             /** @description 产物字节数 */
             size: number;
         };
+        ArtifactPreviewResponseDto: {
+            /** @description kind=text 时为至多 maxBytes 字节的 UTF-8 文本预览；image/binary 恒为 null */
+            content?: string | null;
+            /**
+             * @description 预览类型：text=文本（UTF-8 content 可读）；image/binary=非文本（content 为 null）
+             * @enum {string}
+             */
+            kind: "text" | "image" | "binary";
+            /** @description 内容的 MIME 类型 */
+            mimeType: string;
+            /** @description 产物文件名（裸文件名） */
+            name: string;
+            /** @description 磁盘上产物的完整字节数 */
+            size: number;
+            /** @description 是否因 maxBytes 上限而截断（true 表示 content 只是文件开头的一部分） */
+            truncated: boolean;
+        };
         ArtifactUploadResponseDto: {
             name: string;
             /** @enum {boolean} */
@@ -6285,7 +6708,7 @@ export interface components {
              * @example daily
              * @enum {string}
              */
-            cadence: "daily" | "weekly" | "monthly";
+            cadence: "once" | "hourly" | "daily" | "weekly" | "monthly";
             /** @description preview 返回的 cardHash（16 位十六进制）——确认留痕锚点 */
             expectedCardHash: string;
             /** @description preview 返回的 policyGeneration（16 位十六进制）——策略代际锚点 */
@@ -6756,6 +7179,24 @@ export interface components {
             /** @example admin */
             username: string;
         };
+        CreateWorkbenchChatSessionDto: {
+            /** @description 可选业务上下文（服务端脱敏后落 session.contextJson） */
+            context?: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description 会话类型覆盖；不传时服务端根据 prompt 推导（chat / sop_authoring / plan）
+             * @enum {string}
+             */
+            kind?: "chat" | "sop_authoring" | "plan";
+            /**
+             * @description 用户给工作台的初始指令（作为首条 user AgentStep 落库）
+             * @example 帮我分析昨天的订单异常并起草一份日报 SOP
+             */
+            prompt: string;
+            /** @description 会话标题（可选；缺省由服务端按 prompt 截取） */
+            title?: string;
+        };
         CreateWorkbenchSessionDto: {
             /** @description 随会话携带的业务上下文（服务端脱敏后落库） */
             context?: {
@@ -6770,6 +7211,21 @@ export interface components {
              * @description 用户自己提交的 SOP draft 行 id（UUID）
              */
             sopId: string;
+        };
+        DagRootExecutionDto: {
+            /** @description 新创建并执行入队的执行 ID */
+            executionId: string;
+            /** @description 执行状态（入队后的初始状态，通常为 pending） */
+            status: string;
+            /** @description 被触发的任务 ID */
+            taskId: string;
+        };
+        DecideWorkbenchApprovalDto: {
+            /**
+             * @description 处置动作：grant/deny 仅 ADMIN 且四眼（申请人不可批自己的单）；withdraw 仅创建者本人撤回待批单
+             * @enum {string}
+             */
+            decision: "grant" | "deny" | "withdraw";
         };
         DeleteTaskResponseDto: {
             deleted: boolean;
@@ -7558,6 +8014,8 @@ export interface components {
             version: string;
         };
         ExecutorPackageResponseDto: {
+            /** @description 更新日志（包发布说明）。实体暂无该列，存量与新包统一返回 null，供前端按新契约渲染。 */
+            changelog?: string | null;
             /** @description SHA-256 校验和 */
             checksum?: string | null;
             /**
@@ -8128,7 +8586,7 @@ export interface components {
              * @example monthly
              * @enum {string}
              */
-            cadence: "daily" | "weekly" | "monthly";
+            cadence: "once" | "hourly" | "daily" | "weekly" | "monthly";
             /** @example zhangsan */
             imSenderId: string;
             /**
@@ -8543,6 +9001,24 @@ export interface components {
             total: number;
             totalPages: number;
         };
+        PlanCardAiSuggestionsDto: {
+            /** @description 大模型建议的验收说明 */
+            acceptanceText?: string;
+            /** @description 经白名单过滤后的大模型能力建议列表 */
+            capabilityHints?: string[];
+            /** @description 实际命中的模型名称 */
+            model?: string;
+            /** @description 实际命中的模型提供方标识 */
+            provider?: string;
+            /** @description 大模型识别的风险提示列表 */
+            riskNotes: string[];
+            /** @description 大模型建议的执行步骤列表 */
+            suggestedSteps: string[];
+            /** @description 大模型生成的方案概要 */
+            summary: string;
+            /** @description 大模型建议的标题 */
+            title?: string;
+        };
         PlanCardBudgetDto: {
             /** @description 相对预算口径说明与钳制理由（无 token 样本、不折算真实成本） */
             budgetBasis?: string;
@@ -8558,35 +9034,67 @@ export interface components {
             status: "ok" | "warn" | "fail";
         };
         PlanCardDto: {
+            /** @description 确定性验收说明 */
             acceptanceText: string;
+            /** @description 方案卡预算配置 */
             budget: components["schemas"]["PlanCardBudgetDto"];
+            /** @description 能力白名单提示列表 */
             capabilityHints: string[];
+            /** @description 方案卡标题 */
             title: string;
-            /** @description cron 回读出的确定性业务语句（每天/每周/每月 N 日） */
+            /** @description 触发频率回读出的确定性业务语句（手动触发一次/每小时执行一次/每天/每周/每月 N 日） */
             triggerText: string;
         };
         PlanCardPreviewResponseDto: {
+            /** @description 大模型辅助生成的步骤与风险建议（仅启用且模型可用时返回） */
+            aiSuggestions?: components["schemas"]["PlanCardAiSuggestionsDto"];
+            /** @description 确定性生成的方案卡 */
             card: components["schemas"]["PlanCardDto"];
             /** @description card 规范化 JSON 的 sha256 短前缀（16 位十六进制） */
             cardHash: string;
+            /** @description 确定性校验项列表 */
             checks: components["schemas"]["PlanCardCheckDto"][];
             /** @description 是否通过确定性闸门；任一 fail 即 false */
             eligible: boolean;
+            /**
+             * @description 规划模式：ai 表示已附加大模型建议，deterministic 表示纯确定性规划
+             * @enum {string}
+             */
+            plannerMode?: "ai" | "deterministic";
             /** @description 策略代际指纹（16 位十六进制）——能力/预算策略变更后需重新 preview */
             policyGeneration: string;
         };
+        PostWorkbenchMessageDto: {
+            /** @description 追加的对话正文（落 role=user AgentStep） */
+            content: string;
+            /**
+             * @description 投送模式；followup=普通续问，steer=等待期注入（默认 followup）
+             * @default followup
+             * @enum {string}
+             */
+            mode?: "followup" | "steer";
+        };
         PreviewPlanCardRequestDto: {
             /**
+             * @description 触发频率档位（once/hourly/daily/weekly/monthly）
              * @example daily
              * @enum {string}
              */
-            cadence: "daily" | "weekly" | "monthly";
-            /** @example 汇总昨日订单异常并推送日报 */
+            cadence: "once" | "hourly" | "daily" | "weekly" | "monthly";
+            /**
+             * @description 业务目标描述
+             * @example 汇总昨日订单异常并推送日报
+             */
             goal: string;
             /** @description 可选能力/预算参数；capabilityId 必须在内置白名单内 */
             params?: {
                 [key: string]: string;
             };
+            /**
+             * @description 是否启用大模型辅助方案规划（可选；不影响确定性方案卡哈希）
+             * @default false
+             */
+            useAi?: boolean;
         };
         ProjectDeleteResponseDto: {
             /** @description true = 删除/移除生效 */
@@ -9950,6 +10458,40 @@ export interface components {
              */
             serverTime: string;
         };
+        TestAiProviderDto: {
+            /** @description 指定待测试的模型接入编号；缺省时按用途路由自动解析 */
+            providerId?: string;
+            /**
+             * @description 测试路由用途：分析、智能体推理或视频理解
+             * @enum {string}
+             */
+            purpose?: "analysis" | "agent" | "video";
+            /** @description 是否验证流式增量输出链路（默认否） */
+            testStreaming?: boolean;
+            /** @description 是否验证工具调用声明透传（开启且未指定用途时默认按智能体用途测试） */
+            testTools?: boolean;
+        };
+        TestAiProviderResponseDto: {
+            /** @description 失败时的错误分类码（路由拒绝、鉴权失败、超时或网络异常等） */
+            errorCode?: string | null;
+            /** @description 本次端到端测试耗时（毫秒） */
+            latencyMs: number;
+            /** @description 测试结果说明或真实错误详情 */
+            message: string;
+            /** @description 实际命中的模型名称；未能解析路由时为空 */
+            model: string | null;
+            /** @description 连通性测试是否成功 */
+            ok: boolean;
+            /** @description 模型返回内容摘要预览（超长时截断展示） */
+            preview?: string | null;
+            /** @description 实际命中的模型接入编号；未能解析路由时为空 */
+            provider: string | null;
+            /**
+             * @description 本次测试所用的路由用途
+             * @enum {string}
+             */
+            purpose: "analysis" | "agent" | "video";
+        };
         TotpCodeDto: {
             /**
              * @description 6 位 TOTP 动态验证码
@@ -10008,6 +10550,22 @@ export interface components {
              * @example user:42|alice
              */
             owner: string;
+        };
+        TriggerDagRootsDto: {
+            /** @description 触发参数覆盖（透传给每个根节点执行；服务层自动注入内部批次标记，用于同批次依赖判定）。 */
+            params?: Record<string, never>;
+            /** @description 要触发的任务子图（任务 UUID 列表，1..100 个）。只触发这些任务中在子图内零前驱的根节点；依赖边读取每个任务的 dependencies.value。 */
+            taskIds: string[];
+        };
+        TriggerDagRootsResponseDto: {
+            /** @description 本次 DAG 运行的批次标记（UUID），注入到每个根执行 params._dagRunId */
+            dagRunId: string;
+            /** @description 每个根节点的触发结果（taskId/executionId/status） */
+            executions: components["schemas"]["DagRootExecutionDto"][];
+            /** @description 实际触发的根节点任务 ID（在入参子图内零前驱） */
+            rootTaskIds: string[];
+            /** @description 入参中被跳过（非根节点）的任务 ID——它们由根节点的执行终态经依赖扇出自动触发，不在此处直接触发 */
+            skippedDependentTaskIds: string[];
         };
         TriggerTaskDto: {
             /** @description 提前触发并消耗下一个 cron 计划落点：登记后到该落点时刻调度器跳过一次（一次性），并留痕。缺省 false ⇒ 行为不变（手动触发不覆盖计划落点）。仅 cron 任务可用；已有未消耗登记时返回 409。 */
@@ -10495,8 +11053,37 @@ export interface components {
             /** @description 带签名的入站触发 URL */
             url: string;
         };
+        WorkbenchChatSessionResponseDto: {
+            /** @description 首条 user 消息是否已落库 */
+            initialStepPersisted: boolean;
+            /**
+             * @description 实际会话类型
+             * @enum {string}
+             */
+            kind: "chat" | "sop_authoring" | "plan";
+            /** @description 会话 id（SSE / 消息 / 取消端点使用） */
+            sessionId: string;
+            /** @description 会话初始状态（pending） */
+            status: string;
+        };
+        WorkbenchSessionActionResponseDto: {
+            /** @description 操作是否成功 */
+            ok: boolean;
+            /** @description 是否触发了会话恢复入队 */
+            resumed?: boolean;
+            /** @description 会话 id */
+            sessionId?: string;
+            /** @description 当前会话状态 */
+            status?: string;
+        };
         WorkbenchSessionApprovalDto: {
             approvalKey: string;
+            /** @description 审批参数摘要（哈希） */
+            argsDigest?: string | null;
+            /** @description 当前管理员是否可批准/拒绝 */
+            canDecide?: boolean;
+            /** @description 当前用户是否可撤回 */
+            canWithdraw?: boolean;
             createdAt?: Record<string, never> | null;
             decidedBy?: string | null;
             reason?: string | null;
@@ -10512,6 +11099,8 @@ export interface components {
             id: string;
             /** @description 产物名称 */
             name: string;
+            /** @description 产物预览直链 */
+            previewUrl?: string | null;
             /** @description 产物字节数 */
             size: number;
         };
@@ -10531,8 +11120,14 @@ export interface components {
             };
             /** @description 会话关联的产物（若可判定；无则空数组） */
             artifacts: components["schemas"]["WorkbenchSessionArtifactDto"][];
+            /** @description 终态结论（结构化或文本） */
+            conclusion?: (Record<string, never> | string) | null;
+            /** @description 创建时间 */
+            createdAt?: Record<string, never> | null;
             /** @description 发起人（user:<id>） */
             createdBy?: string | null;
+            /** @description 失败/中止原因 */
+            errorMessage?: string | null;
             /** @description 会话 kind（本端点恒为 sop_authoring） */
             kind: string;
             /** @description 作用域（固定为 {sops:[sopId]}） */
@@ -10552,6 +11147,10 @@ export interface components {
             /** @description 工具调用总数 */
             toolCallCount: number;
             toolCalls: components["schemas"]["WorkbenchSessionToolCallDto"][];
+            /** @description 更新时间 */
+            updatedAt?: Record<string, never> | null;
+            /** @description 等待外部输入的说明 */
+            waitingFor?: string | null;
         };
         WorkbenchSessionListItemDto: {
             createdAt: Record<string, never> | null;
@@ -10566,6 +11165,8 @@ export interface components {
             total: number;
         };
         WorkbenchSessionStepDto: {
+            /** @description 完整步骤正文（最长 8000 字符） */
+            content?: string | null;
             /** @description 步骤正文预览（最长 200 字） */
             contentPreview?: string | null;
             /** @description 步骤创建时间 */
@@ -10576,8 +11177,14 @@ export interface components {
             seq: number;
         };
         WorkbenchSessionToolCallDto: {
+            /** @description 调用参数预览 */
+            argsPreview?: string | null;
             createdAt?: Record<string, never> | null;
             errorSummary?: string | null;
+            /** @description 调用结果预览 */
+            outputPreview?: string | null;
+            /** @description 状态变更时刻 */
+            stateChangedAt?: Record<string, never> | null;
             status: string;
             toolName: string;
         };
@@ -11148,6 +11755,29 @@ export interface operations {
             };
         };
     };
+    AgentInteractionController_cancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 会话 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 取消结果（含是否真的改变了状态） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentCancelResponseDto"];
+                };
+            };
+        };
+    };
     AgentController_exportSession: {
         parameters: {
             query?: never;
@@ -11172,6 +11802,33 @@ export interface operations {
                         steps?: Record<string, never>[];
                         toolCalls?: Record<string, never>[];
                     };
+                };
+            };
+        };
+    };
+    AgentInteractionController_postMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 会话 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentMessageDto"];
+            };
+        };
+        responses: {
+            /** @description 消息写入与续跑结果 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentMessageResponseDto"];
                 };
             };
         };
@@ -11220,6 +11877,34 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    AgentInteractionController_streamSession: {
+        parameters: {
+            query?: {
+                /** @description SSE 建连专用短效票据，仅用于鉴权，不参与事件查询 */
+                ticket?: string;
+                /** @description 断点续传起点：只推送 seq 大于该值的事件，缺省从头开始 */
+                fromSeq?: number;
+            };
+            header?: never;
+            path: {
+                /** @description 会话 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SSE 事件流（Res 直写，Content-Type: text/event-stream） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
                 };
             };
         };
@@ -11361,7 +12046,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AiProviderAdminViewDto"];
+                };
             };
         };
     };
@@ -11382,7 +12069,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AiProviderAdminViewDto"];
+                };
             };
         };
     };
@@ -11401,7 +12090,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AiProviderAdminViewDto"];
+                };
             };
         };
     };
@@ -11422,7 +12113,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AiProviderAdminViewDto"];
+                };
             };
         };
     };
@@ -11463,7 +12156,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AiSopSessionListResponseDto"];
+                };
             };
         };
     };
@@ -11484,7 +12179,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AiSopSessionViewDto"];
+                };
             };
         };
     };
@@ -11503,7 +12200,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AiSopSessionViewDto"];
+                };
             };
         };
     };
@@ -11522,7 +12221,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AiSopSessionViewDto"];
+                };
             };
         };
     };
@@ -11545,7 +12246,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AiSopSessionViewDto"];
+                };
             };
         };
     };
@@ -11579,14 +12282,18 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestAiProviderDto"];
+            };
+        };
         responses: {
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AiTestResponseDto"];
+                    "application/json": components["schemas"]["TestAiProviderResponseDto"];
                 };
             };
         };
@@ -17175,6 +17882,30 @@ export interface operations {
             };
         };
     };
+    TaskDagChainController_triggerRoots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TriggerDagRootsDto"];
+            };
+        };
+        responses: {
+            /** @description 根节点触发结果（dagRunId / rootTaskIds / skippedDependentTaskIds / executions） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriggerDagRootsResponseDto"];
+                };
+            };
+        };
+    };
     TaskController_allExecutions: {
         parameters: {
             query?: {
@@ -17333,11 +18064,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /**
-             * @description 产物二进制内容（Res 直传）
-             *
-             *     产物二进制内容（Res 直传）
-             */
+            /** @description 产物二进制内容（Res 直传） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -17345,6 +18072,55 @@ export interface operations {
                 content: {
                     "application/octet-stream": string;
                 };
+            };
+            /** @description 调用者无权访问该产物 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 产物不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ArtifactsController_preview: {
+        parameters: {
+            query?: {
+                /** @description 预览最多读取的字节数，默认 65536，允许 1024..262144；越界返回 400 VALIDATION_FAILED */
+                maxBytes?: number;
+            };
+            header?: never;
+            path: {
+                /** @description 执行 ID（UUID） */
+                execId: string;
+                /** @description 裸产物文件名 */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 有界预览结果（name/mimeType/size/truncated/kind/content）；非文本 content 恒为 null */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactPreviewResponseDto"];
+                };
+            };
+            /** @description 执行 ID 或产物名非法、maxBytes 越界 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description 调用者无权访问该产物 */
             403: {
@@ -18368,6 +19144,29 @@ export interface operations {
             };
         };
     };
+    WorkbenchSessionController_createChatSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWorkbenchChatSessionDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkbenchChatSessionResponseDto"];
+                };
+            };
+        };
+    };
     WorkbenchController_commit: {
         parameters: {
             query?: never;
@@ -18579,6 +19378,105 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkbenchSessionDetailResponseDto"];
+                };
+            };
+        };
+    };
+    WorkbenchSessionController_decideApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                approvalKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecideWorkbenchApprovalDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkbenchSessionActionResponseDto"];
+                };
+            };
+        };
+    };
+    WorkbenchSessionController_cancelSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkbenchSessionActionResponseDto"];
+                };
+            };
+        };
+    };
+    WorkbenchSessionController_postMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PostWorkbenchMessageDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkbenchSessionActionResponseDto"];
+                };
+            };
+        };
+    };
+    WorkbenchSessionController_streamSession: {
+        parameters: {
+            query?: {
+                /** @description 从该事件序号之后开始推送（断线续传） */
+                fromSeq?: string;
+                /** @description SSE 专用短效票据（30 秒） */
+                ticket?: unknown;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-Sent Events 事件流 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
                 };
             };
         };

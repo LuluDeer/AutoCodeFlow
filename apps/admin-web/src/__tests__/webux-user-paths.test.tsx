@@ -3,7 +3,7 @@
  * - 普通用户 Inbox 不渲染 ADMIN-only 会话深链；
  * - 顶层 loadError 留下页内错误态与重试（不是一闪而过的 toast）；
  * - PrivateRoute hydration 未完成时不空白、不误跳登录；
- * - 侧栏菜单叶子与 route-registry.menuRoutes 对齐；
+ * - 侧栏菜单叶子与 route-registry.shellMenuRoutes 对齐；
  * - 面包屑显示注册表/段名表的可读名称，不裸英文路径段。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,7 +18,7 @@ import { loadInbox } from '../api/inbox';
 import type { InboxSections } from '../api/inbox';
 import { authApi } from '../api/auth';
 import { useAuthStore } from '../store/auth';
-import { menuRoutes } from '../routes/route-registry';
+import { menuRoutes, shellMenuRoutes } from '../routes/route-registry';
 
 vi.mock('../api/inbox', { spy: true });
 vi.mock('../api/auth', () => ({ authApi: { me: vi.fn() } }));
@@ -176,13 +176,13 @@ describe('WEBUX / 首帧与导航', () => {
     expect(screen.queryByTestId('private-route-hydration-fallback')).toBeNull();
   });
 
-  it('侧栏叶子来自 route-registry.menuRoutes，admin-only 项按角色过滤', async () => {
+  it('侧栏叶子来自 route-registry.shellMenuRoutes，admin-only 项按角色过滤', async () => {
     renderLayout('/dashboard', 'user');
     openCollapsedGroups();
 
     await waitFor(() => {
       const labels = menuLabels();
-      for (const route of menuRoutes(false)) {
+      for (const route of shellMenuRoutes(false)) {
         expect(labels).toContain(i18n.t(route.labelKey));
       }
     });
@@ -196,7 +196,7 @@ describe('WEBUX / 首帧与导航', () => {
     openCollapsedGroups();
     await waitFor(() => {
       const labels = menuLabels();
-      for (const route of menuRoutes(true)) {
+      for (const route of shellMenuRoutes(true)) {
         expect(labels).toContain(i18n.t(route.labelKey));
       }
     });

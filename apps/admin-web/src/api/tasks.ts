@@ -62,6 +62,10 @@ export interface BatchOutcome {
   failures: Array<{ id: string; error: string }>;
 }
 
+/** POST /api/tasks/dag/trigger-roots 的响应（前端手写：generated 类型尚未覆盖该端点）。 */
+export type TriggerDagRootsResult =
+  components['schemas']['TriggerDagRootsResponseDto'];
+
 export function summarizeBatch(results: BatchItemResult[] | undefined | null): BatchOutcome {
   const list = Array.isArray(results) ? results : [];
   const failures = list
@@ -968,6 +972,18 @@ export const tasksApi = {
   // delete 四处）。因此返回类型必须暴露 per-item error，调用方才能区分
   // 「20 项全成」与「20 项里 7 项被拒」。此前声明为隐式 void，UI 无条件弹
   // 成功提示，属静默的部分失败。
+  /**
+   * POST /api/tasks/dag/trigger-roots —— 只触发子图内零前驱的根节点。
+   * 服务层注入 `_dagRunId`；非根节点由根执行终态经依赖扇出自动触发。
+   */
+  triggerDagRoots: (
+    taskIds: string[],
+    params?: Record<string, unknown>,
+  ) =>
+    client.post('/tasks/dag/trigger-roots', {
+      taskIds,
+      ...(params ? { params } : {}),
+    }) as Promise<TriggerDagRootsResult>,
   batchTrigger: (taskIds: string[]) =>
     client.post('/tasks/batch/trigger', { taskIds }) as Promise<BatchItemResult[]>,
   batchPause: (taskIds: string[]) =>

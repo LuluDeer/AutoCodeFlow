@@ -1,7 +1,8 @@
 import { Suspense } from 'react';
 import type { ReactNode } from 'react';
-import { createBrowserRouter, Navigate } from 'react-router-dom';
+import { createBrowserRouter } from 'react-router-dom';
 import MainLayout from './layouts/MainLayout';
+import { RoleHomeRedirect } from './layouts/RoleHomeRedirect';
 import RequireAdmin from './components/RequireAdmin';
 import PrivateRoute from './components/PrivateRoute';
 import PageFallback from './components/PageFallback';
@@ -70,7 +71,7 @@ export const router = createBrowserRouter(
       element: <PrivateRoute><MainLayout /></PrivateRoute>,
       errorElement: <RouteErrorBoundary />,
       children: [
-        { index: true, element: <Navigate to="/dashboard" replace /> },
+        { index: true, element: <RoleHomeRedirect /> },
         { path: '*', element: withSuspense(<NotFoundPage />) },
         { path: 'dashboard', element: withSuspense(<DashboardPage />) },
         { path: 'tasks', element: withSuspense(<TaskListPage />) },

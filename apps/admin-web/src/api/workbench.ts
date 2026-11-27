@@ -111,14 +111,39 @@ export function createWorkbenchSession(
 
 /** 读取受限会话的实时摘要（状态由后端 worker 推进，前端不锁定为 pending）。 */
 export function getWorkbenchSession(id: string): Promise<GeneratedSessionDetail & {
-  toolCalls?: Array<{ toolName: string; status: string; errorSummary?: string | null; createdAt?: unknown }>;
+  title?: string | null;
+  conclusion?: unknown;
+  errorMessage?: string | null;
+  waitingFor?: string | null;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  steps?: Array<{
+    seq: number;
+    role: string;
+    content?: string | null;
+    contentPreview?: string | null;
+    createdAt?: unknown;
+  }>;
+  toolCalls?: Array<{
+    id?: string;
+    toolName: string;
+    status: string;
+    argsPreview?: string | null;
+    outputPreview?: string | null;
+    errorSummary?: string | null;
+    createdAt?: unknown;
+    stateChangedAt?: unknown;
+  }>;
   approvalItems?: Array<{
     approvalKey: string;
     toolName: string;
     status: string;
     reason?: string | null;
+    argsDigest?: string | null;
     decidedBy?: string | null;
     createdAt?: unknown;
+    canDecide?: boolean;
+    canWithdraw?: boolean;
     reviewUrl?: string | null;
   }>;
   artifacts: Array<{
@@ -127,6 +152,7 @@ export function getWorkbenchSession(id: string): Promise<GeneratedSessionDetail 
     size: number;
     createdAt?: unknown;
     downloadUrl?: string | null;
+    previewUrl?: string | null;
   }>;
 }> {
   return client.get(`/workbench/sessions/${encodeURIComponent(id)}`);
@@ -141,12 +167,92 @@ export function listWorkbenchSessions(params?: { page?: number; pageSize?: numbe
     sessionId: string;
     status: string;
     title: string | null;
+    kind?: string | null;
     createdAt?: unknown;
-    sopId: string | null;
+    sopId?: string | null;
   }>;
   total: number;
 }> {
   return client.get('/workbench/sessions', { params });
+}
+
+// ── Prompt-first 交互会话（后端新端点；generated schema 尚未落地） ──────────
+// 入参/回执刻意用内联结构类型：api 层不反向依赖 pages/workbench 的过渡别名。
+
+export function createWorkbenchChatSession(input: {
+  prompt: string;
+  title?: string;
+  kind?: 'chat' | 'sop_authoring' | 'plan';
+  context?: Record<string, unknown>;
+}): Promise<{
+  sessionId: string;
+  status: string;
+  kind: string;
+  initialStepPersisted: boolean;
+}> {
+  return client.post('/workbench/chat-sessions', input);
+}
+
+export function postWorkbenchMessage(
+  sessionId: string,
+  input: { content: string; mode?: 'followup' | 'steer' },
+): Promise<{ ok: boolean; sessionId?: string; status?: string; resumed?: boolean }> {
+  return client.post(`/workbench/sessions/${encodeURIComponent(sessionId)}/messages`, input);
+}
+
+export function cancelWorkbenchSession(
+  sessionId: string,
+): Promise<{ ok: boolean; sessionId?: string; status?: string; resumed?: boolean }> {
+  return client.post(`/workbench/sessions/${encodeURIComponent(sessionId)}/cancel`);
+}
+
+export function decideWorkbenchApproval(
+  sessionId: string,
+  approvalKey: string,
+  input: { decision: 'grant' | 'deny' | 'withdraw'; note?: string },
+): Promise<{ ok: boolean; sessionId?: string; status?: string; resumed?: boolean }> {
+  return client.post(
+    `/workbench/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalKey)}/decide`,
+    input,
+  );
+}
+
+/** 从后端给的 previewUrl/downloadUrl 解析出 (execId, name)。 */
+export function parseWorkbenchArtifactUrl(
+  artifact: { previewUrl?: string | null; downloadUrl?: string | null },
+): { execId: string; name: string } | null {
+  const url = artifact.previewUrl || artifact.downloadUrl;
+  if (!url) return null;
+  const match = url.match(/\/tasks\/executions\/([^/]+)\/artifacts\/([^/?#]+)/);
+  if (!match) return null;
+  return { execId: decodeURIComponent(match[1]), name: decodeURIComponent(match[2]) };
+}
+
+/** 从后端给的 previewUrl/downloadUrl 解析出 (execId, name)，再走有界预览端点。 */
+export function fetchWorkbenchArtifactPreview(
+  artifact: { name: string; previewUrl?: string | null; downloadUrl?: string | null },
+  signal?: AbortSignal,
+): Promise<{
+  name: string;
+  mimeType: string;
+  size: number;
+  truncated: boolean;
+  kind: 'text' | 'image' | 'binary';
+  content: string | null;
+}> {
+  const parsed = parseWorkbenchArtifactUrl(artifact);
+  if (!parsed) return Promise.reject(new Error('invalid artifact preview url'));
+  return client.get(
+    `/tasks/executions/${encodeURIComponent(parsed.execId)}/artifacts/${encodeURIComponent(parsed.name)}/preview`,
+    { params: { maxBytes: 65536 }, signal },
+  ) as Promise<{
+    name: string;
+    mimeType: string;
+    size: number;
+    truncated: boolean;
+    kind: 'text' | 'image' | 'binary';
+    content: string | null;
+  }>;
 }
 
 export const workbenchApi = {
@@ -155,4 +261,9 @@ export const workbenchApi = {
   createSession: createWorkbenchSession,
   getSession: getWorkbenchSession,
   listSessions: listWorkbenchSessions,
+  createChatSession: createWorkbenchChatSession,
+  postMessage: postWorkbenchMessage,
+  cancelSession: cancelWorkbenchSession,
+  decideApproval: decideWorkbenchApproval,
+  fetchArtifactPreview: fetchWorkbenchArtifactPreview,
 };

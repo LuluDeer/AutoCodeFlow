@@ -26,34 +26,31 @@ import {
   theme,
 } from 'antd';
 import { Link } from 'react-router-dom';
-import { ReloadOutlined } from '@ant-design/icons';
+import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
 import InboxFilterBar, { type InboxFilterMode } from '../components/inbox/InboxFilterBar';
+import { INBOX_GROUPS, matchesInboxQuery } from '../components/inbox/InboxGroups';
+import { useInboxWriteActions } from '../components/inbox/useInboxWriteActions';
 import PublishApprovalCard, { PUBLISH_TOOL_NAME } from './inbox/PublishApprovalCard';
-import { Modal as ConfirmModal } from '../utils/modal';
-import { message } from '../utils/toast';
 import { showApiError } from '../utils/error';
 import { useRaceGuard } from '../utils/raceGuard';
-import { agentApprovalStatusLabel, agentKindLabel } from '../utils/agent-label';
+import { agentKindLabel } from '../utils/agent-label';
 import { formatRelativeTime } from '../utils/timeFormat';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { isAdminOnlyRoute } from '../routes/route-registry';
 import {
-  INBOX_REFRESH_EVENT,
+  isInboxAllClear,
   SECTION_PAGE_SIZE,
   NOTICE_TESTID,
-  isInboxAllClear,
   isSectionVisible,
   noticeTitle,
   emptySectionReason,
   sectionCountLabel,
   sectionNotices,
   sectionWindowLabel,
-  deploymentsApi,
-  agentApi,
   isSelfDeployment,
   blockedHours,
   loadInbox,
@@ -116,10 +113,6 @@ const READONLY_SECTIONS: ReadonlySet<InboxSectionKey> = new Set([
   // 收件箱不该替运营猜处置方式；这里只给「去哪个 SOP 看」的深链。
   'sopBlocked',
 ]);
-
-function dispatchInboxRefresh(): void {
-  window.dispatchEvent(new Event(INBOX_REFRESH_EVENT));
-}
 
 /** 副标题本地化组合：提交者前缀 / 工具名 + 理由；API 层只回原始字段。 */
 /**
@@ -430,64 +423,6 @@ function InboxRow({ item, canWrite, actingId, actingAction, userId, onApprove, o
   );
 }
 
-/** 页面内 `t` 的类型（模块级写动作辅助函数共用，避免各处重复写 ReturnType）。 */
-type InboxT = ReturnType<typeof useTranslation>['t'];
-
-/**
- * 二次确认 → 执行 → 刷新（收件箱所有写动作的唯一通道）。
- *
- * 模块级而不是页面闭包：页面组件体是 `check:size-caps` 的度量单元（300 行红线），
- * 通道本体与「当前是谁在操作」无关，留在外面不会让页面继续变胖。
- *
- * 409 = 竞争后此行已变化：关闭旧确认框并重取（错误留在原位重试其余错误）。
- */
-function confirmThenWith(
-  t: InboxT,
-  title: string,
-  action: () => Promise<void>,
-  options: { danger?: boolean; onDone: () => void },
-): void {
-  ConfirmModal.confirm({
-    title,
-    okText: t('inbox.action.confirm'),
-    cancelText: t('inbox.action.cancel'),
-    okButtonProps: options.danger ? { danger: true } : undefined,
-    onOk: async () => {
-      try {
-        await action();
-      } catch (err) {
-        showApiError(err);
-        if ((err as { __status?: number } | null)?.__status !== 409) throw err;
-      }
-      options.onDone();
-    },
-  });
-}
-
-/**
- * ADR-045：发布审批卡的「批准」。
- *
- * 与「拒绝」同款走二次确认（grant 有副作用且不可撤销），文案复用审批页词条
- * （`agents.approval.*`）——同一件事在收件箱与会话页说同一句话。服务端四眼
- * （`release-four-eyes`）仍会拦「自批」，前端提示只是把红线说清楚。
- */
-function grantPublishApproval(
-  item: InboxItem,
-  t: InboxT,
-  confirm: (title: string, action: () => Promise<void>) => void,
-): void {
-  const { session, approval } = item;
-  if (!session || !approval) return;
-  confirm(t('agents.approval.confirmTitle', { tool: approval.toolName }), async () => {
-    const result = await agentApi.grantApproval(session.id, approval.approvalKey);
-    if (result.ok && result.approval.status === 'granted') {
-      message.success(t('agents.approval.grantOk', { key: approval.approvalKey }));
-    } else {
-      message.warning(t('inbox.approvalState', { status: agentApprovalStatusLabel(result.approval.status, t) }));
-    }
-  });
-}
-
 export default function InboxPage() {
   const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
@@ -498,11 +433,8 @@ export default function InboxPage() {
   // WEBUX-H1：顶层读失败不能只靠 toast——toast 一闪而过，页面会停在没有说明的
   // 空白/旧态。保留原始 error 交给页内 StateError（带重试 + 复制技术详情）。
   const [loadError, setLoadError] = useState<unknown>(null);
-  const [actingId, setActingId] = useState<string | null>(null);
-  const [actingAction, setActingAction] = useState<InboxActingAction | null>(null);
   const [filterMode, setFilterMode] = useState<InboxFilterMode>('all');
-  const [rejectTarget, setRejectTarget] = useState<InboxItem | null>(null);
-  const [rejectReason, setRejectReason] = useState('');
+  const [query, setQuery] = useState('');
 
   const guard = useRaceGuard();
   // UX-H1：AbortController 与序号守卫互补——序号守卫丢「晚到的旧响应」，
@@ -542,69 +474,20 @@ export default function InboxPage() {
     abortRef.current?.abort();
   }, []);
 
-  // ── 写动作 ────────────────────────────────────────────────────────────────
-
-  // 二次确认 → 执行 → 刷新：通道本体在模块级 `confirmThenWith`（页面组件体是
-  // `check:size-caps` 的度量单元，这里只绑当前身份/刷新回调）。
-  const confirmThen = (title: string, action: () => Promise<void>, danger = false) =>
-    confirmThenWith(t, title, action, { danger, onDone: () => { dispatchInboxRefresh(); void reload(); } });
-
-  const handleApprove = (item: InboxItem) => {
-    const dep = item.deployment;
-    if (!dep) return;
-    confirmThen(t('inbox.approveConfirm.title', { title: item.title }), async () => {
-      await deploymentsApi.approve(dep.id);
-      message.success(t('inbox.success.approved'));
-    });
-  };
-
-  const openReject = (item: InboxItem) => {
-    setRejectTarget(item);
-    setRejectReason('');
-  };
-
-  const confirmReject = async () => {
-    const dep = rejectTarget?.deployment;
-    if (!dep) return;
-    setActingId(rejectTarget.id);
-    setActingAction('reject');
-    try {
-      await deploymentsApi.reject(dep.id, rejectReason.trim() || undefined);
-      message.success(t('inbox.success.rejected'));
-      dispatchInboxRefresh();
-      setRejectTarget(null);
-      await reload();
-    } catch (err) {
-      showApiError(err);
-    } finally {
-      setActingId(null);
-      setActingAction(null);
-    }
-  };
-
-  // ADR-045：发布审批卡的「批准」——判定与文案在模块级 `grantPublishApproval`。
-  const handleGrant = (item: InboxItem) => grantPublishApproval(item, t, confirmThen);
-
-  const handleDeny = ({ session, approval, title }: InboxItem) => {
-    if (!session || !approval) return;
-    confirmThen(t('inbox.denyConfirm.title', { title, tool: approval.toolName }), async () => {
-      const result = await agentApi.denyApproval(session.id, approval.approvalKey);
-      if (result.ok && result.approval.status === 'denied') {
-        message.success(t('inbox.success.denied'));
-      } else {
-        message.warning(t('inbox.approvalState', { status: agentApprovalStatusLabel(result.approval.status, t) }));
-      }
-    }, true);
-  };
-
-  const handleResume = ({ canResume, session, title }: InboxItem) => {
-    if (!canResume || !session) return;
-    confirmThen(t('inbox.resumeConfirm.title', { title }), async () => {
-      const result = await agentApi.resume(session.id);
-      if (result.ok) message.success(t('inbox.success.resumed'));
-      else message.warning(result.reason || t('inbox.resumeNotQueued'));
-    });
-  };
+  const {
+    actingId,
+    actingAction,
+    rejectTarget,
+    rejectReason,
+    setRejectReason,
+    setRejectTarget,
+    confirmReject,
+    handleApprove,
+    openReject,
+    handleGrant,
+    handleDeny,
+    handleResume,
+  } = useInboxWriteActions(reload);
 
   // ── 渲染 ────────────────────────────────────────────────────────────────────
 
@@ -640,6 +523,18 @@ export default function InboxPage() {
     // 判定在 api/inbox.isSectionVisible，其余七个小节恒为 true（既有交付面不动）。
     if (!isSectionVisible(section)) return null;
 
+    const visibleRows = (items: InboxItem[]) => {
+      const filtered = query.trim()
+        ? items.filter((item) =>
+            matchesInboxQuery(
+              { title: inboxTitleText(item, t), subtitle: inboxSubtitleText(item, t), approval: item.approval },
+              query,
+            ),
+          )
+        : items;
+      return sortInboxItemsByWaitingSince(filtered).map(renderRow);
+    };
+
     const title = (
       <Space size={8}>
         <Tag color={SECTION_TAG_COLOR[key]}>{t(`inbox.section.${key}`)}</Tag>
@@ -670,7 +565,7 @@ export default function InboxPage() {
               title={key === 'agentApprovals' && section.items.length ? t('inbox.approvalsIncomplete') : t('inbox.loadFailed')}
               onRetry={() => void reload()}
             />
-            {sortInboxItemsByWaitingSince(section.items).map(renderRow)}
+            {visibleRows(section.items)}
           </>
         ) : key === 'queueStall' ? (
           queueStall ? (
@@ -726,7 +621,7 @@ export default function InboxPage() {
             }
           />
         ) : (
-          sortInboxItemsByWaitingSince(section.items).map(renderRow)
+          visibleRows(section.items)
         )}
       </Card>
     );
@@ -736,7 +631,7 @@ export default function InboxPage() {
     <div data-testid="inbox-page">
       <PageHeader
         title={t('inbox.title')}
-        description={t('inbox.description')}
+        description={t(canWrite ? 'inbox.description' : 'dashboard.createFirstHint')}
         extra={<Button icon={<ReloadOutlined />} onClick={() => void reload()} loading={loading}>{t('inbox.action.refresh')}</Button>}
       />
 
@@ -756,7 +651,34 @@ export default function InboxPage() {
       ) : (
         <>
           <InboxFilterBar value={filterMode} onChange={setFilterMode} />
-          {SECTION_ORDER.filter((k) => filterMode === 'all' || (filterMode === 'readonly') === READONLY_SECTIONS.has(k)).map(renderSection)}
+          <Input
+            allowClear
+            aria-label={t('nav.search.aria')}
+            prefix={<SearchOutlined aria-hidden />}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            style={{ marginBottom: 12, maxWidth: 360 }}
+          />
+          {!canWrite && (
+            <Space wrap style={{ marginBottom: 12 }} data-testid="inbox-user-actions">
+              <Link to="/workbench">{t('nav.workbench')}</Link>
+              <Link to="/executions">{t('nav.executions')}</Link>
+            </Space>
+          )}
+          {INBOX_GROUPS.map((group) => {
+            const keys = group.sections.filter((key) =>
+              filterMode === 'all' || (filterMode === 'readonly') === READONLY_SECTIONS.has(key),
+            );
+            if (!keys.length) return null;
+            return (
+              <section key={group.key} data-testid={`inbox-group-${group.key}`}>
+                <Text strong style={{ display: 'block', margin: '4px 0 8px', fontSize: 14 }}>
+                  {t(group.labelKey)}
+                </Text>
+                {keys.map(renderSection)}
+              </section>
+            );
+          })}
         </>
       )}
 

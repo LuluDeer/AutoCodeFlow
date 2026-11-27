@@ -1,7 +1,7 @@
 /**
  * NF-02: 依赖 DAG 组件编排动作区测试——「触发整条链」按钮的渲染与交互。
  * 组件取数走 tasksApi.list（mock），布局纯函数已由 dag-layout.test 覆盖；
- * 本文件聚焦链式触发行为断言（调 batchTrigger 且 taskId 集合=图节点全集）。
+ * 本文件聚焦链式触发行为断言（调 triggerDagRoots，由后端只触发根节点）。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -13,7 +13,7 @@ import { tasksApi, type Task } from '../api/tasks';
 
 vi.mock('../api/tasks', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/tasks')>();
-  return { ...actual, tasksApi: { ...actual.tasksApi, list: vi.fn(), listAll: vi.fn(), batchTrigger: vi.fn() } };
+  return { ...actual, tasksApi: { ...actual.tasksApi, list: vi.fn(), listAll: vi.fn(), triggerDagRoots: vi.fn() } };
 });
 
 vi.mock('react-router-dom', async (importOriginal) => {
@@ -32,10 +32,10 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
     useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
     vi.mocked(tasksApi.list).mockReset();
     vi.mocked(tasksApi.listAll).mockReset().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 } as never);
-    vi.mocked(tasksApi.batchTrigger).mockReset();
+    vi.mocked(tasksApi.triggerDagRoots).mockReset();
   });
 
-  it('有依赖链时渲染按钮，点击触发 batchTrigger 且携带图节点全集', async () => {
+  it('有依赖链时渲染按钮，点击触发 triggerDagRoots 且携带图节点全集（后端只触发根节点）', async () => {
     vi.mocked(tasksApi.listAll).mockResolvedValue({
       items: [
         task('up', '上游'),
@@ -46,7 +46,7 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
       page: 1,
       pageSize: 100,
     } as never);
-    vi.mocked(tasksApi.batchTrigger).mockResolvedValue([] as never);
+    vi.mocked(tasksApi.triggerDagRoots).mockResolvedValue([] as never);
 
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -57,11 +57,11 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
     );
 
     const btn = await screen.findByTestId('dag-trigger-chain');
-    await waitFor(() => expect(btn.textContent).toContain('3'));
+    await waitFor(() => expect(btn.textContent).toContain('触发根节点'));
     fireEvent.click(btn);
 
-    await waitFor(() => expect(tasksApi.batchTrigger).toHaveBeenCalledTimes(1));
-    const ids = vi.mocked(tasksApi.batchTrigger).mock.calls[0][0] as string[];
+    await waitFor(() => expect(tasksApi.triggerDagRoots).toHaveBeenCalledTimes(1));
+    const ids = vi.mocked(tasksApi.triggerDagRoots).mock.calls[0][0] as string[];
     expect(ids.sort()).toEqual(['cur', 'down', 'up']);
   });
 
@@ -81,10 +81,10 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
     );
     const btn = await screen.findByTestId('dag-trigger-chain');
     fireEvent.click(btn);
-    await waitFor(() => expect(tasksApi.batchTrigger).toHaveBeenCalledWith(['solo']));
+    await waitFor(() => expect(tasksApi.triggerDagRoots).toHaveBeenCalledWith(['solo']));
   });
 
-  it('batchTrigger 失败 → 错误消息透出不静默', async () => {
+  it('triggerDagRoots 失败 → 错误消息透出不静默', async () => {
     vi.mocked(tasksApi.listAll).mockResolvedValue({
       items: [task('solo', '单任务')],
       total: 1,
@@ -92,7 +92,7 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
       pageSize: 100,
     } as never);
     // axios 形态错误（getErrMsg 优先取 response.data.message）
-    vi.mocked(tasksApi.batchTrigger).mockRejectedValue({
+    vi.mocked(tasksApi.triggerDagRoots).mockRejectedValue({
       response: { data: { message: 'boom' } },
     } as never);
     render(
@@ -145,7 +145,7 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
 
   // RBAC（P1-5 口径对齐）：非管理员「链式触发」入口禁用——同页头「立即触发」
   // 按钮同为 admin-only，不得从依赖 Tab 绕过。（Tooltip 提示悬停才挂载，不在断言面）
-  it('非管理员：链式触发按钮禁用且不发出 batchTrigger', async () => {
+  it('非管理员：链式触发按钮禁用且不发出 triggerDagRoots', async () => {
     useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
     vi.mocked(tasksApi.listAll).mockResolvedValue({
       items: [task('solo', '单任务')],
@@ -166,6 +166,6 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
     fireEvent.click(btn);
     // 留出事件循环，确认未发起写请求
     await waitFor(() => expect(btn.isConnected).toBe(true));
-    expect(tasksApi.batchTrigger).not.toHaveBeenCalled();
+    expect(tasksApi.triggerDagRoots).not.toHaveBeenCalled();
   });
 });
