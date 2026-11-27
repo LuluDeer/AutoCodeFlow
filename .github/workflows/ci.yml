@@ -372,6 +372,11 @@ jobs:
       - name: E2E (auth / executors / tasks / Agent approvals)
         run: npm run test:e2e -- --runInBand
         working-directory: apps/admin-api
+      # Agent 实时流 / 跨副本控制 L3：同源 PG/Redis services，脚本自建并丢弃
+      # 一次性 DB/Redis 逻辑库，单 Jest 进程 --runInBand；断言摘要缺失即红。
+      - name: Agent realtime cross-instance L3 (throwaway PG/Redis)
+        run: bash scripts/verify-agent-realtime.sh
+        timeout-minutes: 15
 
   # ── 迁移链验证：空库全链 + 幂等二跑守卫 ────────────────────
   # 第五轮教训：全新 DB 迁移链曾断裂 3 处，迁移类改动必须有 CI 兜底。
@@ -1642,6 +1647,11 @@ jobs:
           node scripts/check-guard-liveness.mjs --selftest
           node scripts/check-guard-liveness.mjs
 
+      - name: Live spec skip-gate wiring guard (LIVE-SPECS-WIRED)
+        run: |
+          node scripts/check-live-specs-wired.mjs --selftest
+          node scripts/check-live-specs-wired.mjs
+
       - name: Posture matrix tables guard (R68)
         run: |
           node scripts/check-posture-matrix-tables.mjs --selftest
@@ -2384,6 +2394,31 @@ jobs:
         working-directory: apps/executor-node
       - run: npm ci
         working-directory: apps/admin-web
+      # LIVE-SPECS-WIRED：三份「给隔离端口才跑」的级别 3 集成 spec 此前
+      # 在 CI 与任何可达 script 里都没有门控 env ⇒ Jest 永远 skipped 却报绿。
+      # 复用本 job 已有的隔离映射端口（PG 15432 / Redis 16379，均非宿主默认口），
+      # 真迁移两张测试库后跑三份 spec；断言的是真实落库/队列副作用，不是 mock。
+      - name: Live integration specs on isolated PG/Redis
+        working-directory: apps/admin-api
+        env:
+          SOP_CANCEL_TEST_PG_PORT: '15432'
+          SOP_CANCEL_TEST_PG_DB: autoflow_r289
+          SOP_ADMIN_TEST_PG_PORT: '15432'
+          SOP_ADMIN_TEST_PG_DB: autoflow_sop_admin_test
+          AGENT_RESUME_TEST_REDIS_PORT: '16379'
+          DB_HOST: localhost
+          DB_PORT: '15432'
+          DB_USERNAME: autoflow
+          DB_PASSWORD: test
+        run: |
+          node -e 'const {Client}=require("pg");(async()=>{const c=new Client({host:"localhost",port:15432,user:"autoflow",password:"test",database:"autoflow_test"});await c.connect();for(const db of ["autoflow_r289","autoflow_sop_admin_test"]){try{await c.query(`CREATE DATABASE ${db}`)}catch(e){if(e.code!=="42P04")throw e}}await c.end()})().catch(e=>{console.error(e);process.exit(1)})'
+          for db in autoflow_r289 autoflow_sop_admin_test; do
+            DB_DATABASE="$db" npm run migration:run
+          done
+          npx --node-options="--experimental-vm-modules" jest --runInBand --runTestsByPath \
+            src/modules/agent/runtime/__tests__/agent-resume-bullmq.spec.ts \
+            src/modules/sop/__tests__/sop-assignment-cancel.integration.spec.ts \
+            src/modules/sop/__tests__/sop-admin-pull.integration.spec.ts
       # runner 镜像自带的 google-chrome apt 源（dl.google.com）偶发 Hash Sum
       # mismatch，会让 --with-deps 的 apt-get update 整体失败（2026-09-10
       # 连续三轮实爆）。安装前禁用该源——playwright 系统依赖不含 chrome 本体。

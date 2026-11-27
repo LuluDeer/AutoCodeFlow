@@ -208,6 +208,10 @@ const SKIP_DIRS = new Set([
   "coverage",
   "generated",
   "locales",
+  // 守卫/脚本自检在 apps/admin-api 下生成的临时编译/夹具目录，属于产物，不是源码。
+  ".sop-check",
+  ".boundary-check",
+  ".trigger-check",
   "__pycache__",
   ".git",
   ".next",

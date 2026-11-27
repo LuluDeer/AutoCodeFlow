@@ -172,11 +172,11 @@
     "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1005,
-      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【R65 代签（Lead 已批准）：**共享类型 import**（replay 决策上下文类型），内联字面量会把这个形状写两份 —— 正是 ADR-031 要消灭的「两处各自推导」⇒ 986→**987**；**回滚值 986**。】 【第65轮续(N8 steer 接线，Lead 集成重签)：runtime run() 每轮 LLM 前经 steerInbox.drainAtStepBoundary 注入步边界意图(+注入口 setSteerInbox)，nonCommentLines 987→996、最长函数 run@L520 684→696；既有预算/审批重放/双跑防护逐字未动，反证真红还原。回滚值 987/684。】 【第68轮续(N11 plan 身份接线，Lead 集成重签)：availableTools 之后经 narrowPlanTools 按 plan 身份再收窄(1 行 import+let 改写+1 行调用)，nonCommentLines 996→998、最长函数 run@L522 684→699；预算/审批重放/steer drain/双跑防护逐字未动，反证 13 真红还原。回滚值 996/696。】 | 【2026-11-27 硬骨轮重签】replayedToolResult 增加 expired 显式分支，恢复上下文不再显示「批准后会恢复」误导文案；非注释行 998→1004，函数体/密度/exports 未变。 | 【2026-11-27 空降大改造轮重签】W1-S2 实时流接线：按 kind 分流系统提示词+初始 user turn、AbortSignal 订阅、流式 LLM delta 上报、跨副本 steer 注入（仅 +1 非注释行/函数体+3/密度+0.1，逻辑全部下沉 agent-runtime-realtime.collaborator.ts）；受控增量。",
+      "maxLines": 1048,
+      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【R65 代签（Lead 已批准）：**共享类型 import**（replay 决策上下文类型），内联字面量会把这个形状写两份 —— 正是 ADR-031 要消灭的「两处各自推导」⇒ 986→**987**；**回滚值 986**。】 【第65轮续(N8 steer 接线，Lead 集成重签)：runtime run() 每轮 LLM 前经 steerInbox.drainAtStepBoundary 注入步边界意图(+注入口 setSteerInbox)，nonCommentLines 987→996、最长函数 run@L520 684→696；既有预算/审批重放/双跑防护逐字未动，反证真红还原。回滚值 987/684。】 【第68轮续(N11 plan 身份接线，Lead 集成重签)：availableTools 之后经 narrowPlanTools 按 plan 身份再收窄(1 行 import+let 改写+1 行调用)，nonCommentLines 996→998、最长函数 run@L522 684→699；预算/审批重放/steer drain/双跑防护逐字未动，反证 13 真红还原。回滚值 996/696。】 | 【2026-11-27 硬骨轮重签】replayedToolResult 增加 expired 显式分支，恢复上下文不再显示「批准后会恢复」误导文案；非注释行 998→1004，函数体/密度/exports 未变。 | 【2026-11-27 空降大改造轮重签】W1-S2 实时流接线：按 kind 分流系统提示词+初始 user turn、AbortSignal 订阅、流式 LLM delta 上报、跨副本 steer 注入（仅 +1 非注释行/函数体+3/密度+0.1，逻辑全部下沉 agent-runtime-realtime.collaborator.ts）；受控增量。 | 【2026-11-27 空降负责人第二轮重签】跨副本 cancel 在 LLM/工具批前五处 stopOnAbort、deny resume 结构化 reason、doom-loop 脱离 realtimePorts、steer Redis list；非注释行 1004→1048，最长函数 702→744。回滚值 1004/702。",
       "ceiling": {
-        "nonCommentLines": 1005,
-        "functionLines": 702,
+        "nonCommentLines": 1048,
+        "functionLines": 744,
         "ctorParams": 0,
         "exports": 10,
         "branchDensity": 23.3
@@ -209,10 +209,10 @@
     "apps/admin-api/src/modules/agent/tools/__tests__/tool-executor.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1539,
-      "why": "2026-11-04 实测 nonCommentLines=1301 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R40：新增 1 条端到端用例（执行失败+已 consumed ⇒ 两个出口都含指引）⇒ 非注释行 1301→1326（+25）。回滚值 = 1301。】【2026-11-05 R40：+1 条端到端用例（执行失败且已 consumed ⇒ 落库与模型文案都含指引）⇒ 1301→1326；回滚值 1301。】 【R41：+1 条脱敏用例 ⇒ 非注释行 1326→1354、最长函数体 106→455（describe 内新增 it 使最长块变大；回滚值 1326 / 106）。】 【R44：+1 条接缝测试（spy 证明两条路径都经 outcomeRecorder），非注释行 1354→1370；回滚值 1354。】 【R61 代签（Lead 已批准）：新增 replay 决策/单判据相关用例 ⇒ 1370→**1448**；**回滚值 1370**。功能性修复用例，非放任增长。】 【R65 代签（Lead 已批准）：**唯一贡献是 2 条红→绿 characterization 用例**（ADR-031 步骤 1 的验收证据），删了就没有证据 ⇒ 1448→**1493**；**回滚值 1448**。】 【R102：合并幽灵条目 —— 该文件已从 `tools/` 迁到 `tools/__tests__/`，旧路径条目残留且仍记着 1539 的真实上限；删除旧路径条目并把 1539 迁到新路径条目（同批减 1 条，ratchet 条目数 99→98 = maxEntries）。】",
+      "maxLines": 1548,
+      "why": "2026-11-04 实测 nonCommentLines=1301 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R40：新增 1 条端到端用例（执行失败+已 consumed ⇒ 两个出口都含指引）⇒ 非注释行 1301→1326（+25）。回滚值 = 1301。】【2026-11-05 R40：+1 条端到端用例（执行失败且已 consumed ⇒ 落库与模型文案都含指引）⇒ 1301→1326；回滚值 1301。】 【R41：+1 条脱敏用例 ⇒ 非注释行 1326→1354、最长函数体 106→455（describe 内新增 it 使最长块变大；回滚值 1326 / 106）。】 【R44：+1 条接缝测试（spy 证明两条路径都经 outcomeRecorder），非注释行 1354→1370；回滚值 1354。】 【R61 代签（Lead 已批准）：新增 replay 决策/单判据相关用例 ⇒ 1370→**1448**；**回滚值 1370**。功能性修复用例，非放任增长。】 【R65 代签（Lead 已批准）：**唯一贡献是 2 条红→绿 characterization 用例**（ADR-031 步骤 1 的验收证据），删了就没有证据 ⇒ 1448→**1493**；**回滚值 1448**。】 【R102：合并幽灵条目 —— 该文件已从 `tools/` 迁到 `tools/__tests__/`，旧路径条目残留且仍记着 1539 的真实上限；删除旧路径条目并把 1539 迁到新路径条目（同批减 1 条，ratchet 条目数 99→98 = maxEntries）。】 | 【2026-11-28 第三轮重签】补 applicationId/scope 断言与 fail-closed 场景，非注释行 1539→1548；回滚值 1539。",
       "ceiling": {
-        "nonCommentLines": 1539,
+        "nonCommentLines": 1548,
         "functionLines": 455,
         "ctorParams": 0,
         "exports": 0,
@@ -245,10 +245,10 @@
     "apps/admin-api/src/modules/agent/tools/tool-registry.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1111,
-      "why": "2026-11-04 实测 nonCommentLines=1108 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【第68轮(N11 plan kind，Lead 重签)：SESSION_TOOL_ALLOWLIST 增 plan 只读条目(+1 行)，与 ops_watch 同款纯只读面；回滚值 1108。】 【第68轮 prettier：plan 只读条目按 eslint --fix 折为多行(1109→1111)，仅格式；回滚值 1109。】",
+      "maxLines": 1121,
+      "why": "2026-11-04 实测 nonCommentLines=1108 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【第68轮(N11 plan kind，Lead 重签)：SESSION_TOOL_ALLOWLIST 增 plan 只读条目(+1 行)，与 ops_watch 同款纯只读面；回滚值 1108。】 【第68轮 prettier：plan 只读条目按 eslint --fix 折为多行(1109→1111)，仅格式；回滚值 1109。】 | 【2026-11-27 第二轮集成重签】stop/upgrade deployment 绑定 application scope 各新增必填 applicationId，修复跨 application 逃逸；非注释行 1111→1121。回滚值 1111。",
       "ceiling": {
-        "nonCommentLines": 1111,
+        "nonCommentLines": 1121,
         "functionLines": 24,
         "ctorParams": 0,
         "exports": 9,
@@ -627,10 +627,10 @@
     "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 7418,
-      "why": "R125 广播释放接线与 N=3 对账判据（+61）；回滚值 7273 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。 【R283 重签：nonCommentLines/maxLines 7342 → 7385（+43 非注释行）】受控的测试新增：GET /tasks?triggerType= 此前 DTO 用 @IsEnum 严格校验（= 已对外承诺）而 buildTaskListWhere 一行不读 ⇒ 用户选「触发方式」拿到未过滤全量，且该面 filter matrix 零断言。本轮补 3 条真断言（写进 where / q 的两个 OR 分支都带上 / 与 projectId 取交集），反证：注释掉实现那一行 ⇒ 3 条全红。函数体与分支密度未变。 【R29 重签：7385 → 7418（+33 非注释行）】受控的测试新增：手动 kill 此前透传 findOne 快照 executorId，dispatch 落库窗口内为 null ⇒ 按 address 路由进同址兄弟行队列、页面已 KILLED 而真实进程继续。本轮补 2 条真断言（RETURNING executorId 优先 / 缺失回落快照），反证：第三参改回快照 ⇒ 核心用例红（期望 row-b、实收 null）。函数体与分支密度未变。",
+      "maxLines": 7451,
+      "why": "R125 广播释放接线与 N=3 对账判据（+61）；回滚值 7273 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。 【R283 重签：nonCommentLines/maxLines 7342 → 7385（+43 非注释行）】受控的测试新增：GET /tasks?triggerType= 此前 DTO 用 @IsEnum 严格校验（= 已对外承诺）而 buildTaskListWhere 一行不读 ⇒ 用户选「触发方式」拿到未过滤全量，且该面 filter matrix 零断言。本轮补 3 条真断言（写进 where / q 的两个 OR 分支都带上 / 与 projectId 取交集），反证：注释掉实现那一行 ⇒ 3 条全红。函数体与分支密度未变。 【R29 重签：7385 → 7418（+33 非注释行）】受控的测试新增：手动 kill 此前透传 findOne 快照 executorId，dispatch 落库窗口内为 null ⇒ 按 address 路由进同址兄弟行队列、页面已 KILLED 而真实进程继续。本轮补 2 条真断言（RETURNING executorId 优先 / 缺失回落快照），反证：第三参改回快照 ⇒ 核心用例红（期望 row-b、实收 null）。函数体与分支密度未变。 | 【2026-11-28 第三轮重签】任务写面夹具按事务管理器契约与日志游标语义补齐，非注释行 7418→7451；回滚值 7418。",
       "ceiling": {
-        "nonCommentLines": 7418,
+        "nonCommentLines": 7451,
         "functionLines": 126,
         "ctorParams": 0,
         "exports": 0,
@@ -700,10 +700,10 @@
     "apps/admin-web/e2e/legacy/e2e-full.spec.js": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1675,
-      "why": "2026-11-04 实测 nonCommentLines=1675 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1696,
+      "why": "2026-11-04 实测 nonCommentLines=1675 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 【2026-11-28 第三轮重签】R5 legacy 路径与 settings 20/21、默认 PAUSED 夹具显式 ACTIVE 共补 21 非注释行，1675→1696；回滚值 1675。",
       "ceiling": {
-        "nonCommentLines": 1675,
+        "nonCommentLines": 1696,
         "functionLines": 23,
         "ctorParams": 0,
         "exports": 0,
@@ -1560,11 +1560,11 @@
     "apps/executor-desktop/src/renderer/pages/StatusWindow.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 970,
-      "why": "2026-11-04 实测 nonCommentLines=943、functionLines=807 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[24.5,24.4]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-24 第4轮 D-A：T2 停止确认三路门禁（historyUnknown/running/empty）内联于 StatusWindow 组件函数体 +2 行、T3 并发未知态标签加 gauge.known 守卫 ⇒ 最长函数体 807→809，按实测上调 functionLines 棘轮；门禁纯函数 stopActionGate 已外提 status-helpers.ts，仅两行分支接线留在本文件。 | 2026-11-24 第4轮 R5 最后批 H-A：接 useNowTicker（运行中时长 1s 刷新）、最近失败卡深链元数据、Agent 状态卡短 ID + 复制出口 ⇒ 实测 nonCommentLines=951（+8）、最长函数体 829（+20，StatusWindow 组件内 ticker/深链接线），按实测上调棘轮；纯判定已外提 time-tick.ts/history-nav.ts，本文件只留接线。 | turnaround: desktop workbench entry wiring, nonCommentLines 951->970, functionLines 829->845, controlled UI increment.",
+      "maxLines": 971,
+      "why": "2026-11-04 实测 nonCommentLines=943、functionLines=807 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[24.5,24.4]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-24 第4轮 D-A：T2 停止确认三路门禁（historyUnknown/running/empty）内联于 StatusWindow 组件函数体 +2 行、T3 并发未知态标签加 gauge.known 守卫 ⇒ 最长函数体 807→809，按实测上调 functionLines 棘轮；门禁纯函数 stopActionGate 已外提 status-helpers.ts，仅两行分支接线留在本文件。 | 2026-11-24 第4轮 R5 最后批 H-A：接 useNowTicker（运行中时长 1s 刷新）、最近失败卡深链元数据、Agent 状态卡短 ID + 复制出口 ⇒ 实测 nonCommentLines=951（+8）、最长函数体 829（+20，StatusWindow 组件内 ticker/深链接线），按实测上调棘轮；纯判定已外提 time-tick.ts/history-nav.ts，本文件只留接线。 | turnaround: desktop workbench entry wiring, nonCommentLines 951->970, functionLines 829->845, controlled UI increment. | 【2026-11-27 空降负责人第二轮重签】补工作台打开失败 state + 错误条，非注释行 970→971、最长函数体 845→846；桥接/更新语义仍在独立模块，回滚值 970/845.",
       "ceiling": {
-        "nonCommentLines": 970,
-        "functionLines": 845,
+        "nonCommentLines": 971,
+        "functionLines": 846,
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 24.4
@@ -1669,10 +1669,10 @@
     "apps/executor-node/src/routes/execute.python-multiversion.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1164,
-      "why": "R72-W5 DNS 预闸后该 suite 补注入式解析替身（原用 admin-api 主机名会被 fail-closed 400 掉）；回滚值 1159",
+      "maxLines": 1170,
+      "why": "R72-W5 DNS 预闸后该 suite 补注入式解析替身（原用 admin-api 主机名会被 fail-closed 400 掉）；回滚值 1159 | 【2026-11-27 第二轮集成重签】显式结构化归因用例（interpreter/runtime/package）补齐，非注释行 1164→1170。回滚值 1164。",
       "ceiling": {
-        "nonCommentLines": 1164,
+        "nonCommentLines": 1170,
         "functionLines": 49,
         "ctorParams": 0,
         "exports": 0,
@@ -1705,13 +1705,13 @@
     "apps/executor-node/src/routes/execute.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 2154,
-      "why": "R74-W5 accept 闸改判「实际下载目标」（改写后 packageUrl），修「闸判原文≠下载用改写后」缺陷；回滚值 2152",
+      "maxLines": 2191,
+      "why": "R74-W5 accept 闸改判「实际下载目标」（改写后 packageUrl），修「闸判原文≠下载用改写后」缺陷；回滚值 2152 | 【2026-11-27 空降负责人第二轮重签】SSRF 协议判据接入（DNS 预闸 + fail-closed）与 timeout 首现键统一，新增 selectTimeoutKey / taskForTimeoutProtocolValidation 等 2 个导出；非注释行 2154→2191、exports 40→42。回滚值 2154/40. | 【2026-11-27 第二轮分类器集成重签】显式结构化归因优先通道新增 withExplicitFailureReason/readExplicitFailureReason；最长函数 943→953、exports 42→43。回滚值 943/42.",
       "ceiling": {
-        "nonCommentLines": 2154,
-        "functionLines": 943,
+        "nonCommentLines": 2191,
+        "functionLines": 953,
         "ctorParams": 0,
-        "exports": 40,
+        "exports": 43,
         "branchDensity": 21.4
       },
       "firstRun": {
@@ -1835,10 +1835,10 @@
     "apps/admin-api/src/modules/agent/agent.controller.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 931,
-      "why": "第65轮续(N8 steer 接线，Lead 集成重签)：实测 nonCommentLines=914(>硬上限 900)、最长函数 decideApproval@L637=94、branchDensity=16.5、exports=3，均在各自阈值内；新增 POST /sessions/:id/steer 端点 + SteerInboxService @Optional 末尾注入(N8)。回滚值：删除该端点后为既有 900 以下。 【第71轮(ADR-045 系统代理发布，Lead 重签)：decideApproval 批准 sop_publish 后经 ModuleRef 惰性取 ReleaseApprovalService 发布(+14 行，最长函数 decideApproval 94→108)+构造末尾 @Optional ModuleRef(+2)；既有配置四眼/phrase 禁用/审批 service 逐字不动，发布旁路失败只 warn。回滚值 914/94。】 【第71轮 prettier 折行 +2 行(929→931/108→110)，ADR-045 系统代理发布代码格式；回滚值 929/108。】",
+      "maxLines": 957,
+      "why": "第65轮续(N8 steer 接线，Lead 集成重签)：实测 nonCommentLines=914(>硬上限 900)、最长函数 decideApproval@L637=94、branchDensity=16.5、exports=3，均在各自阈值内；新增 POST /sessions/:id/steer 端点 + SteerInboxService @Optional 末尾注入(N8)。回滚值：删除该端点后为既有 900 以下。 【第71轮(ADR-045 系统代理发布，Lead 重签)：decideApproval 批准 sop_publish 后经 ModuleRef 惰性取 ReleaseApprovalService 发布(+14 行，最长函数 decideApproval 94→108)+构造末尾 @Optional ModuleRef(+2)；既有配置四眼/phrase 禁用/审批 service 逐字不动，发布旁路失败只 warn。回滚值 914/94。】 【第71轮 prettier 折行 +2 行(929→931/108→110)，ADR-045 系统代理发布代码格式；回滚值 929/108。】 | 【2026-11-27 空降负责人第二轮重签】workbench 深链自批判定传 user.id、deny resume 原因透出、phrase/grant 统一判据；非注释行 931→947，函数体未增长。回滚值 931/110。 | 【2026-11-27 第二轮集成重签】resume 端点补 eventStream @Optional 与 reopen 成功后无参清理终态屏障；非注释行 947→957，函数体/exports 未增长。回滚值 947/110。",
       "ceiling": {
-        "nonCommentLines": 931,
+        "nonCommentLines": 957,
         "functionLines": 110,
         "ctorParams": 0,
         "exports": 3,

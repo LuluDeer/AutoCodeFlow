@@ -2156,5 +2156,13 @@
   "默认模型名称": "Default model name",
   "默认请求超时毫秒数": "Default request timeout in milliseconds",
   "默认运行参数（纯运行时参数，不含凭据）": "Default run parameters (pure runtime parameters, no credentials)",
-  "（过滤后）行集合的真实总数": "True total of the (filtered) row set"
+  "（过滤后）行集合的真实总数": "True total of the (filtered) row set",
+  "写消息后的会话状态（running=已注入 steer；pending=已重新入队；终态拒绝时保持原状态）": "Session status after posting a message (running = steer injected; pending = re-enqueued; unchanged on terminal rejection)",
+  "本次动作：steered=注入运行中会话；enqueued=重新入队 agent-jobs；rejected_terminal=会话已是终态，消息未写入、不触发续跑": "Action taken: steered = injected into a running session; enqueued = re-queued to agent-jobs; rejected_terminal = session is terminal, message not written and no resume",
+  "仅 action=rejected_terminal 时出现：终态拒绝续跑的原因（可直接展示）": "Present only when action=rejected_terminal: reason for refusing to resume a terminal session (safe to display)",
+  "本次处置未自动恢复会话的原因（如会话状态不符、仍有 pending 单、重读/审批查询/入队失败）；成功恢复时省略": "Reason why this decision did not auto-resume the session (wrong status, pending approvals, reread/query/enqueue failure); omitted on successful resume",
+  "审批处置结果（含 deny 后自动恢复失败原因）": "Approval decision result (including the reason auto-resume failed after deny)",
+  "动作结果码；终态追消息被拒时为 rejected_terminal": "Action result code; rejected_terminal when a message is refused on a terminal session",
+  "失败/拒绝原因（可直接展示）；ok=false 时给出": "Failure or rejection reason (safe to display); present when ok=false",
+  "处置附言（可选；不参与服务端判定，仅供前端展示/排查，最长 500 字）": "Optional decision note (not used by server logic; for UI display and troubleshooting, max 500 chars)"
 }

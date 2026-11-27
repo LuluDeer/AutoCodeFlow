@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * failureReason 分类器的**三端生成**（P1-b）。
+ * failureReason 分类器的**多端生成**（P1-b；三端契约 + admin 文本分支 = 五份生成物）。
  *
  * 单一事实源 = `packages/executor-protocol/protocol.json` 的
  * `failureReason.classifiers` 段。生成物：
@@ -8,6 +8,9 @@
  *   - apps/executor-node/src/generated/failure-classifier.ts
  *       （node 侧**运行时代码**：在 executor-node 的 tsconfig include 段内 ⇒
  *        tsc 会编译它并随包发布，与既有的 protocol.schemas.ts 同款）
+ *   - apps/admin-api/src/common/failure-classification/generated/failure-classifier.ts
+ *       （admin 侧**文本分支运行时代码**：wrapper 调 `classify(parts, 'admin')`；
+ *        errorCode / exitCode / no-matching-executor 三类非文本判据仍在 wrapper 内）
  *   - apps/executor-python/generated/failure_classifier.py
  *       （python 侧**运行时代码**：generated/ 在 sys.path 上 ⇒
  *        `from generated.failure_classifier import classify` 可达）
@@ -28,12 +31,12 @@
  *    这正是 protobuf 的标准做法（单 .proto，多语言各生成一份）。
  * ③ **落点清单**：docs/archive/audits/2026-11-03-round1/contract-source.md §2.4。
  *
- * ## 为什么「只生成，不改运行时消费方」
+ * ## 为什么「生成物与消费方分离」
  *
- * 本轮**不改**三端运行时（admin-api / executor-node / executor-python 都在他人
- * 或下一轮的写域内）。生成物 + 守卫先落地，把「目标态」固定下来并**可验证**；
- * 运行时切换是下一轮的事（双轨 → 单轨）。因此本脚本是**纯生成 + 自校验**，
- * 不触碰任何 app 目录。
+ * 生成物固定「目标态」并**可验证**：判据 =「每处生成物 ≡ 一次全新生成的字节」
+ * （drift 即红）。admin-api 的文本分支已切到本生成物（`failure-patterns.ts` wrapper），
+ * 非文本判据仍留在 wrapper 内；executor-node / executor-python 的运行时切换由其它切片
+ * 负责。因此本脚本是**纯生成 + 自校验**，不改任何消费方代码。
  *
  * ## 关键纪律：生成物必须**真等价**，不是「看起来像」
  *
@@ -66,6 +69,10 @@ const OUT_DIR = resolve(ROOT, "packages/contract-fixtures/generated");
 const OUT_MJS = resolve(OUT_DIR, "failure-classifier.mjs");
 const OUT_PY = resolve(OUT_DIR, "failure-classifier.py");
 const OUT_NODE_TS = resolve(ROOT, "apps/executor-node/src/generated/failure-classifier.ts");
+const OUT_ADMIN_TS = resolve(
+  ROOT,
+  "apps/admin-api/src/common/failure-classification/generated/failure-classifier.ts",
+);
 const OUT_PY_APP = resolve(ROOT, "apps/executor-python/generated/failure_classifier.py");
 const FIXTURES = resolve(ROOT, "packages/contract-fixtures/contract.json");
 
@@ -666,6 +673,49 @@ export const FALLBACKS: Readonly<{ executor: ClassifiedFailureCode; admin: Contr
 export const SENTINEL_PAD: string = ${JSON.stringify(sentinelPad)};
 `;
 
+// ── 发射：admin-api 的 TS 运行时（中台文本兜底裁决）───────────────────────────
+//
+// 与 executor-node 那份**同语言、同逻辑**：差别只在文件头注释（用途说明 + 非文本判据
+// 归属）。因此代码主体直接复用 `ts` 的文本切片（`ts.slice(...)`）——`ts` 的契约数据
+// 注入、归一、sentinel、规则顺序全部原样继承，不存在「再写一份实现」的漂移面。
+// 跨语言（.mjs ↔ .ts ↔ .py）仍坚持各自写全、由向量真跑证明等价，本段不触碰那条纪律。
+//
+// admin-api 的 wrapper（failure-patterns.ts）只在本生成物**之外**裁决 errorCode /
+// exitCode / no-matching-executor 三类非文本判据；本文件纯粹的 `classify(parts, stage)`
+// 不含任何非文本知识，故可安全地被 wrapper 调用。
+
+const adminTsHeader = `/**
+ * GENERATED — DO NOT EDIT.
+ *
+ * 来源：\`packages/executor-protocol/protocol.json\` 的 \`failureReason.classifiers\` 段。
+ * 由 \`node scripts/generate-failure-classifiers.mjs\` 生成。
+ *
+ * 用途：failureReason 分类器的 **admin-api 文本分支运行时代码**（中台兜底裁决用）。
+ * 本文件只做**文本**归因；\`errorCode\` / \`exitCode\` / no-matching-executor 等非文本判据
+ * 由 \`apps/admin-api/src/common/failure-classification/failure-patterns.ts\` 的 wrapper
+ * 按原优先级裁决，不在本生成物内。
+ *
+ * ## 契约不变式
+ *
+ *   ① **归一**：文本先按 \`normalize\` 拼接 + ASCII 小写化 + astral 折叠，再判定。
+ *   ② **sentinel**：判定前在文本首尾各补一个 U+0001，于是 \`{{NONWORD}}\` 在串边界
+ *      处也成立（\`\\b\` 的合法替代）。
+ *   ③ **顺序即规格**：规则按 \`order\` 升序求值，首个命中者给出码。
+ *   ④ **阶段不同**：\`executor\` 阶段答 \`null\` 表示「我不知道，交给中台」；
+ *      \`admin\` 阶段永远返回一个码（兜底 \`"unknown"\`）。
+ *
+ * ## 与 .mjs 那份的关系
+ *
+ * 契约**数据**（TOKENS / RULES / NORMALIZE / FALLBACKS / SENTINEL_PAD）**同源**
+ * （都由 protocol.json 注入）；**逻辑**各自写全，等价性由
+ * \`scripts/check-failure-classifiers.mjs\` 在两语言**真跑同一批向量**后断言。
+ *
+ * 手改本文件会在下次生成时被覆盖，且不会让契约生效——要改请改 protocol.json。
+ */
+
+`;
+const adminTs = adminTsHeader + ts.slice(ts.indexOf("/** 分类阶段"));
+
 // ── 落盘 ──────────────────────────────────────────────────────────────────
 
 function write(path, content) {
@@ -677,10 +727,13 @@ function write(path, content) {
 /**
  * 落盘清单（D-13 裁定 (a)：各 app 各产一份 + 字节一致 drift 守卫）。
  *
- * 四处的**角色**：
+ * 五处的**角色**：
  *   · apps/executor-node/src/generated/failure-classifier.ts —— node **运行时**那份
  *     （在 executor-node 的 tsconfig include 段内 ⇒ tsc 会编译它并随包发布，
  *     与既有的 protocol.schemas.ts 同款）。
+ *   · apps/admin-api/src/common/failure-classification/generated/failure-classifier.ts
+ *     —— admin **文本分支运行时**那份：只做 `classify(parts, stage)`，非文本判据
+ *     留给 failure-patterns.ts 的 wrapper 按原优先级裁决。
  *   · apps/executor-python/generated/failure_classifier.py —— python **运行时**那份
  *     （generated/ 在 sys.path 上 ⇒ `from generated.failure_classifier import …` 可达）。
  *   · packages/contract-fixtures/generated/failure-classifier.{mjs,py} —— **守卫对照**副本
@@ -697,6 +750,7 @@ function write(path, content) {
  */
 const outputs = [
   [OUT_NODE_TS, ts],
+  [OUT_ADMIN_TS, adminTs],
   [OUT_PY_APP, py],
   [OUT_MJS, mjs],
   [OUT_PY, py],

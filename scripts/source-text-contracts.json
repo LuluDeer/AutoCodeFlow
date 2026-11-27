@@ -1346,6 +1346,7 @@
         "pages/TaskDetailPage.tsx",
         "pages/task-detail/ExecutionsTab.tsx",
         "components/TaskDependencyGraph.tsx",
+        "components/task-dag/DagCanvas.tsx",
         "pages/DashboardPage.tsx",
         "layouts/MainLayout.tsx",
         "pages/LoginPage.tsx",
@@ -1547,7 +1548,8 @@
       "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
       "reads": [
         "apps/admin-web/src/index.css",
-        "apps/admin-web/src/layouts/MainLayout.tsx"
+        "apps/admin-web/src/layouts/MainLayout.tsx",
+        "apps/admin-web/src/components/InboxBadge.tsx"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
@@ -2071,7 +2073,7 @@
       "id": "STC-120",
       "tier": "P0",
       "spec": "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts",
-      "specLine": 2443,
+      "specLine": 2466,
       "needle": "const src = [\"task.service.ts\", \"execution-read.collaborator.ts\"]",
       "reads": [
         "apps/admin-api/src/modules/task/task.service.ts",
@@ -2250,6 +2252,88 @@
       ],
       "asserts": "读权威脚本源文本，断言后端 ttfv-metrics.ts 的 AUTHORITATIVE_SQL / computeTtfv / buildTtfvWarnings 与脚本逐字等价（同源断言 + 反证）。",
       "dispositionNote": "P1 跨语言同源契约：与 STC-129 同因——口径单一事实源在 ESM 脚本，后端 CJS 复刻；源文本比对 + 变异反证是防漂移的显式签字。改动脚本口径时必须同步更新后端并跑这两个 spec，属有意的重构闸，保留。"
+    },
+    {
+      "id": "STC-131",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/modules/artifacts/__tests__/dataops-artifacts-indexes.spec.ts",
+      "specLine": 56,
+      "needle": "const entity = fs.readFileSync(ENTITY_FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/modules/artifacts/entities/execution-artifact.entity.ts",
+        "apps/admin-api/src/migrations/1790000000109-ExecutionArtifactsListIndexes.ts"
+      ],
+      "asserts": "读 execution-artifact.entity.ts 与 0109 迁移源文本，断言分页索引的 up/down 成对、字段与实体一致。",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物，迁移文件名与编号永不重命名 ⇒ 这条源文本断言守的是 up/down 成对契约，不是可重构的技术债。若迁移文件移动，须同步更新本条与 spec。"
+    },
+    {
+      "id": "STC-132",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/task/callback-contract.spec.ts",
+      "specLine": 279,
+      "needle": "const scheduler = readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/task/scheduler/scheduler.service.ts",
+        "apps/admin-api/src/modules/task/execution-callback.collaborator.ts"
+      ],
+      "asserts": "读 scheduler 与 callback collaborator 源文本，断言 stale sweep 与回调终态都落 TIMEOUT + failureReason=TIMEOUT，口径一致。",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "P1 源文本同源契约：守住「sweep 与回调终态口径一致」这条不变量；若把超时处理抽成共享纯函数，需同步替换这段断言。"
+    },
+    {
+      "id": "STC-133",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/common/failure-classification/__tests__/generated-vector.spec.ts",
+      "specLine": 33,
+      "needle": "const contract = JSON.parse(readFileSync(CONTRACT_PATH, \"utf8\")) as {",
+      "reads": [
+        "packages/contract-fixtures/contract.json"
+      ],
+      "asserts": "读 contract.json 数据文件取 failureClassification.vectors，断言 admin wrapper 文本分支逐条对齐契约；非实现源码文本断言。",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "not-a-source-text-contract",
+      "reason": "扫描器的多行路径解析把 resolve(__dirname, ../../packages/contract-fixtures/contract.json) 误判为实现源码读取；实际读的是契约数据文件，不是可重构的实现源码，显式登记豁免但不从表里消失。"
+    },
+    {
+      "id": "STC-134",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/agent/tools/__tests__/tool-declaration-binding.spec.ts",
+      "specLine": 191,
+      "needle": "binderSource: readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/agent/tools/tool-binder.service.ts"
+      ],
+      "asserts": "读 tool-binder.service.ts 源文本，验证 gate-inventory 的写工具审批/scope/真实 service 调用完整性判据能抓住伪造 ADMIN 与硬编码成功回潮。",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "判据对象就是「实现里不得出现伪造主体/空集成功/缺审批」代码形态，运行时 API 断言无法覆盖；保留源文本扫描并要求 binder 搬家时同步本条。"
+    },
+    {
+      "id": "STC-135",
+      "tier": "P2",
+      "spec": "apps/admin-api/test/broadcast-slot-e2e.spec.ts",
+      "specLine": 29,
+      "needle": "const text = readFileSync(FIXTURE_ENV_FILE, \"utf8\");",
+      "reads": [
+        ".env"
+      ],
+      "asserts": "读仓库夹具 .env 的 DB/Redis 连接字段，真栈连接参数优先取注入 env，未读实现源码。",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "not-a-source-text-contract",
+      "reason": "扫描器把 `readFileSync(resolve(__dirname, '../../../.env'))` 误判为实现源码读取；实际读的是连接配置数据文件，用于避免 postgres/postgres 死默认值，显式登记豁免但不从表里消失。"
     }
   ],
   "discipline": [

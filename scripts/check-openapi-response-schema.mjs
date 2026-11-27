@@ -118,6 +118,40 @@ const BASELINE = 'scripts/openapi-response-schema-baseline.json';
  */
 const MIN_2XX_RESPONSES = 150;
 
+/**
+ * 棘轮起点的 **16 条历史无 schema 响应**（2026-11-27 从 openapi.json 实测快照）。
+ *
+ * 为什么写死在本守卫而不是基线 JSON：本轮写域不含基线文件，且这 16 条是
+ * 「既往不咎」的**一次性赦免清单**，不是会随覆盖率上探变化的地板。新增任何
+ * 2xx 响应若不在 `baseline.coveredKeys` ∪ 本清单 ∪ `baseline.knownResponseKeys`
+ * 里且没有实质 schema ⇒ 判红（见 check() 判据⑤）。
+ *
+ * 反证：把 `/new` 这种没有 `@ApiResponse({ type })` 的新端点加进 openapi.json，
+ * 立刻命中「新增无 schema 响应」；把这 16 条修好后 `--update` 会进 coveredKeys，
+ * 留在清单里也只会让「新增」判断更宽，不会掩盖倒退（倒退由 coveredKeys 独立判）。
+ */
+export const LEGACY_UNCOVERED_KEYS = new Set([
+  'POST /agent/executions/{execId}/confirm 200',
+  'POST /ai/media 201',
+  'GET /ai/media/{mediaId}/{fileName} 200',
+  'POST /ai/sop-draft/from-video 200',
+  'POST /ai/sop-sessions/{id}/turns/stream 201',
+  'DELETE /capabilities/{id} 200',
+  'GET /capability-activation 200',
+  'GET /capability-activation/price 200',
+  'PUT /capability-activation/price 200',
+  'GET /capability-activation/quota 200',
+  'PUT /capability-activation/quota 200',
+  'GET /capability-activation/quota-status 200',
+  'GET /capability-activation/stats 200',
+  'GET /capability-activation/token-sample 200',
+  'GET /sop/{id}/assignments/page 200',
+  'POST /workbench/part/project 201',
+]);
+
+/** pct 比较容差：基线按一位小数存储，实测按全精度算，不能因四舍五入假红。 */
+const PCT_EPSILON = 0.05;
+
 /** 收集全部 2xx 响应及其 schema 是否**实质有效**。 */
 export function collect(spec) {
   // 「有 content」不等于「有可用类型」：@nestjs/swagger 对**实体类**（无 @ApiProperty）
@@ -412,6 +446,10 @@ export function check({ rows, baseline }) {
   const s = summarize(rows);
   const coveredKeys = rows.filter((r) => r.hasSchema).map((r) => r.key);
   const coveredSet = new Set(coveredKeys);
+  // 棘轮的「全套」判据只在基线同时带 totalCount + pct 时启用：真实基线两者都有；
+  // 历史函数级 fixture 只给 coveredKeys，保持原有语义（不被新判据误伤）。
+  const fullRatchet =
+    typeof baseline?.totalCount === 'number' && typeof baseline?.pct === 'number';
 
   if (!baseline) {
     // ⚠️ **2026-11-04 收紧**（原先是「零失败 + 一句提示」⇒ exit 0）：
@@ -438,6 +476,49 @@ export function check({ rows, baseline }) {
     failures.push(
       `响应 schema 覆盖数倒退：基线 ${baseCovered}，实际 ${s.covered}（少 ${baseCovered - s.covered}）`,
     );
+  }
+
+  // ②-b 总量与百分比同时入闸（2026-11-27 结构性假绿修复）
+  //
+  // 旧实现只判 `coveredCount` 与 `coveredKeys`：`totalCount` / `pct` 虽然被
+  // loadBaseline() 校验了形状，却**从未参与判红**。于是两种假绿：
+  //   · 删掉一批无 schema 端点 ⇒ 分母变小、pct 升高，守卫更绿；
+  //   · 新增一批无 schema 端点 ⇒ 分子不变，pct 下降，守卫还是绿。
+  // 现在：totalCount 是下限（端点集合不许缩水），pct 是下限（覆盖率不许掉）。
+  if (fullRatchet) {
+    if (s.total < baseline.totalCount) {
+      failures.push(
+        `响应总量倒退：基线 ${baseline.totalCount}，实际 ${s.total}` +
+          `（少 ${baseline.totalCount - s.total}）—— 端点被删或扫描面失效；` +
+          `有意删除请用 --update 上探并在 PR 说明理由。`,
+      );
+    }
+    if (s.pct + PCT_EPSILON < baseline.pct) {
+      failures.push(
+        `响应 schema 覆盖率倒退：基线 ${baseline.pct.toFixed(1)}%，实际 ${s.pct.toFixed(1)}%` +
+          `（降 ${(baseline.pct - s.pct).toFixed(1)} 个百分点）——` +
+          `新增端点没有 @ApiResponse({ type }) 或删了已有装饰器。`,
+      );
+    }
+  }
+
+  // ⑤ 新增即需 schema：基线覆盖清单 ∪ 16 条历史存量 ∪ 显式 knownResponseKeys
+  // 之外的 2xx 响应，必须自带实质 schema。只靠 pct 兜不住「补 10 个又漏 5 个」
+  // 这种净上升的漏网；逐 key 判才能把新增缺口钉死。
+  if (fullRatchet) {
+    const known = new Set([
+      ...(baseline.coveredKeys ?? []),
+      ...LEGACY_UNCOVERED_KEYS,
+      ...(baseline.knownResponseKeys ?? []),
+    ]);
+    for (const r of rows) {
+      if (known.has(r.key) || r.hasSchema) continue;
+      failures.push(
+        `新增无 schema 响应：${r.key} 是基线之外的新端点，却没有可用 @ApiResponse({ type }) schema` +
+          `（前端只能手写 interface）。请补响应 DTO 装饰器后同步 --update；` +
+          `历史存量已登记在 LEGACY_UNCOVERED_KEYS，不在此列。`,
+      );
+    }
   }
 
   // ③ 空壳 schema（"看着有、生成不出类型"）：新增即红。
@@ -503,9 +584,12 @@ function writeBaseline(rows) {
     $comment:
       'ARCH-23 / N-12 响应 schema 覆盖率棘轮基线。coveredKeys = 已验证有**实质** response schema 的 ' +
       'METHOD PATH CODE 条目（防倒退：删装饰器即红）；coveredCount = 覆盖总数下限（只增不减）。' +
+      'totalCount / pct 同为下限：端点集合缩水或覆盖率下降都判红。' +
+      'knownResponseKeys = 基线生成时的全部 2xx 响应键（新增键必须有 schema；' +
+      '16 条历史无 schema 存量另在守卫的 LEGACY_UNCOVERED_KEYS 登记）。' +
       'hollowKeys = 引用**空壳组件**（properties 为空的具名 schema）的响应——看着有 schema，' +
       '前端却只生成 Record<string, never>。存量记此以允许历史遗留，**新增即红**。' +
-      '补齐装饰器后用 --update 上探。覆盖率低不是缺陷本身，但**倒退与空壳新增**是。' +
+      '补齐装饰器后用 --update 上探。覆盖率低不是缺陷本身，但**倒退、新增无 schema、空壳新增**是。' +
       '【2026-11-04】signoffs.coveredCount 是「覆盖率地板这张豁免」的签字（owner + review_by）' +
       '——地板也是豁免，豁免必须有主有期限；signoffs 缺失即结构红。--update 只改数字，不动签字。',
     coveredCount: s.covered,
@@ -513,6 +597,7 @@ function writeBaseline(rows) {
     pct: Number(s.pct.toFixed(1)),
     hollowCount: s.hollow,
     coveredKeys,
+    knownResponseKeys: rows.map((r) => r.key).sort(),
     hollowKeys,
     signoffs: signoffs ?? { coveredCount: { owner: DEFAULT_SIGNOFF.owner, review_by: DEFAULT_SIGNOFF.review_by } },
   };
@@ -946,6 +1031,116 @@ function runSelftest() {
         absent: ['响应 schema 覆盖率守卫通过', '    at '],
       },
     );
+  }
+
+  // CLI ⑩：新增无 schema 端点在真子进程里必须 exit 1 + 点名（钉住 process.exit 接线）
+  {
+    const spec = bigSpec(150);
+    spec.paths['/new'] = { get: { tags: ['T'], responses: { 200: { description: '' } } } };
+    const keys = Array.from({ length: 150 }, (_, i) => `GET /p${i} 200`);
+    subprocess(
+      'CLI ⑩ 新增无 schema 端点 → exit 1 并点名 GET /new 200',
+      {
+        [SPEC]: spec,
+        [BASELINE]: {
+          coveredCount: 150,
+          totalCount: 150,
+          pct: 100,
+          hollowCount: 0,
+          coveredKeys: keys,
+          knownResponseKeys: keys,
+          hollowKeys: [],
+          signoffs: { coveredCount: { ...FIXTURE_SIGNOFF } },
+        },
+      },
+      [],
+      {
+        code: 1,
+        contains: ['新增无 schema 响应', 'GET /new 200'],
+        absent: ['响应 schema 覆盖率守卫通过'],
+      },
+    );
+  }
+
+  // ── ⑩ 总量 / pct / 新增端点三道棘轮（2026-11-27 结构假绿修复）────────
+  {
+    const allKeys = Array.from({ length: 100 }, (_, i) => `GET /p${i} 200`);
+    const mkBaseline = (covered, total, pct, extra = {}) => ({
+      coveredCount: covered,
+      totalCount: total,
+      pct,
+      hollowCount: 0,
+      coveredKeys: allKeys.slice(0, covered),
+      hollowKeys: [],
+      knownResponseKeys: allKeys,
+      signoffs: { coveredCount: { ...FIXTURE_SIGNOFF } },
+      ...extra,
+    });
+
+    test('基线内无 schema 存量（99/100）放行，不逼历史补装饰器', () => {
+      const { failures: f } = check({
+        rows: collect(bigSpec(100, [98, 99])),
+        baseline: mkBaseline(98, 100, 98),
+      });
+      must(f.length === 0, `failures=${JSON.stringify(f)}`);
+    });
+
+    test('新增无 schema 端点 → 红（即使覆盖率名义上升）', () => {
+      const spec = bigSpec(100, [98, 99]);
+      spec.paths['/new'] = { get: { tags: ['T'], responses: { 200: { description: '' } } } };
+      const { failures: f } = check({ rows: collect(spec), baseline: mkBaseline(98, 100, 98) });
+      must(
+        f.some((x) => x.includes('新增无 schema 响应') && x.includes('GET /new 200')),
+        `failures=${JSON.stringify(f)}`,
+      );
+    });
+
+    test('新增端点带 schema → 绿（棘轮只拦新增缺口，不拦进步）', () => {
+      const spec = bigSpec(100, [98, 99]);
+      spec.paths['/new'] = {
+        get: {
+          tags: ['T'],
+          responses: {
+            200: {
+              description: '',
+              content: { 'application/json': { schema: { type: 'object', properties: { id: { type: 'string' } } } } },
+            },
+          },
+        },
+      };
+      const { failures: f } = check({ rows: collect(spec), baseline: mkBaseline(98, 100, 98) });
+      must(f.length === 0, `failures=${JSON.stringify(f)}`);
+    });
+
+    test('pct 下降 → 红（即便 coveredCount 未跌）', () => {
+      const { failures: f } = check({
+        rows: collect(bigSpec(100, [97, 98, 99])),
+        baseline: mkBaseline(98, 100, 98),
+      });
+      must(f.some((x) => x.includes('覆盖率倒退')), `failures=${JSON.stringify(f)}`);
+    });
+
+    test('totalCount 下降 → 红（删端点刷百分比不许蒙混过关）', () => {
+      const { failures: f } = check({
+        rows: collect(bigSpec(99, [98])),
+        baseline: mkBaseline(98, 100, 98),
+      });
+      must(f.some((x) => x.includes('响应总量倒退')), `failures=${JSON.stringify(f)}`);
+    });
+
+    test('16 条历史无 schema 真实 key 之一不必登记在 baseline 也放行', () => {
+      const spec = specFixture(
+        Array.from({ length: 99 }, (_, i) => ['get', `/p${i}`, true]),
+      );
+      // 直接用真实历史 key，确保 LEGACY_UNCOVERED_KEYS 没写错路径/方法。
+      spec.paths['/capabilities/{id}'] = {
+        delete: { tags: ['T'], responses: { 200: { description: '' } } },
+      };
+      const baseline = mkBaseline(99, 100, 99, { knownResponseKeys: undefined });
+      delete baseline.knownResponseKeys;
+      const { failures: f } = check({ rows: collect(spec), baseline });
+      must(f.length === 0, `failures=${JSON.stringify(f)}`);
+    });
   }
 
   // ── 元用例：自检判红必须真的关门（`--selftest` → 退出码 1）──────────────

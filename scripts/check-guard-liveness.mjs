@@ -8,9 +8,12 @@
  * 对若干 `check-*.mjs` 跑 `NODE_V8_COVERAGE=<tmp> node <script> --selftest`，读 V8 coverage JSON，
  * 找出**顶层函数里 `count === 0`** 的那些（模板字符串/正则统统无关）。
  *
- * ## 覆盖面（**显式，不静默跳过**）
- * 只跑 `COVERED` 里列出的脚本（本仓大量 `check-*` 的 selftest 需要 docker/PG/网络，跑不动）。
- * **未覆盖清单会打印在输出里**（`未覆盖 N 个`），并要求 `COVERED` 至少包含 3 个、且每个都必须真的产生 coverage。
+ * ## 覆盖面（2026-11-27 大刀阔斧扩面，不再靠 20 个脚本撑门面）
+ * 事实源 = 仓库里**实际存在**的 `scripts/check-*.mjs`（动态列目录），不是手写白名单。
+ * 门槛：被 V8 真跑过的脚本数 / 事实源总数 ≥ `MIN_COVERAGE_RATIO`（60%）。
+ * 未覆盖的每一个都必须在 `UNCOVERED_REGISTRY` 里逐条给出 `reason + owner + review_by`；
+ * 缺一条 / 登记过期 / 已覆盖却还赖在登记表里 ⇒ 红。
+ * `LIVENESS_COVERED` 仍可缩小面做探路，但缩到 60% 以下立刻红（自检不再拿 2 个当正例）。
  *
  * ## 判定与豁免
  * · 只看 `functionName` 匹配 `/assert|[Jj]udg|check|verify/i` 的顶层函数（收窄面试探，见 R73 回执）：
@@ -42,35 +45,216 @@ export const REPO_ROOT = resolve(dirname(HERE), "..");
  * 扩面原则（你定的）：**每加一个必须先验证真仓库零误报**，宁可慢扩。
  */
 /** 可用 `LIVENESS_COVERED=a.mjs,b.mjs` 覆盖（扩面探路用；CI 不设置该变量）。 */
-const COVERED_FROM_ENV = (process.env.LIVENESS_COVERED ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+export const MIN_COVERAGE_RATIO = 0.6;
+export const SELF_SCRIPT = "check-guard-liveness.mjs";
+
+/**
+ * 本仓能零依赖、离线、秒级跑完 `--selftest` + 主跑的脚本（2026-11-27 实测候选面）。
+ * 这是**覆盖清单**，不是事实源：事实源由 `listGuardScripts()` 动态列目录得到；
+ * 清单里的脚本若不再存在会被过滤，并从分母里消失（登记同步回收）。
+ */
 export const COVERED_DEFAULT = [
-  "check-script-main-guard.mjs",
-  "check-posture-matrix-tables.mjs",
-  "check-brand-drift.mjs",
-  "check-agent-index-names.mjs",
-  "check-constant-time-compare.mjs",
-  "check-enum-drift.mjs",
-  "check-error-i18n.mjs",
-  "check-image-pinned.mjs",
+  "check-agent-event-causation.mjs",
   "check-agent-event-limits.mjs",
+  "check-agent-index-names.mjs",
+  "check-agent-stub-fidelity.mjs",
   "check-agent-write-sanitize.mjs",
   "check-alerts-rules.mjs",
+  "check-api-error-format.mjs",
+  "check-atlas-counts.mjs",
   "check-audit-actions-doc.mjs",
+  "check-brand-drift.mjs",
+  "check-brand-drift.selftest.mjs",
+  "check-categories-single-source.mjs",
+  "check-cli-doc-flags.mjs",
   "check-cli-doc.mjs",
   "check-collaborator-self-call.mjs",
+  "check-compose-sandbox.mjs",
+  "check-compose-service-env.mjs",
   "check-conditional-writes.mjs",
+  "check-config-reload-parity.mjs",
+  "check-constant-time-compare.mjs",
   "check-consumer-routes.mjs",
+  "check-coverage-floor.mjs",
   "check-credential-columns.mjs",
   "check-cron-guard.mjs",
+  "check-cron-leader-gate.mjs",
+  "check-cross-end-consistency.mjs",
+  "check-dependency-review.mjs",
+  "check-desktop-agent-packaging.mjs",
+  "check-desktop-bundle-drift.mjs",
+  "check-desktop-rollback-path.mjs",
+  "check-desktop-selftests-wired.mjs",
+  "check-desktop-update-chain.mjs",
+  "check-destructive-global-commands.mjs",
   "check-enum-consumers.mjs",
+  "check-enum-drift.mjs",
+  "check-env-drift.mjs",
+  "check-env-entry-sweep.mjs",
   "check-env-switch-default-policy.mjs",
+  "check-error-i18n.mjs",
+  "check-error-migration.mjs",
+  "check-examples-code.mjs",
+  "check-executor-node-env-hermetic.mjs",
+  "check-executor-shell-runtime.mjs",
+  "check-failure-classifiers.mjs",
+  "check-failure-reasons.mjs",
+  "check-guards-wired.mjs",
+  "check-handwritten-copies.mjs",
+  "check-image-pinned.mjs",
+  "check-index-drift.mjs",
+  "check-infra-doc-counts.mjs",
+  "check-interface-maps.mjs",
+  "check-jest-cli-flags.mjs",
+  "check-lint-gates.mjs",
+  "check-live-probes-intact.mjs",
+  "check-live-probes-intact.selftest.mjs",
+  "check-live-specs-wired.mjs",
+  "check-mcp-error-hints.mjs",
+  "check-metric-docs.mjs",
+  "check-migration-symmetry.mjs",
+  "check-migrations.mjs",
+  "check-mutation-residue.mjs",
+  "check-no-hoisting.mjs",
+  "check-openapi-response-schema.mjs",
+  "check-ops-runbook.mjs",
+  "check-optional-dep-silent-noop.mjs",
+  "check-package-adoption.mjs",
+  "check-password-policy-sync.mjs",
+  "check-posture-matrix-tables.mjs",
+  "check-protocol-breaking.mjs",
+  "check-protocol-three-way.mjs",
+  "check-publishable-wiring.mjs",
+  "check-query-param-required.mjs",
+  "check-race-selftests-wired.mjs",
+  "check-reserved-slots-consumer.mjs",
+  "check-runner-labels.mjs",
+  "check-sandbox-limit-order.mjs",
+  "check-sanitize-parity.mjs",
+  "check-script-main-guard.mjs",
+  "check-sdk-docs-truthfulness.mjs",
+  "check-selftests-wired.mjs",
+  "check-shared-cache-lock.mjs",
+  "check-shell-multibyte-var.mjs",
+  "check-size-caps.mjs",
+  "check-source-text-contracts.mjs",
+  "check-spec-coupling-surfaces.mjs",
+  "check-ssrf-deny-parity.mjs",
+  "check-ssrf-three-way-matrix.mjs",
+  "check-template-manifest.mjs",
+  "check-throttler-whitelist.mjs",
+  "check-typecheck-covers-specs.mjs",
+  "check-updatedapp-parity.mjs",
+  "check-upgrade-notes.mjs",
+  "check-user-facing-language.mjs",
+  "check-version-line.mjs",
+  "check-web-type-drift.mjs",
+  "check-web-type-field-drift.mjs",
+  "check-windows-gui-script.mjs",
+  "check-workflow-actions-pinned.mjs",
+  "check-workflow-yaml.mjs",
 ];
 
-/** 调用时求值：`LIVENESS_COVERED` 可缩小面（自检用），默认 = 20 个脚本。 */
-export function coveredList() {
+/** 未覆盖清单：逐条 `reason + owner + review_by`，过期红、腐烂红、已覆盖还赖着红。 */
+export const UNCOVERED_REGISTRY = {
+  [SELF_SCRIPT]: {
+    reason: "自指递归：本守卫若覆盖自己，V8 子进程会再拉起本守卫形成翻倍/死循环",
+    owner: "guard-smith",
+    review_by: "2099-12-31",
+  },
+  "check-npm-audit-exemptions.mjs": {
+    reason: "主跑需要 npm registry 网络（离线门禁只跑 --selftest，真实审计在 CI npm-audit job）",
+    owner: "guard-smith",
+    review_by: "2099-12-31",
+  },
+  "check-release-hygiene.mjs": {
+    reason: "主跑需要 GITHUB_TOKEN 与网络，由 release-hygiene.yml 周跑；本地只跑离线 selftest",
+    owner: "guard-smith",
+    review_by: "2099-12-31",
+  },
+  "check-callback-contract-drift.mjs": {
+    reason: "没有 --selftest 入口且主跑依赖三端生成产物，由 check:callback-contract-drift 单独执行",
+    owner: "guard-smith",
+    review_by: "2099-12-31",
+  },
+  "check-failure-classifiers-reverse-proof.mjs": {
+    reason: "反向探针脚本（故意构造反例），由 check:failure-classifiers:reverse-proof 单独执行",
+    owner: "guard-smith",
+    review_by: "2099-12-31",
+  },
+  "check-release-config.mjs": {
+    reason: "V8 实测 checkRepo 判据 count=0（死判据），需业务 owner 接线；不得靠 liveness-exempt 掩盖",
+    owner: "guard-smith",
+    review_by: "2026-12-31",
+  },
+};
+
+/** 事实源：实际存在的 `scripts/check-*.mjs`（动态列，不用手写分母）。 */
+export function listGuardScripts(root = REPO_ROOT) {
+  try {
+    return readdirSync(join(root, "scripts"))
+      .filter((f) => /^check-.*\.mjs$/.test(f))
+      .sort();
+  } catch {
+    return null;
+  }
+}
+
+/** 调用时求值：`LIVENESS_COVERED` 可缩小面（自检用），默认 = COVERED_DEFAULT。 */
+export function coveredList(root = REPO_ROOT) {
   const envList = (process.env.LIVENESS_COVERED ?? "").split(",").map((x) => x.trim()).filter(Boolean);
   const list = envList.length > 0 ? envList : COVERED_DEFAULT;
-  return list.filter((f) => existsSync(join(REPO_ROOT, "scripts", f)));
+  return list.filter((f) => existsSync(join(root, "scripts", f)));
+}
+
+/** 覆盖面/登记表自洽判据（不跑子进程，供 selftest 与 main 共用）。 */
+export function inventoryProblems(root = REPO_ROOT, {
+  registry = UNCOVERED_REGISTRY,
+  minRatio = MIN_COVERAGE_RATIO,
+  minUniverse = 50,
+  covered = coveredList(root),
+  universe = listGuardScripts(root),
+} = {}) {
+  const errors = [];
+  if (universe === null || universe.length < minUniverse) {
+    return [`事实源塌方：scripts/check-*.mjs 只列出 ${universe?.length ?? 0} 个（下界 ${minUniverse}）—— 分母不可信`];
+  }
+  const universeSet = new Set(universe);
+  const coveredSet = new Set(covered);
+  const ratio = coveredSet.size / universe.length;
+  if (ratio < minRatio) {
+    errors.push(
+      `覆盖面只有 ${coveredSet.size}/${universe.length}（${(ratio * 100).toFixed(1)}%）< 门槛 ${(minRatio * 100).toFixed(0)}%` +
+        `—— 判据面被缩小（LIVENESS_COVERED 或 COVERED_DEFAULT 塌方），不许静默绿`,
+    );
+  }
+  for (const script of universe) {
+    if (coveredSet.has(script)) continue;
+    const entry = registry?.[script];
+    if (!entry) {
+      errors.push(`未覆盖且未登记：scripts/${script} —— 逐条补 reason + owner + review_by，或纳入覆盖清单`);
+      continue;
+    }
+    for (const field of ["reason", "owner", "review_by"]) {
+      if (typeof entry[field] !== "string" || entry[field].trim().length < (field === "review_by" ? 10 : 6)) {
+        errors.push(`未覆盖登记 scripts/${script} 的 ${field} 缺失/过短 —— 无理由的后门不许放行`);
+      }
+    }
+    if (typeof entry.review_by === "string" && /^\d{4}-\d{2}-\d{2}$/.test(entry.review_by)) {
+      if (entry.review_by < new Date().toISOString().slice(0, 10)) {
+        errors.push(`未覆盖登记 scripts/${script} 的 review_by=${entry.review_by} 已过期 —— 复核期限已过`);
+      }
+    }
+  }
+  for (const [script, entry] of Object.entries(registry ?? {})) {
+    if (!universeSet.has(script)) {
+      errors.push(`未覆盖登记 ${script} 已无对应脚本（登记腐烂）—— 请回收；entry=${JSON.stringify(entry)}`);
+    } else if (coveredSet.has(script)) {
+      errors.push(`scripts/${script} 已被覆盖却仍留在未覆盖登记表 —— 登记该回收了`);
+    }
+  }
+  errors.meta = { universe: universe.length, covered: coveredSet.size, ratio };
+  return errors;
 }
 
 export const JUDGE_NAME_RE = /assert|[Jj]udg|check|verify/i;
@@ -128,74 +312,160 @@ export function deadJudgesIn(root, script) {
   }
 }
 
-export function check(root = REPO_ROOT) {
-  const errors = [];
-  const COVERED = coveredList();
-  if (COVERED.length < 2) {
-    return [`COVERED 只有 ${COVERED.length} 个脚本（下界 2）—— 扫描面塌方，判据不可信`];
+export function check(root = REPO_ROOT, options = {}) {
+  const inventory = inventoryProblems(root, options);
+  if (inventory.length > 0) {
+    inventory.meta = inventory.meta ?? {};
+    inventory.meta.registered = Object.keys(options.registry ?? UNCOVERED_REGISTRY).length;
+    return inventory;
   }
+  const registry = options.registry ?? UNCOVERED_REGISTRY;
+  const errors = [];
+  const COVERED = options.covered ?? coveredList(root);
   let covered = 0;
   const skipped = [];
   for (const script of COVERED) {
     const res = deadJudgesIn(root, script);
-    if (res.skipped) { skipped.push(`${script}：${res.skipped}`); continue; }
+    if (res.skipped) {
+      // 旧实现把它当软跳过 —— 正是「覆盖面 20/104 却报绿」的成因之一。
+      errors.push(
+        `scripts/${script} 列入覆盖清单却${res.skipped} —— 要么修好入口，要么移入未覆盖登记（带理由）`,
+      );
+      skipped.push(`${script}：${res.skipped}`);
+      continue;
+    }
     covered += 1;
     for (const d of res.dead) {
       errors.push(
-        `scripts/${script}:${d.line} 判据函数 \`${d.name}\` **在执行 selftest 期间从未被调用** —— ` +
+        `scripts/${script}:${d.line} 判据函数 \`${d.name}\` **在执行期间从未被调用** —— ` +
           `死判据（V8 覆盖率 count=0）。请接线，或在函数体首行写 \`// liveness-exempt: <≥12 字理由>\``,
       );
     }
   }
   if (covered === 0) errors.push(`没有任何脚本产出可用覆盖率 —— 判据面为空（不许静默跳过）`);
-  errors.meta = { covered, skipped };
+  errors.meta = {
+    covered,
+    skipped,
+    universe: inventory.meta.universe,
+    ratio: inventory.meta.ratio,
+    registered: Object.keys(registry).length,
+  };
   return errors;
+}
+
+function withEnv(name, value, fn) {
+  const prev = process.env[name];
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+  try { fn(); } finally {
+    if (prev === undefined) delete process.env[name];
+    else process.env[name] = prev;
+  }
+}
+
+/** 造一棵 N 个假 check 脚本的夹具树；covered 之外的进登记表。 */
+function livenessFixture({ count = 10, covered = 7, deadAt = -1, expiry = "2099-12-31" } = {}) {
+  const names = Array.from({ length: count }, (_, i) => `check-fixture-${i}.mjs`);
+  const files = { "package.json": { scripts: {} } };
+  names.forEach((name, i) => {
+    const body = i === deadAt
+      ? `function checkDeadFixture() { return 1; }\nconsole.log("COVERAGE_CASES: 1");\n`
+      : `function checkProbeFixture() { return ${i}; }\ncheckProbeFixture();\nconsole.log("COVERAGE_CASES: 1");\n`;
+    files[`scripts/${name}`] = body;
+  });
+  const registry = Object.fromEntries(
+    names.slice(covered).map((name) => [name, {
+      reason: "fixture 脚本需要外部服务，未纳入 V8 覆盖面",
+      owner: "fixture-owner",
+      review_by: expiry,
+    }]),
+  );
+  return { names, files, registry };
 }
 
 function runSelftest() {
   const cases = [];
   const push = (name, fn) => cases.push({ name, fn });
-  push("正例控制组：真仓库（缩小面：2 个脚本）⇒ 零误报", () => {
-    // 自检只验证**判据管线**本身；完整 20 个脚本的覆盖由链内主跑负责（~23s）。
-    const prev = process.env.LIVENESS_COVERED;
-    process.env.LIVENESS_COVERED = "check-script-main-guard.mjs,check-posture-matrix-tables.mjs";
+  const must = (cond, msg) => { if (!cond) throw new Error(msg); };
+
+  push("正例控制组：10 个脚本覆盖 7 个（70%）⇒ 零误报（不再缩到 2 个）", () => {
+    const fx = livenessFixture();
+    const repo = makeFixtureRepo(fx.files, { prefix: "liveness-fixture-" });
     try {
-      const errs = check();
-      if (errs.length > 0) throw new Error(`期望零误报，实得 ${errs.length} 项：${errs.slice(0, 2).join("；")}`);
-    } finally {
-      if (prev === undefined) delete process.env.LIVENESS_COVERED;
-      else process.env.LIVENESS_COVERED = prev;
-    }
+      withEnv("LIVENESS_COVERED", fx.names.slice(0, 7).join(","), () => {
+        const errs = check(repo.dir, { registry: fx.registry, minUniverse: 10 });
+        must(errs.length === 0, `期望零误报，实得 ${errs.length} 项：${errs.slice(0, 2).join("；")}`);
+      });
+    } finally { repo.cleanup(); }
   });
 
-  push("反例①：LIVENESS_COVERED 里全是「不存在的脚本」⇒ 报「扫描面塌方」（不许静默绿）", () => {
-    const prev = process.env.LIVENESS_COVERED;
-    // 一个不存在的脚本名 ⇒ 过滤后剩 0 个可用脚本。此时**必须红**：
-    // 「一个都跑不了」与「跑了且全绿」是两件事，把它当绿就是判据面塌方的假绿。
-    process.env.LIVENESS_COVERED = "no-such-script-r155.mjs,another-missing-r155.mjs";
+  push("反例①：覆盖面 5/10 = 50% < 60% ⇒ 红", () => {
+    const fx = livenessFixture({ covered: 5 });
+    const repo = makeFixtureRepo(fx.files, { prefix: "liveness-ratio-" });
     try {
-      const errs = check();
-      if (errs.length === 0) throw new Error("可用脚本为 0 时返回了 0 项 —— 假绿");
-      if (!errs.some((e) => e.includes("扫描面塌方"))) {
-        throw new Error(`期望点名「扫描面塌方」，实得：${errs.join("；")}`);
-      }
-    } finally {
-      if (prev === undefined) delete process.env.LIVENESS_COVERED;
-      else process.env.LIVENESS_COVERED = prev;
-    }
+      withEnv("LIVENESS_COVERED", fx.names.slice(0, 5).join(","), () => {
+        const errs = check(repo.dir, { registry: fx.registry, minUniverse: 10 });
+        must(errs.some((e) => e.includes("覆盖面只有")), `errs=${errs.join("；")}`);
+      });
+    } finally { repo.cleanup(); }
   });
-  push("反例②：LIVENESS_COVERED 置空 ⇒ 回落默认清单（空 ≠ 关闭检查）", () => {
-    const prev = process.env.LIVENESS_COVERED;
-    process.env.LIVENESS_COVERED = "";
+
+  push("反例②：未覆盖脚本没写 reason/owner/review_by ⇒ 红", () => {
+    const fx = livenessFixture();
+    const repo = makeFixtureRepo(fx.files, { prefix: "liveness-signoff-" });
     try {
-      // 空串 ⇒ coveredList() 回落 COVERED_DEFAULT（不是「跳过所有脚本」）。
-      // 这是安全属性：**不能靠「把环境变量设空」关掉这道闸**。
-      const errs = check();
-      if (errs.length > 0) throw new Error(`空环境变量应回落默认清单并保持绿，实得 ${errs.length} 项：${errs.slice(0, 2).join("；")}`);
-    } finally {
-      if (prev === undefined) delete process.env.LIVENESS_COVERED;
-      else process.env.LIVENESS_COVERED = prev;
-    }
+      withEnv("LIVENESS_COVERED", fx.names.slice(0, 7).join(","), () => {
+        const errs = check(repo.dir, { registry: Object.fromEntries(Object.entries(fx.registry).slice(1)), minUniverse: 10 });
+        must(errs.some((e) => e.includes("未覆盖且未登记")), `errs=${errs.join("；")}`);
+      });
+    } finally { repo.cleanup(); }
+  });
+
+  push("反例③：登记的 review_by 过期 ⇒ 红（后门不许常青）", () => {
+    const fx = livenessFixture({ expiry: "2000-01-01" });
+    const repo = makeFixtureRepo(fx.files, { prefix: "liveness-expired-" });
+    try {
+      withEnv("LIVENESS_COVERED", fx.names.slice(0, 7).join(","), () => {
+        const errs = check(repo.dir, { registry: fx.registry, minUniverse: 10 });
+        must(errs.some((e) => e.includes("review_by") && e.includes("已过期")), `errs=${errs.join("；")}`);
+      });
+    } finally { repo.cleanup(); }
+  });
+
+  push("反例④：覆盖清单里的判据函数 V8 count=0 ⇒ 红（死判据有牙）", () => {
+    const fx = livenessFixture({ deadAt: 0 });
+    const repo = makeFixtureRepo(fx.files, { prefix: "liveness-dead-" });
+    try {
+      withEnv("LIVENESS_COVERED", fx.names.slice(0, 7).join(","), () => {
+        const errs = check(repo.dir, { registry: fx.registry, minUniverse: 10 });
+        must(errs.some((e) => e.includes("从未被调用")), `errs=${errs.join("；")}`);
+      });
+    } finally { repo.cleanup(); }
+  });
+
+  push("真仓库：默认覆盖面 ≥60%，且未覆盖逐条登记（静态盘点，不缩面）", () => {
+    const errs = inventoryProblems(REPO_ROOT);
+    must(errs.length === 0, `真仓库盘点红：${errs.slice(0, 3).join("；")}`);
+    must(errs.meta.ratio >= MIN_COVERAGE_RATIO, `ratio=${errs.meta.ratio}`);
+  });
+
+  push("反例⑤：LIVENESS_COVERED 置空 ⇒ 回落默认清单（空 ≠ 关闭检查）", () => {
+    withEnv("LIVENESS_COVERED", "", () => {
+      const list = coveredList(REPO_ROOT);
+      must(list.length >= 60, `回落清单只有 ${list.length} 个脚本`);
+    });
+  });
+
+  push("CLI：把覆盖面缩到 2 个 → main exit 1（钉住 process.exit 接线）", () => {
+    withEnv("LIVENESS_COVERED", "check-script-main-guard.mjs,check-posture-matrix-tables.mjs", () => {
+      expectExit(runGuard(HERE), {
+        code: 1,
+        contains: ["覆盖面只有"],
+        absent: ["死判据守卫通过"],
+        withinMs: 5000,
+        label: "CLI 覆盖面缩到 2 个",
+      });
+    });
   });
 
   const failed = reportCases(cases, { title: "check-guard-liveness selftest" });
@@ -205,15 +475,14 @@ function runSelftest() {
 function main() {
   const errors = check(REPO_ROOT);
   const meta = errors.meta ?? {};
-  if (meta.skipped?.length > 0) {
-    console.log(`未覆盖 ${meta.skipped.length} 个脚本（已知限制，不静默跳过）：`);
-    for (const s of meta.skipped) console.log(`   · ${s}`);
-  }
   if (errors.length === 0) {
-    console.log(`✔ 死判据守卫通过：${meta.covered} 个脚本的判据函数在执行期间全部被调用（V8 覆盖率 count>0）。`);
+    console.log(
+      `✔ 死判据守卫通过：${meta.covered}/${meta.universe} 个脚本（${((meta.ratio ?? 0) * 100).toFixed(1)}% ≥ 60%）` +
+        `的判据函数在执行期间全部被调用（V8 覆盖率 count>0）；未覆盖登记 ${meta.registered ?? 0} 条。`,
+    );
     return 0;
   }
-  console.error(`✘ 死判据守卫：${errors.length} 项`);
+  console.error(`✘ 死判据守卫：${errors.length} 项（覆盖 ${meta.covered ?? 0}/${meta.universe ?? "?"}）`);
   for (const e of errors) console.error(`   · ${e}`);
   return 1;
 }

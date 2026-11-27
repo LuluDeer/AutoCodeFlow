@@ -1,5 +1,84 @@
 # AutoCodeFlow Agent Handoff
 
+## 本次交接（2026-11-28 · 空降负责人第五轮，收口）
+
+**方向来源**：用户「继续」。本轮把上一轮留下的证据缺口补齐：admin-api 全量回归、e2e-full 真栈全链、桌面 Electron 真机桥验收，并把当前 diff 的集成审查问题全部收口。主控只串行跑重进程，调研 agent 不限但编译/真机一次只跑一个，未产生 OOM。
+
+**本轮核心改动**：
+1. **集成审查真实缺陷修复**：终态屏障显式 reopen 清理；workbench 审批 ok:false 前端如实提示；deployment scope/伪造 ADMIN/伪成功工具修掉；steer 按 id 幂等；resumeReason 进 OpenAPI；登录无 role 交给 RoleHomeRedirect；`TaskDagChainController` 删除类级 `@Roles` 声明冲突。
+2. **admin-api 全量回归清零**：修复 16 个 suite / 82 个失败的历史测试漂移（事务管理器、默认 PAUSED、执行快照、失败分类单源、日志游标、prompt/审批/路由/静态鉴权清单等），不改产品语义；事件投影审计脚本改为从 prompt registry 与 realtime collaborator 抽事实源，`--selftest` 25/25。
+3. **桌面桥收口**：退役 `getUrl/navigate/close`，最终桥面为 4 invoke + 1 event；新增 admin-web 反证 spec、桌面 selftest 严格集合与 retired 禁止集；新增 `scripts/verify-desktop-workbench-bridge.sh` 与 `e2e/wb-bridge.cjs` 真机 harness。
+4. **e2e-full 对齐默认 PAUSED 语义**：任务夹具显式 ACTIVE，R5 legacy 流程与 RBAC 17 已适配；settings 20/21 对齐当前 AI provider 面板；全链 50 passed / 2 skipped。
+5. **自动化与基线卫生**：source-text-contracts / size-caps 按真实源码重签，所有新增失败都有显式分档或反证，未靠删断言过绿。
+
+**验收与证据（分级）**：
+- **静态 + 类型第 2 级**：`git diff --check` exit 0；`npm run typecheck:all` 全端 exit 0；`check:failure-classifiers` + reverse-proof、`check:source-text-contracts`、`check:size-caps`、`check:user-facing-language`、`check:api-i18n`、`check:response-schema`、`check:guard-liveness`、`check:live-specs-wired`、`check:guards-wired`、`check:docs` 全部 exit 0。
+- **单测/内存替身第 2 级**：admin-api **616 suites / 9887 passed / 9 skipped**（第三次全量，最小夹具环境）；admin-web 全量 406 files / 3311 passed / 1 skipped；Node/Python/MCP 定向全绿。
+- **真实进程内 L3 第 3 级**：`verify-hardening-realstack.sh` 4 suites / 8 tests PASS；`verify-attemptseq-http.sh` 3 tests PASS；`verify-agent-realtime.sh` 5/5 PASS；broadcast-slot e2e 在迁移后的 throwaway 库上 PASS。
+- **真浏览器 L4 第 4 级**：`fullstack-verify-workbench.sh` 1/1 PASS；`verify-hardening-browser.sh` 3/3 PASS、10 断言、skips=0；`scripts/e2e-full.sh` **50 passed / 2 skipped / 0 failed**。
+- **桌面 Electron 真机第 4 级**：`verify-desktop-workbench-bridge.sh` 17/17 PASS、skipped=0，证据在 `artifacts/verification/desktop-bridge-20261128T012101651/`；覆盖真实独立窗口、5 个 bridge 键、文件选择零路径、Agent 事件订阅/退订、本机取消、四页隔离。
+
+**诚实边界 / 后续项**：
+- 本轮最高验收级别为**真浏览器 / 桌面 Electron 第 4 级**，当前工作树真跑通过。
+- 未做生产环境长稳、真实外部通知渠道与多主机拓扑；未 git commit/push。
+- 参考项目审查仅存于对话，未写入任何项目代码或文档。
+
+---
+
+## 本次交接（2026-11-27 · 空降负责人第四轮，收口）
+
+**方向来源**：用户继续要求自定目标、大刀阔斧打磨，并强调编译 agent 要少。先派 5 路只读取证（残留前端失败 / 桌面桥 / 失败分类器 / 真栈验收 / 当前 diff 集成审查），再按互斥写域派发 17 个实现与测试修复切片。全程主控串行编译、真栈与浏览器验收；参考项目只读，未写入项目。
+
+**本轮核心改动**：
+1. **上一轮集成回归修补**：终态屏障改为显式 reopen 即清理；workbench 审批 ok:false 前端如实提示；deployment scope 逃逸、delete_application 伪造 ADMIN、get_my_project_roles 伪成功全部修掉；steer 按 id 跨副本幂等；resumeReason 进入 OpenAPI；登录无 role 交给 RoleHomeRedirect。
+2. **失败分类器三端单源**：admin 新增生成物出口，node/python 运行时切到生成物，executor 阶段 null/None 让位且不携带 failureReason；bwrap 日志扫描与 errorCode/exitCode/no-match 非文本判据保留；守卫切到生成物行为 + wrapper 接线，CLS 差异从 16 收敛为 4，protocol `failureReason.xConsumption=runtime`。
+3. **桌面工作台桥接落地**：新增 admin-web 类型化 bridge 适配层，附件选择走 `pickLocalFiles`，桌面 Agent 状态条消费上下文/回放/实时事件并可取消本机指派；非 Electron 环境逐方法探测回退，零凭据、零路径、事件白名单纯文本展示。
+4. **残留前端失败清零**：DAG 键盘可达与品牌绿阴影、日志 rAF 标识漂移、通知铃旧面板测试迁移、Settings RBAC、midwidth header、时间格式源码守卫、type-debt 基线、命令面板白名单、登录/终态文案等全部对齐当前产品；旧断言语义未降级。
+5. **真栈验收制度化**：补 Agent 实时流两真 Nest 跨副本 L3 spec 与脚本；`verify-hardening-realstack.sh` 落盘 `commands.txt/jest.log/result.json`；新脚本从 `.env` 读凭据并 export `REDIS_DB`；L4 spec 适配 LegacyFlow 默认折叠与 cadence 精确 selector。
+
+**验收与证据（分级）**：
+- **静态 + 类型第 2 级**：`git diff --check` exit 0；`npm run typecheck:all` 全端 exit 0；OpenAPI 重导 + API-I18N 2384 处注入 + `gen:api-types` + `gen:api-reference` + failure classifier 五份生成物零漂移。
+- **单测/内存替身第 2 级**：admin-api 13 个定向 suite 203 tests（失败分类修复后全过）；admin-web **全量 406 files / 3311 passed / 1 skipped**；Node 4 files / 299 passed；Python 7 files / 365 passed / 1 skipped；MCP 工具面 63 tools。
+- **静态守卫**：failure-classifiers + reverse-proof、source-text-contracts、size-caps、user-facing-language、api-i18n、response-schema、guard-liveness、live-specs-wired、guards-wired 等全部 exit 0；反证用例均保持有牙。
+- **真实进程内 L3 第 3 级**：`verify-hardening-realstack.sh` 4 suites / 8 tests PASS；`verify-attemptseq-http.sh` 3 tests PASS；`verify-agent-realtime.sh` 5/5 PASS（delta 帧、>5000 重放截断、终态零副作用、跨副本 abort、steer 单次消费）。
+- **真浏览器 L4 第 4 级**：`fullstack-verify-workbench.sh` 1/1 PASS（API 建用户 → 真登录 → 角色侧栏 → preview/commit → 运行草稿 → API readback）；`verify-hardening-browser.sh` 3/3 PASS、10 断言、skips=0（会话恢复/降级轮询、产物真下载、日志 SSE 重连不重复）。
+
+**诚实边界 / 后续项**：
+- 本轮最高验收级别为**真浏览器第 4 级**，且当前 HEAD/工作树状态下真跑通过。
+- 未跑 admin-api 全量回归、桌面 Electron 真机点击、生产环境长稳；未 git commit/push。
+- 桌面桥的 `getUrl/navigate/close` 三通道保留未退役（当前无消费但无危害）；如追求最小桥面可后续退役。
+- 参考项目审查仅存于对话，未写入任何项目代码或文档。
+
+---
+
+## 本次交接（2026-11-27 · 空降负责人第三轮，进行中收口）
+
+**方向来源**：用户要求继续自定目标、大刀阔斧优化；本轮先用 6 路只读取证（核心路径 / Agent 实时流 / 执行器协议 / 前端体验 / 验证可信度 / 参考项目），再按用户可验收路径派发 15 个互斥写域实现切片 + 2 个测试修复切片。全程子 agent 禁跑 build/typecheck；主控串行编译与验收，避免 OOM。参考项目只做只读提炼，未写入项目。
+
+**核心诊断（源码实证）**：Agent SSE 端点无浏览器消费者；cancel/steer 跨副本失效；workbench deny/cancel/终态消息多处假成功；四眼绕过；命令面板与侧栏角色口径分叉；SSRF 双端相反结论；MCP null 写 NOT NULL；13 个 Agent 工具声明无执行体；三个真 PG/Redis spec 在 CI 永久 skip；工作台首屏新旧两套流程叠屏。
+
+**本轮交付（按用户可验收路径）**：
+1. **Agent 实时交互**：新增 `useAgentSessionLiveSession`，Agent 会话页真正接 SSE；后端 synced 帧带 accumulator 快照、replay 截断标志、跨副本 delta append、终态后 running/started 阻断；终态追加消息返回 `rejected_terminal` + reason + 零副作用。
+2. **运行时控制面**：cancel 通过 `subscribeAbort` 在 LLM/工具批前即时刹车；steer 改 Redis list 跨副本可消费；deny 自动恢复失败带 reason；doom-loop 脱离 realtimePorts；自批判定覆盖 `user:<id>` 与 `user:<username>`。
+3. **工作台体验**：LegacyFlow 默认折叠为「旧版草稿入口」；侧栏/命令面板共用角色可见集合；403 按角色返回首页；审批卡内联主时间线并显示真实命令；状态/错误文案 i18n 化；SSE 降级横幅独立显示；首屏与登录跳页按角色收敛。
+4. **审批/协议正确性**：workbench deny/withdraw 结算工具台账并发 settled 事件；cancel 返回真实 aborted；审批响应不再恒 ok:true；kind 请求字段从 DTO 与前端请求体删除；note 入 DTO 消除 400。
+5. **执行器一致性**：SSRF、超时优先级、日志保留按协议生成物统一；node/python 共享向量测试；协议四段 `xConsumption` 升 runtime。
+6. **工具面/MCP/CLI**：13 个未绑定 Agent 工具全部绑定或删声明，错误文案中性化；MCP create/update_task 显式 null 被结构化拒绝；MCP 63 / CLI 74 文档与源码计数对齐。
+7. **验证基建**：新增 `check-live-specs-wired`，三个孤儿 PG/Redis spec 接入 CI；response-schema 新增即需 schema；guard-liveness 覆盖 99/105；api-i18n selftest 本地接线；atlas 实测数字与迁移数同步；源码文本契约补 2 条；size-caps 基线按实测重签并排除守卫自检临时目录。
+
+**验收与证据（分级，不越级上报）**：
+- **静态 + 类型第 2 级**：`git diff --check` exit 0；`npm run typecheck:all` 8 端全 exit 0；OpenAPI 单 worker 重导 + API-I18N 2381 处注入 + `gen:api-types` + `gen:api-reference` 成功。
+- **单测/内存替身第 2 级**：admin-api 10 个定向 suite 88 tests（两处集成期断言修正后全过）；admin-web 11 个改造定向 suite 63 tests 全过；工作台 6 个遗留 suite 60/60 通过；MCP 4 个 suite 228 tests 通过；node/python 执行器各 23 tests 通过；desktop selftest 8/8。
+- **静态守卫**：live-specs / response-schema / guard-liveness / api-i18n / interface-maps / atlas-counts / cli-doc / cli-doc-flags / docs / source-text-contracts / user-facing-language / size-caps / guards-wired / web-type 双守卫 / migrations / migration-symmetry / protocol-breaking / protocol-three-way / callback-contract-drift / e2e-wiring / infra-doc-counts / mcp-tool-surface 全部 exit 0；`lint:i18n` 补登 AgentSessionsPage 动态键后 exit 0。
+- **全量前端回归**：最终 `npm run test:web -- --maxWorkers=2` 为 403 files / 3262 passed / 27 failed；其中本轮改造引起的 4 组失败已修并单文件复跑通过，`i18n-migration-verify` 补登动态键基线后单文件通过。剩余失败集中在既有源码漂移（DAG 键盘可达/role/阴影、日志追加 rAF、NotificationBell 旧面板、SettingsPage 非管理员 tab、midwidth header、时间格式化源码守卫、type-debt 基线），隔离复跑二次确认仍红，**非本轮改造引入**，未用放宽断言掩盖。
+
+**诚实边界 / 后续项**：
+- 本轮最高验收级别为**单测/内存替身 + 静态守卫第 2 级**；未跑真 PG/Redis 进程内集成、未跑真浏览器 L4、未跑桌面 Electron 真机点击。
+- 后续优先：① 清理上段列出的 26 个既有前端失败；② desktop `window.workbenchApi` 8 个能力仍零消费，需决定接入或退役；③ failure classifier 生成物运行时零消费；④ 对新增 SSE/审批/执行器语义补真栈与浏览器验收。
+- 分支 `develop`；未 git commit/push；参考项目审查仅存于对话，未写入任何项目代码或文档。
+
+---
+
 ## 本次交接（2026-11-27 · 空降负责人大改造轮，已完成）
 
 **方向来源**：用户明确「外部空降负责人、不要盲信 md、功能没实现/定位有问题/体验不好、允许大刀阔斧、调研 agent 不限但编译 agent 少、/data/project/opensource 仅内部参考不写进项目」。先用 9 路只读审计（6 路本仓库 CodeGraph 深审 + 3 路参考架构）建立证据矩阵，再分 Wave 1（7 路后端/协议/执行器/MCP）+ Wave 2（3 路前端 IA/工作台/Ops 页）+ 主控制度化收口，共 13 路实现切片、约 193 个文件改动。全程子 agent 禁跑 build/tsc/jest，主控串行编译与重导，12GB 主机零 OOM。

@@ -237,6 +237,8 @@ apps/executor-desktop/resources/playwright/
 
 # 本机部署产物/备份（不进仓库；.env 本身已在第 2 行忽略）
 .env.bak*
+# Electron harness 在仓库根跑出的窗口边界快照，不是源码
+/workbench-window.json
 # 只忽略仓库根的部署产物目录；不要误伤 apps/admin-api/src/modules/artifacts/ 等源码目录
 /artifacts/
 
