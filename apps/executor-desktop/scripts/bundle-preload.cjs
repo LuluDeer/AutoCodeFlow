@@ -20,25 +20,35 @@ const esbuild = require('esbuild');
 
 const DESKTOP = path.resolve(__dirname, '..');
 const ENTRY = path.join(DESKTOP, 'src', 'preload', 'index.ts');
+// 独立工作台窗口用最小权限 preload（ADR-044：业务人员工作台与执行器配置
+// 权限隔离），必须是独立产物；与主 preload 同目录、同构建规则。
+const WORKBENCH_ENTRY = path.join(DESKTOP, 'src', 'preload', 'workbench.ts');
 const OUT_DIR = path.join(DESKTOP, 'dist', 'preload');
 const OUT = path.join(OUT_DIR, 'index.js');
+const WORKBENCH_OUT = path.join(OUT_DIR, 'workbench.js');
+const KEEP = new Set(['index.js', 'index.js.map', 'workbench.js', 'workbench.js.map']);
 
-esbuild.buildSync({
-  entryPoints: [ENTRY],
-  outfile: OUT,
-  bundle: true,
-  platform: 'node',
-  format: 'cjs',
-  target: 'es2020',
-  external: ['electron'],
-  sourcemap: true,
-  logLevel: 'warning',
-});
+for (const [entry, outfile] of [
+  [ENTRY, OUT],
+  [WORKBENCH_ENTRY, WORKBENCH_OUT],
+]) {
+  esbuild.buildSync({
+    entryPoints: [entry],
+    outfile,
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'es2020',
+    external: ['electron'],
+    sourcemap: true,
+    logLevel: 'warning',
+  });
+}
 
 // tsc 会为 preload 目录下的其它模块单独 emit；打包后它们都是死文件
 // （沙箱里也 require 不到），清掉避免造成"运行时还会做模块解析"的误判。
 for (const name of fs.readdirSync(OUT_DIR)) {
-  if (name === 'index.js' || name === 'index.js.map') continue;
+  if (KEEP.has(name)) continue;
   if (name.endsWith('.js') || name.endsWith('.js.map')) {
     fs.rmSync(path.join(OUT_DIR, name));
   }

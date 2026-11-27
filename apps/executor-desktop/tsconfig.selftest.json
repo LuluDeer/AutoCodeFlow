@@ -128,7 +128,11 @@
     "src/main/navigation-policy.ts",
     "src/main/navigation-policy.selftest.ts",
     "src/main/cli-dispatch.ts",
-    "src/main/cli-dispatch.selftest.ts"
+    "src/main/cli-dispatch.selftest.ts",
+    "src/main/workbench-window.ts",
+    "src/main/workbench-ipc.ts",
+    "src/main/workbench-window.selftest.ts",
+    "src/main/workbench-window.review.selftest.ts"
   ],
   "exclude": []
 }

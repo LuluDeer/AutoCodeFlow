@@ -26,6 +26,8 @@ import { uiText } from './ui-texts';
 import * as path from 'path';
 import log, { applyLogLevel, initLogCleanup } from './logger';
 import { parseCliDispatch } from './cli-dispatch';
+import { createWorkbenchWindow } from './workbench-window';
+import { registerWorkbenchIpcHandlers } from './workbench-ipc';
 
 /**
  * i18n-DESK-01：主进程侧读取「界面语言」设置的唯一入口。
@@ -186,6 +188,11 @@ if (cliDispatch === null) {
   log.info('CLI 分发模式：agent，仓库暂无独立 Agent CLI 入口，降级为默认桌面壳启动。');
 }
 
+// 阶段 A（ADR-044）：`--workbench` 是**并存入口**，刻意不进 parseCliDispatch
+// （那套三旗标/冲突降级语义逐字不动）。业务人员用这个旗标直接进中台工作台，
+// 四页（wizard/status/config/history/apps）的启动流程完全不受影响。
+const workbenchMode = process.argv.slice(2).includes('--workbench');
+
 app.whenReady().then(async () => {
   // 移除默认菜单栏（File/Edit/View 等），Linux/Windows 上会显示原生菜单
   Menu.setApplicationMenu(null);
@@ -319,6 +326,9 @@ app.whenReady().then(async () => {
 
   // 注册所有 IPC handlers
   registerIpcHandlers();
+  // 阶段 A（ADR-044）：独立工作台的窄 channel 面，独立于四页注册链；
+  // ipc-handlers.ts 是棘轮文件，新增段放在 workbench-ipc.ts（既有 handler 零改动）。
+  registerWorkbenchIpcHandlers({ getAdminApiUrl: () => configStore.get('adminApiUrl'), log });
 
   // DSK-03：自动更新仅生产包启用（dev 下 electron-updater 无 app-update.yml
   // 会报错；且开发期不应触发升级流程）。initUpdater 内部延迟 30s 检查、
@@ -374,6 +384,20 @@ app.whenReady().then(async () => {
     // B-1：即便 start 失败也照常启动心跳探针——它对未监听端口只会累计
     // 失败计数（迟滞口径下不会误报），等用户修好配置/端口后能自动恢复。
     startHeartbeat();
+  }
+
+  // 阶段 A（ADR-044）：独立工作台窗口——只在 --workbench 时**追加**开启，
+  // 上面的四页启动分支一行未改。中台地址缺失/非法时只落错误日志，
+  // 托盘 / 执行器 / 心跳主链照常运行（绝不因为工作台窗口把应用带崩）。
+  if (workbenchMode) {
+    try {
+      createWorkbenchWindow({
+        getWorkbenchUrl: () => configStore.get('adminApiUrl'),
+        log,
+      });
+    } catch (err) {
+      log.error(`[workbench] open failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // P7b：Agent 托管（agentEnabled=true 且配置齐全时开始轮询 agent-collab）
