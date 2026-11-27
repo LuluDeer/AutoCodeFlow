@@ -1,11 +1,14 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Inject as NestInject,
   Ip,
   Logger,
   Optional as NestOptional,
+  Param as NestParam,
   Post,
+  Get as NestGet,
   UseGuards,
 } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
@@ -78,12 +81,27 @@ import {
 } from "./part-projection.service";
 import { ReleaseApprovalService } from "./release-approval.service";
 import { sopContentHash } from "../sop/sop-frontmatter";
+import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
+import {
+  CreateWorkbenchSessionDto,
+  WorkbenchSessionCreateResponseDto,
+  WorkbenchSessionDetailResponseDto,
+} from "./dto/workbench-session.dto";
+import {
+  WORKBENCH_SESSIONS_PORT,
+  type WorkbenchSessionsPort,
+} from "./workbench-sessions.port";
 
 /** 极简框架替身可能没有 @Optional / @Inject；缺席时降级 no-op，手动 new 不受影响。 */
 const Optional: (...args: any[]) => any =
   typeof NestOptional === "function" ? NestOptional : () => () => undefined;
 const Inject: (...args: any[]) => any =
   typeof NestInject === "function" ? NestInject : () => () => undefined;
+/** 同上：极简框架替身可能没有 @Get；缺席时降级 no-op（仅影响元数据，不影响手动调用）。 */
+const Get: (...args: any[]) => any =
+  typeof NestGet === "function" ? NestGet : () => () => undefined;
+const Param: (...args: any[]) => any =
+  typeof NestParam === "function" ? NestParam : () => () => undefined;
 
 /** 与 sop.controller.ts:100 auditUserId 同口径：非有限数一律 null。 */
 function auditUserId(user?: { id: number | string }): number | null {
@@ -242,6 +260,12 @@ export class WorkbenchController {
     // 五闸、draft 落库与三态返回逐字不变。
     @Optional()
     private readonly moduleRef?: ModuleRef,
+    // 「运行我的草稿」会话端口。@Optional 追加在末尾以兼容既有定位参数单测；
+    // 生产由 WorkbenchModule 注入真实 AgentSessionService + agent-jobs 队列。
+    // 缺席 ⇒ 新端点显式报 DEPENDENCY_UNAVAILABLE（503），绝不回空壳。
+    @Optional()
+    @Inject(WORKBENCH_SESSIONS_PORT)
+    private readonly sessions?: WorkbenchSessionsPort | null,
   ) {}
 
   /**
@@ -642,5 +666,129 @@ export class WorkbenchController {
         }`,
       );
     }
+  }
+
+  // ── 「运行我的草稿」业务用户会话面（阶段 B/C 的最小真实闭环）────────────
+
+  /**
+   * 业务用户把自己 commit 出来的 SOP draft 实例化为一个严格限权的 Agent 会话。
+   *
+   * 防越权三道闸：
+   * ① SOP 必须存在、状态为 draft；否则 404 / 409（已发布的不许「跑草稿」）；
+   * ② 归属必须是当前用户（`createdBy === user:<id>`）——ADMIN 可代跑（管理面）；
+   *    其他 USER 的草稿一律 403（防枚举：与不存在同码不可分辨靠 404 区分不行，
+   *    这里刻意 403 让本人知道自己没权限，ADMIN 例外）；
+   * ③ kind/scope/creator/triggerSource 服务端钉死，请求体里根本没有这些字段
+   *    （DTO whitelist + forbidNonWhitelisted 保证多传即 400）。
+   *
+   * 一步入队：与 agent.controller.ts:497-530 同口径（jobId=sessionId 去重、attempts=1）。
+   */
+  @Post("sessions")
+  @ApiOperation({
+    summary: "运行我的 SOP 草稿：创建限权 Agent 会话并入 agent-jobs 队列",
+  })
+  @Roles(UserRole.ADMIN, UserRole.USER)
+  @ApiOkResponse({ type: WorkbenchSessionCreateResponseDto })
+  async createSession(
+    @Body() dto: CreateWorkbenchSessionDto,
+    @CurrentUser() user: { id: number | string; username?: string } | undefined,
+  ): Promise<WorkbenchSessionCreateResponseDto> {
+    if (!this.sops || !this.sessions) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    const userId = Number(user?.id);
+    if (!Number.isFinite(userId)) {
+      throw new AppError(ErrorCode.USER_NOT_FOUND, {});
+    }
+    const isAdmin = (user as { role?: string } | undefined)?.role === UserRole.ADMIN;
+    const identity = `user:${userId}`;
+
+    // ① 存在性 + 状态：用 SopService.getSop（不存在抛 SOP_NOT_FOUND → 404）。
+    const sop = await this.sops.getSop(dto.sopId);
+    if (sop.status !== "draft") {
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail: "SOP 不是 draft 状态，不能运行草稿",
+      });
+    }
+    // ② 归属：createdBy 口径见 sop.entity.ts:64-66（user:<id> / agent:<sessionId>）。
+    //    ADMIN 代跑是管理面例外；普通 USER 只能跑自己的草稿。
+    if (!isAdmin && sop.createdBy !== identity) {
+      throw new ForbiddenException("无权运行他人的 SOP 草稿");
+    }
+
+    // ③ 服务端钉死会话形状；context 只放服务端已知事实 + 客户提供的 goal。
+    //    策略代际在 commit 时已算过并回带，这里读一次当前值随会话继承，
+    //    供下游在途失效比对（与 CommitResultDto.policyGeneration 同口径）。
+    const policyGeneration = await this.currentGeneration();
+    const session = await this.sessions.create({
+      kind: "sop_authoring",
+      triggerSource: "workbench",
+      title: `工作台草稿运行 · ${sop.slug}`,
+      createdBy: identity,
+      scope: { sops: [dto.sopId] },
+      context: {
+        goal: dto.goal,
+        sopId: dto.sopId,
+        cardHash: dto.expectedCardHash.toLowerCase(),
+        policyGeneration,
+        ...(dto.context && Object.keys(dto.context).length > 0
+          ? { extra: dto.context }
+          : {}),
+      },
+    });
+    await this.sessions.enqueue(session.id, "trigger:workbench");
+    this.logger.log(
+      JSON.stringify({
+        event: "workbench.session.created",
+        sessionId: session.id,
+        sopId: dto.sopId,
+        createdBy: identity,
+      }),
+    );
+    return { sessionId: session.id, status: session.status };
+  }
+
+  /** 读回自己的会话（creator 或 ADMIN）：状态 + 步骤/审批/产物摘要。 */
+  @Get("sessions/:id")
+  @ApiOperation({ summary: "读取工作台会话进度（仅创建者或管理员）" })
+  @Roles(UserRole.ADMIN, UserRole.USER)
+  @ApiOkResponse({ type: WorkbenchSessionDetailResponseDto })
+  async getSession(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @CurrentUser() user: { id: number | string; username?: string } | undefined,
+  ): Promise<WorkbenchSessionDetailResponseDto> {
+    if (!this.sessions) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    const userId = Number(user?.id);
+    if (!Number.isFinite(userId)) {
+      throw new AppError(ErrorCode.USER_NOT_FOUND, {});
+    }
+    const isAdmin = (user as { role?: string } | undefined)?.role === UserRole.ADMIN;
+    const session = await this.sessions.findById(id);
+    // 防枚举：不存在与越权统一 404（不告诉调用方「存在但不属于你」）。
+    if (!session) {
+      throw new AppError("AGENT_SESSION_NOT_FOUND", { sessionId: id });
+    }
+    if (
+      !isAdmin &&
+      session.createdBy !== `user:${userId}` &&
+      session.createdBy !== `user:${user?.username}`
+    ) {
+      throw new AppError("AGENT_SESSION_NOT_FOUND", { sessionId: id });
+    }
+    // 工作台读面只服务 sop_authoring 且 scope 指向 SOP 的会话——管理员建的
+    // ops_watch/incident 等会话不走这条业务用户路径。
+    const scope = (session.scopeJson ?? {}) as Record<string, unknown>;
+    const summary = await this.sessions.readSummary(id);
+    return {
+      sessionId: session.id,
+      kind: session.kind,
+      status: session.status,
+      createdBy: session.createdBy ?? null,
+      scope,
+      ...(session.title ? { title: session.title } : {}),
+      ...summary,
+    };
   }
 }
