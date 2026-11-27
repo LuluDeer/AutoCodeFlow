@@ -85,7 +85,20 @@ export class CreateTaskDto {
   @IsTaskName()
   name: string;
   @ApiPropertyOptional() @IsString() @IsOptional() description?: string;
-  @ApiPropertyOptional() @IsEnum(TaskStatus) @IsOptional() status?: TaskStatus;
+  /**
+   * 任务初始状态。**缺省 = PAUSED**：新建/导入任务先落到暂停态，由用户显式
+   * resume 后再进入调度；显式传入 status 时以调用方为准（active/paused/
+   * deleted 原样落库）。TypeORM 实体默认值与 Swagger 均与此口径一致。
+   */
+  @ApiPropertyOptional({
+    enum: TaskStatus,
+    default: TaskStatus.PAUSED,
+    description:
+      "任务初始状态；缺省 paused（创建后不自动调度），显式传入时以传入值为准。",
+  })
+  @IsEnum(TaskStatus)
+  @IsOptional()
+  status?: TaskStatus;
   @ApiProperty() @IsEnum(TaskTriggerType) triggerType: TaskTriggerType;
   @ApiPropertyOptional()
   @IsString()

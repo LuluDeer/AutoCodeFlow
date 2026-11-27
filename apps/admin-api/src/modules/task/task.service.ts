@@ -107,7 +107,10 @@ import { ExecutionCallback } from "./execution-callback.collaborator";
 // T2-B4 第三刀：执行日志读面与写入协作者。
 import { ExecutionLog } from "./execution-log.collaborator";
 // T2-B4 第四刀：任务版本快照 + 依赖图校验协作者。
-import { TaskVersioning } from "./task-version.collaborator";
+import {
+  TaskVersioning,
+  type SaveVersionOptions,
+} from "./task-version.collaborator";
 // T2-B4 收尾刀：执行日志读面协作者（分页 / SSE / AI 分析）。
 import { ExecutionLogRead } from "./execution-log-read.collaborator";
 // R284-LOGPURGE-01：日志保留期配置服务（@Optional + 置尾 ⇒ 既有 11 处位置装配不错位）
@@ -1512,6 +1515,36 @@ export class TaskService implements OnModuleInit {
     await this.assertCanWriteProjectAware(task, user);
   }
 
+  /**
+   * TASKCORE-TX-01：创建任务的写事务边界。
+   *
+   * task 行与初始版本快照必须同生共死：生产装配恒有真 DataSource，走
+   * `dataSource.transaction`，两个仓储都从同一个 EntityManager 取。
+   * 兼容分支仅为既有内存替身单测（直接 `new TaskService(..., dataSource: {})`）
+   * 保留旧装配形态，不代表生产可降级为两次写。
+   */
+  private async runTaskCreateWrite<T>(
+    work: (
+      taskRepo: Repository<Task>,
+      versionRepo: Repository<TaskVersion>,
+    ) => Promise<T>,
+  ): Promise<T> {
+    if (typeof this.dataSource?.transaction === "function") {
+      let executed = false;
+      const result = await this.dataSource.transaction(async (manager) => {
+        executed = true;
+        return work(
+          manager.getRepository(Task),
+          manager.getRepository(TaskVersion),
+        );
+      });
+      // 真 DataSource 必然执行回调。既有单测里 transaction 只是 jest.fn()
+      // 空桩（不调用回调）时回落，避免 create 拿到 undefined 后误报脱敏错误。
+      if (executed) return result;
+    }
+    return work(this.taskRepo, this.versionRepo);
+  }
+
   async create(dto: CreateTaskDto, user?: { id: number } | null) {
     // FEAT-RENAME：名称的服务层守卫。
     //
@@ -1538,6 +1571,13 @@ export class TaskService implements OnModuleInit {
       await this.checkCircularDependency(dto.id, dto.dependencies);
     }
     const normalized = this.normalizeTaskDto(dto);
+    // TASKCORE-STATUS-01: 三端口径（DTO/Swagger → 控制器文案 → 实体默认值）
+    // 统一为「缺省 paused，显式 status 优先」。服务层显式写入而非依赖 DB
+    // DEFAULT：编程式调用方（模板/manifest/MCP）同样拿到 paused，且不受
+    // 存量库迁移里旧的 ACTIVE DEFAULT 影响。null 视为缺省。
+    if (normalized.status == null) {
+      normalized.status = TaskStatus.PAUSED;
+    }
     // FIX-1.3: triggerType 与触发配置配对校验（cron ⇒ cronExpression、
     // fixed_rate ⇒ fixedRate≥1）。此前缺校验：API/MCP/自动注册路径可创建
     // 「active 但永不触发」的任务且无任何告警（调度注册条件不满足即静默跳过，
@@ -1598,8 +1638,19 @@ export class TaskService implements OnModuleInit {
       }
     }
     try {
-      const saved = await this.taskRepo.save(this.taskRepo.create(normalized));
-      await this.saveVersion(saved.id, undefined, undefined, saved);
+      // TASKCORE-TX-01: task 行 + 初始 v1 快照同一事务。任一步失败整体回滚，
+      // 不会留下「列表可见但没有版本快照」的幽灵任务；成功时两者同时在库。
+      const saved = await this.runTaskCreateWrite(
+        async (taskRepo, versionRepo) => {
+          const row = await taskRepo.save(taskRepo.create(normalized));
+          await this.saveVersion(row.id, undefined, undefined, row, {
+            taskRepo,
+            versionRepo,
+            requireVersion: true,
+          });
+          return row;
+        },
+      );
       // F-4（SEC-02 安全红线）：create 是写路径唯一漏脱敏的返回点——
       // update/pause/resume/updateGlue 经 maskSecretsForResponse，findOne 直接
       // 调 secretsCrypto.maskForResponse（同一个掩码函数、同一契约）；
@@ -2141,19 +2192,48 @@ export class TaskService implements OnModuleInit {
 
     let rows: TaskExecution[];
     try {
-      rows = await this.execRepo.find({
-        where: { taskId: In(ids), synthetic: false },
-        order: { createdAt: "DESC", id: "DESC" },
-        select: {
-          id: true,
-          taskId: true,
-          status: true,
-          startTime: true,
-          endTime: true,
-          duration: true,
-          createdAt: true,
-        },
-      });
+      if (typeof this.execRepo.createQueryBuilder === "function") {
+        // PERF-LASTEXEC-01: 每任务只取最新一条。DISTINCT ON 的首个 ORDER BY
+        // 键必须与 DISTINCT 键一致，随后 (createdAt DESC, id DESC) 正好命中
+        // 迁移 1790000000049 的 idx_task_executions_task_id_created_at_id
+        // (taskId, createdAt DESC, id DESC)；返回行数恒 ≤ 任务数 N，不随每个
+        // 任务的历史执行条数线性放大。
+        rows = await this.execRepo
+          .createQueryBuilder("e")
+          .select([
+            "e.id",
+            "e.taskId",
+            "e.status",
+            "e.startTime",
+            "e.endTime",
+            "e.duration",
+            "e.createdAt",
+          ])
+          .distinctOn(["e.taskId"])
+          .where("e.taskId IN (:...ids)", { ids })
+          .andWhere("e.synthetic = false")
+          .orderBy("e.taskId", "ASC")
+          .addOrderBy("e.createdAt", "DESC")
+          .addOrderBy("e.id", "DESC")
+          .getMany();
+      } else {
+        // 内存替身单测兜底：真实装配恒有 QueryBuilder；这里保留 take 上界，
+        // 避免测试桩把全量历史喂进映射逻辑（生产语义以上方 DISTINCT ON 为准）。
+        rows = await this.execRepo.find({
+          where: { taskId: In(ids), synthetic: false },
+          order: { createdAt: "DESC", id: "DESC" },
+          take: ids.length,
+          select: {
+            id: true,
+            taskId: true,
+            status: true,
+            startTime: true,
+            endTime: true,
+            duration: true,
+            createdAt: true,
+          },
+        });
+      }
     } catch (err) {
       this.logger.warn(
         `attachLastExecutionSummary 批量查询失败，列表行 lastExecution 置空: ${
@@ -3607,6 +3687,12 @@ export class TaskService implements OnModuleInit {
     // wraps content in `data:` frames; the idle heartbeat must bypass that
     // wrapper so EventSource clients ignore the frame per the SSE spec.
     ping?: () => void,
+    // LOG-HARDEN: 断线重连起点 + 带行号帧出口（纯接线，实现在协作者）。
+    fromLine = 0,
+    emitFrame?: (frame: {
+      lineNumber: number;
+      content: string;
+    }) => void,
   ): Promise<void> {
     return this.executionLogRead.streamExecutionLogs(
       execId,
@@ -3615,6 +3701,8 @@ export class TaskService implements OnModuleInit {
       signal,
       preAcquiredSlot,
       ping,
+      fromLine,
+      emitFrame ? (frame) => emitFrame(frame) : undefined,
     );
   }
 
@@ -4942,6 +5030,13 @@ export class TaskService implements OnModuleInit {
       failureReason?: ExecutionFailureReason;
       durationMs?: number;
       executorAddress?: string;
+      /**
+       * 尝试世代（协议顶层 attemptSeq）：执行器终态回调原样回传，协作者用它
+       * 做终态写入的世代门禁。Facade 此前的回调项类型漏了本字段 ⇒ 内部类型化
+       * 调用无法透传，只能回退「服务端读行快照」门禁（迟到回调可被误接受）。
+       * 这里补齐字段；callbacks 对象原样转发给协作者，无需额外接线。
+       */
+      attemptSeq?: number;
       deviceFingerprint?: string;
       artifacts?: Array<{ name: string; size: number; sha256: string }>;
       result?: Record<string, unknown>;
@@ -4969,12 +5064,14 @@ export class TaskService implements OnModuleInit {
     createdBy?: string,
     description?: string,
     taskSnapshot?: Task,
+    options?: SaveVersionOptions,
   ): Promise<TaskVersion | null> {
     return this.taskVersioning.saveVersion(
       taskId,
       createdBy,
       description,
       taskSnapshot,
+      options,
     );
   }
 

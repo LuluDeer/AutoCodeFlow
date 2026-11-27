@@ -38,6 +38,15 @@ export const MIGRATION_LOCK_POLL_INTERVAL_MS = 1_000;
 /** 等待日志节流：每 30s 至多一条，避免多副本等待期间刷屏。 */
 const WAIT_LOG_INTERVAL_MS = 30_000;
 
+/** TypeORM 1.x MigrationExecutor.transaction 的同域取值（undoLastMigration 接受）。 */
+export type MigrationTransactionMode = "all" | "none" | "each";
+
+/** 迁移实例的最小形状；真 DataSource.migrations 是已实例化对象。 */
+export interface MigrationDescriptor {
+  name?: string;
+  transaction?: boolean;
+}
+
 /** 真 DataSource 满足的结构最小面（单测以 mock 实现同一形状）。
  * TypeORM 1.x 的 DataSource 只有 runMigrations / undoLastMigration（没有
  * revertMigrations）——down 模式走 undoLastMigration，且为可选成员：仅消费
@@ -48,7 +57,13 @@ export interface MigratableDataSource {
     release(): Promise<void>;
   };
   runMigrations(): Promise<unknown>;
-  undoLastMigration?(): Promise<unknown>;
+  undoLastMigration?(options?: {
+    transaction?: MigrationTransactionMode;
+  }): Promise<unknown>;
+  /** 真 DataSource.initialize() 后填充；单测注入实例数组。 */
+  migrations?: MigrationDescriptor[];
+  /** 真 DataSource.options；仅取 migrationsTableName（默认 "migrations"）。 */
+  options?: { migrationsTableName?: string };
 }
 
 export interface AdvisoryLockMigrationOptions {
@@ -119,6 +134,49 @@ async function reportInvalidIndexes(
   }
 }
 
+/**
+ * down 的事务模式按「台账最后一条已执行迁移的实例声明」动态决定：
+ * - `transaction === false`（如 0109 的 DROP INDEX CONCURRENTLY）→ "none"。
+ *   TypeORM 1.1.x 的 `undoLastMigration()` 硬编码默认 `"all"`，既不读
+ *   `migrationsTransactionMode`，也不像 up 那样检查实例的 transaction=false，
+ *   于是 PG 拒绝事务块内的 CONCURRENTLY（0A000 → 25P02）。
+ * - 其余 → "each"，与 data-source.ts / configuration.ts 的
+ *   `migrationsTransactionMode: "each"` 一致，普通迁移保持原有事务行为。
+ *
+ * 台账查询走**持有 advisory lock 的同一 queryRunner**（与 TypeORM
+ * loadExecutedMigrations 同序：id DESC），避免锁外读到并发变更。
+ * 信息缺失/查询失败时 fail-safe 回退 "each"：宁可保留原有报错，也不静默
+ * 剥掉普通迁移的事务保护；down 的错误照常抛给调用方。
+ */
+async function resolveDownTransactionMode(
+  dataSource: MigratableDataSource,
+  lockRunner: { query(sql: string, params?: unknown[]): Promise<unknown> },
+  warn: (message: string) => void,
+): Promise<MigrationTransactionMode> {
+  const fallback: MigrationTransactionMode = "each";
+  try {
+    const migrations = dataSource.migrations;
+    if (!Array.isArray(migrations) || migrations.length === 0) return fallback;
+    const rawTable = dataSource.options?.migrationsTableName ?? "migrations";
+    const table = `"${rawTable.replace(/"/g, '""')}"`;
+    const rows = (await lockRunner.query(
+      `SELECT "name" FROM ${table} ORDER BY "id" DESC LIMIT 1`,
+    )) as Array<{ name?: unknown }>;
+    const lastName = rows?.[0]?.name;
+    if (typeof lastName !== "string") return fallback;
+    const instance = migrations.find(
+      (m) => (m.name ?? m.constructor?.name) === lastName,
+    );
+    if (!instance) return fallback;
+    return instance.transaction === false ? "none" : fallback;
+  } catch (err: unknown) {
+    warn(
+      `Down transaction mode unresolved, falling back to "each": ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return fallback;
+  }
+}
+
 export async function runMigrationsWithAdvisoryLock(
   dataSource: MigratableDataSource,
   options: AdvisoryLockMigrationOptions = {},
@@ -183,7 +241,16 @@ export async function runMigrationsWithAdvisoryLock(
     const before = mode === "up" ? await countMigrations() : -1;
     try {
       if (mode === "down") {
-        await dataSource.undoLastMigration();
+        // 在锁内解析：台账最后一条迁移若声明 transaction=false（0109），
+        // undoLastMigration 必须显式 {transaction:"none"}，否则 CONCURRENTLY
+        // 落到事务块里被 PG 拒绝。普通迁移仍走 "each"。
+        const transaction = await resolveDownTransactionMode(
+          dataSource,
+          lockRunner,
+          warn,
+        );
+        log(`Down transaction mode: ${transaction}`);
+        await dataSource.undoLastMigration({ transaction });
       } else {
         await dataSource.runMigrations();
         // db-1：迁移后立刻自检 INVALID 索引（同一条锁连接；fail-open）。

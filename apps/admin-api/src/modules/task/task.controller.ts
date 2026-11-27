@@ -93,6 +93,7 @@ import { ExecutionStatus } from "./entities/task-execution.entity";
 import {
   AllExecutionsQueryDto,
   ExecutionLogsQueryDto,
+  ExecutionLogsStreamQueryDto,
   ExportExecutionsQueryDto,
   TaskExecutionsQueryDto,
 } from "./dto/execution-query.dto";
@@ -153,7 +154,7 @@ export class TaskController {
   @Post()
   @ApiOperation({
     description:
-      "创建新的自动化任务。支持 cron、webhook 与事件三种触发方式。任务创建后处于暂停状态。",
+      "创建新的自动化任务。支持 cron、webhook 与事件三种触发方式。任务创建后缺省处于暂停状态；请求体显式传入 status 时以传入值为准。",
     summary: "创建任务",
   })
   @ApiCreatedResponse({
@@ -185,7 +186,7 @@ export class TaskController {
   @Post("import")
   @ApiOperation({
     description:
-      "E-1：用 GET /tasks/:id/export 的载荷创建任务。校验走完整的 POST /tasks 创建链路。名称冲突绝不覆盖：追加 ' (imported)'，再依次尝试 ' (imported) 2'、' (imported) 3'……直到找到可用名称。密钥绝不参与传输（SEC-02 红线）：载荷中携带的 secrets 键会被忽略，导入的任务在无密钥状态下启动——warnings 中始终包含重新配置的提示。新任务初始为暂停状态。",
+      "E-1：用 GET /tasks/:id/export 的载荷创建任务。校验走完整的 POST /tasks 创建链路。名称冲突绝不覆盖：追加 ' (imported)'，再依次尝试 ' (imported) 2'、' (imported) 3'……直到找到可用名称。密钥绝不参与传输（SEC-02 红线）：载荷中携带的 secrets 键会被忽略，导入的任务在无密钥状态下启动——warnings 中始终包含重新配置的提示。新任务缺省为暂停状态（定义导出不含 status，导入后需显式 resume 才会调度）。",
     summary: "导入任务定义（JSON 导出载荷）",
   })
   @ApiBody({ type: ImportTaskDto })
@@ -1298,7 +1299,19 @@ export class TaskController {
     @Param("execId", ParseUuidShapePipe) execId: string,
     @Req() req: Request,
     @Res() res: Response,
+    // 尾参：既有单测按 4 个位置参数直调本方法，追加可选尾参不破坏它们。
+    // SSE 专用 DTO：在日志查询参数之外显式放行 ?ticket=（仅鉴权用，不透传）。
+    @Query() query?: ExecutionLogsStreamQueryDto,
   ): Promise<void> {
+    // LOG-HARDEN: 可选 fromLine（缺省/0 = 从头）。断线重连传最后已见行号，
+    // 避免每次重连都从 0 重推整段日志。
+    const rawFromLine = query?.fromLine;
+    const fromLine = rawFromLine
+      ? Math.min(
+          Math.max(0, parseInt(rawFromLine, 10) || 0),
+          Number.MAX_SAFE_INTEGER,
+        )
+      : 0;
     // 任务作用域必须在写出 SSE 响应头前校验，避免跨任务 execution 流泄露。
     await this.taskService.getExecution(execId, id);
     // TASK-008: 在写出任何 SSE 响应头之前先占用并发槽位——超限时抛出的
@@ -1318,6 +1331,15 @@ export class TaskController {
 
       const send = (line: string) => {
         res.write(`data: ${JSON.stringify(line)}\n\n`);
+      };
+      // LOG-HARDEN: 带行号的帧——前端按 lineNumber 去重，重连从该行号续传。
+      const emitFrame = (frame: { lineNumber: number; content: string }) => {
+        res.write(
+          `data: ${JSON.stringify({
+            lineNumber: frame.lineNumber,
+            content: frame.content,
+          })}\n\n`,
+        );
       };
       // QA3: idle keep-alive sink — a raw SSE comment frame (": ping\n\n").
       // Per the SSE spec clients ignore comment lines, so EventSource parsing
@@ -1343,6 +1365,8 @@ export class TaskController {
           ac.signal,
           releaseSlot,
           ping,
+          fromLine,
+          emitFrame,
         );
       } catch {
         res.write(`event: error\ndata: stream error\n\n`);

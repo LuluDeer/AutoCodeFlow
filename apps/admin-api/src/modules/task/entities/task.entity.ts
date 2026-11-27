@@ -147,7 +147,10 @@ export class Task {
     type: "enum",
     enum: TaskStatus,
     enumName: "task_status_enum",
-    default: TaskStatus.ACTIVE,
+    // TASKCORE-STATUS-01: API create/import 缺省 PAUSED（DTO/Swagger/控制器
+    // 同口径）。实体默认只兜住绕过服务层的直接写入；服务层 create 始终显式
+    // 写入 status（dto.status ?? PAUSED），显式传入的调用方优先。
+    default: TaskStatus.PAUSED,
   })
   status: TaskStatus;
   @Column({

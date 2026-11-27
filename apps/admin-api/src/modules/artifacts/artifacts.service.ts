@@ -51,10 +51,14 @@ import { escapeLikePattern } from "../audit/audit.service";
 // GCO §5：产物读面复用既有任务属主 + 项目角色底座，不新造归属列/权限体系。
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { UserRole } from "../users/entities/user.entity";
-import { Task } from "../task/entities/task.entity";
+import { Task, TaskStatus } from "../task/entities/task.entity";
 import { ProjectAccessService } from "../project/project-access.service";
-import { ProjectMember } from "../project/entities/project-member.entity";
 import { Project } from "../project/project.entity";
+import {
+  ProjectMember,
+  PROJECT_ROLE_RANK,
+  isProjectRole,
+} from "../project/entities/project-member.entity";
 
 /**
  * 读面主体投影。ADMIN 恒全量（viewer.isAdmin 短路）；role=user 只见
@@ -249,14 +253,26 @@ export class ArtifactsService {
     manager: EntityManager,
     viewer: ArtifactViewer,
   ): Promise<string[]> {
+    // 一次查询拿全量成员行，rank 过滤纯内存完成。旧实现对每个项目再发一次
+    // hasProjectRole→repo.findOne（N+1）；列表页每翻一页都要重复付这笔查询。
     const rows = await manager.getRepository(ProjectMember).find({
       select: { projectId: true, role: true },
       where: { userId: viewer.id },
     });
-    const access = this.projectAccessOf(manager);
+    // 先按首次出现的行定角色（与旧 `new Set(projectIds)` + findOne 的取值一致），
+    // 再用与 hasProjectRole 相同的 rank 判据筛出 editor+，避免脏重复行放大权限。
+    const roleByProject = new Map<string, ProjectMember["role"]>();
+    for (const row of rows) {
+      if (!roleByProject.has(row.projectId)) {
+        roleByProject.set(row.projectId, row.role);
+      }
+    }
     const result: string[] = [];
-    for (const projectId of new Set(rows.map((row) => row.projectId))) {
-      if (await access.hasProjectRole(viewer.id, projectId, "editor")) {
+    for (const [projectId, role] of roleByProject) {
+      if (
+        isProjectRole(role) &&
+        PROJECT_ROLE_RANK[role] >= PROJECT_ROLE_RANK.editor
+      ) {
         result.push(projectId);
       }
     }
@@ -272,7 +288,7 @@ export class ArtifactsService {
     const taskRepo = manager.getRepository(Task);
     const owned = await taskRepo.find({
       select: { id: true },
-      where: { ownerUserId: viewer.id },
+      where: { ownerUserId: viewer.id, status: Not(TaskStatus.DELETED) },
     });
     const ownedIds = owned.map((row) => row.id);
     if (mineOnly) return ownedIds;
@@ -281,7 +297,13 @@ export class ArtifactsService {
     if (projects.length === 0) return ownedIds;
     const shared = await taskRepo.find({
       select: { id: true },
-      where: { ownerUserId: Not(IsNull()), projectId: In(projects) },
+      where: {
+        ownerUserId: Not(IsNull()),
+        projectId: In(projects),
+        // @DeleteDateColumn 只挡 deletedAt 非空；失败中间态
+        // status=deleted 且 deletedAt 为空的行必须在这里挡掉。
+        status: Not(TaskStatus.DELETED),
+      },
     });
     return [...new Set([...ownedIds, ...shared.map((row) => row.id)])];
   }
@@ -309,9 +331,11 @@ export class ArtifactsService {
 
     const manager = this.execRepo.manager;
     if (!manager || !exec.taskId) throw new AppError(ErrorCode.TASK_NOT_OWNER);
-    const task = await manager
-      .getRepository(Task)
-      .findOne({ where: { id: exec.taskId } });
+    // 显式 Not(DELETED)：与 visibleTaskIds 同口径，deletedAt 为空的失败中间态
+    // 也不能成为产物可读入口（ADMIN 已在上方短路，不涉及权限放宽）。
+    const task = await manager.getRepository(Task).findOne({
+      where: { id: exec.taskId, status: Not(TaskStatus.DELETED) },
+    });
     if (!task || task.ownerUserId == null) {
       throw new AppError(ErrorCode.TASK_NOT_OWNER);
     }
@@ -466,9 +490,27 @@ export class ArtifactsService {
       where.taskId = In(scoped);
     }
 
+    // 排序跟随主过滤维度，使 ORDER BY 能直接命中复合索引：
+    //   taskId 过滤 → (taskId, createdAt DESC, id DESC)
+    //   applicationId 过滤 → (applicationId, createdAt DESC, id DESC)
+    // 无维度过滤时保持历史 (createdAt DESC, id DESC)，不改既有分页语义。
+    const order = query.taskId
+      ? ({
+          taskId: "ASC",
+          createdAt: "DESC",
+          id: "DESC",
+        } as const)
+      : query.applicationId
+        ? ({
+            applicationId: "ASC",
+            createdAt: "DESC",
+            id: "DESC",
+          } as const)
+        : ({ createdAt: "DESC", id: "DESC" } as const);
+
     const [rows, total] = await this.artifactIndexRepo.findAndCount({
       where,
-      order: { createdAt: "DESC", id: "DESC" },
+      order,
       skip: (query.page - 1) * query.pageSize,
       take: query.pageSize,
     });

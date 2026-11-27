@@ -8,9 +8,10 @@ import {
   Or,
   IsNull,
   In,
+  Not,
 } from "typeorm";
 import { ConfigService } from "@nestjs/config";
-import { Task } from "../task/entities/task.entity";
+import { Task, TaskStatus } from "../task/entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -54,11 +55,15 @@ export class MetricsService {
    * 与任务列表 / 执行列表同一套口径。
    */
   private projectTaskWhere(projectId?: string): Record<string, unknown> {
-    if (!projectId) return {};
+    // 与任务列表 buildTaskListWhere 同口径：Repository 的 @DeleteDateColumn 只
+    // 自动排除 deletedAt 非空的行，失败中间态 `status=deleted AND deletedAt
+    // IS NULL` 对它可见——必须显式 Not(DELETED) 才不会把已删任务算进看板。
+    const base: Record<string, unknown> = { status: Not(TaskStatus.DELETED) };
+    if (!projectId) return base;
     if (projectId === "default") {
-      return { projectId: Or(IsNull(), In([DEFAULT_PROJECT_ID])) };
+      return { ...base, projectId: Or(IsNull(), In([DEFAULT_PROJECT_ID])) };
     }
-    return { projectId };
+    return { ...base, projectId };
   }
 
   /** 执行聚合 QB 关联 tasks 表——执行行自身不冗余 projectId，经 taskId 派生。 */
@@ -87,13 +92,18 @@ export class MetricsService {
   ): Promise<number> {
     if (!projectId) {
       return this.execRepo.count({
-        where: { createdAt: MoreThanOrEqual(todayStart) },
+        where: {
+          createdAt: MoreThanOrEqual(todayStart),
+          // S8 口径：合成行只做「没跑」的可见性记录，不算一次执行尝试。
+          synthetic: false,
+        },
       });
     }
     const qb = this.execRepo
       .createQueryBuilder("e")
       .leftJoin("tasks", "t", "t.id = e.taskId")
-      .where("e.createdAt >= :todayStart", { todayStart });
+      .where("e.createdAt >= :todayStart", { todayStart })
+      .andWhere("e.synthetic = false");
     this.applyProjectFilter(qb, projectId);
     return qb.getCount();
   }
@@ -127,7 +137,9 @@ export class MetricsService {
       .createQueryBuilder("e")
       .select("e.status", "status")
       .addSelect("COUNT(*)", "count")
-      .where("e.createdAt >= :windowStart", { windowStart });
+      .where("e.createdAt >= :windowStart", { windowStart })
+      // 与日报/真实执行口径一致：合成 cancelled 行从未运行，不进任何统计桶。
+      .andWhere("e.synthetic = false");
     if (projectId) this.joinTaskForProject(statsQb);
     this.applyProjectFilter(statsQb, projectId);
     const execStats = await statsQb.groupBy("e.status").getRawMany();
@@ -152,7 +164,8 @@ export class MetricsService {
       .createQueryBuilder("e")
       .select("AVG(e.duration)", "avg")
       .where("e.status = :s", { s: ExecutionStatus.SUCCESS })
-      .andWhere("e.createdAt >= :windowStart", { windowStart });
+      .andWhere("e.createdAt >= :windowStart", { windowStart })
+      .andWhere("e.synthetic = false");
     if (projectId) this.joinTaskForProject(avgQb);
     this.applyProjectFilter(avgQb, projectId);
     const avgDuration = await avgQb.getRawOne();
@@ -177,7 +190,8 @@ export class MetricsService {
       .addSelect("COUNT(*)", "count")
       .where("e.createdAt >= NOW() - CAST(:days || ' days' AS INTERVAL)", {
         days,
-      });
+      })
+      .andWhere("e.synthetic = false");
     if (projectId) this.joinTaskForProject(trendQb);
     this.applyProjectFilter(trendQb, projectId);
     const rows = await trendQb
@@ -322,6 +336,9 @@ export class MetricsService {
       .andWhere("e.createdAt <= :end", { end: endOfDay })
       .andWhere("e.status = :status", { status: ExecutionStatus.SUCCESS })
       .andWhere("e.duration IS NOT NULL")
+      // 上面 statsQb 已排除合成行；时长聚合必须同口径，否则日报的
+      // successCount 与 avgDurationMs 可能来自两批不同的执行行。
+      .andWhere("e.synthetic = false")
       .getRawOne();
 
     const statMap: Record<string, number> = {};

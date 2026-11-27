@@ -97,6 +97,23 @@ export interface TaskVersionDeps {
 }
 
 /**
+ * `saveVersion` 的可选落点覆盖。
+ *
+ * 创建任务时 task 行与初始版本必须同生共死：Facade 把事务内的
+ * `EntityManager` 仓储传进来，让 MAX+1 查询与 INSERT 都走同一连接/事务。
+ * 其它调用方不传 ⇒ 使用构造器注入的常规仓储，行为逐字节不变。
+ */
+export interface SaveVersionOptions {
+  taskRepo?: Repository<Task>;
+  versionRepo?: Repository<TaskVersion>;
+  /**
+   * 初始版本语义：唯一冲突也必须抛出（让事务回滚 task 行），不能沿用
+   * 更新路径的「快照竞争失败仅 warn + 返回 null」best-effort 语义。
+   */
+  requireVersion?: boolean;
+}
+
+/**
  * R63-A1（ADR-026 规则 4）：`rollbackToVersion` 允许从版本快照恢复的**列白名单**。
  *
  * 为什么是正向白名单，而不是「snapshot 里有什么就写什么」或整行 `save(entity)`：
@@ -187,8 +204,15 @@ export class TaskVersioning {
     createdBy?: string,
     description?: string,
     taskSnapshot?: Task,
+    options?: SaveVersionOptions,
   ): Promise<TaskVersion | null> {
-    return this.saveVersionImpl(taskId, createdBy, description, taskSnapshot);
+    return this.saveVersionImpl(
+      taskId,
+      createdBy,
+      description,
+      taskSnapshot,
+      options,
+    );
   }
 
   /** `saveVersion` 的真正实现（同簇内部调用走这里）。 */
@@ -197,16 +221,18 @@ export class TaskVersioning {
     createdBy?: string,
     description?: string,
     taskSnapshot?: Task,
+    options?: SaveVersionOptions,
   ): Promise<TaskVersion | null> {
+    const taskRepo = options?.taskRepo ?? this.deps.taskRepo;
+    const versionRepo = options?.versionRepo ?? this.deps.versionRepo;
     const task =
-      taskSnapshot ??
-      (await this.deps.taskRepo.findOne({ where: { id: taskId } }));
+      taskSnapshot ?? (await taskRepo.findOne({ where: { id: taskId } }));
     if (!task) {
       throw new AppError("TASK_NOT_FOUND", { taskId });
     }
 
     // Use MAX(version number) + 1 to avoid race condition from COUNT-based numbering
-    const maxResult = await this.deps.versionRepo
+    const maxResult = await versionRepo
       .createQueryBuilder("v")
       .select("MAX(CAST(SUBSTR(v.version, 2) AS INTEGER))", "maxNum")
       .where("v.taskId = :taskId", { taskId })
@@ -310,10 +336,12 @@ export class TaskVersioning {
     // 功），把快照插入失败裸抛成 500 会让一次已成功的编辑收到错误响应。
     // 版本快照少一条属可接受损失（主流程已成功；R1 先例：executor.service
     // register 对同型竞态同样降级），识别 23505 后 warn 并返回 null，不回
-    // 500。版本保留策略（挤出一类）另行处理，不在本修复范围。
+    // 500。唯一例外是 options.requireVersion（创建任务的初始快照）——那种
+    // 场景必须抛出，由 Facade 的事务回滚 task 行，见下方 catch。
+    // 版本保留策略（挤出一类）另行处理，不在本修复范围。
     try {
-      return await this.deps.versionRepo.save(
-        this.deps.versionRepo.create({
+      return await versionRepo.save(
+        versionRepo.create({
           taskId,
           version,
           gitCommit: task.gitCommit,
@@ -324,6 +352,11 @@ export class TaskVersioning {
       );
     } catch (err: unknown) {
       if (isUniqueViolation(err)) {
+        if (options?.requireVersion) {
+          // 初始快照竞争失败不允许 best-effort：抛出 AppError(409) 让调用方
+          // 的事务回滚 task 行，杜绝「任务可见但没有 v1 快照」的幽灵任务。
+          throw new AppError("RESOURCE_EXISTS");
+        }
         this.deps.logger.warn(
           `saveVersion: concurrent version snapshot insert for task ${taskId} lost the race (unique violation on (taskId, version)) — skipping this snapshot, main flow unaffected`,
         );

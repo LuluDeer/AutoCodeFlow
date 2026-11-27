@@ -24,6 +24,10 @@ async function main(): Promise<void> {
   try {
     await runMigrationsWithAdvisoryLock(AppDataSource, {
       mode: direction,
+      // down 的事务模式由 util 在 advisory lock 内按「台账最后一条迁移实例的
+      // transaction=false」动态决定：0109 的 DROP INDEX CONCURRENTLY 得到
+      // undoLastMigration({transaction:"none"})，普通迁移仍走 "each"。
+      // 不在这里写死 transaction:none——那会把普通迁移也拖出事务保护。
       // CLI 是人盯着的交互路径：日志直落 stdout 即可（data-source.ts 的
       // logging 配置已覆盖查询面；本侧只打锁等待/获取进度）。
       log: (m) => console.log(`[migration-lock] ${m}`),

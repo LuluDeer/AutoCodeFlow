@@ -30,6 +30,18 @@ import { TaskExecution } from "../../task/entities/task-execution.entity";
 // （同 task-execution.entity 对 NETOPT-3① 的说明）。
 @Index("idx_execution_artifacts_task", ["taskId"])
 @Index("idx_execution_artifacts_application", ["applicationId"])
+// 列表分页排序：(主过滤维度, createdAt DESC, id DESC)。TypeORM 的
+// IndexOptions 不表达方向，DESC/DESC 以迁移 DDL 为准（同 task-execution 先例）。
+@Index("idx_execution_artifacts_task_created_at_id", [
+  "taskId",
+  "createdAt",
+  "id",
+])
+@Index("idx_execution_artifacts_application_created_at_id", [
+  "applicationId",
+  "createdAt",
+  "id",
+])
 export class ExecutionArtifactRow {
   @PrimaryGeneratedColumn("uuid") id: string;
 
