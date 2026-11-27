@@ -183,9 +183,9 @@ child.stderr.on('data', (c) => { stderr += c.toString('utf8'); });
       const failures = [];
       const byName = new Map(tools.map((t) => [t.name, t]));
 
-      // (1) total is pinned to the audited count — bump deliberately.
-      // 52 → 56（MUTEX-01 互斥组四工具：list/create/update/delete_mutex_group）。
-      const EXPECTED_TOOLS = 57;
+      // 57 → 63（新增 6 个高杠杆工具：create_task/delete_task/list_artifacts/
+      // send_agent_message/cancel_agent_session/decide_agent_approval）。
+      const EXPECTED_TOOLS = 63;
       if (tools.length !== EXPECTED_TOOLS) {
         failures.push(
           `tool count is ${tools.length}, expected ${EXPECTED_TOOLS} — if you added/removed a tool, ` +
@@ -256,7 +256,7 @@ child.stderr.on('data', (c) => { stderr += c.toString('utf8'); });
         child.kill();
         process.exit(1);
       }
-      console.log('\nMCP tool-surface guard OK: 57 tools, annotations complete, runMode enums intact.');
+      console.log('\nMCP tool-surface guard OK: 63 tools, annotations complete, runMode enums intact.');
     }
 
     // names list — report mode only (the guard's output should stay short/parsable)

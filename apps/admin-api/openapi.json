@@ -165,6 +165,32 @@
         ],
         "type": "object"
       },
+      "AgentCancelResponseDto": {
+        "properties": {
+          "aborted": {
+            "description": "本次请求是否把会话置为 aborted；false 表示会话此前已是终态，没有覆盖既有结论",
+            "type": "boolean",
+            "x-i18n-en": "Whether this request set the session to aborted; false means the session was already terminal and no existing conclusion was overwritten"
+          },
+          "sessionId": {
+            "description": "会话 id",
+            "format": "uuid",
+            "type": "string",
+            "x-i18n-en": "Session id"
+          },
+          "status": {
+            "description": "取消后的会话状态（终态会话保持原状态）",
+            "type": "string",
+            "x-i18n-en": "Session status after cancellation (terminal sessions keep their status)"
+          }
+        },
+        "required": [
+          "sessionId",
+          "status",
+          "aborted"
+        ],
+        "type": "object"
+      },
       "AgentCollabAckReplyDto": {
         "properties": {
           "address": {
@@ -457,6 +483,66 @@
           "sizeBytes",
           "uploadedBy",
           "createdAt"
+        ],
+        "type": "object"
+      },
+      "AgentMessageDto": {
+        "properties": {
+          "content": {
+            "description": "用户消息正文（写入前由服务端统一脱敏，长度 1..4000）",
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string",
+            "x-i18n-en": "User message body (redacted server-side before storage; length 1..4000)"
+          },
+          "mode": {
+            "description": "追加方式：followup=作为下一轮输入（默认）；steer=运行中注入步边界。非法值判 400。",
+            "enum": [
+              "followup",
+              "steer"
+            ],
+            "type": "string",
+            "x-i18n-en": "Append mode: followup = use as input for the next turn (default); steer = inject as a step boundary while running. Invalid values return 400."
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
+      "AgentMessageResponseDto": {
+        "properties": {
+          "action": {
+            "description": "本次动作：steered=注入运行中会话；enqueued=重新入队 agent-jobs",
+            "enum": [
+              "steered",
+              "enqueued"
+            ],
+            "type": "string",
+            "x-i18n-en": "Action taken this time: steered = injected into a running session; enqueued = re-enqueued in agent-jobs"
+          },
+          "sessionId": {
+            "description": "会话 id",
+            "format": "uuid",
+            "type": "string",
+            "x-i18n-en": "Session id"
+          },
+          "status": {
+            "description": "写消息后的会话状态（running=已注入 steer；pending=已重新入队）",
+            "type": "string",
+            "x-i18n-en": "Session status after writing the message (running = steer injected; pending = re-enqueued)"
+          },
+          "stepSeq": {
+            "description": "新写入的用户步序号",
+            "type": "number",
+            "x-i18n-en": "Sequence number of the newly written user step"
+          }
+        },
+        "required": [
+          "sessionId",
+          "status",
+          "stepSeq",
+          "action"
         ],
         "type": "object"
       },
@@ -1642,22 +1728,532 @@
         ],
         "type": "object"
       },
-      "AiTestResponseDto": {
+      "AiProviderAdminViewDto": {
         "properties": {
-          "message": {
-            "description": "样例提示词的回复文本，或降级状态下的提示信息",
-            "type": "string",
-            "x-i18n-en": "Reply text for the sample prompt, or the notice message in the degraded state"
+          "errors": {
+            "description": "注册表解析过程中发现的配置错误列表",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "List of configuration errors found while parsing the registry"
           },
-          "ok": {
-            "description": "provider 被禁用或返回空响应时为 false",
-            "type": "boolean",
-            "x-i18n-en": "false when the provider is disabled or returns an empty response"
+          "providers": {
+            "description": "已注册的模型接入列表（脱敏视图）",
+            "items": {
+              "$ref": "#/components/schemas/AiProviderViewDto"
+            },
+            "type": "array",
+            "x-i18n-en": "List of registered model providers (redacted view)"
+          },
+          "routes": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AiRoutesViewDto"
+              }
+            ],
+            "description": "各业务用途当前路由配置",
+            "x-i18n-en": "Current routing configuration for each business purpose"
           }
         },
         "required": [
-          "ok",
-          "message"
+          "providers",
+          "errors",
+          "routes"
+        ],
+        "type": "object"
+      },
+      "AiProviderViewDto": {
+        "properties": {
+          "allowedModels": {
+            "description": "允许调用的模型白名单",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Allowlist of models permitted for calls"
+          },
+          "baseUrl": {
+            "description": "接口基础地址",
+            "type": "string",
+            "x-i18n-en": "Base URL of the API"
+          },
+          "deniedForUse": {
+            "description": "是否被中台出域策略禁止使用",
+            "type": "boolean",
+            "x-i18n-en": "Whether it is blocked by the platform's outbound policy"
+          },
+          "deniedModels": {
+            "description": "禁止调用的模型黑名单",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Denylist of models forbidden for calls"
+          },
+          "enabled": {
+            "description": "是否启用该模型接入",
+            "type": "boolean",
+            "x-i18n-en": "Whether this model provider is enabled"
+          },
+          "hasApiKey": {
+            "description": "是否已配置密钥（永不回传密钥明文）",
+            "type": "boolean",
+            "x-i18n-en": "Whether a secret key is configured (the key itself is never returned in plain text)"
+          },
+          "id": {
+            "description": "模型接入唯一编号",
+            "type": "string",
+            "x-i18n-en": "Unique ID of the model provider"
+          },
+          "label": {
+            "description": "展示名称",
+            "type": "string",
+            "x-i18n-en": "Display name"
+          },
+          "legacy": {
+            "description": "是否由旧版配置键自动合成",
+            "type": "boolean",
+            "x-i18n-en": "Whether it was synthesized automatically from legacy configuration keys"
+          },
+          "maxTokens": {
+            "description": "默认最大输出令牌数",
+            "type": "number",
+            "x-i18n-en": "Default maximum output tokens"
+          },
+          "model": {
+            "description": "默认模型名称",
+            "type": "string",
+            "x-i18n-en": "Default model name"
+          },
+          "modelEnabled": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "description": "按模型名称单独控制的启停状态映射",
+            "type": "object",
+            "x-i18n-en": "Map of per-model enable/disable overrides keyed by model name"
+          },
+          "supportsVideo": {
+            "description": "是否支持视频理解输入",
+            "type": "boolean",
+            "x-i18n-en": "Whether video understanding input is supported"
+          },
+          "timeoutMs": {
+            "description": "默认请求超时毫秒数",
+            "type": "number",
+            "x-i18n-en": "Default request timeout in milliseconds"
+          },
+          "transport": {
+            "description": "出站协议类型",
+            "enum": [
+              "openai",
+              "ollama"
+            ],
+            "type": "string",
+            "x-i18n-en": "Outbound protocol type"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "transport",
+          "baseUrl",
+          "model",
+          "maxTokens",
+          "timeoutMs",
+          "supportsVideo",
+          "enabled",
+          "hasApiKey",
+          "legacy"
+        ],
+        "type": "object"
+      },
+      "AiRouteAssignmentViewDto": {
+        "properties": {
+          "maxTokens": {
+            "description": "覆盖的最大输出令牌数（字符串编码）",
+            "type": "string",
+            "x-i18n-en": "Overridden maximum output tokens (encoded as a string)"
+          },
+          "model": {
+            "description": "覆盖的模型名称；空字符串表示使用接入默认模型",
+            "type": "string",
+            "x-i18n-en": "Overridden model name; an empty string means use the provider's default model"
+          },
+          "provider": {
+            "description": "指向的模型接入编号；空字符串表示跟随全局默认",
+            "type": "string",
+            "x-i18n-en": "ID of the referenced model provider; an empty string means follow the global default"
+          },
+          "timeoutMs": {
+            "description": "覆盖的超时毫秒数（字符串编码）",
+            "type": "string",
+            "x-i18n-en": "Overridden timeout in milliseconds (encoded as a string)"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "maxTokens",
+          "timeoutMs"
+        ],
+        "type": "object"
+      },
+      "AiRoutesViewDto": {
+        "properties": {
+          "agent": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AiRouteAssignmentViewDto"
+              }
+            ],
+            "description": "智能体推理用途路由配置",
+            "x-i18n-en": "Routing configuration for the agent reasoning purpose"
+          },
+          "analysis": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AiRouteAssignmentViewDto"
+              }
+            ],
+            "description": "分析用途路由配置",
+            "x-i18n-en": "Routing configuration for the analysis purpose"
+          },
+          "video": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AiRouteAssignmentViewDto"
+              }
+            ],
+            "description": "视频理解用途路由配置",
+            "x-i18n-en": "Routing configuration for the video understanding purpose"
+          }
+        },
+        "required": [
+          "analysis",
+          "agent",
+          "video"
+        ],
+        "type": "object"
+      },
+      "AiSopSessionDraftDto": {
+        "properties": {
+          "assumptions": {
+            "description": "模型显式列出的假设清单",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "List of assumptions explicitly stated by the model"
+          },
+          "bodyMarkdown": {
+            "description": "步骤正文内容",
+            "type": "string",
+            "x-i18n-en": "Step body content"
+          },
+          "frontMatterYaml": {
+            "description": "前置元数据配置文件内容",
+            "type": "string",
+            "x-i18n-en": "Content of the front-matter metadata configuration file"
+          },
+          "model": {
+            "description": "生成该草稿所用模型名称",
+            "type": "string",
+            "x-i18n-en": "Name of the model used to generate this draft"
+          },
+          "provider": {
+            "description": "生成该草稿所用模型接入编号",
+            "type": "string",
+            "x-i18n-en": "ID of the model provider used to generate this draft"
+          },
+          "slug": {
+            "description": "标准化唯一标识",
+            "type": "string",
+            "x-i18n-en": "Canonical unique identifier"
+          },
+          "title": {
+            "description": "草稿标题",
+            "type": "string",
+            "x-i18n-en": "Draft title"
+          }
+        },
+        "required": [
+          "title",
+          "slug",
+          "frontMatterYaml",
+          "bodyMarkdown",
+          "assumptions",
+          "provider",
+          "model"
+        ],
+        "type": "object"
+      },
+      "AiSopSessionListItemDto": {
+        "properties": {
+          "createdAt": {
+            "description": "会话创建时间",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "Session creation time"
+          },
+          "id": {
+            "description": "会话编号",
+            "type": "string",
+            "x-i18n-en": "Session number"
+          },
+          "mediaCount": {
+            "description": "已关联的录屏数量",
+            "type": "number",
+            "x-i18n-en": "Number of associated screen recordings"
+          },
+          "status": {
+            "description": "会话状态",
+            "type": "string",
+            "x-i18n-en": "Session status"
+          },
+          "title": {
+            "description": "草稿标题，尚未出稿时为空",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Draft title; empty until a draft is produced"
+          },
+          "updatedAt": {
+            "description": "会话最近更新时间",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "Time of the session's most recent update"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "createdAt",
+          "updatedAt",
+          "mediaCount",
+          "title"
+        ],
+        "type": "object"
+      },
+      "AiSopSessionListResponseDto": {
+        "properties": {
+          "items": {
+            "description": "会话摘要列表（按更新时间倒序）",
+            "items": {
+              "$ref": "#/components/schemas/AiSopSessionListItemDto"
+            },
+            "type": "array",
+            "x-i18n-en": "List of session summaries (sorted by update time, descending)"
+          },
+          "total": {
+            "description": "会话总数",
+            "type": "number",
+            "x-i18n-en": "Total number of sessions"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "type": "object"
+      },
+      "AiSopSessionMediaRefDto": {
+        "properties": {
+          "expiresAt": {
+            "description": "签名直链过期时间戳（毫秒）",
+            "type": "number",
+            "x-i18n-en": "Expiration timestamp of the signed direct link (milliseconds)"
+          },
+          "mediaId": {
+            "description": "媒体文件编号",
+            "type": "string",
+            "x-i18n-en": "Media file ID"
+          },
+          "name": {
+            "description": "原始文件名",
+            "type": "string",
+            "x-i18n-en": "Original file name"
+          },
+          "url": {
+            "description": "已签发的直链地址（会话内复用）",
+            "type": "string",
+            "x-i18n-en": "Issued direct-link URL (reused within the session)"
+          }
+        },
+        "required": [
+          "mediaId",
+          "name"
+        ],
+        "type": "object"
+      },
+      "AiSopSessionMessageDto": {
+        "properties": {
+          "action": {
+            "description": "助手本轮执行的动作类型（追问或产出草稿）",
+            "enum": [
+              "ask",
+              "draft"
+            ],
+            "type": "string",
+            "x-i18n-en": "Type of action performed by the assistant in this turn (follow-up question or draft produced)"
+          },
+          "at": {
+            "description": "消息时间戳",
+            "type": "string",
+            "x-i18n-en": "Message timestamp"
+          },
+          "mediaIds": {
+            "description": "本轮附带的视频媒体编号列表",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "List of IDs of video media attached to this turn"
+          },
+          "role": {
+            "description": "消息发送角色",
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "type": "string",
+            "x-i18n-en": "Role of the message sender"
+          },
+          "text": {
+            "description": "消息正文内容",
+            "type": "string",
+            "x-i18n-en": "Message body content"
+          }
+        },
+        "required": [
+          "role",
+          "text",
+          "at"
+        ],
+        "type": "object"
+      },
+      "AiSopSessionUsageDto": {
+        "properties": {
+          "cachedTokens": {
+            "description": "命中前缀缓存的输入令牌数",
+            "type": "number",
+            "x-i18n-en": "Number of input tokens served from the prefix cache"
+          },
+          "tokensIn": {
+            "description": "输入令牌数",
+            "type": "number",
+            "x-i18n-en": "Number of input tokens"
+          },
+          "tokensOut": {
+            "description": "输出令牌数",
+            "type": "number",
+            "x-i18n-en": "Number of output tokens"
+          }
+        },
+        "required": [
+          "tokensIn",
+          "tokensOut"
+        ],
+        "type": "object"
+      },
+      "AiSopSessionViewDto": {
+        "properties": {
+          "createdAt": {
+            "description": "会话创建时间",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "Session creation time"
+          },
+          "draft": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AiSopSessionDraftDto"
+              }
+            ],
+            "description": "当前生成的草稿对象，尚未出稿时为空",
+            "nullable": true,
+            "type": "object",
+            "x-i18n-en": "Currently generated draft object; empty until a draft is produced"
+          },
+          "id": {
+            "description": "会话编号",
+            "type": "string",
+            "x-i18n-en": "Session number"
+          },
+          "lastTurnUsage": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AiSopSessionUsageDto"
+              }
+            ],
+            "description": "最近一轮推理令牌用量",
+            "x-i18n-en": "Reasoning token usage in the most recent turn"
+          },
+          "media": {
+            "description": "会话关联的录屏媒体列表",
+            "items": {
+              "$ref": "#/components/schemas/AiSopSessionMediaRefDto"
+            },
+            "type": "array",
+            "x-i18n-en": "List of screen-recording media associated with the session"
+          },
+          "messages": {
+            "description": "会话消息历史列表",
+            "items": {
+              "$ref": "#/components/schemas/AiSopSessionMessageDto"
+            },
+            "type": "array",
+            "x-i18n-en": "List of messages in the session history"
+          },
+          "needsVideo": {
+            "description": "本轮模型是否要求补录视频",
+            "type": "boolean",
+            "x-i18n-en": "Whether the model requested additional video in this turn"
+          },
+          "provider": {
+            "description": "会话绑定的模型接入编号，缺省时为空",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "ID of the model provider bound to the session; empty when unset"
+          },
+          "questionsAsked": {
+            "description": "累计已追问次数",
+            "type": "number",
+            "x-i18n-en": "Cumulative number of follow-up questions asked"
+          },
+          "remainingQuestions": {
+            "description": "剩余可追问次数",
+            "type": "number",
+            "x-i18n-en": "Remaining number of follow-up questions allowed"
+          },
+          "status": {
+            "description": "会话状态（进行中、已出草稿或已保存）",
+            "enum": [
+              "active",
+              "drafted",
+              "saved"
+            ],
+            "type": "string",
+            "x-i18n-en": "Session status (in progress, draft produced, or saved)"
+          },
+          "updatedAt": {
+            "description": "会话最近更新时间",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n-en": "Time of the session's most recent update"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "messages",
+          "media",
+          "draft",
+          "provider",
+          "questionsAsked",
+          "remainingQuestions",
+          "createdAt",
+          "updatedAt"
         ],
         "type": "object"
       },
@@ -3014,6 +3610,54 @@
         ],
         "type": "object"
       },
+      "ArtifactPreviewResponseDto": {
+        "properties": {
+          "content": {
+            "description": "kind=text 时为至多 maxBytes 字节的 UTF-8 文本预览；image/binary 恒为 null",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "For kind=text, a UTF-8 text preview of at most maxBytes bytes; always null for image/binary"
+          },
+          "kind": {
+            "description": "预览类型：text=文本（UTF-8 content 可读）；image/binary=非文本（content 为 null）",
+            "enum": [
+              "text",
+              "image",
+              "binary"
+            ],
+            "type": "string",
+            "x-i18n-en": "Preview kind: text = textual (UTF-8 content readable); image/binary = non-textual (content is null)"
+          },
+          "mimeType": {
+            "description": "内容的 MIME 类型",
+            "type": "string",
+            "x-i18n-en": "MIME type of the content"
+          },
+          "name": {
+            "description": "产物文件名（裸文件名）",
+            "type": "string",
+            "x-i18n-en": "Artifact file name (bare file name)"
+          },
+          "size": {
+            "description": "磁盘上产物的完整字节数",
+            "type": "number",
+            "x-i18n-en": "Complete size of the artifact on disk in bytes"
+          },
+          "truncated": {
+            "description": "是否因 maxBytes 上限而截断（true 表示 content 只是文件开头的一部分）",
+            "type": "boolean",
+            "x-i18n-en": "Whether the content was truncated due to the maxBytes limit (true means content contains only the beginning of the file)"
+          }
+        },
+        "required": [
+          "name",
+          "mimeType",
+          "size",
+          "truncated",
+          "kind"
+        ],
+        "type": "object"
+      },
       "ArtifactUploadResponseDto": {
         "properties": {
           "name": {
@@ -4014,6 +4658,8 @@
         "properties": {
           "cadence": {
             "enum": [
+              "once",
+              "hourly",
               "daily",
               "weekly",
               "monthly"
@@ -5085,6 +5731,44 @@
         ],
         "type": "object"
       },
+      "CreateWorkbenchChatSessionDto": {
+        "properties": {
+          "context": {
+            "additionalProperties": true,
+            "description": "可选业务上下文（服务端脱敏后落 session.contextJson）",
+            "type": "object",
+            "x-i18n-en": "Optional business context (redacted server-side and stored in session.contextJson)"
+          },
+          "kind": {
+            "description": "会话类型覆盖；不传时服务端根据 prompt 推导（chat / sop_authoring / plan）",
+            "enum": [
+              "chat",
+              "sop_authoring",
+              "plan"
+            ],
+            "type": "string",
+            "x-i18n-en": "Session kind override; when omitted, the server infers it from the prompt (chat / sop_authoring / plan)"
+          },
+          "prompt": {
+            "description": "用户给工作台的初始指令（作为首条 user AgentStep 落库）",
+            "example": "帮我分析昨天的订单异常并起草一份日报 SOP",
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string",
+            "x-i18n-en": "The user's initial instruction to the workbench (persisted as the first user AgentStep)"
+          },
+          "title": {
+            "description": "会话标题（可选；缺省由服务端按 prompt 截取）",
+            "maxLength": 255,
+            "type": "string",
+            "x-i18n-en": "Session title (optional; when omitted, the server derives it from the prompt)"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
       "CreateWorkbenchSessionDto": {
         "properties": {
           "context": {
@@ -5116,6 +5800,49 @@
           "sopId",
           "goal",
           "expectedCardHash"
+        ],
+        "type": "object"
+      },
+      "DagRootExecutionDto": {
+        "properties": {
+          "executionId": {
+            "description": "新创建并执行入队的执行 ID",
+            "type": "string",
+            "x-i18n-en": "ID of the newly created and enqueued execution"
+          },
+          "status": {
+            "description": "执行状态（入队后的初始状态，通常为 pending）",
+            "type": "string",
+            "x-i18n-en": "Execution status (initial status after enqueue, usually pending)"
+          },
+          "taskId": {
+            "description": "被触发的任务 ID",
+            "type": "string",
+            "x-i18n-en": "IDs of the triggered tasks"
+          }
+        },
+        "required": [
+          "taskId",
+          "executionId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "DecideWorkbenchApprovalDto": {
+        "properties": {
+          "decision": {
+            "description": "处置动作：grant/deny 仅 ADMIN 且四眼（申请人不可批自己的单）；withdraw 仅创建者本人撤回待批单",
+            "enum": [
+              "grant",
+              "deny",
+              "withdraw"
+            ],
+            "type": "string",
+            "x-i18n-en": "Decision action: grant/deny is restricted to ADMINs and subject to the four-eyes principle (the requester cannot approve their own request); withdraw allows only the creator to withdraw their own pending approval request"
+          }
+        },
+        "required": [
+          "decision"
         ],
         "type": "object"
       },
@@ -7146,6 +7873,12 @@
       },
       "ExecutorPackageResponseDto": {
         "properties": {
+          "changelog": {
+            "description": "更新日志（包发布说明）。实体暂无该列，存量与新包统一返回 null，供前端按新契约渲染。",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Changelog (package release notes). The entity does not have this column yet; both existing and new packages return null so the frontend can render the new contract."
+          },
           "checksum": {
             "description": "SHA-256 校验和",
             "nullable": true,
@@ -8609,6 +9342,8 @@
         "properties": {
           "cadence": {
             "enum": [
+              "once",
+              "hourly",
               "daily",
               "weekly",
               "monthly"
@@ -9760,6 +10495,65 @@
         ],
         "type": "object"
       },
+      "PlanCardAiSuggestionsDto": {
+        "properties": {
+          "acceptanceText": {
+            "description": "大模型建议的验收说明",
+            "type": "string",
+            "x-i18n-en": "AI-suggested acceptance criteria"
+          },
+          "capabilityHints": {
+            "description": "经白名单过滤后的大模型能力建议列表",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "List of AI capability suggestions filtered by the allowlist"
+          },
+          "model": {
+            "description": "实际命中的模型名称",
+            "type": "string",
+            "x-i18n-en": "Name of the model actually used"
+          },
+          "provider": {
+            "description": "实际命中的模型提供方标识",
+            "type": "string",
+            "x-i18n-en": "Identifier of the model provider actually used"
+          },
+          "riskNotes": {
+            "description": "大模型识别的风险提示列表",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "List of AI-identified risk warnings"
+          },
+          "suggestedSteps": {
+            "description": "大模型建议的执行步骤列表",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "List of AI-suggested execution steps"
+          },
+          "summary": {
+            "description": "大模型生成的方案概要",
+            "type": "string",
+            "x-i18n-en": "AI-generated plan summary"
+          },
+          "title": {
+            "description": "大模型建议的标题",
+            "type": "string",
+            "x-i18n-en": "AI-suggested title"
+          }
+        },
+        "required": [
+          "summary",
+          "suggestedSteps",
+          "riskNotes"
+        ],
+        "type": "object"
+      },
       "PlanCardBudgetDto": {
         "properties": {
           "budgetBasis": {
@@ -9810,24 +10604,36 @@
       "PlanCardDto": {
         "properties": {
           "acceptanceText": {
-            "type": "string"
+            "description": "确定性验收说明",
+            "type": "string",
+            "x-i18n-en": "Deterministic acceptance criteria"
           },
           "budget": {
-            "$ref": "#/components/schemas/PlanCardBudgetDto"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PlanCardBudgetDto"
+              }
+            ],
+            "description": "方案卡预算配置",
+            "x-i18n-en": "Plan card budget configuration"
           },
           "capabilityHints": {
+            "description": "能力白名单提示列表",
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-i18n-en": "List of capability allowlist hints"
           },
           "title": {
-            "type": "string"
+            "description": "方案卡标题",
+            "type": "string",
+            "x-i18n-en": "Plan card title"
           },
           "triggerText": {
-            "description": "cron 回读出的确定性业务语句（每天/每周/每月 N 日）",
+            "description": "触发频率回读出的确定性业务语句（手动触发一次/每小时执行一次/每天/每周/每月 N 日）",
             "type": "string",
-            "x-i18n-en": "Deterministic business statement read back from cron (daily/weekly/monthly on day N)"
+            "x-i18n-en": "Deterministic business sentence read back from the trigger frequency (trigger once manually / run hourly / daily / weekly / on day N of each month)"
           }
         },
         "required": [
@@ -9841,8 +10647,23 @@
       },
       "PlanCardPreviewResponseDto": {
         "properties": {
+          "aiSuggestions": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PlanCardAiSuggestionsDto"
+              }
+            ],
+            "description": "大模型辅助生成的步骤与风险建议（仅启用且模型可用时返回）",
+            "x-i18n-en": "AI-assisted step and risk suggestions (returned only when enabled and a model is available)"
+          },
           "card": {
-            "$ref": "#/components/schemas/PlanCardDto"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PlanCardDto"
+              }
+            ],
+            "description": "确定性生成的方案卡",
+            "x-i18n-en": "Deterministically generated plan card"
           },
           "cardHash": {
             "description": "card 规范化 JSON 的 sha256 短前缀（16 位十六进制）",
@@ -9850,15 +10671,26 @@
             "x-i18n-en": "Short sha256 prefix of the canonical card JSON (16 hex characters)"
           },
           "checks": {
+            "description": "确定性校验项列表",
             "items": {
               "$ref": "#/components/schemas/PlanCardCheckDto"
             },
-            "type": "array"
+            "type": "array",
+            "x-i18n-en": "List of deterministic checks"
           },
           "eligible": {
             "description": "是否通过确定性闸门；任一 fail 即 false",
             "type": "boolean",
             "x-i18n-en": "Whether the deterministic gate passed; false if any check fails"
+          },
+          "plannerMode": {
+            "description": "规划模式：ai 表示已附加大模型建议，deterministic 表示纯确定性规划",
+            "enum": [
+              "ai",
+              "deterministic"
+            ],
+            "type": "string",
+            "x-i18n-en": "Planning mode: ai means AI suggestions are attached; deterministic means purely deterministic planning"
           },
           "policyGeneration": {
             "description": "策略代际指纹（16 位十六进制）——能力/预算策略变更后需重新 preview",
@@ -9875,22 +10707,52 @@
         ],
         "type": "object"
       },
+      "PostWorkbenchMessageDto": {
+        "properties": {
+          "content": {
+            "description": "追加的对话正文（落 role=user AgentStep）",
+            "maxLength": 4000,
+            "type": "string",
+            "x-i18n-en": "Appended chat content (persisted as a role=user AgentStep)"
+          },
+          "mode": {
+            "default": "followup",
+            "description": "投送模式；followup=普通续问，steer=等待期注入（默认 followup）",
+            "enum": [
+              "followup",
+              "steer"
+            ],
+            "type": "string",
+            "x-i18n-en": "Delivery mode: followup = ordinary follow-up question, steer = injected while waiting (default: followup)"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
       "PreviewPlanCardRequestDto": {
         "properties": {
           "cadence": {
+            "description": "触发频率档位（once/hourly/daily/weekly/monthly）",
             "enum": [
+              "once",
+              "hourly",
               "daily",
               "weekly",
               "monthly"
             ],
             "example": "daily",
-            "type": "string"
+            "type": "string",
+            "x-i18n-en": "Trigger frequency tier (once/hourly/daily/weekly/monthly)"
           },
           "goal": {
+            "description": "业务目标描述",
             "example": "汇总昨日订单异常并推送日报",
             "maxLength": 500,
             "minLength": 1,
-            "type": "string"
+            "type": "string",
+            "x-i18n-en": "Business objective description"
           },
           "params": {
             "additionalProperties": {
@@ -9899,6 +10761,12 @@
             "description": "可选能力/预算参数；capabilityId 必须在内置白名单内",
             "type": "object",
             "x-i18n-en": "Optional capability/budget parameters; capabilityId must be in the built-in allowlist"
+          },
+          "useAi": {
+            "default": false,
+            "description": "是否启用大模型辅助方案规划（可选；不影响确定性方案卡哈希）",
+            "type": "boolean",
+            "x-i18n-en": "Whether AI-assisted plan generation is enabled (optional; does not affect the deterministic plan card hash)"
           }
         },
         "required": [
@@ -13572,6 +14440,99 @@
         ],
         "type": "object"
       },
+      "TestAiProviderDto": {
+        "properties": {
+          "providerId": {
+            "description": "指定待测试的模型接入编号；缺省时按用途路由自动解析",
+            "maxLength": 128,
+            "type": "string",
+            "x-i18n-en": "ID of the model provider to test; when omitted, it is resolved automatically by purpose routing"
+          },
+          "purpose": {
+            "description": "测试路由用途：分析、智能体推理或视频理解",
+            "enum": [
+              "analysis",
+              "agent",
+              "video"
+            ],
+            "type": "string",
+            "x-i18n-en": "Purpose to test routing for: analysis, agent reasoning, or video understanding"
+          },
+          "testStreaming": {
+            "description": "是否验证流式增量输出链路（默认否）",
+            "type": "boolean",
+            "x-i18n-en": "Whether to verify the streaming incremental output path (default: false)"
+          },
+          "testTools": {
+            "description": "是否验证工具调用声明透传（开启且未指定用途时默认按智能体用途测试）",
+            "type": "boolean",
+            "x-i18n-en": "Whether to verify pass-through of tool-call declarations (when enabled without an explicit purpose, the agent purpose is tested)"
+          }
+        },
+        "type": "object"
+      },
+      "TestAiProviderResponseDto": {
+        "properties": {
+          "errorCode": {
+            "description": "失败时的错误分类码（路由拒绝、鉴权失败、超时或网络异常等）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Error category code on failure (route rejected, authentication failure, timeout, network error, etc.)"
+          },
+          "latencyMs": {
+            "description": "本次端到端测试耗时（毫秒）",
+            "type": "number",
+            "x-i18n-en": "End-to-end duration of this test (milliseconds)"
+          },
+          "message": {
+            "description": "测试结果说明或真实错误详情",
+            "type": "string",
+            "x-i18n-en": "Test result description or real error details"
+          },
+          "model": {
+            "description": "实际命中的模型名称；未能解析路由时为空",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Name of the model actually used; empty if routing could not be resolved"
+          },
+          "ok": {
+            "description": "连通性测试是否成功",
+            "type": "boolean",
+            "x-i18n-en": "Whether the connectivity test succeeded"
+          },
+          "preview": {
+            "description": "模型返回内容摘要预览（超长时截断展示）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Preview summary of the model's response (truncated when too long)"
+          },
+          "provider": {
+            "description": "实际命中的模型接入编号；未能解析路由时为空",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "ID of the model provider actually used; empty if routing could not be resolved"
+          },
+          "purpose": {
+            "description": "本次测试所用的路由用途",
+            "enum": [
+              "analysis",
+              "agent",
+              "video"
+            ],
+            "type": "string",
+            "x-i18n-en": "Routing purpose used for this test"
+          }
+        },
+        "required": [
+          "ok",
+          "provider",
+          "model",
+          "purpose",
+          "latencyMs",
+          "message"
+        ],
+        "type": "object"
+      },
       "TotpCodeDto": {
         "properties": {
           "code": {
@@ -13693,6 +14654,67 @@
         "required": [
           "owner",
           "backer"
+        ],
+        "type": "object"
+      },
+      "TriggerDagRootsDto": {
+        "properties": {
+          "params": {
+            "description": "触发参数覆盖（透传给每个根节点执行；服务层自动注入内部批次标记，用于同批次依赖判定）。",
+            "type": "object",
+            "x-i18n-en": "Trigger parameter overrides (forwarded to each root execution; the service injects an internal batch marker automatically for same-batch dependency evaluation)."
+          },
+          "taskIds": {
+            "description": "要触发的任务子图（任务 UUID 列表，1..100 个）。只触发这些任务中在子图内零前驱的根节点；依赖边读取每个任务的 dependencies.value。",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "Task subgraph to trigger (a list of 1..100 task UUIDs). Only the root nodes with zero predecessors inside the subgraph are triggered; dependency edges are read from each task's dependencies.value."
+          }
+        },
+        "required": [
+          "taskIds"
+        ],
+        "type": "object"
+      },
+      "TriggerDagRootsResponseDto": {
+        "properties": {
+          "dagRunId": {
+            "description": "本次 DAG 运行的批次标记（UUID），注入到每个根执行 params._dagRunId",
+            "type": "string",
+            "x-i18n-en": "Batch marker (UUID) for this DAG run, injected into each root execution as params._dagRunId"
+          },
+          "executions": {
+            "description": "每个根节点的触发结果（taskId/executionId/status）",
+            "items": {
+              "$ref": "#/components/schemas/DagRootExecutionDto"
+            },
+            "type": "array",
+            "x-i18n-en": "Trigger result for each root node (taskId/executionId/status)"
+          },
+          "rootTaskIds": {
+            "description": "实际触发的根节点任务 ID（在入参子图内零前驱）",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "IDs of the actually triggered root tasks (zero predecessors within the submitted subgraph)"
+          },
+          "skippedDependentTaskIds": {
+            "description": "入参中被跳过（非根节点）的任务 ID——它们由根节点的执行终态经依赖扇出自动触发，不在此处直接触发",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n-en": "IDs of submitted tasks that were skipped (non-root nodes) — they are triggered automatically by dependency fan-out from the root nodes' terminal executions, not directly here"
+          }
+        },
+        "required": [
+          "dagRunId",
+          "rootTaskIds",
+          "skippedDependentTaskIds",
+          "executions"
         ],
         "type": "object"
       },
@@ -14855,10 +15877,90 @@
         ],
         "type": "object"
       },
+      "WorkbenchChatSessionResponseDto": {
+        "properties": {
+          "initialStepPersisted": {
+            "description": "首条 user 消息是否已落库",
+            "type": "boolean",
+            "x-i18n-en": "Whether the first user message has been persisted"
+          },
+          "kind": {
+            "description": "实际会话类型",
+            "enum": [
+              "chat",
+              "sop_authoring",
+              "plan"
+            ],
+            "type": "string",
+            "x-i18n-en": "Actual session kind"
+          },
+          "sessionId": {
+            "description": "会话 id（SSE / 消息 / 取消端点使用）",
+            "type": "string",
+            "x-i18n-en": "Session id (used by the SSE, message, and cancel endpoints)"
+          },
+          "status": {
+            "description": "会话初始状态（pending）",
+            "type": "string",
+            "x-i18n-en": "Initial session status (pending)"
+          }
+        },
+        "required": [
+          "sessionId",
+          "status",
+          "kind",
+          "initialStepPersisted"
+        ],
+        "type": "object"
+      },
+      "WorkbenchSessionActionResponseDto": {
+        "properties": {
+          "ok": {
+            "description": "操作是否成功",
+            "type": "boolean",
+            "x-i18n-en": "Whether the operation succeeded"
+          },
+          "resumed": {
+            "description": "是否触发了会话恢复入队",
+            "type": "boolean",
+            "x-i18n-en": "Whether session-resume enqueue was triggered"
+          },
+          "sessionId": {
+            "description": "会话 id",
+            "type": "string",
+            "x-i18n-en": "Session id"
+          },
+          "status": {
+            "description": "当前会话状态",
+            "type": "string",
+            "x-i18n-en": "Current session status"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      },
       "WorkbenchSessionApprovalDto": {
         "properties": {
           "approvalKey": {
             "type": "string"
+          },
+          "argsDigest": {
+            "description": "审批参数摘要（哈希）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Summary (hash) of the approval arguments"
+          },
+          "canDecide": {
+            "description": "当前管理员是否可批准/拒绝",
+            "type": "boolean",
+            "x-i18n-en": "Whether the current administrator can approve/deny"
+          },
+          "canWithdraw": {
+            "description": "当前用户是否可撤回",
+            "type": "boolean",
+            "x-i18n-en": "Whether the current user can withdraw"
           },
           "createdAt": {
             "nullable": true,
@@ -14911,6 +16013,12 @@
             "description": "产物名称",
             "type": "string",
             "x-i18n-en": "Artifact name"
+          },
+          "previewUrl": {
+            "description": "产物预览直链",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Direct link to the artifact preview"
           },
           "size": {
             "description": "产物字节数",
@@ -14973,11 +16081,36 @@
             "type": "array",
             "x-i18n-en": "Artifacts linked to the session (when determinable; empty array otherwise)"
           },
+          "conclusion": {
+            "description": "终态结论（结构化或文本）",
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "x-i18n-en": "Terminal conclusion (structured or text)"
+          },
+          "createdAt": {
+            "description": "创建时间",
+            "nullable": true,
+            "type": "object",
+            "x-i18n-en": "Creation time"
+          },
           "createdBy": {
             "description": "发起人（user:<id>）",
             "nullable": true,
             "type": "string",
             "x-i18n-en": "Initiator (user:<id>)"
+          },
+          "errorMessage": {
+            "description": "失败/中止原因",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Failure/abort reason"
           },
           "kind": {
             "description": "会话 kind（本端点恒为 sop_authoring）",
@@ -15029,6 +16162,18 @@
               "$ref": "#/components/schemas/WorkbenchSessionToolCallDto"
             },
             "type": "array"
+          },
+          "updatedAt": {
+            "description": "更新时间",
+            "nullable": true,
+            "type": "object",
+            "x-i18n-en": "Update time"
+          },
+          "waitingFor": {
+            "description": "等待外部输入的说明",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Description of what external input is awaited"
           }
         },
         "required": [
@@ -15097,6 +16242,12 @@
       },
       "WorkbenchSessionStepDto": {
         "properties": {
+          "content": {
+            "description": "完整步骤正文（最长 8000 字符）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Full step body (up to 8000 characters)"
+          },
           "contentPreview": {
             "description": "步骤正文预览（最长 200 字）",
             "nullable": true,
@@ -15128,6 +16279,12 @@
       },
       "WorkbenchSessionToolCallDto": {
         "properties": {
+          "argsPreview": {
+            "description": "调用参数预览",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Preview of call arguments"
+          },
           "createdAt": {
             "nullable": true,
             "type": "object"
@@ -15135,6 +16292,18 @@
           "errorSummary": {
             "nullable": true,
             "type": "string"
+          },
+          "outputPreview": {
+            "description": "调用结果预览",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Preview of call result"
+          },
+          "stateChangedAt": {
+            "description": "状态变更时刻",
+            "nullable": true,
+            "type": "object",
+            "x-i18n-en": "Time of the status change"
           },
           "status": {
             "type": "string"
@@ -16194,6 +17363,51 @@
         }
       }
     },
+    "/agent/sessions/{id}/cancel": {
+      "post": {
+        "description": "DB 条件写把非终态会话置为 aborted（幂等，不覆盖已有结论），并通过 Redis 与本地事件通道通知正在运行的 worker 停止；终态会话保持原状态，aborted 字段返回 false。",
+        "operationId": "AgentInteractionController_cancel",
+        "parameters": [
+          {
+            "description": "会话 ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "x-i18n-en": "Session ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCancelResponseDto"
+                }
+              }
+            },
+            "description": "取消结果（含是否真的改变了状态）",
+            "x-i18n-en": "Cancellation result (including whether the status actually changed)"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "取消（中止）Agent 会话",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "description": "A conditional DB write sets a non-terminal session to aborted (idempotent; an existing conclusion is never overwritten) and notifies the running worker to stop via Redis and the local event channel. Terminal sessions keep their status and the aborted field returns false.",
+          "summary": "Cancel (abort) an Agent session"
+        }
+      }
+    },
     "/agent/sessions/{id}/export": {
       "get": {
         "operationId": "AgentController_exportSession",
@@ -16257,6 +17471,61 @@
         ],
         "x-i18n-en": {
           "summary": "Export the full Agent session transcript (JSON)"
+        }
+      }
+    },
+    "/agent/sessions/{id}/messages": {
+      "post": {
+        "description": "持久化一条 user 步（正文服务端统一脱敏）后，按会话状态注入运行中的步边界（steered）或转 pending 重新入队 agent-jobs（enqueued）。会话仍有未处置审批单时不自动恢复，消息以 steer 形式等待处置。",
+        "operationId": "AgentInteractionController_postMessage",
+        "parameters": [
+          {
+            "description": "会话 ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "x-i18n-en": "Session ID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentMessageDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentMessageResponseDto"
+                }
+              }
+            },
+            "description": "消息写入与续跑结果",
+            "x-i18n-en": "Message write and resume result"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "追加用户消息并续跑 Agent 会话",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "description": "Persists a user step (content is redacted server-side), then injects a step boundary into the running session (steered) or sets it to pending and re-enqueues it in agent-jobs (enqueued), depending on session state. A session with unresolved approval requests is not resumed automatically; the message waits for resolution as a steer.",
+          "summary": "Append a user message and resume an Agent session"
         }
       }
     },
@@ -16346,6 +17615,72 @@
         ],
         "x-i18n-en": {
           "summary": "Append a steer intent to a waiting_input session (injected at the next step boundary)"
+        }
+      }
+    },
+    "/agent/sessions/{id}/stream": {
+      "get": {
+        "description": "按 seq 重放持久事件后转入实时推送：先发 synced 边界帧，再有 token/reasoning/tool_call/phase/status 增量帧；每 15 秒发送心跳注释帧。断线重连传 fromSeq 从上次的 seq 续传，队列溢出时收到 resync_required 后应主动重连。",
+        "operationId": "AgentInteractionController_streamSession",
+        "parameters": [
+          {
+            "description": "会话 ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "x-i18n-en": "Session ID"
+          },
+          {
+            "description": "SSE 建连专用短效票据，仅用于鉴权，不参与事件查询",
+            "in": "query",
+            "name": "ticket",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Short-lived ticket dedicated to establishing the SSE connection; used only for authentication, not for event queries"
+          },
+          {
+            "description": "断点续传起点：只推送 seq 大于该值的事件，缺省从头开始",
+            "in": "query",
+            "name": "fromSeq",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "x-i18n-en": "Resume-from point: only events with seq greater than this value are pushed; omitted means from the beginning"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "SSE 事件流（Res 直写，Content-Type: text/event-stream）",
+            "x-i18n-en": "SSE event stream (written directly to the response, Content-Type: text/event-stream)"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Agent 会话事件 SSE 流",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "description": "Replays persisted events by seq and then switches to live streaming: a synced boundary frame is sent first, followed by token/reasoning/tool_call/phase/status incremental frames; a heartbeat comment frame is sent every 15 seconds. On reconnect, pass fromSeq to resume from the last seq; if the queue overflows, reconnect when you receive resync_required.",
+          "summary": "SSE stream of Agent session events"
         }
       }
     },
@@ -16567,6 +17902,13 @@
         "parameters": [],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiProviderAdminViewDto"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -16598,6 +17940,13 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiProviderAdminViewDto"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -16630,6 +17979,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiProviderAdminViewDto"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -16663,6 +18019,13 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiProviderAdminViewDto"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -16736,6 +18099,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiSopSessionListResponseDto"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -16767,6 +18137,13 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiSopSessionViewDto"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -16799,6 +18176,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiSopSessionViewDto"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -16831,6 +18215,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiSopSessionViewDto"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -16873,6 +18264,13 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiSopSessionViewDto"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -16936,12 +18334,22 @@
       "post": {
         "operationId": "AiController_testConfig",
         "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestAiProviderDto"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AiTestResponseDto"
+                  "$ref": "#/components/schemas/TestAiProviderResponseDto"
                 }
               }
             },
@@ -16953,12 +18361,12 @@
             "JWT": []
           }
         ],
-        "summary": "用示例提示词测试当前 AI 配置",
+        "summary": "连通性自检：按指定模型接入/用途真实请求一次并返回结构化诊断",
         "tags": [
           "AI Config"
         ],
         "x-i18n-en": {
-          "summary": "Test the current AI configuration with a sample prompt"
+          "summary": "Connectivity self-check: makes one real request using the specified model provider/purpose and returns structured diagnostics"
         }
       }
     },
@@ -21528,7 +22936,7 @@
     },
     "/executions/stream": {
       "get": {
-        "description": "Server-Sent Events 流，从进程内领域事件总线转发执行终态事件（execution.completed / execution.failed / execution.killed）。载荷：ExecutionTerminalEventPayload。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。",
+        "description": "Server-Sent Events 流，从领域事件总线转发执行终态事件（execution.completed / execution.failed / execution.killed）。载荷：ExecutionTerminalEventPayload。ADMIN 转发全量；普通 USER 只转发其属主任务或具备 editor+ 角色的项目内任务的事件，无权任务的事件（含 taskName/errorMessage/logHead）一律丢弃，且建连时解析一次可见集合、事件热路径零数据库查询。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。",
         "operationId": "ExecutionsStreamController_stream",
         "parameters": [],
         "responses": {
@@ -21549,13 +22957,13 @@
             "bearer": []
           }
         ],
-        "summary": "执行终态 SSE 流（FEAT-16）",
+        "summary": "执行终态 SSE 流（按任务归属过滤，FEAT-16）",
         "tags": [
           "metrics"
         ],
         "x-i18n-en": {
-          "description": "Server-Sent Events stream that forwards execution terminal events (execution.completed / execution.failed / execution.killed) from the in-process domain event bus. Payload: ExecutionTerminalEventPayload. Auth: JWT bearer header, or a short-lived SSE ticket via ?ticket= (POST /auth/sse-ticket, TTL 30 seconds) - EventSource cannot set headers.",
-          "summary": "Execution terminal-state SSE stream (FEAT-16)"
+          "description": "Server-Sent Events stream forwarding execution terminal events (execution.completed / execution.failed / execution.killed) from the domain event bus. Payload: ExecutionTerminalEventPayload. ADMINs receive all events; regular USERs receive only events for tasks they own or tasks in projects where they have the editor+ role. Events for unauthorized tasks (including taskName/errorMessage/logHead) are discarded. The visible set is resolved once at connection time, with zero database queries on the event hot path. Authentication: JWT bearer header, or a short-lived SSE ticket via ?ticket= (POST /auth/sse-ticket, TTL 30 seconds) because EventSource cannot set request headers.",
+          "summary": "SSE stream of execution terminal events (filtered by task ownership, FEAT-16)"
         }
       }
     },
@@ -27237,6 +28645,49 @@
         }
       }
     },
+    "/tasks/dag/trigger-roots": {
+      "post": {
+        "description": "传入任务子图（taskIds）与可选参数覆盖，仅触发子图内零前驱的根节点；非根节点由根执行成功后经依赖扇出自动触发，本端点返回 dagRunId、实际触发的 rootTaskIds、被跳过的 skippedDependentTaskIds，以及每个根节点的执行结果。dagRunId 注入根执行 params._dagRunId，供同批次依赖判定使用。",
+        "operationId": "TaskDagChainController_triggerRoots",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TriggerDagRootsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TriggerDagRootsResponseDto"
+                }
+              }
+            },
+            "description": "根节点触发结果（dagRunId / rootTaskIds / skippedDependentTaskIds / executions）",
+            "x-i18n-en": "Root-node trigger result (dagRunId / rootTaskIds / skippedDependentTaskIds / executions)"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "按 DAG 只触发根节点",
+        "tags": [
+          "Task Management"
+        ],
+        "x-i18n-en": {
+          "description": "Pass a task subgraph (taskIds) and optional parameter overrides. Only root nodes with zero predecessors inside the subgraph are triggered; non-root nodes are triggered automatically by dependency fan-out after their root succeeds. This endpoint returns the dagRunId, the actually triggered rootTaskIds, the skipped skippedDependentTaskIds, and the execution result of each root node. The dagRunId is injected into root execution params._dagRunId for dependency resolution within the same batch.",
+          "summary": "Trigger only root nodes in the DAG"
+        }
+      }
+    },
     "/tasks/executions/all": {
       "get": {
         "description": "全局执行记录（跨任务）。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks、GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（status/taskId/taskName/executorAddress/startTime/endTime/projectId/runtime/triggerType）自由组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。",
@@ -27681,8 +29132,8 @@
                 }
               }
             },
-            "description": "产物二进制内容（Res 直传）\n\n产物二进制内容（Res 直传）",
-            "x-i18n-en": "Artifact binary content (passed through via Res)\n\nArtifact binary content (passed through via Res)"
+            "description": "产物二进制内容（Res 直传）",
+            "x-i18n-en": "Artifact binary content (streamed directly via Res)"
           },
           "403": {
             "description": "调用者无权访问该产物",
@@ -27705,6 +29156,84 @@
         "x-i18n-en": {
           "description": "Streams a stored artifact to an authenticated caller. ADMIN sees everything; role=user sees only artifacts owned by the caller or produced by executions of projects where the caller is editor+, and ownerless artifacts always return 403. The bare filename is strictly validated (path traversal defense); a missing artifact returns 404.",
           "summary": "Download a single execution artifact (streamed, narrowed by ownership)"
+        }
+      }
+    },
+    "/tasks/executions/{execId}/artifacts/{name}/preview": {
+      "get": {
+        "description": "按与下载相同的归属校验读取产物开头做有界预览。ADMIN 全量；普通用户仅见本人属主或本人具 editor+ 项目的执行产物，无主产物恒 403。maxBytes 默认 65536、可取 1024..262144；文本（text/*、json、xml）按 UTF-8 返回 content，图片/二进制 content=null 且不会读取文件内容。超出上限时 truncated=true，文件路径穿越与非 UUID 执行 ID 一律 400。",
+        "operationId": "ArtifactsController_preview",
+        "parameters": [
+          {
+            "description": "执行 ID（UUID）",
+            "in": "path",
+            "name": "execId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Execution id (UUID)"
+          },
+          {
+            "description": "裸产物文件名",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Raw artifact filename"
+          },
+          {
+            "description": "预览最多读取的字节数，默认 65536，允许 1024..262144；越界返回 400 VALIDATION_FAILED",
+            "in": "query",
+            "name": "maxBytes",
+            "required": false,
+            "schema": {
+              "maximum": 262144,
+              "minimum": 1024,
+              "type": "number"
+            },
+            "x-i18n-en": "Maximum number of bytes to read for the preview; defaults to 65536, accepts 1024..262144; out-of-range values return 400 VALIDATION_FAILED"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactPreviewResponseDto"
+                }
+              }
+            },
+            "description": "有界预览结果（name/mimeType/size/truncated/kind/content）；非文本 content 恒为 null",
+            "x-i18n-en": "Bounded preview result (name/mimeType/size/truncated/kind/content); content is always null for non-text artifacts"
+          },
+          "400": {
+            "description": "执行 ID 或产物名非法、maxBytes 越界",
+            "x-i18n-en": "Invalid execution ID or artifact name, or maxBytes out of range"
+          },
+          "403": {
+            "description": "调用者无权访问该产物",
+            "x-i18n-en": "Caller may not access this artifact"
+          },
+          "404": {
+            "description": "产物不存在",
+            "x-i18n-en": "Artifact not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "有界预览单个执行产物（文本 UTF-8 / 图片与二进制仅元数据）",
+        "tags": [
+          "Execution Artifacts"
+        ],
+        "x-i18n-en": {
+          "description": "Reads the beginning of an artifact for a bounded preview using the same ownership checks as download. ADMINs see all artifacts; regular users see only artifacts of executions they own or in projects where they have editor+ access; unowned artifacts always return 403. maxBytes defaults to 65536 and accepts 1024..262144; text (text/*, json, xml) is returned as UTF-8 content, while images/binary content is null and their file contents are never read. If the limit is exceeded, truncated=true; path traversal and non-UUID execution IDs always return 400.",
+          "summary": "Bounded preview of a single execution artifact (UTF-8 text / metadata only for images and binary files)"
         }
       }
     },
@@ -29656,6 +31185,48 @@
         }
       }
     },
+    "/workbench/chat-sessions": {
+      "post": {
+        "description": "以一句 prompt 直接创建 Agent 会话并将该 prompt 作为首条用户消息落库、入 agent-jobs 队列。会话类型由服务端从 prompt 推导（对话/起草 SOP/受限计划），请求体不能指定 kind/scope/createdBy/triggerSource。",
+        "operationId": "WorkbenchSessionController_createChatSession",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkbenchChatSessionDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkbenchChatSessionResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "发起工作台对话会话（prompt-first，无需先提交 SOP）",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "description": "Creates an Agent session directly from a single prompt, persists that prompt as the first user message, and enqueues it in agent-jobs. The server infers the session kind from the prompt (chat / SOP drafting / constrained plan); the request body cannot specify kind/scope/createdBy/triggerSource.",
+          "summary": "Start a workbench chat session (prompt-first, no SOP submission required)"
+        }
+      }
+    },
     "/workbench/commit": {
       "post": {
         "operationId": "WorkbenchController_commit",
@@ -29920,7 +31491,7 @@
             "name": "pageSize",
             "required": false,
             "schema": {
-              "maximum": 20,
+              "maximum": 50,
               "minimum": 1,
               "type": "number"
             }
@@ -30026,6 +31597,217 @@
         ],
         "x-i18n-en": {
           "summary": "Read workbench session progress (creator or admin only)"
+        }
+      }
+    },
+    "/workbench/sessions/{id}/approvals/{approvalKey}/decide": {
+      "post": {
+        "description": "grant/deny 仅管理员可用且受四眼原则约束（申请人不可批准自己发起的操作）；withdraw 允许会话创建者撤回自己的待批单。三种处置都会恢复会话执行。",
+        "operationId": "WorkbenchSessionController_decideApproval",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "approvalKey",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideWorkbenchApprovalDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkbenchSessionActionResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "处置工作台会话的审批单",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "description": "grant/deny is available only to administrators and is subject to the four-eyes principle (the requester cannot approve their own operation); withdraw lets the session creator withdraw their own pending approval request. All three decisions resume session execution.",
+          "summary": "Decide on a workbench session approval request"
+        }
+      }
+    },
+    "/workbench/sessions/{id}/cancel": {
+      "post": {
+        "description": "向正在运行的会话发出协作式中止请求；是否命中由会话运行态决定。仅创建者或管理员可调用。",
+        "operationId": "WorkbenchSessionController_cancelSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkbenchSessionActionResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "请求中止工作台会话",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "description": "Sends a cooperative abort request to a running session; whether it takes effect depends on the session's runtime state. Only the creator or an administrator may call this.",
+          "summary": "Request abort of a workbench session"
+        }
+      }
+    },
+    "/workbench/sessions/{id}/messages": {
+      "post": {
+        "description": "正文落为 role=user 的 AgentStep；运行中的会话走 step 边界注入，挂起的会话重新入队。仅会话创建者或管理员可调用。",
+        "operationId": "WorkbenchSessionController_postMessage",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostWorkbenchMessageDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkbenchSessionActionResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "向工作台会话追加用户消息并恢复执行",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "description": "The content is persisted as an AgentStep with role=user; a running session uses step-boundary injection, while a pending session is re-enqueued. Only the session creator or an administrator may call this.",
+          "summary": "Append a user message to a workbench session and resume execution"
+        }
+      }
+    },
+    "/workbench/sessions/{id}/stream": {
+      "get": {
+        "description": "会话事件 SSE 流。EventSource 无法设置请求头时，可先 POST /auth/sse-ticket 换取 30 秒短效票据，再用 ?ticket= 建流；也支持常规 Authorization: Bearer。断线可用 ?fromSeq= 从上一次事件序号续传。仅会话创建者或管理员可读。",
+        "operationId": "WorkbenchSessionController_streamSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "从该事件序号之后开始推送（断线续传）",
+            "in": "query",
+            "name": "fromSeq",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Start pushing after this event sequence number (resume after disconnect)"
+          },
+          {
+            "description": "SSE 专用短效票据（30 秒）",
+            "in": "query",
+            "name": "ticket",
+            "required": false,
+            "schema": {},
+            "x-i18n-en": "Short-lived ticket reserved for SSE (30 seconds)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Server-Sent Events 事件流",
+            "x-i18n-en": "Server-Sent Events stream"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "工作台会话事件时间线 SSE 流",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "description": "SSE stream of session events. When EventSource cannot set request headers, first POST /auth/sse-ticket to obtain a 30-second short-lived ticket and then open the stream with ?ticket=; a regular Authorization: Bearer header is also supported. On reconnect, use ?fromSeq= to resume after the last event sequence. Only the session creator or an administrator may read it.",
+          "summary": "SSE stream of the workbench session event timeline"
         }
       }
     }

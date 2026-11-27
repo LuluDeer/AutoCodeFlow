@@ -1,5 +1,5 @@
 # REST 接口地图
-> 所属: docs/atlas/05-interfaces · 最后核对: 2026-11-25 · 对应代码: apps/admin-api/src/modules/*（**37** 个 controller 文件，**34** 个路由前缀）
+> 所属: docs/atlas/05-interfaces · 最后核对: 2026-11-27 · 对应代码: apps/admin-api/src/modules/*（**38** 个 controller 文件，**35** 个路由前缀）
 >
 > 路由前缀由 `scripts/check-interface-maps.mjs` 守护：源码里每个 `@Controller("<前缀>")` 都必须在本页出现，缺一即红。
 > 本页是**地图**不是全量清单（全量 240 个操作 / 206 个路径见 [docs/api-reference.md](../../api-reference.md) 附录），但「整个域缺失」属于漂移。
@@ -55,6 +55,7 @@
 | **GET** | **`/tasks/:id/executions/:execId/logs/stream`** | JWT | **日志 SSE 流（见下节）** |
 | POST | `/tasks/:id/executions/:execId/analyze·kill` | JWT | AI 分析/强杀 |
 | POST | `/tasks/:id/pause·resume·rollback` | JWT | 暂停/恢复/回滚配置 |
+| POST | `/tasks/dag/trigger-roots` | JWT | 按 DAG 子图只触发根节点（注入 `_dagRunId`，下游由依赖扇出） |
 | POST | `/tasks/:id/versions/:versionId/rollback` | JWT | 版本回滚 |
 | GET | `/tasks/:id/versions/:v1/compare/:v2` | JWT | 版本 diff |
 | POST | `/tasks/:id/suggest-schedule` | JWT | AI 建议 cron |

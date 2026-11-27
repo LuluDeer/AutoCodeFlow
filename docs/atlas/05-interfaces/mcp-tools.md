@@ -1,7 +1,7 @@
-# MCP 工具地图（57 个）
-> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-25 · 对应代码: packages/mcp-server/src（tools.ts 注册 **57** 个 server.tool，9 个 register*Tools；index.ts 入口）
+# MCP 工具地图（63 个）
+> 所属: docs/atlas/05-interfaces · 最后核对: 2026-11-27 · 对应代码: packages/mcp-server/src（tools.ts 及 tools/*.ts 注册 **63** 个 server.tool，10 个 register*Tools；index.ts 入口）
 >
-> 数量由 `scripts/check-interface-maps.mjs` 守护：源码注册的工具名必须逐个出现在本页，缺一即红。**手写枚举必然单向腐烂**（本页曾停留在 40 个，实际 57 个，漏了 17 个）。
+> 数量由 `scripts/check-interface-maps.mjs` 守护：源码注册的工具名必须逐个出现在本页，缺一即红。**手写枚举必然单向腐烂**（本页曾停留在 40 个，实际 57 个，漏了 17 个；本轮再补 6 个高杠杆工具至 63 个）。
 
 ## 怎么连
 
@@ -226,6 +226,17 @@ acf config show                                    # 打印配置文件路径
 | 工具 | 参数概要 | 语义 |
 |---|---|---|
 | tool_search | keyword?, tags?, limit? | 按关键词/标签**按需检索**已注册工具，返回排序且有界（默认 10 / 上限 50）的清单，避免把全部工具 schema 塞进模型上下文；只读（`readOnlyHint: true`）。运行时读 MCP server 的真实注册表 `_registeredTools`（内部字段，SDK 升级需复核），不是测试夹具。 |
+
+### 高杠杆意图域 — registerTurnaroundTools（6 个）
+
+| 工具 | 参数概要 | 语义 |
+|---|---|---|
+| `create_task` | name, triggerType, status?, cronExpression?, … | 直接创建任务（弥补过去只有模板建任务的缺口） |
+| `delete_task` | taskId | 删除任务 |
+| `list_artifacts` | executionId?, taskId?, page? | 列出执行产物清单 |
+| `send_agent_message` | sessionId, content, mode? | 向 agent 会话追加用户消息（followup/steer） |
+| `cancel_agent_session` | sessionId | 中止正在运行的 agent 会话 |
+| `decide_agent_approval` | sessionId, approvalKey, decision, note? | 审批 agent 工具调用（grant/deny） |
 
 ## 与 REST 的对应关系要点
 

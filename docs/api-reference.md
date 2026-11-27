@@ -1443,7 +1443,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 305 个操作，覆盖 262 个路径。
+共 315 个操作，覆盖 272 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1468,9 +1468,12 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/agent/sessions/{id}/approvals/{approvalKey}/deny` | 拒绝 Agent 审批单 |
 | POST | `/agent/sessions/{id}/approvals/{approvalKey}/grant` | 批准 Agent 审批单并恢复会话 |
 | POST | `/agent/sessions/{id}/approvals/{approvalKey}/phrase` | 用审批短语处置 Agent 审批单（一次性授权） |
+| POST | `/agent/sessions/{id}/cancel` | 取消（中止）Agent 会话 |
 | GET | `/agent/sessions/{id}/export` | 导出 Agent 会话完整转录（JSON） |
+| POST | `/agent/sessions/{id}/messages` | 追加用户消息并续跑 Agent 会话 |
 | POST | `/agent/sessions/{id}/resume` | 恢复挂起/失败的 Agent 会话 |
 | POST | `/agent/sessions/{id}/steer` | 向 waiting_input 会话追加 steer 意图（下一轮步边界注入） |
+| GET | `/agent/sessions/{id}/stream` | Agent 会话事件 SSE 流 |
 | GET | `/agent/sessions/backlogged` | 列出「调度积压」的会话（pending 但队列里没有对应 job） |
 | GET | `/agent/sessions/queue-idle` | 队列是否空转（worker 在册却不再消费新 job） |
 | GET | `/agent/sessions/queue-stall` | 队列是否停摆（有活排队但结构上没人能消费） |
@@ -1491,7 +1494,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/ai/sop-sessions/{id}/saved` | 标记会话已保存为 SOP 草稿（前端在 POST /sop 成功后调用） |
 | POST | `/ai/sop-sessions/{id}/turns` | 补充一句话或一段录屏，继续下一轮 |
 | POST | `/ai/sop-sessions/{id}/turns/stream` | 流式继续一轮（SSE 事件流：三种帧类型） |
-| POST | `/ai/test` | 用示例提示词测试当前 AI 配置 |
+| POST | `/ai/test` | 连通性自检：按指定模型接入/用途真实请求一次并返回结构化诊断 |
 | POST | `/alerts/webhook` | Alertmanager v2 Webhook 接收端 |
 | GET | `/api-keys` | 列出我的 API Key（脱敏） |
 | POST | `/api-keys` | 创建 API Key |
@@ -1584,7 +1587,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | PUT | `/executions/{execId}/artifacts/{name}` | 上传单个执行产物（执行器 → 中台，尽力而为） |
 | POST | `/executions/{id}/logs` | 实时执行日志流式上报 |
 | POST | `/executions/callback` | 执行结果回调 |
-| GET | `/executions/stream` | 执行终态 SSE 流（FEAT-16） |
+| GET | `/executions/stream` | 执行终态 SSE 流（按任务归属过滤，FEAT-16） |
 | GET | `/executor-packages` | 获取执行器包列表 |
 | POST | `/executor-packages` | 上传执行器包 |
 | DELETE | `/executor-packages/{id}` | 删除执行器包 |
@@ -1729,9 +1732,11 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/tasks/batch/pause` | 批量暂停任务 |
 | POST | `/tasks/batch/resume` | 批量恢复任务 |
 | POST | `/tasks/batch/trigger` | 批量触发任务 |
+| POST | `/tasks/dag/trigger-roots` | 按 DAG 只触发根节点 |
 | GET | `/tasks/executions/{execId}` | 执行详情（按执行 ID） |
 | GET | `/tasks/executions/{execId}/artifacts` | 列出执行产物（manifest，按归属收窄） |
 | GET | `/tasks/executions/{execId}/artifacts/{name}` | 下载单个执行产物（流式，按归属收窄） |
+| GET | `/tasks/executions/{execId}/artifacts/{name}/preview` | 有界预览单个执行产物（文本 UTF-8 / 图片与二进制仅元数据） |
 | GET | `/tasks/executions/{execId}/logs` | 执行日志（按执行 ID） |
 | GET | `/tasks/executions/all` | 全局执行记录 |
 | GET | `/tasks/executions/export` | 导出执行记录为 CSV（流式，仅管理员） |
@@ -1743,6 +1748,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/users/{id}` | 获取用户详情 |
 | PATCH | `/users/{id}` | 更新用户 |
 | POST | `/webhooks/tasks/{taskId}` | 通过入站 Webhook 触发任务 |
+| POST | `/workbench/chat-sessions` | 发起工作台对话会话（prompt-first，无需先提交 SOP） |
 | POST | `/workbench/commit` | 确认方案卡并落成 SOP 草稿（N7 留痕 hash 校验；只 draft，不自动发布） |
 | POST | `/workbench/part/project` | N10：按服务端 Part 与会话归属投影可见面（大字段仅在可见时从 blob 读回） |
 | POST | `/workbench/preview` | 最小方案卡预览 + 确定性校验（N7 反幻觉闸门；不调用 LLM、不落 SOP） |
@@ -1752,5 +1758,9 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/workbench/sessions` | 列出当前用户创建的工作台会话 |
 | POST | `/workbench/sessions` | 运行我的 SOP 草稿：创建限权 Agent 会话并入 agent-jobs 队列 |
 | GET | `/workbench/sessions/{id}` | 读取工作台会话进度（仅创建者或管理员） |
+| POST | `/workbench/sessions/{id}/approvals/{approvalKey}/decide` | 处置工作台会话的审批单 |
+| POST | `/workbench/sessions/{id}/cancel` | 请求中止工作台会话 |
+| POST | `/workbench/sessions/{id}/messages` | 向工作台会话追加用户消息并恢复执行 |
+| GET | `/workbench/sessions/{id}/stream` | 工作台会话事件时间线 SSE 流 |
 
 <!-- API-APPENDIX:END -->

@@ -1,5 +1,41 @@
 # AutoCodeFlow Agent Handoff
 
+## 本次交接（2026-11-27 · 空降负责人大改造轮，已完成）
+
+**方向来源**：用户明确「外部空降负责人、不要盲信 md、功能没实现/定位有问题/体验不好、允许大刀阔斧、调研 agent 不限但编译 agent 少、/data/project/opensource 仅内部参考不写进项目」。先用 9 路只读审计（6 路本仓库 CodeGraph 深审 + 3 路参考架构）建立证据矩阵，再分 Wave 1（7 路后端/协议/执行器/MCP）+ Wave 2（3 路前端 IA/工作台/Ops 页）+ 主控制度化收口，共 13 路实现切片、约 193 个文件改动。全程子 agent 禁跑 build/tsc/jest，主控串行编译与重导，12GB 主机零 OOM。
+
+**核心诊断（源码实证，非文档宣称）**：
+- 旗舰 `/workbench` 是无 LLM 的 3 字段模板表单 + 2s 只读轮询，真正的多轮 SSE AI 会话埋在 ADMIN-only 隐藏页；`steer` 只在进程内 Map；无会话取消；`sop_authoring` 误用硬编码运维提示词；审批 deny 永久卡 `waiting_input`。
+- 定位多重人格：20 项侧栏把 SRE 控制台、老板驾驶舱与业务工作台混排；桌面工作台只能 CLI `--workbench` 启动且 `window.workbenchApi` 前端零调用。
+- 高危实弹缺陷：`GET /executions/stream` 越权广播全站事件；DAG「触发链」并行触发全部节点；`executor-python` 配置热更新忘拆信封;排队 kill 扣押并发槽; `AgentHost` 静默丢弃 LLM 澄清问题与浏览器截图、域名白名单用并集; `mcp-server` CJS 引 ESM-only node-fetch。
+
+**本轮交付（按用户可验收路径）**：
+1. **AI 流式底座**（`modules/ai`、`sop-collab.controller`）：`chatMultimodalStream` 支持 tools/tool_calls 组装、reasoning、AbortSignal；Ollama agent 走 `/v1` OpenAI 兼容面；`POST /api/ai/test` 按 provider/purpose 真测并返回结构化诊断；`/agent-collab/llm` 支持 `role:tool`/assistant.tool_calls、不可用抛 503；新 OpenAPI DTO 全中文。
+2. **Agent 实时交互**（`modules/agent`）：新增 `AgentEventStreamService`（Redis Pub/Sub + `agent_events` seq 重放 + `synced` 水位 + 15s 心跳 + 有界队列 resync_required + ActiveStreamAccumulator + 跨副本 steer + 实时 abort），`GET/agent/sessions/:id/stream`、`POST .../messages`、`POST .../cancel`；按 kind 分流提示词；Doom-Loop 守卫；inbox counts USER 隔离；deny 保守自动 resume。
+3. **工作台交互后端**（`modules/workbench`）：prompt-first `POST /workbench/chat-sessions`、SSE 流、消息、取消、审批 grant/deny/withdraw；可选 LLM 规划经确定性闸门，补 `http` 能力与 `once/hourly`；会话时间线返回 50 步全文/工具/审批/产物预览。
+4. **控制面安全与 DAG**（`metrics`/`artifacts`/`task`/`task-template`/`notification`/`executor-package`）：`GET /executions/stream` 按任务归属过滤；有界产物 `/preview`（UTF-8 安全边界）；`POST /tasks/dag/trigger-roots` 只触发根节点 + `_dagRunId` 同批依赖判定（主控补 task.service/scheduler 透传）；模板导入保留参数；SMTP 连接池复用；changelog 契约对齐。
+5. **桌面与 AgentHost**（`executor-desktop`）：4 个 P0/P1 缺陷修复；25s 长轮询 + 实时事件 + 运行中取消；托盘/状态页「打开工作台」入口，单例 `--workbench`、主题/离线回退；`window.workbenchApi` 扩展为安全上下文、本地选文件、Agent 事件订阅/取消（零凭据过桥）。
+6. **执行器对齐**（`executor-python`/`executor-node`/`protocol`）：Python 配置热更新信封修复 + 非阻塞节流；排队 kill 即时释放槽位；`executorId` 与 v8 409 冲突自愈；产物自愈连接池上传；Node 产物流式上传；双端显式 `capabilities[]`（保留 runtime token 供调度）；协议 schema 已重生成。
+7. **MCP/CLI**：MCP 去 node-fetch 改原生 fetch + `AUTOCODEFLOW_API_KEY` + 6 个高杠杆工具（共 63 工具，文档/探针同步）；CLI 加 `ACF_API_KEY` 与 `artifact`/`template` 命令（共 74 命令，文档同步）；L4 脚本移除吞构建失败的 `|| true`。
+8. **前端 IA/工作台/Ops**：USER 4 项平级外壳、ADMIN 5 域分组、角色默认首页；三栏 AI Agent 工作台（会话栏/对话时间线+内联审批/检查器），SSE 主流+轮询兜底，legacy 表单折叠保留；DAG 交互式触发根节点、产物有界预览、模板参数化、执行多状态深链修复。
+
+**验收与证据（分级，不越级上报）**：
+- **静态 + 类型第 2 级**：admin-api / admin-web / executor-node / executor-desktop(worker+renderer) 全部 `tsc --noEmit` exit 0；`git diff --check` exit 0。
+- **契约门禁全绿**：`check:api-i18n`（2378 注入）、`check:response-schema`（299/315）、`check:web-type-drift`、`check:web-type-field-drift`、`check:user-facing-language`、`check:size-caps`、`check:guards-wired`、`check:interface-maps`（MCP 63/REST 35）、`check:cli-doc`（74）、`i18n-key-check`（zh/en 各 4372）、`i18n-scan` 全 exit 0；`npm run gen:protocol` 生成 12 schema 成功。
+- **OpenAPI 重导**：`openapi-export.e2e-spec.ts` 1/1 PASS（272 paths / 844KB），i18n 注入 + `gen:api-types` + `gen:api-reference` 均成功。
+- **单测/内存替身第 2 级**：admin-api 9 个 targeted suite 共 **57/57 PASS**（agent 实时/workbench/AI 流/产物预览/SSE RBAC/DAG/timeline/SMTP/依赖闸）；`executor-package-changelog.spec.ts` 因本机 `bcrypt` native build 缺失未能加载（**环境边界，非代码失败**）。admin-web 定向 4 文件：DAG 6/6、workbench-helpers 已修断言待复跑、分页 Popover 契约由专职 agent 同步中。
+- **集成期真实修复（非文档游戏）**：修复 `AgentEventStreamService` 的 Nest DI token（type-only import 导致 Function token 无法解析）、收尾编辑事故造成的整文件重复追加、审批四眼被 owner 校验误挡、UTF-8 有界预览多字节截断、DAG 测试 fixture 结构与 controller 契约不符等。基线重签均附实测原因（task.service / mcp tools / acf-cli tests / agent-runtime / StatusWindow）。
+
+**诚实边界 / 后续项**：
+- **验收进度更新（本轮末）**：**L3 真 PG/Redis 集成 4 suites / 8 tests PASS**（`verify-hardening-realstack.sh`，throwaway DB 已清理）；**L4 真浏览器 1/1 PASS**（`fullstack-verify-workbench.sh`，真 PG15432/Redis16379/admin-api:3105/vite:5176/Playwright chromium，完整 USER 旅程：API 建用户→真浏览器登录→角色侧栏→工作台 preview→commit→运行草稿→API readback），证据在 `artifacts/verification/fullstack-workbench-20261127-193928/{report.json,spec-evidence.json,workbench-panel-success.png}`。**admin-web 真实 `npm run build`（tsc -b + vite build）exit 0**（4837 modules，vite 8.3.6）。会话终态 `failed` 是 throwaway 栈 `AI_PROVIDER=disabled` 且无 LLM 路由的真实结果，非代码缺陷；L4 只断言会话创建/入队/真状态读回，未断言 agent 成功。
+- 尚未跑 `verify-hardening-browser.sh` 的第二套 L4 硬化套件（本轮 L4 已由 fullstack-workbench 覆盖主路径）；桌面 Electron 真机点击未在 L4 覆盖；bcrypt native build 缺失导致 executor-package changelog spec 未能加载（环境边界，非代码失败）。
+- Workbench UI 的 SSE payload 字段按后端实际帧（`type`/`event`、`text`/`delta`）核对过，durable 事件靠 `synced` 触发 REST 全量兜底；mid-stream token 续传仍建议在真浏览器验证刷新场景。
+- 桌面 `window.workbenchApi` 的本地选文件/事件订阅已在主进程与 selftest 层验证，未在真 Electron UI 中完成端到端点击验收。
+- `executor-python` 裸 `python3` 缺 `pydantic_settings`，必须用 `apps/executor-python/.venv`（已确认存在且依赖齐全）跑 pytest/import 链。
+- 分支 `feat/turnaround-overhaul-20261127`；未 git commit/push；参考项目审查仅存于对话，未写入任何项目代码/文档。
+
+---
+
 ## 本次交接（2026-11-27 · 空降负责人下一轮，已完成）
 
 **方向来源**：用户要求继续下一轮。目标锁定剩余最高价值硬骨头：真实浏览器、真实 HTTP 执行器、审批事件投影 expired 语义、无 token 日志丢行、应用发布行契约。先派 5 路实现/验收 agent（`impl-browser-real`、`impl-http-attemptseq`、`impl-approval-projection`、`impl-python-notoken`、`impl-apprelease-contract`），浏览器验收发现 SSE ticket 400 后再派 `impl-sse-ticket-fix`、最后派 `impl-workbench-split` 拆大函数收口；主控串行重导与验收，避免 OOM。

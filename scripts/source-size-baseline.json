@@ -172,14 +172,14 @@
     "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1004,
-      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【R65 代签（Lead 已批准）：**共享类型 import**（replay 决策上下文类型），内联字面量会把这个形状写两份 —— 正是 ADR-031 要消灭的「两处各自推导」⇒ 986→**987**；**回滚值 986**。】 【第65轮续(N8 steer 接线，Lead 集成重签)：runtime run() 每轮 LLM 前经 steerInbox.drainAtStepBoundary 注入步边界意图(+注入口 setSteerInbox)，nonCommentLines 987→996、最长函数 run@L520 684→696；既有预算/审批重放/双跑防护逐字未动，反证真红还原。回滚值 987/684。】 【第68轮续(N11 plan 身份接线，Lead 集成重签)：availableTools 之后经 narrowPlanTools 按 plan 身份再收窄(1 行 import+let 改写+1 行调用)，nonCommentLines 996→998、最长函数 run@L522 684→699；预算/审批重放/steer drain/双跑防护逐字未动，反证 13 真红还原。回滚值 996/696。】 | 【2026-11-27 硬骨轮重签】replayedToolResult 增加 expired 显式分支，恢复上下文不再显示「批准后会恢复」误导文案；非注释行 998→1004，函数体/密度/exports 未变。",
+      "maxLines": 1005,
+      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【R65 代签（Lead 已批准）：**共享类型 import**（replay 决策上下文类型），内联字面量会把这个形状写两份 —— 正是 ADR-031 要消灭的「两处各自推导」⇒ 986→**987**；**回滚值 986**。】 【第65轮续(N8 steer 接线，Lead 集成重签)：runtime run() 每轮 LLM 前经 steerInbox.drainAtStepBoundary 注入步边界意图(+注入口 setSteerInbox)，nonCommentLines 987→996、最长函数 run@L520 684→696；既有预算/审批重放/双跑防护逐字未动，反证真红还原。回滚值 987/684。】 【第68轮续(N11 plan 身份接线，Lead 集成重签)：availableTools 之后经 narrowPlanTools 按 plan 身份再收窄(1 行 import+let 改写+1 行调用)，nonCommentLines 996→998、最长函数 run@L522 684→699；预算/审批重放/steer drain/双跑防护逐字未动，反证 13 真红还原。回滚值 996/696。】 | 【2026-11-27 硬骨轮重签】replayedToolResult 增加 expired 显式分支，恢复上下文不再显示「批准后会恢复」误导文案；非注释行 998→1004，函数体/密度/exports 未变。 | 【2026-11-27 空降大改造轮重签】W1-S2 实时流接线：按 kind 分流系统提示词+初始 user turn、AbortSignal 订阅、流式 LLM delta 上报、跨副本 steer 注入（仅 +1 非注释行/函数体+3/密度+0.1，逻辑全部下沉 agent-runtime-realtime.collaborator.ts）；受控增量。",
       "ceiling": {
-        "nonCommentLines": 1004,
-        "functionLines": 699,
+        "nonCommentLines": 1005,
+        "functionLines": 702,
         "ctorParams": 0,
         "exports": 10,
-        "branchDensity": 23.2
+        "branchDensity": 23.3
       },
       "firstRun": {
         "bad": [
@@ -681,14 +681,14 @@
     "apps/admin-api/src/modules/task/task.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 2996,
-      "why": "R125 广播释放依赖改为必填（漏接线变 TS2345 而非静默 no-op，+3）；回滚值 2860。 | **2026-11-15 本轮重签（+62 非注释行）**：P1-1 列表行批量回填最近一次真实执行摘要 lastExecution（8ccf6c42：响应 DTO 补 lastExecution 字段 + 服务层按任务 id 批量查询最近执行摘要，是前端任务列表「上次执行结果/耗时/深链」的数据来源）；P1-2 项目上下文过滤（878812db）另带 2 行查询条件。ceiling.nonCommentLines 2863→2925，函数体 316、exports 16 未变，密度 20.9 较基线 21 净降。 | **2026-11-16 P2-2 重签（+4 非注释行）**：执行列表/导出两路共享的过滤器入参类型补 runtime/triggerType 两个字段透传（谓词在 collaborator 唯一真值源，本文件仅接线）；ceiling.nonCommentLines 2925→2929，函数体 316、exports 16 未变，密度 20.9→21.0（分母变小的被动上升，判定点数未增）。 【R283 重签：branchDensity 21 → 21.1】新增 triggerType 过滤必须在两条装配路径各判一次（buildTaskListWhere 的对象形态 + findAllByLastStatus 的手写 qb 链），二者无法共用同一判断——该分支刻意不复用 buildTaskListWhere（其注释已写明），否则 lastStatus 与 triggerType 组合会静默丢失过滤。这是**受控的逻辑新增**（1 条等值过滤），不是体量失控；分桶密度分母（函数总数）未变。 | **2026-11-20 R284-LOGPURGE-01 重签（+1 非注释行）**：日志 30 天 vs 执行 90 天 ⇒ 31~90 天前的执行详情日志区是空的，而此前唯一文案讲「切日志级别」，用户读成「没输出」并写「没有证据」（真相是证据已被策略删除）。本文件只做**依赖接线**：1 行 import（SystemConfigService）+ 2 行注入属性 + 1 行 @Optional 置尾构造器参数；所有权重（三态判定/回落链/文档）都下沉到 execution-log-read.collaborator.ts（净增 179 行在那个文件，不在基线里）。已实测把这两行压成单行会被 eslint --fix 拆回，注释内联后净增**恰为 1 行**（+5 → +1，其余被同期删除的行抵消）——这 1 行是无替代的 DI 接线。functionLines/ctorParams/exports/density 未变。 | 【2026-11-27 空降纠偏轮重签】create/import 显式 PAUSED、task 与初始版本同事务、最近执行摘要改 DISTINCT ON 每任务一条；非注释行 2930→2988，函数体/密度/exports 未变。 | 【2026-11-27 硬骨轮重签】handleCallback facade 补 attemptSeq 可选字段，内部类型化调用不再丢失世代门禁；非注释行 2988→2996，函数体/密度/exports 未变。",
+      "maxLines": 3025,
+      "why": "R125 广播释放依赖改为必填（漏接线变 TS2345 而非静默 no-op，+3）；回滚值 2860。 | **2026-11-15 本轮重签（+62 非注释行）**：P1-1 列表行批量回填最近一次真实执行摘要 lastExecution（8ccf6c42：响应 DTO 补 lastExecution 字段 + 服务层按任务 id 批量查询最近执行摘要，是前端任务列表「上次执行结果/耗时/深链」的数据来源）；P1-2 项目上下文过滤（878812db）另带 2 行查询条件。ceiling.nonCommentLines 2863→2925，函数体 316、exports 16 未变，密度 20.9 较基线 21 净降。 | **2026-11-16 P2-2 重签（+4 非注释行）**：执行列表/导出两路共享的过滤器入参类型补 runtime/triggerType 两个字段透传（谓词在 collaborator 唯一真值源，本文件仅接线）；ceiling.nonCommentLines 2925→2929，函数体 316、exports 16 未变，密度 20.9→21.0（分母变小的被动上升，判定点数未增）。 【R283 重签：branchDensity 21 → 21.1】新增 triggerType 过滤必须在两条装配路径各判一次（buildTaskListWhere 的对象形态 + findAllByLastStatus 的手写 qb 链），二者无法共用同一判断——该分支刻意不复用 buildTaskListWhere（其注释已写明），否则 lastStatus 与 triggerType 组合会静默丢失过滤。这是**受控的逻辑新增**（1 条等值过滤），不是体量失控；分桶密度分母（函数总数）未变。 | **2026-11-20 R284-LOGPURGE-01 重签（+1 非注释行）**：日志 30 天 vs 执行 90 天 ⇒ 31~90 天前的执行详情日志区是空的，而此前唯一文案讲「切日志级别」，用户读成「没输出」并写「没有证据」（真相是证据已被策略删除）。本文件只做**依赖接线**：1 行 import（SystemConfigService）+ 2 行注入属性 + 1 行 @Optional 置尾构造器参数；所有权重（三态判定/回落链/文档）都下沉到 execution-log-read.collaborator.ts（净增 179 行在那个文件，不在基线里）。已实测把这两行压成单行会被 eslint --fix 拆回，注释内联后净增**恰为 1 行**（+5 → +1，其余被同期删除的行抵消）——这 1 行是无替代的 DI 接线。functionLines/ctorParams/exports/density 未变。 | 【2026-11-27 空降纠偏轮重签】create/import 显式 PAUSED、task 与初始版本同事务、最近执行摘要改 DISTINCT ON 每任务一条；非注释行 2930→2988，函数体/密度/exports 未变。 | 【2026-11-27 硬骨轮重签】handleCallback facade 补 attemptSeq 可选字段，内部类型化调用不再丢失世代门禁；非注释行 2988→2996，函数体/密度/exports 未变。 | 【2026-11-27 空降大改造轮重签】DAG `_dagRunId` 批次接线：新增 loadDagRunId 助手（查询失败回落旧口径）、依赖闸传参、下游扇出透传同批标记，消除跨 run 菱形汇合误触发；净增 29 非注释行/最长函数 +15/密度 21.1→21.2（受控逻辑新增）。",
       "ceiling": {
-        "nonCommentLines": 2996,
-        "functionLines": 316,
+        "nonCommentLines": 3025,
+        "functionLines": 331,
         "ctorParams": 0,
         "exports": 16,
-        "branchDensity": 21.1
+        "branchDensity": 21.2
       },
       "firstRun": {
         "bad": [
@@ -1560,11 +1560,11 @@
     "apps/executor-desktop/src/renderer/pages/StatusWindow.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 951,
-      "why": "2026-11-04 实测 nonCommentLines=943、functionLines=807 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[24.5,24.4]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-24 第4轮 D-A：T2 停止确认三路门禁（historyUnknown/running/empty）内联于 StatusWindow 组件函数体 +2 行、T3 并发未知态标签加 gauge.known 守卫 ⇒ 最长函数体 807→809，按实测上调 functionLines 棘轮；门禁纯函数 stopActionGate 已外提 status-helpers.ts，仅两行分支接线留在本文件。 | 2026-11-24 第4轮 R5 最后批 H-A：接 useNowTicker（运行中时长 1s 刷新）、最近失败卡深链元数据、Agent 状态卡短 ID + 复制出口 ⇒ 实测 nonCommentLines=951（+8）、最长函数体 829（+20，StatusWindow 组件内 ticker/深链接线），按实测上调棘轮；纯判定已外提 time-tick.ts/history-nav.ts，本文件只留接线。",
+      "maxLines": 970,
+      "why": "2026-11-04 实测 nonCommentLines=943、functionLines=807 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[24.5,24.4]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-24 第4轮 D-A：T2 停止确认三路门禁（historyUnknown/running/empty）内联于 StatusWindow 组件函数体 +2 行、T3 并发未知态标签加 gauge.known 守卫 ⇒ 最长函数体 807→809，按实测上调 functionLines 棘轮；门禁纯函数 stopActionGate 已外提 status-helpers.ts，仅两行分支接线留在本文件。 | 2026-11-24 第4轮 R5 最后批 H-A：接 useNowTicker（运行中时长 1s 刷新）、最近失败卡深链元数据、Agent 状态卡短 ID + 复制出口 ⇒ 实测 nonCommentLines=951（+8）、最长函数体 829（+20，StatusWindow 组件内 ticker/深链接线），按实测上调棘轮；纯判定已外提 time-tick.ts/history-nav.ts，本文件只留接线。 | turnaround: desktop workbench entry wiring, nonCommentLines 951->970, functionLines 829->845, controlled UI increment.",
       "ceiling": {
-        "nonCommentLines": 951,
-        "functionLines": 829,
+        "nonCommentLines": 970,
+        "functionLines": 845,
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 24.4
@@ -1724,10 +1724,10 @@
     "packages/acf-cli/src/__tests__/cli-gaps.test.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1535,
-      "why": "2026-11-04 实测 nonCommentLines=1535 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1537,
+      "why": "2026-11-04 实测 nonCommentLines=1535 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 【2026-11-27 空降大改造轮重签】ACF_API_KEY / --api-key 与 artifact/template 新命令的 CLI 契约补测，nonCommentLines 1535→1537（+2）；测试文件。",
       "ceiling": {
-        "nonCommentLines": 1535,
+        "nonCommentLines": 1537,
         "functionLines": 8,
         "ctorParams": 0,
         "exports": 0,
@@ -1742,10 +1742,10 @@
     "packages/acf-cli/src/__tests__/commands.test.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1478,
-      "why": "2026-11-04 实测 nonCommentLines=1478 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1480,
+      "why": "2026-11-04 实测 nonCommentLines=1478 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 【2026-11-27 空降大改造轮重签】acf artifact/template 新命令注册与 help 输出的回归用例，nonCommentLines 1478→1480（+2）；测试文件。",
       "ceiling": {
-        "nonCommentLines": 1478,
+        "nonCommentLines": 1480,
         "functionLines": 12,
         "ctorParams": 0,
         "exports": 0,
@@ -1797,10 +1797,10 @@
     "packages/mcp-server/src/__tests__/tools.test.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 2275,
-      "why": "【R50 重签：2244→2275（+31）】list_dead_letters 截断信号两条用例（501>2→truncated=true、config 失败→null 降级）；删除即失去反证。 | 【R43 重签：2221→2244（+23 非注释行）】MCP sop_get slug 分支测试（slug 编码路径、二选一双红）+ sop_assignments_pending 尾部 ? 断言随 R40 路径形态修正；删除即失去反证。函数体/密度未变。 | 【R40 重签：2181→2221（+40 非注释行）】MCP sop_assignments_pending 分页用例：验证 offset/limit 分页、truncated/pendingTotal 报告，删除即失去反证。函数体/密度未变。 | 2026-11-04 实测 nonCommentLines=2181 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 2436,
+      "why": "【R50 重签：2244→2275（+31）】list_dead_letters 截断信号两条用例（501>2→truncated=true、config 失败→null 降级）；删除即失去反证。 | 【R43 重签：2221→2244（+23 非注释行）】MCP sop_get slug 分支测试（slug 编码路径、二选一双红）+ sop_assignments_pending 尾部 ? 断言随 R40 路径形态修正；删除即失去反证。函数体/密度未变。 | 【R40 重签：2181→2221（+40 非注释行）】MCP sop_assignments_pending 分页用例：验证 offset/limit 分页、truncated/pendingTotal 报告，删除即失去反证。函数体/密度未变。 | 2026-11-04 实测 nonCommentLines=2181 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 【2026-11-27 空降大改造轮重签】新增 6 个高杠杆 MCP 工具（create_task/delete_task/list_artifacts/send_agent_message/cancel_agent_session/decide_agent_approval）的注册与 schema 保真回归用例，nonCommentLines 2275→2436；测试文件，不改生产密度/函数体。",
       "ceiling": {
-        "nonCommentLines": 2275,
+        "nonCommentLines": 2436,
         "functionLines": 25,
         "ctorParams": 0,
         "exports": 0,
@@ -1815,13 +1815,13 @@
     "packages/mcp-server/src/tools.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 844,
-      "why": "【R50 重签：779→805（+26）】list_dead_letters 增 GET /executors/runtime-config 取真实总数、truncated 截断信号与降级 note；反证去 truncated→用例红。 | 【R43 重签：762→779（+17）、functionLines 232→251（+19，registerSopTools）】MCP sop_get 支持 id 或 slug（agent 端同口径）：sopId optional + slug 二选一 zod 校验 + by-slug 编码路径 + 诚实 description，registerSopTools 因新增分支/校验/描述增长 19 行（仍 <300 全局阈值）；exports/密度未变。反证：删 slug 分支 → slug 用例红。 | 【R40 补签2：761→762 / functionLines 231→232（+1，mutation-residue-ok 豁免注释）】分页字段 total 的类型守卫 `typeof === \"number\" ? x : null` 被 derived-to-constant 正则误报，加行内带理由豁免（非变异体）。 | 【R40 补签：functionLines 227→231（+4，registerSopTools 内 consumer-routes 路径形态注释）】路径改写为字面 `?` 在 query 插值前，供守卫 split(\"?\")[0] 正确归一；注释说明为何不能用条件表达式插值。仍 <300。 | 【R40 重签：nonCommentLines 726→761（+35）、functionLines 194→227（+33，registerSopTools）】MCP sop_assignments_pending 暴露 offset/limit 分页与 truncated/pendingTotal：sopId 分支改读新 /sop/:id/assignments/page 端点并回分页事实，避免 >100 条时旧卡单永久不可见。registerSopTools 因新增参数 schema + 分支 + 描述增长 33 行（仍 < 300 全局阈值）；exports/密度未变。 | 2026-11-04 R6「工具清单化」第 1 批实测：audit/project/executor 三组（7 个工具、243 行）已搬至 packages/mcp-server/src/tools/{audit,project,executor}.ts，共享件下沉到 tools/shared.ts；非注释行 2092→1742（其余 6 组 49 个工具仍在此文件）。ceiling 按实测收紧（不是放宽）：exports 25→14、branchDensity 11.6→10.8、functionLines 仍 854（registerTaskTools 未拆，留待下一批）。1742 里有 13 行是共享件的**显式再导出清单**：刻意不写 `export *`，否则 JSON_CONTENT/UUID_PATH_ID/zod 枚举这些内部构件会顺着 \"./tools\" 漏成公开 API。 | **R7 registerTaskTools 拆分**：`registerTaskTools`（854 行 / 21 工具）按子域拆到 `tools/{task-definition,task-execution,task-operations,task-template,task-version,task-update}.ts`。实测 tools.ts 非注释 1742→**1046**、最长函数 854→**384**（`registerDeploymentTools`）、密度 10.8→**14.1**。**56 个 `server.tool` 块逐字节比对：55/56 相同**，唯一差异 `update_task` 是把 schema 整体搬到 `UPDATE_TASK_SCHEMA` 常量（**字段 38 个、`.describe()` 40 处，两侧完全一致**）⇒ 纯搬移。⚠️ 下一个候选是 `registerDeploymentTools`（384 行）。 | **文件重命名**：`task-update.schema.ts` → **`task-update.ts`** —— 它既含 schema 常量**也含 `update_task` 的注册**（`admin-hints.test.ts` 断言 `tools/` 下**除 shared.ts 外每个文件都必须 ≥1 个 `server.tool(`** ⇒ 纯 schema 文件会直接红 ⇒ **schema 与注册同文件是被约束逼的**，不是偷懒）⇒ 文件名应当**名副其实**（`.schema` 后缀会让人以为它不含注册）。 | **R8 deployment 拆分**：`registerDeploymentTools`（384 行 / 9 工具）按子域拆到 `tools/{deployment-deploy,deployment-lifecycle,deployment-approval}.ts`（3 / 2 / 4 个工具，聚合器按**搬走前的注册顺序**调用三家）。实测 tools.ts 非注释 1046→**726**、最长函数 384→**194**（`registerApplicationTools@L118`）、exports 仍 **14**、密度 14.1→**14.2** —— **密度微升不是变复杂**：分支绝对数 148→**103**（−45），分母缩得更多；ceiling 按实测重签，且 branchDensity 只在 >20 时才被读取。**56 个 `server.tool` 块逐字节比对 56/56 完全相同**（本轮没有 `update_task` 那种 schema 外提），另做**运行时**逐工具比对 description / annotations / zod JSON Schema（56/56 全等，含注册顺序）。⚠️ **DEP-04 审批语义横跨两个文件**（产生侧 deploy / 闭环侧 approval），两侧文件头注互相点名 —— 拆的是文件，不是语义链。 | **R12 评估（2026-11-05）：`registerApplicationTools` 194 行，结论 = 不拆（边界已定，勿重复评估）**。逐行实测归类：zod schema 声明 **74 行(38%)** + `server.tool(` 脚手架 **49 行(25%)** + 注释 **28 行(14%)** + 空行 5 ⇒ **约 80% 不是逻辑**；handler 体仅 38 行，其中真正的分支逻辑只有 `update_application` 的空 patch 闸（约 12 行）。**没有真实语义分组**（6 个工具全打 `/applications` 一条资源；对比 deployment 9 工具有 DEP-04 产生/闭环链 + 触发/运行生命周期两条真链）；且 `create_application`(13 字段) 与 `update_application`(15 字段) 是 `PartialType` 字段对偶（共用 12 键，F1 事故=漏键静默失效），拆开等于拆散唯一能发现下一次漂移的并排位置。假设硬拆：最长函数 194→~110（仍在 300 内，**无判据变强**）、非注释 726→~572 ⇒ 掉到 600 以下反而**强制删本条目**且 `$ratchet.maxEntries` 98→97。故**本轮不改任何数值**（仅注释，非注释行仍 726、最长函数仍 194）；边界理由同时写在 `registerApplicationTools` 上方头注（方法学㊳：停止拆分也要留痕）。 | **工作台 N27 按需检索：nonCommentLines 805→806、exports 14→15（+1 re-export）** —— tools.ts 末尾显式 `export { searchTools } from \"./tool-search\"`（一行 re-export，遵循本仓\"不写 export *、避免内部构件漏成公开 API\"惯例），export 数 14→15；searchTools 本体在独立 tool-search.ts（零依赖纯函数），未新增第 57 个 MCP 工具（tool 面仍 56）。why 理由：显式单导出是最小面的选择。 | 【N27 重签：806→844（+38）、exports 15→16（+1）】把 withStructuredToolErrors 改成本地包装，在第 57 个工具 tool_search 注册边界读真实 _registeredTools 做按需检索；38 行 = 包装 + 注册块 + 类型；exports +1 = searchTools 显式再导出改成本地 import+re-export 组合。反证：删注册块 → tool_search 断言红；工具数已同步 mcp-tool-sources/probe/admin-hints。SDK 内部字段 _registeredTools 是已知耦合点，SDK 升级需复核。",
+      "maxLines": 845,
+      "why": "【R50 重签：779→805（+26）】list_dead_letters 增 GET /executors/runtime-config 取真实总数、truncated 截断信号与降级 note；反证去 truncated→用例红。 | 【R43 重签：762→779（+17）、functionLines 232→251（+19，registerSopTools）】MCP sop_get 支持 id 或 slug（agent 端同口径）：sopId optional + slug 二选一 zod 校验 + by-slug 编码路径 + 诚实 description，registerSopTools 因新增分支/校验/描述增长 19 行（仍 <300 全局阈值）；exports/密度未变。反证：删 slug 分支 → slug 用例红。 | 【R40 补签2：761→762 / functionLines 231→232（+1，mutation-residue-ok 豁免注释）】分页字段 total 的类型守卫 `typeof === \"number\" ? x : null` 被 derived-to-constant 正则误报，加行内带理由豁免（非变异体）。 | 【R40 补签：functionLines 227→231（+4，registerSopTools 内 consumer-routes 路径形态注释）】路径改写为字面 `?` 在 query 插值前，供守卫 split(\"?\")[0] 正确归一；注释说明为何不能用条件表达式插值。仍 <300。 | 【R40 重签：nonCommentLines 726→761（+35）、functionLines 194→227（+33，registerSopTools）】MCP sop_assignments_pending 暴露 offset/limit 分页与 truncated/pendingTotal：sopId 分支改读新 /sop/:id/assignments/page 端点并回分页事实，避免 >100 条时旧卡单永久不可见。registerSopTools 因新增参数 schema + 分支 + 描述增长 33 行（仍 < 300 全局阈值）；exports/密度未变。 | 2026-11-04 R6「工具清单化」第 1 批实测：audit/project/executor 三组（7 个工具、243 行）已搬至 packages/mcp-server/src/tools/{audit,project,executor}.ts，共享件下沉到 tools/shared.ts；非注释行 2092→1742（其余 6 组 49 个工具仍在此文件）。ceiling 按实测收紧（不是放宽）：exports 25→14、branchDensity 11.6→10.8、functionLines 仍 854（registerTaskTools 未拆，留待下一批）。1742 里有 13 行是共享件的**显式再导出清单**：刻意不写 `export *`，否则 JSON_CONTENT/UUID_PATH_ID/zod 枚举这些内部构件会顺着 \"./tools\" 漏成公开 API。 | **R7 registerTaskTools 拆分**：`registerTaskTools`（854 行 / 21 工具）按子域拆到 `tools/{task-definition,task-execution,task-operations,task-template,task-version,task-update}.ts`。实测 tools.ts 非注释 1742→**1046**、最长函数 854→**384**（`registerDeploymentTools`）、密度 10.8→**14.1**。**56 个 `server.tool` 块逐字节比对：55/56 相同**，唯一差异 `update_task` 是把 schema 整体搬到 `UPDATE_TASK_SCHEMA` 常量（**字段 38 个、`.describe()` 40 处，两侧完全一致**）⇒ 纯搬移。⚠️ 下一个候选是 `registerDeploymentTools`（384 行）。 | **文件重命名**：`task-update.schema.ts` → **`task-update.ts`** —— 它既含 schema 常量**也含 `update_task` 的注册**（`admin-hints.test.ts` 断言 `tools/` 下**除 shared.ts 外每个文件都必须 ≥1 个 `server.tool(`** ⇒ 纯 schema 文件会直接红 ⇒ **schema 与注册同文件是被约束逼的**，不是偷懒）⇒ 文件名应当**名副其实**（`.schema` 后缀会让人以为它不含注册）。 | **R8 deployment 拆分**：`registerDeploymentTools`（384 行 / 9 工具）按子域拆到 `tools/{deployment-deploy,deployment-lifecycle,deployment-approval}.ts`（3 / 2 / 4 个工具，聚合器按**搬走前的注册顺序**调用三家）。实测 tools.ts 非注释 1046→**726**、最长函数 384→**194**（`registerApplicationTools@L118`）、exports 仍 **14**、密度 14.1→**14.2** —— **密度微升不是变复杂**：分支绝对数 148→**103**（−45），分母缩得更多；ceiling 按实测重签，且 branchDensity 只在 >20 时才被读取。**56 个 `server.tool` 块逐字节比对 56/56 完全相同**（本轮没有 `update_task` 那种 schema 外提），另做**运行时**逐工具比对 description / annotations / zod JSON Schema（56/56 全等，含注册顺序）。⚠️ **DEP-04 审批语义横跨两个文件**（产生侧 deploy / 闭环侧 approval），两侧文件头注互相点名 —— 拆的是文件，不是语义链。 | **R12 评估（2026-11-05）：`registerApplicationTools` 194 行，结论 = 不拆（边界已定，勿重复评估）**。逐行实测归类：zod schema 声明 **74 行(38%)** + `server.tool(` 脚手架 **49 行(25%)** + 注释 **28 行(14%)** + 空行 5 ⇒ **约 80% 不是逻辑**；handler 体仅 38 行，其中真正的分支逻辑只有 `update_application` 的空 patch 闸（约 12 行）。**没有真实语义分组**（6 个工具全打 `/applications` 一条资源；对比 deployment 9 工具有 DEP-04 产生/闭环链 + 触发/运行生命周期两条真链）；且 `create_application`(13 字段) 与 `update_application`(15 字段) 是 `PartialType` 字段对偶（共用 12 键，F1 事故=漏键静默失效），拆开等于拆散唯一能发现下一次漂移的并排位置。假设硬拆：最长函数 194→~110（仍在 300 内，**无判据变强**）、非注释 726→~572 ⇒ 掉到 600 以下反而**强制删本条目**且 `$ratchet.maxEntries` 98→97。故**本轮不改任何数值**（仅注释，非注释行仍 726、最长函数仍 194）；边界理由同时写在 `registerApplicationTools` 上方头注（方法学㊳：停止拆分也要留痕）。 | **工作台 N27 按需检索：nonCommentLines 805→806、exports 14→15（+1 re-export）** —— tools.ts 末尾显式 `export { searchTools } from \"./tool-search\"`（一行 re-export，遵循本仓\"不写 export *、避免内部构件漏成公开 API\"惯例），export 数 14→15；searchTools 本体在独立 tool-search.ts（零依赖纯函数），未新增第 57 个 MCP 工具（tool 面仍 56）。why 理由：显式单导出是最小面的选择。 | 【N27 重签：806→844（+38）、exports 15→16（+1）】把 withStructuredToolErrors 改成本地包装，在第 57 个工具 tool_search 注册边界读真实 _registeredTools 做按需检索；38 行 = 包装 + 注册块 + 类型；exports +1 = searchTools 显式再导出改成本地 import+re-export 组合。反证：删注册块 → tool_search 断言红；工具数已同步 mcp-tool-sources/probe/admin-hints。SDK 内部字段 _registeredTools 是已知耦合点，SDK 升级需复核。 | 【2026-11-27 空降大改造轮重签】新增 registerTurnaroundTools 的显式 re-export（6 个高杠杆工具在 tools/turnaround-tools.ts 实现，本文件只导出一个新入口）；nonCommentLines 844→845、exports 16→17，工具本体零新增到本文件。",
       "ceiling": {
-        "nonCommentLines": 844,
+        "nonCommentLines": 845,
         "functionLines": 251,
         "ctorParams": 0,
-        "exports": 16,
+        "exports": 17,
         "branchDensity": 14.2
       },
       "firstRun": {

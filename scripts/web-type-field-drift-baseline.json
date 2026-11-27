@@ -68,12 +68,6 @@
       "review_by": "2026-12-15"
     },
     {
-      "key": "apps/admin-web/src/api/executor-packages.ts\tExecutorPackage\textra:changelog",
-      "reason": "保留（非前端合成，UI 已消费·后端契约缺位）：ExecutorInstallWizardPage 用 matchedPackage.changelog 渲染更新日志；生成 ExecutorPackageResponseDto 无该字段，后端 ExecutorPackage 契约本切片未扩，继续冻结基线等待其域补契约，不虚报为前端合成。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
       "key": "apps/admin-web/src/api/executors.ts\tExecutor\tmissing:capabilities",
       "reason": "待处置（missing·生成物有·手写无）：后端已下发 capabilities，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
       "owner": "arch-core",
@@ -132,18 +126,6 @@
     {
       "key": "apps/admin-web/src/api/agent.ts\tAgentApprovalDecision",
       "reason": "待处置（未配对）：AgentApprovalDecision 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
-      "key": "apps/admin-web/src/api/ai.ts\tAiProviderAdminView",
-      "reason": "待处置（未配对）：AiProviderAdminView 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
-      "key": "apps/admin-web/src/api/ai.ts\tAiProviderView",
-      "reason": "待处置（未配对）：AiProviderView 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
       "owner": "arch-core",
       "review_by": "2026-12-15"
     },

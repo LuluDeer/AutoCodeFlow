@@ -36,7 +36,7 @@ export function isRealRepoRoot(rootDir) {
 }
 
 /** 当前 `server.tool(` 的**真实**出现次数（56 个工具）。新增/删除工具时必须同步。 */
-export const EXPECTED_TOOL_COUNT = 57;
+export const EXPECTED_TOOL_COUNT = 63;
 
 /**
  * 拼接 `tools.ts` 与 `tools/*.ts` 的源码文本，并**自证扫描面完整**。

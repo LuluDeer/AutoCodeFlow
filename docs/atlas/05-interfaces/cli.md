@@ -1,5 +1,5 @@
-# CLI 命令地图（acf，69 个子命令）
-> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-20 · 对应代码: packages/acf-cli/src（index.ts + commands/ 12 个文件）
+# CLI 命令地图（acf，74 个子命令）
+> 所属: docs/atlas/05-interfaces · 最后核对: 2026-11-27 · 对应代码: packages/acf-cli/src（index.ts + commands/ 14 个文件）
 
 ## 怎么连
 
@@ -17,7 +17,7 @@
 
 优先级：CLI 选项 > 环境变量 > conf 存储。CLI 不持有 executor token；执行器面操作不在命令范围内。
 
-## 命令地图（13 个域 + config，共 69 个子命令）
+## 命令地图（15 个域 + config，共 74 个子命令）
 
 ### login / config（6）
 
@@ -148,6 +148,22 @@
 
 > **曾漏记**：`acf mutex` 自命令注册起（`index.ts` 的 `program.addCommand(mutexCommand())`）就一直存在于 CLI，
 > 但命令地图里**没有这一节** —— 文档读者会以为没有互斥组的管理入口。R69 补入。
+
+### artifact（3）— commands/artifact.ts
+
+| 命令 | 作用 | 关键选项 |
+|---|---|---|
+| `acf artifact list` | 列出产物（可按执行过滤） | `--execution` |
+| `acf artifact preview <execId> <name>` | 通过有界 preview 端点读取文本预览（图片/二进制仅元信息） | `--max-bytes` |
+| `acf artifact download <execId> <name>` | 下载产物原文件（保留 SHA-256 校验头） | `-o/--output` |
+
+### template（2）— commands/template.ts
+
+| 命令 | 作用 | 关键选项 |
+|---|---|---|
+| `acf template list` | 列出任务模板 | `--json` |
+| `acf template use <id>` | 用模板实例化任务 | `--name` `--params '<json>'` |
+
 ## 常见坑
 
 1. `task trigger` 默认**不**等待（立即返回执行 id）；需要等终态并拿退出码时加 `--wait`（失败终态/超时退出码 1），超时上限 `--wait-timeout <s>`。

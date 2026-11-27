@@ -144,8 +144,10 @@ check(
   /purpose === "video" && !entry\.supportsVideo/.test(route),
 );
 check(
-  "能力闸：Agent 拒绝 ollama（无 tool-calling 面）",
-  /purpose === "agent" && entry\.transport !== "openai"/.test(route),
+  "能力闸：非 OpenAI 传输仅允许在 agent 用途切到 OpenAI 兼容面",
+  /purpose === "agent" && entry\.transport === "ollama"/.test(route) &&
+    /resolvedTransport = useOllamaOpenAi \? "openai" : entry\.transport/.test(route) &&
+    !/purpose === "agent" && entry\.transport !== "openai"/.test(route),
 );
 check(
   "Agent 输出/超时下限不继承分析档",
