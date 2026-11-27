@@ -67,6 +67,32 @@ export interface LogsPurgedState {
   at: Date | null;
 }
 
+/** REST 日志分页的统一返回形状（DB / S3 / 运行态合并共用）。 */
+export interface ExecutionLogPage {
+  lines: string[];
+  /** 与 lines 下标一一对应的真实行号（行号有洞时如实给出）。 */
+  lineNumbers: number[];
+  totalLines: number;
+  hasMore: boolean;
+  /** 下一页 fromLine = 最后一行 lineNumber + 1；空页 = 本次 fromLine。 */
+  nextCursor: number;
+}
+
+/** SSE 日志帧：控制器把本对象 JSON.stringify 后写进 `data:`。 */
+export interface ExecutionLogStreamFrame {
+  lineNumber: number;
+  content: string;
+}
+
+/** 终态集合：REST 的「S3 单一来源 vs 运行态合并」与 SSE 共用同一份判据。 */
+const TERMINAL_LOG_STATUSES: string[] = [
+  ExecutionStatus.SUCCESS,
+  ExecutionStatus.FAILED,
+  ExecutionStatus.TIMEOUT,
+  "killed",
+  "cancelled",
+];
+
 /** 注入回调面（**窄签名**）。 */
 export interface ExecutionLogReadDeps {
   /** 执行记录仓库。 */
@@ -259,7 +285,10 @@ export class ExecutionLogRead {
     fromLine = 0,
     limit = 500,
     level?: string | null,
-  ) {
+  ): Promise<ExecutionLogPage & {
+    logsPurged: boolean | null;
+    logsPurgedAt: string | null;
+  }> {
     // Cap limit to prevent accidental memory exhaustion
     const safeLimit = Math.min(Math.max(1, limit), 2000);
     const exec = await this.deps.execRepo.findOne({ where: { id: execId } });
@@ -269,91 +298,129 @@ export class ExecutionLogRead {
       });
     }
     const logWindow = this.logPartitionWindow(exec);
-    // LOG-02 + High-6.1: S3-stored logs are streamed line-by-line so we never
-    // hold the full decompressed payload in memory. The S3 pointer is the
-    // authoritative backend: failures stay failures instead of looking like an
-    // empty DB result (S3 writes purge the DB rows).
+
+    // S3 指针存在时：终态 ⇒ S3 单一来源；未终态 ⇒ DB 实时行 + S3 已归档行
+    // 按 lineNumber 合并（DB 优先，实时内容更新），否则运行中实时行不可见。
     if (exec.logStorage === "s3" && exec.logObjectKey) {
-      let result: Awaited<ReturnType<typeof paginateLogStream>>;
+      // 缺 status 的旧装配/桩视同终态，保持 S3 权威语义；真运行的执行恒有 status。
+      const terminal =
+        !exec.status || TERMINAL_LOG_STATUSES.includes(exec.status);
+      let archived: ExecutionLogPage | null = null;
       try {
         const s3 = this.deps.resolveS3Storage();
         if (!s3) {
           throw new Error("S3 日志存储未配置");
         }
         const stream = await s3.getStream(exec.logObjectKey);
-        result = await paginateLogStream(stream, fromLine, safeLimit, {
+        archived = await paginateLogStream(stream, fromLine, safeLimit, {
           level: level ?? null,
+          // REST 契约：fromLine 恒为行号（level 模式也用行号游标）；
+          // paginateLogStream 默认仍保留旧的 offset 语义供既有直调方使用。
+          cursorMode: "line",
         });
       } catch (err: unknown) {
+        if (terminal) {
+          this.deps.logger.warn(
+            `Failed to read S3 logs for execution ${execId} (${err instanceof Error ? err.message : String(err)}) — S3 pointer is authoritative; DB fallback skipped`,
+          );
+          throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {
+            executionId: execId,
+            dependency: "s3_log_storage",
+          });
+        }
+        // 运行态 S3 暂不可读：不吞成空日志，退回 DB 实时行（下面继续）。
         this.deps.logger.warn(
-          `Failed to read S3 logs for execution ${execId} (${err instanceof Error ? err.message : String(err)}) — S3 pointer is authoritative; DB fallback skipped`,
+          `Failed to read S3 logs for running execution ${execId} (${err instanceof Error ? err.message : String(err)}) — showing DB live lines only`,
         );
-        throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {
-          executionId: execId,
-          dependency: "s3_log_storage",
-        });
       }
-      // R284：S3 内容为空同样要能说清"为什么空"（对象被 S3LogObjectRetention
-      // 回收 ⇒ 指针被清空后根本进不了本分支；能进来但内容为空 ⇒ 真没输出）。
-      return {
-        ...result,
-        ...(await this.purgedFields(exec, result.lines)),
+      if (terminal && archived) {
+        return {
+          ...archived,
+          ...(await this.purgedFields(exec, archived.lines)),
+        };
+      }
+
+      const dbRows = await this.liveDbLines(
+        execId,
+        fromLine,
+        logWindow,
+        level,
+        safeLimit + 1,
+      );
+      // 同号冲突：DB 实时行优先（它是后写入的较新内容）。
+      const byLine = new Map<number, string>();
+      for (const row of dbRows) byLine.set(row.lineNumber, row.content);
+      if (archived) {
+        for (let i = 0; i < archived.lineNumbers.length; i++) {
+          const n = archived.lineNumbers[i];
+          if (!byLine.has(n)) byLine.set(n, archived.lines[i]);
+        }
+      }
+      const merged = buildPageFromEntries(byLine, fromLine, safeLimit);
+      const page: ExecutionLogPage = {
+        ...merged,
+        // archived 只取了 safeLimit 行：它报告还有后续 ⇒ 合并页也必须 hasMore。
+        hasMore: merged.hasMore || (archived?.hasMore ?? false),
       };
+      return { ...page, ...(await this.purgedFields(exec, page.lines)) };
     }
-    // N10: use typed logLineRepo instead of string-based getRepository
-    // CODE-01: fetch true total in parallel so pagination metadata is accurate
-    // OBS-03: level 过滤在 SQL 层下推（level = :level）；未传 level 时查询
-    // 形态与 OBS-03 之前完全一致（行号游标 + 全量 count），存量行为不变。
-    const qb = this.deps.logLineRepo
-      .createQueryBuilder("l")
-      .where("l.executionId = :id", { id: execId })
-      // P1（第 6 轮）：分区键范围——让 PG 只扫执行窗口覆盖的分区。
-      .andWhere("l.createdAt >= :logSince AND l.createdAt <= :logUntil", {
-        logSince: logWindow.since,
-        logUntil: logWindow.until,
-      });
-    if (level) {
-      qb.andWhere("l.level = :level", { level });
-    } else {
-      qb.andWhere("l.lineNumber >= :from", { from: fromLine });
-    }
-    // OBS-03: level 过滤后行集不再按 lineNumber 连续，行号游标
-    // （lineNumber >= from）会让 fromLine += lines.length 的既有客户端翻页
-    // 契约产生重复/漏行——过滤模式下 fromLine 语义切换为"过滤后序列的
-    // 偏移量"（skip/OFFSET），与 S3 路径的读后过滤分页保持同一语义（见
-    // api-reference.md）。未传 level 时绝不触碰 skip（行为不变）。
-    const paged = qb
-      .orderBy("l.lineNumber", "ASC")
-      .select(["l.lineNumber", "l.content"])
-      .take(safeLimit);
-    const [lines, totalLines] = await Promise.all([
-      (level ? paged.skip(fromLine) : paged).getMany(),
-      // OBS-03: totalLines 与过滤语义一致——level 过滤时按 level 计数
-      // （分页元数据描述的是调用方能翻到的行集），未过滤时保持全量计数。
-      level
-        ? this.deps.logLineRepo.count({
-            where: {
-              executionId: execId,
-              level,
-              createdAt: Between(logWindow.since, logWindow.until),
-            },
-          })
-        : this.deps.logLineRepo.count({
-            where: {
-              executionId: execId,
-              createdAt: Between(logWindow.since, logWindow.until),
-            },
-          }),
-    ]);
-    const page = {
-      lines: lines.map((r) => r.content),
-      // CODE-01: true total count, not (currentBatch + offset)
+
+    const dbRows = await this.liveDbLines(
+      execId,
+      fromLine,
+      logWindow,
+      level,
+      safeLimit + 1,
+    );
+    // 多取一行判定 hasMore：行号有洞时 fromLine + lines.length 不再等于游标。
+    const hasMore = dbRows.length > safeLimit;
+    const rows = dbRows.slice(0, safeLimit);
+    const lineNumbers = rows.map((r) => r.lineNumber);
+    const lastLine = lineNumbers.length > 0 ? lineNumbers[lineNumbers.length - 1] : fromLine - 1;
+    const totalLines = await this.deps.logLineRepo.count({
+      where: {
+        executionId: execId,
+        ...(level ? { level } : {}),
+        createdAt: Between(logWindow.since, logWindow.until),
+      },
+    });
+    const page: ExecutionLogPage = {
+      lines: rows.map((r) => r.content),
+      lineNumbers,
       totalLines,
-      hasMore: fromLine + lines.length < totalLines,
+      hasMore,
+      nextCursor: lineNumbers.length > 0 ? lastLine + 1 : fromLine,
     };
     // R284-LOGPURGE-01：日志区为空时必须能说清是「已按保留期清理」还是
     // 「真没输出」——而不只是返回空数组（空数组是一个没有宾语的事实）。
     return { ...page, ...(await this.purgedFields(exec, page.lines)) };
+  }
+
+  /**
+   * 从 DB 读取 lineNumber >= fromLine 的行（含 level 过滤），多取 1 行用于
+   * 精确判定 hasMore。level 模式下 fromLine 同样是行号游标，与 S3 一致。
+   */
+  private async liveDbLines(
+    execId: string,
+    fromLine: number,
+    logWindow: { since: Date; until: Date },
+    level: string | null | undefined,
+    fetchLimit: number,
+  ): Promise<Array<{ lineNumber: number; content: string }>> {
+    const qb = this.deps.logLineRepo
+      .createQueryBuilder("l")
+      .where("l.executionId = :id", { id: execId })
+      .andWhere("l.createdAt >= :logSince AND l.createdAt <= :logUntil", {
+        logSince: logWindow.since,
+        logUntil: logWindow.until,
+      })
+      .andWhere("l.lineNumber >= :from", { from: fromLine });
+    if (level) qb.andWhere("l.level = :level", { level });
+    return qb
+      .orderBy("l.lineNumber", "ASC")
+      .select(["l.lineNumber", "l.content"])
+      .take(fetchLimit)
+      .getMany() as Promise<Array<{ lineNumber: number; content: string }>>;
   }
 
   /**
@@ -399,11 +466,16 @@ export class ExecutionLogRead {
     // wraps content in `data:` frames; the idle heartbeat must bypass that
     // wrapper so EventSource clients ignore the frame per the SSE spec.
     ping?: () => void,
+    // LOG-HARDEN: 断线重连从最后已见行号之后续传；0/未传 = 从头。
+    fromLine = 0,
+    // LOG-HARDEN: 带行号的帧出口。未提供时退回旧 `send(纯文本)`，保持既有
+    // 直调方（含存量单测）零破坏；控制器提供它 ⇒ 每帧携带 lineNumber。
+    emitFrame?: (frame: ExecutionLogStreamFrame) => void,
   ): Promise<void> {
     // TASK-008: 控制器通常会在写出 SSE 响应头之前预先占用槽位
     // （preAcquiredSlot），以便超限时能返回真正的 503；未传入时在此补占。
     const releaseSlot = preAcquiredSlot ?? this.deps.acquireSseSlot(execId);
-    let nextLine = 0;
+    let nextLine = Number.isFinite(fromLine) ? Math.max(0, fromLine) : 0;
     let s3FetchFailed = false;
     const POLL_INTERVAL = 1000; // ms
     const MAX_RUNTIME = 30 * 60 * 1000; // 30 min safety cap
@@ -423,9 +495,10 @@ export class ExecutionLogRead {
     // EventSource 解析不受影响，但反向代理会把连接视为活跃。
     const IDLE_PING_INTERVAL = 15_000; // ms
     let lastWriteAt = Date.now();
-    const write = (line: string) => {
+    const write = (content: string, lineNumber: number) => {
       lastWriteAt = Date.now();
-      send(line);
+      if (emitFrame) emitFrame({ lineNumber, content });
+      else send(content);
     };
     const start = Date.now();
     const TERMINAL_STATUSES = [
@@ -481,19 +554,34 @@ export class ExecutionLogRead {
         }
       }
 
-      // LOG-02: S3 objects are uploaded once at callback time, so their lines
-      // become readable only after the execution reaches a terminal state;
-      // stream whatever has not been sent yet, then stop.
+      // S3 指针存在：终态 ⇒ S3 单一来源；运行中 ⇒ S3 对象尚未上传，实时行
+      // 只在 DB ⇒ 每拍从 DB 推进（之前整段跳过，运行中日志面全空）。
       if (exec.logStorage === "s3" && exec.logObjectKey) {
-        const terminal = TERMINAL_STATUSES.includes(exec.status);
-        if (terminal && !s3FetchFailed) {
+        const terminal = TERMINAL_LOG_STATUSES.includes(exec.status);
+        if (!terminal) {
+          const sseWindow = this.logPartitionWindow(exec);
+          const live = await this.liveDbLines(
+            execId,
+            nextLine,
+            sseWindow,
+            null,
+            SSE_FLUSH_BATCH_LINES + 1,
+          );
+          const rows = live.slice(0, SSE_FLUSH_BATCH_LINES);
+          for (const row of rows) {
+            write(row.content, row.lineNumber);
+            nextLine = Math.max(nextLine, row.lineNumber + 1);
+          }
+          // 未终态永不提前结束（空拍也要继续轮询，否则运行中流会秒退）。
+          // 满批由外层 while 下一轮继续从 nextLine 推进，不在这里截断。
+          return false;
+        }
+        if (!s3FetchFailed) {
           try {
             const s3 = this.deps.resolveS3Storage();
             if (s3) {
-              // O-14/F-3：改用 getStream() 流式逐行回传，不再把整个日志对象
-              // gunzip 成全量 Buffer/字符串驻留内存。按物理行索引跳过已推送行
-              // （nextLine），流结束后把 nextLine 推进到总行数，与原全量
-              // split("\n") + slice 的 SSE 协议/行分割语义一致。
+              // O-14/F-3：getStream() 流式逐行回传；每个 SSE 帧携带真实行号
+              // （物理行索引），前端按它去重、重连从该行号续传。
               const stream = await s3.getStream(exec.logObjectKey);
               const rl = createInterface({
                 input: stream,
@@ -501,10 +589,10 @@ export class ExecutionLogRead {
               });
               let idx = 0;
               for await (const line of rl) {
-                if (idx >= nextLine) write(line);
+                if (idx >= nextLine) write(line, idx);
                 idx++;
               }
-              nextLine = idx;
+              nextLine = Math.max(nextLine, idx);
             }
           } catch (err: unknown) {
             s3FetchFailed = true;
@@ -513,7 +601,7 @@ export class ExecutionLogRead {
             );
           }
         }
-        return terminal;
+        return true;
       }
 
       // P1（第 6 轮）：与 REST 同款分区窗口——SSE 每 1s 一拍、并发 64 条时
@@ -537,8 +625,8 @@ export class ExecutionLogRead {
         .getMany();
 
       for (const row of lines) {
-        write(row.content);
-        nextLine = row.lineNumber + 1;
+        write(row.content, row.lineNumber);
+        nextLine = Math.max(nextLine, row.lineNumber + 1);
       }
 
       const terminal = [
@@ -701,26 +789,68 @@ export async function paginateLogStream(
   stream: Readable,
   fromLine: number,
   limit: number,
-  opts: { level?: string | null } = {},
-): Promise<{ lines: string[]; totalLines: number; hasMore: boolean }> {
+  opts: { level?: string | null; cursorMode?: "line" | "offset" } = {},
+): Promise<ExecutionLogPage> {
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
   const out: string[] = [];
-  let idx = 0; // physical line index (unfiltered)
-  let matched = 0; // OBS-03: lines surviving the level filter
+  const lineNumbers: number[] = [];
+  let idx = 0; // physical line index (真实行号)
+  let matched = 0; // level 过滤后命中的行数
+  let hasMore = false;
+  // 默认（level 模式）保留旧 offset 语义以兼容既有直调方；REST 走 cursorMode:"line"。
+  const useOffset =
+    Boolean(opts.level) && (opts.cursorMode ?? "offset") === "offset";
   for await (const line of rl) {
-    if (opts.level) {
-      if (levelOfLine(line) !== opts.level) continue;
-      if (matched >= fromLine && out.length < limit) out.push(line);
-      matched++;
-    } else {
-      if (idx >= fromLine && out.length < limit) out.push(line);
+    if (opts.level && levelOfLine(line) !== opts.level) {
       idx++;
+      continue;
     }
+    const cursorValue = useOffset ? matched : idx;
+    if (cursorValue >= fromLine) {
+      if (out.length < limit) {
+        out.push(line);
+        lineNumbers.push(idx);
+      } else {
+        hasMore = true;
+      }
+    }
+    matched++;
+    idx++;
   }
   const totalLines = opts.level ? matched : idx;
+  const lastLine = lineNumbers.length > 0 ? lineNumbers[lineNumbers.length - 1] : fromLine - 1;
   return {
     lines: out,
+    lineNumbers,
     totalLines,
-    hasMore: fromLine + out.length < totalLines,
+    // offset 模式保留旧判据（既有契约）；line 模式按真实行号判定。
+    hasMore: useOffset ? fromLine + out.length < totalLines : hasMore,
+    nextCursor: lineNumbers.length > 0 ? lastLine + 1 : fromLine,
+  };
+}
+
+/**
+ * 由 (真实行号 → 文本) 映射构造统一分页页。
+ * 用于 S3 未终态的「DB 实时行 + S3 归档行」合并结果：按行号排序，
+ * 不按到达顺序拼接 ⇒ 行号有洞/乱序到达都不会产生交叠或漏行。
+ */
+export function buildPageFromEntries(
+  byLine: Map<number, string>,
+  fromLine: number,
+  limit: number,
+): ExecutionLogPage {
+  const entries = [...byLine.entries()]
+    .filter(([n]) => n >= fromLine)
+    .sort((a, b) => a[0] - b[0]);
+  const page = entries.slice(0, limit);
+  const lineNumbers = page.map(([n]) => n);
+  const lastLine =
+    lineNumbers.length > 0 ? lineNumbers[lineNumbers.length - 1] : fromLine - 1;
+  return {
+    lines: page.map(([, content]) => content),
+    lineNumbers,
+    totalLines: entries.length,
+    hasMore: entries.length > page.length,
+    nextCursor: lineNumbers.length > 0 ? lastLine + 1 : fromLine,
   };
 }

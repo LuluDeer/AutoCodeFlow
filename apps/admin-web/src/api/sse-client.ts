@@ -94,8 +94,18 @@ export function sseReconnectBackoffMs(
 export interface CreateSseClientOptions {
   /** SSE 基地址（不含尾斜杠），与 axios client 同源 */
   baseUrl: string;
-  /** SSE 路径，如 /metrics/stream */
-  path: string;
+  /**
+   * SSE 路径，如 /metrics/stream。
+   * LOG-HARDEN-01：支持函数形态——每次建连（含重连）现场求值，
+   * 让日志流能按"当前已收最大行号"动态决定续传位置。
+   */
+  path: string | (() => string);
+  /**
+   * LOG-HARDEN-01：每次建连动态求值的 query 参数（如断线续传的 fromLine）。
+   * 由工厂统一拼到 ticket 之前，避免调用方在 path 里手拼出
+   * `?fromLine=N?ticket=...` 这种坏 URL。不传时行为与旧版逐字一致。
+   */
+  query?: Record<string, string | number> | (() => Record<string, string | number>);
   /**
    * 换票函数（可注入，测试桩用）。默认走 `POST /auth/sse-ticket`：
    * A5 之后 access token 不再进 URL，建流前现换一枚 30s 的专用票据。
@@ -142,6 +152,7 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
     reconnect = true,
     base,
     cap,
+    query,
   } = options;
 
   // 状态登记统一出口：注册表 + 订阅者 + 调用方回调三同步。
@@ -236,7 +247,20 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
     // 换票期间被 close（组件卸载）/ 被隐藏（后台标签）→ 丢弃票据，不再建流。
     if (closed || paused) return;
 
-    es = new EventSource(buildSseUrl(baseUrl, path, ticket));
+    // LOG-HARDEN-01：path / query 每次建连现场求值。日志流重连时 fromLine
+    // 必须取自最新已收行号——无论重连由工厂自管还是调用方重建，这里都覆盖到。
+    const resolvedPath = typeof path === 'function' ? path() : path;
+    const queryValues = typeof query === 'function' ? query() : query;
+    const queryEntries = queryValues ? Object.entries(queryValues) : [];
+    if (queryEntries.length > 0) {
+      const qs = new URLSearchParams();
+      for (const [k, v] of queryEntries) qs.set(k, String(v));
+      if (ticket) qs.set('ticket', ticket);
+      es = new EventSource(`${buildSseUrl(baseUrl, resolvedPath)}?${qs.toString()}`);
+    } else {
+      // 无动态 query：走原路径，URL 拼接/编码与既有测试逐字一致。
+      es = new EventSource(buildSseUrl(baseUrl, resolvedPath, ticket));
+    }
 
     es.onopen = () => {
       attempt = 0;

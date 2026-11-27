@@ -83,6 +83,9 @@ describe("TaskController.streamLogs — SSE concurrency (TASK-008)", () => {
       release,
       // QA3: the raw ping sink is handed to the service as the 6th arg
       expect.any(Function),
+      // LOG-HARDEN: fromLine (0 when the query is omitted) + emitFrame sink
+      0,
+      expect.any(Function),
     );
     expect(release).toHaveBeenCalledTimes(1);
   });

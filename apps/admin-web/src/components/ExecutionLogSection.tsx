@@ -103,6 +103,104 @@ const SSE_POLL_MAX_MS = 60_000;
 const SSE_RETRY_BASE_MS = 1500;
 const MAX_SSE_AUTO_RETRIES = 2;
 
+// ── LOG-HARDEN-01：行号模型（SSE / REST 分页 / 断流轮询三路共用的去重口径）──
+/**
+ * 一行日志的权威表示。lineNumber 是后端分配的真实行号（可有不连续洞）。
+ * 所有来源都按它对齐，绝不使用数组下标或到达顺序——这是"重连不重复、
+ * 分页无交叠、refresh 合并不丢行"的唯一正确判据。
+ */
+export interface LogRow {
+  lineNumber: number;
+  content: string;
+}
+
+/** REST 页的局部形状：生成类型尚未追平契约字段，故在此局部叠加。 */
+export type ExecutionLogsPageWithCursor = {
+  lines?: string[];
+  lineNumbers?: number[];
+  nextCursor?: number;
+  hasMore?: boolean;
+};
+
+/** SSE data 帧 `{ lineNumber, content }`；畸形帧返回 null（忽略）。 */
+export function parseSseLogFrame(data: string): LogRow | null {
+  try {
+    const f = JSON.parse(data) as { lineNumber?: unknown; content?: unknown };
+    if (typeof f?.lineNumber !== 'number' || !Number.isFinite(f.lineNumber)) return null;
+    if (typeof f?.content !== 'string') return null;
+    return { lineNumber: f.lineNumber, content: f.content };
+  } catch {
+    return null;
+  }
+}
+
+/** REST 页是否带真实行号（旧后端兼容判定：缺失时不合并，避免错号覆盖）。 */
+export function pageHasLineNumbers(resp: ExecutionLogsPageWithCursor): boolean {
+  return Array.isArray(resp.lineNumbers)
+    && Array.isArray(resp.lines)
+    && resp.lineNumbers.length === resp.lines.length
+    && resp.lineNumbers.every((n) => typeof n === 'number' && Number.isFinite(n));
+}
+
+/** 平行数组 zip 成 LogRow[]；无真实行号时回退下标（仅供旧后端展示）。 */
+export function rowsFromPage(resp: ExecutionLogsPageWithCursor): LogRow[] {
+  const lines = Array.isArray(resp.lines) ? resp.lines : [];
+  const nums = Array.isArray(resp.lineNumbers) ? resp.lineNumbers : [];
+  return lines.map((content, i) => ({
+    lineNumber: typeof nums[i] === 'number' && Number.isFinite(nums[i]) ? nums[i] : i,
+    content,
+  }));
+}
+
+/**
+ * 下页游标：契约优先用 nextCursor（= 本页最后一行真实行号 + 1）。
+ * 旧后端无此字段时退到最后真实行号 + 1，再退到 fromLine + 行数（兼容兜底）。
+ * 行号有洞时绝不用 fromLine += lines.length——那会重复尾部并漏行。
+ */
+export function resolveNextCursor(
+  resp: ExecutionLogsPageWithCursor,
+  fromLine: number,
+  lastLineNumber?: number,
+  fallbackCount = 0,
+): number {
+  if (typeof resp.nextCursor === 'number' && Number.isFinite(resp.nextCursor) && resp.nextCursor > fromLine) {
+    return resp.nextCursor;
+  }
+  if (typeof lastLineNumber === 'number' && Number.isFinite(lastLineNumber) && lastLineNumber + 1 > fromLine) {
+    return lastLineNumber + 1;
+  }
+  return fromLine + fallbackCount;
+}
+
+/** 权威行表 → 按行号升序的文本行（渲染快照）。 */
+export function rowsToLines(map: Map<number, string>): string[] {
+  return [...map.entries()].sort((a, b) => a[0] - b[0]).map(([, content]) => content);
+}
+
+/**
+ * 把一批行合并进权威行表，返回是否有变化。
+ * - 'sse'：仅接受 lineNumber > 已见最大行号（严格递增流），重复/迟到/乱序帧丢弃；
+ * - 'rest'：DB 页优先——同号行覆盖 SSE 缓冲旧内容，并推进最大行号。
+ *
+ * maxRef.current 初始 -1（尚未收到任何行），故首帧行号 0 或 1 都能落地。
+ */
+export function mergeLogRows(
+  map: Map<number, string>,
+  maxRef: { current: number },
+  rows: LogRow[],
+  source: 'sse' | 'rest',
+): boolean {
+  let changed = false;
+  for (const row of rows) {
+    if (!Number.isFinite(row.lineNumber) || row.lineNumber < 0) continue;
+    if (source === 'sse' && row.lineNumber <= maxRef.current) continue;
+    map.set(row.lineNumber, row.content);
+    if (row.lineNumber > maxRef.current) maxRef.current = row.lineNumber;
+    changed = true;
+  }
+  return changed;
+}
+
 export interface ExecutionLogSectionProps {
   taskId: string;
   execId: string;
@@ -141,6 +239,15 @@ export default function ExecutionLogSection({
   const logRef = useRef<HTMLPreElement>(null);
   const [wrapLines, setWrapLines] = useState(true);
   const [streamLines, setStreamLines] = useState<string[] | null>(null);
+  // LOG-HARDEN-01：以真实行号为准的权威行表。SSE 帧 / REST 分页 / 断流轮询
+  // 三路写入同一张表，按 lineNumber 去重（DB 页覆盖同号 SSE 行），渲染时
+  // 才按行号排序 join；行号有洞不会产生尾部交叠。
+  const logLineMapRef = useRef<Map<number, string>>(new Map());
+  // 已见最大行号（-1 = 尚未收到任何行）。API 契约 fromLine 是包含式，
+  // 故续传 / 断流拉取统一传 max+1（与 REST nextCursor 同口径）。
+  const maxLineNumberRef = useRef(-1);
+  // 上一次 effect 的 execId：换执行才清行号表，单纯重连保留已收行。
+  const lastExecIdRef = useRef<string | null>(null);
   // PERF-06（本轮体验审查）：SSE 日志追加改**批量累积 + 按帧刷新**。
   //
   // 原实现 `setStreamLines((prev) => [...prev, line])` 每来一行就：
@@ -154,7 +261,8 @@ export default function ExecutionLogSection({
   // 的 state 更新：无论一帧里来几行（0 行也行、50 行也行），每帧最多一次
   // 数组拷贝 + 一次渲染。join 的结果另用 useMemo 缓存（见 rawLogs），
   // 避免"父组件因别的原因重渲也重算 join"。
-  const pendingStreamLinesRef = useRef<string[]>([]);
+  // LOG-HARDEN-01：缓冲项改为带真实行号的 LogRow，flush 时按行号合并进权威表。
+  const pendingRowsRef = useRef<LogRow[]>([]);
   const streamFlushRafRef = useRef<number | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [streamDisconnected, setStreamDisconnected] = useState(false);
@@ -226,10 +334,18 @@ export default function ExecutionLogSection({
     if (!isRunningOrPending) return;
     setStreaming(true);
     setStreamDisconnected(false);
-    setStreamLines([]);
     reportStream({ streaming: true, disconnected: false });
-    // PERF-06：换执行/重连时清空增量缓冲，避免上一轮的残留行混进新日志。
-    pendingStreamLinesRef.current = [];
+    // LOG-HARDEN-01：只有"换执行"才清空行号表并归零续传游标。
+    // 同一执行的重连（reconnectKey / status 变化）保留已收行，从 max 续传，
+    // 不再从 0 全量重推——这是"重连不重复"的关键。
+    const changedExec = lastExecIdRef.current !== execId;
+    lastExecIdRef.current = execId;
+    if (changedExec) {
+      logLineMapRef.current = new Map();
+      maxLineNumberRef.current = -1;
+      setStreamLines([]);
+    }
+    pendingRowsRef.current = [];
 
     let client: { close: () => void } | null = null;
     let retryCount = 0;
@@ -251,22 +367,30 @@ export default function ExecutionLogSection({
       client = createSseClient({
         baseUrl: getSseBase(),
         path: `/tasks/${taskId}/executions/${execId}/logs/stream`,
+        // LOG-HARDEN-01：每次建连（含自管重连）现场求值 fromLine。
+        // API 契约：SSE/REST 的 fromLine 统一为【包含式】（返回 >= fromLine 的行）。
+        // 故续传传 max+1（= REST nextCursor 口径），服务端不再重放已收行；
+        // 前端仍按 lineNumber 去重作防御。首次连接返回 {}（等价 fromLine=0）。
+        query: (): Record<string, string | number> => (maxLineNumberRef.current >= 0
+          ? { fromLine: maxLineNumberRef.current + 1 }
+          : {}),
         reconnect: false,
         onMessage: (e) => {
-          try {
-            const line = JSON.parse(e.data) as string;
-            // PERF-06：只入缓冲，由 rAF 合并刷新（见 pendingStreamLinesRef 注释）。
-            pendingStreamLinesRef.current.push(line);
-            if (streamFlushRafRef.current === null) {
-              streamFlushRafRef.current = requestAnimationFrame(() => {
-                streamFlushRafRef.current = null;
-                const batch = pendingStreamLinesRef.current;
-                if (batch.length === 0) return;
-                pendingStreamLinesRef.current = [];
-                setStreamLines((prev) => (prev ? prev.concat(batch) : batch.slice()));
-              });
-            }
-          } catch { /* ignore malformed */ }
+          const row = parseSseLogFrame(e.data);
+          if (!row) return;
+          // PERF-06：只入缓冲，由 rAF 合并刷新（见 pendingRowsRef 注释）。
+          pendingRowsRef.current.push(row);
+          if (streamFlushRafRef.current === null) {
+            streamFlushRafRef.current = requestAnimationFrame(() => {
+              streamFlushRafRef.current = null;
+              const batch = pendingRowsRef.current;
+              pendingRowsRef.current = [];
+              if (batch.length === 0) return;
+              if (mergeLogRows(logLineMapRef.current, maxLineNumberRef, batch, 'sse')) {
+                setStreamLines(rowsToLines(logLineMapRef.current));
+              }
+            });
+          }
         },
         onStatus: (status) => {
           if (status === 'live') {
@@ -339,7 +463,7 @@ export default function ExecutionLogSection({
         cancelAnimationFrame(streamFlushRafRef.current);
         streamFlushRafRef.current = null;
       }
-      pendingStreamLinesRef.current = [];
+      pendingRowsRef.current = [];
       setStreaming(false);
       reportStream({ streaming: false, disconnected: false });
     };
@@ -351,13 +475,31 @@ export default function ExecutionLogSection({
   // U3: 标签页不可见时跳过请求（回到前台后下一拍即恢复刷新）。
   // O-5：指数退避——起步 8s，每次轮询后翻倍至封顶 60s；新一次断流重新起步，
   // 避免长时间断流时固定每 8s 打一次请求。
+  // LOG-HARDEN-01：每拍除 refresh()（更新状态/告警）外，另按
+  // fromLine = max+1 主动拉一页新行，用 lineNumbers 与 SSE 缓冲做行级合并
+  // ⇒ 断流期间新行可见，且与已收行不重复（DB 页覆盖同号 SSE 行）。
   useEffect(() => {
     if (!streamDisconnected || !isLive) return;
     ssePollDelayRef.current = SSE_POLL_BASE_MS;
+    let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     const tick = () => {
+      if (!alive) return;
       if (document.visibilityState === 'visible') {
         refresh();
+        const fromLine = maxLineNumberRef.current >= 0 ? maxLineNumberRef.current + 1 : 0;
+        void tasksApi.executionLogs(taskId, execId, { fromLine, limit: LOG_PAGE_LIMIT })
+          .then((resp) => {
+            if (!alive) return;
+            // 旧后端无真实行号 → 不合并，避免错号覆盖；refresh 的 data.logs 仍可见。
+            if (!pageHasLineNumbers(resp)) return;
+            const rows = rowsFromPage(resp);
+            if (rows.length > 0
+              && mergeLogRows(logLineMapRef.current, maxLineNumberRef, rows, 'rest')) {
+              setStreamLines(rowsToLines(logLineMapRef.current));
+            }
+          })
+          .catch(() => { /* 断流页拉取失败：下一拍再试，不影响轮询节奏 */ });
         ssePollDelayRef.current = Math.min(
           ssePollDelayRef.current * 2,
           SSE_POLL_MAX_MS,
@@ -366,8 +508,11 @@ export default function ExecutionLogSection({
       timer = setTimeout(tick, ssePollDelayRef.current);
     };
     timer = setTimeout(tick, ssePollDelayRef.current);
-    return () => clearTimeout(timer);
-  }, [streamDisconnected, isLive, refresh]);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [streamDisconnected, isLive, refresh, taskId, execId]);
 
   // U2: 切换执行记录时丢弃上一条已加载的完整日志与过滤结果
   useEffect(() => {
@@ -490,38 +635,49 @@ export default function ExecutionLogSection({
   }, [displayLogs, activeKeyword]);
 
   /**
-   * U2/OBS-03 共用：分页拉全日志行（后端 limit 封顶 2000/页，hasMore 驱动
-   * 翻页，LOG_MAX_PAGES 兜底防死循环）。level 传入时为服务端过滤模式——
-   * 过滤后行集不再按行号连续，fromLine 语义是"过滤后序列的偏移量"（后端
-   * SQL skip/OFFSET），客户端沿用既有翻页契约 fromLine += lines.length
-   * （收到的行数即过滤后已消费的偏移量），与后端 hasMore =
-   * fromLine + lines.length < totalLines（过滤后计数）自洽。
+   * U2/OBS-03 共用：分页拉全日志行（后端 limit 封顶 2000/页，LOG_MAX_PAGES
+   * 兜底防死循环）。
+   * LOG-HARDEN-01：翻页游标改用服务端 `nextCursor`（= 本页最后一行真实
+   * 行号 + 1），不再 `fromLine += lines.length`——后者在行号有洞时会重复
+   * 尾部 / 漏行。level 过滤模式同样统一为行号游标（与 API 契约一致）。
    */
   const fetchAllLogLines = async (
     level?: string,
     maxLines?: number,
-  ): Promise<{ lines: string[]; truncated: boolean }> => {
+  ): Promise<{ lines: string[]; rows: LogRow[]; truncated: boolean }> => {
     const all: string[] = [];
+    const allRows: LogRow[] = [];
     let fromLine = 0;
     let truncated = false;
     for (let page = 0; page < LOG_MAX_PAGES; page++) {
       const resp = await tasksApi.executionLogs(
         taskId, execId,
         level ? { fromLine, limit: LOG_PAGE_LIMIT, level } : { fromLine, limit: LOG_PAGE_LIMIT },
-      );
+      ) as ExecutionLogsPageWithCursor;
       const lines = Array.isArray(resp?.lines) ? resp.lines : [];
       if (lines.length === 0) break;
       all.push(...lines);
-      fromLine += lines.length;
+      const pageRows = rowsFromPage(resp);
+      allRows.push(...pageRows);
       // F-11: 行数上限保护——超过 maxLines 即停拉，避免全量 join 巨型字符串
       if (maxLines !== undefined && all.length >= maxLines) {
         truncated = true;
         all.length = maxLines;
+        allRows.length = Math.min(allRows.length, maxLines);
         break;
       }
+      // hasMore 由服务端按"最后行号是否还有后续行"判定；游标只信 nextCursor。
       if (!resp?.hasMore) break;
+      const nextCursor = resolveNextCursor(
+        resp,
+        fromLine,
+        pageRows.length > 0 ? pageRows[pageRows.length - 1].lineNumber : undefined,
+        lines.length,
+      );
+      if (nextCursor <= fromLine) break; // 游标未推进 → 防死循环
+      fromLine = nextCursor;
     }
-    return { lines: all, truncated };
+    return { lines: all, rows: allRows, truncated };
   };
 
   // U2: 回调日志被执行器截断时，从全量日志端点按行分页拉全（后端 limit 上限

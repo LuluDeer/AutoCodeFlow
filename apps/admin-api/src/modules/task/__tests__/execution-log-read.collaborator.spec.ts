@@ -538,10 +538,14 @@ describe("getExecutionLogs · S3 指针权威后端", () => {
     );
 
     expect(getStream).toHaveBeenCalledWith(OBJECT_KEY);
+    // LOG-HARDEN：fromLine 统一为真实行号（level 模式也用行号游标）。
+    // 行 1 = "[ERROR] second"，行 3 = "[ERROR] third"；本页 limit=1 ⇒ 只取行 1。
     expect(result).toEqual({
-      lines: ["[ERROR] third"],
+      lines: ["[ERROR] second"],
+      lineNumbers: [1],
       totalLines: 2,
-      hasMore: false,
+      hasMore: true,
+      nextCursor: 2,
       logsPurged: false,
       logsPurgedAt: null,
     });
@@ -566,8 +570,11 @@ describe("getExecutionLogs · S3 指针权威后端", () => {
 
     expect(result).toEqual({
       lines: ["db line"],
+      lineNumbers: [2],
       totalLines: 5,
-      hasMore: true,
+      // 多取 1 行判定 hasMore（stub 只返回 1 行 ⇒ 无待发行）。
+      hasMore: false,
+      nextCursor: 3,
       logsPurged: false,
       logsPurgedAt: null,
     });
@@ -592,7 +599,8 @@ describe("getExecutionLogs · S3 指针权威后端", () => {
       "l.lineNumber",
       "l.content",
     ]);
-    expect(fixture.qb.take).toHaveBeenCalledWith(1);
+    // limit+1 一次多取一行用于精确 hasMore（行号有洞时不能按行数推游标）。
+    expect(fixture.qb.take).toHaveBeenCalledWith(2);
     expect(getMany).toHaveBeenCalledTimes(1);
     expect(count).toHaveBeenCalledTimes(1);
     expect(fixture.warn).not.toHaveBeenCalled();

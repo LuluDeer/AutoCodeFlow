@@ -57,6 +57,27 @@ import { S3LogStorage } from "./log-storage/s3-log-storage";
  * | `backfillFullLogsFromExecutor` | **被既有 spec spy 在 private 上**（`task.service.spec.ts:5751`/`:5796`）⇒ 留 Facade | 本类的 `persistCallbackLogsIfMissing` |
  */
 
+/**
+ * LOG-HARDEN：S3 append 的「已知前页内容」进程内兜底缓存。
+ *
+ * 多页回填的 append 路径是「读旧对象 → 拼新页 → put」：一旦 s3GetExistingLog
+ * 瞬时失败返回 null，旧实现会把 content 退化成本页并 put ⇒ 前几页被整页覆盖
+ * 且零痕迹。缓存只记住本进程上一次成功 put/replace 的完整内容，作为读失败时
+ * 的第二事实源；有帽，避免长跑进程按 executionId 无界增长。
+ */
+const S3_LOG_CONTENT_CACHE = new Map<string, string>();
+const S3_LOG_CACHE_MAX_ENTRIES = 64;
+
+function rememberS3Content(executionId: string, content: string): void {
+  S3_LOG_CONTENT_CACHE.delete(executionId);
+  S3_LOG_CONTENT_CACHE.set(executionId, content);
+  while (S3_LOG_CONTENT_CACHE.size > S3_LOG_CACHE_MAX_ENTRIES) {
+    const oldest = S3_LOG_CONTENT_CACHE.keys().next();
+    if (oldest.done) break;
+    S3_LOG_CONTENT_CACHE.delete(oldest.value);
+  }
+}
+
 /** 注入回调面（**窄签名**）。 */
 export interface ExecutionLogDeps {
   /** 数据源（两个事务体）。 */
@@ -161,12 +182,28 @@ export class ExecutionLog {
       try {
         let content = lines.join("\n");
         if (append) {
-          existing = await this.deps.s3GetExistingLog(s3, executionId);
-          if (existing !== null && existing.length > 0) {
-            content = `${existing}\n${content}`;
+          try {
+            existing = await this.deps.s3GetExistingLog(s3, executionId);
+          } catch {
+            existing = null;
+          }
+          // 读失败时退到本进程缓存的「上一次成功写入的完整内容」，避免把
+          // 前几页覆盖成只有本页；两者都没有 ⇒ 拒绝 put，走 DB append 回退
+          // （按 startLineNumber 追加，不删既有行）。
+          const prior =
+            existing !== null && existing.length > 0
+              ? existing
+              : S3_LOG_CONTENT_CACHE.get(executionId);
+          if (prior && prior.length > 0) {
+            content = `${prior}\n${content}`;
+          } else {
+            throw new Error(
+              "S3 既有日志内容不可得——拒绝 append，避免覆盖前页",
+            );
           }
         }
         const key = await s3.put(executionId, content);
+        rememberS3Content(executionId, content);
         if (!append) {
           await this.deps.logLineRepo.delete({ executionId });
         }
@@ -242,25 +279,48 @@ export class ExecutionLog {
       });
     }
 
-    const entities = lines.map((content, i) =>
-      this.deps.logLineRepo.create({
-        executionId,
-        lineNumber: fromLine + i,
-        content,
-        level: levelOfLine(content),
-      }),
-    );
+    const toLine = fromLine + lines.length;
 
     const CHUNK = 500;
     await this.deps.dataSource.transaction(async (manager) => {
-      // Idempotency: delete only the exact range [fromLine, fromLine + lines.length) to avoid overwriting later chunks
-      const toLine = fromLine + lines.length;
-      await manager.delete(ExecutionLogLine, {
-        executionId,
-        lineNumber: Between(fromLine, toLine - 1),
+      // 单调保护：先读已落库的同号行，再逐行做显式冲突判定。
+      // 旧实现无条件 delete 整个 [fromLine,toLine) 再覆写 ⇒ 迟到/乱序的旧
+      // chunk 会把较新 chunk 已落库的行盖回旧内容（"日志倒退"）。
+      const existing = await manager.find(ExecutionLogLine, {
+        where: { executionId, lineNumber: Between(fromLine, toLine - 1) },
       });
-      for (let i = 0; i < entities.length; i += CHUNK) {
-        await manager.save(ExecutionLogLine, entities.slice(i, i + CHUNK));
+      const byLine = new Map<number, string>();
+      for (const row of existing) byLine.set(row.lineNumber, row.content);
+
+      const toInsert: ExecutionLogLine[] = [];
+      const conflicts: number[] = [];
+      for (let i = 0; i < lines.length; i++) {
+        const lineNumber = fromLine + i;
+        const content = lines[i];
+        const prev = byLine.get(lineNumber);
+        if (prev === undefined) {
+          toInsert.push(
+            this.deps.logLineRepo.create({
+              executionId,
+              lineNumber,
+              content,
+              level: levelOfLine(content),
+            }),
+          );
+        } else if (prev !== content) {
+          // first-write-wins：同号不同内容 = 旧 chunk 迟到。保留较新行，
+          // 只记录冲突；重传的同内容 chunk 视为幂等成功（不写也不报）。
+          conflicts.push(lineNumber);
+        }
+      }
+      if (conflicts.length > 0) {
+        this.deps.logger.warn(
+          `Ignored ${conflicts.length} stale log line(s) for execution ${executionId} ` +
+            `(lineNumber ${conflicts[0]}..${conflicts[conflicts.length - 1]}) — first-write-wins`,
+        );
+      }
+      for (let i = 0; i < toInsert.length; i += CHUNK) {
+        await manager.save(ExecutionLogLine, toInsert.slice(i, i + CHUNK));
       }
     });
 

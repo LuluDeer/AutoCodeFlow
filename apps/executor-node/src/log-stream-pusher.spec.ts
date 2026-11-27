@@ -22,12 +22,17 @@ import {
   MAX_BYTES_PER_CHUNK,
   MAX_BUFFERED_BYTES,
   MAX_PUSH_ATTEMPTS,
-  BACKPRESSURE_MARKER, PUSH_TIMEOUT_MS } from './log-stream-pusher';
+  BACKPRESSURE_MARKER, NO_TOKEN_MARKER, PUSH_TIMEOUT_MS } from './log-stream-pusher';
 import { post } from './admin-client';
+import { getCurrentToken } from './middleware/auth';
 import { logger } from './logger';
 
 jest.mock('./admin-client', () => ({
   post: jest.fn(),
+}));
+
+jest.mock('./middleware/auth', () => ({
+  getCurrentToken: jest.fn(async () => 'TOKEN'),
 }));
 
 jest.mock('./logger', () => ({
@@ -35,6 +40,7 @@ jest.mock('./logger', () => ({
 }));
 
 const mockedPost = post as jest.MockedFunction<typeof post>;
+const mockedGetCurrentToken = getCurrentToken as jest.MockedFunction<typeof getCurrentToken>;
 
 /** 取出第 n 次 post 调用的 body（分片载荷）。 */
 function bodyOf(call: number): { fromLine: number; lines: string[] } {
@@ -47,6 +53,11 @@ function bodyOf(call: number): { fromLine: number; lines: string[] } {
 /** 出站分片是否为背压 marker（不是真实日志行）。 */
 function isMarker(body: { lines: string[] }): boolean {
   return body.lines.length === 1 && /dropped by local backpressure/.test(body.lines[0] ?? '');
+}
+
+/** 无令牌导致的丢行 marker（与背压/推送失败同通道、不同文案）。 */
+function isNoTokenMarker(body: { lines: string[] }): boolean {
+  return body.lines.length === 1 && /executor token was unavailable/.test(body.lines[0] ?? '');
 }
 
 /** 当前在飞缓冲的字节数（与 python 侧 `_buffered_bytes` 同义）。 */
@@ -519,5 +530,134 @@ describe('EN-03 推送失败：回填重发 / 上限丢片留 marker / warn', ()
     expect(
       warnMock.mock.calls.some((c) => /Failed to push log chunk/.test(String(c[0]))),
     ).toBe(true);
+  });
+
+  it('resolved 非 2xx 也必须进入重发/丢片 marker 路径（与 python 4xx/5xx 对齐）', async () => {
+    mockedPost.mockResolvedValue({ status: 500 } as never);
+    const pusher = new LogStreamPusher('exec-en03-5xx-status');
+    pusher.addLine('x');
+
+    const flush = (pusher as unknown as { flush: () => Promise<void> }).flush.bind(pusher);
+    for (let i = 0; i < MAX_PUSH_ATTEMPTS; i++) await flush();
+    expect(mockedPost).toHaveBeenCalledTimes(MAX_PUSH_ATTEMPTS);
+
+    mockedPost.mockResolvedValue({ status: 200 } as never);
+    await flush();
+    const marker = mockedPost.mock.calls.map((_, i) => bodyOf(i)).find(
+      (b) => b.lines.length === 1 && /dropped after repeated push failures/.test(b.lines[0] ?? ''),
+    );
+    expect(marker).toBeTruthy();
+    expect(marker!.lines[0]).toContain('1 log lines dropped');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NOTOKEN：无令牌不能再 debug 后静默清缓冲。python/node 共用同一条 marker
+// 通道与同一份文案；未到上限且有后续 flush 时原片补发，finalFlush 仍无令牌
+// 时留本地可见 marker，marker 自身失败不递归生成新 marker。
+// ---------------------------------------------------------------------------
+
+describe('NOTOKEN 无令牌：回填补发 / final marker / 重试预算隔离', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedPost.mockResolvedValue({ status: 200 } as never);
+  });
+
+  it('无令牌回填，令牌恢复后补发原片（不产生 marker）', async () => {
+    mockedGetCurrentToken
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce('RECOVERED');
+
+    const pusher = new LogStreamPusher('exec-notoken-recover');
+    pusher.addLine('buffered');
+    const flush = (pusher as unknown as { flush: () => Promise<void> }).flush.bind(pusher);
+
+    await flush();
+    expect(mockedPost).not.toHaveBeenCalled();
+
+    await flush();
+    expect(mockedPost).toHaveBeenCalledTimes(1);
+    expect(bodyOf(0)).toEqual({ fromLine: 0, lines: ['buffered'] });
+    expect(isNoTokenMarker(bodyOf(0))).toBe(false);
+    expect(
+      (pusher as unknown as { chunks: unknown[] }).chunks,
+    ).toHaveLength(0);
+  });
+
+  it('finalFlush 仍无令牌：不空发 HTTP，留下本地可见 marker 并保留补发片', async () => {
+    mockedGetCurrentToken.mockResolvedValueOnce(null);
+
+    const pusher = new LogStreamPusher('exec-notoken-final');
+    pusher.addLine('a');
+    pusher.addLine('b');
+    await pusher.finalFlush();
+
+    expect(mockedPost).not.toHaveBeenCalled();
+    const queued = (pusher as unknown as {
+      chunks: { fromLine: number; lines: string[]; isMarker?: boolean }[];
+    }).chunks;
+    expect(queued).toHaveLength(1);
+    expect(queued[0].lines[0]).toBe(NO_TOKEN_MARKER(2));
+    expect(queued[0].isMarker).toBe(true);
+    expect(
+      (logger.warn as unknown as jest.Mock).mock.calls.some(
+        (c) => String(c[0]).includes(NO_TOKEN_MARKER(2)),
+      ),
+    ).toBe(true);
+  });
+
+  it('令牌全程缺失：最多尝试 MAX_PUSH_ATTEMPTS 次，marker 不递归', async () => {
+    const original = mockedGetCurrentToken.getMockImplementation();
+    mockedGetCurrentToken.mockResolvedValue(null);
+    try {
+      const pusher = new LogStreamPusher('exec-notoken-cap');
+      (pusher as unknown as { scheduleFlush: () => void }).scheduleFlush = () => {};
+      pusher.addLine('only-line');
+      const flush = (pusher as unknown as { flush: () => Promise<void> }).flush.bind(pusher);
+
+      for (let i = 0; i < MAX_PUSH_ATTEMPTS; i++) await flush();
+      expect((pusher as unknown as { chunks: unknown[] }).chunks).toHaveLength(0);
+
+      // 下一轮推 marker；marker 自己无令牌时也不能再造一个 marker。
+      for (let i = 0; i < MAX_PUSH_ATTEMPTS; i++) await flush();
+      expect((pusher as unknown as { chunks: unknown[] }).chunks).toHaveLength(0);
+      expect(mockedPost).not.toHaveBeenCalled();
+      const markerWarns = (logger.warn as unknown as jest.Mock).mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('executor token was unavailable'));
+      expect(markerWarns).toHaveLength(1);
+    } finally {
+      mockedGetCurrentToken.mockImplementation(
+        original ?? (async () => 'TOKEN'),
+      );
+    }
+  });
+
+  it('无令牌不消耗 5xx 重试预算：两次无令牌 + 两次 5xx 后仍成功', async () => {
+    mockedGetCurrentToken
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce('TOKEN')
+      .mockResolvedValueOnce('TOKEN')
+      .mockResolvedValueOnce('TOKEN');
+    mockedPost
+      .mockResolvedValueOnce({ status: 500 } as never)
+      .mockResolvedValueOnce({ status: 500 } as never)
+      .mockResolvedValue({ status: 200 } as never);
+
+    const pusher = new LogStreamPusher('exec-notoken-5xx');
+    (pusher as unknown as { scheduleFlush: () => void }).scheduleFlush = () => {};
+    pusher.addLine('x');
+    const flush = (pusher as unknown as { flush: () => Promise<void> }).flush.bind(pusher);
+
+    await flush();
+    await flush();
+    expect(mockedPost).not.toHaveBeenCalled();
+
+    for (let i = 0; i < 3; i++) await flush();
+    expect(mockedPost).toHaveBeenCalledTimes(3);
+    const bodies = mockedPost.mock.calls.map((_, i) => bodyOf(i));
+    expect(bodies.every((b) => b.fromLine === 0 && b.lines[0] === 'x')).toBe(true);
+    expect(bodies.some(isNoTokenMarker)).toBe(false);
   });
 });

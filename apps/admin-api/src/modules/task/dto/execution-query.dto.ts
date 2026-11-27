@@ -5,6 +5,7 @@ import {
   IsISO8601,
   IsIn,
   IsInt,
+  IsNotEmpty,
   IsOptional,
   IsString,
   Matches,
@@ -340,4 +341,28 @@ export class ExecutionLogsQueryDto {
   @IsOptional()
   @IsIn(LOG_LEVEL_VALUES as unknown as string[])
   level?: string;
+}
+
+/**
+ * SSE 日志流专用查询 DTO（GET /tasks/:id/executions/:execId/logs/stream）。
+ *
+ * 在 ExecutionLogsQueryDto 的日志查询参数之上显式声明 `?ticket=`，与
+ * admin-web 的 createSseClient / buildSseUrl 既有建连契约对齐。此前该字段
+ * 不在白名单里，全局 ValidationPipe（whitelist + forbidNonWhitelisted）把
+ * 每一条带票据的建连请求判为 400，SSE 从未进入 streamExecutionLogs。
+ *
+ * ticket 只进白名单做格式校验：controller 不把它传给日志查询，鉴权仍由
+ * JwtStrategy.extractJwtFromRequest 在 /logs/stream 路径上完成。REST 日志
+ * 端点继续绑定 ExecutionLogsQueryDto，仍然拒绝 ticket（不放宽其白名单）。
+ */
+export class ExecutionLogsStreamQueryDto extends ExecutionLogsQueryDto {
+  @ApiPropertyOptional({
+    description:
+      "SSE 专用短效票据（POST /auth/sse-ticket 获取，TTL 30 秒）；仅供 EventSource 建连鉴权，不参与日志查询。长度 1..4096。",
+  })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(4096)
+  ticket?: string;
 }

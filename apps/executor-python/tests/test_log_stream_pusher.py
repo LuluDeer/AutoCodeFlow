@@ -49,6 +49,22 @@ class _Recorder:
         return _FakeResponse(self.status_code)
 
 
+class _ScriptedRecorder:
+    """按预设序列返回响应或抛异常，用于验证失败回填、重试上限与 marker。"""
+
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    async def __call__(self, client, method, url, *, token=None, headers=None, **kwargs):
+        await asyncio.sleep(0)  # 保留挂起点，否则 CancelledError 分支不会现形
+        self.calls.append({'url': url, 'token': token, 'json': kwargs.get('json')})
+        outcome = self.outcomes.pop(0) if self.outcomes else _FakeResponse(200)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
 @pytest.fixture
 def pusher_env(monkeypatch):
     """把 pusher 的两个外部依赖（令牌 / 出站 HTTP）替换为可观测的假件。"""
@@ -193,6 +209,123 @@ def test_no_token_skips_without_raising(monkeypatch, pusher_env):
     _run(pusher.final_flush())
 
     assert pusher_env.calls == []
+
+
+@pytest.mark.asyncio
+async def test_no_token_requeues_and_resends_when_token_recovers(
+        pusher_env, monkeypatch):
+    """无令牌时原片回填；令牌恢复后补发原片，不产生丢行 marker。"""
+    tokens = iter([None, 'RECOVERED'])
+
+    async def token_seq():
+        return next(tokens, 'RECOVERED')
+
+    monkeypatch.setattr(lsp, 'get_current_token', token_seq)
+    pusher = LogStreamPusher('exec-notoken-recover')
+    await pusher.add_line('buffered')
+
+    await pusher.flush()  # 无令牌：不得发空凭据请求，原片留在队列里
+    assert pusher_env.calls == []
+    assert pusher.chunks and pusher.chunks[0]['lines'] == ['buffered']
+
+    await pusher.flush()  # 令牌恢复：补发原片
+    assert len(pusher_env.calls) == 1
+    assert pusher_env.calls[0]['token'] == 'RECOVERED'
+    assert pusher_env.calls[0]['json'] == {
+        'fromLine': 0,
+        'lines': ['buffered'],
+    }
+    assert all('dropped' not in c['json']['lines'][0] for c in pusher_env.calls)
+    assert pusher.chunks == []
+
+
+@pytest.mark.asyncio
+async def test_no_token_at_final_flush_leaves_visible_marker(
+        pusher_env, monkeypatch, caplog):
+    """final_flush 仍无令牌：不空发 HTTP，但在本地流留下可见 marker 且保留可补发片。"""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger='log_stream_pusher')
+
+    async def no_token():
+        return None
+
+    monkeypatch.setattr(lsp, 'get_current_token', no_token)
+    pusher = LogStreamPusher('exec-notoken-final')
+    await pusher.add_line('line-a')
+    await pusher.add_line('line-b')
+
+    await pusher.final_flush()
+
+    assert pusher_env.calls == [], '无令牌不得发出空凭据请求'
+    marker_text = pusher.chunks[0]['lines'][0]
+    assert marker_text == lsp.NO_TOKEN_MARKER_TEMPLATE.format(n=2), marker_text
+    logs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(marker_text in msg for msg in logs), logs
+
+
+@pytest.mark.asyncio
+async def test_no_token_stops_after_attempt_cap_without_marker_recursion(
+        pusher_env, monkeypatch, caplog):
+    """令牌全程缺失：最多尝试 MAX_PUSH_ATTEMPTS 次；marker 丢了不再生成 marker。"""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger='log_stream_pusher')
+
+    async def no_token():
+        return None
+
+    monkeypatch.setattr(lsp, 'get_current_token', no_token)
+    pusher = LogStreamPusher('exec-notoken-cap')
+    pusher._schedule_flush = lambda: None
+    await pusher.add_line('only-line')
+
+    for _ in range(lsp.MAX_PUSH_ATTEMPTS):
+        await pusher.flush()
+    assert pusher.chunks == [], '到上限后原片应被丢弃，不再回填'
+    assert pusher_env.calls == []
+
+    # 下一轮推 marker；marker 自身没有 token 时也不能无限生成新 marker。
+    for _ in range(lsp.MAX_PUSH_ATTEMPTS):
+        await pusher.flush()
+    assert pusher.chunks == []
+    assert pusher_env.calls == []
+    warns = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert sum('log lines dropped because executor token was unavailable' in m
+               for m in warns) == 1, warns
+
+
+@pytest.mark.asyncio
+async def test_no_token_does_not_consume_5xx_retry_budget(
+        pusher_env, monkeypatch):
+    """无令牌与 5xx 的重试预算互不占用：两次无令牌 + 两次 5xx 后仍能成功。"""
+    tokens = iter([None, None, 'TOKEN', 'TOKEN', 'TOKEN'])
+
+    async def token_seq():
+        return next(tokens, 'TOKEN')
+
+    scripted = _ScriptedRecorder([
+        _FakeResponse(500, 'admin busy'),
+        _FakeResponse(500, 'admin busy'),
+        _FakeResponse(201),
+    ])
+    monkeypatch.setattr(lsp, 'get_current_token', token_seq)
+    monkeypatch.setattr(lsp, 'request_with_self_heal', scripted)
+
+    pusher = LogStreamPusher('exec-notoken-5xx')
+    pusher._schedule_flush = lambda: None
+    await pusher.add_line('x')
+
+    for _ in range(2):
+        await pusher.flush()  # 两次无令牌：不发 HTTP，不消耗 push failures
+    assert scripted.calls == []
+
+    for _ in range(3):
+        await pusher.flush()  # 两次 5xx + 一次成功
+    assert len(scripted.calls) == 3
+    assert all(c['json'] == {'fromLine': 0, 'lines': ['x']}
+               for c in scripted.calls)
+    assert not any('dropped' in c['json']['lines'][0] for c in scripted.calls)
 
 
 def test_backpressure_drops_oldest(pusher_env):
@@ -374,4 +507,108 @@ async def test_marker_is_emitted_once_per_flush_episode(pusher_env) -> None:
     markers = [b for b in bodies if 'dropped by local backpressure' in b['lines'][0]]
     assert len(markers) == 1
     assert '300 log lines dropped' in markers[0]['lines'][0], markers[0]['lines'][0]
+
+
+# ---------------------------------------------------------------------------
+# EN-03：推送失败语义与 executor-node 对齐——失败回填队首重发，重试耗尽才丢并
+# 留 push-failure marker（不再 debug 后静默丢行）。
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_transient_push_failure_requeues_and_resends(pusher_env, monkeypatch):
+    """瞬时失败（5xx）→ 失败片连同未尝试的片回填队首，下一次 flush 按原顺序重发，一行不少。"""
+    scripted = _ScriptedRecorder([
+        _FakeResponse(200),               # 片1（fromLine 0）成功
+        _FakeResponse(503, 'admin busy'),  # 片2（fromLine 100）首次失败
+        _FakeResponse(200),               # 重发片2 成功
+        _FakeResponse(200),               # 片3（fromLine 200）成功
+    ])
+    monkeypatch.setattr(lsp, 'request_with_self_heal', scripted)
+
+    pusher = LogStreamPusher('exec-en03-retry')
+    for i in range(250):
+        await pusher.add_line(f'l{i}')
+
+    await pusher.flush()  # 片1 成功、片2 失败 → 片2/片3 回填
+    assert [c['json']['fromLine'] for c in scripted.calls] == [0, 100]
+
+    await pusher.flush()  # 重发片2、片3
+    bodies = [c['json'] for c in scripted.calls]
+    assert [b['fromLine'] for b in bodies] == [0, 100, 100, 200]
+    assert bodies[1]['lines'] == bodies[2]['lines'], '重发的必须是同一片（内容与行号不变）'
+    delivered = bodies[0]['lines'] + bodies[2]['lines'] + bodies[3]['lines']
+    assert delivered == [f'l{i}' for i in range(250)], '250 行必须全部送达且按顺序'
+    assert pusher.chunks == []
+    # 未到重试上限、最终全部成功 → 不得产生任何 marker
+    assert all('dropped' not in b['lines'][0] for b in bodies)
+
+
+@pytest.mark.asyncio
+async def test_persistent_failure_emits_push_failure_marker(
+        pusher_env, monkeypatch, caplog):
+    """同一片失败 MAX_PUSH_ATTEMPTS 次后丢弃，下一次 flush 推一行 push-failure marker。"""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger='log_stream_pusher')
+    scripted = _ScriptedRecorder([
+        _FakeResponse(500, 'admin down'),
+        _FakeResponse(500, 'admin down'),
+        _FakeResponse(500, 'admin down'),
+        _FakeResponse(200),  # marker
+    ])
+    monkeypatch.setattr(lsp, 'request_with_self_heal', scripted)
+
+    pusher = LogStreamPusher('exec-en03-drop')
+    await pusher.add_line('only-line')
+
+    for _ in range(lsp.MAX_PUSH_ATTEMPTS):
+        await pusher.flush()
+    assert len(scripted.calls) == lsp.MAX_PUSH_ATTEMPTS
+    assert pusher.chunks == [], '到上限后该片应被丢弃，不再回填'
+
+    # 首次失败必须从 debug 升到 warn（每执行限 1 条），不得静默。
+    warns = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any('Failed to push log chunk' in m for m in warns), warns
+
+    # 缓冲已空但缺口有记账 → 下一次 flush 必须推 marker（旧实现直接 return）。
+    await pusher.flush()
+    bodies = [c['json'] for c in scripted.calls]
+    marker = bodies[-1]
+    assert marker['fromLine'] == 0, marker
+    assert len(marker['lines']) == 1
+    assert 'dropped after repeated push failures' in marker['lines'][0], marker['lines'][0]
+    assert '1 log lines dropped' in marker['lines'][0], marker['lines'][0]
+
+
+@pytest.mark.asyncio
+async def test_4xx_is_retried_not_silently_dropped(pusher_env, monkeypatch):
+    """4xx 不再只 debug 后静默丢弃——必须像网络异常一样回填重发。"""
+    scripted = _ScriptedRecorder([
+        _FakeResponse(400, 'bad request'),
+        _FakeResponse(201),
+    ])
+    monkeypatch.setattr(lsp, 'request_with_self_heal', scripted)
+
+    pusher = LogStreamPusher('exec-en03-4xx')
+    await pusher.add_line('x')
+    await pusher.flush()
+    assert len(scripted.calls) == 1, '失败片应回填，不得静默推进到下一片或丢弃'
+
+    await pusher.flush()
+    assert len(scripted.calls) == 2
+    assert all(c['json'] == {'fromLine': 0, 'lines': ['x']} for c in scripted.calls)
+
+
+@pytest.mark.asyncio
+async def test_success_path_emits_no_marker(pusher_env):
+    """EN-03 回归：全量推送成功不得产生背压或失败 marker。"""
+    pusher = LogStreamPusher('exec-en03-clean')
+    for i in range(150):
+        await pusher.add_line(f'l{i}')
+    await pusher.flush()
+
+    bodies = [c['json'] for c in pusher_env.calls]
+    assert bodies, '没有发出请求'
+    assert all('dropped' not in b['lines'][0] for b in bodies), bodies
+    assert sum(len(b['lines']) for b in bodies) == 150
 

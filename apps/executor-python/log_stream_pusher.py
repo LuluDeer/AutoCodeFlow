@@ -35,6 +35,33 @@ MAX_BYTES_PER_CHUNK = 1_000_000
 # 我们不想让执行器本地背压去影响那个决策。这里用一个只对人说话、不参与任何判定的文案。
 MARKER_TEMPLATE = '... [{n} log lines dropped by local backpressure] ...'
 
+# EN-03（与 executor-node log-stream-pusher.ts 对齐）：推送重试耗尽后的丢行
+# marker。与背压 marker 走同一条通道（占用缺口行号、单行成片），但文案区分原因
+# ——背压是「本机产出快于上报」，这里是「上报连续失败」。刻意不复用 admin 的
+# LOG_TRUNCATION_MARKER，理由同 MARKER_TEMPLATE（不参与终态「回调覆盖实时流」判定）。
+PUSH_FAILURE_MARKER_TEMPLATE = (
+    '... [{n} log lines dropped after repeated push failures] ...'
+)
+
+# NOTOKEN（与 executor-node log-stream-pusher.ts 对齐）：无令牌导致无法上报的
+# 行也走同一条 marker 通道。旧实现 `_push_chunk` 只 debug 一句就 return，
+# `_flush_now` 把它当成功、清空缓冲并复位告警闸 —— 实时视图从此静默缺一段。
+# 这里用独立文案区分「本机没拿到上报凭据」与背压/重试耗尽；仍刻意不使用
+# admin 的 LOG_TRUNCATION_MARKER，避免影响终态回调覆盖实时流的判定。
+NO_TOKEN_MARKER_TEMPLATE = (
+    '... [{n} log lines dropped because executor token was unavailable] ...'
+)
+
+
+class NoTokenError(RuntimeError):
+    """Internal signal: an admin push was attempted without a usable token."""
+
+
+# EN-03：同一片最多尝试推送几次（含首次）。失败片会回填队首重发，但没有上限
+# 就是无限重发（admin 长期不可用时缓冲永远清不掉、final_flush 永远发不完）。
+# 3 次 ≈ 3×5s 超时窗口，与 node 侧 MAX_PUSH_ATTEMPTS 逐字同值。
+MAX_PUSH_ATTEMPTS = 3
+
 
 def _utf8_len(text: str) -> int:
     """`text` 的 UTF-8 字节数。ASCII 走 `len()`（零拷贝），非 ASCII 才 encode。"""
@@ -73,6 +100,62 @@ class LogStreamPusher:
         # R125：自上次 flush 起被丢掉的行数，以及**第一条被丢行**的行号（marker 占用它）。
         self._dropped_since_flush = 0
         self._first_dropped_line = None
+        # EN-03：推送失败的可观测性——与背压同样「每执行限 1 条 warn」，全量推送
+        # 成功后复位，令下一次独立故障仍能告警一次。
+        self._push_failure_warned = False
+        # EN-03：当前丢弃窗口里是否有「重试耗尽」造成的丢行（决定 marker 文案）。
+        self._dropped_by_push_failure = False
+        # NOTOKEN：同一丢弃窗口也可能由「拿不到令牌」造成；单独记账，避免
+        # 把无凭据丢行误标成背压或 admin 连续失败。
+        self._dropped_by_no_token = False
+        self._no_token_warned = False
+
+    def _marker_text(self) -> str:
+        """按当前丢弃窗口的主因选 marker 文案（通道不变、原因可区分）。"""
+        if self._dropped_by_no_token:
+            template = NO_TOKEN_MARKER_TEMPLATE
+        elif self._dropped_by_push_failure:
+            template = PUSH_FAILURE_MARKER_TEMPLATE
+        else:
+            template = MARKER_TEMPLATE
+        return template.format(n=self._dropped_since_flush)
+
+    def _make_marker_chunk(self) -> dict:
+        text = self._marker_text()
+        # `isMarker` 只在本机流转，不会进入 POST body（_push_chunk 只取
+        # fromLine/lines）；它让 marker 自身丢了之后不再递归生成新 marker。
+        return {
+            'fromLine': self._first_dropped_line,
+            'lines': [text],
+            'bytes': len(text),
+            'isMarker': True,
+        }
+
+    def _clear_drop_accounting(self) -> None:
+        self._dropped_since_flush = 0
+        self._first_dropped_line = None
+        self._dropped_by_push_failure = False
+        self._dropped_by_no_token = False
+
+    def _record_dropped_chunk(self, chunk: dict, reason: str) -> None:
+        """把一整片计入丢行窗口；marker 片自身不再递归记账。"""
+        if chunk.get('isMarker'):
+            return
+        if self._first_dropped_line is None:
+            self._first_dropped_line = chunk['fromLine']
+        self._dropped_since_flush += len(chunk['lines'])
+        if reason == 'no_token':
+            self._dropped_by_no_token = True
+        else:
+            self._dropped_by_push_failure = True
+
+    async def _queue_marker_chunk(self, marker: dict) -> None:
+        """把 marker 放回队首，供令牌恢复后的下一次 flush 补发。"""
+        async with self._lock:
+            self.chunks.insert(0, marker)
+            self._buffered_bytes = sum(
+                int(c.get('bytes', 0) or 0) for c in self.chunks
+            )
 
     async def add_line(self, content: str) -> int:
         """Add a line to the buffer. Returns the line number assigned to this line."""
@@ -167,7 +250,7 @@ class LogStreamPusher:
 
         self.timer = asyncio.create_task(delayed_flush())
 
-    async def _flush_now(self) -> None:
+    async def _flush_now(self, *, final: bool = False) -> None:
         """Drain every pending chunk to the admin API.
 
         刻意**不**取消 ``self.timer``：本方法正是 timer 任务自身调用的目标，
@@ -177,7 +260,10 @@ class LogStreamPusher:
         """
         async with self._flush_lock:
             async with self._lock:
-                if not self.chunks:
+                # EN-03：缓冲已空但仍有丢弃记账时必须继续——「重试耗尽丢片」之后
+                # 缓冲正好是空的，若按旧逻辑直接 return，这一段的缺口对实时视图
+                # 完全不可见（对齐 node flushNow 的同一判断）。
+                if not self.chunks and self._first_dropped_line is None:
                     return
                 chunks_to_flush = self.chunks[:]
                 self.chunks.clear()
@@ -188,27 +274,113 @@ class LogStreamPusher:
             # 单行成片是安全的：每片自带 fromLine，admin 按 fromLine+i 落库，
             # 所以插入这一行**不会**让后续切片的行号错位。
             if self._first_dropped_line is not None:
-                marker = {
-                    'fromLine': self._first_dropped_line,
-                    'lines': [MARKER_TEMPLATE.format(n=self._dropped_since_flush)],
-                    'bytes': len(MARKER_TEMPLATE) + 8,
-                }
-                self._dropped_since_flush = 0
-                self._first_dropped_line = None
+                marker = self._make_marker_chunk()
+                self._clear_drop_accounting()
                 chunks_to_flush.insert(0, marker)
 
             all_pushed = True
             pushed = 0
             try:
-                for chunk in chunks_to_flush:
+                i = 0
+                while i < len(chunks_to_flush):
+                    chunk = chunks_to_flush[i]
                     try:
                         await self._push_chunk(chunk)
+                    except NoTokenError as err:
+                        # NOTOKEN：无令牌不是普通网络失败，也没有 HTTP 请求发出。
+                        # 单独计数、单独告警：恢复令牌后原片可立即补发，旧的重试
+                        # 预算不被吃掉；到上限（或 final_flush）才丢片并留 marker。
+                        all_pushed = False
+                        token_failures = int(chunk.get('token_failures', 0)) + 1
+                        chunk['token_failures'] = token_failures
+                        if not self._no_token_warned:
+                            self._no_token_warned = True
+                            logger.warning(
+                                f"[LogStreamPusher] No token available for execution "
+                                f"{self.execution_id}; log chunk (fromLine "
+                                f"{chunk['fromLine']}, {len(chunk['lines'])} lines) "
+                                f"stays queued for up to {MAX_PUSH_ATTEMPTS} attempts "
+                                f"(subsequent no-token failures stay at warn-once): {err}"
+                            )
+                        exhausted = final or token_failures >= MAX_PUSH_ATTEMPTS
+                        if chunk.get('isMarker'):
+                            # marker 本身丢掉时不能再生成 marker（否则无 token 时
+                            # 每轮 flush 都多一个待重发片，永远清不完）。
+                            if exhausted:
+                                logger.warning(
+                                    f"[LogStreamPusher] {chunk['lines'][0]} "
+                                    f"(marker retained locally for execution "
+                                    f"{self.execution_id}; no token available)"
+                                )
+                            else:
+                                async with self._lock:
+                                    self.chunks.insert(0, chunk)
+                                    self._buffered_bytes = sum(
+                                        int(c.get('bytes', 0) or 0)
+                                        for c in self.chunks
+                                    )
+                            i += 1
+                            pushed += 1
+                            continue
+                        if exhausted:
+                            self._record_dropped_chunk(chunk, 'no_token')
+                            i += 1
+                            pushed += 1
+                            continue
+                        requeue = chunks_to_flush[i:]
+                        async with self._lock:
+                            self.chunks = requeue + self.chunks
+                            self._buffered_bytes = sum(
+                                int(c.get('bytes', 0) or 0) for c in self.chunks
+                            )
+                        break
                     except Exception as err:
                         all_pushed = False
-                        logger.debug(
-                            f"[LogStreamPusher] Failed to push chunk for execution {self.execution_id}: {err}"
-                        )
-                        # Continue with next chunks despite failure
+                        # EN-03：失败片不再 debug 后静默丢弃——记录本片失败次数
+                        # （跨 flush 保留），回填队首重发；到上限才丢弃并留 marker。
+                        failures = int(chunk.get('failures', 0)) + 1
+                        chunk['failures'] = failures
+                        if not self._push_failure_warned:
+                            self._push_failure_warned = True
+                            logger.warning(
+                                f"[LogStreamPusher] Failed to push log chunk "
+                                f"(fromLine {chunk['fromLine']}, {len(chunk['lines'])} lines) "
+                                f"for execution {self.execution_id}; will retry "
+                                f"(up to {MAX_PUSH_ATTEMPTS} attempts, subsequent failures "
+                                f"stay at warn-once): {err}"
+                            )
+                        if failures >= MAX_PUSH_ATTEMPTS:
+                            # 到上限 → 丢弃这一片，但**不得静默**：计入丢弃窗口，
+                            # 下一次 flush 在缺口行号上推一行 marker（与背压同通道）。
+                            logger.warning(
+                                f"[LogStreamPusher] Dropping log chunk "
+                                f"(fromLine {chunk['fromLine']}, {len(chunk['lines'])} lines) "
+                                f"for execution {self.execution_id} after "
+                                f"{failures} failed push attempts"
+                            )
+                            if chunk.get('isMarker'):
+                                logger.warning(
+                                    f"[LogStreamPusher] {chunk['lines'][0]} "
+                                    f"(marker retained locally for execution "
+                                    f"{self.execution_id})"
+                                )
+                            else:
+                                self._record_dropped_chunk(chunk, 'push_failure')
+                            i += 1
+                            pushed += 1
+                            continue
+                        # 未到上限 → 本片连同**尚未尝试**的后续片一起回填队首
+                        # （顺序不变），下一轮 flush 从这一片开始重发。刻意不再
+                        # 继续推后续片：① 失败时继续打 admin 雪上加霜；② 跳过
+                        # 发后面的片会让到达顺序与行号相反、实时视图乱序。
+                        requeue = chunks_to_flush[i:]
+                        async with self._lock:
+                            self.chunks = requeue + self.chunks
+                            self._buffered_bytes = sum(
+                                int(c.get('bytes', 0) or 0) for c in self.chunks
+                            )
+                        break
+                    i += 1
                     pushed += 1
             except asyncio.CancelledError:
                 # G2（审计轮 #15）：本协程通常就是 `self.timer`。外部 `flush()`
@@ -230,12 +402,25 @@ class LogStreamPusher:
                         f"requeued {len(remaining)} chunk(s) instead of dropping them"
                     )
                 raise
-            # P3（A8 对齐 node）: 缓冲清空且全部推送成功 → 复位背压告警闸，
-            # 让下一次独立的背压事件仍能产出一条 warn（而非本执行终身静默）。
+            # NOTOKEN：final_flush 是本执行最后一次排空机会。若这一轮因无令牌
+            # （或重试耗尽）仍留下丢行记账，就地写一条可见 marker，并把它放回
+            # 队首——进程若在此后拿到令牌并被再次 flush，marker 仍可补发。
+            if final and self._first_dropped_line is not None:
+                marker = self._make_marker_chunk()
+                logger.warning(
+                    f"[LogStreamPusher] {marker['lines'][0]} "
+                    f"(execution {self.execution_id} is finishing; marker retained locally)"
+                )
+                await self._queue_marker_chunk(marker)
+                self._clear_drop_accounting()
+            # P3（A8 对齐 node）: 缓冲清空且全部推送成功 → 复位背压告警闸与推送
+            # 失败告警闸，让下一次独立的故障仍能产出一条 warn（而非终身静默）。
             if all_pushed:
                 self._backpressure_warned = False
+                self._push_failure_warned = False
+                self._no_token_warned = False
 
-    async def flush(self) -> None:
+    async def flush(self, *, final: bool = False) -> None:
         """Cancel any pending timer, then drain every buffered line."""
         timer = self.timer
         self.timer = None
@@ -244,7 +429,7 @@ class LogStreamPusher:
             # gather(return_exceptions=True)：等待取消落地，但**不**把
             # CancelledError 传播给调用方（调用方自己没有被取消）。
             await asyncio.gather(timer, return_exceptions=True)
-        await self._flush_now()
+        await self._flush_now(final=final)
 
     async def _push_chunk(self, chunk: dict) -> None:
         """Push a single chunk to the admin API."""
@@ -257,10 +442,11 @@ class LogStreamPusher:
 
         token = await get_current_token()
         if not token:
-            logger.debug(
-                f"[LogStreamPusher] No token available for execution {self.execution_id}"
+            # NOTOKEN：抛内部信号而不是 return —— caller 才能区分「没有凭据」
+            # 与「推送成功」，把原片回填或留 marker，而不是静默清缓冲。
+            raise NoTokenError(
+                f"执行 {self.execution_id} 暂无可用令牌"
             )
-            return
 
         response = await request_with_self_heal(
             get_http_client(),
@@ -275,9 +461,12 @@ class LogStreamPusher:
         )
 
         if response.status_code not in (200, 201):
-            logger.debug(
-                f"[LogStreamPusher] Admin API returned {response.status_code} for execution "
-                f"{self.execution_id}: {response.text}"
+            # EN-03：4xx/5xx 不能再只 debug 后静默继续——必须向上抛，交给
+            # `_flush_now` 计入失败次数、回填队首重发；到上限才丢弃并留 marker。
+            # （网络异常本来就会从 request_with_self_heal 抛出，走同一条重试路径。）
+            raise RuntimeError(
+                f"[日志推送] 管理端返回状态码 {response.status_code} "
+                f"for execution {self.execution_id}: {response.text}"
             )
 
     async def final_flush(self) -> None:
@@ -287,7 +476,7 @@ class LogStreamPusher:
             tail = self._partial
             self._partial = ''
             await self.add_line(tail[:-1] if tail.endswith('\r') else tail)
-        await self.flush()
+        await self.flush(final=True)
 
     def get_current_line(self) -> int:
         """Get the current line number (useful for tracking progress)."""

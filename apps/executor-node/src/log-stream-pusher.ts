@@ -1,5 +1,6 @@
 import { logger } from './logger';
 import { post } from './admin-client';
+import { getCurrentToken } from './middleware/auth';
 import { executorAddressHeaderFor } from './callback';
 
 /** 子进程的哪一路输出。stdout/stderr 是两条独立的管道（见 routes/execute.ts）。 */
@@ -19,6 +20,13 @@ interface LogChunk {
    * 不可用时缓冲永远清不掉，finalFlush 也永远发不完）。
    */
   failures?: number;
+  /** NOTOKEN：无令牌尝试次数，和 failures（HTTP/网络失败）分开计数。 */
+  tokenFailures?: number;
+  /**
+   * 这一片本身就是丢行 marker。marker 在无令牌时再次丢失不得递归生成新
+   * marker，否则令牌长期缺失会每轮 flush 多一个待重发片，缓冲永远清不掉。
+   */
+  isMarker?: boolean;
 }
 
 /**
@@ -73,6 +81,18 @@ export const MAX_PUSH_ATTEMPTS = 3;
 export const PUSH_FAILURE_MARKER = (n: number): string =>
   `... [${n} log lines dropped after repeated push failures] ...`;
 
+/**
+ * NOTOKEN：拿不到上报凭据导致的丢行 marker，与 python 侧逐字同模板。
+ *
+ * 旧实现 pushChunk 无令牌时 debug 后 return，flushNow 把它当成功并清空
+ * 缓冲；这里与背压/推送失败共用同一条 marker 通道，只用文案区分原因。
+ */
+export const NO_TOKEN_MARKER = (n: number): string =>
+  `... [${n} log lines dropped because executor token was unavailable] ...`;
+
+/** Internal signal: an admin push was attempted without a usable token. */
+class NoTokenError extends Error {}
+
 /** `text` 的 UTF-8 字节数（记账必须是字节：中文 1 字符 = 3 字节）。 */
 function utf8Len(text: string): number {
   return Buffer.byteLength(text, 'utf8');
@@ -101,6 +121,9 @@ export class LogStreamPusher {
   private pushFailureWarned = false;
   /** EN-03：当前丢弃窗口里是否有「重试耗尽」造成的丢行（决定 marker 文案）。 */
   private droppedByPushFailure = false;
+  /** NOTOKEN：当前丢弃窗口是否由无令牌造成（与背压/重试耗尽分开记账）。 */
+  private droppedByNoToken = false;
+  private noTokenWarned = false;
   // 跨 chunk 的半行缓冲（**按流隔离**）：子进程输出按任意字节边界分片，一行
   // 可能被劈成两个 chunk。不做缓冲就会把「一行」记成「两行」——行号与最终
   // 回调日志对不上。
@@ -128,6 +151,45 @@ export class LogStreamPusher {
   private flushChain: Promise<void> = Promise.resolve();
 
   constructor(private executionId: string) {}
+
+  /** 按当前丢弃窗口的主因选 marker 文案（通道不变、原因可区分）。 */
+  private markerText(): string {
+    if (this.droppedByNoToken) return NO_TOKEN_MARKER(this.droppedSinceFlush);
+    if (this.droppedByPushFailure) return PUSH_FAILURE_MARKER(this.droppedSinceFlush);
+    return BACKPRESSURE_MARKER(this.droppedSinceFlush);
+  }
+
+  private makeMarkerChunk(): LogChunk {
+    const text = this.markerText();
+    // isMarker 只在本机流转，不会进入 post body；它让 marker 自身丢了之后
+    // 不再递归生成新 marker。
+    return {
+      fromLine: this.firstDroppedLine ?? 0,
+      lines: [text],
+      bytes: utf8Len(text),
+      isMarker: true,
+    };
+  }
+
+  private clearDropAccounting(): void {
+    this.droppedSinceFlush = 0;
+    this.firstDroppedLine = null;
+    this.droppedByPushFailure = false;
+    this.droppedByNoToken = false;
+  }
+
+  private recordDroppedChunk(chunk: LogChunk, reason: 'no_token' | 'push_failure'): void {
+    if (chunk.isMarker) return;
+    if (this.firstDroppedLine === null) this.firstDroppedLine = chunk.fromLine;
+    this.droppedSinceFlush += chunk.lines.length;
+    if (reason === 'no_token') this.droppedByNoToken = true;
+    else this.droppedByPushFailure = true;
+  }
+
+  private queueMarkerChunk(marker: LogChunk): void {
+    this.chunks.unshift(marker);
+    this.bufferedBytes += marker.bytes;
+  }
 
   /**
    * Add a line to the buffer. Returns the line number assigned to this line.
@@ -227,12 +289,12 @@ export class LogStreamPusher {
    * 的陷阱（timer 回调先把 `this.timer` 置 null 再 flush），但仍需串行化，
    * 见 {@link flushChain} 的注释。
    */
-  private async flush(): Promise<void> {
+  private async flush(final = false): Promise<void> {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    return this.serialize(() => this.flushNow());
+    return this.serialize(() => this.flushNow(final));
   }
 
   /**
@@ -247,7 +309,7 @@ export class LogStreamPusher {
   }
 
   /** 排空当前缓冲（调用方须已经持有 flush 链）。 */
-  private async flushNow(): Promise<void> {
+  private async flushNow(final = false): Promise<void> {
     // EN-03：缓冲已空但仍有丢弃记账时必须继续——「重试耗尽丢片」之后缓冲正好
     // 是空的，若按旧逻辑直接 return，这一段的缺口对实时视图完全不可见。
     if (this.chunks.length === 0 && this.firstDroppedLine === null) return;
@@ -259,19 +321,8 @@ export class LogStreamPusher {
     // 单行成片是安全的：每片自带 fromLine，admin 按 fromLine+i 落库，所以插入
     // 这一行**不会**让后续切片的行号错位。
     if (this.firstDroppedLine !== null) {
-      const marker: LogChunk = {
-        fromLine: this.firstDroppedLine,
-        // EN-03：marker 通道只有一条，文案区分「本机背压」与「上报连续失败」。
-        lines: [
-          this.droppedByPushFailure
-            ? PUSH_FAILURE_MARKER(this.droppedSinceFlush)
-            : BACKPRESSURE_MARKER(this.droppedSinceFlush),
-        ],
-        bytes: 0, // 已在缓冲记账之外，不参与字节闸
-      };
-      this.droppedSinceFlush = 0;
-      this.firstDroppedLine = null;
-      this.droppedByPushFailure = false;
+      const marker = this.makeMarkerChunk();
+      this.clearDropAccounting();
       chunksToFlush.unshift(marker);
     }
 
@@ -282,6 +333,43 @@ export class LogStreamPusher {
         await this.pushChunk(chunk);
       } catch (err) {
         allPushed = false;
+        if (err instanceof NoTokenError) {
+          // NOTOKEN：没有 HTTP 请求发出，和 5xx/网络失败分开计数；令牌恢复后
+          // 原片立即补发。到上限（或 finalFlush）才丢片并留 marker。
+          const tokenFailures = (chunk.tokenFailures ?? 0) + 1;
+          chunk.tokenFailures = tokenFailures;
+          if (!this.noTokenWarned) {
+            this.noTokenWarned = true;
+            logger.warn(
+              `[LogStreamPusher] No token available for execution ${this.executionId}; ` +
+                `log chunk (fromLine ${chunk.fromLine}, ${chunk.lines.length} lines) ` +
+                `stays queued for up to ${MAX_PUSH_ATTEMPTS} attempts ` +
+                `(subsequent no-token failures stay at warn-once): ${err}`,
+            );
+          }
+          const exhausted = final || tokenFailures >= MAX_PUSH_ATTEMPTS;
+          if (chunk.isMarker) {
+            // marker 自身丢了不能再生成 marker（否则无令牌时每轮多一个片）。
+            if (exhausted) {
+              logger.warn(
+                `[LogStreamPusher] ${chunk.lines[0]} (marker retained locally ` +
+                  `for execution ${this.executionId}; no token available)`,
+              );
+            } else {
+              this.chunks.unshift(chunk);
+              this.bufferedBytes += chunk.bytes;
+            }
+            continue;
+          }
+          if (exhausted) {
+            this.recordDroppedChunk(chunk, 'no_token');
+            continue;
+          }
+          const requeue = chunksToFlush.slice(i);
+          for (const pending of requeue) this.bufferedBytes += pending.bytes;
+          this.chunks.unshift(...requeue);
+          break;
+        }
         const failures = (chunk.failures ?? 0) + 1;
         chunk.failures = failures;
         // EN-03：连续失败必须从 debug 升到 warn（每执行限 1 条防风暴，全量
@@ -302,9 +390,14 @@ export class LogStreamPusher {
               `${chunk.lines.length} lines) for execution ${this.executionId} after ` +
               `${failures} failed push attempts`,
           );
-          if (this.firstDroppedLine === null) this.firstDroppedLine = chunk.fromLine;
-          this.droppedByPushFailure = true;
-          this.droppedSinceFlush += chunk.lines.length;
+          if (chunk.isMarker) {
+            logger.warn(
+              `[LogStreamPusher] ${chunk.lines[0]} (marker retained locally ` +
+                `for execution ${this.executionId})`,
+            );
+          } else {
+            this.recordDroppedChunk(chunk, 'push_failure');
+          }
           continue;
         }
         // 未到上限 → 本片连同**尚未尝试**的后续片一起回填队首（顺序不变），
@@ -317,11 +410,24 @@ export class LogStreamPusher {
         break;
       }
     }
+    // NOTOKEN：finalFlush 是本执行最后一次排空机会。若这一轮仍留下丢行记账，
+    // 就地写一条可见 marker，并放回队首——进程若此后拿到令牌又被 flush，
+    // marker 仍可补发；本地日志先保证「可观测」。
+    if (final && this.firstDroppedLine !== null) {
+      const marker = this.makeMarkerChunk();
+      logger.warn(
+        `[LogStreamPusher] ${marker.lines[0]} (execution ${this.executionId} ` +
+          `is finishing; marker retained locally)`,
+      );
+      this.queueMarkerChunk(marker);
+      this.clearDropAccounting();
+    }
     // 第四轮审计（A8）: 缓冲清空且全部推送成功 → 复位背压告警闸，让下一次
     // 独立的背压事件仍能产出一条 warn（而非本执行终身静默）。
     if (allPushed) {
       this.backpressureWarned = false;
       this.pushFailureWarned = false;
+      this.noTokenWarned = false;
     }
   }
 
@@ -335,6 +441,14 @@ export class LogStreamPusher {
    */
   private async pushChunk(chunk: LogChunk): Promise<void> {
     const path = `/api/executions/${encodeURIComponent(this.executionId)}/logs`;
+
+    // NOTOKEN：先显式取一次令牌。admin-client.post 内部也会取令牌并注入头，
+    // 但无令牌时它会静默不带 Authorization 发请求；这里必须把它变成可回填、
+    // 可留 marker 的信号，而不是让 flushNow 把「空凭据请求」当成功。
+    const token = await getCurrentToken();
+    if (!token) {
+      throw new NoTokenError(`执行 ${this.executionId} 暂无可用令牌`);
+    }
 
     // SEC-THROTTLE-BUCKET（审计 P1-1 配套）：与回调同款附带
     // `x-executor-address`——admin 侧 ExecutorAwareThrottlerGuard 现在**只对
@@ -352,8 +466,10 @@ export class LogStreamPusher {
     );
 
     if (response.status !== 200 && response.status !== 201) {
-      logger.debug(
-        `[LogStreamPusher] Admin API returned ${response.status} for execution ${this.executionId}`,
+      // EN-03：mock/未来 post 变体若以 resolved 形态返回 4xx/5xx，也必须进入
+      // 回填重发路径；否则 flushNow 会把失败片当成功、静默丢一段实时日志。
+      throw new Error(
+        `[日志推送] 管理端返回状态码 ${response.status}（执行 ${this.executionId}）`,
       );
     }
   }
@@ -369,7 +485,7 @@ export class LogStreamPusher {
       this.partials.set(stream, '');
       this.addLine(tail.endsWith('\r') ? tail.slice(0, -1) : tail);
     }
-    await this.flush();
+    await this.flush(true);
   }
 
   /**
