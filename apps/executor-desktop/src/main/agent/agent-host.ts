@@ -1,4 +1,7 @@
 /**
+ * ALLOW: 终态回报失败重排/幂等重报/修订版 SOP 锚点/poll 快照与上限收口集中在本文件，非注释行 1075>900；
+ * 相关账本与协议已拆到 requeue-ledger、collab-client，余下为不可再拆的状态机编排；size-caps 基线 98 条已满。
+ *
  * P7b（agent-and-deployment）：Agent 托管——指派生命周期的属主。
  *
  * ## 它管什么
@@ -50,7 +53,7 @@ import {
 } from './permission-profile';
 import { runAgentLoop, type AgentLoopResult } from './loop';
 import { buildLoopHandlers, isRetryableRelayError, newClarificationId, type SopPayload } from './runtime';
-import type { CollabClient } from './collab-client';
+import { DEFAULT_MAX_ASSIGNMENTS_PER_POLL, type CollabClient } from './collab-client';
 import type { GateCounters, GateLimits } from './gates';
 import { runIsolatedTask } from './isolated-runner';
 import {
@@ -102,6 +105,12 @@ export interface AgentHostStats {
   lastEffectiveProfile: string | null;
 }
 
+/** poll 首次领取快照所需的当前能力事实（同一 tick 内只探测一次）。 */
+interface CapabilityFacts {
+  capabilities: string[];
+  effectiveProfile: string;
+}
+
 interface PollAssignmentItem {
   kind: 'assignment';
   assignmentId: string;
@@ -134,12 +143,69 @@ interface ReplyItem {
 export const DEFAULT_TRANSIENT_REQUEUE_LIMIT = 20;
 
 /**
- * 中台 pollPending 一轮最多下发的指派条数（缺陷 A 的既有事实）。
- * claim ledger 的对账拿它当「本轮响应是否被条数上限截断」的判据：被截断时
- * 「某个 id 没回来」连证据都算不上——它可能只是排到下一轮（见
- * reconcileRequeueLedger）。
+ * 终态回报失败的恢复点。AssignmentJournal 没有独立字段，复用 lastSendError
+ * 承载「下一次 tick 用同一把幂等键重报」所需的最小事实；outstandingAsk 原样
+ * 留在 asked/replies 中，回复未 ACK 前绝不推进游标。
  */
-const MAX_ASSIGNMENTS_PER_POLL = 3;
+const TERMINAL_RETRY_PREFIX = 'terminal_report_retry:';
+
+interface PendingTerminalReport {
+  status: 'completed' | 'failed';
+  attempt: number;
+  result: Record<string, unknown>;
+  /** 触发终态的澄清回复；终态回报成功后才 ACK 它。 */
+  ackClarificationId?: string;
+  error: string;
+}
+
+function encodeTerminalRetry(pending: PendingTerminalReport): string {
+  return `${TERMINAL_RETRY_PREFIX}${JSON.stringify(pending)}`;
+}
+
+function decodeTerminalRetry(raw: string | null | undefined): PendingTerminalReport | null {
+  if (typeof raw !== 'string' || !raw.startsWith(TERMINAL_RETRY_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(raw.slice(TERMINAL_RETRY_PREFIX.length)) as PendingTerminalReport | null;
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (parsed.status !== 'completed' && parsed.status !== 'failed') return null;
+    if (typeof parsed.attempt !== 'number' || !Number.isInteger(parsed.attempt) || parsed.attempt < 1) return null;
+    if (!parsed.result || typeof parsed.result !== 'object' || Array.isArray(parsed.result)) return null;
+    if (typeof parsed.error !== 'string') return null;
+    if (parsed.ackClarificationId !== undefined && typeof parsed.ackClarificationId !== 'string') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** 版本串比较（半语义化：数字段 + 预发布后缀），用于阻止修订版 SOP 被旧载荷回退。 */
+function compareSopVersion(a: string, b: string): number {
+  const [aCore = '', aPre = ''] = a.split('-', 2);
+  const [bCore = '', bPre = ''] = b.split('-', 2);
+  const aParts = aCore.split('.');
+  const bParts = bCore.split('.');
+  for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+    const an = Number(aParts[i] ?? '0');
+    const bn = Number(bParts[i] ?? '0');
+    if (Number.isFinite(an) && Number.isFinite(bn) && an !== bn) return an < bn ? -1 : 1;
+    const as = aParts[i] ?? '0';
+    const bs = bParts[i] ?? '0';
+    if (as !== bs) return as.localeCompare(bs);
+  }
+  if (aPre === bPre) return 0;
+  if (aPre === '') return 1;
+  if (bPre === '') return -1;
+  return aPre.localeCompare(bPre);
+}
+
+/** 重领时沿用 journal 已消费的最高修订版；中心重发旧载荷不许把 sop_amended 回退。 */
+function keepExistingSop(existing: SopPayload | null | undefined, incoming: SopPayload): boolean {
+  if (!existing) return false;
+  const cmp = compareSopVersion(existing.version, incoming.version);
+  if (cmp > 0) return true;
+  // 同版本不同 hash 视为内容漂移：SOP 版本不可变，保守沿用已消费版本。
+  return cmp === 0 && existing.contentHash !== incoming.contentHash;
+}
 
 export class AgentHost {
   private ticking = false;
@@ -205,7 +271,13 @@ export class AgentHost {
 
       // 先声明 agent:sop 再 poll：SOP 预检和后续 LLM/回报端点都依赖这个能力。
       // 首次尚未收到中台权限上限时保守不报 gui；poll 下发策略后再更新。
-      const preflight = await this.advertiseCapabilities(this.centerPolicy !== null);
+      // 同一份事实同时作为 poll 请求里的首次领取快照（服务端 CAS 写入用），
+      // 避免「能力上报说有、领取快照说没有」的双份真相。
+      const pollFacts = await this.capabilityFacts(this.centerPolicy !== null);
+      const pollReport = await this.capabilityReportFor(pollFacts.capabilities);
+      const preflight = await this.advertiseCapabilities(
+        this.centerPolicy !== null, pollReport, pollFacts,
+      );
       if (!preflight.ok) return { worked: false, detail: `capability failed: ${preflight.error ?? 'unknown'}` };
 
       // poll 恒 0 等待——长等待由外部定时器节奏控制，host 不占住调用线程。
@@ -218,6 +290,9 @@ export class AgentHost {
       const poll = await this.deps.client.poll(this.deps.address, {
         waitMs: 0,
         ...(resendAssignments !== undefined ? { resendAssignments } : {}),
+        capabilities: pollFacts.capabilities,
+        capabilityReport: pollReport,
+        effectiveProfile: pollFacts.effectiveProfile,
       });
       if (!poll.ok) return { worked: false, detail: `poll failed: ${poll.error ?? 'unknown'}` };
       this.resendAssignmentIds = [];
@@ -228,7 +303,17 @@ export class AgentHost {
       // 只有「中台明确终结」（本机终态回报成功 → settleAssignment）才删条目；
       // 其余保留并继续重试，连续缺席到阈值才清理（原因与计数都落日志）。
       // 只动 id 账本，绝不重建/覆盖任何单的 journal。
-      this.reconcileRequeueLedger(poll.items, resendAssignments ?? []);
+      const pollLimit = Number.isFinite(poll.maxAssignmentsPerPoll) && poll.maxAssignmentsPerPoll >= 1
+        ? Math.floor(poll.maxAssignmentsPerPoll)
+        : DEFAULT_MAX_ASSIGNMENTS_PER_POLL;
+      this.reconcileRequeueLedger(
+        poll.items, resendAssignments ?? [], pollLimit,
+      );
+
+      // 终态回报失败的自愈在本进程内完成：下一 tick 用同一把幂等键重报，
+      // 不依赖进程重启，也不等中台 10 分钟 stalled 扫描。重报成功的单从本轮
+      // 待处理流里剔除，避免「刚终结又被重领重跑」。
+      const settledByRetry = new Set(await this.retryPendingTerminalReports());
 
       // 中台策略随每轮 poll 下发——本地缓存最新值（离线沿用最近一次，09 §调整4）
       if (poll.sopPolicy && typeof poll.sopPolicy === 'object') {
@@ -252,6 +337,7 @@ export class AgentHost {
         for (const item of poll.items) {
           if (!item || typeof item !== 'object' || (item as PollAssignmentItem).kind !== 'assignment') continue;
           const assignment = item as PollAssignmentItem;
+          if (settledByRetry.has(assignment.assignmentId)) continue;
           const reported = await this.deps.client.reportComplete(this.deps.address, assignment.assignmentId, {
             status: 'failed', attempt: 1,
             result: { outcome: 'agent_disabled_during_poll', stopMessage: 'Agent 在领取指派期间被关闭，未执行' },
@@ -288,6 +374,8 @@ export class AgentHost {
       const malformedAssignments: unknown[] = [];
       for (const raw of poll.items) {
         if (!raw || typeof raw !== 'object') continue;
+        const rawId = (raw as { assignmentId?: unknown }).assignmentId;
+        if (typeof rawId === 'string' && settledByRetry.has(rawId)) continue;
         const kind = (raw as { kind?: unknown }).kind;
         if (kind === 'assignment') {
           if (!isValidPollAssignment(raw)) malformedAssignments.push(raw);
@@ -301,7 +389,7 @@ export class AgentHost {
       // 先消费澄清回复：回复触发续跑；同一指派的崩溃重发载荷若同批到达，
       // 续跑已代表最新状态，旧载荷跳过防双重运行。
       const continued = new Set<string>();
-      let worked = false;
+      let worked = settledByRetry.size > 0;
       for (const bad of malformedAssignments) {
         await this.reportMalformedAssignment(bad);
         worked = true;
@@ -327,7 +415,9 @@ export class AgentHost {
         ? `assignment ${assignment?.assignmentId ?? ''} still awaiting reply; resend skipped`
         : assignment
           ? `assignment ${assignment.assignmentId} processed`
-          : 'clarification replies consumed';
+          : settledByRetry.size > 0
+            ? `${settledByRetry.size} terminal report(s) retried`
+            : 'clarification replies consumed';
       return {
         worked,
         ...(worked ? { detail: deferredIds.length > 0 ? `${baseDetail}; ${deferredIds.length} deferred to next poll` : baseDetail } : {}),
@@ -368,10 +458,17 @@ export class AgentHost {
           .filter((j) => j.phase === 'awaiting_reply' && this.outstandingAsk(j) !== null)
           .map((j) => j.assignmentId),
       );
+      // 终态回报失败是「必须重报」的锚点，即使 journal 仍在 awaiting_reply：
+      // 不能被下面的回复通道守卫当噪声丢掉（回复未 ACK 前更不能丢）。
+      const terminalPending = new Set(
+        journals
+          .filter((j) => decodeTerminalRetry(j.lastSendError) !== null)
+          .map((j) => j.assignmentId),
+      );
       const ledgerIds = this.ledger.list();
       let restored = 0;
       for (const id of ledgerIds) {
-        if (awaiting.has(id)) {
+        if (awaiting.has(id) && !terminalPending.has(id)) {
           console.warn(
             `[agent-host] claim ledger 丢弃 id（journal 处于 awaiting_reply 且提问未回复，` +
             `交给回复通道重发会触发重跑并丢答复）: ${id}`,
@@ -423,7 +520,11 @@ export class AgentHost {
    *
    * 全程只碰 id 账本——绝不读写/重建任何单的 journal。任何失败只 warn。
    */
-  private reconcileRequeueLedger(items: readonly unknown[], requestedIds: readonly string[]): void {
+  private reconcileRequeueLedger(
+    items: readonly unknown[],
+    requestedIds: readonly string[],
+    maxAssignmentsPerPoll: number,
+  ): void {
     try {
       const assignmentIds = items.filter(isValidPollAssignment).map((item) => item.assignmentId);
       // 澄清回复同样证明「中台还持有这张单」——它是 awaiting_reply 单唯一的
@@ -439,16 +540,27 @@ export class AgentHost {
       this.ledger.markSeen([...returned]);
 
       // 恰好被条数上限填满 = 「没回来」连证据都算不上（可能只是排到下一轮）。
-      const truncated = assignmentIds.length >= MAX_ASSIGNMENTS_PER_POLL;
+      const truncated = assignmentIds.length >= maxAssignmentsPerPoll;
       const requested = new Set(requestedIds);
       const askedButMissing: string[] = [];
       const heldWithoutEvidence: string[] = [];
+      const awaitHeld: string[] = [];
+      const dir = this.journalDir();
       for (const id of this.ledger.list()) {
         if (returned.has(id)) continue;
-        // 只对「本轮点名要过」的 id 收集证据。没请求过的 id（例如 awaiting_reply
-        // 守卫刻意跳过的那张）缺席不说明任何事——既不计数，也不重新请求。
-        if (requested.has(id)) askedButMissing.push(id);
-        else heldWithoutEvidence.push(id);
+        if (requested.has(id)) {
+          askedButMissing.push(id);
+          continue;
+        }
+        // 本轮没点名请求的 id：awaiting_reply 的交给回复通道（重发会被
+        // processAssignment 重建为 running 并吃掉答复）；其余**每轮都重排**，
+        // 不再只写一行日志把锚点晾死到下次进程重启。
+        const journal = loadAssignmentJournal(dir, id);
+        if (journal?.phase === 'awaiting_reply' && this.outstandingAsk(journal) !== null) {
+          awaitHeld.push(id);
+          continue;
+        }
+        heldWithoutEvidence.push(id);
       }
 
       // 截断轮不累加证据：这一轮「没给」可能是被上限挤掉的，不是中台的答复。
@@ -468,19 +580,28 @@ export class AgentHost {
         this.queueResendAssignment(id);
         retried.push(truncated ? id : `${id}(${misses}/${REQUEUE_MISS_DROP_THRESHOLD})`);
       }
+      // 没被本轮点名、也没有 await_reply 守卫的锚点：每轮重新入队。
+      // 「无证据」只表示不能累加缺席计数，不等于「不用再要」。
+      for (const id of heldWithoutEvidence) this.queueResendAssignment(id);
       if (retried.length > 0) {
         console.debug(
           truncated
             ? `[agent-host] claim ledger: 保留 ${retried.length} 个「已请求重发、本轮未返回」的 id ——` +
-              `本轮响应被 ${MAX_ASSIGNMENTS_PER_POLL} 张上限截断（不计证据），下一轮继续请求: ${retried.join(',')}`
+              `本轮响应被 ${maxAssignmentsPerPoll} 张上限截断（不计证据），下一轮继续请求: ${retried.join(',')}`
             : `[agent-host] claim ledger: 保留 ${retried.length} 个「已请求重发、本轮未返回」的 id，` +
               `下一轮继续重试（本轮未返回 ≠ 终态）: ${retried.join(',')}`,
         );
       }
       if (heldWithoutEvidence.length > 0) {
         console.debug(
-          `[agent-host] claim ledger: 保留 ${heldWithoutEvidence.length} 个本轮未返回、本轮也没请求的 id` +
-          `（无判定证据，如 awaiting_reply 守卫跳过）: ${heldWithoutEvidence.join(',')}`,
+          `[agent-host] claim ledger: 重排 ${heldWithoutEvidence.length} 个本轮未请求、非 awaiting_reply 的 id` +
+          `（无判定证据但也不能晾死）: ${heldWithoutEvidence.join(',')}`,
+        );
+      }
+      if (awaitHeld.length > 0) {
+        console.debug(
+          `[agent-host] claim ledger: 保留 ${awaitHeld.length} 个 awaiting_reply id，等回复通道而非重发: ` +
+          awaitHeld.join(','),
         );
       }
       const added = this.ledger.add(assignmentIds);
@@ -502,6 +623,9 @@ export class AgentHost {
    */
   private settleAssignment(assignmentId: string): void {
     clearAssignmentJournal(this.journalDir(), assignmentId);
+    // 终态已送达：同 tick 内可能仍在重发队列里，撤掉它，避免「刚终结又被重领」。
+    const queued = this.resendAssignmentIds.indexOf(assignmentId);
+    if (queued >= 0) this.resendAssignmentIds.splice(queued, 1);
     try {
       this.ledger.remove(assignmentId);
     } catch {
@@ -530,6 +654,100 @@ export class AgentHost {
     }
   }
 
+  /** 把「终态回报失败」写回 journal；outstandingAsk/asked/replies 原样保留。 */
+  private persistTerminalRetry(
+    journal: AssignmentJournal,
+    pending: PendingTerminalReport,
+  ): void {
+    journal.lastSendError = encodeTerminalRetry(pending);
+    journal.updatedAt = new Date().toISOString();
+    try {
+      saveAssignmentJournal(this.journalDir(), journal);
+    } catch {
+      /* 落盘失败：本 tick 的队列仍然有效，下一 tick 重建日志时沿用 lastSendError */
+    }
+  }
+
+  /**
+   * 所有终态回报的唯一出口：成功才 ACK（若由澄清回复触发）并清日志/撤账本；
+   * 失败则保留 journal + 原幂等键，排入下一 tick 重报。绝不靠进程重启兜底。
+   */
+  private async reportTerminalResult(
+    journal: AssignmentJournal,
+    input: {
+      status: 'completed' | 'failed';
+      result: Record<string, unknown>;
+      ackClarificationId?: string;
+    },
+  ): Promise<boolean> {
+    const base = {
+      status: input.status,
+      attempt: 1,
+      result: input.result,
+      ...(input.ackClarificationId !== undefined ? { ackClarificationId: input.ackClarificationId } : {}),
+    };
+    let reported: { ok: boolean; error?: string };
+    try {
+      reported = await this.deps.client.reportComplete(
+        this.deps.address, journal.assignmentId,
+        { status: base.status, attempt: base.attempt, result: base.result },
+      );
+    } catch (err) {
+      reported = { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    if (reported.ok) {
+      if (input.ackClarificationId !== undefined) {
+        await this.ackReply(journal.assignmentId, input.ackClarificationId);
+      }
+      this.settleAssignment(journal.assignmentId);
+      return true;
+    }
+    this.persistTerminalRetry(journal, {
+      ...base,
+      error: (reported.error ?? 'terminal report failed').slice(0, 200),
+    });
+    this.queueResendAssignment(journal.assignmentId);
+    this.stats.lastOutcome = 'terminal_report_pending';
+    return false;
+  }
+
+  /**
+   * tick 内的同进程自愈：扫描 journal 里未送达的终态回报，用原 attempt 重报。
+   * 返回本轮已真正终结的 id（调用方据此跳过同批被中台重发的载荷）。
+   */
+  private async retryPendingTerminalReports(): Promise<string[]> {
+    const settled: string[] = [];
+    for (const journal of listAssignmentJournals(this.journalDir())) {
+      const pending = decodeTerminalRetry(journal.lastSendError);
+      if (!pending) continue;
+      this.stats.lastOutcome = 'terminal_report_retry';
+      this.stats.lastAssignmentId = journal.assignmentId;
+      let reported: { ok: boolean; error?: string };
+      try {
+        reported = await this.deps.client.reportComplete(
+          this.deps.address, journal.assignmentId,
+          { status: pending.status, attempt: pending.attempt, result: pending.result },
+        );
+      } catch (err) {
+        reported = { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+      if (reported.ok) {
+        if (pending.ackClarificationId !== undefined) {
+          await this.ackReply(journal.assignmentId, pending.ackClarificationId);
+        }
+        this.settleAssignment(journal.assignmentId);
+        settled.push(journal.assignmentId);
+      } else {
+        this.persistTerminalRetry(journal, {
+          ...pending,
+          error: (reported.error ?? 'terminal report failed').slice(0, 200),
+        });
+        this.queueResendAssignment(journal.assignmentId);
+      }
+    }
+    return settled;
+  }
+
   /**
    * 缺陷 A：连续瞬态续跑上限（deps 可覆盖，缺省 20）。
    * 非法值（缺失/小数/<=0）回落到缺省——与 gates.normalizeLimits 同款
@@ -541,36 +759,57 @@ export class AgentHost {
     return Number.isFinite(n) && n >= 1 ? n : DEFAULT_TRANSIENT_REQUEUE_LIMIT;
   }
 
+  private async capabilityFacts(includeGui: boolean): Promise<CapabilityFacts> {
+    const effective = mergeWithCenterPolicy(
+      resolveLocalPermissions(this.deps.getConfig().agent), this.centerPolicy,
+    );
+    const capabilities = ['agent:sop', 'filesystem', 'http'];
+    if (probePlaywright().available) capabilities.push('browser');
+    if (includeGui && effective.hostAccess === 'app-scoped' &&
+        effective.allowedApps.length > 0 &&
+        await (process.platform === 'win32' ? new WindowsGuiDriver() : new X11GuiDriver()).probe()) {
+      capabilities.push('gui');
+    }
+    const effectiveProfile = `${effective.preset}(ce=${effective.codeExecution},sb=${effective.sandboxBackend},ha=${effective.hostAccess},te=${effective.taskExecution})`;
+    return { capabilities, effectiveProfile };
+  }
+
+  /** capabilityReport 用 EnvironmentReport 形态；agent:sop 是中台能力标签，不塞进运行时能力表。 */
+  private async capabilityReportFor(capabilities: readonly string[]): Promise<Record<string, unknown>> {
+    const env = await collectEnvironmentReport();
+    env.capabilities = capabilities.filter((cap) => cap !== 'agent:sop');
+    return env as unknown as Record<string, unknown>;
+  }
+
   private async advertiseCapabilities(
     includeGui: boolean,
-    report?: Record<string, unknown>,
-  ): Promise<{ ok: boolean; error?: string }> {
+    reportOverride?: Record<string, unknown>,
+    factsOverride?: CapabilityFacts,
+  ): Promise<{ ok: boolean; error?: string; facts: CapabilityFacts }> {
     return this.withCapabilityWrite(async () => {
       if (!this.deps.getConfig().agentEnabled && !this.working) {
-        return { ok: false, error: 'agent disabled' };
+        return {
+          ok: false,
+          error: 'agent disabled',
+          facts: factsOverride ?? await this.capabilityFacts(includeGui),
+        };
       }
-      const effective = mergeWithCenterPolicy(
-        resolveLocalPermissions(this.deps.getConfig().agent), this.centerPolicy,
-      );
-      const capabilities = ['agent:sop', 'filesystem', 'http'];
-      if (probePlaywright().available) capabilities.push('browser');
-      if (includeGui && effective.hostAccess === 'app-scoped' &&
-          effective.allowedApps.length > 0 &&
-          await (process.platform === 'win32' ? new WindowsGuiDriver() : new X11GuiDriver()).probe()) {
-        capabilities.push('gui');
-      }
-      const fingerprint = capabilities.join(',');
+      const facts = factsOverride ?? await this.capabilityFacts(includeGui);
+      const fingerprint = facts.capabilities.join(',');
       // 正常 tick 每 30s 续租一次；处理指派期间另有本地定时器续租。
       // 只跳过同一个 tick 内重复的第二次上报，不能把 DB 里的能力当永久授权。
-      if (!report && this.capabilityAdvertised && fingerprint === this.lastCapabilities &&
-          Date.now() - this.lastCapabilityReportAt < 25_000) return { ok: true };
-      const result = await this.deps.client.reportCapability(this.deps.address, capabilities, report);
+      if (!reportOverride && this.capabilityAdvertised && fingerprint === this.lastCapabilities &&
+          Date.now() - this.lastCapabilityReportAt < 25_000) {
+        return { ok: true, facts };
+      }
+      const report = reportOverride ?? await this.capabilityReportFor(facts.capabilities);
+      const result = await this.deps.client.reportCapability(this.deps.address, facts.capabilities, report);
       if (result.ok) {
         this.capabilityAdvertised = true;
         this.lastCapabilities = fingerprint;
         this.lastCapabilityReportAt = Date.now();
       }
-      return result;
+      return { ...result, facts };
     });
   }
 
@@ -631,7 +870,8 @@ export class AgentHost {
     this.awaitingReplyResendOnce.delete(item.assignmentId);
     const journal: AssignmentJournal = {
       assignmentId: item.assignmentId,
-      sop: item.sop,
+      // 中心重发可能带回领取时的旧快照；已消费的 sop_amended 修订版必须胜出。
+      sop: keepExistingSop(existing?.sop, item.sop) ? existing!.sop : item.sop,
       phase: 'running',
       pendingQuestion: null,
       // 崩溃重跑保留既有问答历史与预算计数：历史是答案上下文（丢了就会
@@ -679,7 +919,12 @@ export class AgentHost {
       return false;
     }
     if (journal.replies.some((r) => r.clarificationId === reply.clarificationId)) {
-      // 重放：上次已消费、ACK 未送达——补 ACK 即可，绝不二次续跑
+      // 重放：上次已消费、ACK 未送达——但若终态回报还没送达，ACK 必须继续等，
+      // 否则回复游标先走、终态只靠本地内存，进程一退出就两头落空。
+      if (decodeTerminalRetry(journal.lastSendError) !== null) {
+        await this.retryPendingTerminalReports();
+        return false;
+      }
       await this.ackReply(reply.assignmentId, reply.clarificationId);
       return false;
     }
@@ -690,16 +935,14 @@ export class AgentHost {
       // 如实终结本单，绝不挂着装等——运维在 Admin Web 处理后重派。
       this.stats.lastOutcome = 'escalated_to_human';
       this.stats.processed += 1;
-      const reported = await this.deps.client.reportComplete(this.deps.address, reply.assignmentId, {
+      await this.reportTerminalResult(journal, {
         status: 'failed',
-        attempt: 1,
+        ackClarificationId: reply.clarificationId,
         result: {
           outcome: 'escalated_to_human',
           stopMessage: '澄清已升级人工，无自动答复——请在 Admin Web 处理后重派',
         },
       });
-      if (reported.ok) this.settleAssignment(reply.assignmentId);
-      await this.ackReply(reply.assignmentId, reply.clarificationId);
       return true;
     }
 
@@ -729,6 +972,16 @@ export class AgentHost {
       return true;
     }
     await this.runWithJournal(journal);
+    const pending = decodeTerminalRetry(journal.lastSendError);
+    if (pending) {
+      // 续跑到达终态但回报没送达：把这条回复的 ACK 挂到恢复点上，
+      // 终态回报成功后才推进中台游标（回复文本已在 journal.replies 里）。
+      this.persistTerminalRetry(journal, {
+        ...pending,
+        ackClarificationId: reply.clarificationId,
+      });
+      return true;
+    }
     await this.ackReply(reply.assignmentId, reply.clarificationId);
     return true;
   }
@@ -791,16 +1044,14 @@ export class AgentHost {
         // 的工单不能继续进入 LLM/GUI 循环，必须明确回报不可执行。
         this.stats.lastOutcome = 'permission_denied';
         this.stats.processed += 1;
-        const reported = await this.deps.client.reportComplete(this.deps.address, assignmentId, {
+        await this.reportTerminalResult(journal, {
           status: 'failed',
-          attempt: 1,
           result: {
             outcome: 'permission_denied',
             stopMessage: `SOP 所需能力当前不可用：${missing.join(', ')}`,
             effectiveProfile: this.stats.lastEffectiveProfile,
           },
         });
-        if (reported.ok) this.settleAssignment(assignmentId);
         return;
       }
       const environment = await collectEnvironmentReport();
@@ -895,15 +1146,13 @@ export class AgentHost {
     } catch (err) {
       // 兜底：循环外的意外（poll 载荷畸形、磁盘故障……）也要如实回报
       this.stats.lastOutcome = 'host_error';
-      const reported = await this.deps.client.reportComplete(this.deps.address, assignmentId, {
+      await this.reportTerminalResult(journal, {
         status: 'failed',
-        attempt: 1,
         result: {
           outcome: 'host_error',
           stopMessage: err instanceof Error ? err.message : String(err),
         },
-      }).catch(() => undefined);
-      if (reported?.ok) this.settleAssignment(assignmentId);
+      });
     } finally {
       clearInterval(capabilityLeaseTimer);
       clearInterval(progressTimer);
@@ -989,9 +1238,8 @@ export class AgentHost {
 
       if (deliverError !== null) {
         this.stats.lastOutcome = 'deliver_failed';
-        const reported = await this.deps.client.reportComplete(this.deps.address, assignmentId, {
+        await this.reportTerminalResult(journal, {
           status: 'failed',
-          attempt: 1,
           result: {
             outcome: 'deliver_failed',
             stopMessage: `交付打包/上传失败：${deliverError}`,
@@ -1000,13 +1248,11 @@ export class AgentHost {
             effectiveProfile: this.stats.lastEffectiveProfile,
           },
         });
-        if (reported.ok) this.settleAssignment(assignmentId);
         return;
       }
 
-      const reported = await this.deps.client.reportComplete(this.deps.address, assignmentId, {
+      await this.reportTerminalResult(journal, {
         status: 'completed',
-        attempt: 1,
         result: {
           outcome: result.outcome,
           iterations: result.iterations,
@@ -1017,7 +1263,6 @@ export class AgentHost {
           ...(isolatedRun !== null ? { isolatedRun } : {}),
         },
       });
-      if (reported.ok) this.settleAssignment(assignmentId);
       return;
     }
 
@@ -1080,9 +1325,8 @@ export class AgentHost {
           `[agent-host] LLM 链路持续不可用，停止重排: assignmentId=${assignmentId} ` +
           `streak=${streak} lastError=${detail}`,
         );
-        const reported = await this.deps.client.reportComplete(this.deps.address, assignmentId, {
+        await this.reportTerminalResult(journal, {
           status: 'failed',
-          attempt: 1,
           result: {
             outcome: 'error',
             stopReason: null,
@@ -1095,9 +1339,8 @@ export class AgentHost {
             effectiveProfile: this.stats.lastEffectiveProfile,
           },
         });
-        // 只在回报成功时清日志：回报失败就留着恢复点，下一轮 poll 再重领
-        // （streak 已封顶，下一轮会再走一次同样的收敛，不会又跑循环）。
-        if (reported.ok) this.settleAssignment(assignmentId);
+        // 回报失败时 reportTerminalResult 已保留 journal + 幂等键，下一 tick 重报
+        // （streak 已封顶，不会又跑循环）。
         return;
       }
       journal.lastSendError = `transient relay failure, awaiting re-claim: ${(result.stopMessage ?? '').slice(0, 160)}`;
@@ -1119,9 +1362,8 @@ export class AgentHost {
     }
 
     // gate_stopped / permission_denied / escalated / error → failed（带原因）
-    const reported = await this.deps.client.reportComplete(this.deps.address, assignmentId, {
+    await this.reportTerminalResult(journal, {
       status: 'failed',
-      attempt: 1,
       result: {
         outcome: result.outcome,
         stopReason: result.stopReason ?? null,
@@ -1132,7 +1374,6 @@ export class AgentHost {
         effectiveProfile: this.stats.lastEffectiveProfile,
       },
     });
-    if (reported.ok) this.settleAssignment(assignmentId);
   }
 
   /**
@@ -1161,17 +1402,16 @@ export class AgentHost {
         }
       }
       if (sent.escalated) {
-        // 中台 maxRounds 触顶已强制升级——不会再有回复，如实终结本单
+        // 中台 maxRounds 触顶已强制升级——不会再有回复，如实终结本单。
+        // 回报失败时报告恢复点 + 回排，下一 tick 用同键重报；绝不 ACK/清日志。
         this.stats.lastOutcome = 'escalated_to_human';
-        const reported = await this.deps.client.reportComplete(this.deps.address, assignmentId, {
+        await this.reportTerminalResult(journal, {
           status: 'failed',
-          attempt: 1,
           result: {
             outcome: 'escalated_to_human',
             stopMessage: `澄清轮次触顶（第 ${sent.round ?? outstanding.round} 轮），已升级人工`,
           },
         });
-        if (reported.ok) this.settleAssignment(assignmentId);
       }
       return;
     }
@@ -1193,14 +1433,18 @@ export class AgentHost {
     const id = (raw as { assignmentId?: unknown } | null)?.assignmentId;
     const idLabel = typeof id === 'string' && id.trim() !== '' ? id.slice(0, 64) : '(missing)';
     this.stats.lastOutcome = 'poll_payload_invalid';
-    await this.deps.client.reportComplete(this.deps.address, typeof id === 'string' ? id.slice(0, 128) : 'unknown-assignment', {
+    const reported = await this.deps.client.reportComplete(this.deps.address, typeof id === 'string' ? id.slice(0, 128) : 'unknown-assignment', {
       status: 'failed',
       attempt: 1,
       result: {
         outcome: 'poll_payload_invalid',
         stopMessage: `poll 指派载荷缺字段/形态非法（assignmentId=${idLabel}）——未进入执行`,
       },
-    }).catch(() => undefined);
+    }).catch(() => ({ ok: false as const, error: 'reportComplete threw' }));
+    // 回报没送达就别把锚点丢掉；畸形载荷没有 journal，只能靠 id 账本让中台再投一次。
+    if (!reported.ok && typeof id === 'string' && id.trim() !== '') {
+      this.queueResendAssignment(id.trim().slice(0, 128));
+    }
   }
 
   /** 未获得回复的最近一次提问（重试只针对它；无则返回 null）。 */
@@ -1220,6 +1464,9 @@ export class AgentHost {
     try {
       for (const journal of listAssignmentJournals(this.journalDir())) {
         if (journal.phase !== 'awaiting_reply' || journal.lastSendError === null) continue;
+        // 终态回报失败挂起的 lastSendError 不是「澄清没发出去」——重发澄清会
+        // 烧掉新一轮幂等键并吃掉人工答复，交给 retryPendingTerminalReports。
+        if (decodeTerminalRetry(journal.lastSendError) !== null) continue;
         if (!this.outstandingAsk(journal)) continue;
         this.stats.lastOutcome = 'clarification_send_retry';
         await this.sendClarificationForJournal(journal);

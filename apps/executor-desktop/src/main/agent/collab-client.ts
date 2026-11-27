@@ -30,6 +30,14 @@ import { URL } from 'url';
 
 export const COLLAB_DEFAULT_TIMEOUT_MS = 30_000;
 
+/** poll 响应未下发上限时的缺省领取条数（服务端常量 POLL_ASSIGNMENTS_MAX 的消费侧回落值）。 */
+export const DEFAULT_MAX_ASSIGNMENTS_PER_POLL = 3;
+
+function normalizeMaxAssignmentsPerPoll(raw: unknown): number {
+  const n = typeof raw === 'number' ? Math.floor(raw) : NaN;
+  return Number.isFinite(n) && n >= 1 ? n : DEFAULT_MAX_ASSIGNMENTS_PER_POLL;
+}
+
 /**
  * 响应体字节上限：collect 已到顶后继续接收的字节只计数不保留——计数是为了
  * 在 `end` 时能如实报出「实收 N 字节」。中台正常响应（poll/relay/complete）
@@ -115,19 +123,58 @@ export class CollabClient {
   /** 长轮询待办（指派 / 澄清回复）。waitMs 由服务端钳位 ≤25s。 */
   async poll(
     address: string,
-    opts: { waitMs?: number; resendAssignments?: boolean | string[] } = {},
-  ): Promise<{ ok: boolean; error?: string; items: unknown[]; sopPolicy?: unknown }> {
+    opts: {
+      waitMs?: number;
+      resendAssignments?: boolean | string[];
+      /** 首次领取快照：能力名列表（含 agent:sop）。 */
+      capabilities?: string[];
+      /** 首次领取快照：环境报告（含 capabilities 运行时能力子集）。 */
+      capabilityReport?: Record<string, unknown>;
+      /** 首次领取快照：min(本地, 中台) 权限档位的可读串。 */
+      effectiveProfile?: string;
+    } = {},
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    items: unknown[];
+    sopPolicy?: unknown;
+    maxAssignmentsPerPoll: number;
+  }> {
     const res = await this.post('/api/agent-collab/poll', address, {
       address,
       ...(opts.waitMs !== undefined ? { waitMs: opts.waitMs } : {}),
       ...(opts.resendAssignments !== undefined ? { resendAssignments: opts.resendAssignments } : {}),
+      ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : {}),
+      ...(opts.capabilityReport !== undefined ? { capabilityReport: opts.capabilityReport } : {}),
+      ...(opts.effectiveProfile !== undefined ? { effectiveProfile: opts.effectiveProfile } : {}),
     }, Math.max(this.timeoutMs, (opts.waitMs ?? 0) + 10_000));
-    if (!res.ok) return { ok: false, error: res.error ?? `poll failed (status=${res.status})`, items: [] };
-    const parsed = unwrapEnvelope<{ items?: unknown[]; sopPolicy?: unknown }>(res.body);
-    if (!parsed) {
-      return { ok: false, error: 'poll 响应非法 JSON', items: [] };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: res.error ?? `poll failed (status=${res.status})`,
+        items: [],
+        maxAssignmentsPerPoll: DEFAULT_MAX_ASSIGNMENTS_PER_POLL,
+      };
     }
-    return { ok: true, items: Array.isArray(parsed.items) ? parsed.items : [], sopPolicy: parsed.sopPolicy };
+    const parsed = unwrapEnvelope<{
+      items?: unknown[];
+      sopPolicy?: unknown;
+      maxAssignmentsPerPoll?: unknown;
+    }>(res.body);
+    if (!parsed) {
+      return {
+        ok: false,
+        error: 'poll 响应非法 JSON',
+        items: [],
+        maxAssignmentsPerPoll: DEFAULT_MAX_ASSIGNMENTS_PER_POLL,
+      };
+    }
+    return {
+      ok: true,
+      items: Array.isArray(parsed.items) ? parsed.items : [],
+      sopPolicy: parsed.sopPolicy,
+      maxAssignmentsPerPoll: normalizeMaxAssignmentsPerPoll(parsed.maxAssignmentsPerPoll),
+    };
   }
 
   /** 能力上报（覆盖式）。接 SOP 的机器必须显式含 `agent:sop`。 */

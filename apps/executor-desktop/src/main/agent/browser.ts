@@ -7,8 +7,9 @@
  *
  * ## 四道边界（全部代码层，不靠 prompt）
  * 1. **Playwright 可用性闸**：动态 require（`@playwright/test` 依赖链带的
- *    `playwright-core`）——不可用时**如实**返回 unavailable，绝不崩溃、绝不
- *    伪装成功。perception 的能力域自述据此不超前声明 `browser`。
+ *    `playwright-core`）之后还必须校验 `chromium.executablePath()` 指向的
+ *    二进制**真实存在**——模块在、浏览器没装也算 unavailable，绝不崩溃、
+ *    绝不伪装成功。perception 的能力域自述据此不超前声明 `browser`。
  * 2. **动作封闭枚举**：navigate / click / type / press / screenshot /
  *    extract_text / wait 七个。LLM 想要 `exec` / `goto-file://` / 任意 JS
  *    注入（`page.evaluate`）——没有这个动作，就不存在。
@@ -73,18 +74,87 @@ export interface BrowserActionResult {
   sessionClosed?: boolean;
 }
 
-/** Playwright 可用性探测（同步、缓存——perception 与 browser 共用判定）。 */
-let playwrightCache: { available: boolean; chromium?: unknown } | null = null;
-export function probePlaywright(): { available: boolean; error?: string } {
-  if (playwrightCache) return { available: playwrightCache.available, error: playwrightCache.available ? undefined : 'probed: unavailable' };
+/**
+ * Playwright 可用性探测（同步、缓存——perception 与 browser 共用判定）。
+ *
+ * 只 require 到模块不算「浏览器可用」：`chromium.executablePath()` 指到的
+ * 二进制必须真实存在，否则中心会派到跑不动的 SOP。`PLAYWRIGHT_BROWSERS_PATH`
+ * 的语义由 playwright-core 自己解析（executablePath 已包含该变量），这里只
+ * 做存在性闸；单元替身走 `probePlaywright({ deps })`，绕过全局缓存。
+ */
+export interface PlaywrightProbeDeps {
+  load: (id: string) => unknown;
+  exists: (executable: string) => boolean;
+  env: NodeJS.ProcessEnv;
+}
+
+export interface PlaywrightProbeOptions {
+  /** 注入即视为替身调用：不读写全局缓存，不污染生产判定。 */
+  deps?: Partial<PlaywrightProbeDeps>;
+}
+
+let playwrightCache: {
+  available: boolean;
+  chromium?: unknown;
+  error?: string;
+} | null = null;
+
+function defaultPlaywrightProbeDeps(): PlaywrightProbeDeps {
+  return {
+    load: (id) => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      return require(id);
+    },
+    exists: (executable) => fs.existsSync(executable),
+    env: process.env,
+  };
+}
+
+function chromiumExecutable(pw: unknown): string | null {
+  const chromium = (pw as { chromium?: { executablePath?: () => string } } | null)?.chromium;
+  if (typeof chromium?.executablePath !== 'function') return null;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pw = require('playwright-core');
-    playwrightCache = { available: true, chromium: pw.chromium };
+    const p = chromium.executablePath();
+    return typeof p === 'string' && p.length > 0 ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+export function probePlaywright(
+  options: PlaywrightProbeOptions = {},
+): { available: boolean; error?: string } {
+  const injected = options.deps !== undefined;
+  if (!injected && playwrightCache) {
+    return {
+      available: playwrightCache.available,
+      error: playwrightCache.available ? undefined : playwrightCache.error ?? 'probed: unavailable',
+    };
+  }
+  const deps: PlaywrightProbeDeps = { ...defaultPlaywrightProbeDeps(), ...options.deps };
+  const hint = deps.env.PLAYWRIGHT_BROWSERS_PATH
+    ? ` (PLAYWRIGHT_BROWSERS_PATH=${deps.env.PLAYWRIGHT_BROWSERS_PATH})`
+    : '';
+  try {
+    const pw = deps.load('playwright-core');
+    const executable = chromiumExecutable(pw);
+    if (!executable) {
+      const error = 'playwright-core 未提供可用的 chromium.executablePath()';
+      if (!injected) playwrightCache = { available: false, error };
+      return { available: false, error };
+    }
+    if (!deps.exists(executable)) {
+      const error = `Chromium executable 不存在：${executable}${hint}——浏览器能力不可用`;
+      if (!injected) playwrightCache = { available: false, error };
+      return { available: false, error };
+    }
+    const chromium = (pw as { chromium?: unknown }).chromium;
+    if (!injected) playwrightCache = { available: true, chromium };
     return { available: true };
   } catch (err) {
-    playwrightCache = { available: false };
-    return { available: false, error: err instanceof Error ? err.message : String(err) };
+    const error = err instanceof Error ? err.message : String(err);
+    if (!injected) playwrightCache = { available: false, error };
+    return { available: false, error };
   }
 }
 
@@ -241,17 +311,22 @@ export class AgentBrowserSession {
           const buf = await this.page.screenshot({ timeout: BROWSER_ACTION_TIMEOUT_MS });
           fs.mkdirSync(path.dirname(resolved.path), { recursive: true });
           fs.writeFileSync(resolved.path, buf);
-          return { ok: true, screenshotPath: rel };
+          // 截图是观察产物：复核落点后越界则先清掉刚落盘的文件再终止，
+          // 绝不在越界页续跑，也绝不把越界页截图留在工作区
+          return await this.recheckAfterAction(
+            { ok: true, screenshotPath: rel },
+            { absolutePath: resolved.path },
+          );
         }
         case 'extract_text': {
           const sel = typeof input.selector === 'string' && input.selector ? input.selector : 'body';
           const text = (await this.page.textContent(sel, { timeout: BROWSER_ACTION_TIMEOUT_MS })) ?? '';
-          return { ok: true, text: text.slice(0, EXTRACT_TEXT_MAX) };
+          return await this.recheckAfterAction({ ok: true, text: text.slice(0, EXTRACT_TEXT_MAX) });
         }
         case 'wait': {
           const ms = Math.min(Math.max(Number(input.ms ?? 1000), 50), 10_000);
           await this.page.waitForTimeout(ms);
-          return { ok: true, detail: `waited ${ms}ms` };
+          return await this.recheckAfterAction({ ok: true, detail: `waited ${ms}ms` });
         }
       }
     } catch (err) {
@@ -260,14 +335,31 @@ export class AgentBrowserSession {
   }
 
   /**
-   * P2-3：click/press 之后的落点复核。越界 = 终止会话（录屏照常落盘）
-   * 并返回带 sessionClosed 标记的失败结果；在界 = 透传成功。
+   * P2-3：动作后的落点复核。越界 = 终止会话（录屏照常落盘）
+   * 并返回带 sessionClosed 标记的失败结果；在界 = 原样透传动作结果，不丢
+   * extract_text 的 text / screenshot 的 screenshotPath / wait 的 detail。
    */
-  private async recheckAfterAction(): Promise<BrowserActionResult> {
-    if (!this.page) return { ok: true };
+  private async recheckAfterAction(
+    result: BrowserActionResult = { ok: true },
+    cleanupArtifact?: { absolutePath: string },
+  ): Promise<BrowserActionResult> {
+    if (!this.page) return result;
     const landed = checkPostActionUrl(this.page.url(), this.allowedDomains);
-    if (!landed.ok) return await this.terminateForBoundary(landed.url);
-    return { ok: true };
+    if (!landed.ok) {
+      // screenshot 已先落盘；越界产物不能留在工作区，先删文件（空目录一并收掉）。
+      // 清理失败不阻塞越界终止，失败语义仍由 terminateForBoundary 返回。
+      if (cleanupArtifact?.absolutePath) {
+        try {
+          fs.rmSync(cleanupArtifact.absolutePath, { force: true });
+          const dir = path.dirname(cleanupArtifact.absolutePath);
+          if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+        } catch {
+          /* best-effort 清理 */
+        }
+      }
+      return await this.terminateForBoundary(landed.url);
+    }
+    return result;
   }
 
   /** P2-3：越界处置——置位闸 + 与既有 close() 路径合流（录屏落盘、句柄回收）。 */

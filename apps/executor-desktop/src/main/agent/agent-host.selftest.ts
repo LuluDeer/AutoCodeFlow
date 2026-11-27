@@ -67,11 +67,15 @@ function makeCenter(opts: {
   sopPolicy?: unknown;
   sopCapabilities?: string[];
   /** P7d：poll 响应脚本（逐次弹出；缺省沿用「首单 + 空」行为）。 */
-  pollScript?: Array<{ items: unknown[]; sopPolicy?: unknown }>;
+  pollScript?: Array<{ items: unknown[]; sopPolicy?: unknown; maxAssignmentsPerPoll?: number }>;
   /** P7d：首次 ACK 回 500（重发去重路径）。 */
   failFirstAck?: boolean;
   /** P7d：澄清上报前 N 次回 503（发送失败重试路径；N=2 才能观察跨 tick 重试）。 */
   failClarifyTimes?: number;
+  /** 终态回报前 N 次回 500（同进程自愈路径）。 */
+  failCompleteTimes?: number;
+  /** 澄清端点按触顶升级回应（maxRounds 场景）。 */
+  clarificationEscalated?: boolean;
 }) {
   const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
   const llmQueue = [...opts.llmScript];
@@ -79,6 +83,7 @@ function makeCenter(opts: {
   let assignmentSent = false;
   const ackCalls: string[] = [];
   const clarifyCalls: Array<Record<string, unknown>> = [];
+  const completeCalls: Array<Record<string, unknown>> = [];
   const server = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
@@ -151,6 +156,16 @@ function makeCenter(opts: {
         );
         return;
       }
+      if (p.startsWith('/api/agent-collab/assignments/') && p.endsWith('/complete')) {
+        completeCalls.push(body);
+        if (completeCalls.length <= (opts.failCompleteTimes ?? 0)) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ message: 'complete boom' }));
+          return;
+        }
+        reply({ ok: true, accepted: true });
+        return;
+      }
       if (p === '/api/agent-collab/capability' || p.startsWith('/api/agent-collab/assignments/')) {
         reply({ ok: true, accepted: true });
         return;
@@ -163,7 +178,11 @@ function makeCenter(opts: {
           res.end(JSON.stringify({ message: 'clarify boom' }));
           return;
         }
-        reply({ ok: true, escalated: false, round: clarifyCalls.length });
+        reply({
+          ok: true,
+          escalated: opts.clarificationEscalated === true,
+          round: clarifyCalls.length,
+        });
         return;
       }
       reply({ ok: true });
@@ -172,6 +191,8 @@ function makeCenter(opts: {
   return {
     requests,
     ackCalls,
+    clarifyCalls,
+    completeCalls,
     listen: (): Promise<string> =>
       new Promise((resolve) => {
         server.listen(0, '127.0.0.1', () => {
@@ -1527,8 +1548,8 @@ async function main(): Promise<void> {
     };
     const host1 = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client: crashing });
     const r1 = await host1.tick();
-    check('处理阶段抛错不穿透 tick（收敛为 host_error）',
-      r1.worked === true && host1.stats.lastOutcome === 'host_error',
+    check('处理阶段回报抛错不穿透 tick（收敛为可恢复的待回报态）',
+      r1.worked === true && host1.stats.lastOutcome === 'terminal_report_pending',
       `worked=${r1.worked} outcome=${host1.stats.lastOutcome}`);
     check('★ 崩溃现场：账本已落盘该 id（poll 后、处理前写入）',
       JSON.stringify(ledgerIds(workDir)) === JSON.stringify([ASSIGNMENT_ID]),
@@ -1748,6 +1769,150 @@ async function main(): Promise<void> {
         `threw=${threw} body=${JSON.stringify(badPolls[0]?.body ?? null)}`);
       await badCenter.close();
     }
+  }
+
+  console.log('-- 25. 终态回报 5xx：同进程重领 + 同幂等键重报，ACK 只在成功后推进 --');
+  {
+    const workDir = newWorkDir();
+    const asked = { clientClarificationId: 'client-1', round: 1, question: '升级前最后一句' };
+    seedJournal(workDir, {
+      phase: 'awaiting_reply',
+      pendingQuestion: asked.question,
+      asked: [asked],
+      replies: [],
+    });
+    // 第一轮回报 failed 回 500；第二轮用同一 attempt=1 重报才成功。
+    const center = makeCenter({
+      llmScript: [],
+      failCompleteTimes: 1,
+      pollScript: [
+        { items: [replyItem({ resolution: 'escalated_to_human', answer: null })] },
+        { items: [replyItem({ resolution: 'escalated_to_human', answer: null })] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+
+    const r1 = await host.tick();
+    check('第一轮：终态回报失败但 tick 不吞异常', r1.worked === true);
+    check('★ 第一次 complete 是 failed 且回 500 后不 ACK（回复没被吃掉）',
+      center.completeCalls.length === 1 &&
+      center.completeCalls[0].status === 'failed' &&
+      center.ackCalls.length === 0,
+      `complete=${center.completeCalls.length} ack=${center.ackCalls.length}`);
+    const failedJournal = loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID);
+    check('★ failure 保留 journal + outstandingAsk + terminal retry 恢复点',
+      failedJournal?.phase === 'awaiting_reply' &&
+      failedJournal.asked.length === 1 &&
+      (failedJournal.lastSendError ?? '').startsWith('terminal_report_retry:'));
+    check('★ 失败后账本仍锚住 id', ledgerIds(workDir).includes(ASSIGNMENT_ID));
+
+    const r2 = await host.tick();
+    const polls = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('★ 第二轮 poll 按 id 请求重领（不靠进程重启/stalled 扫描）',
+      Array.isArray(polls[1]?.body.resendAssignments) &&
+      (polls[1]!.body.resendAssignments as string[]).includes(ASSIGNMENT_ID),
+      `body=${JSON.stringify(polls[1]?.body ?? null)}`);
+    check('第二轮：同幂等键重报后终态落地', r2.worked === true && center.completeCalls.length === 2);
+    check('★ 两次 complete 都用 attempt=1（幂等键不变）',
+      center.completeCalls.every((c) => c.attempt === 1),
+      `attempts=${JSON.stringify(center.completeCalls.map((c) => c.attempt))}`);
+    check('★ 只在终态回报成功后 ACK 一次',
+      center.ackCalls.length === 1 &&
+      center.ackCalls[0].includes('/clarifications/ack'));
+    check('重报成功后 journal 与账本都清空',
+      loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null &&
+      !ledgerIds(workDir).includes(ASSIGNMENT_ID));
+    await center.close();
+  }
+
+  console.log('-- 26. sop_amended 修订版：中心重发旧载荷不回退 --');
+  {
+    const workDir = newWorkDir();
+    const amendedSop = { ...SOP_PAYLOAD, version: '2.0.0', contentHash: 'h2' };
+    seedJournal(workDir, { phase: 'running', sop: amendedSop });
+    // 第一次 complete 回 500，让 journal 留在盘上可检查修订版是否被旧载荷覆盖。
+    const center = makeCenter({
+      llmScript: [PLAN_OK],
+      failCompleteTimes: 1,
+      pollScript: [{ items: [assignmentItem(ASSIGNMENT_ID, { sop: SOP_PAYLOAD })] }],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    await host.tick();
+    const j = loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID);
+    check('★ 重领后 journal 沿用已消费的修订版 version/contentHash',
+      j?.sop.version === '2.0.0' && j.sop.contentHash === 'h2',
+      `sop=${JSON.stringify(j?.sop ?? null).slice(0, 160)}`);
+    const llm = center.requests.find((q) => q.path === '/api/agent-collab/llm');
+    check('续跑实际按修订版 SOP 执行（LLM 上下文含 2.0.0，而非重发载荷的 1.0.0）',
+      JSON.stringify(llm?.body ?? {}).includes('2.0.0'));
+    check('汇报失败仍保留恢复点（等待同键重报）',
+      center.completeCalls.length === 1 && (j?.lastSendError ?? '').startsWith('terminal_report_retry:'));
+    await center.close();
+  }
+
+  console.log('-- 27. poll 上限来自响应 + 首次领取快照字段 --');
+  {
+    const workDir = newWorkDir();
+    // A 在账本里且本轮被点名请求；响应只回 B，并用 maxAssignmentsPerPoll=1 截断。
+    seedJournal(workDir, { phase: 'running' });
+    const center = makeCenter({
+      llmScript: [PLAN_OK],
+      pollScript: [{
+        items: [assignmentItem(ASSIGNMENT_ID_B)],
+        maxAssignmentsPerPoll: 1,
+      }],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    await host.tick();
+    const polls = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    const pollBody = polls[0]?.body ?? {};
+    check('★ poll 请求带首次领取快照三字段',
+      Array.isArray(pollBody.capabilities) &&
+      (pollBody.capabilities as string[]).includes('agent:sop') &&
+      pollBody.capabilityReport !== undefined && typeof pollBody.capabilityReport === 'object' &&
+      typeof pollBody.effectiveProfile === 'string',
+      `body=${JSON.stringify(pollBody).slice(0, 220)}`);
+    const evidence = ledgerEvidence(workDir, ASSIGNMENT_ID);
+    check('★ maxAssignmentsPerPoll=1 被消费：截断轮不给缺席 id 记 misses',
+      ledgerIds(workDir).includes(ASSIGNMENT_ID) &&
+      (evidence === null || evidence.misses === 0),
+      `evidence=${JSON.stringify(evidence)}`);
+    check('本次截断只处理中台实际返回的 B',
+      !!center.requests.find((q) => q.path === `/api/agent-collab/assignments/${ASSIGNMENT_ID_B}/complete`) &&
+      !center.requests.some((q) => q.path === `/api/agent-collab/assignments/${ASSIGNMENT_ID}/complete`));
+    await center.close();
+  }
+
+  console.log('-- 28. claim ledger 对账：非 awaiting_reply 的 id 每轮重排 --');
+  {
+    const workDir = newWorkDir();
+    const asked = { clientClarificationId: 'client-1', round: 1, question: '还在等答复' };
+    seedJournal(workDir, {
+      assignmentId: ASSIGNMENT_ID,
+      phase: 'awaiting_reply',
+      asked: [asked],
+      replies: [],
+    });
+    const ledger = new RequeueLedger(workDir);
+    ledger.add([ASSIGNMENT_ID, ASSIGNMENT_ID_B]);
+    const host = new AgentHost({
+      address: 'a:1', workDir, getConfig: () => makeConfig('http://127.0.0.1:1'),
+      client: {} as CollabClient,
+    });
+    (host as unknown as {
+      reconcileRequeueLedger: (items: unknown[], requested: string[], limit: number) => void;
+    }).reconcileRequeueLedger([], [], 3);
+    const queued = (host as unknown as { resendAssignmentIds: string[] }).resendAssignmentIds;
+    check('★ 本轮未请求、非 awaiting_reply 的账本 id 被重新入队',
+      queued.includes(ASSIGNMENT_ID_B), `queued=${JSON.stringify(queued)}`);
+    check('awaiting_reply 的 id 不重发（避免重跑吃掉答复）',
+      !queued.includes(ASSIGNMENT_ID));
   }
 
   for (const d of workDirs) fs.rmSync(d, { recursive: true, force: true });

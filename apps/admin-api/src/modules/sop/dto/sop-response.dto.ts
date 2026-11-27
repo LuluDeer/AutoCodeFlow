@@ -454,6 +454,14 @@ export class CollabPollResponseDto {
     description: "每次轮询都会下发的企业策略（执行器本地配置无法覆盖）",
   })
   sopPolicy: { permissionPolicy: string; allowedProfiles: string[] };
+
+  @ApiPropertyOptional({
+    description:
+      "服务端事实源 POLL_ASSIGNMENTS_MAX 下发的单次 poll 最大领取数；缺省按 3 处理",
+    example: 3,
+    minimum: 1,
+  })
+  maxAssignmentsPerPoll?: number;
 }
 
 /** POST /agent-collab/clarifications —— 执行器 Agent 回问的受理回执。 */

@@ -5,7 +5,9 @@
  * 两层：
  *   · **闸门逻辑**（全平台可测）：动作枚举、白名单为空 = 全禁、协议白名单、
  *     子域语义、未启动会话拒绝执行；
- *   · **真实浏览器**（条件执行）：playwright 浏览器二进制已安装时跑一轮
+ *   · **替身单元级**：probe 依赖注入（模块在但 executable 缺失 → unavailable）、
+ *     wait/extract_text/screenshot 动作后越界 → 会话终止（screenshot 越界产物同步清理）；
+ *   · **真实浏览器**（条件执行）：playwright 模块 + Chromium executable 均通过探测时跑一轮
  *     「本地服务器 → navigate/extract_text/screenshot → close 落录屏」；
  *     未安装时**如实打印跳过**（不是假绿——跳过行显式可见）。
  */
@@ -34,6 +36,41 @@ function check(name: string, cond: boolean, extra = ''): void {
 
 function makeWorkspace(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'agent-browser-'));
+}
+
+/** 内存替身页：只实现封闭动作用到的最小面，绝不声称是真实浏览器级实测。 */
+interface FakePage {
+  currentUrl: string;
+  goto: (url: string) => Promise<{ status: () => number }>;
+  click: () => Promise<void>;
+  fill: () => Promise<void>;
+  press: () => Promise<void>;
+  screenshot: () => Promise<Buffer>;
+  textContent: () => Promise<string | null>;
+  waitForTimeout: () => Promise<void>;
+  url: () => string;
+}
+
+function makeFakePage(initialUrl: string): FakePage {
+  const page: FakePage = {
+    currentUrl: initialUrl,
+    goto: async (url) => {
+      page.currentUrl = url;
+      return { status: () => 200 };
+    },
+    click: async () => undefined,
+    fill: async () => undefined,
+    press: async () => undefined,
+    screenshot: async () => Buffer.from('fake-png'),
+    textContent: () => Promise.resolve('fake text'),
+    waitForTimeout: async () => undefined,
+    url: () => page.currentUrl,
+  };
+  return page;
+}
+
+function attachFakePage(s: AgentBrowserSession, page: FakePage): void {
+  (s as unknown as { page: unknown }).page = page;
 }
 
 async function main(): Promise<void> {
@@ -115,11 +152,138 @@ async function main(): Promise<void> {
     fs.rmSync(ws, { recursive: true, force: true });
   }
 
+  console.log('-- 4b. Playwright 能力探测（可注入替身，单元级，非浏览器实测）--');
+  {
+    const missingExe = probePlaywright({
+      deps: {
+        load: () => ({ chromium: { executablePath: () => '/fixture/missing/chrome' } }),
+        exists: (p) => p !== '/fixture/missing/chrome',
+        env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: '/fixture/browsers' },
+      },
+    });
+    check(
+      '模块存在但 Chromium executable 缺失 → unavailable（不向中心报 browser）',
+      missingExe.available === false && (missingExe.error ?? '').includes('Chromium executable 不存在'),
+      JSON.stringify(missingExe),
+    );
+
+    const presentExe = probePlaywright({
+      deps: {
+        load: () => ({ chromium: { executablePath: () => '/fixture/browsers/chromium-999/chrome-linux/chrome' } }),
+        exists: () => true,
+        env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: '/fixture/browsers' },
+      },
+    });
+    check('executable 存在 → available', presentExe.available === true, JSON.stringify(presentExe));
+
+    const noExeApi = probePlaywright({
+      deps: { load: () => ({ chromium: {} }), exists: () => true, env: process.env },
+    });
+    check('模块无 executablePath → unavailable', noExeApi.available === false);
+
+    const loadThrows = probePlaywright({
+      deps: {
+        load: () => {
+          throw new Error('module boom');
+        },
+        exists: () => true,
+        env: process.env,
+      },
+    });
+    check('require 失败仍收敛为 unavailable', loadThrows.available === false && (loadThrows.error ?? '').includes('module boom'));
+  }
+
+  console.log('-- 4c. 观察动作后越界复核（内存替身，非浏览器实测）--');
+  {
+    const allowed = 'https://erp.corp.com/ok';
+    const evil = 'https://evil.example.com/landing';
+
+    {
+      const ws = makeWorkspace();
+      const s = new AgentBrowserSession(ws, ['erp.corp.com']);
+      const page = makeFakePage(allowed);
+      page.waitForTimeout = async () => {
+        page.currentUrl = evil;
+      };
+      attachFakePage(s, page);
+      const r = await s.run({ action: 'wait', ms: 50 });
+      check(
+        'wait 后越界 → sessionClosed / 边界终止',
+        r.ok === false && r.sessionClosed === true && (r.refusal ?? '').includes('白名单外'),
+        JSON.stringify(r),
+      );
+      const next = await s.run({ action: 'extract_text' });
+      check('wait 越界后会话拒绝后续动作', next.ok === false && (next.refusal ?? '').includes('终止'));
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+
+    {
+      const ws = makeWorkspace();
+      const s = new AgentBrowserSession(ws, ['erp.corp.com']);
+      const page = makeFakePage(allowed);
+      page.textContent = async () => {
+        page.currentUrl = evil;
+        return 'SECRET';
+      };
+      attachFakePage(s, page);
+      const r = await s.run({ action: 'extract_text', selector: '#t' });
+      check(
+        'extract_text 后越界 → sessionClosed 且不回传页面文本',
+        r.ok === false && r.sessionClosed === true && r.text === undefined,
+        JSON.stringify(r),
+      );
+      const next = await s.run({ action: 'wait', ms: 50 });
+      check('extract_text 越界后会话拒绝后续动作', next.ok === false && (next.refusal ?? '').includes('终止'));
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+
+    {
+      const ws = makeWorkspace();
+      const s = new AgentBrowserSession(ws, ['erp.corp.com']);
+      const page = makeFakePage(allowed);
+      page.screenshot = async () => {
+        page.currentUrl = evil;
+        return Buffer.from('fake-png');
+      };
+      attachFakePage(s, page);
+      const r = await s.run({ action: 'screenshot' });
+      const shotDir = path.join(ws, 'screenshots');
+      const shots = fs.existsSync(shotDir) ? fs.readdirSync(shotDir) : [];
+      check(
+        'screenshot 后越界 → 越界截图已清理且 sessionClosed',
+        r.ok === false && r.sessionClosed === true && shots.length === 0,
+        JSON.stringify({ ...r, shots: shots.length }),
+      );
+      const next = await s.run({ action: 'extract_text' });
+      check('screenshot 越界后会话拒绝后续动作', next.ok === false && (next.refusal ?? '').includes('终止'));
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+
+    {
+      const ws = makeWorkspace();
+      const s = new AgentBrowserSession(ws, ['erp.corp.com']);
+      attachFakePage(s, makeFakePage(allowed));
+      const wait = await s.run({ action: 'wait', ms: 50 });
+      const text = await s.run({ action: 'extract_text', selector: '#t' });
+      const shot = await s.run({ action: 'screenshot' });
+      check('同域 wait 不受影响（保留 detail）', wait.ok === true && (wait.detail ?? '').includes('waited'));
+      check('同域 extract_text 不受影响（保留 text）', text.ok === true && text.text === 'fake text');
+      check(
+        '同域 screenshot 不受影响（保留 screenshotPath）',
+        shot.ok === true && shot.screenshotPath !== undefined && fs.existsSync(path.join(ws, shot.screenshotPath ?? 'x')),
+      );
+      const after = await s.run({ action: 'wait', ms: 50 });
+      check('同域复核后会话仍可继续执行', after.ok === true && after.sessionClosed === undefined);
+      await s.close();
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  }
+
   console.log('-- 5. 真实浏览器（条件执行）--');
   {
     const pw = probePlaywright();
     if (!pw.available) {
-      console.log('  (跳过：playwright-core 不可用——本机无浏览器自动化能力，如实跳过而非假绿)');
+      console.log('  (跳过：Playwright 能力探测未通过——模块或 Chromium executable 不可用，如实跳过而非假绿)');
     } else {
       // 本地服务器当"目标站点"，白名单放行 localhost
       const server = http.createServer((_req, res) => {

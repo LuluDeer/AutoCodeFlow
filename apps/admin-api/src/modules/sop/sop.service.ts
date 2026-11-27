@@ -95,8 +95,58 @@ const POLL_ITEMS_MAX = 20;
  * N 个 poll 周期才能全部下发（执行器 poll 间隔秒级，指派积压被拉长）；3 仍
  * 保持"小步多轮"的并发形态（Host 逐单领取执行，不会一次灌入过多并行任务），
  * 与澄清回复共享 POLL_ITEMS_MAX=20 的响应总闸。
+ *
+ * IMPL-SOP-ADMIN：此值是服务端唯一事实源，经 poll 响应的
+ * `maxAssignmentsPerPoll` 下发给桌面执行器；桌面端缺省行为仍是 3，不再复制常量。
  */
-const POLL_ASSIGNMENTS_MAX = 3;
+export const POLL_ASSIGNMENTS_MAX = 3;
+
+/** poll 请求随首次领取上报的审计快照（与服务层 CAS 同事务落库）。 */
+export interface SopPullClaimContext {
+  /** capabilities + capabilityReport 的原样快照；字段缺失时为 null。 */
+  capabilitySnapshotJson?: Record<string, unknown> | null;
+  /** effectiveProfile 截断到 32 字（列宽）；字段缺失时为 null。 */
+  permissionProfileAtPull?: string | null;
+}
+
+const CANDIDATE_PACKAGE_DEPLOYMENT_STATUS = "pending_deploy";
+const CANDIDATE_PACKAGE_DEPLOYMENT_NOTE = "候选包待部署/复核中，未自动部署";
+
+function pickCandidatePackageRef(
+  result: Record<string, unknown>,
+): unknown | undefined {
+  const direct = result.packageRef ?? result.candidatePackageRef ?? result.packageId;
+  if (direct !== undefined && direct !== null && direct !== "") return direct;
+  const nested = result.candidatePackage;
+  if (nested && typeof nested === "object") {
+    const inner = nested as Record<string, unknown>;
+    const ref = inner.packageRef ?? inner.packageId ?? inner.id;
+    if (ref !== undefined && ref !== null && ref !== "") return ref;
+  }
+  return undefined;
+}
+
+/**
+ * 候选包交付回报的诚实化：产出包 ≠ 自动部署。
+ *
+ * 只给 completed 且带包引用的结果补 `packageRef` + `deploymentStatus`
+ * 与说明；审批/部署链路本身完全不动（DEP-04 仍由 deploy_application 审批）。
+ */
+function normalizeCandidatePackageResult(
+  result: Record<string, unknown> | null,
+  status: "completed" | "failed",
+): Record<string, unknown> | null {
+  if (status !== "completed" || !result) return result;
+  const ref = pickCandidatePackageRef(result);
+  if (ref === undefined) return result;
+  return {
+    ...result,
+    packageRef: typeof ref === "string" ? ref.slice(0, 255) : ref,
+    deploymentStatus: CANDIDATE_PACKAGE_DEPLOYMENT_STATUS,
+    autoDeployed: false,
+    deploymentNote: CANDIDATE_PACKAGE_DEPLOYMENT_NOTE,
+  };
+}
 
 /**
  * mediaRefs 只接受平台内路径——外网 URL 一律拒绝（11 §5.2 SSRF 转嫁）。
@@ -682,6 +732,8 @@ export class SopService {
   async pollPending(input: {
     executorId: string;
     resendAssignments?: boolean | string[];
+    /** 首次领取的审计快照——poll 请求上报，随领取 CAS 一条 UPDATE 落库。 */
+    claimContext?: SopPullClaimContext;
   }): Promise<unknown[]> {
     const items: unknown[] = [];
     const capabilities = await this.executors.getAgentCapabilities(
@@ -728,13 +780,26 @@ export class SopService {
         const payload = await this.assignmentPayload(a, capabilities);
         if (payload) {
           if (firstPull) {
+            // IMPL-SOP-ADMIN：领取事实与当时的能力/权限事实必须原子落库。
+            // 这四条列写进同一条条件 UPDATE（WHERE pulledAt IS NULL 的 CAS），
+            // 并发 poll 只有一个胜者能同时拿到 pulledAt + 快照；不存在
+            // 「先领取成功、审计快照后补写失败」的半成品事实。
+            const claimPatch: Partial<SopAssignment> = {
+              pulledAt: new Date(),
+              // 领取即进入执行态——执行器没带 targetAgentSessionId 也照常流转
+              status: a.status === "assigned" ? "in_progress" : a.status,
+            };
+            if (input.claimContext?.capabilitySnapshotJson !== undefined) {
+              claimPatch.capabilitySnapshotJson =
+                input.claimContext.capabilitySnapshotJson;
+            }
+            if (input.claimContext?.permissionProfileAtPull !== undefined) {
+              claimPatch.permissionProfileAtPull =
+                input.claimContext.permissionProfileAtPull;
+            }
             const claim = await this.assignments.update(
               { id: a.id, pulledAt: IsNull(), status: In(activeStatuses) },
-              {
-                pulledAt: new Date(),
-                // 领取即进入执行态——执行器没带 targetAgentSessionId 也照常流转
-                status: a.status === "assigned" ? "in_progress" : a.status,
-              },
+              claimPatch,
             );
             // 两个 poll 可并发读取同一份待领快照；只有 CAS 胜者能投递。
             if (claim.affected !== 1) continue;
@@ -1454,8 +1519,15 @@ export class SopService {
     if (["completed", "cancelled"].includes(a.status)) {
       return { accepted: false };
     }
-    if (input.result)
-      this.checkJsonSize(input.result, RESULT_MAX_BYTES, "result");
+    // IMPL-SOP-ADMIN：候选包回报只表示「包已进系统」，completed 不等于已部署。
+    // 落库前把 packageRef 与 pending_deploy/复核中语义写进 resultJson，详情读面
+    // 与后续验收会话看到的是同一份诚实事实；部署审批链完全不碰。
+    const resultToStore = normalizeCandidatePackageResult(
+      input.result ?? a.resultJson,
+      input.status,
+    );
+    if (resultToStore)
+      this.checkJsonSize(resultToStore, RESULT_MAX_BYTES, "result");
 
     // R33-A2（总控收尾）：上面的 a.attempt / a.status 都是**读取时刻的快照**，与这次
     // 落库之间可能已有并发的 complete 落库（执行器重试、双回调）。无条件
@@ -1472,7 +1544,7 @@ export class SopService {
       },
       {
         status: input.status,
-        resultJson: input.result ?? a.resultJson,
+        resultJson: resultToStore,
         attempt,
       },
     );

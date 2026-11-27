@@ -18,6 +18,7 @@ import { diskStorage } from "multer";
 import type { Response } from "express";
 import { ConfigService } from "@nestjs/config";
 import {
+  ArrayMaxSize,
   IsArray,
   IsIn,
   IsInt,
@@ -48,7 +49,11 @@ import {
   type MultimodalMessage,
   type MultimodalPart,
 } from "../ai/ai.service";
-import { SopService } from "./sop.service";
+import {
+  POLL_ASSIGNMENTS_MAX,
+  SopService,
+  type SopPullClaimContext,
+} from "./sop.service";
 import { SopMediaService, MAX_AGENT_MEDIA_BYTES } from "./sop-media.service";
 import type { SopClarificationMediaRef } from "./entities/sop-clarification.entity";
 // ADR-017 阶段 3（复查补口）：判定「指纹是否已上报」以决定能否走凭据反查
@@ -91,6 +96,8 @@ import { ErrorCode } from "../../common/errors/error-codes";
 /** 长轮询上限（与 pull 通道同款纪律：必须 < 反代 60s 读超时）。 */
 const POLL_MAX_WAIT_MS = 25_000;
 const POLL_TICK_MS = 500;
+/** poll 上报的 capabilityReport 快照上限（与 resultJson 同量级）。 */
+const POLL_CAPABILITY_REPORT_MAX_BYTES = 64_000;
 
 /**
  * B-9：媒体上传的 multer 层上限。100MB 的业务判定（SopMediaService.save）
@@ -113,6 +120,42 @@ const AGENT_TOKEN_AUTH_REASON =
 
 function bearer(auth: string | undefined): string {
   return auth?.startsWith("Bearer ") ? auth.slice(7) : (auth ?? "");
+}
+
+/**
+ * 把 poll 请求里的能力/权限上报收敛成领取快照。
+ *
+ * 注意：这里只制作**事实快照**，权限判定仍只认 ExecutorService 的短租约能力；
+ * 执行器自报 `capabilities` 不会被当作授权凭据。空值显式落 null，便于审计区分
+ * 「没上报」与「上报了空集合」。
+ */
+function buildPullClaimContext(body: AgentCollabPollDto): SopPullClaimContext {
+  const report = body.capabilityReport ?? body.report;
+  if (report) {
+    const size = JSON.stringify(report)?.length ?? 0;
+    if (size > POLL_CAPABILITY_REPORT_MAX_BYTES) {
+      throw new AppError(ErrorCode.SOP_JSON_FIELD_TOO_LARGE, {
+        label: "capabilityReport",
+        max: POLL_CAPABILITY_REPORT_MAX_BYTES,
+      });
+    }
+  }
+  const hasCapabilities = Array.isArray(body.capabilities);
+  const capabilitySnapshotJson =
+    !hasCapabilities && report === undefined
+      ? null
+      : {
+          ...(hasCapabilities ? { capabilities: body.capabilities } : {}),
+          ...(report !== undefined ? { report } : {}),
+        };
+  return {
+    capabilitySnapshotJson,
+    permissionProfileAtPull:
+      typeof body.effectiveProfile === "string" &&
+      body.effectiveProfile.length > 0
+        ? body.effectiveProfile.slice(0, 32)
+        : null,
+  };
 }
 
 export class AgentCollabPollDto {
@@ -146,6 +189,43 @@ export class AgentCollabPollDto {
   @IsArray()
   @IsString({ each: true })
   inflight?: string[];
+  /**
+   * IMPL-SOP-ADMIN：首次领取审计快照来源。每轮 poll 都可带，服务端只在
+   * `pulledAt IS NULL` 的 CAS 胜出时写入，后续重复 poll 不覆盖历史事实。
+   */
+  @ApiPropertyOptional({
+    isArray: true,
+    type: "string",
+    maxItems: 32,
+    description: "本轮执行器声明的能力域（快照来源，不授予权限）",
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(32)
+  @IsString({ each: true })
+  @MaxLength(64, { each: true })
+  capabilities?: string[];
+  @ApiPropertyOptional({
+    type: "object",
+    additionalProperties: true,
+    description: "EnvironmentReport 形态的富能力报告（快照来源）",
+  })
+  @IsOptional()
+  @IsObject()
+  capabilityReport?: Record<string, unknown>;
+  @ApiPropertyOptional({
+    description: "领取时生效的权限档位字符串（截断到 32 字）",
+    maxLength: 32,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  effectiveProfile?: string;
+  /** 旧 capability 上报字段别名；poll 侧优先读 capabilityReport。 */
+  @ApiPropertyOptional({ type: "object", additionalProperties: true })
+  @IsOptional()
+  @IsObject()
+  report?: Record<string, unknown>;
 }
 
 export class AgentCollabCapabilityDto {
@@ -416,6 +496,7 @@ export class SopCollabController {
       auth,
       body?.deviceFingerprint,
     );
+    const claimContext = buildPullClaimContext(body);
     const requested = Number(body.waitMs ?? 0);
     const deadline =
       Number.isFinite(requested) && requested > 0
@@ -435,7 +516,11 @@ export class SopCollabController {
     for (;;) {
       // P3-1：断连即停——不再发起下一轮 DB 查询（结果也送不出去了）。
       if (isClientGone()) {
-        return { items: [], sopPolicy: this.sopPolicy() };
+        return {
+          items: [],
+          sopPolicy: this.sopPolicy(),
+          maxAssignmentsPerPoll: POLL_ASSIGNMENTS_MAX,
+        };
       }
       const items = await this.sops.pollPending({
         executorId: executor.id,
@@ -449,9 +534,15 @@ export class SopCollabController {
                   (x): x is string => typeof x === "string" && x.length > 0,
                 )
               : false,
+        // 首次领取 CAS 同事务写入的事实快照（来自本轮 poll 请求）。
+        claimContext,
       });
       if (items.length > 0 || Date.now() - start >= deadline) {
-        return { items, sopPolicy: this.sopPolicy() };
+        return {
+          items,
+          sopPolicy: this.sopPolicy(),
+          maxAssignmentsPerPoll: POLL_ASSIGNMENTS_MAX,
+        };
       }
       await new Promise((r) => setTimeout(r, POLL_TICK_MS));
     }
