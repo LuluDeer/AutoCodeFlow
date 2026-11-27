@@ -37,4 +37,10 @@ export class ApprovalPhraseResponseDto {
     nullable: true,
   })
   approval: object | null;
+
+  @ApiProperty({
+    description:
+      "本次处置是否把会话重新入队恢复（与 grant/deny 端点同口径：仅允许且会话挂起等待审批、无其它 pending 单时为 true）",
+  })
+  resumed: boolean;
 }

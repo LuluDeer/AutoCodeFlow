@@ -41,8 +41,10 @@
  *   · system prompt / 工具 schema 不参与逐轮估算，只经上面的首轮残差近似；
  *   · 工具结果正文以库里的 `resultJson`（≤32KB 预览形态）重建，运行时内存里
  *     的实时结果可能更长 → 估算在长结果上**偏低**；
- *   · 审批单状态细节（granted/denied/consumed）不重建，`awaiting_approval`
- *     一律按「等待人工审批」文案估算（量级同档）。
+ *   · 审批单状态：只有 `expired`（TTL 超时收口，不是人工决定、没有
+ *     `approval_decided` 事件）会从 `agent_approvals.status` 重建，并按
+ *     「审批已过期 / 重新发起」文案估算；其余状态仍按「等待人工审批」。
+ *     该句与 runtime 快照、事件投影、对账脚本逐字对齐（selftest 有哨针）。
  *
  * ## 用法
  *   node scripts/agent-context-token-audit.mjs --report            # 默认动作
@@ -249,11 +251,24 @@ export function verdictAdvice(verdict) {
 export function renderReplayText(
   row,
   replayMaxChars = REPLAY_MAX_CHARS_FALLBACK,
+  /**
+   * 审批单当前状态（来自 `agent_approvals.status`）。只有 `expired` 会改变文案：
+   * 它不是人工决定、没有 `approval_decided` 事件，快照与投影侧都必须显式收口。
+   * 其余状态一律按「等待人工审批」估算（量级同档），与三处镜像同口径。
+   */
+  approvalStatus = undefined,
 ) {
   if (!row) {
     return "【工具结果缺失】该调用没有对应的执行记录（可能在上报前中断）——请重新观察现状后再决定下一步。";
   }
   if (row.status === "awaiting_approval") {
+    if (approvalStatus === "expired") {
+      const id = row.approvalId ?? "该审批单";
+      return (
+        `【审批已过期】审批单 ${id} 已因超时过期，不再接受批准；本次调用未执行。` +
+        `请重新发起该操作（会重新申请审批），不要原地重提本调用——重提不会改变过期结论。`
+      );
+    }
     return `【等待人工审批】${row.errorMessage ?? "该调用需人工审批"}（会话已挂起；批准后会恢复；批准前请勿重复提交）。`;
   }
   if (row.status === "in_flight") {
@@ -413,7 +428,7 @@ export function buildRoundSamples(
           messages.push({
             role: "tool",
             tool_call_id: call.id,
-            content: renderReplayText(row, replayMaxChars),
+            content: renderReplayText(row, replayMaxChars, row?.approvalStatus),
           });
           answered.add(call.id);
         }
@@ -522,10 +537,22 @@ const SESSIONS_QUERY = `
 
 const TOOL_CALLS_QUERY = `
   SELECT c."sessionId", c."stepId", c."toolCallId", c."toolName", c.status,
-         c."resultJson", c."resultTruncated", c."errorMessage"
+         c."approvalId", c."resultJson", c."resultTruncated", c."errorMessage"
     FROM agent_tool_calls c
    WHERE c."sessionId" IN (
            SELECT DISTINCT "sessionId" FROM agent_steps WHERE "tokensIn" > 0
+         )`;
+
+/** expired 没有 approval_decided 事件，只能从审批单表按 approvalId 回读状态。 */
+const APPROVALS_QUERY = `
+  SELECT a."approvalKey", a.status
+    FROM agent_approvals a
+   WHERE a."approvalKey" IN (
+           SELECT "approvalId" FROM agent_tool_calls
+            WHERE "approvalId" IS NOT NULL
+              AND "sessionId" IN (
+                    SELECT DISTINCT "sessionId" FROM agent_steps WHERE "tokensIn" > 0
+                  )
          )`;
 
 async function loadRows(target) {
@@ -564,6 +591,15 @@ async function loadRows(target) {
     const steps = await client.query(STEPS_QUERY);
     const sessions = await client.query(SESSIONS_QUERY);
     const toolCalls = await client.query(TOOL_CALLS_QUERY);
+    const approvals = await client.query(APPROVALS_QUERY);
+    const statusByKey = new Map(
+      approvals.rows.map((a) => [a.approvalKey, a.status]),
+    );
+    for (const row of toolCalls.rows) {
+      if (row.approvalId && statusByKey.has(row.approvalId)) {
+        row.approvalStatus = statusByKey.get(row.approvalId);
+      }
+    }
     return {
       steps: steps.rows,
       sessions: sessions.rows,
@@ -1109,6 +1145,56 @@ export function runSelftest() {
           out.samples.length === 0 && out.roundsMeasured === 0,
           "全 0 必须是零样本",
         );
+      },
+    },
+    {
+      name: "重放文案：expired 明说「审批已过期 / 重新发起」，其余状态不漂移",
+      fn: () => {
+        const golden =
+          "【审批已过期】审批单 ap-1 已因超时过期，不再接受批准；本次调用未执行。" +
+          "请重新发起该操作（会重新申请审批），不要原地重提本调用——重提不会改变过期结论。";
+        const row = {
+          status: "awaiting_approval",
+          approvalId: "ap-1",
+          errorMessage: "需要审批",
+        };
+        const expired = renderReplayText(row, 2000, "expired");
+        must(expired === golden, `expired 文案必须与三处镜像逐字一致：${expired}`);
+        must(!expired.includes("批准后会恢复"), "expired 不能承诺批准后会恢复");
+        const waiting = renderReplayText(row, 2000);
+        must(
+          waiting.includes("【等待人工审批】") && waiting.includes("批准后会恢复"),
+          `未带状态时仍应是等待文案：${waiting}`,
+        );
+        for (const status of ["granted", "denied", "consumed"]) {
+          const text = renderReplayText(row, 2000, status);
+          must(text === waiting, `${status} 不该改变 awaiting_approval 的兜底文案`);
+        }
+      },
+    },
+    {
+      name: "镜像漂移哨针：四处源码的 expired 文案逐字同在，注入漂移必红",
+      fn: () => {
+        const needle = "【审批已过期】审批单 ";
+        const files = [
+          "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.ts",
+          "apps/admin-api/src/modules/agent/runtime/agent-event-projection.ts",
+          "scripts/agent-event-projection-audit.mjs",
+          "scripts/agent-context-token-audit.mjs",
+        ];
+        const sources = files.map((f) => [f, readFileSync(join(ROOT, f), "utf8")]);
+        const hits = (list) =>
+          list.filter(([, src]) => src.includes(needle)).map(([f]) => f);
+        const before = hits(sources);
+        must(
+          before.length === files.length,
+          `缺 expired 文案哨针的镜像：${files.filter((f) => !before.includes(f)).join(", ")}`,
+        );
+        const bleached = sources.map(([f, src]) => [
+          f,
+          src.replaceAll(needle, "【审批已过期】审批编号 "),
+        ]);
+        must(hits(bleached).length === 0, "注入漂移后守卫仍判绿 ⇒ 哨针是摆设");
       },
     },
   ];

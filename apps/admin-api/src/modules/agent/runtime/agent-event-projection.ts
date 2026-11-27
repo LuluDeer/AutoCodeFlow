@@ -311,9 +311,12 @@ export interface SnapshotToolCall {
  *   · `contextJson` / `systemPrompt` 的 `undefined` 表示「**没提供**」，必须与
  *     `null`（明确没有）区分：否则「会话有上下文但没传」会被静默吞成「没有
  *     上下文」，对账在会话级漏掉一整段差异；
- *   · 这里**没有任何审批字段**（见文件头注）：审批状态在 S7-G1 第四阶段起由
- *     `approval_decided` 事件承载，**不是**这里的一份入参。给它开一个口子等于
- *     「让快照给快照作证」——对账会绿，却证明不了「切换之后投影还知道审批结果」。
+ *   · 这里**没有决定态审批字段**：granted/denied/consumed 由 `approval_decided`
+ *     事件承载，**不是**这里的一份入参（给它们开口子等于「让快照给快照作证」）。
+ *     唯一例外是 `approvalStatuses` 里的 `expired`：它是 TTL sweep 的系统超时
+ *     收口、不是人工决定，`ApprovalDecidedStatus` 刻意不含它 ⇒ 事件流里永远
+ *     没有 `approval_decided(expired)`，只能由调用方从 `agent_approvals` 带入。
+ *     详见该字段注释。
  */
 export interface ProjectionSnapshot {
   /** 代码里的 system prompt（`SYSTEM_PROMPT`）。`undefined` = 未提供。 */
@@ -338,6 +341,21 @@ export interface ProjectionSnapshot {
    * 上面那条「投影看不见的差异」在报告里出现，而不是静默归零。
    */
   unkeyedToolCallRows?: number;
+  /**
+   * 审批单状态查询（与 `ApprovalStatusLookup.statuses` 同形），**只**用于
+   * `awaiting_approval` 且事件流没有 `approval_decided` 的那条调用。
+   *
+   * 为什么破了「快照里没有审批字段」的规矩：`expired` 是 TTL sweep 的系统
+   * 超时收口，**不是人工决定**，`ApprovalDecidedStatus` 刻意不含它 ⇒ 事件流
+   * 里没有 `approval_decided(expired)`。若投影只看事件，expired 会落进
+   * 「【已执行】」兜底（比「等待审批」更坏：模型会以为动作做过了），或落进
+   * 「批准后会恢复」（那张单再也不会被批准）。这是唯一无法由事件承载的
+   * 状态，因此单开这一个窄口；`granted/denied/consumed` **仍以事件为准**，
+   * 不让快照给快照作证（对账语义不变）。
+   *
+   * `undefined` = 调用方没提供 ⇒ 行为与改动前逐字节相同。
+   */
+  approvalStatuses?: Record<string, { status: string; decidedBy: string | null }>;
 }
 
 /** 缺口分类（对账报告按它分组，本阶段的核心交付就是这张表的实际计数）。 */
@@ -1936,9 +1954,24 @@ function renderReplay(
           `不得重试同一调用：请改走其他手段核实，或把「需要人工执行」写进最终结论。`
         );
       }
+      if (decision.status === "consumed") {
+        return (
+          `【已执行】该调用已凭审批单 ${approvalId} 执行过一次；` +
+          `请勿重复提交（一张批准单只放行一次），需要再次执行请在最终报告中说明。`
+        );
+      }
+    }
+    // TTL sweep 把超时的单标成 expired，但它不是人工决定（ApprovalDecidedStatus
+    // 刻意不含它）⇒ 事件流里没有 approval_decided(expired)。这里从
+    // ApprovalStatusLookup 带进来的状态显式收口：落回下面的兜底句会承诺
+    // 「批准后会恢复」，而这张单再也不会被批准；落到上面的「已执行」更坏。
+    const approvalStatus = approvalId
+      ? snapshot.approvalStatuses?.[approvalId]
+      : undefined;
+    if (approvalStatus?.status === "expired") {
       return (
-        `【已执行】该调用已凭审批单 ${approvalId} 执行过一次；` +
-        `请勿重复提交（一张批准单只放行一次），需要再次执行请在最终报告中说明。`
+        `【审批已过期】审批单 ${approvalId} 已因超时过期，不再接受批准；本次调用未执行。` +
+        `请重新发起该操作（会重新申请审批），不要原地重提本调用——重提不会改变过期结论。`
       );
     }
     gaps.push({

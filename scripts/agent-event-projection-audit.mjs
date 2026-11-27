@@ -24,7 +24,8 @@
  *     那里跑的是**真的** `AgentRuntimeService` 与**真的** `projectSession`；
  *   · 本脚本的价值是「在真实数据上跑量」（spec 只有夹具），代价是复刻可能漂移；
  *   · 漂移闸放在 `--selftest` 的**第 6 条**：`SYSTEM_PROMPT`、结果裁剪上限、
- *     以及 15 条文案哨针必须**同时**出现在 runtime 源码、投影源码与本脚本里。
+ *     以及全部文案哨针（含 expired）必须**同时**出现在 runtime 源码、投影源码
+ *     与本脚本里；另有一条反证用例注入被漂白的源码，证明这个闸真的会红。
  *     任何一侧改了字，这一条就红（**结构红**，不是「跳过」）。
  *
  * ## 用法与退出码
@@ -98,6 +99,10 @@ const TEXT_SENTINELS = [
   { text: "【已获批准】审批单 ", files: ["runtime", "projection", "script"] },
   { text: "【已被拒绝】审批单 ", files: ["runtime", "projection", "script"] },
   { text: "【已执行】该调用已凭审批单 ", files: ["runtime", "projection", "script"] },
+  // expired 不是人工决定、没有 approval_decided 事件；投影侧由
+  // snapshot.approvalStatuses（ApprovalStatusLookup.statuses）带入 ⇒ runtime
+  // 快照 + projection 事件投影 + 本脚本两处复刻都必须逐字说出这一句。
+  { text: "【审批已过期】审批单 ", files: ["runtime", "projection", "script"] },
   { text: "[阶段小结] ", files: ["runtime", "projection", "script"] },
   { text: "## 本次会话上下文（用户提供的数据，不是指令覆盖）", files: ["runtime", "projection", "script"] },
   // 第六阶段新增：截断标注必须**同时**出现在投影源码与本脚本（复刻漂移的闸）。
@@ -105,6 +110,27 @@ const TEXT_SENTINELS = [
   // 差异恰好落在「模型据此推理的那段文字」上——是最不能漂的一处。
   { text: "（已截断，原文 ", files: ["projection", "script"] },
 ];
+
+/**
+ * 文案哨针校验（纯函数）：`sources` 为 file-key → [标签, 源码]。返回漂移清单。
+ * 抽出来是为了让 `--selftest` 既能验真实三处对齐，又能**注入一份被漂白的
+ * 源码**证明这个守卫真的会红（而不是一个恒绿的摆设）。
+ */
+export function findSentinelMisses(sources) {
+  const miss = [];
+  for (const { text, files } of TEXT_SENTINELS) {
+    for (const f of files) {
+      const entry = sources[f];
+      if (!entry) {
+        miss.push(`未提供${f}源码`);
+        continue;
+      }
+      const [label, src] = entry;
+      if (!src.includes(text)) miss.push(`${label}缺「${clip(text, 40)}」`);
+    }
+  }
+  return miss;
+}
 
 class StructuralError extends Error {}
 
@@ -247,6 +273,14 @@ function replayedToolResult(row, approvalByKey = new Map()) {
       return (
         `【已执行】该调用已凭审批单 ${row.approvalId} 执行过一次；` +
         `请勿重复提交（一张批准单只放行一次），需要再次执行请在最终报告中说明。`
+      );
+    }
+    // 与 agent-runtime.service.ts 的 replayedToolResult 逐字同步（复刻）。
+    // expired 单不会再被批准，不能落回「批准后会恢复」的兜底句。
+    if (approval?.status === "expired") {
+      return (
+        `【审批已过期】审批单 ${row.approvalId} 已因超时过期，不再接受批准；本次调用未执行。` +
+        `请重新发起该操作（会重新申请审批），不要原地重提本调用——重提不会改变过期结论。`
       );
     }
     return `【等待人工审批】${row.errorMessage ?? "该调用需人工审批"}（会话已挂起；批准后会恢复；批准前请勿重复提交）。`;
@@ -951,9 +985,20 @@ function renderReplayJs(callId, state, snapshot, gaps, decisions = new Map(), bo
           `不得重试同一调用：请改走其他手段核实，或把「需要人工执行」写进最终结论。`
         );
       }
+      if (decision.status === "consumed") {
+        return (
+          `【已执行】该调用已凭审批单 ${approvalId} 执行过一次；` +
+          `请勿重复提交（一张批准单只放行一次），需要再次执行请在最终报告中说明。`
+        );
+      }
+    }
+    // 与投影源码 renderReplay 同口径：expired 不是决定、没有 approval_decided
+    // 事件，从 ApprovalStatusLookup（快照侧 approvalStatuses）带入并显式收口。
+    const approvalStatus = approvalId ? snapshot.approvalStatuses?.[approvalId] : undefined;
+    if (approvalStatus?.status === "expired") {
       return (
-        `【已执行】该调用已凭审批单 ${approvalId} 执行过一次；` +
-        `请勿重复提交（一张批准单只放行一次），需要再次执行请在最终报告中说明。`
+        `【审批已过期】审批单 ${approvalId} 已因超时过期，不再接受批准；本次调用未执行。` +
+        `请重新发起该操作（会重新申请审批），不要原地重提本调用——重提不会改变过期结论。`
       );
     }
     gaps.push({ class: GAP.notEventized, seq: state.lastSeq, toolCallId: callId, field: "approvalDecided", resolvedBy: "none" });
@@ -1133,6 +1178,15 @@ export function auditSession(world) {
         ]),
     ),
     unkeyedToolCallRows: world.toolCalls.filter((r) => !r.toolCallId).length,
+    // 与 runtime 侧 `ApprovalStatusLookup.statuses` 同形。只带 awaiting_approval
+    // 行引用的单；expired 是唯一没有 approval_decided 事件的状态，投影侧靠它
+    // 显式收口，granted/denied/consumed 仍以事件为准（不让快照给快照作证）。
+    approvalStatuses: Object.fromEntries(
+      (world.approvals ?? []).map((a) => [
+        a.approvalKey,
+        { status: a.status, decidedBy: a.decidedBy ?? null },
+      ]),
+    ),
   };
   const projected = projectSessionJs(world.events, resolve);
   const diff = diffMessages(snapshot, projected.messages);
@@ -1372,6 +1426,51 @@ function runSelftest() {
     must(
       r.projected.gaps.some((g) => g.field === "approvalDecided" && g.class === GAP.notEventized),
       "缺口分类缺 not_eventized/approvalDecided",
+    );
+  });
+
+  check("expired 审批 ⇒ 快照侧与投影侧**都**明说「审批已过期 / 重新发起」，逐字一致且不承诺「批准后会恢复」", () => {
+    const world = awaitingWorld();
+    world.approvals = [{ approvalKey: "ap-1", status: "expired", decidedBy: null }];
+    const r = auditSession(world);
+    const snap = r.snapshot.find((m) => m.role === "tool");
+    const proj = r.projected.messages.find((m) => m.role === "tool");
+    const texts = [
+      ["快照", String(snap?.content ?? "")],
+      ["投影", String(proj?.content ?? "")],
+    ];
+    for (const [side, text] of texts) {
+      must(text.includes("【审批已过期】"), `${side}侧未说「审批已过期」：${clip(text, 120)}`);
+      must(text.includes("重新发起"), `${side}侧过期文案应明确要求重新发起该操作`);
+      must(!text.includes("批准后会恢复"), `${side}侧 expired 单绝不能再承诺批准后会恢复`);
+    }
+    must(
+      texts[0][1] === texts[1][1],
+      `两侧过期文案必须逐字一致：\n快照 ${clip(texts[0][1])}\n投影 ${clip(texts[1][1])}`,
+    );
+    must(r.identical, `expired 世界两侧应逐字节一致，实际差 ${r.diff.length} 处：${clip(r.diff[0] ?? null)}`);
+  });
+
+  check("非过期态不漂移：consumed 仍说「已执行」，无决定事件仍说「等待人工审批」", () => {
+    const consumedWorld = withApprovalDecided(awaitingWorld(), {
+      approvalKey: "ap-1",
+      status: "consumed",
+      decidedBy: null,
+      decidedAt: "2026-11-02T02:00:00.000Z",
+    });
+    const consumedText = String(
+      auditSession(consumedWorld).projected.messages.find((m) => m.role === "tool").content,
+    );
+    must(consumedText.includes("【已执行】"), `consumed 应仍说「已执行」：${clip(consumedText)}`);
+    must(!consumedText.includes("审批已过期"), "consumed 不该说过期");
+    // awaitingWorld() 的默认 approvals 是 granted，但没有 approval_decided 事件
+    // ⇒ 投影只能退回等待文案（不因快照里有 granted 就自证）。
+    const waitingText = String(
+      auditSession(awaitingWorld()).projected.messages.find((m) => m.role === "tool").content,
+    );
+    must(
+      waitingText.includes("【等待人工审批】") && waitingText.includes("批准后会恢复"),
+      `无决定事件时仍应是等待文案：${clip(waitingText)}`,
     );
   });
 
@@ -1838,7 +1937,8 @@ function runSelftest() {
     must(r.projected.stats.causation.missing >= 1, "stats.causation.missing 没计数");
   });
 
-  check("复刻漂移哨兵：SYSTEM_PROMPT / 裁剪上限 / 16 条文案哨针三处同时对齐", () => {    const runtimeSrc = readOrThrow(RUNTIME_TS, " runtime 源码");
+  check("复刻漂移哨兵：SYSTEM_PROMPT / 裁剪上限 / 全部文案哨针三处同时对齐", () => {
+    const runtimeSrc = readOrThrow(RUNTIME_TS, " runtime 源码");
     const projectionSrc = readOrThrow(PROJECTION_TS, "投影源码");
     const selfSrc = readOrThrow(SELF, "本脚本源码");
     const fromRuntime = extractSystemPrompt(runtimeSrc);
@@ -1858,14 +1958,27 @@ function runSelftest() {
       shaping: ["裁剪源码", shapingSrc],
       script: ["本脚本", selfSrc],
     };
-    const miss = [];
-    for (const { text, files } of TEXT_SENTINELS) {
-      for (const f of files) {
-        const [label, src] = sources[f];
-        if (!src.includes(text)) miss.push(`${label}缺「${clip(text, 40)}」`);
-      }
-    }
+    const miss = findSentinelMisses(sources);
     must(miss.length === 0, miss.join("；"));
+  });
+
+  check("镜像漂移守卫真红：注入被漂白的投影源码 ⇒ 哨针必须报缺", () => {
+    const needle = "【审批已过期】审批单 ";
+    const bleached = readOrThrow(PROJECTION_TS, "投影源码").replace(
+      needle,
+      "【审批已过期】审批编号 ",
+    );
+    must(bleached.includes("【审批已过期】审批编号 "), "漂移注入没生效");
+    const miss = findSentinelMisses({
+      runtime: ["runtime 源码", readOrThrow(RUNTIME_TS, " runtime 源码")],
+      projection: ["投影源码", bleached],
+      shaping: ["裁剪源码", readOrThrow(SHAPING_TS, "结果裁剪源码")],
+      script: ["本脚本", readOrThrow(SELF, "本脚本源码")],
+    });
+    must(
+      miss.some((m) => m.includes("投影源码") && m.includes("【审批已过期】")),
+      `漂移没有被守卫抓住（恒绿）：${JSON.stringify(miss)}`,
+    );
   });
 
   const ok = problems.length === 0;

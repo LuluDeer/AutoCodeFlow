@@ -240,6 +240,8 @@ describe("N17 · decideApprovalByPhrase 路由装配（ADMIN-only）", () => {
         decidedBy: "alice",
         decidedAt: new Date("2026-01-01T00:00:00Z"),
       },
+      // 该夹具的会话快照没有 waiting_input 状态 ⇒ 不触发恢复入队。
+      resumed: false,
     });
     expect(JSON.stringify(out)).not.toContain("attacker");
   });

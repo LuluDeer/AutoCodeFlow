@@ -34,10 +34,7 @@ import type { Repository } from "typeorm";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
-import {
-  AgentSessionService,
-  buildEventBody,
-} from "./runtime/agent-session.service";
+import { AgentSessionService } from "./runtime/agent-session.service";
 import { AgentBacklogService } from "./runtime/agent-backlog.service";
 import { AgentQueueStallService } from "./runtime/agent-queue-stall.service";
 import { AgentQueueIdleService } from "./runtime/agent-queue-idle.service";
@@ -48,6 +45,11 @@ import {
   ApprovalPhraseDto,
   ApprovalPhraseResponseDto,
 } from "./dto/approval-phrase.dto";
+import { parseApprovalPhrase } from "./runtime/approval-phrases";
+import {
+  appendToolCallStatusChangedEvent,
+  isApprovalSelfDecision,
+} from "./runtime/agent-approval-wakeup.service";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import type { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { AGENT_QUEUE_NAME, type AgentJobData } from "./runtime/agent.processor";
@@ -634,6 +636,80 @@ export class AgentController {
   // 「真的可审批」的另一半：申请在 ToolExecutorService.requestApproval 落库，
   // 这里提供人工处置端点，批准后复用既有 resume 链路恢复会话。
 
+  /** 四眼原则的统一抛出口：判定收在纯函数 `isApprovalSelfDecision`。 */
+  private assertNoSelfApproval(
+    session: AgentSession,
+    username: string,
+    toolName: string,
+  ): void {
+    if (
+      isApprovalSelfDecision({
+        createdBy: session.createdBy,
+        username,
+        toolName,
+        config: this.config,
+      })
+    ) {
+      throw new AppError("AGENT_APPROVAL_SELF_DENIED");
+    }
+  }
+
+  /**
+   * 审批决定落地后的**共享副作用**（grant / deny / phrase 三条入口共用）。
+   *
+   * 为什么不放在 `decide` / `decideByPhrase` 里：那两层只负责条件写与事件，
+   * 恢复队列与台账 settle 需要会话快照与 controller 的 queue 端口；抽到这里
+   * 才能让 phrase 路径与 grant 路径的行为逐字一致（phrase 曾经两步都不做，
+   * 会话卡在 waiting_input、台账停在 awaiting_approval）。
+   *
+   * · granted → 仅当会话（重读后的最新态）挂在 waiting_input 且没有其它
+   *   pending 单时入队 `resume:approval`；重读失败沿用处置前快照。
+   * · denied  → 按 approvalKey 把 awaiting_approval 台账行条件写成 denied；
+   *   **只有真的命中行**（affected > 0）才补 `tool_call_status_changed`。
+   *
+   * @returns 本次决定是否触发了恢复入队（写进响应 `resumed`）。
+   */
+  private async applyApprovalDecisionEffects(input: {
+    sessionId: string;
+    approvalKey: string;
+    decision: "granted" | "denied";
+    decidedBy: string;
+    session: AgentSession;
+  }): Promise<boolean> {
+    const { sessionId, approvalKey, decision, decidedBy, session } = input;
+    if (decision === "denied") {
+      const settled = await this.sessions.settleToolCallByApprovalId(
+        approvalKey,
+        "denied",
+        `已被 ${decidedBy} 人工拒绝（审批单 ${approvalKey}）——不得重试同一调用`,
+      );
+      // S7-G1：库里没变 ⇒ 事件也不能说变（并发输家不得写出「已拒绝」的事实）。
+      if (settled > 0) {
+        await this.emitToolCallSettledEvents(sessionId, approvalKey);
+      }
+      return false;
+    }
+
+    // granted：worker 可能先落 pending 单、后 markWaiting；处置时旧快照还是
+    // running，而 markWaiting 触发的 wakeup probe 见单仍 pending 会直接 return。
+    // 这里在 decide 成功后重读会话，用最新 status/totalSteps 判定并入队。
+    let freshSession = session;
+    try {
+      const reread = await this.sessions.findById(sessionId);
+      if (reread) freshSession = reread;
+    } catch {
+      // 重读异常：沿用处置前快照，不制造新的崩溃面。
+    }
+    if (
+      freshSession.status === "waiting_input" &&
+      !(await this.approvals.hasPendingForSession(sessionId))
+    ) {
+      await this.enqueueResume(freshSession, "resume:approval");
+      return true;
+    }
+    return false;
+  }
+
   /** 审批单处置的共享体：approve 与 deny 只差 decision 值。 */
   private async decideApproval(
     sessionId: string,
@@ -651,26 +727,10 @@ export class AgentController {
     if (approval.sessionId !== session.id) {
       throw new AppError("AGENT_APPROVAL_SESSION_MISMATCH", { sessionId });
     }
-    // G4（OSS 对照审计）：四眼原则——发起人不能批准自己发起的会话的审批单。
-    // 默认关闭（单人部署/演示会被卡死），部署方显式开启后生效；发起人缺失
-    // （存量行 NULL）时不可判定，只 warn 不拦（不假装有策略）。
-    if (
-      decision === "granted" &&
-      this.config?.get<boolean>("agent.policy.blockSelfApproval") === true &&
-      session.createdBy
-    ) {
-      if (session.createdBy === `user:${user.username}`) {
-        throw new AppError("AGENT_APPROVAL_SELF_DENIED");
-      }
-    }
-    // ADR-045：发布审批单服务端强制四眼，不依赖 agent.policy.blockSelfApproval 开关；
-    // createdBy 口径与建单侧一致（`user:${username}`），命中即 403。
-    if (
-      decision === "granted" &&
-      approval.toolName === "sop_publish" &&
-      session.createdBy === `user:${user.username}`
-    ) {
-      throw new AppError("AGENT_APPROVAL_SELF_DENIED");
+    // G4 / ADR-045：四眼判定收口到共享纯函数，grant 与 phrase 同一口径；
+    // 只在 granted（放行副作用）时校验，deny 不涉及「批自己的操作」。
+    if (decision === "granted") {
+      this.assertNoSelfApproval(session, user.username, approval.toolName);
     }
     // 条件写（pending → granted/denied）：并发处置撞上时后到者收 409。
     // prettier-ignore
@@ -689,55 +749,16 @@ export class AgentController {
       row.toolName,
       user.username,
     );
-    // 处置结果的行为**按 decision 分流**（实施轮 #14 修）：
-    //
-    //   · granted → 若会话挂起在 waiting_input 且**没有其它仍在等的单**，
-    //     重新入队恢复（重放同一调用时闸门会读到 granted 并放行一次）。
-    //     仍有 pending 时先不恢复：恢复也只会立刻再次挂起，白烧一轮 LLM。
-    //   · denied  → **不自动恢复**。原实现 deny 同样 resume，而模型手里没有
-    //     「被拒绝」这一事实（回给它的最后一条是「已提交审批单」），最自然的
-    //     下一步就是重提同一调用 → 再生成一张单 → 管理员只能无限拒绝，
-    //     拒绝反而成了一个可持续驱动的执行/计费循环。这里把调用行按 denied
-    //     落库（台账可辨），管理员若想让它继续，显式 resume 即可——那时
-    //     rebuildMessages 会把「被拒绝」作为 tool 应答喂回模型。
-    if (decision === "denied") {
-      const settled = await this.sessions.settleToolCallByApprovalId(
-        approvalKey,
-        "denied",
-        `已被 ${user.username} 人工拒绝（审批单 ${approvalKey}）——不得重试同一调用`,
-      );
-      // S7-G1 第五阶段：台账行**真的**被条件写成 denied 之后，补一条状态事件。
-      // 判据是 `affected > 0`（而不是「deny 走到了这里」）：条件写钉住
-      // `status='awaiting_approval'`，命中 0 行说明这一行已被别的路径写过
-      // （已执行 / 已拒绝），**库里没变 ⇒ 事件也不能说变**——与 `approval_decided`
-      // 同一条纪律（并发输家不得写出「批了/拒了」的事实）。
-      if (settled > 0) {
-        await this.emitToolCallSettledEvents(sessionId, approvalKey);
-      }
-    }
-    let resumed = false;
-    if (decision === "granted") {
-      // 时序修复：worker 可能先落 pending 单、后 markWaiting；管理员在两者之间
-      // grant 时 :611 的快照还是 running，而 markWaiting 触发的 wakeup probe
-      // 见单仍 pending 会直接 return，随后本处若再信旧快照就不入队 ⇒ 会话永停
-      // waiting_input、单永不 consume。这里在 decide 成功后重读会话，用最新
-      // status/totalSteps 判定并入队；重读失败或为 null 时沿用原快照，不制造
-      // 新的崩溃面（decide 前的 requireById 已钉住会话存在）。
-      let freshSession = session;
-      try {
-        const reread = await this.sessions.findById(sessionId);
-        if (reread) freshSession = reread;
-      } catch {
-        // 重读异常：沿用 decide 前快照，保持既有语义。
-      }
-      if (
-        freshSession.status === "waiting_input" &&
-        !(await this.approvals.hasPendingForSession(sessionId))
-      ) {
-        await this.enqueueResume(freshSession, "resume:approval");
-        resumed = true;
-      }
-    }
+    // 处置结果的行为按 decision 分流，判定体已抽到共享 helper，phrase 端点
+    // 走同一份：granted 仅当 waiting_input 且无其它 pending 才恢复；denied
+    // 只 settle 台账 + 发状态事件，不自动恢复（见 helper 头注）。
+    const resumed = await this.applyApprovalDecisionEffects({
+      sessionId,
+      approvalKey,
+      decision,
+      decidedBy: user.username,
+      session,
+    });
     return {
       ok: true,
       // prettier-ignore
@@ -809,70 +830,13 @@ export class AgentController {
     sessionId: string,
     approvalKey: string,
   ): Promise<void> {
-    try {
-      // A2 因果：这次 settle 是**被那条审批决定引起的**（管理员点了 deny）。
-      // 起因在循环外解析一次（`approvalKey` 同一时刻唯一），而且**必须自成一道
-      // try/catch**：`findEventSeqByRef` 可能不存在（既有单测替身只给
-      // `listToolCalls`/`settleToolCallByApprovalId`）或解析时抖动——那种情况下
-      // 只能丢掉**这条边**，绝不能连累下面的事件本身（旁路纪律：记账失败不得
-      // 让一条真实的事件迁移消失）。取到 NULL 时事件照写，读侧会标
-      // `resolvedBy: "heuristic"`——比「没有事件」好，比「假边」也诚实。
-      //
-      // 为什么起因不用 `tool_call_recorded`：这条迁移的**直接**原因是人按下了
-      // 拒绝，不是当初那次申请。指向申请会让「谁在什么时候拒的、之后才落 denied」
-      // 这段先后关系在因果图里消失（规则表 `tool_call_status_changed.cause` 的
-      // 第二个分支，也是规则里唯一允许偏离「指向发起事件」的情形）。
-      let causedBySeq: number | null = null;
-      try {
-        causedBySeq = await this.sessions.findEventSeqByRef(
-          sessionId,
-          "approval_decided",
-          { approvalKey, status: "denied" },
-        );
-      } catch (err: unknown) {
-        this.logger.debug(
-          `causation resolve skipped (event still appended): session=${sessionId} ` +
-            `key=${approvalKey} — ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      const rows = await this.sessions.listToolCalls(sessionId);
-      for (const row of rows) {
-        // 只认「这次 settle 之后真的处于 denied」的那一行。存量行可能没有
-        // toolCallId（迁移 069 之前），没有身份就没法归属，宁可不发——投影那边
-        // 会把它记成 row_without_event，比一条归不到调用的状态事件诚实。
-        if (row.approvalId !== approvalKey) continue;
-        if (row.status !== "denied" || !row.toolCallId) continue;
-        await this.sessions.tryAppendEvent(sessionId, {
-          kind: "tool_call_status_changed",
-          causedBySeq,
-          payload: {
-            toolCallId: row.toolCallId,
-            toolName: row.toolName,
-            tier: row.tier,
-            status: row.status,
-            durationMs: row.durationMs ?? 0,
-            resultTruncated: row.resultTruncated === true,
-            hasResult: (row.resultJson ?? null) !== null,
-            // 存在性哨兵：投影与守卫脚本按它判断「事件说这里有错误文案」。
-            errorMessage: row.errorMessage ? "present" : null,
-            // 正文进事件（与 recordToolCall / updateToolCallByToolCallId 同形）：
-            // 拒绝文案必须钉在**这次迁移**上，否则「为什么被拒绝」会随台账行被
-            // 就地覆盖而丢失（见方法头注）。脱敏/截断/标记全交给既有实现。
-            body: {
-              result: buildEventBody(row.resultJson),
-              error: buildEventBody(row.errorMessage),
-            },
-          },
-        });
-      }
-    } catch (err: unknown) {
-      // 记账失败绝不能反向弄挂一次人工拒绝（纪律 2：事件是旁路）。
-      this.logger.warn(
-        `agent_events append failed (bypass — deny unaffected): ` +
-          `session=${sessionId} kind=tool_call_status_changed key=${approvalKey} — ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    // 实现与旁路纪律已外提到共享模块，供 grant/deny/phrase 三条路径复用。
+    await appendToolCallStatusChangedEvent(
+      this.sessions,
+      this.logger,
+      sessionId,
+      approvalKey,
+    );
   }
 
   @Post("sessions/:id/approvals/:approvalKey/grant")
@@ -929,12 +893,18 @@ export class AgentController {
     if (approval.sessionId !== session.id) {
       throw new AppError("AGENT_APPROVAL_SESSION_MISMATCH", { sessionId: id });
     }
-    // ADR-045：发布审批单禁用 phrase 路径——phrase 整条无自批校验，申请人可绕过四眼。
-    // 在指纹重算与 decideByPhrase 之前显式拒绝，发布审批只能走 grant 端点。
+    // ADR-045：发布审批单禁用 phrase 路径——phrase 整条曾无自批校验，申请人可
+    // 绕过四眼。发布审批只能走 grant 端点（那边由共享 guard 强制四眼）。
     if (approval.toolName === "sop_publish") {
       throw new AppError("VALIDATION_FAILED", {
         detail: "发布审批必须用 grant 端点、不支持短语",
       });
+    }
+    // G4 补齐：phrase 的 allow 与 grant 的 granted 是同一种放行决定，必须过
+    // 同一份四眼判定。解析只用于判定方向（allow 才拦），真正的短语校验与
+    // 条件写仍由 `decideByPhrase` 独占，不在这里重写一套语义。
+    if (parseApprovalPhrase(dto.phrase)?.kind === "allow") {
+      this.assertNoSelfApproval(session, user.username, approval.toolName);
     }
 
     // 指纹口径与闸门/落库侧同一份 computeApprovalPolicyFingerprint：读的是
@@ -981,6 +951,19 @@ export class AgentController {
       user.username,
       policyFingerprint,
     );
+    // 与 grant/deny 共用同一份决策副作用：allow → 条件满足时入队恢复；
+    // deny → settle 台账 + 补 tool_call_status_changed。行快照为 null 说明
+    // 条件写没拿到行，没有任何事实可据此记账，resumed 保持 false。
+    let resumed = false;
+    if (row?.status === "granted" || row?.status === "denied") {
+      resumed = await this.applyApprovalDecisionEffects({
+        sessionId: session.id,
+        approvalKey,
+        decision: row.status,
+        decidedBy: user.username,
+        session,
+      });
+    }
     return {
       ok: true,
       approval: row
@@ -991,6 +974,7 @@ export class AgentController {
             decidedAt: row.decidedAt,
           }
         : null,
+      resumed,
     };
   }
 
