@@ -54,6 +54,7 @@ class ExecuteRequest(BaseModel):
     task: TaskConfig
     params: dict[str, Any] | None = Field(default=None)
     secrets: dict[str, Any] | None = Field(default=None)
+    attemptSeq: int | None = Field(default=None)
 
 
 class HeartbeatPayload(BaseModel):
@@ -142,6 +143,7 @@ class CallbackPayload(BaseModel):
     artifacts: list[CallbackArtifact] | None = Field(default=None)
     result: dict[str, Any] | None = Field(default=None)
     traceparent: str | None = Field(default=None)
+    attemptSeq: int | None = Field(default=None)
 
 
 PROTOCOL_NETWORK_POLICY = json.loads(r"""

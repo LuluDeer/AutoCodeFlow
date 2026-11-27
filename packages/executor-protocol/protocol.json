@@ -1524,6 +1524,10 @@
           ],
           "additionalProperties": true,
           "description": "SEC-02 续：任务级凭据，与 params **分开**传递并按**原名**注入子进程 env（params 仍是 AUTOFLOW_<KEY>）。分开的理由：第三方 SDK 认规范名（AWS_ACCESS_KEY_ID / OPENAI_API_KEY），加前缀后脚本无法改写、凭据不可用。兼容性：secrets 同时仍合并进 params（旧执行器只读 params，行为与今日逐字节一致），故本字段是**纯增量**——旧执行器忽略它、新执行器额外按原名注入一份。执行器侧对键名做白名单校验（[A-Za-z_][A-Za-z0-9_]*）+ 保留名拒绝（PATH/PYTHON*/AUTOFLOW_* 等），非法键静默跳过并 warn。"
+        },
+        "attemptSeq": {
+          "type": "integer",
+          "description": "派发时刻的尝试世代（admin claim 时 task_executions.attemptSeq 的当前值），顶层可选键，与 traceparent 同层。执行器收到后保存在本次执行的上下文里，终态回调时**原样回传**（CallbackPayload.attemptSeq），让 admin 的终态门禁能识别「上一世代的迟到回调」。字段缺席 = 旧中台派发（或该执行尚未登记世代）⇒ 执行器不新增该键、admin 回落服务端快照，行为与本字段引入前逐字节一致；非整数形态由本 schema 闸（两侧生成物 strict）在 accept 期拒绝，不静默洗白。"
         }
       }
     },
@@ -1879,6 +1883,10 @@
         "traceparent": {
           "type": "string",
           "description": "OBS-01：dispatch 请求携带的 W3C traceparent。**如实登记的线缆形态**：双端都把它放进请求体（node pushCallback 展开项 / python payload['traceparent']），但 admin 只读同名的 HTTP 头（@Headers('traceparent')），请求体副本被 ParseArrayPipe whitelist 静默剥除——body 副本不承载语义，仅随批次首个携带者决定回传头（traceparentHeaderFor）。"
+        },
+        "attemptSeq": {
+          "type": "integer",
+          "description": "派发时 execute payload 顶层的 attemptSeq 原样回传（admin claim 世代）。**仅在收到该字段且为整数时才出现**：旧中台不派该键 ⇒ 执行器终态回调也不新增该键（不写 undefined/null），admin 按服务端快照兜底，旧端兼容不变。与 runtime executeMode/isBroadcast 无关——执行器不读任务快照、只回传派发时收到的值。非整数形态由本 schema 闸拒绝（两侧生成物 strict，pydantic lax 不得把 '7' 洗成 7）。"
         }
       },
       "$comment": "本轮协议 SSOT 补全：执行器→admin 回调载荷（POST /api/executions/callback 的**数组单条**，admin 侧 CallbackItemDto 的发送端子集）首次进协议——此前这是执行器→admin 最高频的消息，却只有 node 手写 interface（callback.ts CallbackRequest）与 python 手拼 dict（routers/execute.py 五处字面量），字段形状/nullable 全靠注释互指。**纯描述性收编**：逐字段取双端实际发送的交集+明确 optional，不改任何线上载荷语义。additionalProperties:false（zod .strictObject / pydantic extra=forbid）：双端发送键恰好是上述 11 键的子集，strict 让「任一端新增回调字段」必须先落本文件再落实现（否则该端运行时对账即红）——这正是回调面此前缺失的闸。与 KillResponse 同理，「多余键拒绝」的**共享**向量不放进 schemaVectors（zod 把未知键报在根路径、pydantic 报在该键 loc，expectErrorPath 无法两侧同形），改由两侧运行时对账测试断言（node pushCallback / python enqueue_callback 的 warn 闸）。batch 形态：数组 ≤100 条（admin 硬拒超出；node CALLBACK_BATCH_SIZE / python CALLBACK_LIVE_BATCH_SIZE 同值 100），数组本身不建模（两端共享的就是单条形状）。"
@@ -2133,6 +2141,13 @@
           },
           "secrets": {},
           "$comment": "空 secrets 对象合法；params 的 AUTOFLOW_ 命名空间与 secrets 的原名通道并存（执行器两侧对两者分别注入）。"
+        },
+        {
+          "executionId": "exec-attemptseq-7",
+          "task": {
+            "runtime": "python"
+          },
+          "attemptSeq": 7
         }
       ],
       "invalid": [
@@ -2249,6 +2264,17 @@
             "secrets"
           ],
           "$comment": "SEC-02 续（本轮补盲区）：secrets 的**类型**闸——admin 恒发对象/null，字符串形态只会来自序列化事故，两侧 accept 路径的协议闸门都应 400。注意：**键名**白名单/保留名拒绝不在此闸（非法键的线上语义是「静默跳过并 warn」，见顶层 secrets 段），故不存在「保留键名被 schema 拒」的 invalid 向量——那是运行时语义，由 secrets 段向量钉住。"
+        },
+        {
+          "name": "attemptSeq-not-integer",
+          "payload": {
+            "executionId": "exec-1",
+            "task": {},
+            "attemptSeq": "7"
+          },
+          "expectErrorPath": [
+            "attemptSeq"
+          ]
         }
       ]
     },
@@ -2826,6 +2852,11 @@
           "executionId": "exec-cb-6",
           "status": "failed",
           "failureReason": "unknown"
+        },
+        {
+          "executionId": "exec-cb-attemptseq-7",
+          "status": "success",
+          "attemptSeq": 7
         }
       ],
       "invalid": [
@@ -2985,6 +3016,17 @@
             "executionId"
           ],
           "$comment": "pattern 与 ExecuteRequest.executionId 同款下限：非空、无路径分隔符。admin 另有更严的 @IsUUID(4) 接收闸（不反向强加给发送端建模）。"
+        },
+        {
+          "name": "attemptSeq-not-integer",
+          "payload": {
+            "executionId": "exec-cb-1",
+            "status": "success",
+            "attemptSeq": "7"
+          },
+          "expectErrorPath": [
+            "attemptSeq"
+          ]
         }
       ],
       "_extraKeyNote": "additionalProperties:false（zod .strictObject / pydantic extra=forbid）对『多余键』的拒绝不放进共享向量：zod 把未知键报在根路径（键名在 issue.keys），pydantic 报在该键 loc，两侧错误定位不同形，无法用同一个 expectErrorPath 表达。多余键拒绝改由两侧运行时对账断言——node pushCallback / python enqueue_callback 的 warn 闸（见 callback.spec.ts / test_executor_protocol_contract.py），任一端往载荷里加字段而不先落本文件，该端自己的对账测试即红。"

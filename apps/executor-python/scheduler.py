@@ -742,13 +742,19 @@ async def pull_task() -> None:
                 await reject_pulled_execution(
                     execution_id, f'载荷校验失败：{e}',
                     traceparent if isinstance(traceparent, str) else None,
+                    *( (task.get('attemptSeq'),) if task.get('attemptSeq') is not None else () ),
                 )
                 continue
             try:
                 # E-01: 预留即正式占用——slot_pre_reserved 模式下 accept 不
                 # 再重复计数（详见 accept_execution 注释）。
-                accept_execution(req, traceparent if isinstance(traceparent, str) else None,
-                                 slot_pre_reserved=True)
+                _pulled_attempt_seq = task.get('attemptSeq')
+                if _pulled_attempt_seq is not None:
+                    accept_execution(req, traceparent if isinstance(traceparent, str) else None,
+                                     slot_pre_reserved=True, attempt_seq=_pulled_attempt_seq)
+                else:
+                    accept_execution(req, traceparent if isinstance(traceparent, str) else None,
+                                     slot_pre_reserved=True)
                 reserved = False  # 所有权移交：完成路径归还该槽位
                 # E-01-RPT: 预留已转为正式占用（该 executionId 随之出现在
                 # runningExecutionIds 里）——此刻起它不再是「预留」，故撤销预留
@@ -767,8 +773,11 @@ async def pull_task() -> None:
                     )
                 else:
                     # 真失败（校验被拒）：维持既有语义，补发 failed 回调。
-                    await reject_pulled_execution(execution_id, e.detail,
-                                                  traceparent if isinstance(traceparent, str) else None)
+                    await reject_pulled_execution(
+                        execution_id, e.detail,
+                        traceparent if isinstance(traceparent, str) else None,
+                        *( (task.get('attemptSeq'),) if task.get('attemptSeq') is not None else () ),
+                    )
         except Exception as e:
             logger.warning('Pull failed: %s', e)
         finally:

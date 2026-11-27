@@ -368,6 +368,32 @@ export class TaskExecution {
    * 记为 0、迁移后第一回合记为 1」这个基线上的偏移不影响任何判据的正确性。
    */
   @Column({ type: "int", default: 0 }) attemptSeq: number;
+
+  /**
+   * 执行快照：本次 claim 派发时任务的 executeMode（single / broadcast）。
+   *
+   * 为什么必须是**执行行自己的快照**而不是读 `task.executeMode` 当前值：任务在
+   * 执行途中改模式时，历史执行的语义不可随之改变。回调侧据此释放广播占坑，
+   * 若读当前值，改成 single 后所有在途广播执行都不再释放 → 槽位永久泄漏；
+   * 反向改成 broadcast 又会让单播执行多减一次 → 容量虚低、超发任务。
+   *
+   * NULL = 迁移前存量行 / 快照缺失：此时回调按非广播处理（与引入本列前逐字节
+   * 一致），绝不回读任务当前配置去猜。与 attemptSeq 同批在 claim 的原子 UPDATE
+   * 上写入，因此与「这次是第几回合」共享同一个 winner 语义。
+   */
+  @Column({ type: "varchar", length: 16, nullable: true })
+  executeMode: string | null;
+
+  /**
+   * 执行快照：本次派发是否为广播（claim 时由 executeMode 推导）。
+   *
+   * 与 `executeMode` 同批写入、同语义：回调只读本列释放每个执行器的广播坑，
+   * 不读任务当前模式。NULL 的可空性与 executeMode 一致（存量行不回填，
+   * 无法可靠还原历史模式，保守按非广播处理）。
+   */
+  @Column({ type: "boolean", nullable: true })
+  isBroadcast: boolean | null;
+
   /**
    * RT-BUDGET-01：**本行为什么被重试**（`user` / `internal`）。
    *

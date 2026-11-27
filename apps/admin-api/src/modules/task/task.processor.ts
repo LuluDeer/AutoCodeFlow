@@ -224,6 +224,13 @@ export class TaskProcessor extends WorkerHost {
         // 见上方 CONSISTENCY-01 注释）——谓词与自增在同一条 UPDATE 里求值，
         // 不依赖任何进程内状态，多副本下也成立。
         attemptSeq: () => '"attemptSeq" + 1',
+        // 执行快照（迁移 1790000000108）：把本次派发的模式钉在执行行上。
+        // 与 attemptSeq 在**同一条原子 UPDATE** 里写入，回调侧只读这里，
+        // 绝不回读 task.executeMode 当前值——任务在执行途中改模式时，
+        // 历史执行的广播占坑归属不能被改写。NULL = 替身/存量行未声明模式，
+        // 回调按非广播处理（与引入本列前逐字节一致）。
+        executeMode: task.executeMode ?? null,
+        isBroadcast: task.executeMode === "broadcast",
       })
       .where("id = :id", { id: executionId })
       .andWhere("status IN (:...claimable)", {
@@ -245,9 +252,14 @@ export class TaskProcessor extends WorkerHost {
     }
     exec.status = ExecutionStatus.RUNNING;
     exec.startTime = startTime;
+    // 快照同步进内存视图（与 DB 的同一次 claim 同源）：回调未到来前的读面
+    // 与派发载荷都用得到，且与落库列逐值一致。
+    exec.executeMode = task.executeMode ?? null;
+    exec.isBroadcast = task.executeMode === "broadcast";
     // G3：本次 claim 的尝试世代。消费面（当前）＝结构化日志 + 内存视图；
-    // 「随派发下传 / 回调回传」需要执行器协议承载，不在本批足迹内（见
-    // execution-terminal.ts 的 expectedAttemptSeq 注释）。
+    // 「随派发下传 / 回调回传」已闭合：派发载荷顶层 attemptSeq 由
+    // executor.service 从本对象的 attemptSeq 读取，执行器原样回传后由
+    // callback collaborator 优先用于终态世代门禁。
     const claimedAttemptSeq = await this.readClaimedAttemptSeq(
       executionId,
       claimed.raw,
@@ -321,9 +333,28 @@ export class TaskProcessor extends WorkerHost {
       // Broadcast mode: dispatch to all online executors
       // Single mode: dispatch to the executor with lowest load
       const isBroadcast = task.executeMode === "broadcast";
-      const rawResult = isBroadcast
-        ? await this.executorService.dispatchBroadcast(dispatchTask, exec)
-        : await this.executorService.dispatch(dispatchTask, exec);
+      // 派发载荷的 attemptSeq 只能取「本次 claim 确认过」的世代。读不到时
+      // exec.attemptSeq 还是 claim 前 findOne 的旧值（可能是上一回合），
+      // 若照原样下发，新回合的回调会带旧世代被世代门禁永久拒绝。
+      //
+      // 刻意**临时改写同一个 exec 引用**而不是传浅拷贝：dispatch 通过入参
+      // 引用把 executorAddress / executorId 等派发结果写回执行行（既有契约，
+      // 与 finally 的 ownedPatch 同事务落库），换成副本会静默丢掉这些写回。
+      // 派发返回（含抛错）后立即恢复原值，不影响后续落库。
+      const attemptSeqBeforeDispatch = exec.attemptSeq;
+      if (claimedAttemptSeq === null) {
+        exec.attemptSeq = undefined as unknown as number;
+      }
+      let rawResult: any;
+      try {
+        rawResult = isBroadcast
+          ? await this.executorService.dispatchBroadcast(dispatchTask, exec)
+          : await this.executorService.dispatch(dispatchTask, exec);
+      } finally {
+        if (claimedAttemptSeq === null) {
+          exec.attemptSeq = attemptSeqBeforeDispatch;
+        }
+      }
       // E-P2-R5: executorAddress 不再在此处单独 update（不在事务内，与终态写
       // 之间存在 TOCTOU/非原子窗口）。它并入 finally 的 ownedPatch（下方已有
       // `exec.executorAddress !== undefined` 条件判断），与状态/结果同事务落库。

@@ -123,7 +123,19 @@ export class ExecutionCallbackController {
   async callback(
     @Headers("authorization") auth: string | undefined,
     @Headers("traceparent") traceparent: string | undefined,
-    @Body(new ParseArrayPipe({ items: CallbackItemDto, whitelist: true }))
+    // 漂移 fail-fast（本轮）：此前只带 whitelist，回调体里**未声明**的新字段
+    // 会被静默剥离——协议新增字段时执行器以为上报成功，admin 却永远读不到，
+    // 故障表现为「字段在数据里消失」而非显式报错。改为 forbidNonWhitelisted：
+    // 任何非 DTO 字段整批 400，配合 scripts/check-callback-contract-drift.mjs
+    // 的「protocol.CallbackPayload ⊆ DTO 字段」静态守卫，新增协议字段必须
+    // 先补 DTO 才能真正上线。traceparent 已在 DTO 声明（执行器既有回调会带）。
+    @Body(
+      new ParseArrayPipe({
+        items: CallbackItemDto,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
     callbacks: CallbackItemDto[],
   ) {
     if (callbacks.length > 100) {

@@ -290,7 +290,13 @@ describe("T2-B4 第二刀 · ExecutionCallback 协作者的结构契约", () => 
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(false);
     const svc = build({
-      execution: makeExecution({ executorAddress: null }),
+      // 执行快照驱动：广播的事实钉在执行行上，task 当前值刻意保留 BROADCAST
+      // 以证明判定不依赖它（任务中途改模式不应改写历史执行的槽位归属）。
+      execution: makeExecution({
+        executorAddress: null,
+        executeMode: "broadcast",
+        isBroadcast: true,
+      }),
       task: { executeMode: ExecuteMode.BROADCAST },
       redisLockService: { setIfAbsent } as never,
     });

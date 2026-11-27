@@ -213,6 +213,15 @@ export class ExecutionCallback {
       durationMs?: number;
       executorAddress?: string;
       /**
+       * 尝试世代（协议顶层 `attemptSeq?: number`）：派发时由 admin 写入载荷，
+       * 执行器终态回调原样回传。终态写入优先用它做世代门禁——迟到回调即使
+       * 在「重新 claim 之后」才到达，也会携带旧世代而被 DB 谓词拒绝。
+       *
+       * 可选兼容：旧执行器 / SDK 直调不带本字段，此时回退到服务端读行快照，
+       * 与引入本字段前逐字节一致。非有限整数（含 null / NaN / 字符串）按缺省。
+       */
+      attemptSeq?: number;
+      /**
        * ADR-017 阶段 3（协议 v6）：执行器自报的稳定安装身份（64 位小写十六
        * 进制）——回调面的**行身份**输入，由控制器解析为行 id 后经
        * `fingerprintExecutorIdByAddress` 传入。缺省（旧执行器/采集失败/SDK
@@ -430,24 +439,16 @@ export class ExecutionCallback {
           continue;
         }
 
-        // R-06（DEEP_REVIEW 0ef3bbe）: 广播执行的槽位释放。广播 dispatch 对
-        // 每个目标执行器 runningTaskCount +1（executor.service.dispatchBroadcast），
-        // 但广播执行的 executorAddress 恒为 null（task.processor 仅非广播落库），
-        // 下方 winner 分支的 releaseExecutorSlot(winnerAddress) 对 null 早退 no-op。
-        // 这里按任务 executeMode 权威判定广播，随后无论本回调是 winner 还是重复回调
-        // （affected=0），都按 cb.executorAddress 释放该执行器自己的那一个坑——
-        // N 个被接受执行器各回调一次，恰好 -N。非广播执行不走此分支，单播释放
-        // 语义（winner-once）不变。
-        let isBroadcast = false;
-        if (!execution.executorAddress && execution.taskId) {
-          // NETOPT-1⑥: 批量路径查 Map，单条路径保持原 findOne（语义不变）
-          const taskRow = taskById
-            ? (taskById.get(execution.taskId) ?? null)
-            : await this.deps.taskRepo.findOne({
-                where: { id: execution.taskId },
-              });
-          isBroadcast = taskRow?.executeMode === "broadcast";
-        }
+        // R-06 / 执行快照：广播占坑的释放依据必须是**本次执行自己的快照**，
+        // 绝不能读 task.executeMode 当前值——任务在执行途中改成 single 后，
+        // 旧实现会把所有在途广播回调判成单播 → N 个 broadcastReservedCount
+        // 一只不减（槽位永久泄漏）；反向改成 broadcast 又会多减单播坑。
+        // 快照在 claim 的原子 UPDATE 上与 attemptSeq 同批落库（见 task.processor）。
+        // NULL = 迁移前存量行：保守按非广播处理（与引入本列前逐字节一致）。
+        const isBroadcast =
+          execution.isBroadcast === true ||
+          (execution.isBroadcast == null &&
+            execution.executeMode === "broadcast");
 
         // P1: atomic terminal transition — the update only lands while the
         // execution is still pending/running, making duplicate callbacks and
@@ -558,31 +559,34 @@ export class ExecutionCallback {
         // G3（迁移 1790000000092）：**尝试世代**校验——本次终态写入只认「这个回合」。
         //
         // 为什么纯状态门不够：终态门只看 `status IN (打开态)`，回答不了「这是第几
-        // 回合的开着」。而同一个 executionId 会被重新 claim 成 RUNNING
-        //（`task.processor` 的 claim 把 FAILED 也算可 claim——BullMQ 重试复用同一个
-        // `{executionId}` job；互斥/部署等待的唤醒同款），于是「上一回合的迟到回调」
-        // 与「本回合的正常回调」在 (id, status, executorAddress) 上完全同形。
+        // 回合的开着」。同一 executionId 被重新 claim 后（FAILED 也可 claim），
+        // 上一回合的迟到回调与本回合的正常回调在 (id, status, address) 上完全同形。
         //
-        // 值取**服务端快照**（本方法开头读到的那一行的 attemptSeq），因为执行器回调
-        // 载荷是 `additionalProperties: false` 的封闭 schema——让执行器回传世代要改
-        // `packages/executor-protocol` + 重生成 node/python 两侧 schema + 两个执行器
-        // 运行时（三处均不在本批足迹内，属架构变更）。规范化成整数才传：替身/存量行
-        // 未带该列时得到 undefined ⇒ **不加谓词** ⇒ 与引入前逐字节一致。
+        // **值优先取回调自带的 attemptSeq**：服务端读行快照只能关住「读行→写行」
+        // 这段窗口；回调在重新 claim 之后才到达时，读到的已是新世代，旧回合照样
+        // 放行。协议顶层 `attemptSeq?: number` 随派发下传、由执行器原样回传后，
+        // 谓词用的是**派发那一刻**的世代，多副本下也只由 DB 在写的瞬间求值。
         //
-        // 保证的是「读行 → 写行」这段窗口（中间隔着广播判定、失败时的 AI 分析 LLM
-        // 往返、产物索引落库，可达秒级）：期间若该行被重新 claim（世代自增），旧回合
-        // 的结果**不会**落到新回合的行上。**边界如实声明**：迟到回调若在重新 claim
-        // **之后**才到达，其快照已是新世代，本条谓词放行——挡那一段必须让回调自带
-        // 世代（协议改动）；届时只需把此处换成 `cb.attemptSeq`，谓词与语义不动。
+        // 兼容策略：回调没带 / 非有限整数时回退服务端快照（旧执行器与 SDK 直调
+        // 行为零变化）；两者都读不到 ⇒ 不传 ⇒ 谓词整段不拼，与引入前逐字节一致。
+        // 规范化到非负整数才写入 WHERE，非法值一律当缺省（不编 0——0 是第一回合
+        // 的合法值，编造会永久静默丢弃终态写）。
+        const cbAttemptSeq =
+          typeof cb.attemptSeq === "number" &&
+          Number.isInteger(cb.attemptSeq) &&
+          cb.attemptSeq >= 0
+            ? cb.attemptSeq
+            : undefined;
         const snapshotAttemptSeq =
           typeof execution.attemptSeq === "number" &&
           Number.isInteger(execution.attemptSeq)
             ? execution.attemptSeq
             : undefined;
+        const expectedAttemptSeq = cbAttemptSeq ?? snapshotAttemptSeq;
         const updated = await transitionToTerminal(this.deps.execRepo, {
           ids: [cb.executionId],
           patch: { status: terminalStatus, ...restPatch },
-          expectedAttemptSeq: snapshotAttemptSeq,
+          expectedAttemptSeq,
           // 驱动 affected=1 但 RETURNING 空时，统一入口按快照兜底 winner 地址；
           // 优先取回调自带地址（比 findOne 快照新），避免 dispatch 落库窗口内
           // 快照为 null → releaseSlot(null) no-op → 槽位永久虚高。
@@ -605,18 +609,17 @@ export class ExecutionCallback {
           //   ② 行**仍开着**但世代已推进 = 迟到回合被世代门禁拒绝（本批新增的拒绝面）。
           // ② 刻意**不**走 ① 的补写日志：那一回合的日志不属于当前回合的行，写进去
           // 会让当前回合的日志视图混入一个已废弃回合的输出（日志是取证面）。
-          // 仍按成功上报——执行器重试这条回调永远不可能再命中，重试只是把一批
-          // 已死的载荷反复投递（与「重复回调」的上报契约一致）。
+          // 判据与上面的写入谓词同源：优先回调回传的世代，缺省才用读行快照。
           const staleRound =
-            snapshotAttemptSeq !== undefined &&
+            expectedAttemptSeq !== undefined &&
             !!fresh &&
             typeof fresh.attemptSeq === "number" &&
             Number.isInteger(fresh.attemptSeq) &&
-            fresh.attemptSeq !== snapshotAttemptSeq;
+            fresh.attemptSeq !== expectedAttemptSeq;
           if (staleRound) {
             this.deps.logger.warn(
               `G3: discarded a stale-attempt callback for execution ${cb.executionId} — ` +
-                `handled against attempt #${snapshotAttemptSeq}, row has advanced to #${fresh?.attemptSeq}; ` +
+                `handled against attempt #${expectedAttemptSeq} (${cbAttemptSeq !== undefined ? "callback" : "server snapshot"}), row has advanced to #${fresh?.attemptSeq}; ` +
                 `terminal write skipped (affected=0), reported success so the executor stops retrying a dead round`,
             );
           } else if (fresh) {

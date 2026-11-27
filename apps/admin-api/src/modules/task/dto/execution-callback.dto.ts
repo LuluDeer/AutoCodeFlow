@@ -125,6 +125,24 @@ export class CallbackItemDto {
   @IsIn(["success", "failed"])
   status: "success" | "failed";
 
+  @ApiPropertyOptional({
+    description:
+      "尝试世代：claim 时由 admin 写入派发载荷，执行器原样回传。终态写入优先用它做并发世代门禁；缺省回退服务端快照以兼容旧执行器。非有限整数按缺省处理。",
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  attemptSeq?: number;
+
+  @ApiPropertyOptional({
+    description:
+      "OBS-01: 执行器回传的 W3C traceparent。admin 主通道从请求头解析，本字段仅为协议兼容而声明——不声明时 forbidNonWhitelisted 会把执行器既有回调整批 400。",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(256)
+  traceparent?: string;
+
   @ApiPropertyOptional({ description: "执行器地址，用于按执行器校验 token" })
   @IsOptional()
   @IsString()

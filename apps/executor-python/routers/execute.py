@@ -1520,7 +1520,7 @@ class _LiveExecution:
     """One accepted, not-yet-terminal execution (node ExecutionEntry parity)."""
 
     __slots__ = ('execution_id', 'task_id', 'cancelled', 'killed_by_request',
-                 'killed_callback_pushed', 'proc', 'traceparent')
+                 'killed_callback_pushed', 'proc', 'traceparent', 'attempt_seq')
 
     def __init__(self, execution_id: str):
         self.execution_id = execution_id
@@ -1540,6 +1540,9 @@ class _LiveExecution:
         # OBS-01: dispatch 请求的 W3C traceparent 头（admin OTEL_ENABLED=false
         # 时缺省）——注入任务 env AUTOFLOW_TRACE_ID 并随回调回传。
         self.traceparent: Optional[str] = None
+        # 派发时载荷顶层的 attemptSeq（admin claim 世代）。缺省 None = 旧中台
+        # 未派该键 ⇒ 终态回调不新增 attemptSeq，行为与引入前逐字节一致。
+        self.attempt_seq: Optional[int] = None
 
 
 _live_executions: dict[str, _LiveExecution] = {}
@@ -1567,6 +1570,37 @@ def unregister_live_execution(execution_id: str) -> None:
 def get_live_execution(execution_id: str) -> Optional['_LiveExecution']:
     with _live_lock:
         return _live_executions.get(execution_id)
+
+
+def _safe_attempt_seq(value: Any) -> Optional[int]:
+    """派发世代入参闸：只认有限整数（bool 是 int 子类，显式排除）。
+
+    与 protocol.json ExecuteRequest.attemptSeq 的 `type: integer` 同口径；畸形
+    形态（字符串/浮点/NaN/bool）一律按「未派该键」处理，不静默洗白成假世代。
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _stamp_attempt_seq_from_live(payload: dict) -> dict:
+    """回调盖章：从 live 执行上下文取派发世代，原样补进载荷。
+
+    收口在入队/落盘两处（而非每个回调构造点），让主路径、kill、停机、取消
+    与拒绝等出口都不必各自接线；载荷已显式带 attemptSeq 时不覆盖（死信重放
+    的落盘载荷就靠这一点保住世代）。
+    """
+    if not isinstance(payload, dict) or 'attemptSeq' in payload:
+        return payload
+    execution_id = payload.get('executionId')
+    if not isinstance(execution_id, str):
+        return payload
+    entry = get_live_execution(execution_id)
+    if entry is not None:
+        attempt_seq = _safe_attempt_seq(entry.attempt_seq)
+        if attempt_seq is not None:
+            return {**payload, 'attemptSeq': attempt_seq}
+    return payload
 
 
 def execution_exists(execution_id: str) -> bool:
@@ -3074,6 +3108,7 @@ def accept_execution(
     req: ExecuteRequest,
     traceparent: Optional[str] = None,
     slot_pre_reserved: bool = False,
+    attempt_seq: Optional[int] = None,
 ) -> dict:
     """领取核心：容量预检 + 重复领取守卫 + 登记 + 后台执行（原 POST /execute
     主体；ARCH-32 抽取供 pull 循环复用）。被拒抛 ExecutionRejected。
@@ -3288,6 +3323,9 @@ def accept_execution(
             400,
             f'执行 {req.executionId} 已在本执行器上活跃',
         )
+    # 派发世代：只在传入有限整数时记入上下文；旧中台不派该键 ⇒ 终态回调
+    # 不新增 attemptSeq，行为与引入前逐字节一致。
+    entry.attempt_seq = _safe_attempt_seq(attempt_seq)
 
     # OBS-01: 记录派发载荷的 W3C traceparent（HTTP 路由取请求头、pull 路径取
     # 载荷字段；缺省=无追踪），注入任务 env AUTOFLOW_TRACE_ID 并随回调回传关联。
@@ -3312,7 +3350,20 @@ def accept_execution(
 
 async def execute(req: ExecuteRequest, request: Request = None):
     tp = request.headers.get('traceparent') if request is not None else None
+    # 派发世代是顶层可选键；本文件的 ExecuteRequest 是「消费面模型」（字段面
+    # 由真实消费点决定，见类注释），不改它的字段集。Starlette 已经缓存了请求
+    # body，这里再读一次不会二次消费；拿不到（直连调用/测试替身）就当未派。
+    raw_attempt_seq = None
+    if request is not None and hasattr(request, 'json'):
+        try:
+            raw_body = await request.json()
+            if isinstance(raw_body, dict):
+                raw_attempt_seq = raw_body.get('attemptSeq')
+        except Exception:
+            raw_attempt_seq = None
     try:
+        if raw_attempt_seq is not None:
+            return accept_execution(req, tp, attempt_seq=raw_attempt_seq)
         return accept_execution(req, tp)
     except ExecutionRejected as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
@@ -3405,11 +3456,14 @@ router.add_api_route(
 
 
 async def reject_pulled_execution(execution_id: str, reason: str,
-                                  traceparent: Optional[str] = None) -> None:
+                                  traceparent: Optional[str] = None,
+                                  attempt_seq: Optional[int] = None) -> None:
     """ARCH-32: pull 载荷领取被拒时补发 failed 回调——admin 侧不留僵尸
-    RUNNING 行（既有 stale sweep 之前先收敛；fail-open 不抛出）。"""
+    RUNNING 行（既有 stale sweep 之前先收敛；fail-open 不抛出）。本路径
+    未登记 live entry，派发世代由调用方从原始 pull 载荷显式传入。"""
     try:
         token = await get_current_token()
+        _attempt_seq = _safe_attempt_seq(attempt_seq)
         await _send_callback_with_retry(
             build_admin_api_url('/executions/callback'),
             {
@@ -3428,6 +3482,7 @@ async def reject_pulled_execution(execution_id: str, reason: str,
                 # 的收敛回调也要能被归到正确执行器行。
                 **_executor_callback_identity(),
                 **({'traceparent': traceparent} if traceparent else {}),
+                **({'attemptSeq': _attempt_seq} if _attempt_seq is not None else {}),
             },
             token,
         )
@@ -3517,6 +3572,7 @@ def enqueue_callback(payload: dict) -> None:
     """Enqueue a terminal callback for batched delivery (node pushCallback
     parity). De-dupes by executionId: a later terminal result for the same
     execution supersedes an earlier queued one."""
+    payload = _stamp_attempt_seq_from_live(payload)
     _validate_callback_payload(payload)
     execution_id = payload.get('executionId')
     with _live_callback_lock:
@@ -3788,7 +3844,7 @@ def _persist_giving_up(payload: dict, url: str) -> None:
     must never escalate into the caller's terminal path — the result was
     already reported as lost in the logs at that point."""
     try:
-        _persist_failed_callback(payload, url)
+        _persist_failed_callback(_stamp_attempt_seq_from_live(payload), url)
     except Exception as exc:  # pragma: no cover - defensive
         logger.error('Callback persistence failed: %s', exc)
 
@@ -4320,12 +4376,14 @@ async def stop_callback_retry_task() -> None:
         pass
 
 
-async def _push_killed_callback(executionId: str) -> None:
+async def _push_killed_callback(executionId: str,
+                               attempt_seq: Optional[int] = None) -> None:
     """E4: push the terminal killed callback for an execution that never got
     a live process (queued/prepare stage). The kill endpoint already marked
     ``killed_callback_pushed`` and removed the registry entry; the background
     ``_run_and_callback`` sees the flag and skips its own callback, so admin
-    receives exactly one terminal result."""
+    receives exactly one terminal result. ``attempt_seq`` is passed explicitly
+    because the live entry is already gone at this point."""
     admin_api_url = _get_admin_api_url()
     if not admin_api_url:
         return
@@ -4338,6 +4396,8 @@ async def _push_killed_callback(executionId: str) -> None:
         # ADR-017 阶段 3 / 协议 v6：被杀的终态回调同样盖章行身份。
         **_executor_callback_identity(),
     }
+    if attempt_seq is not None:
+        payload['attemptSeq'] = attempt_seq
     # O-20: enqueue into the batch queue and flush inline — the kill endpoint
     # (and its tests) expect the terminal result delivered-or-persisted here.
     enqueue_callback(payload)
@@ -4385,7 +4445,7 @@ async def kill_execution(executionId: str):
     # _run_and_callback 的 finally 所有）。
     if not entry.killed_callback_pushed:
         entry.killed_callback_pushed = True
-        _spawn_background(_push_killed_callback(executionId))
+        _spawn_background(_push_killed_callback(executionId, entry.attempt_seq))
     unregister_live_execution(executionId)
     return _kill_body(True)
 

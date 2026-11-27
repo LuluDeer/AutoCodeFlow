@@ -14,6 +14,7 @@ import {
 } from '../scheduler';
 import { loadManifest, mergeTaskWithManifest } from '../manifest';
 import { pushCallback, CallbackFailureReason } from '../callback';
+import { noteDispatchAttemptSeq, forgetDispatchAttemptSeq } from '../callback-attemptseq';
 import { gatherArtifacts, artifactsDirFor, ArtifactManifestEntry } from '../artifacts';
 import { getCurrentToken } from '../middleware/auth';
 import { getCurrentAdminUrl } from '../admin-client';
@@ -418,6 +419,7 @@ function createExecutionEntry(executionId: string, taskId: string): ExecutionEnt
       Atomics.sub(getRunningCountArray(), 0, 1);
       liveExecutions.delete(entry.executionId);
       unpinLogFilePath(entry.executionId);
+      forgetDispatchAttemptSeq(entry.executionId);
     },
   };
   return entry;
@@ -852,6 +854,9 @@ export function acceptExecution(
     // 在后台执行（经 worker 按 taskId 串行，见 dispatch）。
     entry = createExecutionEntry(executionId, String(body.task.id || executionId));
     liveExecutions.set(executionId, entry);
+    // 派发世代：顶层 attemptSeq 是可选整数（协议闸门已验形状）；登记成功后
+    // 记入回调盖章表，终态回调原样回传，旧中台不派该键则什么都不做。
+    noteDispatchAttemptSeq(executionId, body.attemptSeq);
     // OBS-01: 记录派发载荷的 W3C traceparent（HTTP 路由取请求头、pull 路径
     // 取载荷字段；缺省=无追踪），后续注入任务 env AUTOFLOW_TRACE_ID 并随回
     // 调回传关联。

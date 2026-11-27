@@ -14,6 +14,7 @@ import {
 } from './dead-letter-sidecar';
 // 本轮协议 SSOT 补全：回调载荷的协议闸由 protocol.json 生成（勿手改产物）。
 import { CallbackPayloadSchema } from './generated/protocol.schemas';
+import { getDispatchAttemptSeq } from './callback-attemptseq';
 
 /**
  * NETOPT-4：回调落盘原子化——先写 `<目标>.tmp` 再 renameSync 到位。
@@ -117,6 +118,12 @@ export interface CallbackRequest {
   result?: Record<string, unknown>;
   /** OBS-01: dispatch 请求携带的 W3C traceparent（admin 追踪开启时存在）。 */
   traceparent?: string;
+  /**
+   * 派发时的尝试世代（admin claim 时写入 dispatch payload 顶层）。执行器在
+   * accept 阶段记入上下文，终态回调原样回传；旧中台不派该键 ⇒ 这里始终
+   * undefined、回调体不新增该键（不写 null），行为与引入前逐字节一致。
+   */
+  attemptSeq?: number;
 }
 
 const callbackQueue: CallbackRequest[] = [];
@@ -226,9 +233,11 @@ function getDeadLetterDir(): string {
  */
 function withExecutorAddress(request: CallbackRequest): CallbackRequest {
   const fingerprint = getDeviceFingerprint();
+  const attemptSeq = getDispatchAttemptSeq(request.executionId);
   return {
     executorAddress: config.executorAddressPublic || config.executorAddress,
     ...(fingerprint ? { deviceFingerprint: fingerprint } : {}),
+    ...(attemptSeq !== undefined ? { attemptSeq } : {}),
     ...request,
   };
 }

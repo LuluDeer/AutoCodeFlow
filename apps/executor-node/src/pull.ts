@@ -10,6 +10,7 @@ import {
   ExecuteRequest,
 } from './routes/execute';
 import { pushCallback } from './callback';
+import { noteDispatchAttemptSeq, forgetDispatchAttemptSeq } from './callback-attemptseq';
 // R2-1·P1b·A7：gitRepo 出站地址闸（与 HTTP 路由**同一份**实现 —— 两条领取
 // 入口（push / pull）的 SSRF 判据必须一致，否则「同一载荷走 push 被拒、走 pull
 // 放行」就是新的漂移面）。
@@ -357,6 +358,8 @@ export async function pullOnce(): Promise<void> {
   let controller: AbortController | null = null;
   // 1-3: 停滞看门狗句柄（finally 摘除）。
   let stallTimer: NodeJS.Timeout | null = null;
+  // 本轮已登记的派发世代：accept 未接手时由 finally 回收（回调已在 push 时盖章）。
+  let notedExecutionId: string | null = null;
   try {
     // ARCH-33（ADR-016）：先算空闲槽位，再决定是否预留。
     //
@@ -451,6 +454,11 @@ export async function pullOnce(): Promise<void> {
 
     logger.info(`Pulled execution ${task.executionId} from admin pull queue`);
     const { traceparent, ...body } = task;
+    // 派发世代：pull 载荷与 push 同形（顶层 attemptSeq）。在 accept 之前先
+    // 登记，这样 SSRF/校验失败这类「未登记就补发 failed 回调」的拒绝路径
+    // 也能把派发时的世代原样回传；accept 成功路径会重复记同一值（幂等）。
+    notedExecutionId = task.executionId;
+    noteDispatchAttemptSeq(task.executionId, task.attemptSeq);
     // NETOPT-9-6: 任务先落地再拉配置——原先在 accept 之前 await
     // maybePullConfig（GET 10s + 本地 reload 10s，最坏 ~20s），既延迟了
     // 已到手任务的领取，又按 E-01 语义让 admin 看到该预留槽位长期被占。
@@ -591,6 +599,11 @@ export async function pullOnce(): Promise<void> {
       // E-01-RPT: 与账本 -1 同点撤销预留上报（含 accept 429/400 路径——
       // 那些路径 slotReserved 仍为 true，由本 finally 统一归还）。
       untrackReservation();
+    }
+    if (notedExecutionId && slotReserved) {
+      // accept 未接手（SSRF 拒绝 / 400 / 429 / 异常）：回调已在 push 时盖章，
+      // 登记表不再需要，避免长跑 pull 循环无界累积。
+      forgetDispatchAttemptSeq(notedExecutionId);
     }
   }
 }

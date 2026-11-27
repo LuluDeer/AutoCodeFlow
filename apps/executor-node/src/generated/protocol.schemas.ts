@@ -41,6 +41,7 @@ export const ExecuteRequestSchema = z.looseObject({
   "task": TaskConfigSchema,
   "params": z.record(z.string(), z.unknown()).nullable().optional(),
   "secrets": z.record(z.string(), z.unknown()).nullable().optional(),
+  "attemptSeq": z.number().int().optional(),
 });
 export type ExecuteRequest = z.infer<typeof ExecuteRequestSchema>;
 
@@ -129,6 +130,7 @@ export const CallbackPayloadSchema = z.strictObject({
   "artifacts": z.array(CallbackArtifactSchema).optional(),
   "result": z.record(z.string(), z.unknown()).optional(),
   "traceparent": z.string().optional(),
+  "attemptSeq": z.number().int().optional(),
 });
 export type CallbackPayload = z.infer<typeof CallbackPayloadSchema>;
 

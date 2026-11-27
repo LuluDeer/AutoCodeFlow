@@ -1715,6 +1715,23 @@ export class ExecutorService implements OnModuleInit {
   }
 
   /**
+   * 派发载荷顶层的 `attemptSeq?: number`（与 traceparent 同层）。
+   *
+   * 只有「本次 claim 确认过」的有限非负整数才写键；读不到世代时整键不出现
+   *（绝不写 undefined/null），执行器原样回传，admin 回调侧据此做世代门禁。
+   * 旧执行器忽略该顶层键，行为与引入前逐字节一致。
+   */
+  private dispatchAttemptSeq(execution: TaskExecution): number | undefined {
+    const seq = execution?.attemptSeq;
+    return typeof seq === "number" &&
+      Number.isFinite(seq) &&
+      Number.isInteger(seq) &&
+      seq >= 0
+      ? seq
+      : undefined;
+  }
+
+  /**
    * T1-B3a：**转发层**（实现已迁至 `ExecutorDispatchPayload`）。
    *
    * 语义说明（原实现的完整论证见协作者的 `buildDispatchSecrets` 头注）：
@@ -4457,10 +4474,17 @@ export class ExecutorService implements OnModuleInit {
       agentCapabilities: string[];
     }>
   > {
-    const rows = await this.repo.find({
-      order: { lastHeartbeat: "DESC" },
-      take: 100,
-    });
+    // IMPL-SOP-ADMIN：能力/租约判定必须先于任何行数截断。旧实现先 take(100)
+    // 再内存过滤，第 101 台之后的 agent:sop 机器（常见是远端/NAT 后的机器）
+    // 被静默丢掉。这里把粗粒度谓词下沉到 SQL，截断整个移除；随后仍逐台复用
+    // getAgentCapabilities 做精确租约 + 精确数组判定，避免 LIKE 的假阳性。
+    const leaseFloor = new Date(Date.now() - AGENT_CAPABILITIES_LEASE_MS);
+    const rows = await this.repo
+      .createQueryBuilder("e")
+      .where("e.agentCapabilities LIKE :cap", { cap: "%agent:sop%" })
+      .andWhere("e.agentCapabilitiesUpdatedAt >= :leaseFloor", { leaseFloor })
+      .orderBy("e.lastHeartbeat", "DESC")
+      .getMany();
     const out: Array<{
       id: string;
       appName: string;
@@ -4958,6 +4982,7 @@ export class ExecutorService implements OnModuleInit {
   }
 
   async dispatch(task: Task, execution: TaskExecution) {
+    const attemptSeq = this.dispatchAttemptSeq(execution);
     let candidates: Executor[];
     // E-2: 决策日志的候选池基数（pinned=1；fleet 查询=SQL Top-K 后的行数；
     // FEAT-22 strict=部署集合 ∩ ONLINE 的行数）。
@@ -5378,6 +5403,8 @@ export class ExecutorService implements OnModuleInit {
           executionId: execution.id,
           task: effectiveTask,
           params: dispatchParams,
+          // 尝试世代（顶层可选键，读不到时不出现；执行器终态回调原样回传）。
+          ...(attemptSeq !== undefined ? { attemptSeq } : {}),
           // SEC-02 续：secrets 单独下发一份供执行器按原名注入（纯增量字段，
           // 旧执行器忽略它，见 buildDispatchSecrets 的注释）。
           secrets: dispatchSecrets,
@@ -5420,6 +5447,8 @@ export class ExecutorService implements OnModuleInit {
           executionId: execution.id,
           task: effectiveTask,
           params: dispatchParams,
+          // 尝试世代（顶层可选键，读不到时不出现；执行器终态回调原样回传）。
+          ...(attemptSeq !== undefined ? { attemptSeq } : {}),
           // SEC-02 续：secrets 单独下发一份供执行器按原名注入（纯增量字段）。
           secrets: dispatchSecrets,
         },
@@ -5863,6 +5892,7 @@ export class ExecutorService implements OnModuleInit {
     task: Task,
     execution: TaskExecution,
   ): Promise<any[]> {
+    const attemptSeq = this.dispatchAttemptSeq(execution);
     // A-1（执行器域审计 P1）：广播不经过互斥占坑闸（claimExecutorSlotForExecution）
     // ——挂互斥组的执行会静默绕过组内并发约束。写面已在任务 create/update 拒绝
     // 「broadcast + 应用挂互斥组」组合（task.service.assertBroadcastMutexCompatible）；
@@ -5978,6 +6008,8 @@ export class ExecutorService implements OnModuleInit {
             executionId: execution.id,
             task: dispatchTask,
             params: dispatchParams,
+            // 尝试世代（顶层可选键，读不到时不出现；执行器终态回调原样回传）。
+            ...(attemptSeq !== undefined ? { attemptSeq } : {}),
             // SEC-02 续：secrets 单独下发一份供执行器按原名注入（纯增量字段）。
             secrets: dispatchSecrets,
             traceparent: broadcastHeaders["traceparent"],
@@ -6002,6 +6034,8 @@ export class ExecutorService implements OnModuleInit {
             executionId: execution.id,
             task: dispatchTask,
             params: dispatchParams,
+            // 尝试世代（顶层可选键，读不到时不出现；执行器终态回调原样回传）。
+            ...(attemptSeq !== undefined ? { attemptSeq } : {}),
             // SEC-02 续：secrets 单独下发一份供执行器按原名注入（纯增量字段）。
             secrets: dispatchSecrets,
           },
