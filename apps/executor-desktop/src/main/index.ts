@@ -7,6 +7,7 @@ import {
   resolveAgentWorkerEntry,
 } from './agent-worker-paths';
 import type { AgentHostConfig } from './agent/agent-host';
+import type { AgentLiveEvent } from './agent/agent-events';
 import type { AgentStatusSnapshot } from './agent-status-view';
 import { agentHostIdentity as buildAgentHostIdentity, agentHostTransition } from './agent-host-lifecycle';
 import { HeartbeatMonitor } from './heartbeat';
@@ -537,7 +538,7 @@ let agentHostIdentity: string | null = null;
 let agentHostReady: Promise<void> = Promise.resolve();
 let agentTickPromise: Promise<unknown> | null = null;
 /** Agent 实时事件的有界回放缓冲（工作台打开时补历史）。 */
-const recentAgentEvents: unknown[] = [];
+const recentAgentEvents: AgentLiveEvent[] = [];
 // B：连续 defer 计数——agentHostTransition 用它封顶（MAX_AGENT_HOST_DEFERS），
 // 超限即强制重建，防「tick 一直不结束 ⇒ 身份替换永久 defer ⇒ 旧身份继续收单」。
 let agentHostDeferStreak = 0;

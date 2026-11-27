@@ -43,7 +43,7 @@
 
 3. 创建弹窗里的明文 `acf_…` **只显示这一次**（服务端只存 SHA-256），复制后填进 `AUTOCODEFLOW_API_TOKEN`。
 
-API Key 可设有效期或永不过期，吊销下一次调用即生效；它是用户 JWT 的**真子集**（`/api-keys`、`/auth/*`、`/users`、`/config` 一律拒绝），但**本仓 56 个 MCP 工具都不碰这四个前缀**，所以对 MCP 够用。ADMIN-only 工具（如 `approve_deployment`、`list_pending_approvals`）需要走路线 B。
+API Key 可设有效期或永不过期，吊销下一次调用即生效；它是用户 JWT 的**真子集**（`/api-keys`、`/auth/*`、`/users`、`/config` 一律拒绝），但**本仓 63 个 MCP 工具都不碰这四个前缀**，所以对 MCP 够用。ADMIN-only 工具（如 `approve_deployment`、`list_pending_approvals`）需要走路线 B。
 
 ### 路线 B：用户 JWT（只有它能用 ADMIN-only 工具）
 
@@ -69,7 +69,7 @@ acf config show                                    # 打印配置文件路径
 
 请求侧：30s 超时预算（`REQUEST_TIMEOUT_MS`）；工具调用即对应 REST 端点，因此同样受 scope / RBAC / 限流约束——建议给 Agent 建**独立低权用户或 readonly API Key**，而非共用 ADMIN。
 
-## 工具地图（按注册域分组，共 57 个）
+## 工具地图（按注册域分组，共 63 个）
 
 ### Task 域 — registerTaskTools（0 个）
 

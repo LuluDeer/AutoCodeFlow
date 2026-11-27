@@ -15,7 +15,7 @@ acf exec tail <execId>
 ACF_API_URL=http://localhost:3105 ACF_API_KEY=acf_<your-api-key> acf task list
 ```
 
-完整 69 个子命令地图与参数速查见 [CLI 命令地图](../../docs/atlas/05-interfaces/cli.md)。
+完整 74 个子命令地图与参数速查见 [CLI 命令地图](../../docs/atlas/05-interfaces/cli.md)（含 artifact / template 两组入口）。
 
 > **API 地址口径**（2026-10-07）：admin-api 路由带全局 `/api` 前缀。
 > `--api-url`/`ACF_API_URL`/login 的 URL prompt 对**不带** `/api` 尾段的地址
@@ -201,6 +201,18 @@ acf task delete <id> -y     # 非交互下唯一被接受的确认方式
   传 `null` 摘组。`acf app get <appId> --json` 可读出当前挂的组（表格视图不显示）。
   组不存在时服务端 404（`assertMutexGroupExists` 前置校验）。
 - 写面（create/update/delete）要求 **ADMIN** 角色；`list` 任意登录用户可读。
+
+## 产物与任务模板（artifact / template）
+
+这两组是**顶层命令**（不是 `task` 的子命令），命令地图各自单列一节：
+
+- `acf artifact list [--execution <execId>]`：列出执行产物（可按执行过滤）。
+- `acf artifact preview <execId> <name> [--max-bytes <n>]`：经有界 preview 端点读取文本预览；图片 / 二进制只返回元信息。
+- `acf artifact download <execId> <name> [-o/--output <file>]`：下载产物原文件，保留 SHA-256 校验头。
+- `acf template list [--json]`：列出可用任务模板。
+- `acf template use <id> [--name <name>] [--params '<json>']`：用模板实例化任务。
+
+以上 5 条与其余各域命令合计 **74 个子命令**（与 [CLI 命令地图](../../docs/atlas/05-interfaces/cli.md) 的分组计数同源）。
 
 ## 开发
 

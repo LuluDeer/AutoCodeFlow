@@ -496,6 +496,15 @@ const EMPTY_ROLES_OPT_OUT: Readonly<Record<string, string>> = {
     "下载面：handler 内手搓双凭据（执行器令牌 / access JWT），无 req.user",
 };
 
+/**
+ * class 级 @Roles 与 handler 级 @WriteGuard 共存的**显式例外登记表**（key = Controller.method）。
+ *
+ * 判据本身不变：共存仍被 audit() 记为 declaration-conflict，未登记的新共存照样判红。
+ * 本表只登记已复核、语义不冲突的存量案例——每条必须写明「两种声明各管什么」，
+ * 防止「顺手加一条例外」把这条判据腐化成永真断言。
+ */
+const DECLARATION_CONFLICT_OPT_OUT: Readonly<Record<string, string>> = {};
+
 describe("R203-A1 全路由鉴权矩阵（route-authz-matrix）", () => {
   it("规模下界：控制器 30 个、路由 >=220 条、各方法桶齐全（扫描器失效即红）", () => {
     // 扫描器一旦因为路径写错 / 元数据键改名而「扫不到东西」，下面所有
@@ -541,10 +550,12 @@ describe("R203-A1 全路由鉴权矩阵（route-authz-matrix）", () => {
   });
 
   it("矩阵无违规（@Public 未登记 / 矛盾声明 / 过期登记项）", () => {
-    // empty-roles-override 单独在下一个用例里对账（它有一张显式登记表），
-    // 这里只断言它之外再无违规。
+    // empty-roles-override 与 declaration-conflict 各自有显式登记表，分别在
+    // 下面两个用例里逐条对账（未登记的一项都不会被放过）；这里只断言其余违规为空。
     const remaining = violations.filter(
-      (v) => v.kind !== "empty-roles-override",
+      (v) =>
+        v.kind !== "empty-roles-override" &&
+        v.kind !== "declaration-conflict",
     );
     expect(
       remaining.map((v) => v.kind + ": " + v.id + " — " + v.detail),
@@ -611,6 +622,18 @@ describe("R203-A1 全路由鉴权矩阵（route-authz-matrix）", () => {
     ).toEqual(Object.keys(EMPTY_ROLES_OPT_OUT).sort());
   });
 
+  it("class 级 @Roles 与 @WriteGuard 共存的清单钉死（每处都写清两种声明各管什么）", () => {
+    const conflicts = kindOf("declaration-conflict")
+      .map((v) => v.id)
+      .sort();
+    // 审计器照常报冲突；登记表必须与实测冲突一一对应——新增未登记的共存会红，
+    // 已修掉的共存没从表里删掉也会红（防登记表腐烂）。
+    expect(conflicts).toEqual(Object.keys(DECLARATION_CONFLICT_OPT_OUT).sort());
+    for (const reason of Object.values(DECLARATION_CONFLICT_OPT_OUT)) {
+      expect(reason.trim().length).toBeGreaterThan(12);
+    }
+  });
+
   it("机器面（token 声明）路由清单钉死——读面与写面同权对待", () => {
     // write-guard-coverage 只扫写方法，故 GET /executors/config 这类
     // 「机器面读」此前无人核对。这里把 token 面整体钉住（读写一把抓）。
@@ -674,9 +697,9 @@ describe("R203-A1 全路由鉴权矩阵（route-authz-matrix）", () => {
     expect(undeclared).toEqual([]);
   });
 
-  it("自检：检测器对 4 类缺陷形态能红、对合规形态不误报（防「永真断言」）", () => {
+  it("自检：检测器对 5 类缺陷形态能红、对合规形态不误报（防「永真断言」）", () => {
     // 一个守卫最怕的不是漏报，而是**根本没有红的能力**。这里用合成路由
-    // 把 4 类缺陷形态各喂一遍，断言 audit() 真的报出来；再喂两条合规路由，
+    // 把 5 类缺陷形态各喂一遍，断言 audit() 真的报出来；再喂两条合规路由，
     // 断言不误报。
     const base: RouteRow = {
       id: "SyntheticController.probe",
@@ -718,6 +741,26 @@ describe("R203-A1 全路由鉴权矩阵（route-authz-matrix）", () => {
     );
     expect(badEmptyRoles.violations.map((v) => v.kind)).toContain(
       "empty-roles-override",
+    );
+
+    // 第 5 类：@Roles 与 @WriteGuard 共存——登记例外不能削弱检测器本身，
+    // 合成路由（未登记）必须仍然被 audit() 判红。
+    const badBoth = audit(
+      [
+        {
+          ...base,
+          roles: [UserRole.USER],
+          writeGuard: {
+            resource: "synthetic",
+            scope: "project-role",
+            reason: "合成用例",
+          },
+        },
+      ],
+      {},
+    );
+    expect(badBoth.violations.map((v) => v.kind)).toContain(
+      "declaration-conflict",
     );
 
     // 合规形态：已声明的机器面读端点（token + @Public + reason）不应报错。

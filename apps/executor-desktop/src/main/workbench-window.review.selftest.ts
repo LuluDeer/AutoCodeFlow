@@ -2,7 +2,7 @@
  * 独立验收审查 selftest（verify-wbwindow，只读审查产物，非生产源码）。
  *
  * 刻意不 import impl 的 workbench-window.selftest.ts：本文件独立复现
- * 「preload 实际 channel 集合 / BrowserWindow 安全配置 / URL 校验 / IPC 双收窄 /
+ * 「preload 实际 channel 集合 / BrowserWindow 安全配置 / URL 守卫 / IPC 双收窄 /
  * 四页桥未被污染」断言，并自带变异反证（全量 preload 必须真红）。 mutation-residue-ok: 此处仅描述反证方法非残留变异体
  *
  * test:main 是显式枚举脚本，不含本文件；手动运行：
@@ -19,8 +19,9 @@ import * as path from 'node:path';
 import {
   buildWorkbenchWebPreferences,
   isAllowedWorkbenchUrl,
-  resolveWorkbenchNavigation,
   resolveWorkbenchUrl,
+  WORKBENCH_CHANNELS,
+  WORKBENCH_CHANNEL_VALUES,
   WORKBENCH_SESSION_PARTITION,
 } from './workbench-window';
 
@@ -31,12 +32,31 @@ const WINDOW = path.join(ROOT, 'src', 'main', 'workbench-window.ts');
 const IPC = path.join(ROOT, 'src', 'main', 'workbench-ipc.ts');
 const WINDOW_MGR = path.join(ROOT, 'src', 'main', 'window-manager.ts');
 
-const ALLOW = [
-  'workbench:getUrl', 'workbench:navigate', 'workbench:close',
-  'workbench:getDesktopContext', 'workbench:cancelAgentAssignment',
-  'workbench:pickLocalFiles', 'workbench:getRecentAgentEvents',
+const EXPECTED_INVOKE = [
+  'workbench:getDesktopContext',
+  'workbench:cancelAgentAssignment',
+  'workbench:pickLocalFiles',
+  'workbench:getRecentAgentEvents',
+].sort();
+
+const EXPECTED_INVOKE_KEYS = [
+  'getDesktopContext',
+  'cancelAgentAssignment',
+  'pickLocalFiles',
+  'getRecentAgentEvents',
+].sort();
+
+const EXPECTED_EXPOSED = [
+  ...EXPECTED_INVOKE,
   'workbench:agentEvent',
 ].sort();
+
+const RETIRED = [
+  'workbench:getUrl',
+  'workbench:navigate',
+  'workbench:close',
+] as const;
+
 const FORBIDDEN = [
   'config:save', 'config:get', 'config:import', 'executor:stop', 'executor:start',
   'apps:uninstall', 'updater:install', 'agent:get-status',
@@ -50,7 +70,8 @@ function readChannels(src: string): string[] {
 }
 
 function assertWhiteList(src: string, label: string): void {
-  assert.deepStrictEqual(readChannels(src), ALLOW, `${label}: channel 集合必须严格等于三项白名单`);
+  assert.deepStrictEqual(readChannels(src), EXPECTED_EXPOSED,
+    `${label}: channel 集合必须严格等于四 invoke + 一 event`);
   for (const channel of FORBIDDEN) {
     assert.ok(!src.includes(channel), `${label}: 禁用 channel 出现 —— ${channel}`);
   }
@@ -66,15 +87,32 @@ function ok(label: string): void {
 {
   const src = fs.readFileSync(PRELOAD, 'utf8');
   assertWhiteList(src, 'workbench preload');
+  assert.deepStrictEqual([...WORKBENCH_CHANNEL_VALUES].sort(), EXPECTED_INVOKE,
+    'WORKBENCH_CHANNEL_VALUES 必须严格等于四 invoke，事件订阅不在其中');
+  assert.deepStrictEqual(Object.keys(WORKBENCH_CHANNELS).sort(), EXPECTED_INVOKE_KEYS,
+    'WORKBENCH_CHANNELS 的 key 也必须严格等于四 invoke');
   assert.ok(src.includes("exposeInMainWorld('workbenchApi'"), '必须挂独立 workbenchApi 命名空间');
   assert.ok(!src.includes('electronAPI'), '不得挂四页 electronAPI 命名空间');
   for (const forbiddenToken of ['filePath', 'executorToken', 'getConfig:', 'config:save:', 'shell:']) {
     assert.ok(!src.includes(forbiddenToken), `工作台桥不得出现 ${forbiddenToken}`);
   }
-  ok('workbench preload 实际 channel 严格等于白名单，禁用 channel 零出现');
+  ok('workbench preload 实际 channel 严格等于四 invoke + 一 event，禁用 channel 零出现');
 }
 
-// ── 2. 变异反证：全量 preload 必须让同一断言真红 ───────────────────────── mutation-residue-ok: 反证用例标题非残留变异体
+// ── 2. 退役通道零出现：preload / channel 源 / ipc handler 源 ──────────────
+{
+  const src = fs.readFileSync(PRELOAD, 'utf8');
+  const win = fs.readFileSync(WINDOW, 'utf8');
+  const ipc = fs.readFileSync(IPC, 'utf8');
+  for (const channel of RETIRED) {
+    assert.ok(!src.includes(channel), `workbench preload 仍含退役 channel: ${channel}`);
+    assert.ok(!win.includes(channel), `WORKBENCH_CHANNELS 源仍含退役 channel: ${channel}`);
+    assert.ok(!ipc.includes(channel), `workbench-ipc handler 源仍含退役 channel: ${channel}`);
+  }
+  ok('退役三通道在三处源码中零出现');
+}
+
+// ── 3. 变异反证：全量 preload 必须让同一断言真红 ───────────────────────── mutation-residue-ok: 反证用例标题非残留变异体
 {
   const full = fs.readFileSync(FULL_PRELOAD, 'utf8');
   let turnedRed = false;
@@ -93,7 +131,7 @@ function ok(label: string): void {
   ok(`变异反证成立：换成全量 preload 后断言真红（${reason.slice(0, 60)}…）`); // mutation-residue-ok: 反证成功消息非残留变异体
 }
 
-// ── 3. BrowserWindow 四项安全配置（独立断言，不依赖 impl selftest） ─────
+// ── 4. BrowserWindow 四项安全配置（独立断言，不依赖 impl selftest） ─────
 {
   const prefs = buildWorkbenchWebPreferences();
   assert.strictEqual(prefs.partition, WORKBENCH_SESSION_PARTITION);
@@ -107,7 +145,7 @@ function ok(label: string): void {
   ok('partition 独立 + contextIsolation/nodeIntegration/webviewTag/sandbox 逐项成立');
 }
 
-// ── 4. loadURL 安全：协议白名单 + 同源 + 相对路径导航 ────────────────────
+// ── 5. loadURL 安全：协议白名单 + 同源（导航 invoke 已退役） ──────────────
 {
   const base = 'https://acf.example.org';
   const workbenchUrl = resolveWorkbenchUrl(base);
@@ -121,14 +159,10 @@ function ok(label: string): void {
     'https://evil.tld/workbench', `${base}.evil.tld/`, '//evil.tld/', null]) {
     assert.strictEqual(isAllowedWorkbenchUrl(bad, workbenchUrl), false, `必须拒绝: ${JSON.stringify(bad)}`);
   }
-  assert.strictEqual(resolveWorkbenchNavigation('/inbox', workbenchUrl), `${base}/inbox`);
-  for (const bad of ['https://evil.tld/', '//evil.tld/', 'javascript:alert(1)', 'file:///etc/passwd']) {
-    assert.throws(() => resolveWorkbenchNavigation(bad, workbenchUrl), /工作台导航/);
-  }
   ok('loadURL 只接受 http(s)+配置同源；javascript:/file:/data:/任意 host 全拒');
 }
 
-// ── 5. 源码锚点：窗口真用独立配置 + IPC 双收窄 + 四页桥未污染 ────────────
+// ── 6. 源码锚点：窗口真用独立配置 + IPC 双收窄 + 四页桥未污染 ────────────
 {
   const win = fs.readFileSync(WINDOW, 'utf8');
   for (const [label, needle] of [

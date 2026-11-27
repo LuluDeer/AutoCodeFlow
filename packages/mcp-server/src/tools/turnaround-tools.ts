@@ -14,6 +14,7 @@ import {
   DEPLOYMENT_ENV_VALUE_MAX_BYTES,
   EXECUTE_MODE,
   JSON_CONTENT,
+  JSON_ERROR,
   MAINTENANCE_WINDOW_ITEM,
   MISFIRE_STRATEGY,
   TASK_FIXED_RATE_MAX_SECONDS,
@@ -87,7 +88,7 @@ const CREATE_TASK_SCHEMA = {
     .number()
     .int()
     .min(1)
-    .max(2_147_483)
+    .max(TASK_FIXED_RATE_MAX_SECONDS)
     .optional()
     .describe(
       "Fixed interval in seconds (required when triggerType=fixed_rate; 1-2147483)",
@@ -181,11 +182,13 @@ const CREATE_TASK_SCHEMA = {
   executeMode: EXECUTE_MODE.optional().describe(
     "Dispatch mode: single | broadcast (broadcast cannot be combined with executorId)",
   ),
-  blockStrategy: BLOCK_STRATEGY.nullable().optional().describe(
-    "Re-trigger policy while active: serial | discard | cover_early (null = legacy serial)",
+  // NOT NULL enum columns: null is not a default token here. Omission is the
+  // only way to let the backend apply its column default (serial / ignore).
+  blockStrategy: BLOCK_STRATEGY.optional().describe(
+    "Re-trigger policy while active: serial | discard | cover_early. Omit to use the backend default (serial); explicit null is disallowed because the column is NOT NULL.",
   ),
-  misfireStrategy: MISFIRE_STRATEGY.nullable().optional().describe(
-    "Misfire policy on scheduler recovery: ignore | fire_once (null = default ignore)",
+  misfireStrategy: MISFIRE_STRATEGY.optional().describe(
+    "Misfire policy on scheduler recovery: ignore | fire_once. Omit to use the backend default (ignore); explicit null is disallowed because the column is NOT NULL.",
   ),
   priority: TASK_PRIORITY.optional().describe(
     "Task priority: 1 (LOW) | 2 (NORMAL) | 3 (HIGH) | 4 (CRITICAL) or uppercase label",
@@ -266,12 +269,29 @@ export function registerTurnaroundTools(
   // ---- create_task ----------------------------------------------------------
   server.tool(
     "create_task",
-    "Create a new scheduled or on-demand task (POST /tasks). Required fields: name (unique across all tasks, max 255 chars) and triggerType (cron | fixed_rate | api | manual). Provide cronExpression when triggerType=cron, or fixedRate (seconds) when triggerType=fixed_rate. Default status is paused; pass status=active to schedule immediately. Payloads containing the [redacted] sentinel are rejected before POST.",
+    "Create a new scheduled or on-demand task (POST /tasks). Required fields: name (unique across all tasks, max 255 chars) and triggerType (cron | fixed_rate | api | manual). Provide cronExpression when triggerType=cron, or fixedRate (seconds) when triggerType=fixed_rate. Default status is paused; pass status=active to schedule immediately. blockStrategy and misfireStrategy are NOT NULL enum columns: omit them to use the backend defaults (serial / ignore); explicit null is disallowed. Payloads containing the [redacted] sentinel are rejected before POST.",
     CREATE_TASK_SCHEMA,
     { destructiveHint: false },
     async (fields) => {
+      const rawFields = fields as Record<string, unknown>;
+      // Defensive handler-level guard: the SDK schema no longer accepts
+      // null, but direct handler callers (tests, internal shims) must fail the
+      // same way instead of forwarding null into a NOT NULL PG enum column.
+      const nullEnumFields = ["blockStrategy", "misfireStrategy"].filter(
+        (field) => rawFields[field] === null,
+      );
+      if (nullEnumFields.length > 0) {
+        return JSON_ERROR({
+          error: "NULL_NOT_ALLOWED",
+          errorCode: "NULL_NOT_ALLOWED",
+          fields: nullEnumFields,
+          message:
+            `create_task disallows explicit null for NOT NULL enum columns: ${nullEnumFields.join(", ")}. ` +
+            "Omit the field to use the backend default (blockStrategy=serial, misfireStrategy=ignore).",
+        });
+      }
       const body = Object.fromEntries(
-        Object.entries(fields).filter(([, v]) => v !== undefined),
+        Object.entries(rawFields).filter(([, v]) => v !== undefined),
       );
       const blocked = rejectRedactionSentinel(body, "create_task");
       if (blocked) return blocked;

@@ -208,7 +208,7 @@ export const EXAMPLES: Record<string, string[]> = {
   'template list': ['acf template list', 'acf template list --json'],
   'template use': [
     'acf template use <templateId> --name nightly-backup',
-    "acf template use <templateId> --name sync --body '{"params":{"KEY":"value"}}'",
+    `acf template use <templateId> --name sync --body '{"params":{"KEY":"value"}}'`,
   ],
   'config show': ['acf config show', 'acf config show --json'],
   'config set-url': ['acf config set-url http://localhost:3105'],

@@ -50,6 +50,35 @@ export const UPDATE_EVENTS = {
 } as const;
 
 /**
+ * updater:check 的两种「不支持」共用同一个稳定哨兵：
+ *  - app.isPackaged=false（开发模式，updater 未初始化）；
+ *  - Linux 非 AppImage（deb/rpm/pacman，electron-updater 不发任何事件）。
+ * 渲染层用 development 标记区分中文提示，不改变 error 契约。
+ */
+export const UPDATER_UNSUPPORTED_INSTALL = 'UPDATER_UNSUPPORTED_INSTALL' as const;
+
+export type UpdaterCheckSupportResult =
+  | { ok: true }
+  | { ok: false; error: typeof UPDATER_UNSUPPORTED_INSTALL; development?: true };
+
+/**
+ * updater:check 前置闸门（纯函数，定向单测直接驱动）。
+ * 未打包时绝不再走进 runCheck 拿「静默 no-op」冒充成功；非 AppImage 哨兵保留。
+ */
+export function resolveUpdaterCheckSupport(
+  isPackaged: boolean,
+  selfUpdateSupported: boolean,
+): UpdaterCheckSupportResult {
+  if (!isPackaged) {
+    return { ok: false, error: UPDATER_UNSUPPORTED_INSTALL, development: true };
+  }
+  if (!selfUpdateSupported) {
+    return { ok: false, error: UPDATER_UNSUPPORTED_INSTALL };
+  }
+  return { ok: true };
+}
+
+/**
  * 纯函数：semver 比较语义的「a 是否严格新于 b」。
  *  - 支持数值段与预发布段（-alpha.1 < 正式版；alpha.2 > alpha.1）；
  *  - 相等返回 false；回退（a 更旧）返回 false；

@@ -42,6 +42,7 @@ import {
   downloadUpdate,
   isSelfUpdateSupported,
   quitAndInstall,
+  resolveUpdaterCheckSupport,
 } from './updater';
 import {
   checkPathWithinDomains,
@@ -1072,22 +1073,19 @@ export function registerIpcHandlers(): void {
   });
 
   // ── 自动更新（DSK-03）─────────────────────────────────
-  // renderer 主动触发一次检查（设置页「检查更新」按钮）；dev 未打包时
-  // updater 未初始化，checkForUpdates 静默 no-op，仍返回 ok:true（NETOPT-F
-  // P3-2: 旧注释称"静默失败返回 ok:false"与实现不符——runCheck 恒 return
-  // ok:true，错误经 updater:error 广播显性化）。
+  // renderer 主动触发一次检查（设置页「检查更新」按钮）。未打包模式 updater
+  // 未初始化：旧实现走静默 no-op 却回 ok:true；现在先过 resolveUpdaterCheckSupport
+  // 如实回 ok:false + UPDATER_UNSUPPORTED_INSTALL + development:true，渲染层据此
+  // 提示「开发模式不支持自更新检查」。Linux 非 AppImage 哨兵继续保留。
   ipcMain.handle('updater:check', async () => {
-    // A-3：当前安装形态不支持自更新时必须如实回 ok:false。
-    // 判据复用 updater.ts 的 isSelfUpdateSupported（与 electron-updater 的
-    // 分派同源）：Linux 非 AppImage（deb/rpm/pacman 安装）下
-    // AppImageUpdater.isUpdaterActive() 因 APPIMAGE 缺失返回 false，
-    // checkForUpdates 直接 resolve(null)、**一个事件都不发**——旧实现照样回
-    // ok:true，渲染层只能闪一句"已发起检查"，用户永远等不到结果（永久静默）。
-    // deb/rpm 只能由包管理器升级，所以这一条是稳定的哨兵错误码，由渲染层
-    // 映射成"请用包管理器升级"的双语文案。
-    if (!isSelfUpdateSupported(process.platform, process.env.APPIMAGE)) {
-      return { ok: false, error: 'UPDATER_UNSUPPORTED_INSTALL' };
-    }
+    // 未打包模式：updater 未初始化，旧实现仍 await 静默 no-op 再回 ok:true，
+    // 用户看到"已发起检查"却永远等不到结果。先过纯函数闸门，如实回稳定哨兵。
+    // development 标记只用于渲染层中文分支，error 仍是 UPDATER_UNSUPPORTED_INSTALL。
+    const support = resolveUpdaterCheckSupport(
+      app.isPackaged,
+      isSelfUpdateSupported(process.platform, process.env.APPIMAGE),
+    );
+    if (!support.ok) return support;
     // NETOPT-C P3: 用户主动检查——错误显性化（后台定时检查保持静默）
     await checkForUpdatesUserInitiated();
     return { ok: true };

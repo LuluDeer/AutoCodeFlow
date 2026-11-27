@@ -4,8 +4,9 @@
  * 与四页（status/config/history/apps）**并存但隔离**：
  *  - 独立 BrowserWindow + 独立 session partition（`persist:acf-workbench`），
  *    不共享 defaultSession 的缓存 / cookie / localStorage / 权限闸门；
- *  - 独立 preload（`src/preload/workbench.ts`），只暴露导航/会话相关的最小
- *    API，执行器配置 / 凭据 / 子进程 / 卸载 / 更新 channel 刻意不暴露；
+ *  - 独立 preload（`src/preload/workbench.ts`），只暴露桌面上下文 / Agent 事件 /
+ *    文件选择 / 取消指派相关的最小 API；执行器配置 / 凭据 / 子进程 / 卸载 /
+ *    更新 channel 刻意不暴露；
  *  - 只 loadURL 配置里的中台地址 + `/workbench`；导航守卫白名单同源 http(s)，
  *    `javascript:` / `file:` / 任意 host 一律拒绝；
  *  - webview tag 全局关闭（window-manager 的 `webviewTag:false` + 本窗口守卫），
@@ -42,7 +43,8 @@ export function normalizePartition(raw: unknown): string | null {
 export const WORKBENCH_SENDER_FLAG = '__acfWorkbenchPartition';
 
 import * as path from 'path';
-import type { ResolvedTheme } from './theme-colors';
+import { windowBackground, type ResolvedTheme } from './theme-colors';
+import { resolveRestoreBounds, type Rect } from './window-bounds';
 import {
   readWorkbenchBounds,
   sanitizePickedFiles,
@@ -56,11 +58,8 @@ export const WORKBENCH_PRELOAD_PATH = path.join(__dirname, '../preload/workbench
 /** 中台业务工作台路由（admin-web /workbench 对业务人员开放）。 */
 export const WORKBENCH_PATH = '/workbench';
 
-/** 工作台 preload 允许过桥的 channel —— 白名单的唯一事实源。 */
+/** 工作台 preload 允许 invoke 过桥的 channel —— invoke 白名单唯一事实源（事件订阅不在其中）。 */
 export const WORKBENCH_CHANNELS = {
-  getUrl: 'workbench:getUrl',
-  navigate: 'workbench:navigate',
-  close: 'workbench:close',
   getDesktopContext: 'workbench:getDesktopContext',
   cancelAgentAssignment: 'workbench:cancelAgentAssignment',
   pickLocalFiles: 'workbench:pickLocalFiles',
@@ -138,24 +137,6 @@ export function isAllowedWorkbenchUrl(raw: unknown, baseUrl: string): boolean {
 }
 
 /**
- * preload 的 `workbench:navigate` 参数收窄：只接受同源**相对路径**。
- * 不接受绝对 URL（防开放重定向）——业务人员只能在工作台自己的路由间跳转。
- */
-export function resolveWorkbenchNavigation(target: unknown, baseUrl: string): string {
-  if (typeof target !== 'string' || !target.startsWith('/') || target.startsWith('//')) {
-    throw new Error('工作台导航只接受同源相对路径');
-  }
-  let url: URL;
-  try {
-    url = new URL(target, baseUrl);
-  } catch {
-    throw new Error('工作台导航参数非法');
-  }
-  if (!isAllowedWorkbenchUrl(url.href, baseUrl)) throw new Error('工作台导航目标不在白名单内');
-  return url.href;
-}
-
-/**
  * 工作台窗口的 webPreferences —— 四项安全配置的唯一事实源（selftest 逐项钉住）。
  * `partition` 与 `preload` 是它与四页 `sharedWebPreferences()` 的两处硬差异。
  */
@@ -176,7 +157,7 @@ export function buildWorkbenchWebPreferences(
   };
 }
 
-/** 当前工作台窗口（供 IPC handler 收窄 / 关闭 / 导航复用）。 */
+/** 当前工作台窗口（供 IPC handler 收窄复用）。 */
 let workbenchWindow: import('electron').BrowserWindow | null = null;
 
 export function getWorkbenchWindow(): import('electron').BrowserWindow | null {
@@ -323,16 +304,16 @@ export function createWorkbenchWindow(options: CreateWorkbenchWindowOptions): im
   const showTimer = setTimeout(doShow, 3000);
   showTimer.unref?.();
   let boundsTimer: NodeJS.Timeout | null = null;
-  for (const event of ['resize', 'move'] as const) {
-    win.on(event, () => {
-      if (boundsTimer !== null) clearTimeout(boundsTimer);
-      boundsTimer = setTimeout(() => {
-        boundsTimer = null;
-        if (!win.isDestroyed()) writeWorkbenchBounds(win.getBounds(), logger);
-      }, 400);
-      boundsTimer.unref?.();
-    });
-  }
+  const onBoundsChange = () => {
+    if (boundsTimer !== null) clearTimeout(boundsTimer);
+    boundsTimer = setTimeout(() => {
+      boundsTimer = null;
+      if (!win.isDestroyed()) writeWorkbenchBounds(win.getBounds(), logger);
+    }, 400);
+    boundsTimer.unref?.();
+  };
+  win.on('resize', onBoundsChange);
+  win.on('move', onBoundsChange);
   win.once('closed', () => {
     clearTimeout(showTimer);
     if (boundsTimer !== null) clearTimeout(boundsTimer);

@@ -111,30 +111,37 @@ export function planDiagnosticsResult(r: DiagnosticResult | undefined, t: CfgTex
  * 两者都能被断言：分支在 io-result.selftest.mjs，锚点在页面。
  */
 export type UpdateCheckTexts = {
-  /** 普通结果："已发起检查"（开发模式主进程静默返回时也不承诺有新版本）。 */
+  /** 普通结果："已发起检查"（仅用于生产态成功发起）。 */
   initiated: string;
   /** 不支持自更新的安装形态："请用包管理器升级"。 */
   unsupportedInstall: string;
   /** 主进程回 ok:false 时携带的稳定哨兵字面量。 */
   unsupportedSentinel: string;
+  /** 开发模式专用文案；缺省时用下方常量，页面/i18n 不必同步改。 */
+  devUnsupported?: string;
 };
 
-export type UpdateCheckResult = { ok: boolean; error?: string };
+export type UpdateCheckResult = { ok: boolean; error?: string; development?: boolean };
+
+/** 开发模式中文提示的单一事实源（跨端没有 i18n 键时也能如实提示）。 */
+export const UPDATER_DEV_UNSUPPORTED_TEXT = '开发模式不支持自更新检查';
 
 /**
  * 检查更新：**总是**有一句提示（与上面三条不同，这里没有 silent 出口）——
  * 该动作是用户主动点的，静默等于"点了没反应"。
  *
- * DSK-05 的口径：开发模式（未打包）主进程 updater 未初始化、`checkForUpdates`
- * 静默返回，因此这里刻意不承诺"有新版本"，只说"已发起检查"；只有拿到
- * `unsupportedSentinel`（deb/rpm 等非 AppImage 安装）才改说"用包管理器升级"，
- * 否则用户永远等不到下发事件。
+ * 主进程 updater:check 的 ok:false 有两条语义：
+ *  - `development:true`：未打包模式，updater 根本没初始化 ⇒ 「开发模式不支持自更新检查」；
+ *  - `error === unsupportedSentinel` 且无 development：deb/rpm 等非 AppImage 安装 ⇒ "包管理器升级"。
+ * 两者共用 UPDATER_UNSUPPORTED_INSTALL 稳定错误码，靠 development 标记分流；
+ * 其它 error 原样透出。任何结果都有一句可见提示，不再谎称"已发起检查"。
  */
 export function planUpdateCheckText(
   r: UpdateCheckResult | undefined,
   texts: UpdateCheckTexts,
 ): string {
   if (r && r.ok === false) {
+    if (r.development === true) return texts.devUnsupported ?? UPDATER_DEV_UNSUPPORTED_TEXT;
     if (r.error === texts.unsupportedSentinel) return texts.unsupportedInstall;
     return r.error || texts.initiated;
   }

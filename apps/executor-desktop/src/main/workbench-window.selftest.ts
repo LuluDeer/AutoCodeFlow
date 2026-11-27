@@ -1,11 +1,11 @@
 /**
- * 阶段 A（ADR-044）selftest：独立工作台窗口的三条硬契约。
+ * 阶段 A（ADR-044）selftest：独立工作台窗口退役三通道后的硬契约。
  *
  *  1. preload 白名单形态 —— **从 workbench.ts 源码提取实际 ipcRenderer channel
  *     字面量集合**，与允许集做严格差集；禁用集逐项存在性否决。改源码注释没用，
  *     只有真的把 channel 加回去才会红（变异反证见回报）。 mutation-residue-ok: 说明反证判据非残留变异体
- *  2. loadURL / 导航白名单 —— 拒绝 javascript:/file:/data:/任意 host，
- *     只接受配置的中台同源 http(s) 与同源相对路径。
+ *  2. loadURL / URL 守卫白名单 —— 拒绝 javascript:/file:/data:/任意 host，
+ *     只保留配置的中台同源 http(s) 守卫；已退役的导航 invoke 不再 exposed。
  *  3. 独立 session partition + 四项 webPreferences 安全配置逐项断言，
  *     并与四页 sharedWebPreferences() 的 defaultSession 形态做差异断言。
  *
@@ -24,7 +24,6 @@ import {
   isAllowedWorkbenchUrl,
   isWorkbenchSender,
   normalizePartition,
-  resolveWorkbenchNavigation,
   resolveWorkbenchUrl,
 } from './workbench-window';
 import {
@@ -36,8 +35,34 @@ import {
 const ROOT = path.join(__dirname, '..');
 const PRELOAD_SRC = path.join(ROOT, 'src', 'preload', 'workbench.ts');
 const WINDOW_SRC = path.join(ROOT, 'src', 'main', 'workbench-window.ts');
+const IPC_SRC = path.join(ROOT, 'src', 'main', 'workbench-ipc.ts');
 const FOUR_PAGE_SRC = path.join(ROOT, 'src', 'main', 'window-manager.ts');
 const BASE = 'http://admin.example.local:3105';
+
+const EXPECTED_INVOKE = [
+  'workbench:getDesktopContext',
+  'workbench:cancelAgentAssignment',
+  'workbench:pickLocalFiles',
+  'workbench:getRecentAgentEvents',
+].sort();
+
+const EXPECTED_INVOKE_KEYS = [
+  'getDesktopContext',
+  'cancelAgentAssignment',
+  'pickLocalFiles',
+  'getRecentAgentEvents',
+].sort();
+
+const EXPECTED_EXPOSED = [
+  ...EXPECTED_INVOKE,
+  'workbench:agentEvent', // ipcRenderer.on 订阅（单向推送）
+].sort();
+
+const RETIRED = [
+  'workbench:getUrl',
+  'workbench:navigate',
+  'workbench:close',
+] as const;
 
 function check(label: string, fn: () => void): void {
   fn();
@@ -51,18 +76,10 @@ function check(label: string, fn: () => void): void {
   const re = /\bipcRenderer\.(?:invoke|invokeSync|send|sendSync|on|once|postMessage)\(\s*['"]([^'"]+)['"]/g;
   for (const match of source.matchAll(re)) exposed.add(match[1]);
 
-  const expected = [
-    'workbench:getUrl', 'workbench:navigate', 'workbench:close',
-    'workbench:getDesktopContext', 'workbench:cancelAgentAssignment',
-    'workbench:pickLocalFiles', 'workbench:getRecentAgentEvents',
-    'workbench:agentEvent', // ipcRenderer.on 订阅（单向推送）
-  ];
-  check('workbench preload expose 的 channel 集合严格等于三项白名单', () => {
-    assert.deepStrictEqual([...exposed].sort(), [...expected].sort());
-    assert.deepStrictEqual([...WORKBENCH_CHANNEL_VALUES].sort(), [...expected].sort());
-    assert.strictEqual(WORKBENCH_CHANNELS.getUrl, 'workbench:getUrl');
-    assert.strictEqual(WORKBENCH_CHANNELS.navigate, 'workbench:navigate');
-    assert.strictEqual(WORKBENCH_CHANNELS.close, 'workbench:close');
+  check('workbench preload expose 的 channel 集合严格等于四 invoke + 一 event', () => {
+    assert.deepStrictEqual([...exposed].sort(), EXPECTED_EXPOSED);
+    assert.deepStrictEqual([...WORKBENCH_CHANNEL_VALUES].sort(), EXPECTED_INVOKE);
+    assert.deepStrictEqual(Object.keys(WORKBENCH_CHANNELS).sort(), EXPECTED_INVOKE_KEYS);
     assert.strictEqual(WORKBENCH_CHANNELS.getDesktopContext, 'workbench:getDesktopContext');
     assert.strictEqual(WORKBENCH_CHANNELS.cancelAgentAssignment, 'workbench:cancelAgentAssignment');
     assert.strictEqual(WORKBENCH_CHANNELS.pickLocalFiles, 'workbench:pickLocalFiles');
@@ -70,6 +87,16 @@ function check(label: string, fn: () => void): void {
     // 新增能力只暴露安全面：路径/凭据/执行器子进程 channel 仍一个都没有。
     assert.ok(!source.includes('filePath'), '预加载不得过桥文件路径');
     assert.ok(source.includes("exposeInMainWorld('workbenchApi'"), '必须挂在 workbenchApi 命名空间');
+  });
+
+  check('退役三通道在 preload / channel 源 / ipc handler 源中零出现', () => {
+    const windowSource = fs.readFileSync(WINDOW_SRC, 'utf8');
+    const ipcSource = fs.readFileSync(IPC_SRC, 'utf8');
+    for (const channel of RETIRED) {
+      assert.ok(!source.includes(channel), `workbench preload 仍含退役 channel: ${channel}`);
+      assert.ok(!windowSource.includes(channel), `WORKBENCH_CHANNELS 源仍含退役 channel: ${channel}`);
+      assert.ok(!ipcSource.includes(channel), `workbench-ipc handler 源仍含退役 channel: ${channel}`);
+    }
   });
 
   // 禁用集：出现一次就红（含注释里出现也算——src 里刻意不写这些字面量）。
@@ -89,7 +116,7 @@ function check(label: string, fn: () => void): void {
   });
 }
 
-// ── 2. loadURL / 导航白名单 ────────────────────────────────────────────
+// ── 2. loadURL / URL 守卫白名单 ─────────────────────────────────────────
 {
   check('resolveWorkbenchUrl 拼接 /workbench，且不硬编码 localhost', () => {
     assert.strictEqual(resolveWorkbenchUrl(BASE), `${BASE}/workbench`);
@@ -109,7 +136,7 @@ function check(label: string, fn: () => void): void {
     }
   });
 
-  check('导航白名单只放中台同源 http(s)，拒绝 javascript:/file:/任意 host', () => {
+  check('URL 守卫只放中台同源 http(s)，拒绝 javascript:/file:/任意 host', () => {
     const workbenchUrl = resolveWorkbenchUrl(BASE);
     for (const ok of [`${BASE}/login`, `${BASE}/artifacts?x=1`, workbenchUrl]) {
       assert.ok(isAllowedWorkbenchUrl(ok, workbenchUrl), `同源 URL 必须放行: ${ok}`);
@@ -120,19 +147,6 @@ function check(label: string, fn: () => void): void {
       '//evil.example.org/', '', null, undefined, 42,
     ]) {
       assert.ok(!isAllowedWorkbenchUrl(bad, workbenchUrl), `非白名单 URL 必须拒绝: ${JSON.stringify(bad)}`);
-    }
-  });
-
-  check('workbench:navigate 只接受同源相对路径（防开放重定向）', () => {
-    const workbenchUrl = resolveWorkbenchUrl(BASE);
-    assert.strictEqual(resolveWorkbenchNavigation('/inbox', workbenchUrl), `${BASE}/inbox`);
-    assert.strictEqual(resolveWorkbenchNavigation('/workbench?goal=1', workbenchUrl), `${BASE}/workbench?goal=1`);
-    for (const bad of [
-      'https://evil.example.org/', '//evil.example.org/', 'javascript:alert(1)',
-      'file:///etc/passwd', '', 'inbox', null, 42,
-    ]) {
-      assert.throws(() => resolveWorkbenchNavigation(bad, workbenchUrl), /工作台导航/,
-        `非法导航参数必须拒绝: ${JSON.stringify(bad)}`);
     }
   });
 }
@@ -191,7 +205,7 @@ function check(label: string, fn: () => void): void {
       on: () => undefined,
     } as RawIpcMainLike;
     const guarded = createGuardedIpcMain(raw, { policy: () => ({ devServerUrl: workbenchUrl }) });
-    guarded.handle('workbench:getUrl', () => 'ok');
+    guarded.handle(WORKBENCH_CHANNELS.getDesktopContext, () => 'ok');
     assert.ok(registered !== null);
     const handler = registered as (event: unknown, ...args: unknown[]) => unknown;
     assert.strictEqual(

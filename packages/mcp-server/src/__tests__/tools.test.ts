@@ -473,12 +473,13 @@ describe("MCP-DTO-ALIGN: update_task happy path 透传（zod 校验值原样到 
 });
 
 describe("MCP-DTO-ALIGN: 显式 null 透传（可空列的清除/重置语义照抄 DTO）", () => {
+  // blockStrategy / misfireStrategy 是 NOT NULL 枚举列，显式 null 必须拒绝；
+  // 见 null-enum-semantics.test.ts，不在这份「可空列」清单里。
   const T = "11111111-1111-4111-8111-111111111111";
   const NULLABLE_FIELDS = [
     "secrets", "maintenanceWindows", "timeoutAction", "timeoutWarnRatio",
     "estimatedDurationSec", "requirements", "dependencies",
-    "blockStrategy", "misfireStrategy", "executorAffinityTags",
-    "executorAntiAffinityTags", "deploymentPolicy", "expectedUpdatedAt",
+    "executorAffinityTags", "executorAntiAffinityTags", "deploymentPolicy", "expectedUpdatedAt",
   ] as const;
 
   it.each(NULLABLE_FIELDS)("%s:null 原样上送（不被 undefined 过滤吃掉）", async (field) => {

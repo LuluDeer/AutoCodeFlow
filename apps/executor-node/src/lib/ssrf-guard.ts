@@ -10,6 +10,13 @@ import { ssrfDnsLookup } from '../git-repo-dns-resolver';
  * - `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（`1` 亦兼容）显式逃生（容器内联调用 admin-api 本机
  *   等合法内网场景需显式选择）；
  * - redirect 链递归调用 downloadFile 时也经过同一闸。
+ *
+ * runtime-parity：本模块是协议 `networkPolicy` 的**运行时消费点**——类别表
+ * （`ALLOWED_UNDER_PRIVATE`）与恒拒表（`METADATA_ADDRESSES`）从
+ * `packages/executor-protocol/protocol.json` 的生成物读取，语法闸
+ * `assertSafeHttpUrl` 与 DNS 闸 `assertSafeDnsResolution[WithTimeout]` 同判据；
+ * execute.ts 的 gitRepo / packageUrl accept 期闸门复用本模块，与 python
+ * `network_policy.py` 对同一 URL 给出同一结论（解析失败 fail-closed）。
  */
 
 import { config } from '../config';

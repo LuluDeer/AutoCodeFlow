@@ -1,5 +1,8 @@
 /// <reference types="vite/client" />
 
+import type { TabSwitchDetail } from './tab-switch';
+import type { ThemeMode } from './theme/theme-mode';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // renderer 侧的 `window.electronAPI` **全局类型契约**（R196）
 //
@@ -48,9 +51,23 @@
  * 经 `ipcRenderer.invoke` 回到 renderer ⇒ 精确类型**在 main 端才是权威**（`ipc-handlers.ts` 的
  * `ipcMain.handle(...)`）。在 renderer 侧再抄一份**必然漂移**（这正是本轮要消灭的那种重复契约），
  * 且 `invoke` 的静态返回类型本就是 `Promise<any>`。
+ *
  * ⇒ renderer 侧调用后**自己**收窄（各页面已有自己的 `LogReadResultLike` 之类的局部形状）。
  */
-interface ElectronApiBridge {
+
+/** 托盘/深链切 tab 的跨端 payload；TabSwitchDetail 只在 tab-switch.ts 定义一次。 */
+export type SwitchTabPayload = string | (Pick<TabSwitchDetail, 'historyExecutionId'> & { tab: string });
+
+/** 编译期契约断言：payload 同时接受纯字符串与带 historyExecutionId 的对象。 */
+type Assert<T extends true> = T;
+type _SwitchTabAcceptsString = Assert<string extends SwitchTabPayload ? true : false>;
+type _SwitchTabAcceptsDetail = Assert<
+  { tab: string; historyExecutionId?: string } extends SwitchTabPayload ? true : false
+>;
+type _BootThemeSnapshot = Assert<
+  ElectronApiBridge['bootTheme'] extends ThemeMode | null ? true : false
+>;
+export interface ElectronApiBridge {
   // ── 配置 ──
   getConfig: () => Promise<Record<string, unknown>>;
   saveConfig: (cfg: Record<string, unknown>) => Promise<any>;
@@ -95,6 +112,8 @@ interface ElectronApiBridge {
   applyTheme: (theme: 'light' | 'dark') => Promise<{ ok: boolean; theme: 'light' | 'dark' }>;
   // ⑤ 主题后端镜像：三态模式落盘 config.theme。
   saveTheme: (mode: 'light' | 'dark' | 'system') => Promise<{ ok: boolean; theme: 'light' | 'dark' | 'system' }>;
+  // P3 首帧防闪：preload 在页面脚本前同步取到的 config.theme 快照；桥缺失/非法值为 null。
+  bootTheme: ThemeMode | null;
 
   // ── 历史 ──
   getHistory: () => Promise<any>;
@@ -124,7 +143,9 @@ interface ElectronApiBridge {
   writeClipboardText: (text: string) => Promise<any>;
   onLogLine: (cb: (line: string) => void) => () => void;
   onStatusChange: (cb: (status: string) => void) => () => void;
-  onSwitchTab: (cb: (tab: string) => void) => () => void;
+  // 托盘/深链切 tab：旧实现只送 string，T1/T3 深链送带 historyExecutionId 的对象。
+  // 复用 tab-switch.ts 的 TabSwitchDetail，不复制第二份字段定义。
+  onSwitchTab: (cb: (payload: SwitchTabPayload) => void) => () => void;
 
   // ── 更新 ──
   checkForUpdate: () => Promise<any>;

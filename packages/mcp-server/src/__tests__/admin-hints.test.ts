@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { EXPECTED_TOOL_COUNT } from "../../../../scripts/lib/mcp-tool-sources.mjs";
 
 /**
  * SDK-DX-08（2026-10-29 SDK/DX 审计）：**ADMIN-only 工具的 description 必须
@@ -308,14 +309,14 @@ function collectControllerFiles(dir: string, out: string[] = []): string[] {
 }
 
 /**
- * 工具总数（R6 拆分时的实测值：`tools.ts` 49 + `tools/*.ts` 7）。
+ * 工具总数取**单一事实源**：`scripts/lib/mcp-tool-sources.mjs` 的
+ * `EXPECTED_TOOL_COUNT`（当前 63 = 源码 `server.tool(` 的准确出现次数）。
  *
  * 为什么要钉**准确值**而不只是下界：`tools.ts` 拆完仍剩 49 个工具，若取数面漏了
  * `tools/*.ts`，`> 40` 的防空转断言**照样绿**——少 7 个工具无人发现。钉总数后，
  * 「从任一新文件里删掉一个工具」必然红（这也正是本 spec 的变异验证方式）。
- * 新增/删除工具时这个数字要一起改：那是本守卫唯一的人工签字点。
+ * 新增/删除工具时只改权威源常量（守卫与文档同步），本 spec 不再留第二份手抄值。
  */
-const EXPECTED_TOOL_COUNT = 57;
 
 describe("ADMIN-only MCP 工具的描述必须带 `ADMIN only.`（SDK-DX-08）", () => {
   const tools = readToolsFromSources();

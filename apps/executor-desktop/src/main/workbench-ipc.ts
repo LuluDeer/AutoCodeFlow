@@ -19,9 +19,7 @@
 import { ipcMain as electronIpcMain } from 'electron';
 import { createGuardedIpcMain } from './ipc-sender-guard';
 import {
-  getWorkbenchWindow,
   isWorkbenchSender,
-  resolveWorkbenchNavigation,
   resolveWorkbenchUrl,
   WORKBENCH_CHANNELS,
   type WorkbenchLog,
@@ -56,29 +54,6 @@ export function registerWorkbenchIpcHandlers(deps: WorkbenchIpcDeps): void {
       }
     },
     log: deps.log,
-  });
-
-  workbenchIpc.handle(WORKBENCH_CHANNELS.getUrl, (event) => {
-    if (!isWorkbenchSender(event.sender)) throw new Error('workbench:getUrl: sender not allowed');
-    return resolveWorkbenchUrl(deps.getAdminApiUrl());
-  });
-
-  workbenchIpc.handle(WORKBENCH_CHANNELS.navigate, (event, target: unknown) => {
-    if (!isWorkbenchSender(event.sender)) throw new Error('workbench:navigate: sender not allowed');
-    const base = resolveWorkbenchUrl(deps.getAdminApiUrl());
-    const nextUrl = resolveWorkbenchNavigation(target, base);
-    const win = getWorkbenchWindow();
-    if (!win || win.isDestroyed() || win.webContents.id !== event.sender.id) {
-      throw new Error('workbench:navigate: sender is not the workbench window');
-    }
-    void win.loadURL(nextUrl);
-    return { ok: true, url: nextUrl };
-  });
-
-  workbenchIpc.handle(WORKBENCH_CHANNELS.close, (event) => {
-    if (!isWorkbenchSender(event.sender)) throw new Error('workbench:close: sender not allowed');
-    getWorkbenchWindow()?.close();
-    return { ok: true };
   });
 
   workbenchIpc.handle(WORKBENCH_CHANNELS.getDesktopContext, (event) => {

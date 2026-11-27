@@ -4,10 +4,10 @@
  * ## 定位
  *
  * 本文件是**零依赖纯函数**（不 import 任何包、不碰 IO），只实现检索判据；
- * 工具的**注册**在 `tools.ts`——第 52 轮已把 `tool_search` 注册为第 57 个
+ * 工具的**注册**在 `tools.ts`——第 52 轮已把 `tool_search` 注册为第 63 个
  * （`readOnlyHint: true`），handler 读 `server._registeredTools` 真实工具表后调
- * `searchTools`。运行时工具面基线为 **57**（`admin-hints.test.ts` 的
- * `EXPECTED_TOOL_COUNT = 57`）；本文件自身不注册工具，但注册边界与基线已落地，
+ * `searchTools`。运行时工具面基线为 **63**（`scripts/lib/mcp-tool-sources.mjs` 的
+ * `EXPECTED_TOOL_COUNT = 63`）；本文件自身不注册工具，但注册边界与基线已落地，
  * 改动工具数须同步该基线。SDK 内部字段 `_registeredTools` 是已知耦合点，
  * SDK 升级需复核。
  *

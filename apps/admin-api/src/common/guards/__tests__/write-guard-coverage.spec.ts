@@ -88,6 +88,14 @@ const VALID_SCOPES: ReadonlySet<WriteScope> = new Set<WriteScope>([
   "public",
 ]);
 
+/**
+ * 「@WriteGuard 与 @Roles 不共存」的**显式例外登记表**（key = Controller.method）。
+ *
+ * 判据不放宽：共存仍会被本 spec 报出来，未登记的新共存一律判红；本表只登记
+ * 已复核、语义不冲突的存量案例，每条必须写明「两种声明各管什么、谁在真正授权」。
+ */
+const ROLES_WITH_WRITE_GUARD_OPT_OUT: Readonly<Record<string, string>> = {};
+
 interface WriteEndpoint {
   /** 稳定标识：Controller.method */
   id: string;
@@ -273,7 +281,25 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
         (e) => e.writeGuard !== undefined && e.roles && e.roles.length > 0,
       )
       .map((e) => `${e.id}: 同时有 @Roles 与 @WriteGuard`);
-    expect(both).toEqual([]);
+
+    // 已复核的存量例外必须逐条登记在 ROLES_WITH_WRITE_GUARD_OPT_OUT 并写明理由；
+    // 任何**新增**的共存（未登记）照样判红，不能靠改这条断言放行。
+    const unregistered = both.filter(
+      (line) =>
+        ROLES_WITH_WRITE_GUARD_OPT_OUT[line.split(":")[0]] === undefined,
+    );
+    expect(unregistered).toEqual([]);
+
+    // 双向对账：登记表里的 id 必须真的仍是共存（源码修好后忘记删表也要红）。
+    const registered = both
+      .map((line) => line.split(":")[0])
+      .sort();
+    expect(registered).toEqual(
+      Object.keys(ROLES_WITH_WRITE_GUARD_OPT_OUT).sort(),
+    );
+    for (const reason of Object.values(ROLES_WITH_WRITE_GUARD_OPT_OUT)) {
+      expect(reason.trim().length).toBeGreaterThan(12);
+    }
   });
 
   it("token/public 类声明必须集中在可审计的窄面上（回归守卫：这类端点数量与清单钉死）", () => {
@@ -433,6 +459,11 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
         "TaskController.webhookDisable",
         "TaskController.webhookEnable",
         "TaskController.webhookRotate",
+        // R203-A1：DAG 根节点触发与 trigger 同一执行面口径——service.trigger
+        // 内 assertCanOperate 拒 viewer 并落 task:operate 证据；控制器已收口为
+        // 仅 JwtAuthGuard + handler @WriteGuard(project-role)，无角色声明共存。
+        // 属主收紧随 ADR-013 拍板。
+        "TaskDagChainController.triggerRoots",
       ].sort(),
     );
   });

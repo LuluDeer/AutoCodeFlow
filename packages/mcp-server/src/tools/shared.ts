@@ -274,6 +274,11 @@ export const EXECUTION_STATUS = z.enum([
   "cancelled",
 ]);
 export const TASK_TRIGGER_TYPE = z.enum(["cron", "fixed_rate", "api", "manual"]);
+/**
+ * fixed_rate 周期上限（秒）：与 admin-api `create-task.dto.ts` 的同一常量对齐。
+ * 双重约束：int4 列上界与 Node setInterval / Redis PEXPIRE 的 int32 毫秒回绕。
+ */
+export const TASK_FIXED_RATE_MAX_SECONDS = 2_147_483;
 export const TASK_RUNTIME = z.enum(["python", "node", "shell"]);
 export const EXECUTE_MODE = z.enum(["single", "broadcast"]);
 export const AGENT_SESSION_KIND = z.enum([

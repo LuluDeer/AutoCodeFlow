@@ -144,18 +144,15 @@ const UPDATE_TASK_SCHEMA = {
         "Dispatch mode: single | broadcast. broadcast fans out to all online executors and cannot be combined with executorId.",
       ),
       // A4（第三轮审计·中）/ N-14（create-task.dto.ts:260-279 语义）。
-      blockStrategy: BLOCK_STRATEGY
-        .nullable()
-        .optional()
-        .describe(
-          'Re-trigger policy while a same-params run is active: serial (queue, default) | discard (skip this trigger) | cover_early (cancel the running execution and rerun). null = legacy rows default to serial.',
-        ),
-      misfireStrategy: MISFIRE_STRATEGY
-        .nullable()
-        .optional()
-        .describe(
-          "Misfire policy when the scheduler was down at fire time: ignore (skip, default) | fire_once (fire once on recovery).",
-        ),
+      // NOT NULL enum columns: explicit null is not a reset token here. Only
+      // omission keeps the stored value (create path falls back to the column
+      // default: serial / ignore).
+      blockStrategy: BLOCK_STRATEGY.optional().describe(
+        'Re-trigger policy while a same-params run is active: serial (queue, default) | discard (skip this trigger) | cover_early (cancel the running execution and rerun). Omit to keep the current value; explicit null is disallowed because the column is NOT NULL.',
+      ),
+      misfireStrategy: MISFIRE_STRATEGY.optional().describe(
+        "Misfire policy when the scheduler was down at fire time: ignore (skip, default) | fire_once (fire once on recovery). Omit to keep the current value; explicit null is disallowed because the column is NOT NULL.",
+      ),
       // CORE-01：数字 1-4 或大写 label（@IsEnum 的经验接受面，见 TASK_PRIORITY 注释）。
       priority: TASK_PRIORITY.optional().describe(
         "Task priority: 1 (LOW) | 2 (NORMAL, default) | 3 (HIGH) | 4 (CRITICAL) — integers, or the uppercase labels LOW/NORMAL/HIGH/CRITICAL. Lowercase labels and numeric strings are rejected (backend @IsEnum).",
@@ -311,14 +308,30 @@ export function registerTaskUpdateTools(server: McpServer, call: ApiCall): void 
   // ---- update_task ---------------------------------------------------------
   server.tool(
     "update_task",
-    'Update an existing task via PATCH (only the fields you pass are changed; explicit null clears nullable fields). Supports executor pinning: set executorId to pin the task to one executor (fails fast if it is offline), or pass executorId: null to clear the pin. executorId is mutually exclusive with executeMode="broadcast" — the backend rejects that combination with 400. Also supports task-level secrets (per-key merge; leaf "******" keeps the stored value, null deletes the key), maintenance windows, priority (1-4), timeout policy (timeoutSeconds/timeoutAction/timeoutWarnRatio), dependency requirements, upstream task dependencies (map display-name → upstream task id), block/misfire strategies, executor affinity tags, deployment policy, and expectedUpdatedAt optimistic locking (409 on conflict).',
+    'Update an existing task via PATCH (only the fields you pass are changed; explicit null clears nullable fields — except blockStrategy/misfireStrategy, which are NOT NULL enums and disallow null; omit them to keep the current value, backend defaults on creation are serial / ignore). Supports executor pinning: set executorId to pin the task to one executor (fails fast if it is offline), or pass executorId: null to clear the pin. executorId is mutually exclusive with executeMode="broadcast" — the backend rejects that combination with 400. Also supports task-level secrets (per-key merge; leaf "******" keeps the stored value, null deletes the key), maintenance windows, priority (1-4), timeout policy (timeoutSeconds/timeoutAction/timeoutWarnRatio), dependency requirements, upstream task dependencies (map display-name → upstream task id), block/misfire strategies, executor affinity tags, deployment policy, and expectedUpdatedAt optimistic locking (409 on conflict).',
     UPDATE_TASK_SCHEMA,
     { destructiveHint: true, idempotentHint: true },
     async ({ taskId, ...fields }) => {
+      const rawFields = fields as Record<string, unknown>;
+      // Same NOT NULL enum guard as create_task: SDK schema rejects null at
+      // the boundary, this keeps direct handler callers from writing null.
+      const nullEnumFields = ["blockStrategy", "misfireStrategy"].filter(
+        (field) => rawFields[field] === null,
+      );
+      if (nullEnumFields.length > 0) {
+        return JSON_ERROR({
+          error: "NULL_NOT_ALLOWED",
+          errorCode: "NULL_NOT_ALLOWED",
+          fields: nullEnumFields,
+          message:
+            `update_task disallows explicit null for NOT NULL enum columns: ${nullEnumFields.join(", ")}. ` +
+            "Omit the field to keep its current value (backend defaults on creation: blockStrategy=serial, misfireStrategy=ignore).",
+        });
+      }
       // Drop undefined fields so PATCH only touches what the caller supplied;
       // keep explicit nulls (e.g. executorId: null) so a pin can be cleared.
       const body = Object.fromEntries(
-        Object.entries(fields).filter(([, v]) => v !== undefined),
+        Object.entries(rawFields).filter(([, v]) => v !== undefined),
       );
       // 空 patch = 必然空转（后端对 `{}` 返回 200 并落一条 task.update 审计）。
       // 与其让 agent 以为改完了，不如明确失败并列出可写字段。

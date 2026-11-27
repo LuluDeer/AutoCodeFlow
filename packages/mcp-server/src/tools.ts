@@ -11,7 +11,7 @@
  *
  * 已搬出：audit(1) / project(3) / executor(3) / task(21) / deployment(9)。
  * 仍在本文件：application(6) / mutex(4) / observability(3) / sop(6)。
- * 搬迁纪律：`server.tool` 调用块**整块搬移、逐字节不改**（56 个工具的
+ * 搬迁纪律：`server.tool` 调用块**整块搬移、逐字节不改**（63 个工具的
  * name/description/schema 是对外契约，`tool-schema-fidelity.test.ts` 守着）。
  *
  * ⚠️ **application 组已评估、结论是「不拆」** —— 理由写在 `registerApplicationTools`
@@ -56,7 +56,7 @@ export type { ApiCall, ToolErrorStructuredContent } from "./tools/shared";
 /**
  * R31-E2 注册边界 + N27 按需检索入口。
  *
- * 真实 MCP server 在这里拿到 `tool_search`；既有 register*Tools 的 56 工具面
+ * 真实 MCP server 在这里拿到 `tool_search`；既有 register*Tools 的 63 工具面
  * 不动（tools.test.ts 的 full-surface 断言仍按原集合校验）。handler 读的是
  * SDK 的 `_registeredTools`，即运行时真实工具表，不是测试夹具。
  */
@@ -70,7 +70,7 @@ export function withStructuredToolErrors(server: McpServer): McpServer {
   // ---- tool_search ----------------------------------------------------------
   server.tool(
     "tool_search",
-    "Search the registered AutoCodeFlow tools on demand by keyword/tag; returns a ranked, bounded list instead of loading all 56 tools into the model context.",
+    "Search the registered AutoCodeFlow tools on demand by keyword/tag; returns a ranked, bounded list instead of loading all 63 tools into the model context.",
     {
       keyword: z.string().optional().describe("Keyword matched against tool names and descriptions"),
       tags: z.array(z.string()).optional().describe("Optional tags; any matching tag keeps a tool"),
@@ -206,12 +206,12 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
  * **假设现在硬拆，收益是什么**（我算过，结论是「只有口径收益」）：最长函数 194 → ~110、
  * `tools.ts` 非注释 726 → ~572 ⇒ 掉到 600 以下 ⇒ 反而**强制删掉基线条目**并把
  * `$ratchet.maxEntries` 从 98 下调到 97。**没有任何一条判据因此变强**（194 本来就在
- * 300 以内），而 56 个工具块 / `EXPECTED_TOOL_COUNT` / 文档分域计数 / `admin-hints`
+ * 300 以内），而 63 个工具块 / `EXPECTED_TOOL_COUNT` / 文档分域计数 / `admin-hints`
  * 的「每个文件 ≥1 个 `server.tool` 注册」全是新增的搬迁风险面。
  *
  * ⚠️ 写本段头注时踩过的坑：注释里**不能出现 `server.tool` 的完整调用写法**
  * （工具名 + 左括号）—— `scripts/lib/mcp-tool-sources.mjs` 的扫描面自检按它计
- * 56 个工具，注释里多写两次就报「出现 58 次，期望 56 次」⇒ `check-interface-maps`
+ * 63 个工具，注释里多写两次就报「出现 65 次，期望 63 次」⇒ `check-interface-maps`
  * 与 `check-consumer-routes` 直接 exit 1（实测）。要提它请写不带括号的形式。
  *
  * 若要动：先读 `docs/PLAN-CLAIMS.md` 自治优化第 8~12 轮那四条「已知未收口」，

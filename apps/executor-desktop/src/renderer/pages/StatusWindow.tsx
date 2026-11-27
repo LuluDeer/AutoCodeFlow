@@ -386,6 +386,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [agentStatus, setAgentStatus] = useState<AgentStatusSnapshot | null>(null);
   const [agentStatusError, setAgentStatusError] = useState<string | null>(null);
+  const [workbenchError, setWorkbenchError] = useState<string | null>(null);
   // 右栏「日志文件」快捷区（与全屏查看器共用 listLogFiles IPC）
   const [logFiles, setLogFiles] = useState<Array<{ label: string; path: string; date: string }>>([]);
   const [railFileError, setRailFileError] = useState<string | null>(null);

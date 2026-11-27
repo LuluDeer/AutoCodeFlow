@@ -27,9 +27,7 @@ const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
 // getConfig() 回来后的二次解析落同一态，不会再出现「亮一帧再翻暗」。
 // 边界：localStorage 仍有旧值时以它为准（和 main.tsx 同源），手改磁盘 config 不会
 // 覆盖用户本地偏好，直到配置导入流程写回 localStorage。
-const bootThemeRaw = (window as unknown as { electronAPI?: { bootTheme?: unknown } })
-  .electronAPI?.bootTheme;
-const bootMode = parseThemeMode(bootThemeRaw);
+const bootMode = parseThemeMode(window.electronAPI?.bootTheme);
 applyThemeAttribute(
   document.documentElement,
   resolveTheme(readStoredModeOrFallback(storage, bootMode), prefersDark),

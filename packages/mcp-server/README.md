@@ -23,6 +23,8 @@ The server registers **63 tools** (see `src/tools.ts` and `src/tools/`), grouped
 | `list_task_versions` | List historical configuration versions of a task (newest first) |
 | `rollback_task_version` | Roll a task back to a specific historical version snapshot |
 | `compare_task_versions` | Diff two task versions, returns changed fields with old/new values |
+| `create_task` | Create a task directly (name / triggerType / cronExpression? …) — bypasses the template path |
+| `delete_task` | Delete a task by ID (destructive) |
 
 ### Executions
 
@@ -36,6 +38,7 @@ The server registers **63 tools** (see `src/tools.ts` and `src/tools/`), grouped
 | `analyze_execution` | Trigger AI root-cause analysis on a failed execution |
 | `get_execution_stats` | Success rate, avg duration stats for a task |
 | `get_execution_timeline` | OBS-04 timeline: created → started → finished + failure triage card (reason → suggested first action) |
+| `list_artifacts` | List execution artifacts (by `executionId`, or query by `taskId` / page when omitted) |
 
 ### Scheduling
 
@@ -111,6 +114,15 @@ The server registers **63 tools** (see `src/tools.ts` and `src/tools/`), grouped
 | `agent_session_list` | Agent sessions newest first (kind/status filters; `waiting_input` = paused on a human decision) |
 | `agent_session_get` | One agent session with its reasoning steps, tool calls and child sessions |
 | `sop_clarification_reply` | Answer an escalated clarification (`answered` text reply, or `sop_amended` with amended front-matter/body the executor continues against) |
+| `send_agent_message` | Append a user message to an agent session (followup / steer) |
+| `cancel_agent_session` | Cancel a running agent session (destructive) |
+| `decide_agent_approval` | Decide an agent tool-call approval (`grant` / `deny`, optional note) |
+
+### Tool discovery
+
+| Tool | Description |
+|------|-------------|
+| `tool_search` | Search registered tools on demand by keyword / tags, returning a ranked, bounded list (default 10 / max 50) instead of loading every tool schema into the model context; read-only. Reads the live `_registeredTools` table at runtime. |
 
 ## Error messages
 
