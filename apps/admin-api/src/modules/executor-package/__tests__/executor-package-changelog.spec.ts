@@ -5,11 +5,20 @@
  */
 import { ExecutorPackageController } from "../executor-package.controller";
 
-jest.mock("fs", () => ({
-  existsSync: jest.fn(() => true),
-  mkdirSync: jest.fn(),
-  promises: { stat: jest.fn(), open: jest.fn(), readFile: jest.fn() },
-}));
+jest.mock("fs", () => {
+  const actual = jest.requireActual("fs") as typeof import("fs");
+  return {
+    ...actual,
+    existsSync: jest.fn(() => true),
+    mkdirSync: jest.fn(),
+    promises: {
+      ...actual.promises,
+      stat: jest.fn(),
+      open: jest.fn(),
+      readFile: jest.fn(),
+    },
+  };
+});
 
 const pkg = {
   id: "p-1",

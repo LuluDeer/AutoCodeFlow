@@ -47,6 +47,7 @@ import {
   resolveRoute,
   observeAndRemind,
   injectRemoteSteers,
+  bindSessionAbort,
   type RealtimePorts,
 } from "./agent-runtime-realtime.collaborator";
 import type { AgentEventStreamService } from "./agent-event-stream.service";
@@ -509,13 +510,39 @@ export class AgentRuntimeService {
     this.steerInbox = inbox;
   }
 
-  /** W1-S2 装配点：实时端口（缺席即 fail-open）。 */
+  /**
+   * W1-S2 装配点：两个端口**各自**注入（缺席即对应能力 fail-open）。
+   * 这里不再合成一个「两者都在才在场」的 RealtimePorts —— 那样缺 stream
+   * 会连带关掉 doom-loop 守卫，属于 fail-open 扩散。
+   */
   private eventStream: AgentEventStreamService | null = null;
   private doomGuard: AgentDoomLoopGuard | null = null;
   setEventStream(s: AgentEventStreamService): void { this.eventStream = s; }
   setDoomLoopGuard(g: AgentDoomLoopGuard): void { this.doomGuard = g; }
+  /** 仅 LLM 流式调用使用：它必须有 stream；guard 单独走 `this.doomGuard`。 */
   private get realtimePorts(): RealtimePorts | null {
-    return this.eventStream && this.doomGuard ? { stream: this.eventStream, guard: this.doomGuard } : null;
+    return this.eventStream ? { stream: this.eventStream } : null;
+  }
+
+  /**
+   * 跨副本 cancel 的即时刹车点（在每轮 LLM / 工具执行前调用）。
+   *
+   * `subscribeAbort` 生成的 AbortSignal 同时覆盖本地 requestAbort 与 relay
+   * abort；DB 状态复查仍是第一道闸，但那道闸只在「下一轮」生效——长 LLM 调用
+   * 或一批工具执行途中收到的 cancel 必须靠本信号当场停住，不能等下一轮重读。
+   */
+  private async stopOnAbort(
+    sessionId: string,
+    signal: AbortSignal,
+    steps: number,
+  ): Promise<RunOutcome | null> {
+    if (!signal.aborted) return null;
+    await this.sessionService
+      .finish(sessionId, "aborted", {
+        errorMessage: "已被人工中止（abort 信号在本轮被消费）",
+      })
+      .catch(() => undefined);
+    return { status: "aborted", steps };
   }
 
   /**
@@ -577,6 +604,10 @@ export class AgentRuntimeService {
 
     let messages = await this.rebuildMessages(sessionId);
 
+    // 跨副本 abort 消费：本地 requestAbort 与 relay abort 都走 subscribeAbort。
+    // 订阅必须在循环开始前挂上，dispose 在 finally 成对释放。
+    const abortBinding = bindSessionAbort(this.eventStream, sessionId);
+
     // ── 循环 ────────────────────────────────────────────────────────
     //
     // 数据审计 #3：循环体里任何未预期异常（appendStep 重试耗尽、DB 抖动、
@@ -622,6 +653,13 @@ export class AgentRuntimeService {
             steps: fresh.totalSteps,
           } as RunOutcome;
         }
+        // RT-6 的 DB 复查只覆盖「上一轮之前」的 cancel；订阅信号覆盖本轮中途。
+        const abortedAtBoundary = await this.stopOnAbort(
+          sessionId,
+          abortBinding.signal,
+          fresh.totalSteps,
+        );
+        if (abortedAtBoundary) return abortedAtBoundary;
         const usage = await this.sessionService.getUsage(fresh);
         const verdict = this.budgetService.check(fresh.budgetJson, usage);
         if (!verdict.ok) {
@@ -644,7 +682,7 @@ export class AgentRuntimeService {
         //   · 当前步序号取自本 run 的 DB 用量（usage.steps），每轮 LLM 前调一次；
         //   · provider 缺席 ⇒ 整段跳过（fail-open），主链逐字不变。
         if (this.steerInbox) {
-          const drained: { intents: readonly { content: string }[] } = this.steerInbox.drain(sessionId, usage.steps as StepBoundary);
+          const drained: { intents: readonly { content: string }[] } = await this.steerInbox.drain(sessionId, usage.steps as StepBoundary);
           for (const intent of drained.intents) messages = [...messages, { role: "user", content: intent.content }];
         }
         // W1-S2：跨副本 steer 注入（写入侧已持久化 user 步）。
@@ -900,6 +938,14 @@ export class AgentRuntimeService {
           // 「永不抛出」，但注入的实现/替身若违背契约，也不能让记账把会话弄死。
           .catch(() => null);
 
+        // cancel 可能在记账/折叠期间到达：付钱调 LLM 之前最后一道信号检查。
+        const abortedBeforeLlm = await this.stopOnAbort(
+          sessionId,
+          abortBinding.signal,
+          usage.steps,
+        );
+        if (abortedBeforeLlm) return abortedBeforeLlm;
+
         let res: Awaited<ReturnType<AiService["chatMultimodal"]>>;
         const t0 = Date.now();
         try {
@@ -990,6 +1036,14 @@ export class AgentRuntimeService {
         }
 
         const latencyMs = Date.now() - t0;
+
+        // LLM 在途期间收到 cancel：不再落 assistant step、不再执行任何工具。
+        const abortedAfterLlm = await this.stopOnAbort(
+          sessionId,
+          abortBinding.signal,
+          usage.steps + 1,
+        );
+        if (abortedAfterLlm) return abortedAfterLlm;
 
         // provider/model 优先本次响应（避免二次解析漂移），mock 缺字段才回落。
         const route = await resolveRoute(res, () => this.aiService.getActiveRoute());
@@ -1084,8 +1138,17 @@ export class AgentRuntimeService {
         // 的审计记录提前 150 天删掉。
         const tierByName = new Map(tools.map((t) => [t.name, t.tier]));
 
-        // W1-S2：整批 tool_calls 过死循环守卫（缺席 fail-open）。
-        messages = observeAndRemind(this.realtimePorts, sessionId, messages, res.toolCalls);
+        // W1-S2：整批 tool_calls 过死循环守卫。
+        // 只依赖 doomGuard：即使 stream 未装配，守卫仍执行判定（不再被 realtimePorts 连带 fail-open）。
+        messages = observeAndRemind(this.doomGuard, sessionId, messages, res.toolCalls);
+
+        // 工具执行前的 abort 检查（只读批/串行批的共同入口）。
+        const abortedBeforeTools = await this.stopOnAbort(
+          sessionId,
+          abortBinding.signal,
+          usage.steps + 1,
+        );
+        if (abortedBeforeTools) return abortedBeforeTools;
 
         // ── 工具执行（P3 接入；无 executor 时视为不可用）──
         if (!this.toolExecutor) {
@@ -1183,6 +1246,14 @@ export class AgentRuntimeService {
             continue;
           }
 
+          // 一批里的每个工具执行前都复查信号：长批次中途 cancel 立即停手。
+          const abortedBeforeTool = await this.stopOnAbort(
+            sessionId,
+            abortBinding.signal,
+            usage.steps + 1,
+          );
+          if (abortedBeforeTool) return abortedBeforeTool;
+
           const result = await this.executeToolCallGuarded(
             fresh,
             call,
@@ -1220,6 +1291,8 @@ export class AgentRuntimeService {
         })
         .catch(() => undefined);
       return { status: "failed", steps, reason: msg };
+    } finally {
+      abortBinding.dispose();
     }
   }
 

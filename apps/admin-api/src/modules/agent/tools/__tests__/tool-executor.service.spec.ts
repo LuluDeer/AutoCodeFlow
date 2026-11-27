@@ -1522,7 +1522,7 @@ describe("N3/S1-C2 · 执行体的策略指纹与会话级免审", () => {
     });
     const out = await h.svc.execute(
       session(),
-      call("stop_deployment", { deploymentId: "d-1" }),
+      call("stop_deployment", { deploymentId: "d-1", applicationId: "app-1" }),
       null,
     );
     expect(out.content).toContain("【调用被拒绝】");
@@ -1546,7 +1546,7 @@ describe("N3/S1-C2 · 执行体的策略指纹与会话级免审", () => {
     });
     const out = await h.svc.execute(
       session(),
-      call("stop_deployment", { deploymentId: "d-1" }),
+      call("stop_deployment", { deploymentId: "d-1", applicationId: "app-1" }),
       null,
     );
     expect(out.content).toContain("没有记录策略指纹");
@@ -1563,9 +1563,18 @@ describe("N3/S1-C2 · 执行体的策略指纹与会话级免审", () => {
     });
     await h.svc.execute(
       session(),
-      call("stop_deployment", { deploymentId: "d-1" }),
+      call("stop_deployment", { deploymentId: "d-1", applicationId: "app-1" }),
       null,
     );
+    // scope 事实源：stop_deployment 现以 applicationId 绑定 application scope；
+    // 闸门必须收到它，否则「按应用白名单开票」会退化成只按 deploymentId 放票。
+    expect(h.checkSpy.mock.calls[0][2]).toMatchObject({
+      deploymentId: "d-1",
+      applicationId: "app-1",
+    });
+    expect(h.checkSpy.mock.calls[0][0].scopeJson).toMatchObject({
+      unrestricted: true,
+    });
     // 键是 harness 的确定性假 buildKey 算出来的（闸门收到的同一串）
     expect(h.approvals.consume).toHaveBeenCalledWith(
       h.checkSpy.mock.calls[0][4],
@@ -1592,7 +1601,7 @@ describe("N3/S1-C2 · 执行体的策略指纹与会话级免审", () => {
     });
     const out = await h.svc.execute(
       session(),
-      call("stop_deployment", { deploymentId: "d-1" }),
+      call("stop_deployment", { deploymentId: "d-1", applicationId: "app-1" }),
       null,
     );
     expect(out.content).toContain("【调用被拒绝】");
@@ -1652,7 +1661,7 @@ describe("N3/S1-C2 · 执行体的策略指纹与会话级免审", () => {
     const h = harness({ policyConfigThrows: true });
     const out = await h.svc.execute(
       session(),
-      call("stop_deployment", { deploymentId: "d-1" }),
+      call("stop_deployment", { deploymentId: "d-1", applicationId: "app-1" }),
       null,
     );
     expect(out.content).toContain("【调用被拒绝】");
@@ -1709,11 +1718,16 @@ describe("N3/S1-C2 · 执行体的策略指纹与会话级免审", () => {
     });
     const out = await h.svc.execute(
       session(),
-      call("stop_deployment", { deploymentId: "d-1" }),
+      call("stop_deployment", { deploymentId: "d-1", applicationId: "app-1" }),
       null,
     );
     expect(out.content).not.toContain("需人工审批");
     expect(out.content).not.toContain("只放行一次");
+    // 会话级免审也不能绕过 scope：闸门仍收到本次调用的 applicationId 绑定
+    expect(h.checkSpy.mock.calls[0][2]).toMatchObject({
+      deploymentId: "d-1",
+      applicationId: "app-1",
+    });
     expect(h.api.invoke).toHaveBeenCalled();
     // 没有新申请、没有挂起会话
     expect(h.approvals.request).not.toHaveBeenCalled();
@@ -1734,7 +1748,7 @@ describe("N3/S1-C2 · 执行体的策略指纹与会话级免审", () => {
     });
     await h.svc.execute(
       session({ id: "s-OTHER" }),
-      call("stop_deployment", { deploymentId: "d-1" }),
+      call("stop_deployment", { deploymentId: "d-1", applicationId: "app-1" }),
       null,
     );
     expect(h.approvals.findActiveSessionGrant).toHaveBeenCalledWith(
@@ -1781,7 +1795,7 @@ describe("N3/S1-C2 · 执行体的策略指纹与会话级免审", () => {
     });
     const out = await h.svc.execute(
       session(),
-      call("stop_deployment", { deploymentId: "d-1" }),
+      call("stop_deployment", { deploymentId: "d-1", applicationId: "app-1" }),
       null,
     );
     expect(out.content).toContain("已被人工拒绝");

@@ -139,6 +139,8 @@ type WorkbenchSessionsWithResume = WorkbenchSessionsPort & {
   listOwn(input: {
     createdBy: string;
     createdByAlias?: string | null;
+    /** ADMIN 看全部交互式会话；USER 恒按身份过滤（服务端钉死，不信任客户端）。 */
+    isAdmin?: boolean;
     page: number;
     pageSize: number;
   }): Promise<{
@@ -152,6 +154,26 @@ type WorkbenchSessionsWithResume = WorkbenchSessionsPort & {
     total: number;
   }>;
 };
+
+/**
+ * 工作台四眼判定：与 agent 主线 `isApprovalSelfDecision` 同样认 user:<id> /
+ * user:<username> 两种建单人身份。这里内联而非值 import agent runtime——本控制器
+ * 的内存替身单测对 @nestjs/typeorm 的 ESM 装载敏感（见文件头注记）；工作台四眼是
+ * 无条件策略（任何工具都拦建单人），故不读 config。
+ */
+function isWorkbenchSelfDecision(input: {
+  createdBy: string | null | undefined;
+  username: string;
+  userId: number | string | undefined;
+}): boolean {
+  const createdBy = input.createdBy;
+  if (!createdBy) return false;
+  const numericId = Number(input.userId);
+  const byName = createdBy === `user:${input.username}`;
+  const byId =
+    Number.isFinite(numericId) && createdBy === `user:${Math.trunc(numericId)}`;
+  return byName || byId;
+}
 
 /** 极简框架替身可能没有 @Optional / @Inject；缺席时降级 no-op，手动 new 不受影响。 */
 const Optional: (...args: any[]) => any =
@@ -776,9 +798,12 @@ export class WorkbenchController {
     if (!Number.isFinite(userId)) {
       throw new AppError(ErrorCode.USER_NOT_FOUND, {});
     }
+    const isAdmin = (user as { role?: string } | undefined)?.role === UserRole.ADMIN;
     const result = await sessions.listOwn({
       createdBy: `user:${userId}`,
       createdByAlias: user?.username ? `user:${user.username}` : null,
+      // 角色由服务端 JWT 上下文决定；ADMIN 列表分支此前死代码，现在真正可达。
+      isAdmin,
       page: query.page ?? 1,
       pageSize: query.pageSize ?? 20,
     });
@@ -925,7 +950,15 @@ export class WorkbenchController {
         decidedBy: item.decidedBy ?? null,
         createdAt: item.createdAt ?? null,
         argsDigest: item.argsDigest ?? null,
-        canDecide: isAdmin && item.canDecide === true,
+        // 四眼过滤：ADMIN 若就是会话建单人，批准按钮必然 403 —— 不下发。
+        canDecide:
+          isAdmin &&
+          item.canDecide === true &&
+          !isWorkbenchSelfDecision({
+            createdBy: session.createdBy,
+            username: user?.username ?? "",
+            userId: user?.id,
+          }),
         canWithdraw: !isAdmin && item.canWithdraw === true,
         reviewUrl: isAdmin
           ? `${reviewBase}&approvalKey=${encodeURIComponent(item.approvalKey)}`

@@ -66,6 +66,8 @@ function makeHarness() {
       status: "pending",
       reason: "release gate",
       decidedBy: null,
+      canDecide: true,
+      canWithdraw: false,
       createdAt: "2026-01-01T00:00:00.000Z",
     }],
     artifacts: [{
@@ -105,6 +107,7 @@ describe("Workbench resume - own session list", () => {
     expect(listOwn).toHaveBeenCalledWith({
       createdBy: "user:42",
       createdByAlias: "user:alice",
+      isAdmin: false,
       page: 2,
       pageSize: 5,
     });
@@ -135,6 +138,18 @@ describe("Workbench resume - own session list", () => {
     });
     const errors = validateSync(dirty, { whitelist: true, forbidNonWhitelisted: true });
     expect(errors.map((e) => e.property).sort()).toEqual(["createdBy", "scope"]);
+  });
+
+  it("ADMIN 列表按角色传 isAdmin=true；前台不可自报", async () => {
+    const { controller, listOwn } = makeHarness();
+    await controller.listSessions({}, ADMIN);
+    expect(listOwn).toHaveBeenCalledWith({
+      createdBy: "user:1",
+      createdByAlias: "user:root",
+      isAdmin: true,
+      page: 1,
+      pageSize: 20,
+    });
   });
 
   it("他人会话零泄漏：列表空，详情仍按既有防枚举口径 404", async () => {
@@ -173,5 +188,17 @@ describe("Workbench resume - detail projection", () => {
 
     const own = await controller.getSession(SESSION_ID, USER);
     expect(own.approvalItems[0].reviewUrl).toBeNull();
+  });
+
+  it("四眼过滤：ADMIN 就是建单人时不下发 canDecide（否则必 403）", async () => {
+    const { controller } = makeHarness();
+    // 会话由 user:42 创建；把 ADMIN 的 id 改成 42 即「建单人本人」。
+    const selfAdmin = { id: 42, username: "alice", role: UserRole.ADMIN };
+    const detail = await controller.getSession(SESSION_ID, selfAdmin);
+    expect(detail.approvalItems[0].canDecide).toBe(false);
+
+    // 另一个 ADMIN（非建单人）仍可看到批准按钮。
+    const otherAdmin = await controller.getSession(SESSION_ID, ADMIN);
+    expect(otherAdmin.approvalItems[0].canDecide).toBe(true);
   });
 });

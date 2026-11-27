@@ -122,7 +122,8 @@ export class WorkbenchSessionController {
     if (!prompt) {
       throw new AppError(ErrorCode.VALIDATION_FAILED, { detail: "prompt 不能为空" });
     }
-    const kind = dto.kind ?? inferWorkbenchSessionKind(prompt);
+    // kind 由服务端从 prompt 推导——DTO 已不声明该字段，whitelist 会剥除/拒绝客户端自报。
+    const kind = inferWorkbenchSessionKind(prompt);
     const identity = `user:${userId}`;
     const created = await port.createSession({
       kind,
@@ -227,12 +228,32 @@ export class WorkbenchSessionController {
     if (!(WORKBENCH_MESSAGE_MODES as readonly string[]).includes(mode)) {
       throw new AppError(ErrorCode.VALIDATION_FAILED, { detail: "mode 非法" });
     }
-    await port.sendMessage({
-      sessionId: id,
-      content,
-      mode,
-      actor: `user:${Number(user?.id)}`,
-    });
+    try {
+      await port.sendMessage({
+        sessionId: id,
+        content,
+        mode,
+        actor: `user:${Number(user?.id)}`,
+      });
+    } catch (err: unknown) {
+      // 终态会话追加消息：stream agent 返回 action='rejected_terminal'，适配层
+      // 如实上抛 reason；这里必须回 ok:false（此前吞掉后回 ok:true 是假成功）。
+      // 按判别字段识别而非 instanceof：port 的门禁不要求 controller 值 import 适配器
+      // （适配器链拖着 Nest 重依赖，会撞内存替身单测的 ESM 装载）。
+      const rejected = err as {
+        action?: unknown;
+        reason?: unknown;
+      } | null;
+      if (rejected && rejected.action === "rejected_terminal") {
+        return {
+          ok: false,
+          sessionId: id,
+          action: "rejected_terminal",
+          reason: String(rejected.reason ?? "会话已处于终态，不能继续追加消息"),
+        };
+      }
+      throw err;
+    }
     return { ok: true, sessionId: id };
   }
 
@@ -287,6 +308,8 @@ export class WorkbenchSessionController {
     }
     // 四眼原则：创始人（session.createdBy）不能批准自己的待批单。
     // createdBy 在仓内有两种口径（user:<id> / user:<username>），两种都要挡。
+    // 用 AppError 而非裸 ForbiddenException：403 原型仍保持 instanceof 兼容，
+    // 同时带出 AGENT_APPROVAL_SELF_DENIED 错误码，与 agent 主线 / 适配层同口径。
     if (decision === "grant") {
       const numericId = Number(user?.id);
       const selfIdentities = [
@@ -294,17 +317,20 @@ export class WorkbenchSessionController {
         user?.username ? `user:${user.username}` : null,
       ].filter((value): value is string => value !== null);
       if (session?.createdBy && selfIdentities.includes(session.createdBy)) {
-        throw new ForbiddenException("不可批准自己发起的操作（四眼原则）");
+        throw new AppError("AGENT_APPROVAL_SELF_DENIED");
       }
     }
-    const resumed = await port.decideApproval({
+    const applied = await port.decideApproval({
       sessionId: id,
       approvalKey,
       decision,
       actor: `user:${Number(user?.id)}`,
       username: String(user?.username ?? ""),
     });
-    return { ok: true, sessionId: id, resumed };
+    // applied=false = 审批单不存在/会话不匹配/已处置：如实回 ok:false，
+    // 不再无条件 ok:true 伪造一次成功处置（区分「真的处置了」与「没处置」）。
+    // 端口布尔现在只表示「处置已落库」，不再携带 resumed 语义——不伪造 resumed。
+    return { ok: applied, sessionId: id };
   }
 
 }

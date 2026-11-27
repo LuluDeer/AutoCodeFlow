@@ -315,6 +315,18 @@ describe("TaskService (__tests__)", () => {
       // tests that need rollback semantics override transaction entirely.
       transaction: jest.fn(async (fn: any) =>
         fn({
+          // TASKCORE-TX-01：当前写路径统一从事务 manager 取仓储——
+          // runTaskCreateWrite 走 getRepository(Task/TaskVersion)，
+          // storeLogLines 走 delete/save/insert。假 manager 必须提供
+          // getRepository，且返回与本 spec 断言同一组仓储桩，否则 create
+          // 会在 `manager.getRepository is not a function` 处整体失败。
+          getRepository: jest.fn((target: unknown) => {
+            if (target === Task) return taskRepo;
+            if (target === TaskVersion) return versionRepo;
+            if (target === TaskExecution) return execRepo;
+            if (target === ExecutionLogLine) return logLineRepo;
+            return makeRepo();
+          }),
           delete: jest.fn(async (target: unknown, criteria: unknown) => {
             // ARTIFACTS-INDEX-47: 索引整替（ExecutionArtifactRow）同经事务
             // manager——委托到 artifactRepo 桩，legacy 断言口径不变。
@@ -534,10 +546,14 @@ describe("TaskService (__tests__)", () => {
       const dto = { name: "test-task" } as any;
       taskRepo.save.mockResolvedValue({ id: "1", ...dto });
       const result = await service.create(dto);
-      // NF-03: create 注入 ownerUserId（无 user 上下文 → null）
+      // NF-03: create 注入 ownerUserId（无 user 上下文 → null）；
+      // TASKCORE-STATUS-01: 服务层显式落 paused（不依赖 DB DEFAULT）；
+      // SEC-02: secrets 在持久化边界统一归一（未携带 → undefined 键）。
       expect(taskRepo.create).toHaveBeenCalledWith({
         ...dto,
         ownerUserId: null,
+        status: TaskStatus.PAUSED,
+        secrets: undefined,
       });
       expect(taskRepo.save).toHaveBeenCalled();
       expect(result).toHaveProperty("id", "1");
@@ -559,6 +575,8 @@ describe("TaskService (__tests__)", () => {
         timeout: 120,
         timezone: "Asia/Shanghai",
         ownerUserId: null,
+        status: TaskStatus.PAUSED,
+        secrets: undefined,
       });
     });
 
@@ -1057,13 +1075,18 @@ describe("TaskService (__tests__)", () => {
     });
 
     // P2-18 回归锚定：不带 lastStatus 的请求必须保持既有 findAndCount 路径
-    // （零 QueryBuilder），防止子查询分支意外接管默认路径。
-    it("P2-18 回归锚定：无 lastStatus 时仍走 findAndCount，不建任何 QB", async () => {
+    // （任务行不建 QB），防止 lastStatus 的 EXISTS 子查询分支意外接管默认路径。
+    // 注：PERF-LASTEXEC-01 新增的 lastExecution 摘要批量查询会建别名为 "e" 的
+    // execRepo QB——那是独立的列表派生投影，不是 lastStatus 的 "te"/"te2"
+    // 子查询；原断言「execRepo 零 QB」随该正式产品行为失效，改为按别名钉住
+    // 「无 lastStatus 子查询」这一原业务意图。
+    it("P2-18 回归锚定：无 lastStatus 时仍走 findAndCount，不建 lastStatus 子查询", async () => {
       taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
       const result = await service.findAll({ page: 1, pageSize: 10 });
       expect(taskRepo.findAndCount).toHaveBeenCalledTimes(1);
       expect(taskRepo.createQueryBuilder).not.toHaveBeenCalled();
-      expect(execRepo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(execRepo.createQueryBuilder).not.toHaveBeenCalledWith("te");
+      expect(execRepo.createQueryBuilder).not.toHaveBeenCalledWith("te2");
       expect(result).toHaveProperty("total", 1);
     });
 
@@ -2972,7 +2995,11 @@ describe("TaskService (__tests__)", () => {
       const result = await service.getExecutionLogs("exec-1", 0);
       expect(result.lines).toEqual(["line0", "line1"]);
       expect(result.totalLines).toBe(5);
-      expect(result.hasMore).toBe(true);
+      // LOG-CURSOR-01：hasMore 由「多取 1 行是否命中」判定；本桩固定返回
+      // 2 行且默认 limit=500，故无后续行（不再用 totalLines 减游标推断）。
+      expect(result.hasMore).toBe(false);
+      expect(result.lineNumbers).toEqual([0, 1]);
+      expect(result.nextCursor).toBe(2);
     });
 
     it("hasMore is false when all lines are returned", async () => {
@@ -3171,6 +3198,9 @@ describe("TaskService (__tests__)", () => {
         executorAddress: null, // 广播执行：库中执行器地址恒为 null
         taskId: "task-b",
         logs: "",
+        // R-06 快照口径：广播判定取**执行行快照**（isBroadcast），
+        // 不再读 task.executeMode 当前值——任务执行途中改模式不致漏冲销。
+        isBroadcast: true,
       };
       execRepo.findOne.mockResolvedValue(exec);
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
@@ -3225,6 +3255,8 @@ describe("TaskService (__tests__)", () => {
         executorAddress: null, // 广播执行：库中地址恒 null
         taskId: "task-b3",
         logs: "",
+        // R-06 快照口径：isBroadcast 落在执行行（防止任务后续改模式漏减坑）。
+        isBroadcast: true,
       };
       execRepo.findOne.mockResolvedValue(exec);
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
@@ -3294,6 +3326,8 @@ describe("TaskService (__tests__)", () => {
         executorAddress: null,
         taskId: "task-b2",
         logs: "",
+        // R-06 快照口径：一次性闸同样按执行行 isBroadcast 判定。
+        isBroadcast: true,
       };
       execRepo.findOne.mockResolvedValue(exec);
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
@@ -3412,7 +3446,12 @@ describe("TaskService (__tests__)", () => {
       expect((exec as any).failureReason).toBe(ExecutionFailureReason.TIMEOUT);
     });
 
-    it("infers package fetch failures from dependency logs", async () => {
+    // 失败归因已收敛到协议生成物（classifyFailure）：`npm install` /
+    // `pip install` 这类**依赖安装**失败现在有细粒度专属码
+    // DEPENDENCY_INSTALL_FAILED，不再落旧宽口径 PACKAGE_FETCH_FAILED
+    //（见 failure-patterns.spec.ts 的 dep-npm-install-failed 向量）。
+    // 保留「从日志文案推断出依赖/包类失败、不是 SCRIPT_ERROR」这一原意图。
+    it("infers dependency install failures from dependency logs", async () => {
       const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
       execRepo.findOne.mockResolvedValue(exec);
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
@@ -3424,7 +3463,10 @@ describe("TaskService (__tests__)", () => {
         },
       ]);
       expect((exec as any).failureReason).toBe(
-        ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+        ExecutionFailureReason.DEPENDENCY_INSTALL_FAILED,
+      );
+      expect((exec as any).failureReason).not.toBe(
+        ExecutionFailureReason.SCRIPT_ERROR,
       );
     });
 
@@ -4715,17 +4757,22 @@ describe("TaskService (__tests__)", () => {
         // execution out of the capped window); the per-dependency fallback
         // findOne must rescue the SUCCESS row so the trigger still fires.
         setupDownstream(downstream, []);
-        execRepo.findOne
-          .mockResolvedValueOnce({
-            id: "e-dep",
-            status: ExecutionStatus.RUNNING,
-            taskId: "t-upstream",
-            logs: "",
-          })
-          .mockResolvedValueOnce({
-            taskId: "t-upstream",
-            status: ExecutionStatus.SUCCESS,
-          });
+        // 按 where 形状分发而不是按调用顺序：协作者在终态写入后还会额外
+        // findOne（补写日志/依赖重放探针），顺序桩会把「依赖兜底查询」错配到
+        // 上游执行行，导致扇出静默丢失（假红）。
+        const upstreamExec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        const satisfiedDepExec = {
+          taskId: "t-upstream",
+          status: ExecutionStatus.SUCCESS,
+        };
+        execRepo.findOne.mockImplementation(async (opts?: any) =>
+          opts?.where?.id !== undefined ? upstreamExec : satisfiedDepExec,
+        );
         taskQueue.add.mockResolvedValue({});
 
         await service.handleCallback([
@@ -8059,17 +8106,22 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
     expect(logLineRepo.count).toHaveBeenCalledWith({
       where: expect.objectContaining({ executionId: "exec-1" }),
     });
-    // R284-LOGPURGE-01：响应多带 logsPurged/logsPurgedAt（有行 ⇒ false/null）。
+    // R284-LOGPURGE-01 / LOG-CURSOR-01：响应带 logsPurged/logsPurgedAt，
+    // 分页元数据改为统一 ExecutionLogPage 形状（lineNumbers + nextCursor）；
+    // hasMore 由「多取 1 行」判定（本桩只返回 1 行且 limit=100 ⇒ false），
+    // 不再由 totalLines 减法推断——这是正式 product 行为变化。
     expect(result).toEqual({
       lines: ["line0"],
+      lineNumbers: [0],
       totalLines: 5,
-      hasMore: true,
+      hasMore: false,
+      nextCursor: 1,
       logsPurged: false,
       logsPurgedAt: null,
     });
   });
 
-  it("level 参数：SQL 层下推等值过滤 + 过滤后偏移量翻页", async () => {
+  it("level 参数：SQL 层下推等值过滤 + 行号游标续页（不再用 OFFSET）", async () => {
     execRepo.findOne.mockResolvedValue({ id: "exec-1" });
     const qb = makeLogQb([{ lineNumber: 7, content: "[ERROR] boom" }]);
     logLineRepo.createQueryBuilder.mockReturnValue(qb);
@@ -8080,21 +8132,24 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
     expect(qb.andWhere).toHaveBeenCalledWith("l.level = :level", {
       level: "ERROR",
     });
-    expect(qb.andWhere).not.toHaveBeenCalledWith("l.lineNumber >= :from", {
-      from: expect.anything(),
+    // LOG-CURSOR-01：level 模式下 fromLine 仍是**行号游标**，与无过滤路径
+    // 及 S3 路径同口径；原断言要求走 skip/OFFSET 已随正式契约失效。
+    expect(qb.andWhere).toHaveBeenCalledWith("l.lineNumber >= :from", {
+      from: 2,
     });
-    // 过滤模式下 fromLine = 过滤后序列的偏移量（skip/OFFSET）
-    expect(qb.skip).toHaveBeenCalledWith(2);
+    expect(qb.skip).not.toHaveBeenCalled();
     // totalLines 按 level 过滤后计数（分页元数据描述过滤行集）
     expect(logLineRepo.count).toHaveBeenCalledWith({
       where: expect.objectContaining({ executionId: "exec-1", level: "ERROR" }),
     });
     // R284-LOGPURGE-01：响应多带 logsPurged/logsPurgedAt（有行 ⇒ false/null），
-    // 分页三字段语义不变。
+    // hasMore 由「多取 1 行」判定；nextCursor = 最后真实行号 + 1。
     expect(result).toEqual({
       lines: ["[ERROR] boom"],
+      lineNumbers: [7],
       totalLines: 9,
-      hasMore: true, // fromLine(2) + 1 < 9
+      hasMore: false,
+      nextCursor: 8,
       logsPurged: false,
       logsPurgedAt: null,
     });
@@ -8169,6 +8224,14 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
     dataSource = {
       transaction: jest.fn(async (fn: any) =>
         fn({
+          // TASKCORE-TX-01：runTaskCreateWrite 从事务 manager 取仓储。
+          getRepository: jest.fn((target: unknown) => {
+            if (target === Task) return taskRepo;
+            if (target === TaskVersion) return versionRepo;
+            if (target === TaskExecution) return execRepo;
+            if (target === ExecutionLogLine) return logLineRepo;
+            return makeRepo();
+          }),
           delete: jest.fn(async (_t: unknown, c: unknown) =>
             logLineRepo.delete(c as any),
           ),

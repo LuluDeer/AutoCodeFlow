@@ -10,6 +10,7 @@ import {
   Min,
 } from "class-validator";
 import { Type } from "class-transformer";
+import { ApprovalPhraseResponseDto } from "./approval-phrase.dto";
 
 /**
  * SSE 建连查询白名单：只允许 `ticket` 与 `fromSeq`。
@@ -71,7 +72,8 @@ export class AgentMessageResponseDto {
   sessionId: string;
 
   @ApiProperty({
-    description: "写消息后的会话状态（running=已注入 steer；pending=已重新入队）",
+    description:
+      "写消息后的会话状态（running=已注入 steer；pending=已重新入队；终态拒绝时保持原状态）",
   })
   status: string;
 
@@ -79,10 +81,32 @@ export class AgentMessageResponseDto {
   stepSeq: number;
 
   @ApiProperty({
-    description: "本次动作：steered=注入运行中会话；enqueued=重新入队 agent-jobs",
-    enum: ["steered", "enqueued"],
+    description:
+      "本次动作：steered=注入运行中会话；enqueued=重新入队 agent-jobs；rejected_terminal=会话已是终态，消息未写入、不触发续跑",
+    enum: ["steered", "enqueued", "rejected_terminal"],
   })
-  action: "steered" | "enqueued";
+  action: "steered" | "enqueued" | "rejected_terminal";
+
+  @ApiPropertyOptional({
+    description:
+      "仅 action=rejected_terminal 时出现：终态拒绝续跑的原因（可直接展示）",
+  })
+  reason?: string;
+}
+
+/**
+ * grant / deny / 短语审批三条处置端点共用的响应 DTO。
+ *
+ * 继承 `ApprovalPhraseResponseDto` 复用 ok / approval / resumed 三个字段，
+ * 只在这里补 deny 后保守自动恢复的失败原因——该字段此前只存在于 controller
+ * 的返回对象里，Swagger/OpenAPI 无声明，重导契约后前端看不到。
+ */
+export class AgentApprovalDecisionResponseDto extends ApprovalPhraseResponseDto {
+  @ApiPropertyOptional({
+    description:
+      "本次处置未自动恢复会话的原因（如会话状态不符、仍有 pending 单、重读/审批查询/入队失败）；成功恢复时省略",
+  })
+  resumeReason?: string;
 }
 
 /** POST /agent/sessions/:id/cancel 的响应。 */

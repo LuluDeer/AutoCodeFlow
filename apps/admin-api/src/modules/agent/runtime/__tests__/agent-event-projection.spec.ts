@@ -25,14 +25,15 @@
  * 投影侧只吃「事件流 + 快照行」。这样 `replayedToolResult` 里改一个标点、
  * `stepToMessages` 改一处折叠口径，这份对账都会红。
  *
- * 唯一在这里**复制**的是 `SYSTEM_PROMPT`（runtime 里是模块私有常量，本阶段
- * 不许改那个文件）：它是代码常量而不是数据，投影按纪律不复制、由调用方注入。
- * 复制错一个字 ⇒ 逐字节断言必红 ⇒ 这份 spec 本身就是那条防漂移的闸。
+ * 唯一在这里**固定**的是 `SYSTEM_PROMPT`：投影按纪律不复制、由调用方注入。
+ * 提示词已迁到按会话 kind 分派的注册表，这里直接引用它的导出事实源；
+ * 抄错一个字 ⇒ 逐字节断言必红 ⇒ 这份 spec 本身就是那条防漂移的闸。
  */
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AgentRuntimeService } from "../agent-runtime.service";
+import { DEFAULT_AGENT_SYSTEM_PROMPT } from "../agent-prompt-registry";
 // 夹具里的 `payload.body` 用**写入侧同一个函数**构造（第六阶段）：若写入侧改了
 // 信封形状，这份夹具会跟着变，对账因此不会因为「夹具抄错形状」而假绿。
 import { buildEventBody } from "../agent-session.service";
@@ -48,23 +49,12 @@ import type { MultimodalMessage } from "../../../ai/ai.service";
 type Any = Record<string, any>;
 
 /**
- * `agent-runtime.service.ts` 里的 `SYSTEM_PROMPT`（逐字复制）。
+ * 当前系统提示词的**唯一事实源**：`agent-prompt-registry.ts` 的导出常量。
  *
- * 见文件头注：复制是刻意的，且由逐字节对账当闸。
+ * 见文件头注：这里不再抄一份字面量（旧副本在提示词按 kind 分派后已过期）。
+ * 快照侧跑真实 `rebuildMessages`，投影侧注入同一份导出值，逐字节对账仍成立。
  */
-const SYSTEM_PROMPT = [
-  "你是 AutoCodeFlow 平台的中台运维 Agent。",
-  "你的职责是排查环境异常、分析执行失败、协助维护自动化应用。",
-  "",
-  "工作纪律：",
-  "1. 先观察再行动：优先用只读工具了解现状，不要凭猜测下结论。",
-  "2. 每次只做必要的事：不要为了「保险」而重复调用同一个工具。",
-  "3. 有结论就给结论：如果证据已足够，直接输出结论，不要继续调用工具。",
-  "4. 说清不确定性：证据不足时明确说明「需要什么信息才能判断」，不要编造。",
-  "5. 工具被拒是正常反馈：被拒绝时换一条路径，不要反复重试同一个调用。",
-  "",
-  "输出要求：结束时用简洁的中文给出结论与建议的操作。",
-].join("\n");
+const SYSTEM_PROMPT = DEFAULT_AGENT_SYSTEM_PROMPT;
 
 /* ── 夹具：一份「世界」= 快照表里的行 + 按第一阶段写入点会产出的事件 ── */
 
@@ -1224,26 +1214,18 @@ describe("projectSession · ⑥ 存量行（无 toolCallId）⇒ 快照能兜底
 /* ── ⑦ 对账脚本的自检必须真的被执行 ──────────────────────────────── */
 
 describe("scripts/agent-event-projection-audit.mjs · --selftest 可执行（零依赖、不连 DB）", () => {
-  it("退出码 0 且打印夹具对账结论", () => {
-    // 为什么在 spec 里跑它：本阶段不许改根 package.json，脚本无法接进 test:guards；
-    // 让它由 runtime 的 spec 带着跑，是「它的自检不会烂在角落里」的最低成本。
-    const script = join(
-      __dirname,
-      "..",
-      "..",
-      "..",
-      "..",
-      "..",
-      "..",
-      "..",
-      "scripts",
-      "agent-event-projection-audit.mjs",
-    );
-    const out = execFileSync(process.execPath, [script, "--selftest"], {
+  const root = join(__dirname, "..", "..", "..", "..", "..", "..", "..");
+  const script = join(root, "scripts", "agent-event-projection-audit.mjs");
+
+  it("脚本直接对接当前事实源，夹具自检退出码 0 且打印对账结论", () => {
+    const run = spawnSync(process.execPath, [script, "--selftest"], {
       encoding: "utf8",
       timeout: 30_000,
     });
-    expect(out).toContain("SELFTEST");
-    expect(out).toContain("一致");
+    const out = `${run.stdout ?? ""}${run.stderr ?? ""}`;
+    expect(run.status).toBe(0);
+    expect(out).toContain("SELFTEST 25/25");
+    expect(out).toContain("复刻漂移哨兵");
+    expect(out).not.toContain("✘");
   });
 });

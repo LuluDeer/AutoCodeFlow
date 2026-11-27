@@ -224,12 +224,36 @@ describe("T2-B4 第一刀 · ExecutionRead 协作者的转发契约", () => {
       join(__dirname, "..", "execution-read.collaborator.ts"),
       "utf-8",
     );
-    // Facade 侧只应出现**转发调用**，不应出现实现特征（如 findAndCount /
-    // createQueryBuilder("e") / executionListSelectMap 的调用）。
+    // Facade 的 ExecutionRead 转发方法只应保留转发体，不得残留实现特征。
+    // 注：task.service.ts 里现在还有 attachLastExecutionSummary（列表派生
+    // lastExecution）等**别的职责**的实现体，同样会 createQueryBuilder("e")
+    // ——整文件字符串搜索会把这些新实现误判为 ExecutionRead 残留。
+    // 故按**方法体范围**收敛断言，保持「实现只在协作者」这一原意图。
     expect(facadeSrc).toContain("this.executionRead.getExecutions(");
     expect(facadeSrc).toContain("this.executionRead.getExecutionReport(");
-    expect(facadeSrc).not.toContain("executionListSelectMap(this.execRepo)");
-    expect(facadeSrc).not.toContain('createQueryBuilder("e")');
+    const facadeMethodBody = (name: string): string => {
+      const start = facadeSrc.indexOf(`async ${name}(`);
+      expect(start).toBeGreaterThanOrEqual(0);
+      // 类成员体的闭合花括号固定缩进 2 格；内部块缩进更深。用它定位方法体
+      // 终点，避免参数/返回类型里的 `{}`（交叉类型、Promise<{...}>）误截断。
+      const end = facadeSrc.indexOf("\n  }", start);
+      expect(end).toBeGreaterThan(start);
+      return facadeSrc.slice(start, end + 4);
+    };
+    for (const name of [
+      "getExecutions",
+      "getAllExecutions",
+      "streamExecutionsCsv",
+      "getExecutionStats",
+      "getExecution",
+      "getExecutionReport",
+    ]) {
+      const body = facadeMethodBody(name);
+      expect(body).toContain(`this.executionRead.${name}(`);
+      expect(body).not.toContain("createQueryBuilder");
+      expect(body).not.toContain("findAndCount");
+      expect(body).not.toContain("executionListSelectMap");
+    }
     // 协作者侧才有实现
     expect(collaboratorSrc).toContain(
       "executionListSelectMap(this.deps.execRepo)",

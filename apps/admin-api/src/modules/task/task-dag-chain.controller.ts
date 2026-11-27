@@ -14,12 +14,9 @@ import {
 } from "@nestjs/swagger";
 import { randomUUID } from "node:crypto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
-import { RolesGuard } from "../../common/guards/roles.guard";
-import { Roles } from "../../common/decorators/roles.decorator";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
-import { UserRole } from "../users/entities/user.entity";
 import { TaskService } from "./task.service";
 import {
   TriggerDagRootsDto,
@@ -38,8 +35,7 @@ import {
  */
 @ApiTags("Task Management")
 @ApiBearerAuth("JWT")
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.ADMIN, UserRole.USER)
+@UseGuards(JwtAuthGuard)
 @Controller("tasks/dag")
 export class TaskDagChainController {
   constructor(private readonly taskService: TaskService) {}

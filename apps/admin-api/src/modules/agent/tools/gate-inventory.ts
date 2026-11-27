@@ -33,6 +33,14 @@ import type { AgentToolSpec } from "./tool-registry";
  * 但两条 `known-gap` **条目本身保留**——登记册要能回答「这个缺口是什么时候被发现的、
  * 怎么修的」，而不是把历史抹掉。`note` 里逐条写明修复状态。
  *
+ * **2026-11-27：全部 unbound 条目出清并对账。** 本轮把 13 条此前「声明了
+ * 却没有 register」的工具接上既有 Service（任务配置写面、部署/回滚、
+ * 应用删除、执行器死信、审计/项目/调度只读），`GATE_INVENTORY` 里
+ * `kind: "unbound"` 仍为 0 条，且 `unboundDeclaredTools(...)` 对真实 handler
+ * 表的求值必须为 `[]`（见 tools/__tests__/tool-declaration-binding.spec.ts）。
+ * 这与 2026-11-02 那两条的区别：当时只改了两条，注释里的「没有 unbound」
+ * 无人对账；现在对账点是代码，不是注释。
+ *
  * **2026-11-02：两条 `kind: "unbound"` 条目已出清**（`update_application` /
  * `cancel_deployment`）。它们的旧 note 逐字是「注册表声明了但 tool-binder 里没有
  * register —— 调用即『尚未实现』，今天不可执行」。本轮把执行体绑上（真调
@@ -92,15 +100,17 @@ export type GateExemptionKind =
   /** 受控修订：对象与 bump 固定，且走与被闸动作同一套严格校验/版本闸。 */
   | "scoped-amendment"
   /**
-   * 注册表声明了，但执行体未绑定——调用即「尚未实现」，今天不可执行。
+   * 注册表声明了，但执行体未绑定——调用即「没有绑定执行体」，今天不可执行。
    *
-   * 2026-11-02：**今天没有任何条目用这个 kind**（原有的
-   * `update_application` / `cancel_deployment` 已绑定执行体并补了
-   * `approvalRequired`，见文件头注）。保留这个类别不是僵尸代码：它是
-   * 「为什么可以暂时没有门」的一种**真实形态**——注册表先有声明、执行体
-   * 后补是常态，而这段窗口里工具对模型是可见的。将来再出现同形态的声明
-   * （声明了、未绑定、又恰好是 write 且无审批）仍应登记在这里，spec ④ 会
-   * 在绑定执行体的那一刻逼人回来重新裁定要不要门。
+   * 2026-11-27：**今天没有任何条目用这个 kind，且这不再是口头口径**——
+   * `unboundDeclaredTools(ALL_AGENT_TOOL_SPECS, api.implementedTools())`
+   * 对真实 handler 表求值必须为空（唯一的例外是 `hardDisabled` 的审批类
+   * 工具：它们在闸门处就被拦下，永远到不了 invoke）。保留这个类别不是
+   * 僵尸代码：它是「为什么可以暂时没有门」的一种**真实形态**——注册表
+   * 先有声明、执行体后补是常态，而这段窗口里工具对模型是可见的。
+   * 将来再出现同形态的声明（声明了、未绑定、又恰好是 write 且无审批）
+   * 仍应登记在这里，spec ④ 会在绑定执行体的那一刻逼人回来重新裁定
+   * 要不要门。
    */
   | "unbound"
   /** **确实没有门**的已知缺口。必须带 `ref`（登记它的候选编号/设计决策）。 */
@@ -390,4 +400,160 @@ export function formatGateInventoryAudit(a: GateInventoryAudit): string {
 /** 供测试与未来设置页（S1 §8-O3）复用的只读投影。 */
 export function gateInventoryByName(): ReadonlyMap<string, GateInventoryEntry> {
   return new Map(GATE_INVENTORY.map((e) => [e.name, e]));
+}
+
+/**
+ * 2026-11-27 集成审查回归面的定点清单：本轮新绑定的写/危险工具。
+ *
+ * 门禁规则只按「write 且无 approvalRequired」筛工具，无法发现以下三类回归：
+ * ① 有 approvalRequired 但 resourceKind=none（scope 闸直接放行）；
+ * ② 主体伪造（`{id:0, role:ADMIN}`）让 human 门形同虚设；
+ * ③ 绑定的是硬编码返回而不是真 Service 调用（看起来已绑定，实际没做事）。
+ * 这份清单把那批工具的三个维度钉成可断言数据；新增同类工具时主动加行。
+ */
+export const HARDENED_WRITE_TOOLS = [
+  "update_task",
+  "rollback_task_version",
+  "stop_deployment",
+  "upgrade_deployment",
+  "delete_application",
+] as const;
+
+/** 没有真实用户主体时不得伪造成功的工具。 */
+export const HARDENED_NO_SUBJECT_TOOLS = ["get_my_project_roles"] as const;
+
+export interface ToolHardeningAudit {
+  /** 缺 approvalRequired:true（写/危险工具没有逐工具人门）。 */
+  missingApproval: string[];
+  /** resourceKind=none 或缺 resourceIdParam（scope 闸形同虚设）。 */
+  unscoped: string[];
+  /** 声明了却没有 handler。 */
+  unbound: string[];
+  /** handler 块里找不到真 Service 调用。 */
+  noServiceCall: string[];
+  /** handler 块里出现伪造 ADMIN 主体。 */
+  forgedActor: string[];
+  /** 无主体时硬编码空集/成功，而不是显式报错。 */
+  fabricatedSuccess: string[];
+}
+
+const EMPTY_HARDENING: ToolHardeningAudit = {
+  missingApproval: [],
+  unscoped: [],
+  unbound: [],
+  noServiceCall: [],
+  forgedActor: [],
+  fabricatedSuccess: [],
+};
+
+function handlerBlock(binderSource: string, name: string): string {
+  const marker = `register("${name}"`;
+  const start = binderSource.indexOf(marker);
+  if (start < 0) return "";
+  const next = binderSource.indexOf("this.api.register(", start + marker.length);
+  return binderSource.slice(
+    start,
+    next < 0 ? Math.min(binderSource.length, start + 4000) : next,
+  );
+}
+
+/**
+ * 纯函数审计：第二个入参是真实 handler 名集合，第三个是 binder 源码全文。
+ * 与 `auditGateInventory` 分工：那边管「无门写工具登记册」，这边管
+ * 「有门工具的三条硬化不变量」，任一回归都让审计变红。
+ */
+export function auditToolHardening(
+  specs: readonly AgentToolSpec[],
+  implementedToolNames: ReadonlySet<string> | readonly string[],
+  binderSource: string,
+): ToolHardeningAudit {
+  const bound =
+    implementedToolNames instanceof Set
+      ? implementedToolNames
+      : new Set(implementedToolNames);
+  const byName = new Map(specs.map((s) => [s.name, s]));
+  const out: ToolHardeningAudit = {
+    missingApproval: [],
+    unscoped: [],
+    unbound: [],
+    noServiceCall: [],
+    forgedActor: [],
+    fabricatedSuccess: [],
+  };
+
+  for (const name of HARDENED_WRITE_TOOLS) {
+    const spec = byName.get(name);
+    if (!spec) {
+      out.unbound.push(`${name}: registry 里没有声明`);
+      continue;
+    }
+    if (!bound.has(name)) out.unbound.push(name);
+    if (spec.approvalRequired !== true) out.missingApproval.push(name);
+    if (spec.resourceKind === "none" || !spec.resourceIdParam) {
+      out.unscoped.push(name);
+    }
+    const block = handlerBlock(binderSource, name);
+    // 只认注入的领域 service，不把私有 helper（assertDeploymentApplication）
+    // 当作「真 service 调用」——否则把 stop 换成硬编码成功仍能蒙混过关。
+    if (
+      !/this\.(?:deployments|tasks|applications|executors|mutexGroups|sops|templates)\.[A-Za-z]+\(/.test(
+        block,
+      )
+    ) {
+      out.noServiceCall.push(name);
+    }
+    if (/id:\s*0[\s\S]{0,80}UserRole\.ADMIN/.test(block)) {
+      out.forgedActor.push(name);
+    }
+  }
+
+  for (const name of HARDENED_NO_SUBJECT_TOOLS) {
+    const block = handlerBlock(binderSource, name);
+    if (
+      !block.includes("this.requireActor(") ||
+      /memberships:\s*\[\]/.test(block) ||
+      /userId:\s*null/.test(block)
+    ) {
+      out.fabricatedSuccess.push(name);
+    }
+  }
+
+  return out;
+}
+
+export function isToolHardeningClean(a: ToolHardeningAudit): boolean {
+  return (Object.keys(EMPTY_HARDENING) as (keyof ToolHardeningAudit)[]).every(
+    (k) => a[k].length === 0,
+  );
+}
+
+export function formatToolHardeningAudit(a: ToolHardeningAudit): string {
+  return (Object.keys(EMPTY_HARDENING) as (keyof ToolHardeningAudit)[])
+    .filter((k) => a[k].length > 0)
+    .map((k) => `${k}: ${a[k].join(", ")}`)
+    .join("\n");
+}
+
+/**
+ * 「声明面 vs 执行面」的单点判据：注册表里可见、却没有 handler 的工具名。
+ *
+ * 为什么放在本文件：`kind: "unbound"` 的理由是「今天不可执行」，而这件事
+ * 只能由**真实 handler 表**回答。过去这句话只写在注释里，binder 漏绑时
+ * 没有任何信号；现在 `GATE_INVENTORY` 里没有 unbound 条目这件事，必须与
+ * `AgentApiClient.implementedTools()` 对账成立。
+ *
+ * `hardDisabled` 的审批类工具刻意排除：闸门在 invoke 之前就拦下它们，
+ * 不绑定执行体是设计决定而不是「看得见却调不动」的漂移。
+ */
+export function unboundDeclaredTools(
+  specs: readonly AgentToolSpec[],
+  implementedToolNames: ReadonlySet<string> | readonly string[],
+): string[] {
+  const bound =
+    implementedToolNames instanceof Set
+      ? implementedToolNames
+      : new Set(implementedToolNames);
+  return specs
+    .filter((s) => s.hardDisabled !== true && !bound.has(s.name))
+    .map((s) => s.name);
 }

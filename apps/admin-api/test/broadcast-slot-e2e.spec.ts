@@ -8,7 +8,57 @@
  *  - 任务在途改成 single 后，回调仍按执行行的 broadcast 快照释放槽位。
  */
 process.env.SELFTEST_SKIP_ENV_FILE = "1";
-process.env.DB_PASSWORD ||= "test-db-password";
+
+// 与 scripts/verify-hardening-realstack.sh 同一夹具口径：连接参数优先取调用方
+// 已注入的 env，其次取仓库根 .env（由该脚本的 read_env 读取），最后才用夹具默认值。
+// SELFTEST_SKIP_ENV_FILE=1 只禁止 AppModule 自己加载 .env；这里显式读取连接字段，
+// 避免把进程推回 configuration.ts 的 postgres/postgres 死默认值。
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { readFileSync } = require("node:fs") as typeof import("node:fs");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { resolve } = require("node:path") as typeof import("node:path");
+
+const FIXTURE_ENV_FILE = resolve(__dirname, "../../../.env");
+function fixtureEnvValue(key: string): string | undefined {
+  const injected = process.env[key];
+  // setup-env-file.ts 只为满足 Joi 放了一个占位 DB_PASSWORD；真栈连接的口令
+  // 必须来自调用方显式注入或仓库夹具 .env，不能把这个占位值当成真实凭据。
+  const placeholder = key === "DB_PASSWORD" ? "test-db-password" : undefined;
+  if (injected && injected !== placeholder) return injected;
+  try {
+    const text = readFileSync(FIXTURE_ENV_FILE, "utf8");
+    const match = new RegExp(`^[ \\t]*${key}[ \\t]*=[ \\t]*(.*)$`, "m").exec(
+      text,
+    );
+    if (!match) return undefined;
+    const raw = match[1].trim();
+    const quoted = /^(['"])(.*)\1$/.exec(raw);
+    return (quoted ? quoted[2] : raw) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+function applyFixtureEnv(key: string, fallback?: string): void {
+  const value = fixtureEnvValue(key) ?? fallback;
+  const stalePlaceholder =
+    key === "DB_PASSWORD" && process.env[key] === "test-db-password";
+  if (value !== undefined && (!process.env[key] || stalePlaceholder)) {
+    process.env[key] = value;
+  }
+}
+
+applyFixtureEnv("DB_HOST", "127.0.0.1");
+applyFixtureEnv("DB_PORT", "5432");
+applyFixtureEnv("DB_USERNAME", "autoflow");
+applyFixtureEnv("DB_PASSWORD", "test-db-password");
+// DB_DATABASE 刻意不取 .env 的部署库名：真栈夹具由 HARDENING_DB_NAME 指定
+// throwaway 库；裸跑时回落到既有测试库 autoflow_test。 caller 显式给的值优先。
+process.env.DB_DATABASE ||=
+  process.env.HARDENING_DB_NAME || "autoflow_test";
+applyFixtureEnv("REDIS_HOST", "127.0.0.1");
+applyFixtureEnv("REDIS_PORT", "6379");
+applyFixtureEnv("REDIS_DB", "0");
+applyFixtureEnv("REDIS_PASSWORD");
 process.env.JWT_SECRET ||= "test-jwt-secret-0123456789abcdef0123";
 process.env.JWT_REFRESH_SECRET ||= "test-jwt-refresh-secret-0123456789ab";
 process.env.EXECUTOR_SECRET ||= "test-executor-secret-16";

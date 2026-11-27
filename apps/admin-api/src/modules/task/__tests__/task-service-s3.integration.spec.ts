@@ -701,15 +701,28 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
       expect(result.hasMore).toBe(false);
     });
 
-    it("fromLine is an offset into the filtered sequence (not the physical line)", async () => {
-      // 过滤后序列：0=[ERROR] boom, 1=tz boom → offset 1 起第二页
+    // LOG-CURSOR-01：REST 的 fromLine 恒为**真实行号游标**（含 level 模式），
+    // 与 DB 路径同口径；原「过滤后序列的 OFFSET」是旧契约，已随正式实现漂移。
+    // 保留原业务意图：第一页的 nextCursor 直接续出过滤后的第二页，不漏不重。
+    it("level 模式下 fromLine 是行号游标；用 nextCursor 续出过滤后第二页", async () => {
+      // 物理行号：0=[INFO] starting, 1=[ERROR] boom, 3=tz boom（ERROR 命中）
+      const firstPage = await service.getExecutionLogs("e-level", 0, 1, "ERROR");
+      expect(firstPage.lines).toEqual(["[ERROR] boom"]);
+      expect(firstPage.lineNumbers).toEqual([1]);
+      expect(firstPage.totalLines).toBe(2);
+      expect(firstPage.hasMore).toBe(true);
+      expect(firstPage.nextCursor).toBe(2);
+
       const secondPage = await service.getExecutionLogs(
         "e-level",
-        1,
+        firstPage.nextCursor,
         1,
         "ERROR",
       );
-      expect(secondPage.lines).toEqual(["2024-01-01 10:00:00 [ERROR] tz boom"]);
+      expect(secondPage.lines).toEqual([
+        "2024-01-01 10:00:00 [ERROR] tz boom",
+      ]);
+      expect(secondPage.lineNumbers).toEqual([3]);
       expect(secondPage.totalLines).toBe(2);
       expect(secondPage.hasMore).toBe(false);
     });

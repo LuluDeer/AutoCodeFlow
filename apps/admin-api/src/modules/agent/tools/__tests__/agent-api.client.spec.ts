@@ -1,4 +1,4 @@
-import { AgentApiClient } from "../agent-api.client";
+import { AgentApiClient, rejectedTerminalReason } from "../agent-api.client";
 import type { AgentToolSpec } from "../tool-registry";
 
 /**
@@ -16,8 +16,16 @@ const spec = (name: string): AgentToolSpec => ({ name }) as AgentToolSpec;
  * 而不是静默成功」，且**不抛异常**——抛异常会让推理循环的 catch 分支把它
  * 判成链路故障，把可绕过的「工具没实现」升级为不可恢复的 failed 会话。
  */
+describe("终态拒绝文案：事实是消息未写入", () => {
+  it("rejected_terminal 不再声称「消息已落库」", () => {
+    const text = rejectedTerminalReason("succeeded");
+    expect(text).toContain("消息未写入");
+    expect(text).not.toContain("消息已落库");
+  });
+});
+
 describe("AgentApiClient · 未实现工具必须如实失败且不抛异常", () => {
-  it("未登记工具 → isError=true / data=null / 文案含工具名与「尚未实现」，且是 resolve", async () => {
+  it("未登记工具 → isError=true / data=null / 文案含工具名、tier 与「没有绑定执行体」，且是 resolve", async () => {
     const client = new AgentApiClient();
 
     // 关键反证点：这里若改成 throw，本用例会以 rejected 失败。
@@ -26,7 +34,23 @@ describe("AgentApiClient · 未实现工具必须如实失败且不抛异常", (
     expect(res.isError).toBe(true);
     expect(res.data).toBeNull();
     expect(res.errorMessage).toContain("nope_tool");
-    expect(res.errorMessage).toContain("尚未实现");
+    expect(res.errorMessage).toContain("没有绑定执行体");
+    // 不再拿「P3 只接了只读工具」这类阶段叙事误导模型。
+    expect(res.errorMessage).not.toContain("P3");
+    expect(res.errorMessage).not.toContain("只读工具");
+  });
+
+  it("错误文案点出 tier（read / write / dangerous 都能自述），不区分阶段", async () => {
+    const client = new AgentApiClient();
+
+    for (const tier of ["read", "write", "dangerous"] as const) {
+      const res = await client.invoke(
+        { ...spec(`missing_${tier}`), tier } as AgentToolSpec,
+        {},
+      );
+      expect(res.errorMessage).toContain(`tier=${tier}`);
+      expect(res.errorMessage).toContain("装配遗漏");
+    }
   });
 
   it("未登记工具不得调用任何执行体，也不得伪造成功", async () => {

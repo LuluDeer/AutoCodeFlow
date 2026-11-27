@@ -674,6 +674,9 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     effectBound: "call",
     resourceKind: "application",
     resourceIdParam: "applicationId",
+    // 2026-11-27：不可逆写面必须有逐工具审批闸；机器面不得伪造 ADMIN 主体，
+    // 执行体只接受由已批准请求上下文注入的真实 actor。
+    approvalRequired: true,
   },
   {
     name: "analyze_application",
@@ -868,31 +871,43 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
   {
     name: "upgrade_deployment",
     description:
-      "Trigger an overlay upgrade for a running deployment (pulls the latest application version).",
+      "Trigger an overlay upgrade for a running deployment (pulls the latest application version). applicationId must be the application that owns the deployment — it is scope-checked and cross-verified against deploymentId by the handler.",
     parameters: {
       type: "object",
-      properties: { deploymentId: uuid("Deployment ID") },
-      required: ["deploymentId"],
+      properties: {
+        deploymentId: uuid("Deployment ID"),
+        applicationId: uuid("Application ID that owns this deployment (scope-checked)"),
+      },
+      required: ["deploymentId", "applicationId"],
       additionalProperties: false,
     },
     tier: "write",
     effectBound: "call",
-    resourceKind: "none",
+    // 2026-11-27：deploymentId 无法直接做 scope 校验，必须显式带 applicationId
+    // 才能被 validateScope 的 applications 白名单圈住；handler 再用
+    // AppDeploymentService.findById 反查归属做交叉验证。
+    resourceKind: "application",
+    resourceIdParam: "applicationId",
     /** 03 §2：影响在跑部署需审批。 */
     approvalRequired: true,
   },
   {
     name: "stop_deployment",
-    description: "Stop a running application deployment.",
+    description:
+      "Stop a running application deployment. applicationId must be the application that owns the deployment — it is scope-checked and cross-verified against deploymentId by the handler.",
     parameters: {
       type: "object",
-      properties: { deploymentId: uuid("Deployment ID") },
-      required: ["deploymentId"],
+      properties: {
+        deploymentId: uuid("Deployment ID"),
+        applicationId: uuid("Application ID that owns this deployment (scope-checked)"),
+      },
+      required: ["deploymentId", "applicationId"],
       additionalProperties: false,
     },
     tier: "write",
     effectBound: "call",
-    resourceKind: "none",
+    resourceKind: "application",
+    resourceIdParam: "applicationId",
     /** 03 §2：停掉在跑应用需审批。 */
     approvalRequired: true,
   },

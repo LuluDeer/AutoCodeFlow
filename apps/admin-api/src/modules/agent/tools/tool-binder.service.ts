@@ -6,18 +6,30 @@ import {
   Optional,
   forwardRef,
 } from "@nestjs/common";
+import type { Type } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
+import { ModuleRef } from "@nestjs/core";
 import { ConfigService } from "@nestjs/config";
 import { LessThan, Repository } from "typeorm";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上。
 import { AppError } from "../../../common/errors/app-error";
 import { AgentApiClient } from "./agent-api.client";
+import type { ToolInvokeContext } from "./agent-api.client";
 import { TaskService } from "../../task/task.service";
 import { TaskTemplateService } from "../../task-template/task-template.service";
 import { ExecutorService } from "../../executor/executor.service";
 import { ApplicationService } from "../../application/application.service";
 import { AppDeploymentService } from "../../application/app-deployment.service";
+import {
+  DeploymentApprovalStatus,
+  DeploymentTriggerType,
+} from "../../application/entities/app-deployment.entity";
+import { UserRole } from "../../users/entities/user.entity";
+import { ProjectsService } from "../../project/projects.service";
+import { ProjectAccessService } from "../../project/project-access.service";
+import { AuditService } from "../../audit/audit.service";
+import { SchedulerService } from "../../scheduler/scheduler.service";
 import { MutexGroupService } from "../../application/mutex-group.service";
 import { SopService } from "../../sop/sop.service";
 import { AgentToolCall } from "../entities/agent-tool-call.entity";
@@ -46,8 +58,9 @@ export const AGENT_DEPLOY_APPROVAL_REQUIRED_KEY =
  * 会让 agent.module.ts 变成数百行的装配清单，且难以单独测试。
  *
  * ## 范围
- * P3 绑只读工具（排障主力）；P5/P6 补 SOP 工具（sop_* → SopService）。
- * 未绑定的工具由 `AgentApiClient.invoke` 如实返回「尚未实现」，不静默成功。
+ * 声明在 registry 里的工具（除 hardDisabled 的审批类）全部在此绑定执行体：
+ * 只读、写、部署/回滚、项目/审计/调度观测。未绑定属于装配缺陷，
+ * `AgentApiClient.invoke` 会如实返回错误，不静默成功。
  */
 @Injectable()
 export class ToolBinderService implements OnModuleInit {
@@ -76,6 +89,12 @@ export class ToolBinderService implements OnModuleInit {
     // 兜底，与本仓其它可选依赖同款姿态。
     @Optional()
     private readonly config?: ConfigService,
+    // 跨模块只读服务（项目 / 审计 / 调度）的惰性解析器。AgentModule 只显式
+    // import 了部分模块；用 ModuleRef.get({strict:false}) 复用 AppModule 里
+    // 已注册的 provider，避免为几个只读工具扩大模块装配面。@Optional 让既有
+    // 按位置装配的单测无需改动（未传时相关执行体给出明确的装配错误）。
+    @Optional()
+    private readonly moduleRef?: ModuleRef,
   ) {}
 
   onModuleInit(): void {
@@ -87,6 +106,8 @@ export class ToolBinderService implements OnModuleInit {
     // 不绑则模型调用一律「尚未实现」，事件处置/SOP 编排两大场景残废）
     this.bindWriteTools();
     this.bindAgentTools();
+    // 剩余声明工具的收口绑定（此前「声明了却没人 register」的那一批）
+    this.bindRemainingTools();
     this.logger.log(
       `Agent read-tool handlers bound: ${this.api.implementedTools().join(", ")}`,
     );
@@ -669,6 +690,277 @@ export class ToolBinderService implements OnModuleInit {
         args.force === true || args.force === "true",
       ),
     );
+  }
+
+  // ── 剩余声明工具（收口绑定）──────────────────────────────────────────
+  //
+  // 这些工具此前全都在 AGENT_TOOL_SPECS 里对模型可见，却没有 register 执行体
+  // ⇒ 每次调用都得到「没有绑定执行体」，白名单与 schema 形同虚设。本方法
+  // 只复用既有 Service，不新增后端能力；审批/scope 闸仍由注册表逐工具声明
+  // 并由 AgentBoundaryService 在执行前判定，绑定本身不放宽任何门。
+
+  private bindRemainingTools(): void {
+    // 任务配置写面：注册表已声明 approvalRequired:true（逐工具闸）。
+    this.api.register("update_task", async (args) => {
+      const patch = args.patch;
+      if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
+        throw new AppError("VALIDATION_FAILED", {
+          detail: "update_task.patch 必须是「字段名 → 新值」的对象",
+        });
+      }
+      if (Object.keys(patch as Record<string, unknown>).length === 0) {
+        throw new AppError("VALIDATION_FAILED", {
+          detail: "update_task.patch 为空——没有任何字段会被改动",
+        });
+      }
+      return this.tasks.update(
+        this.str(args.taskId),
+        patch as never,
+        undefined,
+      );
+    });
+
+    // 版本快照回滚：service 的 rollbackToVersion 以 versionId 定位快照，
+    // 与 schema 逐字对齐（不是按 gitCommit 的那条 /rollback 端点）。
+    this.api.register("rollback_task_version", async (args) =>
+      this.tasks.rollbackToVersion(
+        this.str(args.taskId),
+        this.str(args.versionId),
+        undefined,
+      ),
+    );
+
+    // ── 部署面（只读三件 + 干预两件）──────────────────────────────────
+    this.api.register("list_deployments", async (args) =>
+      this.deployments.findAll(
+        typeof args.applicationId === "string"
+          ? args.applicationId
+          : undefined,
+        this.num(args.page, 1),
+        this.num(args.pageSize, 20),
+      ),
+    );
+
+    this.api.register("list_pending_approvals", async (args) =>
+      this.deployments.findAll(
+        undefined,
+        this.num(args.page, 1),
+        this.num(args.pageSize, 20),
+        DeploymentApprovalStatus.PENDING_APPROVAL,
+      ),
+    );
+
+    this.api.register("stop_deployment", async (args) => {
+      const deploymentId = this.str(args.deploymentId);
+      const applicationId = this.str(args.applicationId);
+      await this.assertDeploymentApplication(
+        "stop_deployment",
+        deploymentId,
+        applicationId,
+      );
+      return this.deployments.stop(deploymentId);
+    });
+
+    // 触发来源落「agent」：升级事件流需要能区分机器动作与人点的一下。
+    this.api.register("upgrade_deployment", async (args) => {
+      const deploymentId = this.str(args.deploymentId);
+      const applicationId = this.str(args.applicationId);
+      await this.assertDeploymentApplication(
+        "upgrade_deployment",
+        deploymentId,
+        applicationId,
+      );
+      return this.deployments.upgrade(deploymentId, {
+        operator: "agent",
+        triggerType: DeploymentTriggerType.UPGRADE,
+      });
+    });
+
+    // 应用删除是 dangerous + approvalRequired + resourceKind=application。
+    // 主体必须来自已批准请求上下文（ctx.actor），不得伪造 ADMIN：
+    // 没有真实主体就如实失败，让审批链先把人带进来。
+    this.api.register("delete_application", async (args, ctx) => {
+      const actor = this.requireActor("delete_application", ctx);
+      return this.applications.remove(this.str(args.applicationId), {
+        id: actor.id,
+        role: actor.role === "admin" ? UserRole.ADMIN : UserRole.USER,
+        username: actor.username,
+      });
+    });
+
+    // MCP 的 list_dead_letters 读的是 GET /executors 的 deadLetterCount 快照，
+    // 不是 event_subscription 死信表——这里与 MCP 同口径投影。
+    this.api.register("list_dead_letters", async () => {
+      const rows = await this.executors.findAll();
+      const executors = rows
+        .map((r) => ({
+          executorId: r.id,
+          name: r.appName,
+          address: r.address,
+          status: r.status,
+          deadLetterCount:
+            typeof r.deadLetterCount === "number" ? r.deadLetterCount : null,
+        }))
+        .sort(
+          (a, b) => (b.deadLetterCount ?? 0) - (a.deadLetterCount ?? 0),
+        );
+      return {
+        totalDeadLetters: executors.reduce(
+          (n, r) => n + (r.deadLetterCount ?? 0),
+          0,
+        ),
+        executors,
+        note:
+          "Counts are executor-side callback payloads awaiting replay (last heartbeat value).",
+      };
+    });
+
+    // 调度健康：与 GET /metrics/scheduler 同源（SchedulerService 进程内快照）。
+    this.api.register("get_scheduler_health", async () => {
+      const scheduler = this.resolveAdjacent(
+        SchedulerService,
+        "get_scheduler_health",
+      );
+      const [metrics, stats] = await Promise.all([
+        scheduler.getSchedulerMetrics(),
+        Promise.resolve(scheduler.getStats()),
+      ]);
+      const failed =
+        typeof metrics.queue?.failed === "number" ? metrics.queue.failed : null;
+      return {
+        healthy: failed !== null && failed < 100,
+        ...(failed === null
+          ? {
+              degraded:
+                "queue metrics unavailable (Redis unreachable?) — cannot assess queue depth health",
+            }
+          : {}),
+        scheduler: stats,
+        instance: { pid: process.pid },
+        queue: metrics.queue,
+        triggerLatency: {
+          count: metrics.counters.triggerLatencyCount ?? 0,
+          avgMs: metrics.derived.avgTriggerLatencyMs ?? 0,
+          p99Ms: metrics.derived.p99TriggerLatencyMs ?? 0,
+          lastMs: metrics.counters.lastTriggerLatencyMs ?? 0,
+        },
+        counters: metrics.counters,
+        derived: metrics.derived,
+      };
+    });
+
+    // 审计日志：与 GET /audit 同参（page/pageSize + 白名单过滤器）。
+    this.api.register("list_audit_logs", async (args) => {
+      const audit = this.resolveAdjacent(AuditService, "list_audit_logs");
+      const uid = Number(args.userId);
+      return audit.findAll({
+        page: this.num(args.page, 1),
+        pageSize: this.num(args.pageSize, 20),
+        ...(typeof args.action === "string" && args.action
+          ? { action: args.action }
+          : {}),
+        ...(typeof args.resource === "string" && args.resource
+          ? { resource: args.resource }
+          : {}),
+        ...(args.userId !== undefined && Number.isFinite(uid)
+          ? { userId: uid }
+          : {}),
+        ...(typeof args.username === "string" && args.username
+          ? { username: args.username }
+          : {}),
+        ...(typeof args.startTime === "string" && args.startTime
+          ? { startTime: args.startTime }
+          : {}),
+        ...(typeof args.endTime === "string" && args.endTime
+          ? { endTime: args.endTime }
+          : {}),
+      });
+    });
+
+    // 项目面：ProjectsService / ProjectAccessService 直调，语义与
+    // GET /projects 与 GET /projects/:id/members 同一份数据源。
+    this.api.register("list_projects", async () =>
+      this.resolveAdjacent(ProjectsService, "list_projects").findAll(),
+    );
+    this.api.register("get_project_members", async (args) =>
+      this.resolveAdjacent(
+        ProjectAccessService,
+        "get_project_members",
+      ).listMembers(this.str(args.projectId)),
+    );
+
+    // 「我的项目角色」必须有真实主体。没有 ctx.actor 时如实报 isError，
+    // 不返回硬编码空集冒充查询成功（空集与「查不到」是两种事实）。
+    this.api.register("get_my_project_roles", async (_args, ctx) => {
+      const actor = this.requireActor("get_my_project_roles", ctx);
+      const access = this.resolveAdjacent(
+        ProjectAccessService,
+        "get_my_project_roles",
+      );
+      return {
+        userId: actor.id,
+        isAdmin: actor.role === "admin",
+        memberships: await access.listRolesForUser(actor.id),
+      };
+    });
+  }
+
+  /**
+   * 跨工具共用：`deploymentId` 本身不在 scope 白名单键里，必须反查它归属的
+   * applicationId 并与模型显式传入的 applicationId 交叉验证。闸门已按
+   * resourceIdParam=applicationId 校验会话 scope；这里再钉住「ID 属于谁」，
+   * 否则拿到 scope 内任一 applicationId 就能操作 scope 外的部署行。
+   */
+  private async assertDeploymentApplication(
+    toolName: string,
+    deploymentId: string,
+    applicationId: string,
+  ): Promise<void> {
+    const deployment = await this.deployments.findById(deploymentId);
+    if (deployment.applicationId !== applicationId) {
+      throw new Error(
+        `${toolName}: deployment ${deploymentId} 属于 application ` +
+          `${deployment.applicationId}，与传入的 ${applicationId} 不一致（跨 application scope 被拒）`,
+      );
+    }
+  }
+
+  /** 只有已批准请求上下文注入的真实主体才可用于「以人身份」的写面/读面。 */
+  private requireActor(
+    toolName: string,
+    ctx?: ToolInvokeContext,
+  ): { id: number; role: "admin" | "user"; username?: string } {
+    const actor = ctx?.actor;
+    if (
+      !actor ||
+      typeof actor.id !== "number" ||
+      !Number.isFinite(actor.id) ||
+      (actor.role !== "admin" && actor.role !== "user")
+    ) {
+      throw new Error(
+        `${toolName}: 当前 Agent 调用没有真实用户主体（ctx.actor 缺失或未批准注入）。` +
+          `不得伪造 ADMIN 身份，也不返回空结果冒充查询成功；请由已批准的请求上下文注入操作人后重试。`,
+      );
+    }
+    return actor;
+  }
+
+  /** 惰性解析跨模块只读服务；缺席时给明确装配错误，不静默降级。 */
+  private resolveAdjacent<T>(token: Type<T>, toolName: string): T {
+    if (!this.moduleRef) {
+      // 这里用普通 Error：AppError 的码表只收已登记的稳定码，装配缺失不是
+      // 用户可见业务错误；AgentApiClient.invoke 会把 message 原样回给模型。
+      throw new Error(
+        `${toolName}: 进程内依赖解析器未装配（内部装配错误）`,
+      );
+    }
+    try {
+      return this.moduleRef.get<T>(token, { strict: false });
+    } catch {
+      throw new Error(
+        `${toolName}: 所需服务 ${token.name} 未在当前应用中注册`,
+      );
+    }
   }
 
   // ── 参数取值辅助（闸门已保证类型，这里只做缺省）─────────────────

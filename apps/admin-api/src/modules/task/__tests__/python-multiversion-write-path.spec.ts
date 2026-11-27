@@ -144,6 +144,15 @@ describe("python_task_multiversion 写面契约", () => {
     dataSource = {
       transaction: jest.fn(async (fn: any) =>
         fn({
+          // TASKCORE-TX-01：create 经 runTaskCreateWrite 从事务 manager 取
+          // Task / TaskVersion 仓储——必须返回与本 spec 断言同一组桩，
+          // 否则所有 create 用例在 `manager.getRepository is not a function`
+          // 处整体失败（写面契约断言根本跑不到）。
+          getRepository: jest.fn((entity: unknown) => {
+            if (entity === Task) return taskRepo;
+            if (entity === TaskVersion) return versionRepo;
+            return makeRepo();
+          }),
           save: jest.fn(async (...args: any[]) =>
             args.length >= 2 ? args[1] : args[0],
           ),
@@ -863,17 +872,18 @@ describe("python_task_multiversion 写面契约", () => {
       expect(r.reason).toBe(expected);
     });
 
-    it("负例：uv pip install failed → 不归 interpreter_unavailable（仍归依赖/包类）", async () => {
+    it("负例：uv pip install failed → 不归 interpreter_unavailable（仍归依赖安装类）", async () => {
       const r = await inferVia({
         status: "failed",
         errorMessage:
           "uv pip install failed: no matching distribution found for foo",
       });
       expect(r.reason).not.toBe(ExecutionFailureReason.INTERPRETER_UNAVAILABLE);
-      // 本兜底分类器的依赖/包类落点是 PACKAGE_FETCH_FAILED（`pip install` 命中
-      // 该规则）；DEPENDENCY_INSTALL_FAILED 是**执行器上报**的细分取值，兜底
-      // 不产生它。此处钉住"仍在依赖/包类、未被解释器规则吞掉"这一语义。
-      expect(r.reason).toBe(ExecutionFailureReason.PACKAGE_FETCH_FAILED);
+      // 契约收敛（protocol.json / 生成物 classifyFailure）：安装失败现有
+      // **细粒度专属码** DEPENDENCY_INSTALL_FAILED，不再落旧宽口径
+      // PACKAGE_FETCH_FAILED（原注释「兜底不产生它」已失效）。
+      // 此处钉住的语义不变：仍在依赖/包类、未被解释器规则吞掉。
+      expect(r.reason).toBe(ExecutionFailureReason.DEPENDENCY_INSTALL_FAILED);
     });
 
     it("负例：任务自身代码只打印 'interpreter' 一词 → 不误判", async () => {

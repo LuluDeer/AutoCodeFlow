@@ -2,6 +2,16 @@ import { Injectable, Logger } from "@nestjs/common";
 import type { AgentToolSpec } from "./tool-registry";
 
 /**
+ * 终态会话拒绝续跑时的统一文案（Agent 工具面 / 交互面共用）。
+ *
+ * 事实是「先判终态、再 appendStep」：拒绝路径零 step、零事件、零队列，
+ * 所以消息**未写入**。旧文案「消息已落库」会让调用方以为内容还在，
+ * 从而不再重试——这是假事实，必须改。
+ */
+export const rejectedTerminalReason = (status: string): string =>
+  `会话已处于终态（${status}），消息未写入，不触发续跑`;
+
+/**
  * P3：Agent 工具的执行体（设计文档 10 §调整1）。
  *
  * ## 为什么 in-process 而不是绕 HTTP 调自己的 API
@@ -15,11 +25,15 @@ import type { AgentToolSpec } from "./tool-registry";
  * 它的 handler 只做 `call(method, path, body)`，具体传输由注入的 `call`
  * 决定；这里 `call` 的实现是「路由到内部 service」而非 fetch。
  *
- * ## P3 范围（刻意的）
- * 本阶段实现**只读工具**的真实调用（排障主力的前 12 个），写工具的
- * 执行体在 P4/P5 随触发器与 SOP 一起接（它们需要那些模块的能力）。
- * 未实现的工具**如实返回错误**，而不是静默成功——静默成功会让模型在
- * 错误前提上继续推理，比明确失败更危险。
+ * ## 装配范围（当前）
+ * 声明在 `tool-registry.ts` 里的工具，除 `hardDisabled` 的审批类工具外，
+ * 都由 `ToolBinderService.onModuleInit` 在进程内注册执行体——只读、触发、
+ * 创建、部署、回滚都已接线。硬禁用工具由边界闸门在 `invoke` 之前拦截，
+ * 不会走到这里；**任何走到这里的声明工具都必须有 handler**。
+ *
+ * 没有 handler 是装配缺陷（漏 register），不是「本阶段不支持」；如实返回
+ * `isError: true`，不抛异常、不静默成功。文案只说事实（工具名 + tier +
+ * 「未绑定执行体」），不再声称「只接了只读工具」这类会误导模型的阶段叙事。
  */
 
 /** 工具调用结果。 */
@@ -40,8 +54,8 @@ export interface ApiCallResult {
 /**
  * 执行体调用上下文（可选第二参）。
  *
- * 为什么是**可选**：取消通道不要求一次性改造全部 handler（P3 只接了只读
- * 工具，写工具的执行体在 P4/P5 陆续接）。声明了 `ctx` 并检查
+ * 为什么是**可选**：取消通道不要求一次性改造全部 handler（现有 handler 多为
+ * `(args) => …` 形态）。声明了 `ctx` 并检查
  * `ctx.signal.aborted` / 监听 `abort` 的 handler 会真正停下；未声明第二参
  * 的 handler 行为完全不变——**但也不会被取消**（Promise 无法被外部杀死，
  * 见 ToolExecutorService.execute 的残差注释）。
@@ -61,6 +75,18 @@ export interface ToolInvokeContext {
    * handler 若要接服务端幂等面，用它在自己的业务面做「同键返回首次结果」。
    */
   idempotencyKey?: string;
+  /**
+   * 已批准请求上下文注入的**真实操作人**（不是 Agent 自述身份）。
+   *
+   * 仅用于必须落到「人」的写面（delete_application / get_my_project_roles）。
+   * 缺失时这些工具如实报错——绝不伪造 `{id:0, role:ADMIN}`，也不返回空集
+   * 假装查询成功。由审批/请求装配层在批准后的重放路径上填充。
+   */
+  actor?: {
+    id: number;
+    role: "admin" | "user";
+    username?: string;
+  };
 }
 
 /**
@@ -78,7 +104,7 @@ type ToolHandler = (
 export class AgentApiClient {
   private readonly logger = new Logger(AgentApiClient.name);
 
-  /** 工具名 → 执行体。未登记的工具视为「本阶段未实现」。 */
+  /** 工具名 → 执行体。未登记的工具视为装配遗漏（invoke 如实报错）。 */
   private readonly handlers = new Map<string, ToolHandler>();
 
   /**
@@ -97,9 +123,9 @@ export class AgentApiClient {
   /**
    * 执行一次工具调用。
    *
-   * 未实现的工具返回 `isError: true` —— **不抛异常**（抛异常会让推理循环
-   * 的 catch 分支把它当链路故障，收敛为 failed 会话；而「这个工具还没实现」
-   * 是模型可以换路径绕过的信息）。
+   * 未绑定执行体的声明工具返回 `isError: true` —— **不抛异常**（抛异常会让
+   * 推理循环的 catch 分支把它当链路故障，收敛为 failed 会话；而「这条工具
+   * 没有执行体」是模型可以换路径绕过的装配事实）。
    *
    * `ctx.signal` 是执行器超时后的取消信号：**透传**而非强制——handler 声明
    * 第二参就收得到，不声明就收不到（行为与改造前完全一致）。取消是
@@ -116,8 +142,8 @@ export class AgentApiClient {
         data: null,
         isError: true,
         errorMessage:
-          `工具 ${spec.name} 在当前版本尚未实现执行体（P3 只接了只读工具）。` +
-          `请改用已实现的工具，或直接说明需要人工介入。`,
+          `工具 ${spec.name}（tier=${spec.tier}）在当前装配中没有绑定执行体：` +
+          `这是内部装配遗漏，不是参数错误。请改用已绑定的工具，或说明需要人工介入。`,
       };
     }
 

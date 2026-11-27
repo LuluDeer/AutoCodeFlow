@@ -139,7 +139,7 @@ describe("phrase allow/deny 与 grant/deny 共享决策副作用", () => {
     );
   });
 
-  it("phrase deny：台账行落 denied 且补一条 tool_call_status_changed 事件，不恢复", async () => {
+  it("phrase deny：台账行落 denied、补 tool_call_status_changed，并按当前语义自动恢复", async () => {
     const h = harness({ decidedStatus: "denied" });
     const out = await h.ctl.decideApprovalByPhrase(
       SESSION,
@@ -148,7 +148,20 @@ describe("phrase allow/deny 与 grant/deny 共享决策副作用", () => {
       admin(),
     );
 
-    expect(out.resumed).toBe(false);
+    // 当前产品语义：deny 与 allow 共用决策副作用——settle 成功后，只要会话
+    // 仍在 waiting_input 且无其它 pending 单，就入队 `resume:approval_denied`。
+    // 断言从「不恢复」同步为「显式 reason 的恢复」，而不是把整段删掉过绿。
+    expect(out.resumed).toBe(true);
+    expect(out.resumeReason).toBeUndefined();
+    expect(h.queue.add).toHaveBeenCalledWith(
+      "run",
+      expect.objectContaining({
+        sessionId: SESSION,
+        reason: "resume:approval_denied",
+        expectTotalSteps: 3,
+      }),
+      expect.anything(),
+    );
     expect(h.sessions.settleToolCallByApprovalId).toHaveBeenCalledWith(
       KEY,
       "denied",
@@ -165,7 +178,6 @@ describe("phrase allow/deny 与 grant/deny 共享决策副作用", () => {
         }),
       }),
     );
-    expect(h.queue.add).not.toHaveBeenCalled();
   });
 
   it("phrase deny：条件写命中 0 行 ⇒ 不写状态事件（并发输家不得说「已拒绝」）", async () => {

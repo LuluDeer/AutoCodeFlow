@@ -410,7 +410,7 @@ describe("AgentBoundaryService · ⑥ 分级审批（最后一道，可批准）
     expect(v).toMatchObject({ kind: "DENY", reason: "needs_approval" });
   });
 
-  it("dangerous 启用后仍需审批；审批策略关掉时才 ALLOW", () => {
+  it("dangerous 启用后仍需审批；逐工具审批闸不随全局策略放宽而放宽", () => {
     const { svc } = harness({
       "agent.policy.allowDangerous": true,
       "agent.policy.dangerousRequiresApproval": true,
@@ -427,13 +427,22 @@ describe("AgentBoundaryService · ⑥ 分级审批（最后一道，可批准）
       "agent.policy.allowDangerous": true,
       "agent.policy.dangerousRequiresApproval": false,
     });
+    // delete_application 自 2026-11-27 起带 approvalRequired=true：
+    // 全局 dangerousRequiresApproval=false 只能关掉分级闸，关不掉逐工具闸。
+    const stillGated = lax.svc.check(
+      chatSession(),
+      "delete_application",
+      { applicationId: "app-1" },
+      0,
+    );
+    expect(stillGated).toMatchObject({ kind: "NEED_APPROVAL" });
+    expect(stillGated.kind === "NEED_APPROVAL" && stillGated.message).toContain(
+      "需人工审批",
+    );
+    // 对照组：没有 approvalRequired 的普通 dangerous 工具仍受全局开关控制，
+    // 关掉 dangerousRequiresApproval 后确实 ALLOW——证明上面是逐工具闸而非全关。
     expect(
-      lax.svc.check(
-        chatSession(),
-        "delete_application",
-        { applicationId: "app-1" },
-        0,
-      ),
+      lax.svc.check(chatSession(), "delete_mutex_group", { groupId: "g-1" }, 0),
     ).toMatchObject({ kind: "ALLOW" });
   });
 

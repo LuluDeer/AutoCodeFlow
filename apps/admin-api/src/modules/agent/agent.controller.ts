@@ -43,7 +43,6 @@ import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { computeApprovalPolicyFingerprint } from "./runtime/agent-approvals.service";
 import {
   ApprovalPhraseDto,
-  ApprovalPhraseResponseDto,
 } from "./dto/approval-phrase.dto";
 import { parseApprovalPhrase } from "./runtime/approval-phrases";
 import {
@@ -78,6 +77,10 @@ import {
   AgentSessionListResponseDto,
   AgentSessionResumeResponseDto,
 } from "./dto/agent-response.dto";
+// 审批处置响应（grant/deny/phrase 共用）：resumeReason 需在 OpenAPI 中声明。
+import { AgentApprovalDecisionResponseDto } from "./dto/agent-interaction.dto";
+// 终态屏障恢复口：resume 成功 reopen 后必须显式清理，否则后到 running 帧被吞。
+import { AgentEventStreamService } from "./runtime/agent-event-stream.service";
 // R278：待办收件箱的服务端聚合（S1）。新 provider，controller 只加两条薄路由。
 import { AgentInboxService } from "./runtime/agent-inbox.service";
 import {
@@ -105,12 +108,15 @@ import { AgentExecutionConfirmationService } from "./runtime/agent-execution-con
 // 同面（class 级 JwtAuthGuard + ADMIN），不进 metrics 的 @Public 抓取面。
 import { NorthStarMetricsService } from "./runtime/north-star-metrics.service";
 import { AgentNorthStarResponseDto } from "./dto/agent-north-star.dto";
-// N8：waiting_input 期 steer 意图的进程内 inbox（独立 provider，追加在构造末尾）。
+// N8：waiting_input 期 steer 意图的 inbox（本地 Map + 跨副本 Redis list）。
 import { SteerInboxService } from "./runtime/steer-inbox.service";
 // ADR-045 发布结果可见性：审计/重试说明外提，避免 decideApproval 破体量棘轮。
 import { auditReleaseOutcome } from "./runtime/release-outcome.audit";
 // W1-S2：deny 后保守自动恢复（独立 collaborator，避免本棘轮文件增长）。
-import { maybeResumeAfterDeny } from "./runtime/agent-deny-resume.collaborator";
+import {
+  maybeResumeAfterDeny,
+  type DenyResumeResult,
+} from "./runtime/agent-deny-resume.collaborator";
 
 /**
  * R279：把 `since` query（ISO-8601）解析成 `Date`；**解析不出 ⇒ `undefined`（不筛）**。
@@ -279,6 +285,12 @@ export class AgentController {
      */
     @Optional()
     private readonly steerInbox?: SteerInboxService | null,
+    /**
+     * 终态屏障清理口（同 R202/R205 教训，追加末尾 + @Optional）：
+     * 生产由 AgentModule 注入；单测缺席时 resume 的状态机语义逐字不变。
+     */
+    @Optional()
+    private readonly eventStream?: AgentEventStreamService | null,
   ) {}
 
   @Get("sessions")
@@ -604,6 +616,12 @@ export class AgentController {
           reason: "会话状态已变化或上下文已被清理，请刷新后重试",
         };
       }
+      // reopenForResume 的条件写成功 = 新世代。直接清掉事件流侧的终态屏障，
+      // 否则终态先到后到达的 running/started 帧会被永久吞掉，前端卡在「终态」
+      // 而后台实际已重新开跑。不再传 stepSeq/eventSeq —— 它们不是同一计数器，
+      // 传哪一个都会让 epoch 守卫误判成旧世代而拒绝清理。未 reopen / 拒绝路径
+      // 不清理。
+      this.eventStream?.clearTerminalForResume(id);
     }
 
     await this.enqueueResume(session, "resume:manual");
@@ -643,11 +661,14 @@ export class AgentController {
     session: AgentSession,
     username: string,
     toolName: string,
+    /** 当前登录用户 id：workbench 建单写的是 `user:<id>`，只传 username 会漏判。 */
+    userId?: number | string | null,
   ): void {
     if (
       isApprovalSelfDecision({
         createdBy: session.createdBy,
         username,
+        userId,
         toolName,
         config: this.config,
       })
@@ -669,7 +690,8 @@ export class AgentController {
    * · denied  → 按 approvalKey 把 awaiting_approval 台账行条件写成 denied；
    *   **只有真的命中行**（affected > 0）才补 `tool_call_status_changed`。
    *
-   * @returns 本次决定是否触发了恢复入队（写进响应 `resumed`）。
+   * @returns 本次决定是否触发了恢复入队，以及未恢复的具体原因
+   *   （写进响应 `resumed` / `resumeReason`）。
    */
   private async applyApprovalDecisionEffects(input: {
     sessionId: string;
@@ -677,7 +699,7 @@ export class AgentController {
     decision: "granted" | "denied";
     decidedBy: string;
     session: AgentSession;
-  }): Promise<boolean> {
+  }): Promise<DenyResumeResult> {
     const { sessionId, approvalKey, decision, decidedBy, session } = input;
     if (decision === "denied") {
       const settled = await this.sessions.settleToolCallByApprovalId(
@@ -690,15 +712,15 @@ export class AgentController {
         await this.emitToolCallSettledEvents(sessionId, approvalKey);
       }
       // W1-S2：deny 后保守自动恢复——仅 waiting_input 且无其它 pending 单时入队，
-      // 判定体在独立 collaborator（避免本棘轮文件增长）；失败只回 false。
-      const resumed = await maybeResumeAfterDeny(
+      // 判定体在独立 collaborator（避免本棘轮文件增长）；异常不再吞成 false，
+      // reason 由 decideApproval 透出为 `resumeReason`。
+      return await maybeResumeAfterDeny(
         this.sessions,
         this.approvals,
         (s, reason) => this.enqueueResume(s, reason),
         sessionId,
         session,
       );
-      return resumed;
     }
 
     // granted：worker 可能先落 pending 单、后 markWaiting；处置时旧快照还是
@@ -716,9 +738,9 @@ export class AgentController {
       !(await this.approvals.hasPendingForSession(sessionId))
     ) {
       await this.enqueueResume(freshSession, "resume:approval");
-      return true;
+      return { resumed: true };
     }
-    return false;
+    return { resumed: false };
   }
 
   /** 审批单处置的共享体：approve 与 deny 只差 decision 值。 */
@@ -741,7 +763,12 @@ export class AgentController {
     // G4 / ADR-045：四眼判定收口到共享纯函数，grant 与 phrase 同一口径；
     // 只在 granted（放行副作用）时校验，deny 不涉及「批自己的操作」。
     if (decision === "granted") {
-      this.assertNoSelfApproval(session, user.username, approval.toolName);
+      this.assertNoSelfApproval(
+        session,
+        user.username,
+        approval.toolName,
+        user.id,
+      );
     }
     // 条件写（pending → granted/denied）：并发处置撞上时后到者收 409。
     // prettier-ignore
@@ -762,8 +789,9 @@ export class AgentController {
     );
     // 处置结果的行为按 decision 分流，判定体已抽到共享 helper，phrase 端点
     // 走同一份：granted 仅当 waiting_input 且无其它 pending 才恢复；denied
-    // 只 settle 台账 + 发状态事件，不自动恢复（见 helper 头注）。
-    const resumed = await this.applyApprovalDecisionEffects({
+    // 先 settle 台账 + 发状态事件，再按同一保守判据决定是否自动恢复
+    // （旧注释写「denied 不自动恢复」与 helper 实现矛盾，已更正）。
+    const effects = await this.applyApprovalDecisionEffects({
       sessionId,
       approvalKey,
       decision,
@@ -774,7 +802,8 @@ export class AgentController {
       ok: true,
       // prettier-ignore
       approval: { approvalKey: row.approvalKey, status: row.status, decidedBy: row.decidedBy, decidedAt: row.decidedAt },
-      resumed,
+      resumed: effects.resumed,
+      ...(effects.reason ? { resumeReason: effects.reason } : {}),
     };
   }
 
@@ -852,7 +881,10 @@ export class AgentController {
 
   @Post("sessions/:id/approvals/:approvalKey/grant")
   @ApiOperation({ summary: "批准 Agent 审批单并恢复会话" })
-  @ApiOkResponse({ schema: { type: "object", additionalProperties: true } })
+  @ApiOkResponse({
+    type: AgentApprovalDecisionResponseDto,
+    description: "审批处置结果（含 deny 后自动恢复失败原因）",
+  })
   async grantApproval(
     @Param("id") id: string,
     @Param("approvalKey") approvalKey: string,
@@ -863,7 +895,10 @@ export class AgentController {
 
   @Post("sessions/:id/approvals/:approvalKey/deny")
   @ApiOperation({ summary: "拒绝 Agent 审批单" })
-  @ApiOkResponse({ schema: { type: "object", additionalProperties: true } })
+  @ApiOkResponse({
+    type: AgentApprovalDecisionResponseDto,
+    description: "审批处置结果（含 deny 后自动恢复失败原因）",
+  })
   async denyApproval(
     @Param("id") id: string,
     @Param("approvalKey") approvalKey: string,
@@ -889,13 +924,13 @@ export class AgentController {
     description:
       "短语仅接受 allow / allow once / 允许 / 批准 / deny / 拒绝；处置人取当前登录管理员，策略指纹由服务端当前策略快照重算，请求体自报一律忽略。",
   })
-  @ApiOkResponse({ type: ApprovalPhraseResponseDto })
+  @ApiOkResponse({ type: AgentApprovalDecisionResponseDto })
   async decideApprovalByPhrase(
     @Param("id") id: string,
     @Param("approvalKey") approvalKey: string,
     @Body() dto: ApprovalPhraseDto,
     @CurrentUser() user: AuthUser,
-  ): Promise<ApprovalPhraseResponseDto> {
+  ): Promise<AgentApprovalDecisionResponseDto> {
     const session = await this.sessions.requireById(id);
     const approval = await this.approvals.findByKey(approvalKey);
     if (!approval) {
@@ -915,7 +950,12 @@ export class AgentController {
     // 同一份四眼判定。解析只用于判定方向（allow 才拦），真正的短语校验与
     // 条件写仍由 `decideByPhrase` 独占，不在这里重写一套语义。
     if (parseApprovalPhrase(dto.phrase)?.kind === "allow") {
-      this.assertNoSelfApproval(session, user.username, approval.toolName);
+      this.assertNoSelfApproval(
+        session,
+        user.username,
+        approval.toolName,
+        user.id,
+      );
     }
 
     // 指纹口径与闸门/落库侧同一份 computeApprovalPolicyFingerprint：读的是
@@ -963,11 +1003,11 @@ export class AgentController {
       policyFingerprint,
     );
     // 与 grant/deny 共用同一份决策副作用：allow → 条件满足时入队恢复；
-    // deny → settle 台账 + 补 tool_call_status_changed。行快照为 null 说明
-    // 条件写没拿到行，没有任何事实可据此记账，resumed 保持 false。
-    let resumed = false;
+    // deny → settle 台账 + 补 tool_call_status_changed，再按保守判据自动恢复。
+    // 行快照为 null 说明条件写没拿到行，没有任何事实可据此记账，resumed 保持 false。
+    let effects: DenyResumeResult = { resumed: false };
     if (row?.status === "granted" || row?.status === "denied") {
-      resumed = await this.applyApprovalDecisionEffects({
+      effects = await this.applyApprovalDecisionEffects({
         sessionId: session.id,
         approvalKey,
         decision: row.status,
@@ -975,7 +1015,7 @@ export class AgentController {
         session,
       });
     }
-    return {
+    const response = {
       ok: true,
       approval: row
         ? {
@@ -985,8 +1025,10 @@ export class AgentController {
             decidedAt: row.decidedAt,
           }
         : null,
-      resumed,
+      resumed: effects.resumed,
+      ...(effects.reason ? { resumeReason: effects.reason } : {}),
     };
+    return response;
   }
 
   @Get("sessions/:id/approvals")
@@ -1346,10 +1388,11 @@ export class AgentController {
   /**
    * N8：waiting_input 期追加一条 steer 意图。
    *
-   * 只写 inbox，**不**入队 resume job、**不**产生 step/LLM 调用——会话仍在等
-   * 人工审批，模型此刻不在跑。真正注入发生在运行时的下一个模型步边界
-   * （AgentRuntimeService.run 的 drain）。终态/其它状态 soft-fail，沿用
-   * `resume` 端点的状态判定写法（200 + ok:false），绝不复活死意图。
+   * 只写 inbox（本地 Map + 跨副本 Redis list），**不**入队 resume job、**不**
+   * 产生 step/LLM 调用——会话仍在等人工审批，模型此刻不在跑。真正注入发生在
+   * 运行时的下一个模型步边界（另一个副本的 worker 也能 drain 到）。终态/其它
+   * 状态 soft-fail，沿用 `resume` 端点的状态判定写法（200 + ok:false），绝不
+   * 复活死意图。
    */
   @Post("sessions/:id/steer")
   @ApiOperation({
@@ -1380,7 +1423,7 @@ export class AgentController {
         detail: "steer content 不能为空",
       });
     }
-    const result = this.steerInbox.park(
+    const result = await this.steerInbox.park(
       id,
       content,
       Number(session.totalSteps) || 0,

@@ -109,6 +109,7 @@ type WorkbenchSessionsRuntimePort = WorkbenchSessionsPort & {
   listOwn(input: {
     createdBy: string;
     createdByAlias?: string | null;
+    isAdmin?: boolean;
     page: number;
     pageSize: number;
   }): Promise<{
@@ -378,13 +379,21 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
             );
           },
           findById: (id) => sessions().findById(id),
-          listOwn: async ({ createdBy, createdByAlias, page, pageSize }) => {
+          listOwn: async ({ createdBy, createdByAlias, isAdmin, page, pageSize }) => {
             const dataSource = moduleRef.get(DataSource, { strict: false });
             const safePage = Math.max(1, Math.trunc(Number(page) || 1));
             const safePageSize = Math.min(50, Math.max(1, Math.trunc(Number(pageSize) || 20)));
             const offset = (safePage - 1) * safePageSize;
             const alias = createdByAlias || createdBy;
-            const where = `s."createdBy" IN ($1, $2) AND s.kind IN ('chat','plan','sop_authoring')`;
+            // isAdmin 分支此前是死代码（controller 从不传）：ADMIN 看全部交互式
+            // 会话，USER 仍恒按 createdBy 双口径过滤；权限只认服务端角色。
+            const where = isAdmin
+              ? `s.kind IN ('chat','plan','sop_authoring')`
+              : `s."createdBy" IN ($1, $2) AND s.kind IN ('chat','plan','sop_authoring')`;
+            const params = isAdmin
+              ? [safePageSize, offset]
+              : [createdBy, alias, safePageSize, offset];
+            const countParams = isAdmin ? [] : [createdBy, alias];
             const [rows, totalRows] = await Promise.all([
               dataSource.query(
                 `SELECT s.id, s.status, s.title, s.kind, s."createdAt",
@@ -392,14 +401,14 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
                    FROM agent_sessions s
                   WHERE ${where}
                   ORDER BY s."createdAt" DESC, s.id DESC
-                  LIMIT $3 OFFSET $4`,
-                [createdBy, alias, safePageSize, offset],
+                  LIMIT ${isAdmin ? "$1" : "$3"} OFFSET ${isAdmin ? "$2" : "$4"}`,
+                params,
               ),
               dataSource.query(
                 `SELECT COUNT(*)::int AS total
                    FROM agent_sessions s
                   WHERE ${where}`,
-                [createdBy, alias],
+                countParams,
               ),
             ]);
             return {

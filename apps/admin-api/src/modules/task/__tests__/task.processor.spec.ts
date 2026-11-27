@@ -286,7 +286,7 @@ describe("TaskProcessor", () => {
     const live = await execRepo.findOne.mock.results[0].value;
     expect(live.status).toBe(ExecutionStatus.FAILED);
     expect(live.failureReason).toBe(
-      ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+      ExecutionFailureReason.DEPENDENCY_INSTALL_FAILED,
     );
   });
 
@@ -363,7 +363,7 @@ describe("TaskProcessor", () => {
       ],
       [
         "依赖安装失败：pip install 返回非零",
-        ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+        ExecutionFailureReason.DEPENDENCY_INSTALL_FAILED,
       ],
       ["代码拉取失败", ExecutionFailureReason.PACKAGE_FETCH_FAILED],
       [

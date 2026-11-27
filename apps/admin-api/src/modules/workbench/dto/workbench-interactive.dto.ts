@@ -5,12 +5,11 @@
  * 本组端点支持 prompt-first（无需先 commit SOP），会话 kind 由服务端从 prompt
  * 形态推导（chat / sop_authoring / plan），triggerSource 恒为 `workbench`。
  * 请求体没有 kind / scope / createdBy / triggerSource 字段——ValidationPipe
- * whitelist 保证客户端无法越权指定。
+ * whitelist 保证客户端无法越权指定。kind 一律由服务端从 prompt 推导。
  */
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import {
   IsEnum,
-  IsIn,
   IsInt,
   IsNotEmpty,
   IsObject,
@@ -53,15 +52,6 @@ export class CreateWorkbenchChatSessionDto {
   @IsString()
   @MaxLength(255)
   title?: string;
-
-  @ApiPropertyOptional({
-    description:
-      "会话类型覆盖；不传时服务端根据 prompt 推导（chat / sop_authoring / plan）",
-    enum: ["chat", "sop_authoring", "plan"],
-  })
-  @IsOptional()
-  @IsIn(["chat", "sop_authoring", "plan"])
-  kind?: "chat" | "sop_authoring" | "plan";
 
   @ApiPropertyOptional({
     description: "可选业务上下文（服务端脱敏后落 session.contextJson）",
@@ -119,6 +109,17 @@ export class WorkbenchSessionActionResponseDto {
 
   @ApiPropertyOptional({ description: "是否触发了会话恢复入队" })
   resumed?: boolean;
+
+  @ApiPropertyOptional({
+    description: "动作结果码；终态追消息被拒时为 rejected_terminal",
+    enum: ["rejected_terminal"],
+  })
+  action?: "rejected_terminal";
+
+  @ApiPropertyOptional({
+    description: "失败/拒绝原因（可直接展示）；ok=false 时给出",
+  })
+  reason?: string;
 }
 
 /** POST /workbench/sessions/:id/approvals/:approvalKey/decide 请求体。 */
@@ -130,6 +131,16 @@ export class DecideWorkbenchApprovalDto {
   })
   @IsEnum(WORKBENCH_APPROVAL_DECISIONS)
   decision: WorkbenchApprovalDecision;
+
+  @ApiPropertyOptional({
+    description:
+      "处置附言（可选；不参与服务端判定，仅供前端展示/排查，最长 500 字）",
+    maxLength: 500,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
 }
 
 /** GET /workbench/sessions 的增强查询面（pageSize 上限 50）。 */

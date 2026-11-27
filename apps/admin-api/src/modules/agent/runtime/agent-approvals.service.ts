@@ -186,6 +186,16 @@ export type ApprovalDecidedStatus = Extract<
 >;
 
 /**
+ * `approval_decided` 事件里的**人工决策种类**。
+ *
+ * 与 `status` 刻意分开：`withdraw`（工作台创建者撤回）在库里和 `deny` 一样都是
+ * `status=denied`，审计面只看 status 分不出「管理员拒绝」与「本人撤回」。本字段
+ * 只对显式传入的处置路径落（agent 主线现有调用不传 ⇒ payload 形状逐字不变，
+ * 兼容既有 4 键契约）；工作台 grant/deny/withdraw 三条路径都传。
+ */
+export type ApprovalDecisionKind = "grant" | "deny" | "withdraw";
+
+/**
  * `approval_decided` 事件的**确切 payload**（S7-G1 第四阶段）。
  *
  * ```json
@@ -214,6 +224,8 @@ export function buildApprovalDecidedPayload(input: {
   status: ApprovalDecidedStatus;
   decidedBy: string | null;
   decidedAt: Date;
+  /** 显式人工决策种类（grant/deny/withdraw）。缺席时不落键，保持旧事件兼容。 */
+  decision?: ApprovalDecisionKind;
 }): Record<string, unknown> {
   return {
     approvalKey: input.approvalKey,
@@ -222,6 +234,9 @@ export function buildApprovalDecidedPayload(input: {
     // 让「没有署名人」与「旧版事件没记这个字段」变得不可区分。
     decidedBy: input.decidedBy ?? null,
     decidedAt: input.decidedAt.toISOString(),
+    // 撤回与拒绝在库里都是 status=denied，只有 decision 能区分；调用方（工作台
+    // 审批处置）显式传入时才落，agent 主线既有 grant/deny/consume 零改动。
+    ...(input.decision ? { decision: input.decision } : {}),
   };
 }
 
@@ -435,6 +450,12 @@ export class AgentApprovalsService {
     approvalKey: string,
     decision: Extract<AgentApprovalStatus, "granted" | "denied">,
     decidedBy: string,
+    /**
+     * 显式人工决策种类（工作台 withdraw/deny/grant 用）。agent 主线既有调用
+     * 不传 ⇒ 事件 payload 形状与 4 键契约逐字不变；撤回路径传 "withdraw"，
+     * 让下游能在 status 同为 denied 时区分撤回与拒绝。
+     */
+    decisionKind?: ApprovalDecisionKind,
   ): Promise<AgentApproval | null> {
     // 时间戳**先算好再写库**：条件 UPDATE 与随后的 `approval_decided` 事件
     // 必须携带同一个时刻，否则「事件说 10:00批的、行说 10:01」每次取证都要解释。
@@ -469,6 +490,7 @@ export class AgentApprovalsService {
       status: decision,
       decidedBy,
       decidedAt,
+      decision: decisionKind,
     });
     // S1-C2：批准一张收敛操作的单时，**派生**一条会话级授权行。
     //
@@ -573,6 +595,7 @@ export class AgentApprovalsService {
       status: ApprovalDecidedStatus;
       decidedBy: string | null;
       decidedAt: Date;
+      decision?: ApprovalDecisionKind;
     },
   ): Promise<void> {
     const sink = this.eventSink;

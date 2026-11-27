@@ -2906,7 +2906,7 @@ describe("SchedulerService", () => {
       });
       expect(updateQb.set).toHaveBeenCalledWith(
         expect.objectContaining({
-          status: ExecutionStatus.FAILED,
+          status: ExecutionStatus.TIMEOUT,
           failureReason: ExecutionFailureReason.TIMEOUT,
         }),
       );
@@ -3114,7 +3114,7 @@ describe("SchedulerService", () => {
 
       expect(updateQb.set).toHaveBeenCalledWith(
         expect.objectContaining({
-          status: ExecutionStatus.FAILED,
+          status: ExecutionStatus.TIMEOUT,
           failureReason: ExecutionFailureReason.TIMEOUT,
         }),
       );

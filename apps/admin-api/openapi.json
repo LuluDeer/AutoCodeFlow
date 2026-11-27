@@ -108,6 +108,38 @@
         ],
         "type": "object"
       },
+      "AgentApprovalDecisionResponseDto": {
+        "properties": {
+          "approval": {
+            "additionalProperties": true,
+            "description": "处置后的审批单行快照（含最新 status / decidedBy / decidedAt）",
+            "nullable": true,
+            "type": "object",
+            "x-i18n-en": "Snapshot of the approval row after disposition (with latest status / decidedBy / decidedAt)."
+          },
+          "ok": {
+            "description": "处置是否成功（成功恒为 true，失败由错误码表示）",
+            "type": "boolean",
+            "x-i18n-en": "Whether the disposition succeeded (true on success; failures are expressed via a stable error code)."
+          },
+          "resumeReason": {
+            "description": "本次处置未自动恢复会话的原因（如会话状态不符、仍有 pending 单、重读/审批查询/入队失败）；成功恢复时省略",
+            "type": "string",
+            "x-i18n-en": "Reason why this decision did not auto-resume the session (wrong status, pending approvals, reread/query/enqueue failure); omitted on successful resume"
+          },
+          "resumed": {
+            "description": "本次处置是否把会话重新入队恢复（与 grant/deny 端点同口径：仅允许且会话挂起等待审批、无其它 pending 单时为 true）",
+            "type": "boolean",
+            "x-i18n-en": "Whether this decision re-enqueued the session for resume (same rule as grant/deny: true only when allowed, the session is waiting for approval, and no other pending approval remains)"
+          }
+        },
+        "required": [
+          "ok",
+          "approval",
+          "resumed"
+        ],
+        "type": "object"
+      },
       "AgentBacklogResponseDto": {
         "properties": {
           "count": {
@@ -513,13 +545,19 @@
       "AgentMessageResponseDto": {
         "properties": {
           "action": {
-            "description": "本次动作：steered=注入运行中会话；enqueued=重新入队 agent-jobs",
+            "description": "本次动作：steered=注入运行中会话；enqueued=重新入队 agent-jobs；rejected_terminal=会话已是终态，消息未写入、不触发续跑",
             "enum": [
               "steered",
-              "enqueued"
+              "enqueued",
+              "rejected_terminal"
             ],
             "type": "string",
-            "x-i18n-en": "Action taken this time: steered = injected into a running session; enqueued = re-enqueued in agent-jobs"
+            "x-i18n-en": "Action taken: steered = injected into a running session; enqueued = re-queued to agent-jobs; rejected_terminal = session is terminal, message not written and no resume"
+          },
+          "reason": {
+            "description": "仅 action=rejected_terminal 时出现：终态拒绝续跑的原因（可直接展示）",
+            "type": "string",
+            "x-i18n-en": "Present only when action=rejected_terminal: reason for refusing to resume a terminal session (safe to display)"
           },
           "sessionId": {
             "description": "会话 id",
@@ -528,9 +566,9 @@
             "x-i18n-en": "Session id"
           },
           "status": {
-            "description": "写消息后的会话状态（running=已注入 steer；pending=已重新入队）",
+            "description": "写消息后的会话状态（running=已注入 steer；pending=已重新入队；终态拒绝时保持原状态）",
             "type": "string",
-            "x-i18n-en": "Session status after writing the message (running = steer injected; pending = re-enqueued)"
+            "x-i18n-en": "Session status after posting a message (running = steer injected; pending = re-enqueued; unchanged on terminal rejection)"
           },
           "stepSeq": {
             "description": "新写入的用户步序号",
@@ -3558,33 +3596,6 @@
         ],
         "type": "object"
       },
-      "ApprovalPhraseResponseDto": {
-        "properties": {
-          "approval": {
-            "additionalProperties": true,
-            "description": "处置后的审批单行快照（含最新 status / decidedBy / decidedAt）",
-            "nullable": true,
-            "type": "object",
-            "x-i18n-en": "Snapshot of the approval row after disposition (with latest status / decidedBy / decidedAt)."
-          },
-          "ok": {
-            "description": "处置是否成功（成功恒为 true，失败由错误码表示）",
-            "type": "boolean",
-            "x-i18n-en": "Whether the disposition succeeded (true on success; failures are expressed via a stable error code)."
-          },
-          "resumed": {
-            "description": "本次处置是否把会话重新入队恢复（与 grant/deny 端点同口径：仅允许且会话挂起等待审批、无其它 pending 单时为 true）",
-            "type": "boolean",
-            "x-i18n-en": "Whether this decision re-enqueued the session for resume (same rule as grant/deny: true only when allowed, the session is waiting for approval, and no other pending approval remains)"
-          }
-        },
-        "required": [
-          "ok",
-          "approval",
-          "resumed"
-        ],
-        "type": "object"
-      },
       "ArtifactManifestItemDto": {
         "properties": {
           "name": {
@@ -5739,16 +5750,6 @@
             "type": "object",
             "x-i18n-en": "Optional business context (redacted server-side and stored in session.contextJson)"
           },
-          "kind": {
-            "description": "会话类型覆盖；不传时服务端根据 prompt 推导（chat / sop_authoring / plan）",
-            "enum": [
-              "chat",
-              "sop_authoring",
-              "plan"
-            ],
-            "type": "string",
-            "x-i18n-en": "Session kind override; when omitted, the server infers it from the prompt (chat / sop_authoring / plan)"
-          },
           "prompt": {
             "description": "用户给工作台的初始指令（作为首条 user AgentStep 落库）",
             "example": "帮我分析昨天的订单异常并起草一份日报 SOP",
@@ -5839,6 +5840,12 @@
             ],
             "type": "string",
             "x-i18n-en": "Decision action: grant/deny is restricted to ADMINs and subject to the four-eyes principle (the requester cannot approve their own request); withdraw allows only the creator to withdraw their own pending approval request"
+          },
+          "note": {
+            "description": "处置附言（可选；不参与服务端判定，仅供前端展示/排查，最长 500 字）",
+            "maxLength": 500,
+            "type": "string",
+            "x-i18n-en": "Optional decision note (not used by server logic; for UI display and troubleshooting, max 500 chars)"
           }
         },
         "required": [
@@ -15915,10 +15922,23 @@
       },
       "WorkbenchSessionActionResponseDto": {
         "properties": {
+          "action": {
+            "description": "动作结果码；终态追消息被拒时为 rejected_terminal",
+            "enum": [
+              "rejected_terminal"
+            ],
+            "type": "string",
+            "x-i18n-en": "Action result code; rejected_terminal when a message is refused on a terminal session"
+          },
           "ok": {
             "description": "操作是否成功",
             "type": "boolean",
             "x-i18n-en": "Whether the operation succeeded"
+          },
+          "reason": {
+            "description": "失败/拒绝原因（可直接展示）；ok=false 时给出",
+            "type": "string",
+            "x-i18n-en": "Failure or rejection reason (safe to display); present when ok=false"
           },
           "resumed": {
             "description": "是否触发了会话恢复入队",
@@ -17234,12 +17254,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "$ref": "#/components/schemas/AgentApprovalDecisionResponseDto"
                 }
               }
             },
-            "description": ""
+            "description": "审批处置结果（含 deny 后自动恢复失败原因）",
+            "x-i18n-en": "Approval decision result (including the reason auto-resume failed after deny)"
           }
         },
         "security": [
@@ -17282,12 +17302,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "$ref": "#/components/schemas/AgentApprovalDecisionResponseDto"
                 }
               }
             },
-            "description": ""
+            "description": "审批处置结果（含 deny 后自动恢复失败原因）",
+            "x-i18n-en": "Approval decision result (including the reason auto-resume failed after deny)"
           }
         },
         "security": [
@@ -17341,7 +17361,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApprovalPhraseResponseDto"
+                  "$ref": "#/components/schemas/AgentApprovalDecisionResponseDto"
                 }
               }
             },

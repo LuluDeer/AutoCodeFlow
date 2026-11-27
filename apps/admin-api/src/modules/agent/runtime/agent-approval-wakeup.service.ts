@@ -10,9 +10,17 @@ import { AgentSessionService, buildEventBody } from "./agent-session.service";
 /**
  * 四眼原则的**服务端共享判定**（纯函数，grant / deny / phrase 三条处置入口共用）。
  *
- * 输入只有三个事实 + 一个配置读取端口：会话创建者、当前登录用户名、工具名与
- * ConfigService。任何放行决定都必须在写库之前过这一关——phrase 端点原先只拦
- * `sop_publish`，普通工具可被创建者本人用一句 `allow` 自批，正是漏了这一步。
+ * 输入只有几个事实 + 一个配置读取端口：会话创建者、当前登录用户名、当前登录
+ * 用户的数字 id、工具名与 ConfigService。任何放行决定都必须在写库之前过这一关
+ * ——phrase 端点原先只拦 `sop_publish`，普通工具可被创建者本人用一句 `allow`
+ * 自批，正是漏了这一步。
+ *
+ * `createdBy` 有两种**同人**形状，必须同时覆盖：
+ *   · `user:<username>` —— agent 会话直建口径（AgentController.create）；
+ *   · `user:<数字 id>` —— workbench 建单口径（WorkbenchController.createSession
+ *     用 `user:${userId}`）。只比 username 时，管理员从工作台建单、再到
+ *     `/agent-sessions` 深链处置自己的审批单就能自批，`blockSelfApproval=true`
+ *     也拦不住（攻击者不需要知道对方用户名）。
  *
  * · `createdBy` 缺失（存量行 NULL）⇒ 不可判定，不拦（沿用既有 grant 语义）；
  * · `agent.policy.blockSelfApproval` 显式 `true` ⇒ 同一人不可批自己发起的会话；
@@ -25,11 +33,25 @@ export interface ApprovalSelfConfigReader {
 export function isApprovalSelfDecision(input: {
   createdBy: string | null | undefined;
   username: string;
+  /** 当前登录用户数字 id（workbench 建单的 `user:<id>` 口径所需）。 */
+  userId?: number | string | null;
   toolName: string;
   config?: ApprovalSelfConfigReader | null;
 }): boolean {
   if (!input.createdBy) return false;
-  if (input.createdBy !== `user:${input.username}`) return false;
+  const selfByName = input.createdBy === `user:${input.username}`;
+  const rawId = input.userId;
+  const normalizedId =
+    typeof rawId === "number"
+      ? Number.isFinite(rawId)
+        ? String(Math.trunc(rawId))
+        : null
+      : typeof rawId === "string" && /^\d+$/.test(rawId.trim())
+        ? rawId.trim()
+        : null;
+  const selfById =
+    normalizedId !== null && input.createdBy === `user:${normalizedId}`;
+  if (!selfByName && !selfById) return false;
   if (input.toolName === "sop_publish") return true;
   return input.config?.get<boolean>("agent.policy.blockSelfApproval") === true;
 }

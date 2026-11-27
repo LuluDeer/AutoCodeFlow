@@ -157,28 +157,35 @@ describe("chat-session — prompt-first 创建与会话类型推导", () => {
     expect(inferWorkbenchSessionKind("给我一个拆解步骤的方案")).toBe("plan");
   });
 
-  it("DTO whitelist：kind 可选但不能越权传 scope/createdBy", async () => {
+  it("DTO whitelist：客户端不能越权传 kind/scope/createdBy/triggerSource", async () => {
     const dto = plainToInstance(CreateWorkbenchChatSessionDto, {
       prompt: "帮我起草 SOP",
-      kind: "sop_authoring",
+      kind: "plan",
       scope: { sops: ["other"] },
       createdBy: "system:admin",
     });
     expect(dto.prompt).toBe("帮我起草 SOP");
-    expect(dto.kind).toBe("sop_authoring");
-    // whitelist 由 ValidationPipe.forbidNonWhitelisted 在真实请求中剥除/拒绝；
-    // 这里仅断言 DTO 类自身没有声明这些越权字段（class-transformer 不会自动剥）。
+    // kind 字段已从请求 DTO 删除：服务端只从 prompt 推导，客户端传值被全局
+    // whitelist + forbidNonWhitelisted 拒绝（class-transformer 自身仍会拷贝，
+    // 因此这里用带 whitelist 的 validate 断言，而不是断言 dto.kind 为空）。
     const keys = Object.keys(new CreateWorkbenchChatSessionDto());
+    expect(keys).not.toContain("kind");
     expect(keys).not.toContain("scope");
     expect(keys).not.toContain("createdBy");
     expect(keys).not.toContain("triggerSource");
-    const errors = await validate(dto);
-    expect(errors).toHaveLength(0);
+    const errors = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
+    expect(errors.map((e) => e.property)).toContain("kind");
   });
 
-  it("审批 DTO 只接受 grant/deny/withdraw", async () => {
+  it("审批 DTO 只接受 grant/deny/withdraw，note 可选消除 400", async () => {
     const ok = plainToInstance(DecideWorkbenchApprovalDto, { decision: "withdraw" });
     expect(await validate(ok)).toHaveLength(0);
+    const withNote = plainToInstance(DecideWorkbenchApprovalDto, {
+      decision: "deny",
+      note: "误操作，撤回",
+    });
+    expect(await validate(withNote)).toHaveLength(0);
+    expect(withNote.note).toBe("误操作，撤回");
     const bad = plainToInstance(DecideWorkbenchApprovalDto, { decision: "approve" });
     expect(await validate(bad)).not.toHaveLength(0);
   });
@@ -198,8 +205,7 @@ function makeInteractiveHarness(sessionOwner: string) {
     createdBy: sessionOwner,
   }));
   const requestAbort = jest.fn(async () => true);
-  const decideApproval = jest.fn(async () => true);
-  const port: WorkbenchSessionInteractionPort = {
+  const decideApproval = jest.fn(async () => true);  const port: WorkbenchSessionInteractionPort = {
     createSession: create as never,
     findById: findById as never,
     sendMessage: sendMessage as never,
@@ -275,6 +281,50 @@ describe("chat-session — owner 校验与审批四眼", () => {
     expect(h.requestAbort).toHaveBeenCalledTimes(1);
   });
 
+  it("终态会话点取消：端口回 false ⇒ ok:false，不假成功", async () => {
+    const h = makeInteractiveHarness(`user:${USER.id}`);
+    h.requestAbort.mockResolvedValueOnce(false);
+    const controller = new WorkbenchSessionController(h.port);
+    await expect(controller.cancelSession(SESSION_ID, USER)).resolves.toEqual({
+      ok: false,
+      sessionId: SESSION_ID,
+    });
+  });
+
+  it("追加消息：终态拒绝 ⇒ ok:false + action + reason（不谎报成功）", async () => {
+    const h = makeInteractiveHarness(`user:${USER.id}`);
+    h.port.sendMessage = jest.fn(async () => {
+      const err = Object.assign(new Error("会话已处于终态（succeeded），不能继续追加消息"), {
+        action: "rejected_terminal",
+        reason: "会话已处于终态（succeeded），不能继续追加消息",
+      });
+      throw err;
+    }) as never;
+    const controller = new WorkbenchSessionController(h.port);
+    await expect(
+      controller.postMessage(SESSION_ID, { content: "继续" }, USER),
+    ).resolves.toEqual({
+      ok: false,
+      sessionId: SESSION_ID,
+      action: "rejected_terminal",
+      reason: "会话已处于终态（succeeded），不能继续追加消息",
+    });
+  });
+
+  it("审批：端口回 false（不存在/不匹配/已处置）⇒ ok:false，不再假成功", async () => {
+    const h = makeInteractiveHarness("user:99");
+    h.decideApproval.mockResolvedValueOnce(false);
+    const controller = new WorkbenchSessionController(h.port);
+    await expect(
+      controller.decideApproval(
+        SESSION_ID,
+        "apr-1",
+        { decision: "deny" },
+        ADMIN,
+      ),
+    ).resolves.toEqual({ ok: false, sessionId: SESSION_ID });
+  });
+
   it("审批：USER grant 被拒（仅 ADMIN）；ADMIN 自批被拒（四眼）；withdraw owner 可", async () => {
     // owner = ADMIN：ADMIN 是 creator ⇒ 四眼拒绝；USER 非 ADMIN ⇒ 角色闸门拒绝。
     const h = makeInteractiveHarness(`user:${ADMIN.username}`);
@@ -290,7 +340,7 @@ describe("chat-session — owner 校验与审批四眼", () => {
     const ownerController = new WorkbenchSessionController(ownerHarness.port);
     await expect(
       ownerController.decideApproval(SESSION_ID, "apr-1", { decision: "withdraw" }, USER),
-    ).resolves.toEqual({ ok: true, sessionId: SESSION_ID, resumed: true });
+    ).resolves.toEqual({ ok: true, sessionId: SESSION_ID });
     expect(ownerHarness.decideApproval).toHaveBeenCalledWith(
       expect.objectContaining({ decision: "withdraw" }),
     );

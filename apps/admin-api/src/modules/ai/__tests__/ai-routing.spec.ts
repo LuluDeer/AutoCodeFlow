@@ -292,7 +292,7 @@ describe("能力闸：不支持就如实不可用，不静默降级", () => {
     expect(JSON.stringify(h.calls[0].body.messages)).toContain("v.mp4");
   });
 
-  it("Agent 用途落到 ollama（无 tool-calling 面）→ 不发请求", async () => {
+  it("Agent 用途落到 ollama ⇒ 走 OpenAI 兼容 /v1/chat/completions（tool-calling 面）", async () => {
     const h = await harness({
       "ai.provider": "ollama",
       "ai.routes.agent.provider": "local",
@@ -300,7 +300,7 @@ describe("能力闸：不支持就如实不可用，不静默降级", () => {
         {
           id: "local",
           transport: "ollama",
-          baseUrl: "http://localhost:11434",
+          baseUrl: "http://93.184.216.34:11434",
           model: "llama3",
         },
       ]),
@@ -308,8 +308,15 @@ describe("能力闸：不支持就如实不可用，不静默降级", () => {
     const res = await h.service.chatMultimodal({
       messages: [{ role: "user", content: "x" }],
     });
-    expect(res.content).toBe("");
-    expect(h.calls).toHaveLength(0);
+    expect(res.content).toBe("ok");
+    // 当前路由策略：agent + ollama 不再「不发请求」，而是归一到 OpenAI 兼容
+    // 端点后再发（analysis 用途仍走 /api/generate）。用公网字面量避免把
+    // SSRF 守卫的拒绝误当成能力闸结论。
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].url).toBe(
+      "http://93.184.216.34:11434/v1/chat/completions",
+    );
+    expect(h.calls[0].url).not.toContain("/api/generate");
   });
 
   it("分析用途可以落到 ollama（/api/generate 纯文本面）", async () => {

@@ -6,6 +6,12 @@
  * 内存替身（装饰器和异常类均无真实行为），被测对象仍是真实控制器 + 真实纯函数。
  */
 jest.mock("@nestjs/common", () => {
+  // 本机 @nestjs/common 12.x 是 ESM-only：jest.requireActual() 会触发
+  // "Must use import to load ES Module"。因此这里用 Proxy 兜底：显式列出的
+  // 异常类/装饰器保持原语义，其余 Nest 导出（Inject/InjectRepository/Get 等）
+  // 一律降级为 no-op 装饰器，保证被测模块加载期不再因缺导出而 TypeError。
+  const noopDecorator = () => () => undefined;
+
   class HttpError extends Error {
     response?: unknown;
     status?: number;
@@ -48,22 +54,81 @@ jest.mock("@nestjs/common", () => {
   ];
   const out: Record<string, unknown> = {};
   for (const name of exceptions) out[name] = HttpError;
-  return {
+  const stub: Record<string, unknown> = {
     ...out,
-    Controller: () => () => undefined,
-    Post: () => () => undefined,
-    Body: () => () => undefined,
-    Ip: () => () => undefined,
-    UseGuards: () => () => undefined,
-    Injectable: () => () => undefined,
-    Optional: () => () => undefined,
+    Controller: noopDecorator,
+    Post: noopDecorator,
+    Body: noopDecorator,
+    Ip: noopDecorator,
+    UseGuards: noopDecorator,
+    Injectable: noopDecorator,
+    Optional: noopDecorator,
+    Inject: noopDecorator,
     Logger: class {
       log() {}
       warn() {}
       error() {}
     },
   };
+  return new Proxy(stub, {
+    get: (target, property) =>
+      property in target ? target[property as string] : noopDecorator,
+    has: () => true,
+  });
 });
+
+jest.mock("@nestjs/core", () => ({
+  ModuleRef: class {},
+}));
+
+jest.mock("@nestjs/config", () => ({
+  ConfigService: class {
+    get<T>(): T | undefined {
+      return undefined;
+    }
+  },
+}));
+
+jest.mock("@nestjs/typeorm", () => {
+  const noopDecorator = () => () => undefined;
+  return new Proxy(
+    { InjectRepository: noopDecorator, InjectDataSource: noopDecorator },
+    {
+      get: (target, property) =>
+        property in target ? target[property as string] : noopDecorator,
+      has: () => true,
+    },
+  );
+});
+
+jest.mock("@nestjs/schedule", () => {
+  const noopDecorator = () => () => undefined;
+  return new Proxy(
+    { Cron: noopDecorator, Interval: noopDecorator, Timeout: noopDecorator },
+    {
+      get: (target, property) =>
+        property in target ? target[property as string] : noopDecorator,
+      has: () => true,
+    },
+  );
+});
+
+jest.mock("minio", () => ({
+  Client: class {
+    putObject() {
+      return Promise.resolve();
+    }
+    getObject() {
+      return Promise.resolve(null);
+    }
+    removeObject() {
+      return Promise.resolve();
+    }
+    statObject() {
+      return Promise.resolve({});
+    }
+  },
+}));
 
 jest.mock("@nestjs/swagger", () => ({
   ApiTags: () => () => undefined,

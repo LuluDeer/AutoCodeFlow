@@ -99,7 +99,16 @@ describe("TaskTemplateService.importManifest —— 清单导入", () => {
     expect(saved.name).toBe("acme_report"); // 非官方 key：无别的名字来源
     expect(saved.description).toBe(VALID_MANIFEST.description);
     expect(saved.category).toBeNull();
-    expect(saved.config).toEqual(VALID_CONFIG);
+    expect(saved.config).toEqual({
+      ...VALID_CONFIG,
+      metadata: {
+        skillManifest: {
+          version: VALID_MANIFEST.version,
+          capabilities: VALID_MANIFEST.capabilities,
+          params: VALID_MANIFEST.params,
+        },
+      },
+    });
     expect(saved.isOfficial).toBe(false);
     // 属主键按 id 编码（R39-A1 同款）
     expect(saved.createdBy).toBe("user:42|alice");

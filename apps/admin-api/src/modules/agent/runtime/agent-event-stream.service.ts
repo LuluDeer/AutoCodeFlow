@@ -31,6 +31,14 @@ import { EventEmitter } from "node:events";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { AgentSessionStatus } from "../entities/agent-session.entity";
 import { AgentSessionService, redactForStorage } from "./agent-session.service";
+import type {
+  AgentStreamReplayMeta,
+  AgentStreamReplayResult,
+  StreamSnapshotPayload,
+} from "./agent-event-stream.contract";
+
+/** 单次重放最多取多少条（多取 1 条用于判定 hasMore，发送仍只发 5000 条）。 */
+const REPLAY_BATCH_LIMIT = 5000;
 
 /** 跨实例事件中转频道（全局唯一；载荷自带 sessionId，订阅端按会话过滤）。 */
 export const AGENT_EVENT_RELAY_CHANNEL = "acf:agent-events:relay";
@@ -79,7 +87,10 @@ export interface SendMessageResult {
   sessionId: string;
   status: AgentSessionStatus;
   stepSeq: number;
-  action: "steered" | "enqueued";
+  /** 终态会话返回 rejected_terminal；旧调用方仍只消费 steered/enqueued 两值。 */
+  action: "steered" | "enqueued" | "rejected_terminal";
+  /** 仅 rejected_terminal 携带：拒绝原因（简短、可直接展示）。 */
+  reason?: string;
 }
 
 type RelayEnvelope =
@@ -178,11 +189,40 @@ export class AgentEventStreamService implements OnModuleDestroy {
   private readonly emitter = new EventEmitter();
   private readonly subscribers = new Set<Subscriber>();
   private readonly steers = new Map<string, string[]>();
+  /**
+   * 本进程已见到的终态事件 seq（sessionId → terminal seq）。
+   *
+   * 用 seq 而非单纯 Set 是为了支持新世代：failed → reopenForResume → running
+   * 后，运行帧的 seq 必然大于终态 seq，应当放行；单纯 Set 只增不减会永久吞帧。
+   * DB 重放只发历史帧，**不写这里**，避免历史终态污染当前世代。
+   */
+  private readonly terminalKinds = new Map<string, number>();
   private publisher: Redis | null = null;
   private subscriber: Redis | null = null;
   private destroyed = false;
   /** 活跃流快照（供 mid-stream 刷新；与 Pub/Sub 是两个正交的通道）。 */
   readonly accumulator = new ActiveStreamAccumulator();
+
+  /**
+   * 同步终态询问：本进程是否已从本地发布或跨副本 relay 中见过终态。
+   * 不读库、不 await；供 runtime 在写 running/started 前做同段守卫。
+   * DB 重放的历史终态不写此标记，避免旧世代污染当前世代。
+   */
+  hasTerminalEvent(sessionId: string): boolean {
+    return this.terminalKinds.has(sessionId);
+  }
+
+  /**
+   * 恢复成功后清理终态屏障：显式调用本方法即代表调用方已确认 reopen/markRunning
+   * 成功，无条件放行，不再比较 atSeq 与终态 event.seq。
+   *
+   * 原因：stepSeq（totalSteps+1）与 event.seq 是两个独立计数器，跨命名空间比较
+   * 会误拒合法恢复；宁可少挡一个过期 running 帧，也不能让合法恢复永久吞帧。
+   * atSeq 仅作可选诊断提示保留，不参与判定。
+   */
+  clearTerminalForResume(sessionId: string, _atSeq?: number): void {
+    this.terminalKinds.delete(sessionId);
+  }
 
   /**
    * 装配点（AgentModule.onModuleInit）：把消息续跑接到 agent-jobs。
@@ -281,8 +321,27 @@ export class AgentEventStreamService implements OnModuleDestroy {
 
   /** 持久化事件落库后调用：本进程直接派发 + 远端通过 Redis 扇出。 */
   publishDurableEvent(sessionId: string, event: DurableAgentEvent): void {
+    // 终态竞态防护：如果终态 durable 事件已经先到达（快速完成会话常见），
+    // 后到的 running/started 事件不得再投影成「正在运行」；否则前端会永久卡在
+    // 运行中。读终态与 running 判定放在同一同步段，中间不 await。
+    const kind = String(event.kind ?? "");
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const isRunningStart =
+      kind === "session_started" ||
+      kind === "session_running" ||
+      ((kind === "status_changed" || kind === "session_status_changed") &&
+        ["running", "started"].includes(String(payload?.status ?? "")));
+    if (isRunningStart && this.terminalKinds.has(sessionId)) return;
+
     this.dispatch(sessionId, "event", event);
-    const phase = event.payload?.phase;
+    if (
+      TERMINAL_STATUSES.includes(kind) ||
+      TERMINAL_STATUSES.includes(String(payload?.status ?? ""))
+    ) {
+      // 记录终态 seq，作为后续恢复清理的 epoch 基准。
+      this.terminalKinds.set(sessionId, Number(event.seq ?? 0));
+    }
+    const phase = payload?.phase;
     if (typeof phase === "string") {
       this.accumulator.append(sessionId, { type: "phase_changed", phase }, event.seq);
     }
@@ -326,8 +385,23 @@ export class AgentEventStreamService implements OnModuleDestroy {
         return;
       }
       if ("event" in envelope) {
+        const kind = String(envelope.event.kind ?? "");
+        const payload = envelope.event.payload as Record<string, unknown> | undefined;
+        const status = String(payload?.status ?? "");
+        const isRunningStart =
+          kind === "session_started" ||
+          kind === "session_running" ||
+          ((kind === "status_changed" || kind === "session_status_changed") &&
+            ["running", "started"].includes(status));
+        if (isRunningStart && this.terminalKinds.has(envelope.sessionId)) return;
+        if (TERMINAL_STATUSES.includes(kind) || TERMINAL_STATUSES.includes(status)) {
+          this.terminalKinds.set(envelope.sessionId, Number(envelope.event.seq ?? 0));
+        }
         this.dispatch(envelope.sessionId, "event", envelope.event);
       } else if ("delta" in envelope) {
+        // 跨副本 delta 也要进本实例快照，否则远端产生的内容在本地 mid-stream
+        // 刷新时补不回来；本地 publishDelta 已 append，这里不会重复计数（实例自身帧被过滤）。
+        this.accumulator.append(envelope.sessionId, envelope.delta);
         this.dispatch(envelope.sessionId, "delta", envelope.delta);
       }
     } catch (err: unknown) {
@@ -366,6 +440,9 @@ export class AgentEventStreamService implements OnModuleDestroy {
   }
 
   subscribeAbort(sessionId: string, cb: () => void): () => void {
+    // runtime worker 副本可能没有任何 SSE 连接；订阅 abort 时也要建立 relay，
+    // 否则 handleRemote 的跨副本 abort 信号永远到不了这里。
+    this.ensureSubscriber();
     const channel = abortChannel(sessionId);
     this.emitter.on(channel, cb);
     return () => this.emitter.off(channel, cb);
@@ -413,13 +490,52 @@ export class AgentEventStreamService implements OnModuleDestroy {
 
     try {
       // 先重放持久事件，再发 synced 边界；重放期间的实时帧进有界队列。
-      const replayed = await this.replay(sessionId, fromSeq ?? 0, sendEvent);
-      const activeStream = this.accumulator.snapshot(sessionId)?.active ?? false;
+      const replayMeta: AgentStreamReplayMeta = {
+        hasMore: false,
+        truncated: false,
+        count: 0,
+      };
+      const replayed = await this.replay(
+        sessionId,
+        fromSeq ?? 0,
+        sendEvent,
+        replayMeta,
+      );
+      // 终态竞态：重放若已包含终态事件，后续队列中的 running/started 帧必须丢弃；
+      // 扫描与标记放在同一同步段，避免跨 await 的竞态窗口。
+      for (const queued of sub.queue) {
+        if (queued.event !== "event") continue;
+        const ev = queued.payload as Partial<DurableAgentEvent> | undefined;
+        const kind = String(ev?.kind ?? "");
+        const status = String((ev?.payload as Record<string, unknown> | undefined)?.status ?? "");
+        if (TERMINAL_STATUSES.includes(kind) || TERMINAL_STATUSES.includes(status)) {
+          this.terminalKinds.set(sessionId, Number(ev?.seq ?? 0));
+        }
+      }
+      const snapshotRecord = this.accumulator.snapshot(sessionId);
+      const activeStream = snapshotRecord?.active ?? false;
+      // 快照按契约只暴露 content/reasoning/phase；lastSeq/active 仍由帧顶层承载。
+      let snapshot: StreamSnapshotPayload | undefined;
+      if (snapshotRecord) {
+        snapshot = {
+          content: snapshotRecord.content,
+          reasoning: snapshotRecord.reasoning,
+          ...(snapshotRecord.phase !== null
+            ? { phase: snapshotRecord.phase }
+            : {}),
+        };
+      }
+      // status 必须取重放之后的最新快照：重放前的 session 可能仍是 running，
+      // 而 REST/终态写入已在重放期间完成，旧快照会盖掉真实终态。
+      const fresh = await this.sessions.findById(sessionId).catch(() => null);
       sendEvent("synced", {
         sessionId,
         lastSeq: replayed,
-        status: session.status,
+        status: fresh?.status ?? session.status,
         activeStream,
+        ...(snapshot ? { snapshot } : {}),
+        hasMore: replayMeta.hasMore,
+        truncated: replayMeta.truncated,
       });
 
       timer = setInterval(ping, PING_INTERVAL_MS);
@@ -437,6 +553,20 @@ export class AgentEventStreamService implements OnModuleDestroy {
         }
         const frame = sub.queue.shift();
         if (!frame) continue;
+        if (frame.event === "event") {
+          const ev = frame.payload as Partial<DurableAgentEvent> | undefined;
+          const kind = String(ev?.kind ?? "");
+          const status = String((ev?.payload as Record<string, unknown> | undefined)?.status ?? "");
+          const isRunningStart =
+            kind === "session_started" ||
+            kind === "session_running" ||
+            ((kind === "status_changed" || kind === "session_status_changed") &&
+              ["running", "started"].includes(status));
+          if (isRunningStart && this.terminalKinds.has(sessionId)) continue;
+          if (TERMINAL_STATUSES.includes(kind) || TERMINAL_STATUSES.includes(status)) {
+            this.terminalKinds.set(sessionId, Number(ev?.seq ?? 0));
+          }
+        }
         sendEvent(frame.event, frame.payload);
         if (frame.event === "resync_required") break;
       }
@@ -463,15 +593,20 @@ export class AgentEventStreamService implements OnModuleDestroy {
     sessionId: string,
     fromSeq: number,
     sendEvent: (event: string, payload: unknown) => void,
+    meta?: AgentStreamReplayMeta,
   ): Promise<number> {
     // 生产为 PG DataSource；查询失败如实上抛，由 streamSession 发 error 帧，
-    // 绝不伪造空历史。
+    // 绝不伪造空历史。多取 1 条判定是否还有历史；发送仍严格不超过 5000 条。
     const rows = (await this.dataSource.query(
       `SELECT "seq", "kind", "payload", "createdAt" FROM "agent_events"
-       WHERE "sessionId" = $1::uuid AND "seq" > $2 ORDER BY "seq" ASC LIMIT 5000`,
-      [sessionId, Math.max(0, Math.trunc(fromSeq))],
+       WHERE "sessionId" = $1::uuid AND "seq" > $2 ORDER BY "seq" ASC LIMIT $3`,
+      [sessionId, Math.max(0, Math.trunc(fromSeq)), REPLAY_BATCH_LIMIT + 1],
     )) as DurableAgentEvent[];
-    for (const row of rows) {
+    const hasMore = rows.length > REPLAY_BATCH_LIMIT;
+    const visible = hasMore ? rows.slice(0, REPLAY_BATCH_LIMIT) : rows;
+    for (const row of visible) {
+      // DB 重放是历史事实：只发给客户端补历史，**不写 terminalKinds**。
+      // 旧世代的终态事件不得污染当前世代的 running 放行判定。
       sendEvent("event", {
         seq: Number(row.seq),
         kind: row.kind,
@@ -479,7 +614,18 @@ export class AgentEventStreamService implements OnModuleDestroy {
         createdAt: row.createdAt,
       });
     }
-    return rows.length ? Number(rows[rows.length - 1].seq) : fromSeq;
+    const result: AgentStreamReplayResult = {
+      lastSeq: visible.length ? Number(visible[visible.length - 1].seq) : fromSeq,
+      hasMore,
+      truncated: hasMore,
+      count: visible.length,
+    };
+    if (meta) {
+      meta.hasMore = result.hasMore;
+      meta.truncated = result.truncated;
+      meta.count = result.count;
+    }
+    return result.lastSeq;
   }
 
   // ── 中断 ────────────────────────────────────────────────────────────────
@@ -490,13 +636,13 @@ export class AgentEventStreamService implements OnModuleDestroy {
     actor = "admin",
   ): Promise<AgentAbortResult> {
     const session = await this.sessions.requireById(sessionId);
-    let aborted = false;
-    if (!TERMINAL_STATUSES.includes(session.status)) {
-      // finish() 内部是幂等条件写：并发终态只会有一个赢家。
+    const attempted = !TERMINAL_STATUSES.includes(session.status);
+    if (attempted) {
+      // finish() 是 void 的幂等条件写：并发终态只有一个赢家，输家 affected=0。
+      // 不靠返回值（它不返回），改为写入后重读状态判定本次是否真的赢了。
       await this.sessions.finish(sessionId, "aborted", {
         errorMessage: `已被 ${redactForStorage(actor)} 人工中止`,
       });
-      aborted = true;
     }
     try {
       await this.getPublisher().set(agentAbortKey(sessionId), "1", "EX", 600);
@@ -510,6 +656,8 @@ export class AgentEventStreamService implements OnModuleDestroy {
     this.emitter.emit(abortChannel(sessionId));
     this.relay({ sessionId, abort: true });
     const fresh = await this.sessions.findById(sessionId);
+    // attempted 防止「原本已 aborted」被算成本次成功；fresh 状态确认并发赢家。
+    const aborted = attempted && fresh?.status === "aborted";
     return {
       sessionId,
       status: fresh?.status ?? (aborted ? "aborted" : session.status),
@@ -526,6 +674,18 @@ export class AgentEventStreamService implements OnModuleDestroy {
     const actorText = redactForStorage(actor);
     const clean = redactForStorage(content);
     const session = await this.sessions.requireById(sessionId);
+    // 终态拒绝必须前移到 appendStep 之前：生产 appendStep 虽自带终态守卫，
+    // 内存替身/旁路装配仍会先写 step。先判后写才能保证「拒绝即零副作用」
+    // （零 step、零 step_appended 事件、零 steer/队列）。stepSeq=0 表示未写入。
+    if (["succeeded", "aborted", "budget_exceeded"].includes(session.status)) {
+      return {
+        sessionId,
+        status: session.status,
+        stepSeq: 0,
+        action: "rejected_terminal",
+        reason: `会话已处于终态（${session.status}），不能继续追加消息`,
+      };
+    }
     // 先持久化 user step（workbench 侧不重复写），再决定 steer 还是入队。
     const step = await this.sessions.appendStep(sessionId, {
       role: "user",
@@ -564,12 +724,11 @@ export class AgentEventStreamService implements OnModuleDestroy {
       return { sessionId, status: session.status, stepSeq, action: "steered" };
     }
 
-    // 非 running：终态不复活（与手动 resume 同纪律）；failed 需先重开状态机。
-    if (["succeeded", "aborted", "budget_exceeded"].includes(session.status)) {
-      return { sessionId, status: session.status, stepSeq, action: "enqueued" };
-    }
     if (session.status === "failed") {
-      await this.sessions.reopenForResume(sessionId);
+      const reopened = await this.sessions.reopenForResume(sessionId);
+      // 恢复成功后按新世代 seq 清理终态屏障，避免后到 running 帧被永久吞掉。
+      // reopenForResume 返回 false（状态已变/不可重开）时保持屏障不动。
+      if (reopened) this.clearTerminalForResume(sessionId, stepSeq);
     }
     if (this.enqueueResume) {
       await this.enqueueResume(sessionId, stepSeq, mode);
