@@ -1,4 +1,4 @@
-import { Module } from "@nestjs/common";
+import { Logger, Module } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { SystemConfigModule } from "../config/config.module";
@@ -51,21 +51,71 @@ import { DataSource } from "typeorm";
     {
       provide: TokenSamplePort,
       inject: [DataSource],
-      useFactory: (ds: DataSource) =>
-        createTokenSamplePort({
-          selectAgentSessionTotals: async (sessionId) => {
-            const rows = await ds.query(
-              'SELECT id, "totalTokensIn", "totalTokensOut" FROM agent_sessions WHERE id = $1 LIMIT 1',
-              [sessionId],
-            );
-            return rows[0] ?? null;
+      useFactory: (ds: DataSource) => {
+        const logger = new Logger("TokenSamplePortAdapter");
+        return createTokenSamplePort(
+          {
+            selectAgentSessionTotals: async (sessionId) => {
+              const rows = await ds.query(
+                'SELECT id, "totalTokensIn", "totalTokensOut" FROM agent_sessions WHERE id = $1 LIMIT 1',
+                [sessionId],
+              );
+              return rows[0] ?? null;
+            },
+            selectStepUsages: async (agentSessionId) =>
+              ds.query(
+                'SELECT "tokensIn", "tokensOut" FROM agent_steps WHERE "sessionId" = $1 AND "tokensIn" > 0',
+                [agentSessionId],
+              ),
+            // 成本线 P1（第 93 轮）：顶层 dualBasis 金额折算的 token 样本源。
+            // 企业总账单口径：不按 sessionId 关联、不做份额分摊；只取 provider/model
+            // 齐全且确有 token 的组；bigint 由 Port 层归一为 number。
+            // 第 94 轮：与 stats 的激活次数同源——from/to 均为闭区间、参数化过滤
+            // agent_steps."createdAt"；两者缺省时条件整段不追加（全局累计，零回归）。
+            // ⚠ ORDER BY 必须用聚合表达式：PG 在表达式里把 "in"/"out" 当输入列名，
+            //   用 SELECT 输出别名会报 column "in" does not exist（真 PG 实测）。
+            selectTokenByProviderModel: async (from?: Date, to?: Date) => {
+              const params: string[] = [];
+              const window: string[] = [];
+              if (from) {
+                // agent_steps."createdAt" 是 @CreateDateColumn() 默认的
+                // timestamp WITHOUT time zone（与 activation_log 显式 timestamptz 不同）。
+                // ⚠ 不能加 ::timestamptz：PG 会把 naive 列值按会话 TZ 解释为 timestamptz
+                //   再比较，闭区间端点整体漂移（真 PG 实测边界行漏算）。这里与
+                //   applyWindow 一致传 ISO 字符串、无强转，由 PG 按列类型解析。
+                params.push(from.toISOString());
+                window.push(`"createdAt" >= $${params.length}`);
+              }
+              if (to) {
+                params.push(to.toISOString());
+                window.push(`"createdAt" <= $${params.length}`);
+              }
+              const where = [
+                "provider IS NOT NULL",
+                "model IS NOT NULL",
+                '("tokensIn" > 0 OR "tokensOut" > 0)',
+                ...window,
+              ].join(" AND ");
+              return ds.query(
+                `SELECT provider, model, SUM("tokensIn")::bigint AS "in", SUM("tokensOut")::bigint AS "out", COUNT(*)::int AS steps
+FROM agent_steps
+WHERE ${where}
+GROUP BY provider, model ORDER BY SUM("tokensIn") + SUM("tokensOut") DESC`,
+                params,
+              );
+            },
           },
-          selectStepUsages: async (agentSessionId) =>
-            ds.query(
-              'SELECT "tokensIn", "tokensOut" FROM agent_steps WHERE "sessionId" = $1 AND "tokensIn" > 0',
-              [agentSessionId],
-            ),
-        }),
+          {
+            // SQL 失败必须留痕，否则 Port 的 fail-soft 会把错误伪装成「诚实标缺」。
+            onAggregateError: (err: unknown) =>
+              logger.warn(
+                `[showback] 全局 token 聚合查询失败，按空样本标缺：${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              ),
+          },
+        );
+      },
     },
     {
       provide: QUOTA_HARD_LIMIT_GATE,

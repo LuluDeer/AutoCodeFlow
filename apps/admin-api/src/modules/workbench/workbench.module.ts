@@ -16,6 +16,7 @@ import {
   type ReleaseApprovalsPort,
 } from "./release-approval.service";
 import { releasePolicyAdapter } from "./release-policy.adapter";
+import { ReleaseRetryController } from "./release-retry.controller";
 import { ConfigCacheSyncService } from "../config/config-cache-sync.service";
 import { SystemConfigModule } from "../config/config.module";
 import { SystemConfigService } from "../config/config.service";
@@ -67,7 +68,7 @@ import { WorkbenchBlobStore } from "./workbench-blob.store";
     SystemConfigModule,
     AuditModule,
   ],
-  controllers: [WorkbenchController],
+  controllers: [WorkbenchController, ReleaseRetryController],
   providers: [
     {
       provide: CapabilityActivationRecorder,
@@ -126,7 +127,7 @@ import { WorkbenchBlobStore } from "./workbench-blob.store";
       useFactory: (moduleRef: ModuleRef) => {
         const approvals = () =>
           moduleRef.get(AgentApprovalsService, { strict: false });
-        return {
+        const port: ReleaseApprovalsPort = {
           buildKey: (
             sessionId: string,
             toolName: string,
@@ -139,6 +140,14 @@ import { WorkbenchBlobStore } from "./workbench-blob.store";
             currentPolicyFingerprint: string | null,
           ) => approvals().consume(approvalKey, currentPolicyFingerprint),
         };
+        // 重启恢复用的可选方法不进枚举面：workbench-release-port-wiring.spec.ts
+        // 钉死了代理只暴露 buildKey/request/consume 三个可枚举键。用不可枚举属性
+        // 挂上去，消费侧 `this.approvals.findByKey` 仍可惰性取真服务。
+        Object.defineProperty(port, "findByKey", {
+          enumerable: false,
+          value: (approvalKey: string) => approvals().findByKey(approvalKey),
+        });
+        return port;
       },
     },
     {
@@ -147,6 +156,18 @@ import { WorkbenchBlobStore } from "./workbench-blob.store";
       useFactory: (moduleRef: ModuleRef) => ({
         create: (input: never) =>
           moduleRef.get(AgentSessionService, { strict: false }).create(input),
+        // 惰性取真服务：恢复路径只在内存 args 未命中时读 session.contextJson。
+        findById: async (id: string) => {
+          const row = await moduleRef
+            .get(AgentSessionService, { strict: false })
+            .findById(id);
+          return {
+            contextJson: (row?.contextJson ?? null) as Record<
+              string,
+              unknown
+            > | null,
+          };
+        },
       }),
     },
     {

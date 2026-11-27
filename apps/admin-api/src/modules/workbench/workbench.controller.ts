@@ -8,6 +8,7 @@ import {
   Post,
   UseGuards,
 } from "@nestjs/common";
+import { ModuleRef } from "@nestjs/core";
 import {
   ApiBearerAuth,
   ApiOkResponse,
@@ -15,6 +16,7 @@ import {
   ApiTags,
 } from "@nestjs/swagger";
 
+import { AuditService } from "../audit/audit.service";
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -87,6 +89,45 @@ const Inject: (...args: any[]) => any =
 function auditUserId(user?: { id: number | string }): number | null {
   const id = Number(user?.id);
   return Number.isFinite(id) ? id : null;
+}
+
+/**
+ * R92 跨角色闭环：审批**发起**失败的可见面。
+ *
+ * 与 ADR-045 发布结果审计（release-outcome.audit.ts）同级，但触发点更早——
+ * requestRelease 在「建单」阶段就抛错时根本没有 approvalKey / 审批行，
+ * 因此失败必须落一条可定位、可重试的结构化审计，管理员才有接收面。
+ * detail 只含 id / hash / 安全枚举 reason；异常原文（可能夹带 token）只进 warn 日志。
+ */
+export const APPROVAL_REQUEST_FAILED_ACTION =
+  "sop_publish.approval_request_failed";
+
+export const APPROVAL_REQUEST_RETRY_HINT =
+  "管理员在审批发起失败条目点「重新发起审批单」；发布仍需主管四眼批准 + 系统代理执行";
+
+export type ApprovalRequestFailureReason =
+  | "policy_fingerprint_unavailable"
+  | "dependency_unavailable"
+  | "approval_request_failed";
+
+/** 异常收敛成安全枚举：原文只进日志，绝不进审计 detail。 */
+export function classifyApprovalRequestFailure(
+  err: unknown,
+): ApprovalRequestFailureReason {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.includes("策略指纹")) return "policy_fingerprint_unavailable";
+  if (message.includes("端口未装配")) return "dependency_unavailable";
+  return "approval_request_failed";
+}
+
+/** commit 失败态回带 + 审计 detail 共用的同一份事实。 */
+export interface FailedApprovalInfo {
+  sopId: string;
+  cardHash: string;
+  contentHash: string;
+  requestedBy: string;
+  reason: ApprovalRequestFailureReason;
+  retryHint: string;
 }
 
 /**
@@ -197,6 +238,10 @@ export class WorkbenchController {
     // commit 仍只落 draft，既有五闸与返回值逐字不变。
     @Optional()
     private readonly releaseApproval?: ReleaseApprovalService | null,
+    // R92：失败审计旁路。@Optional 缺席（老单测/裁剪部署）⇒ 只 warn 不写审计，
+    // 五闸、draft 落库与三态返回逐字不变。
+    @Optional()
+    private readonly moduleRef?: ModuleRef,
   ) {}
 
   /**
@@ -423,15 +468,22 @@ export class WorkbenchController {
     );
 
     // ADR-045：draft 落库后发起发布审批（业务人员不直接 publish，主管四眼后
-    // 系统代理发布）。fail-open：审批发起异常只 warn、draft 保留，approvalKey
-    // 缺席即"审批未发起"，前端提示重试；既有五闸与 draft 调用逐字不动。
+    // 系统代理发布）。三态如实回带，不再静默失败、不再用中文 next 误导：
+    //   submitted     = requestRelease 成功，带 approvalKey（原 happy path 逐字保留）；
+    //   failed        = 进入发起分支但抛错（端口未装配/策略指纹不可读等），draft 已保留；
+    //   not_requested = 端口缺席或非 USER 上下文（无 username），本就没有发起，非异常。
+    // 既有五闸与 draft 调用逐字不动，draft 不回滚，发布权仍不在业务人员手里。
+    let approvalStatus: CommitResultDto["approvalStatus"] = "not_requested";
     let approvalKey: string | undefined;
+    let failedApproval: FailedApprovalInfo | undefined;
     if (this.releaseApproval && user?.username) {
+      // contentHash 是本地纯函数，提到 try 外让 catch 也能回带/落审计；
+      // 发起失败的语义只覆盖 requestRelease，既有五闸与 draft 落库逐字不变。
+      const contentHash = sopContentHash(
+        payload.frontMatter,
+        payload.bodyMarkdown,
+      );
       try {
-        const contentHash = sopContentHash(
-          payload.frontMatter,
-          payload.bodyMarkdown,
-        );
         const req = await this.releaseApproval.requestRelease({
           sopId: saved.id,
           cardHash: rebuilt.cardHash,
@@ -439,25 +491,42 @@ export class WorkbenchController {
           username: user.username,
         });
         approvalKey = req.approvalKey;
+        approvalStatus = "submitted";
       } catch (err: unknown) {
         this.logger.warn(
-          `发布审批发起失败（draft 已保留）：sopId=${saved.id} — ` +
+          `发布审批发起失败（draft 已保留，approvalStatus=failed）：sopId=${saved.id} — ` +
             `${err instanceof Error ? err.message : String(err)}`,
         );
+        approvalStatus = "failed";
+        failedApproval = {
+          sopId: String(saved.id),
+          cardHash: rebuilt.cardHash,
+          contentHash,
+          requestedBy: user.username,
+          reason: classifyApprovalRequestFailure(err),
+          retryHint: APPROVAL_REQUEST_RETRY_HINT,
+        };
+        // 审计旁路：fire-and-forget，失败只 warn，绝不改 commit 语义。
+        this.writeApprovalRequestFailedAudit(failedApproval);
       }
     }
 
     // 输出锚点：回带第三闸放行的 currentGeneration，不在返回时重算。
-    return {
+    // next 为废弃可选字段，生产不再赋值；前端按 approvalStatus 稳定码渲染 i18n 文案。
+    // approvalFailure 仅在 failed 态出现，供业务人员 UI 直接定位；用交叉类型局部变量
+    // 返回，不改 CommitResultDto 既有声明形状（DTO 文件不在本切片边界内）。
+    const result: CommitResultDto & {
+      approvalFailure?: FailedApprovalInfo;
+    } = {
       sopId: saved.id,
       slug: payload.slug,
       status: "draft",
-      next: approvalKey
-        ? "方案卡已提交发布审批，待主管四眼批准"
-        : "请在 SOP 页面审阅并发布",
+      approvalStatus,
       policyGeneration: currentGeneration,
       ...(approvalKey ? { approvalKey } : {}),
+      ...(failedApproval ? { approvalFailure: failedApproval } : {}),
     };
+    return result;
   }
 
   @Post("rewind")
@@ -519,5 +588,59 @@ export class WorkbenchController {
       });
     }
     return projected;
+  }
+
+  /**
+   * R92 失败审计旁路：ModuleRef 惰性解析 AuditService，fire-and-forget。
+   * 解析失败 / 落库失败只 warn，绝不把一次已经「draft 落库 + failed 回带」的
+   * commit 升级成 5xx（与 release-outcome.audit.ts 同款纪律）。
+   */
+  private writeApprovalRequestFailedAudit(info: FailedApprovalInfo): void {
+    let audit: AuditService | null = null;
+    try {
+      audit = this.moduleRef?.get(AuditService, { strict: false }) ?? null;
+    } catch (err: unknown) {
+      this.logger.warn(
+        `approval_request_failed audit resolve skipped — ${
+          err instanceof Error ? err.name : "unknown"
+        }`,
+      );
+    }
+    if (!audit) {
+      this.logger.warn(
+        "approval_request_failed audit skipped: AuditService unavailable",
+      );
+      return;
+    }
+    const payload = {
+      action: APPROVAL_REQUEST_FAILED_ACTION,
+      resource: "sop",
+      resourceId: info.sopId,
+      result: "failure" as const,
+      detail: {
+        sopId: info.sopId,
+        cardHash: info.cardHash,
+        contentHash: info.contentHash,
+        requestedBy: info.requestedBy,
+        reason: info.reason,
+        retryHint: info.retryHint,
+        attempt: "initial",
+      },
+    };
+    try {
+      void Promise.resolve(audit.log(payload)).catch((err: unknown) => {
+        this.logger.warn(
+          `approval_request_failed audit append failed — ${
+            err instanceof Error ? err.name : "unknown"
+          }`,
+        );
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `approval_request_failed audit append failed — ${
+          err instanceof Error ? err.name : "unknown"
+        }`,
+      );
+    }
   }
 }

@@ -170,12 +170,29 @@ export class CommitResultDto {
   @ApiProperty({ enum: ["draft"] })
   status: "draft";
 
-  @ApiProperty({ description: "发布是独立审批动作，提交后仍需人工审阅" })
-  next: string;
+  @ApiProperty({
+    enum: ["submitted", "failed", "not_requested"],
+    description:
+      "ADR-045 发布审批发起状态（稳定码，非中文）：submitted=已发起并返回 approvalKey；" +
+      "failed=发起异常（端口未装配/策略指纹不可读等）但 draft 已落；" +
+      "not_requested=审批端口缺席或非 USER 上下文，未发起（非异常）",
+  })
+  approvalStatus: "submitted" | "failed" | "not_requested";
+
+  /**
+   * @deprecated 后端不再返回硬编码中文；前端改用 approvalStatus 稳定码 + i18n 文案。
+   * 仅为兼容尚未升级的调用方/fixture 保留可选字段，生产路径不再赋值。
+   */
+  @ApiPropertyOptional({
+    description: "已废弃：改用 approvalStatus + 前端 i18n，生产路径不再返回",
+    deprecated: true,
+    required: false,
+  })
+  next?: string;
 
   @ApiProperty({
     description:
-      "ADR-045：发布审批单 key（业务人员提交后由主管四眼批准、系统代理发布）；缺席表示审批发起失败",
+      "ADR-045：发布审批单 key（业务人员提交后由主管四眼批准、系统代理发布）；仅 approvalStatus=submitted 时有",
     required: false,
   })
   approvalKey?: string;

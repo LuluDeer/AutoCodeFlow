@@ -202,7 +202,7 @@ describe("Workbench commit — 确认→落库（单测/内存替身）", () => 
       sopId: "sop-1",
       slug,
       status: "draft",
-      next: "请在 SOP 页面审阅并发布",
+      approvalStatus: "not_requested",
       policyGeneration: GEN,
     });
     expect(draft).toHaveBeenCalledTimes(1);
@@ -309,7 +309,7 @@ describe("Workbench commit — 确认→落库（单测/内存替身）", () => 
       sopId: "sop-1",
       slug: `workbench-${preview.cardHash.slice(0, 8)}`,
       status: "draft",
-      next: "请在 SOP 页面审阅并发布",
+      approvalStatus: "not_requested",
       policyGeneration: GEN,
     });
     expect(failingRecord).toHaveBeenCalledTimes(1);
@@ -384,7 +384,7 @@ describe("Workbench commit — 确认→落库（单测/内存替身）", () => 
       sopId: "sop-1",
       slug: `workbench-${preview.cardHash.slice(0, 8)}`,
       status: "draft",
-      next: "请在 SOP 页面审阅并发布",
+      approvalStatus: "not_requested",
       policyGeneration: preview.policyGeneration,
     });
     read.mockRestore();

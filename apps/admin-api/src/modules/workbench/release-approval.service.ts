@@ -31,6 +31,11 @@ import { sopContentHash, type SopFrontMatter } from "../sop/sop-frontmatter";
  *      'sop_review'}) 按 createdBy + contextJson 过滤适配），跨进程/重启复用同一会话。
  * 两者都缺席时每次新建会话——approvalKey 不同，但 request 的唯一约束仍保证不会
  * 出现「同一发布被批两次」（只是会多一张待批单，绝不放大发布权）。
+ *
+ * ADR-045 发布锚点持久化：args 随 sop_review 会话的 contextJson 落库；重启/多实例下
+ * 进程内 argsByApprovalKey 丢失时，按 approvalKey → AgentApproval(sessionId,argsDigest)
+ * → session.contextJson 重建 args，并**必须先对账 argsDigest 相等**才放行发布。
+ * 任一端口缺席、字段缺失或摘要不符一律 fail-closed，不猜内容、不借审批注入。
  */
 
 export const RELEASE_APPROVALS_PORT = Symbol("RELEASE_APPROVALS_PORT");
@@ -74,6 +79,11 @@ export interface ReleaseApprovalsPort {
     approvalKey: string,
     currentPolicyFingerprint: string | null,
   ): Promise<boolean>;
+  /** 可选：按 approvalKey 取回审批单（重启恢复 args 用）；缺席即恢复路径 fail-closed。 */
+  findByKey?(approvalKey: string): Promise<{
+    sessionId: string;
+    argsDigest: string | null;
+  } | null>;
 }
 
 export interface ReleaseSessionCreateInput {
@@ -94,6 +104,10 @@ export interface ReleaseSessionsPort {
     cardHash: string;
     contentHash: string;
   }): Promise<{ id: string } | null>;
+  /** 可选：按 id 读回 sop_review 会话的 contextJson（重启恢复 args 用）。 */
+  findById?(
+    id: string,
+  ): Promise<{ contextJson: Record<string, unknown> | null } | null>;
 }
 
 export interface ReleaseSopsPort {
@@ -208,9 +222,8 @@ function buildReleasePreview(args: ReleaseApprovalArgs): string {
 export class ReleaseApprovalService {
   /** 进程内幂等缓存：同一发布申请复用同一 sessionId ⇒ 同一 approvalKey。 */
   private readonly sessionByRequestKey = new Map<string, string>();
-  /** ADR-045：approvalKey → 本次发布的锚定参数（系统代理发布时取回）。进程内，
-   *  重启后若审批单仍在但缓存丢失 ⇒ releaseByApprovalKey fail-closed 不发布，
-   *  需人工在中台按审批单重提（不猜内容 hash，避免借审批注入）。 */
+  /** ADR-045：approvalKey → 本次发布的锚定参数（系统代理发布时取回）。进程内快路径；
+   *  未命中时走审批单 + 会话 contextJson 持久化恢复，并做 argsDigest 对账。 */
   private readonly argsByApprovalKey = new Map<string, ReleaseApprovalArgs>();
 
   constructor(
@@ -279,6 +292,7 @@ export class ReleaseApprovalService {
           sopId: input.sopId,
           cardHash: input.cardHash,
           contentHash: input.contentHash,
+          ...(input.bump !== undefined ? { bump: input.bump } : {}),
         },
       });
       sessionId = session.id;
@@ -306,25 +320,87 @@ export class ReleaseApprovalService {
   }
 
   /**
+   * 从持久化的 session.contextJson 重建发布锚点；只取 requestRelease 写入的四个字段，
+   * context 里的任何额外键都不参与 args/digest（防止借 context 注入）。
+   */
+  private rebuildArgsFromContext(
+    context: Record<string, unknown>,
+  ): ReleaseApprovalArgs | null {
+    const { sopId, cardHash, contentHash, bump } = context;
+    if (
+      typeof sopId !== "string" ||
+      sopId.length === 0 ||
+      typeof cardHash !== "string" ||
+      cardHash.length === 0 ||
+      typeof contentHash !== "string" ||
+      contentHash.length === 0
+    ) {
+      return null;
+    }
+    if (bump === undefined) return { sopId, cardHash, contentHash };
+    if (bump !== "patch" && bump !== "minor" && bump !== "major") return null;
+    return { sopId, cardHash, contentHash, bump };
+  }
+
+  /**
    * ADR-045 系统代理发布入口：主管 approve 后由审批 controller 调本方法，
    * 按 approvalKey 取回本次发布的锚定参数，再走 contentHash 比对 + consume + publish。
-   * 缓存丢失（重启/跨实例）⇒ fail-closed 不发布，不猜内容。
+   * 内存命中沿用原语义；未命中时从审批单 + 会话 context 恢复，argsDigest 对账相等
+   * 才放行。任何一步失败/缺席 ⇒ fail-closed，不猜内容、不抛异常给调用方。
    */
   async releaseByApprovalKey(
     approvalKey: string,
     currentPolicyFingerprint: string | null,
   ): Promise<{ published: boolean; reason?: ReleaseIfApprovedReason }> {
-    const args = this.argsByApprovalKey.get(approvalKey);
-    if (!args || !this.policy) {
+    const cached = this.argsByApprovalKey.get(approvalKey);
+    if (cached) {
+      if (!this.policy) {
+        return { published: false, reason: "dependency_unavailable" };
+      }
+      return this.releaseIfApproved({
+        approvalKey,
+        sopId: cached.sopId,
+        expectedContentHash: cached.contentHash,
+        currentPolicyFingerprint:
+          currentPolicyFingerprint ?? this.policy.currentFingerprint(),
+      });
+    }
+
+    try {
+      if (
+        !this.approvals?.findByKey ||
+        !this.sessions?.findById ||
+        !this.policy
+      ) {
+        return { published: false, reason: "dependency_unavailable" };
+      }
+      const approval = await this.approvals.findByKey(approvalKey);
+      if (!approval?.sessionId || !approval.argsDigest) {
+        return { published: false, reason: "dependency_unavailable" };
+      }
+      const session = await this.sessions.findById(approval.sessionId);
+      const context = session?.contextJson;
+      if (!context || typeof context !== "object" || Array.isArray(context)) {
+        return { published: false, reason: "dependency_unavailable" };
+      }
+      const args = this.rebuildArgsFromContext(context);
+      if (!args) {
+        return { published: false, reason: "dependency_unavailable" };
+      }
+      // 安全闸：context 可被越权改写，digest 必须与审批时落库的值逐字相等。
+      if (computeApprovalArgsDigest(args) !== approval.argsDigest) {
+        return { published: false, reason: "dependency_unavailable" };
+      }
+      return this.releaseIfApproved({
+        approvalKey,
+        sopId: args.sopId,
+        expectedContentHash: args.contentHash,
+        currentPolicyFingerprint:
+          currentPolicyFingerprint ?? this.policy.currentFingerprint(),
+      });
+    } catch {
       return { published: false, reason: "dependency_unavailable" };
     }
-    return this.releaseIfApproved({
-      approvalKey,
-      sopId: args.sopId,
-      expectedContentHash: args.contentHash,
-      currentPolicyFingerprint:
-        currentPolicyFingerprint ?? this.policy.currentFingerprint(),
-    });
   }
 
   /**

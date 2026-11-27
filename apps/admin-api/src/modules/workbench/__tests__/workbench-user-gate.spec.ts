@@ -187,7 +187,9 @@ describe("Workbench 用户放行闸门（GCO §5）", () => {
       ).expect(201);
 
       expect(res.body.status).toBe("draft");
-      expect(res.body.next).toBe("请在 SOP 页面审阅并发布");
+      // R90：不再回带硬编码中文；未装配审批端口 ⇒ not_requested 稳定码
+      expect(res.body.approvalStatus).toBe("not_requested");
+      expect(res.body.next).toBeUndefined();
       expect(res.body.policyGeneration).toBe(GEN);
       expect(draft).toHaveBeenCalledTimes(1);
       expect(draft).toHaveBeenCalledWith(

@@ -1,5 +1,4 @@
 import { ModuleRef } from "@nestjs/core";
-import { ReleaseApprovalService } from "../workbench/release-approval.service";
 import {
   Body,
   Controller,
@@ -106,6 +105,8 @@ import { NorthStarMetricsService } from "./runtime/north-star-metrics.service";
 import { AgentNorthStarResponseDto } from "./dto/agent-north-star.dto";
 // N8：waiting_input 期 steer 意图的进程内 inbox（独立 provider，追加在构造末尾）。
 import { SteerInboxService } from "./runtime/steer-inbox.service";
+// ADR-045 发布结果可见性：审计/重试说明外提，避免 decideApproval 破体量棘轮。
+import { auditReleaseOutcome } from "./runtime/release-outcome.audit";
 
 /**
  * R279：把 `since` query（ISO-8601）解析成 `Date`；**解析不出 ⇒ `undefined`（不筛）**。
@@ -678,21 +679,16 @@ export class AgentController {
       throw new AppError("AGENT_APPROVAL_NOT_FOUND", { approvalKey });
     }
     // ADR-045：主管批准发布审批单 → 系统代理发布（业务人员/主管都不直接 publish）。
-    // ModuleRef 惰性取避免 agent↔workbench 反向 DI 环；旁路失败只 warn，不回滚批准。
-    if (decision === "granted" && row.toolName === "sop_publish") {
-      try {
-        const release = this.moduleRef?.get(ReleaseApprovalService, {
-          strict: false,
-        });
-        const result = await release?.releaseByApprovalKey(approvalKey, null);
-        if (!result?.published)
-          this.logger.warn(
-            `系统代理发布未执行：${approvalKey} ${result?.reason ?? "依赖缺席"}`,
-          );
-      } catch (err: unknown) {
-        this.logger.warn(`系统代理发布异常：${approvalKey} ${String(err)}`);
-      }
-    }
+    // 结果审计与重试说明在独立模块：失败只 warn + 落审计，不回滚批准。
+    await auditReleaseOutcome(
+      this.moduleRef,
+      this.logger,
+      sessionId,
+      approvalKey,
+      decision,
+      row.toolName,
+      user.username,
+    );
     // 处置结果的行为**按 decision 分流**（实施轮 #14 修）：
     //
     //   · granted → 若会话挂起在 waiting_input 且**没有其它仍在等的单**，

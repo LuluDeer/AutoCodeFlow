@@ -37,6 +37,13 @@ import {
   type RawActivationLog,
 } from "./dual-meter";
 import type { PriceReason, TokenSample } from "./price.dto";
+import {
+  assertAmountProjectionInvariant,
+  convertToAmount,
+  toPriceMap,
+  PriceService,
+} from "./price.service";
+import { TokenSamplePort } from "./token-sample.port";
 
 /** 深度钳位：与 agent 域 canonicalJson 同款，避免恶意深嵌套参数爆栈。 */
 const STABLE_MAX_DEPTH = 32;
@@ -131,7 +138,7 @@ export interface ActivationStats {
  * N20：attributeCost 需要外部权重（相对份额）输入，当前没有业务权重来源；
  * 本批只暴露可复算计数，不编造分摊结果。
  */
-const ALLOCATION_NOTE =
+export const ALLOCATION_NOTE =
   "attributeCost 未接线：相对份额分摊需外部权重配置，当前无业务权重来源；本字段只提供可复算的双口径计数。";
 
 function toDate(value: string): Date {
@@ -168,6 +175,11 @@ export class CapabilityActivationService {
     @Optional()
     @Inject(CAPABILITY_SCOPE_GATE)
     private readonly scopeGate?: CapabilityScopeGate,
+    // 成本线 P1（第 93 轮）：顶层金额折算依赖。追加末尾 + @Optional——
+    // R394 教训：既有 spec / 内部调用方用定位参数装配，插中间会静默错位。
+    // 缺席时 stats 保持 dualReport 的 null/NO_TOKEN_SAMPLE 标缺，不崩看板。
+    @Optional() private readonly prices?: PriceService | null,
+    @Optional() private readonly tokenSamples?: TokenSamplePort | null,
   ) {}
 
   /**
@@ -344,6 +356,15 @@ export class CapabilityActivationService {
       failure: Number(r.failure ?? 0),
       blocked: Number(r.blocked ?? 0),
     }));
+    // 成本线 P1（第 93 轮）：只覆盖顶层 dualBasis 的金额位与理由（企业总账单）。
+    // tokenSample / byCapability / byProject 逐字不动，不做任何份额伪分摊。
+    // 第 94 轮：顶层金额与激活次数同源——复用 applyWindow 的 toDate 口径，
+    // 把 DTO 的 string 时间窗转成 Date 后透传；缺省时保持全局累计。
+    const conversion = await this.resolveTopLevelAmount(
+      options.from ? toDate(options.from) : undefined,
+      options.to ? toDate(options.to) : undefined,
+    );
+
     return {
       total: byCapability.reduce((sum, r) => sum + r.count, 0),
       byCapability,
@@ -360,11 +381,116 @@ export class CapabilityActivationService {
         byProject: dualReport.byProject,
         note: dualReport.note,
         tokenSample: dualReport.tokenSample,
-        currencyValue: dualReport.currencyValue,
-        priceReason: dualReport.priceReason,
-        allocationNote: ALLOCATION_NOTE,
+        currencyValue: conversion?.currencyValue ?? dualReport.currencyValue,
+        priceReason: conversion?.priceReason ?? dualReport.priceReason,
+        allocationNote: conversion?.note
+          ? `${conversion.note}${ALLOCATION_NOTE}`
+          : ALLOCATION_NOTE,
       },
     };
+  }
+
+  /**
+   * 成本线 P1：顶层金额折算（fail-soft）。返回 null = 不覆盖 dualReport。
+   *
+   * 口径：只算一个全局金额（企业总账单，非 showback 明细）。每个 provider/model
+   * 组独立折成 AmountProjection，按 currency 分组累加；不同币种绝不相加，
+   * 顶层取 token 总量（in+out）最大的主币种组，其它币种只在 note 里如实说明。
+   * 不变量由 convertToAmount 内的 assertAmountProjectionInvariant 逐组钉死：
+   * reason='OK' ⇔ amount 非 null。零样本 / 端口缺席 / 任意一步异常 ⇒ null。
+   *
+   * 第 94 轮：from/to 为闭区间时间窗（与激活日志 applyWindow 同源）；
+   * 两者缺省时覆盖全量历史，与第 93 轮逐字等价。
+   */
+  private async resolveTopLevelAmount(
+    from?: Date,
+    to?: Date,
+  ): Promise<{
+    currencyValue: number | null;
+    priceReason: PriceReason;
+    note: string | null;
+  } | null> {
+    if (!this.prices || !this.tokenSamples) return null;
+    try {
+      const priceMap = toPriceMap(await this.prices.getByPrefix());
+      const rows = await this.tokenSamples.selectTokenByProviderModel(from, to);
+      // 零样本：不改 dualReport，看板继续诚实标缺（NO_TOKEN_SAMPLE）。
+      if (rows.length === 0) return null;
+
+      const byCurrency = new Map<
+        string,
+        { amount: number; weight: number; groups: number }
+      >();
+      let firstFailure: PriceReason | null = null;
+
+      for (const row of rows) {
+        const projection = convertToAmount(
+          row.in,
+          row.out,
+          priceMap,
+          row.provider,
+          row.model,
+        );
+        // 任何「零样本变 0 元」的回退都在这里立刻转红，由外层 catch 转 fail-soft。
+        assertAmountProjectionInvariant(projection);
+        if (projection.reason !== "OK") {
+          if (firstFailure === null) firstFailure = projection.reason;
+          continue;
+        }
+        // OK ⇒ amount/currency 非 null（不变量已钉死），类型收窄断言。
+        const amount = projection.amount as number;
+        const currency = projection.currency as string;
+        const bucket = byCurrency.get(currency) ?? {
+          amount: 0,
+          weight: 0,
+          groups: 0,
+        };
+        bucket.amount += amount;
+        bucket.weight += row.in + row.out;
+        bucket.groups += 1;
+        byCurrency.set(currency, bucket);
+      }
+
+      if (byCurrency.size > 0) {
+        // Map 保序（rows 已按 in+out DESC），权重相等时保留先到的组。
+        let primaryCurrency = "";
+        let primaryAmount = 0;
+        let primaryWeight = -1;
+        for (const [currency, bucket] of byCurrency) {
+          if (bucket.weight > primaryWeight) {
+            primaryCurrency = currency;
+            primaryAmount = bucket.amount;
+            primaryWeight = bucket.weight;
+          }
+        }
+        const others = [...byCurrency.keys()].filter(
+          (currency) => currency !== primaryCurrency,
+        );
+        const note =
+          others.length === 0
+            ? null
+            : `顶层金额仅含主币种 ${primaryCurrency}（token 样本量最大），其它币种 ${others.join("/")} 未计入，不跨币种相加；`;
+        return {
+          currencyValue: Number(primaryAmount.toFixed(6)),
+          priceReason: "OK",
+          note,
+        };
+      }
+
+      // 有非零样本但全组折算失败：透传首个失败理由，金额仍 null（绝不编造）。
+      return {
+        currencyValue: null,
+        priceReason: firstFailure ?? "PRICE_MISSING",
+        note: null,
+      };
+    } catch (err: unknown) {
+      this.logger.warn(
+        `[showback] 顶层金额折算失败，保持诚实标缺：${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
   }
 
   private applyWindow<T>(

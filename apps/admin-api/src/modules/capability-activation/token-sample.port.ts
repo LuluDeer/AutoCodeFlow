@@ -41,17 +41,49 @@ export interface StepUsageRow {
   tokensOut: number | null;
 }
 
-/** DataSource 最小 select 面：两个精确查询，不暴露写、不暴露宽表 join。 */
+/**
+ * 成本线 P1：agent_steps 按 provider/model 全局聚合的 token 样本行。
+ *
+ * 与 StepUsageRow 的区别：这里不按 sessionId 关联（sessionId 无可靠桥），
+ * 只做企业总账单口径的全局汇总；in/out/steps 均为非负有限数（pg 的
+ * SUM(...)::bigint 以字符串返回，由 Port 层归一），绝不把 0 当样本。
+ */
+export interface ProviderModelTokenRow {
+  provider: string;
+  model: string;
+  in: number;
+  out: number;
+  steps: number;
+}
+
+/** DataSource 最小 select 面：三个只读查询，不暴露写、不暴露宽表 join。 */
 export interface TokenSampleDataSource {
   selectAgentSessionTotals(
     sessionId: string,
   ): Promise<AgentSessionTotalsRow | null>;
   selectStepUsages(agentSessionId: string): Promise<readonly StepUsageRow[]>;
+  /**
+   * 按 provider/model 聚合的真实 token 样本（顶层金额折算用）。
+   * 可选：老装配 / 内存替身未实现时，Port 暴露的方法返回空数组，
+   * stats 折算自然 fail-soft 标缺，不崩既有看板。
+   * from/to 为闭区间时间窗（与 stats 的 from/to 同源）；两者皆缺省时保持
+   * 全局累计（第 93 轮口径）。由 adapter 以 $1/$2 参数化过滤 createdAt。
+   */
+  selectTokenByProviderModel?(
+    from?: Date,
+    to?: Date,
+  ): Promise<readonly ProviderModelTokenRow[]>;
 }
 
 export interface TokenSamplePortOptions {
   /** 覆盖最小样本轮数；非正数 / 非有限值回落到 TOKEN_SAMPLE_MIN_SAMPLES。 */
   minSamples?: number;
+  /**
+   * 全局聚合查询失败时的可选错误钩子（Port 保持零 Nest / 零 ORM 依赖）。
+   * 由调用方注入日志实现：fail-soft 返回空数组前必须留痕，
+   * 否则真 SQL 错误会被伪装成「诚实标缺」，极难排障。
+   */
+  onAggregateError?: (err: unknown) => void;
 }
 
 /** UUID 形状只用于「排除」：非 UUID 必不是 agent_sessions.id。 */
@@ -76,8 +108,18 @@ function positiveToken(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
 }
 
+/**
+ * 聚合行计数归一：pg int8 经 node-postgres 以字符串返回，number 也可；
+ * 其余脏值（NaN / 负数 / 对象）一律归 0，绝不当作样本金额输入。
+ */
+function finitePositiveCount(v: unknown): number {
+  const n = typeof v === "number" || typeof v === "string" ? Number(v) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 export class TokenSamplePort {
   private readonly minSamples: number;
+  private readonly onAggregateError?: (err: unknown) => void;
 
   constructor(
     private readonly ds: TokenSampleDataSource,
@@ -88,6 +130,7 @@ export class TokenSamplePort {
       typeof raw === "number" && Number.isFinite(raw) && raw > 0
         ? raw
         : TOKEN_SAMPLE_MIN_SAMPLES;
+    this.onAggregateError = options.onAggregateError;
   }
 
   /**
@@ -219,6 +262,45 @@ export class TokenSamplePort {
     sessionIds: readonly (string | null | undefined)[],
   ): Promise<TokenSampleView[]> {
     return Promise.all(sessionIds.map((id) => this.sample(id)));
+  }
+
+  /**
+   * 成本线 P1：provider/model token 样本（顶层金额折算入口）。
+   *
+   * 与 sample() 的诚实采样严格分离：这里只提供「真实 DB 里确有 token 的组」，
+   * 不推断 sessionId 归属、不换算金额、不碰 showback 行级口径。
+   * from/to 原值透传（闭区间）；缺省时 adapter 不加时间条件，保持全局累计。
+   * ds 未实现该方法 / 查询抛错 / 行形状损坏 ⇒ 空数组（fail-soft，调用方继续标缺）。
+   */
+  async selectTokenByProviderModel(
+    from?: Date,
+    to?: Date,
+  ): Promise<readonly ProviderModelTokenRow[]> {
+    const select = this.ds.selectTokenByProviderModel;
+    if (typeof select !== "function") return [];
+    try {
+      const rows = await select.call(this.ds, from, to);
+      if (!Array.isArray(rows)) return [];
+      const clean: ProviderModelTokenRow[] = [];
+      for (const row of rows) {
+        if (!row || typeof row !== "object") continue;
+        const r = row as ProviderModelTokenRow;
+        if (typeof r.provider !== "string" || r.provider.trim() === "")
+          continue;
+        if (typeof r.model !== "string" || r.model.trim() === "") continue;
+        clean.push({
+          provider: r.provider,
+          model: r.model,
+          in: finitePositiveCount(r.in),
+          out: finitePositiveCount(r.out),
+          steps: finitePositiveCount(r.steps),
+        });
+      }
+      return clean;
+    } catch (err: unknown) {
+      this.onAggregateError?.(err);
+      return [];
+    }
   }
 
   private build(
