@@ -32,6 +32,7 @@ vi.mock('axios', () => ({
 
 vi.mock('../config.js', () => ({
   getApiUrl: () => 'http://localhost:3105',
+  getApiKey: () => '',
   getToken: () => tokenState.access,
   getRefreshToken: () => tokenState.refresh,
   setToken: vi.fn(),

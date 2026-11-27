@@ -48,6 +48,8 @@ import { agentCommand } from './commands/agent.js';
 import { apikeysCommand } from './commands/apikeys.js';
 import { approvalCommand } from './commands/approval.js';
 import { mutexCommand } from './commands/mutex.js';
+import { artifactCommand } from './commands/artifact.js';
+import { templateCommand } from './commands/template.js';
 import { showConfig, setApiUrl, setToken } from './config.js';
 import { applyExamples } from './help.js';
 import { EXIT_CODES, interruptExit } from './ui.js';
@@ -113,11 +115,15 @@ programAny.unknownOption = (flag: string) => {
 // Global options that override stored config
 program
   .option('--api-url <url>', 'Override API URL for this invocation (or set ACF_API_URL env var)')
+  .option('--api-key <key>', 'Override API key for this invocation (or set ACF_API_KEY env var)')
   .option('--token <token>', 'Override auth token for this invocation (or set ACF_TOKEN env var)');
 
 program.hook('preAction', (thisCommand) => {
   const opts = thisCommand.opts();
   if (opts.apiUrl) process.env['ACF_API_URL'] = opts.apiUrl;
+  // API keys are long-lived credentials: passed via argv for one-shot use only,
+  // never persisted by `acf config set-*`.
+  if (opts.apiKey) process.env['ACF_API_KEY'] = opts.apiKey;
   if (opts.token) process.env['ACF_TOKEN'] = opts.token;
 });
 
@@ -137,6 +143,8 @@ program.addCommand(agentCommand());
 program.addCommand(apikeysCommand());
 program.addCommand(approvalCommand());
 program.addCommand(mutexCommand());
+program.addCommand(artifactCommand());
+program.addCommand(templateCommand());
 
 // acf config show / set
 const configCmd = new Command('config').description('View or update CLI configuration');

@@ -7,7 +7,6 @@ import weakref
 import httpx
 import threading
 from typing import Any
-from urllib.parse import quote
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -20,10 +19,23 @@ from tenacity import (
 from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings, EXECUTOR_VERSION, PROTOCOL_VERSION, MAX_RUNNING_EXECUTION_IDS
 import psutil
-from auth import get_current_token, adopt_executor_token_hash, request_with_self_heal
+from auth import (
+    get_current_token,
+    adopt_executor_token_hash,
+    request_with_self_heal,
+    _unwrap_envelope,
+    is_registration_conflict_active,
+)
+from executor_instance_id import get_executor_instance_id
+from capabilities import python_executor_capabilities
 # ARCH-33（ADR-016）：pull 控制面命令的本地执行分派。commands.py 对 scheduler
 # 只在函数内延迟导入 get_http_client，故此处模块级导入不成环。
 from commands import run_control_commands
+from config_pull import maybe_pull_config
+
+
+# 历史入口别名（旧调用方/测试从 scheduler 导入 `_maybe_pull_config`）。
+_maybe_pull_config = maybe_pull_config
 
 logger = logging.getLogger(__name__)
 
@@ -447,6 +459,16 @@ def _heartbeat_payload(cpu: float, mem: float) -> dict:
         # PROTOCOL-VER（B-3/U-2）：协议版本随心跳回传（与 register 同源），
         # 中台可据此在心跳路径做兼容性分支（见 config.py PROTOCOL_VERSION）。
         'protocolVersion': PROTOCOL_VERSION,
+        # 协议 v8（方案 b，接管自愈）：/token 409 慢性冲突自报。恒发送
+        # （含 false）——与 node scheduler.sendHeartbeat 同口径，「无冲突」
+        # 是真事实；键缺席才是「未上报」。
+        'registrationConflict': is_registration_conflict_active(),
+        # 共享能力声明：心跳随附与 register 一致的可执行能力集合，控制面
+        # 可按同一份清单做派发/运维判定。
+        'capabilities': python_executor_capabilities(),
+        # 行 id（工单 11 / ADR-017 §3）：注册后持久化，供中台在同址多行
+        # 且指纹歧义时按行定位；本地无记录时键省略（legacy 行为不变）。
+        **({'executorId': instance_id} if (instance_id := get_executor_instance_id()) else {}),
         # P2-4（执行器服务审计，2026-10-26）：并发上限随心跳上报——对齐
         # executor-node scheduler.ts sendHeartbeat（E9：admin 容量核算不再依赖
         # 注册期快照，读 config 对象属性，/config/reload 热更 max_concurrent_tasks
@@ -463,11 +485,9 @@ def _heartbeat_payload(cpu: float, mem: float) -> dict:
         # （protocol.json executorNodeOnly 段），python 从不创建这些事实，
         # 不硬造空数组（[] = 「明确没有」，与「不知道」不可混）。
         #
-        # 方案 b（协议 v8）：`registrationConflict` 键在本侧**恒缺席**——
-        # 同款 fail-honest 裁定（auth.py 的 /token 409 缺口登记 + config.py
-        # PROTOCOL_VERSION 注释「两处缺席」裁定）：没有 409 观测就没有可上报
-        # 的冲突态，键缺席 = 「未上报」（中台按 v7 语义不动活性判定，合法）。
-        # 后续批补齐时在本 payload 加 `registrationConflict: _conflict_active()`。
+        # 方案 b（协议 v8）：`registrationConflict` 键**恒发送**（见上方载荷
+        # 段）——auth._fetch_token 已识别 /token 409 并置位冲突标志，成功取回
+        # token 即清除，与 node 侧同一状态机语义。
         #
         # S4-C4（协议 v9，沙箱姿态在控制面可见）：`taskSandbox` 键在本侧
         # **恒发送**（含空串）——与上面两键的「恒缺席」裁定**相反**，理由是
@@ -560,66 +580,6 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
         pass
 
 
-# E-1（中台↔执行器深度审查）：pull 模式配置热更新——记录已应用的 configVersion
-# 指纹；admin pull 响应里的 configVersion 与之不一致时主动拉取配置并复用本地
-# /api/config/reload 的校验与应用路径（与 node pull.ts 的 maybePullConfig 同构）。
-_applied_config_version: str | None = None
-
-
-async def _maybe_pull_config(admin_config_version: Any) -> None:
-    """admin pull 响应附带 configVersion 指纹；变化时主动 GET /api/executors/config
-    拉取全量配置，再回环本地 /api/config/reload 应用（apply 逻辑单一事实源）。
-
-    失败不阻塞任务取件：保留旧版本号，下一轮 pull 重试；旧版 admin 无指纹字段
-    （非字符串）时不拉取，行为零变化。"""
-    global _applied_config_version
-    if not isinstance(admin_config_version, str) or not admin_config_version:
-        return
-    if _applied_config_version == admin_config_version:
-        return
-    try:
-        token = await get_current_token()
-        client = get_http_client()  # O-24: shared per-loop pool
-        address = settings.executor_address_public or settings.executor_address
-        # ADR-017 阶段 3：带上指纹（服务端据此唯一定位本行；缺省即 legacy 路径）。
-        _fp = get_device_fingerprint()
-        response = await request_with_self_heal(
-            client,
-            'get',
-            build_admin_api_url(
-                f'/executors/config?address={quote(address)}'
-                + (f'&deviceFingerprint={quote(_fp)}' if _fp else '')
-            ),
-            token=token,
-            timeout=10,
-        )
-        response.raise_for_status()
-        body = response.json()
-        if not isinstance(body, dict):
-            logger.warning('Pull-mode config fetch returned a non-object payload; '
-                           'keeping applied config version')
-            return
-        # 复用本地 /api/config/reload 的校验 + 应用路径（协议闸门 + workDir
-        # 四闸 + ignored_fields 上报），与 admin 主动推送逐字节一致。
-        local_url = f'http://127.0.0.1:{settings.port}/api/config/reload'
-        local = await client.post(
-            local_url,
-            json=body,
-            headers={'Authorization': f'Bearer {token}'},
-            timeout=10,
-        )
-        if 200 <= local.status_code < 300:
-            _applied_config_version = admin_config_version
-            updated = local.json().get('updated_fields', [])
-            logger.info('Pull-mode config hot-reloaded (version %s): %s',
-                        admin_config_version, ', '.join(updated) or 'no changes')
-        else:
-            logger.warning('Pull-mode config reload rejected by local /config/reload (HTTP %s)',
-                           local.status_code)
-    except Exception as exc:  # pragma: no cover - best-effort, next pull retries
-        logger.warning('Pull-mode config reload failed: %s', exc)
-
-
 async def pull_task() -> None:
     """ARCH-32（ADR-015）: pull 派发循环——EXECUTOR_PULL_MODE=true 时由 main
     启动。E-01（P1）预留槽位方案：先经 try_reserve_running_slot() 原子预留
@@ -647,7 +607,6 @@ async def pull_task() -> None:
         ExecutionRejected,
         ExecuteRequest,
     )
-    from auth import _unwrap_envelope
     # A-3：载荷校验失败（ValidationError）必须与 ExecutionRejected 同语义
     # 收敛（补发 failed 回调），故与 ExecuteRequest 一起在延迟段导入。
     from pydantic import ValidationError
@@ -682,6 +641,9 @@ async def pull_task() -> None:
                     # ADR-017 阶段 3：指纹随长轮询上报——服务端据此唯一定位本行
                     # （pull 允许同地址多行并存，否则会拉到别人的队列）。
                     'deviceFingerprint': get_device_fingerprint() or None,
+                    # 工单 11 / ADR-017 §3：本地持久化的行 id，与指纹共同构成
+                    # 行定位线索；服务端仅在 per-executor 令牌校验通过时采信。
+                    **({'executorId': instance_id} if (instance_id := get_executor_instance_id()) else {}),
                     'waitMs': 25000,
                     # ARCH-33: 服务端据此决定是否出队任务（>0 才出队）。
                     # E-01-STARVE（审计 P1-5）：预留已计入账本，故必须按
@@ -704,8 +666,8 @@ async def pull_task() -> None:
             # 命令与任务在同一次响应里下发，若先处理任务，下面的早退路径会把
             # 这批命令连同响应一起丢掉（而中台已经认为它们投递成功了）。
             await run_control_commands(data.get('commands'))
-            # E-1: 配置指纹比对 + 主动拉取（失败不阻塞取件，下一轮重试）。
-            await _maybe_pull_config(data.get('configVersion'))
+            # E-1: 配置指纹比对 + 主动拉取（非阻塞：后台任务 + 60s 节流）。
+            maybe_pull_config(data.get('configVersion'))
             task = data.get('task')
             if not isinstance(task, dict) or not task.get('executionId'):
                 continue  # 无任务：finally 释放预留

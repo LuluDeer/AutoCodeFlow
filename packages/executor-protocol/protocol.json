@@ -1546,6 +1546,13 @@
             "bwrap"
           ],
           "description": "协议 v9（S4-C4，沙箱姿态在控制面可见）：执行器的**任务沙箱姿态**——取自执行器本地环境变量 TASK_SANDBOX（node config.ts 的 taskSandbox / python config.py 的 task_sandbox），方向为**执行器→中台**（中台从不下发），中台只采信并落 executors.taskSandbox（迁移 1790000000088，可空列、不回填）。三态纪律（**本项核心**）：**键缺席 = 旧执行器未上报**（升级期新旧并存是常态）→ 中台列保持 NULL、读面显示「未上报」，**绝不当成直跑**——「不知道」与「确认没开」是两件事，把缺席读成直跑就退回「看不出来」的原状；`''` = 已上报且直跑（未沙箱）；`'bwrap'` = 已上报且已经在 fail-closed 沙箱里（配置了 bwrap 但二进制缺失/平台不符时任务直接失败，绝不静默降级成直跑）。取值域**只有这两个**：其它值（大小写变体 / 'off' / 'true' / 'docker'）在 schema 闸即被拒（生成物恒 strict，zod 与 pydantic 同判），中台侧针对绕过 schema 的直连上报另有一道运行时判据——非法值 → warn + 按「未上报」处理（fail-safe）。执行器侧的口径：node 把 TASK_SANDBOX 归一为 `'bwrap'` 与非 `'bwrap'` 两档上报（非 'bwrap' 的实际行为就是直跑，故报 `''` 是诚实的）；python 的 pydantic 校验器只放行 `''`/`'bwrap'`，非法值启动即失败。"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "执行器注册/心跳随附的能力声明（可选 string[]）：运行时代名词（python/shell/node）+ 结构化键（execute/pull/control:*/telemetry:*，条件 sandbox:bwrap）。方向为执行器→中台；中台 register 的 capabilities 列以注册值为准，心跳值为辅助观测。缺席 = 旧执行器未上报，保持既有派发语义（admin findFleetCandidates 仍按 capabilities 列里的 runtime token 过滤）。"
         }
       },
       "$comment": "增量登记（协议 v8/v9）：本 schema **只**约束心跳载荷的 v8/v9 新增键类型——cpuUsage/memUsage/runningExecutionIds/deployedApps 等既有字段**刻意不在本 schema 建模**：它们的权威描述是 admin 接收白名单（executor.controller heartbeat F-7 + ExecutorHeartbeatDto 文档 DTO）与执行器发送面（node scheduler.sendHeartbeat / python scheduler._heartbeat_payload），此处重复建模只会造出第二事实源。additionalProperties:true 与 TaskConfig 同款：未建模字段全部透传，中台心跳面不做 schema 拒绝（白名单裁剪在 controller/service 显式进行）。向量见 schemaVectors.HeartbeatPayload；消费方 v8 判据的运行时行为由 admin 侧 executor.heartbeat-conflict-selfreport.spec 钉住，v9 判据（taskSandbox 三态 + 非法值 fail-safe）由 admin 侧 executor.heartbeat-task-sandbox.spec 钉住。"
@@ -2310,6 +2317,17 @@
           "registrationConflict": false,
           "taskSandbox": "bwrap",
           "$comment": "真实心跳载荷形态（v8 + v9 键并存 + 既有字段透传）。"
+        },
+        {
+          "capabilities": [
+            "python",
+            "shell",
+            "execute",
+            "pull",
+            "control:kill",
+            "telemetry:conflict-v8"
+          ],
+          "$comment": "双端注册/心跳能力声明：runtime tokens 保留（admin 派发闸门依赖）+ 结构化键。"
         }
       ],
       "invalid": [

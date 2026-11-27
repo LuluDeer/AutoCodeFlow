@@ -15,6 +15,8 @@ import { collectDeployedAppsForHeartbeat } from './deployed-apps';
 // P10（executor 包版本收敛）：已安装执行器包清单随心跳上报（失败语义与
 // deployedApps 一致：扫描失败省略整键）。
 import { collectInstalledPackages } from './installed-packages';
+import { getExecutorInstanceId } from './executor-instance-id';
+import { executorCapabilities } from './capabilities';
 
 // BUG-03: Use atomic operations to prevent race conditions in concurrent task counting
 // SharedArrayBuffer allows atomic operations across threads, but for single-process Node.js
@@ -364,6 +366,11 @@ async function sendHeartbeat() {
       // PROTOCOL-VER（B-3/U-2）：协议版本随心跳回传（与 register 同源），
       // 中台可据此在心跳路径同样做兼容性分支。
       protocolVersion: PROTOCOL_VERSION,
+      // 结构化能力清单 + 运行时代名词（与 register 同源；沙箱按本机配置）。
+      capabilities: executorCapabilities(config.taskSandbox),
+      // 工单 11 / ADR-017 §3：注册后持久化的行 id，供中台在同址多行 + 指纹
+      // 歧义时按行定位；本地无记录时键省略（undefined → JSON 丢键）。
+      executorId: getExecutorInstanceId() ?? undefined,
       // 方案 b（协议 v8，接管自愈死锁修复）：/token 409 慢性冲突自报。
       // 语义「自最近一次 409 起持续至成功取回 token」（写方 auth.ts 的
       // recordTokenConflict / clearTokenConflict，读方

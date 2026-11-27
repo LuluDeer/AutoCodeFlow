@@ -112,9 +112,9 @@ class TestProtocolV7KeysAlwaysOmitted:
                       'runningExecutionIds', 'protocolVersion'):
             assert field in body, f'心跳核心字段 {field} 不应因 v7 两键缺席而丢失'
         assert body['protocolVersion'] == PROTOCOL_VERSION
-        # 方案 b（v8）：registrationConflict 在本侧也恒缺席（auth.py 无 409
-        # 观测——缺口登记见 auth.py._fetch_token 头注）。
-        assert 'registrationConflict' not in body
+        # 方案 b（v8）：本侧已识别 /token 409 并上报 registrationConflict
+        # （恒发送含 false，与 node 同口径）。
+        assert 'registrationConflict' in body
 
     @pytest.mark.asyncio
     async def test_heartbeat_never_reports_node_shaped_tree(self, monkeypatch, tmp_path):

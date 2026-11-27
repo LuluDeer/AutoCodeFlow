@@ -12,7 +12,7 @@ acf task trigger <taskId> --wait
 acf exec tail <execId>
 
 # 方式二：CI / 自动化直接使用作用域 API Key（不落盘）
-ACF_API_URL=http://localhost:3105 ACF_TOKEN=acf_<your-api-key> acf task list
+ACF_API_URL=http://localhost:3105 ACF_API_KEY=acf_<your-api-key> acf task list
 ```
 
 完整 69 个子命令地图与参数速查见 [CLI 命令地图](../../docs/atlas/05-interfaces/cli.md)。
@@ -119,6 +119,9 @@ acf task delete <id> -y     # 非交互下唯一被接受的确认方式
 文件损坏时 CLI 会把坏内容备份到 `<config>.corrupt`、给出 `acf login` 指引，
 并用默认配置继续运行。
 
+- `ACF_API_KEY`（`acf_...`）：长期 API Key，按 admin-api 的 API Key Guard
+  以 `Authorization: Bearer <key>` 发送；环境变量或 `--api-key` 单次覆盖，
+  **不会写入本地配置**。设置后优先于 JWT，且 401 不再触发 refresh。
 - `ACF_TOKEN` / `ACF_REFRESH_TOKEN` / `ACF_API_URL`：环境变量注入（CI/cron
   推荐，不落盘）；`--api-url` / `--token` 可单次覆盖。
 - `acf login` 的密码输入不回显；`--password` 参数已标记 deprecated（会进

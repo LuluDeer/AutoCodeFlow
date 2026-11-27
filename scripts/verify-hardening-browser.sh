@@ -230,10 +230,14 @@ echo "══ [2/6] admin-api rebuild + migration chain ══"
 (
   cd "$REPO_ROOT/apps/admin-api"
   [[ -d node_modules ]] || { echo "admin-api/node_modules 缺失，npm ci"; npm ci; }
+  # Build failures are fatal. `|| true` here used to let a broken build fall
+  # through to a stale dist and "pass" the browser verification.
   NODE_OPTIONS="--max-old-space-size=4096" npm run build \
-    >"$LOG_DIR/admin-api-build.log" 2>&1 || true
+    >"$LOG_DIR/admin-api-build.log" 2>&1 \
+    || { echo "admin-api npm run build failed" >>"$LOG_DIR/admin-api-build.log"; exit 1; }
   NODE_OPTIONS="--max-old-space-size=4096" npx tsc -p tsconfig.build.json \
-    >>"$LOG_DIR/admin-api-build.log" 2>&1 || true
+    >>"$LOG_DIR/admin-api-build.log" 2>&1 \
+    || { echo "admin-api tsc -p tsconfig.build.json failed" >>"$LOG_DIR/admin-api-build.log"; exit 1; }
   grep -q "sessions/:id" dist/modules/workbench/workbench.controller.js \
     || { echo "dist controller missing workbench sessions/:id endpoint" >>"$LOG_DIR/admin-api-build.log"; exit 1; }
   env "${E2E_ENV[@]}" npm run migration:run \

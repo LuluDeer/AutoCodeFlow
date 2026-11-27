@@ -105,6 +105,7 @@ export function withStructuredToolErrors(server: McpServer): McpServer {
 export { registerAuditTools } from "./tools/audit";
 export { registerExecutorTools } from "./tools/executor";
 export { registerProjectTools } from "./tools/project";
+export { registerTurnaroundTools } from "./tools/turnaround-tools";
 
 // N27：ToolSearch 纯函数的对外出口；注册块见下方 withStructuredToolErrors 包装。
 import { searchTools, type ToolDefinition } from "./tool-search";

@@ -69,6 +69,7 @@ const classifyState = { value: 'unknown' as string };
 
 vi.mock('../client.js', () => ({
   get: vi.fn(),
+  getRaw: vi.fn(),
   post: vi.fn(),
   put: vi.fn(),
   patch: vi.fn(),
@@ -82,6 +83,7 @@ vi.mock('../client.js', () => ({
 
 vi.mock('../config.js', () => ({
   getApiUrl: () => 'http://localhost:3105',
+  getApiKey: () => '',
   getToken: () => '',
   getRefreshToken: () => '',
   setApiUrl: vi.fn(),

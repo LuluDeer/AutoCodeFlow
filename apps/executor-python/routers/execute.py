@@ -1520,7 +1520,7 @@ class _LiveExecution:
     """One accepted, not-yet-terminal execution (node ExecutionEntry parity)."""
 
     __slots__ = ('execution_id', 'task_id', 'cancelled', 'killed_by_request',
-                 'killed_callback_pushed', 'proc', 'traceparent', 'attempt_seq')
+                 'killed_callback_pushed', 'slot_released', 'proc', 'traceparent', 'attempt_seq')
 
     def __init__(self, execution_id: str):
         self.execution_id = execution_id
@@ -1535,6 +1535,10 @@ class _LiveExecution:
         self.killed_by_request = False
         # killed 失败回调已推送（kill 端点与 _run_and_callback 共用防双推）
         self.killed_callback_pushed = False
+        # 容量槽位是否已归还（kill 排队路径立即释放，_run_and_callback 的
+        # finally 据此跳过重复 decrement_running——counter 虽钳到 0，但
+        # 并发 kill + 后续任务领取时多扣一次会吃掉别的任务的槽位）。
+        self.slot_released = False
         # 已 spawn 的任务子进程（asyncio subprocess），供 kill/停机树杀使用
         self.proc = None
         # OBS-01: dispatch 请求的 W3C traceparent 头（admin OTEL_ENABLED=false
@@ -4440,12 +4444,18 @@ async def kill_execution(executionId: str):
         return _kill_body(True)
 
     # 排队/prepare（尚未 spawn）：立刻收尾——推送一次 killed 回调（后台任务，
-    # 不阻塞 admin 的 3s 超时）并摘除注册表；run_task 的 cancelled 检查点会让
-    # 后台流程静默退出，绝不双发回调、绝不双释放容量（decrement 仍归
-    # _run_and_callback 的 finally 所有）。
+    # 不阻塞 admin 的 3s 超时）、摘除注册表，并**立即归还容量槽位**。
+    # 旧实现把 decrement 全押在后台 _run_and_callback 的 finally 上，而后台
+    # 任务要等 _get_task_lock(task_id)（同任务串行）才进 run_task——若同任务
+    # 前一个执行还在跑，kill 后槽位会长期挂在账本上， Heartbeat 报满、admin
+    # 停止派发，直到前一个执行结束。现在 kill 即释放（幂等标志防止 finally
+    # 重复扣减）：
     if not entry.killed_callback_pushed:
         entry.killed_callback_pushed = True
         _spawn_background(_push_killed_callback(executionId, entry.attempt_seq))
+    if not entry.slot_released:
+        entry.slot_released = True
+        sched.decrement_running()
     unregister_live_execution(executionId)
     return _kill_body(True)
 
@@ -4548,7 +4558,15 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                 if reason:
                     payload['failureReason'] = reason
             finally:
-                sched.decrement_running()
+                if entry is not None and entry.slot_released:
+                    # E4-kill：kill 端点已在排队/prepare 路径立即释放槽位，
+                    # 这里绝不重复 decrement_running（并发下会吃掉别的任务
+                    # 的槽位；counter 的 max(0,...) 只防下溢不防误扣）。
+                    pass
+                else:
+                    if entry is not None:
+                        entry.slot_released = True
+                    sched.decrement_running()
 
         if entry is not None and entry.killed_callback_pushed:
             # E4: the kill endpoint already pushed the terminal killed callback

@@ -4,7 +4,7 @@ MCP (Model Context Protocol) server for AutoCodeFlow. Lets AI agents like Claude
 
 ## Tools exposed
 
-The server registers **56 tools** (see `src/tools.ts`), grouped below.
+The server registers **63 tools** (see `src/tools.ts` and `src/tools/`), grouped below.
 
 ### Tasks
 
@@ -195,7 +195,7 @@ credentials to the scoped API-key chain. Pick by how long the MCP server lives.
 
 API keys never expire unless you set a validity, and revoking one takes effect on
 the next call. They are a strict subset of a user JWT (credential / user /
-system-config endpoints refuse them) — but **none of the 56 MCP tools touch those
+system-config endpoints refuse them) — but **none of the 63 MCP tools touch those
 endpoints**, so an API key is sufficient here. ADMIN-only tools (e.g.
 `approve_deployment`, `list_pending_approvals`) need option B.
 
@@ -227,7 +227,7 @@ acf config show                                      # prints the config file pa
 | `AUTOCODEFLOW_API_TOKEN` | — | **Required.** API key (`acf_…`, recommended) or user JWT. The server exits on startup when missing, because every tool call would be rejected. |
 | `AUTOCODEFLOW_API_REFRESH_TOKEN` | — | Optional, JWT only. When set, a 401 from non-`/auth/*` API calls triggers one in-memory refresh and replays the original request once; rotated refresh tokens live only for the process lifetime. |
 
-> All 56 tools share these 3 variables — no tool requires additional environment
+> All 63 tools share these 3 variables — no tool requires additional environment
 > configuration. Permission-sensitive tools are enforced server-side: API-key
 > scopes for `acf_…` credentials, and roles for a JWT (ADMIN-only tools reject
 > API keys with 403 by design).

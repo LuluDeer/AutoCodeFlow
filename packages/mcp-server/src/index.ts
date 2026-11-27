@@ -6,13 +6,13 @@
  *
  * Usage:
  *   AUTOCODEFLOW_API_URL=http://localhost:3105 \
- *   AUTOCODEFLOW_API_TOKEN=<jwt> \
+ *   AUTOCODEFLOW_API_KEY=acf_<key> \
  *   node dist/index.js
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { apiRequest, API_URL, API_TOKEN } from "./api";
+import { apiRequest, API_KEY_REFRESH_HINT, API_URL, hasApiCredential } from "./api";
 import pkg from "../package.json";
 import {
   withStructuredToolErrors,
@@ -25,6 +25,7 @@ import {
   registerAuditTools,
   registerProjectTools,
   registerSopTools,
+  registerTurnaroundTools,
 } from "./tools";
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,7 @@ registerObservabilityTools(registering, apiRequest);
 registerAuditTools(registering, apiRequest);
 registerProjectTools(registering, apiRequest);
 registerSopTools(registering, apiRequest);
+registerTurnaroundTools(registering, apiRequest);
 
 // ---------------------------------------------------------------------------
 // CLI — argument handling for the bin entry (autocodeflow-mcp)
@@ -98,8 +100,10 @@ function helpText(): string {
     "",
     "Environment variables:",
     "  AUTOCODEFLOW_API_URL     Admin API base URL (default: http://localhost:3105)",
-    "  AUTOCODEFLOW_API_TOKEN   JWT bearer token for the Admin API (required)",
-    "  AUTOCODEFLOW_API_REFRESH_TOKEN  Optional. Enables 401 self-heal: on access-token expiry the server refreshes once and replays the request (in-memory rotation for the process lifetime)",
+    "  AUTOCODEFLOW_API_KEY     API key (acf_..., recommended for long-lived MCP servers; sent as Authorization: Bearer)",
+    "  AUTOCODEFLOW_API_TOKEN   JWT bearer token or API key (required if AUTOCODEFLOW_API_KEY is not set)",
+    "  AUTOCODEFLOW_API_REFRESH_TOKEN  Optional (JWT only). Enables 401 self-heal: on access-token expiry the server refreshes once and replays the request (in-memory rotation for the process lifetime)",
+    "  On 401: " + API_KEY_REFRESH_HINT + ".",
     "",
   ].join("\n");
 }
@@ -110,11 +114,11 @@ function helpText(): string {
 async function main() {
   // W-07: the missing-token check lives here (not api.ts module scope) so
   // --help/--version still work; since every tool call would 401 anyway, a
-  // missing token is now fatal instead of a warning the user finds at call time.
-  if (!API_TOKEN) {
+  // missing credential is fatal instead of a warning found at call time.
+  if (!hasApiCredential()) {
     process.stderr.write(
-      "[autocodeflow-mcp] ERROR: AUTOCODEFLOW_API_TOKEN is not set — every tool call would be rejected with 401. " +
-        "Get a token from the admin web (or POST /api/auth/login) and export it, then restart.\n",
+      "[autocodeflow-mcp] ERROR: neither AUTOCODEFLOW_API_KEY nor AUTOCODEFLOW_API_TOKEN is set — every tool call would be rejected with 401. " +
+        "Create an API key (acf_...) or get a JWT token (e.g. via acf login / POST /api/auth/login) and export it, then restart.\n",
     );
     process.exit(1);
   }

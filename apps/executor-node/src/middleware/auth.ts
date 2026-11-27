@@ -11,6 +11,7 @@ import { executorStartupId } from '../startup-identity';
 // ADR-017 阶段 3（复查补口）：指纹是 /executors/token 的**行定位键**，
 // 必须随载荷上报（缺省 = 服务端按 address 回落，同址多行时会取错行）。
 import { getDeviceFingerprint } from '../device-identity';
+import { getExecutorInstanceId } from '../executor-instance-id';
 import { unwrapAdminResponseData, adoptExecutorTokenHash } from '../admin-envelope';
 import {
   sharedAxios,
@@ -266,6 +267,8 @@ async function fetchToken(): Promise<string | null> {
         // sticks in RUNNING until the stale sweep). Omitted when collection
         // failed (null) → admin's legacy address path, unchanged behavior.
         deviceFingerprint: getDeviceFingerprint() ?? undefined,
+        // 工单 11 / ADR-017 §3：本地持久化的行 id，与指纹共同构成行定位线索。
+        executorId: getExecutorInstanceId() ?? undefined,
       },
       headers,
     );

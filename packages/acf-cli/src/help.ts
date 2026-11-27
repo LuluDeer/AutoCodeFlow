@@ -193,6 +193,23 @@ export const EXAMPLES: Record<string, string[]> = {
     'acf mutex delete <groupId>   # refuses (409) while apps are attached — lists how many',
     'acf mutex delete <groupId> --force -y   # attached apps silently lose the constraint',
   ],
+  'artifact list': [
+    'acf artifact list --execution <execId>',
+    'acf artifact list --task <taskId> --ext csv --json',
+  ],
+  'artifact preview': [
+    'acf artifact preview <execId> <name>   # text content is printed inline',
+    'acf artifact preview <execId> report.json --json',
+  ],
+  'artifact download': [
+    'acf artifact download <execId> <name>',
+    'acf artifact download <execId> <name> -o report.csv',
+  ],
+  'template list': ['acf template list', 'acf template list --json'],
+  'template use': [
+    'acf template use <templateId> --name nightly-backup',
+    "acf template use <templateId> --name sync --body '{"params":{"KEY":"value"}}'",
+  ],
   'config show': ['acf config show', 'acf config show --json'],
   'config set-url': ['acf config set-url http://localhost:3105'],
   // 刻意**不**演示 `set-token <明文>`：命令行 token 会进 shell history 与进程列表。

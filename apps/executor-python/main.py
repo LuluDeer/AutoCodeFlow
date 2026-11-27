@@ -32,6 +32,8 @@ from auth import (
 )
 # ARCH-36（ADR-017 阶段 2）：稳定设备指纹（与心跳路径同源，memo 一次）。
 from device_identity import get_device_fingerprint
+from executor_instance_id import persist_executor_instance_id, get_executor_instance_id
+from capabilities import python_executor_capabilities
 
 def _setup_logging() -> None:
     """8-3（audit-r4）：结构化日志。
@@ -415,7 +417,15 @@ def _register_payload() -> dict:
         'protocolVersion': PROTOCOL_VERSION,
         # ARCH-32: 派发模式自报（pull = NAT 内零入站，经长轮询取件）
         'dispatchMode': 'pull' if settings.executor_pull_mode else 'push',
-        'capabilities': ['python', 'shell'],
+        # 共享能力声明（execute/pull/control:* /telemetry:*，沙箱按配置）——
+        # 单一事实源在 capabilities.py，注册与心跳绝不漂移。
+        'capabilities': python_executor_capabilities(),
+        # 旧版 runtime 字段（python/shell），保留向后兼容；中台 register 侧
+        # `capabilities ?? runtime`，这里以 capabilities 为准。
+        'runtime': ['python', 'shell'],
+        # 行 id（工单 11 / ADR-017 §3）：注册响应里的 id 由下方落盘，
+        # 后续 register（补注册）带上它使中台可按行定位。
+        **({'executorId': _eid} if (_eid := get_executor_instance_id()) else {}),
         # FR-13/AC-13a（python_task_multiversion）：解释器缓存池清单，随注册
         # 上报（CONTRACT.md §2.3）。启动期已探测一次（`get_interpreters_snapshot`
         # 的懒加载 + 有界超时，满足 NFR-10 的 ≤5s 冷启动预算）；探测失败退化为
@@ -488,6 +498,13 @@ async def register_executor() -> bool:
         # it as the per-execution callback-token HMAC source secret.
         try:
             adopt_executor_token_hash(response.json())
+            # 工单 11 / ADR-017 §3：持久化注册响应里的行 id，供后续 token /
+            # pull / config / heartbeat 回传，使中台可在同址多行 + 指纹歧义
+            # 的场景中按行定位本执行器。写失败 best-effort，不阻断注册。
+            from auth import _unwrap_envelope
+            persist_executor_instance_id(
+                _unwrap_envelope(response.json()).get('id') if isinstance(_unwrap_envelope(response.json()), dict) else None
+            )
         except Exception:  # pragma: no cover - non-JSON admin bodies
             pass
         logger.info('Registered to admin-api')

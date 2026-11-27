@@ -47,6 +47,7 @@ import {
 import { checkAdminApiConnectivity, initAdminClients, post, postWithStaticToken } from './admin-client';
 import { adoptExecutorTokenHash, unwrapAdminResponseData } from './admin-envelope';
 import { persistExecutorInstanceId } from './executor-instance-id';
+import { executorCapabilities, registerRuntimeProvider } from './capabilities';
 import { recordRegistration } from './heartbeat-state';
 // ARCH-36（ADR-017 阶段 2）：稳定设备指纹（register/heartbeat 同源，memo 一次）。
 import { getDeviceFingerprint } from './device-identity';
@@ -191,6 +192,8 @@ function getInterpretersSnapshot(): Promise<ReportedInterpreter[]> {
 
 async function registerExecutor(): Promise<boolean> {
   const runtimes = await detectAvailableRuntimes();
+  // 心跳与注册共用同一份探测结果；后续 /config/reload 不改运行时能力。
+  registerRuntimeProvider(() => runtimes);
   try {
     const resp = await postWithStaticToken('/api/executors/register', {
       appName: config.appName,
@@ -208,8 +211,10 @@ async function registerExecutor(): Promise<boolean> {
       protocolVersion: PROTOCOL_VERSION,
       // ARCH-32: 派发模式自报（pull = NAT 内零入站，经长轮询取件）
       dispatchMode: config.pullMode ? 'pull' : 'push',
-      // Legacy field kept for backwards compatibility
-      capabilities: runtimes,
+      // Legacy runtime tokens + 结构化 capability keys（control:*/telemetry:*）。
+      // runtime tokens 必须保留：admin findFleetCandidates 按 task.runtime
+      // 在 capabilities 列里精确匹配（去掉会让对应任务永远派不到本机）。
+      capabilities: executorCapabilities(config.taskSandbox),
       // Structured capability fields
       runtime: runtimes,
       maxConcurrent: config.maxConcurrentTasks,

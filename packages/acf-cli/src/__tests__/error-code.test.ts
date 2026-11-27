@@ -218,7 +218,7 @@ describe('formatApiError：已知码按类给可操作提示，未知码/无码�
       'Bad request (400): bad payload',
     );
     expect(formatApiError(axiosError(401, { message: '' }))).toBe(
-      'Unauthorized (401): token missing, expired or invalid — run "acf login" or pass --token / set ACF_TOKEN',
+      'Unauthorized (401): credential missing, expired or invalid — check ACF_API_KEY / --api-key, or run "acf login" / pass --token / set ACF_TOKEN',
     );
     expect(formatApiError(new Error('local IO failure'))).toBe('local IO failure');
   });

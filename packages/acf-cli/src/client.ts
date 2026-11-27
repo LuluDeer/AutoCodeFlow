@@ -5,6 +5,7 @@ import axios, { AxiosInstance, AxiosError, AxiosRequestConfig } from "axios";
 import { appendErrorCodeHint, messageFromData } from "./error-code.js";
 import {
   getApiUrl,
+  getApiKey,
   getToken,
   getRefreshToken,
   setToken,
@@ -166,10 +167,12 @@ function getClient(): AxiosInstance {
       baseURL: normalizeApiBase(getApiUrl()),
       timeout: 30_000,
     });
-    // Token 逐请求读取（不再在实例创建时烘焙）：同进程内 login / 刷新轮换
-    // 后无需 resetClient 也能带上最新凭据（resetClient 保留仅为兼容）。
+    // Credentials 逐请求读取（不再在实例创建时烘焙）：同进程内 login / 刷新
+    // 轮换后无需 resetClient 也能带上最新凭据（resetClient 保留仅为兼容）。
+    // admin-api 的 JwtAuthGuard 按 `acf_` 前缀分流 API Key 认证；API Key 是
+    // 长期凭据，即使同时存在 JWT 也优先，并跳过 401 refresh 自愈。
     _client.interceptors.request.use((cfg) => {
-      const token = getToken();
+      const token = getApiKey() || getToken();
       if (token) {
         cfg.headers = Object.assign({}, cfg.headers, {
           Authorization: `Bearer ${token}`,
@@ -179,6 +182,9 @@ function getClient(): AxiosInstance {
     });
     _client.interceptors.response.use(undefined, async (err: AxiosError) => {
       const status = err.response?.status;
+      if (status === 401 && getApiKey()) {
+        throw err;
+      }
       const cfg = err.config as
         (AxiosRequestConfig & { _acfAuthRetried?: boolean }) | undefined;
       if (
@@ -212,6 +218,26 @@ export async function get<T>(
 ): Promise<T> {
   const r = await getClient().get<unknown>(path, { params });
   return unwrap<T>(r.data);
+}
+
+/** Raw byte response for binary endpoints (artifact download). */
+export interface RawResponse {
+  data: Uint8Array;
+  headers: Record<string, string | string[] | undefined>;
+}
+
+export async function getRaw(
+  path: string,
+  params?: Record<string, string | number | undefined>,
+): Promise<RawResponse> {
+  const r = await getClient().get<ArrayBuffer>(path, {
+    params,
+    responseType: 'arraybuffer',
+  });
+  return {
+    data: new Uint8Array(r.data),
+    headers: r.headers as Record<string, string | string[] | undefined>,
+  };
 }
 
 export async function post<T>(
@@ -321,7 +347,10 @@ function formatApiErrorBase(e: unknown): string {
       case 400:
         return `Bad request (400): ${detail || "invalid parameters — the API rejects fields not declared in its DTO whitelist"}`;
       case 401:
-        return `Unauthorized (401): ${detail || "token missing, expired or invalid"} — run "acf login" or pass --token / set ACF_TOKEN`;
+        return (
+          `Unauthorized (401): ${detail || "credential missing, expired or invalid"} — ` +
+          'check ACF_API_KEY / --api-key, or run "acf login" / pass --token / set ACF_TOKEN'
+        );
       case 403:
         return `Forbidden (403): ${detail || "your account is not allowed to perform this operation (some endpoints require the ADMIN role)"}`;
       case 404:

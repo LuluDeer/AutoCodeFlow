@@ -11,9 +11,10 @@
  * minimum posture — explicitly allowed by docs/archive/audits/sec-01-review-report.md §四 — is:
  *   1. the config file is created with 0600 (owner read/write only), and any
  *      legacy group/world-readable file is repaired to 0600 on load;
- *   2. credentials can be injected per-invocation via ACF_TOKEN /
- *      ACF_REFRESH_TOKEN (URL via ACF_API_URL) without ever touching disk —
- *      the recommended mode for CI / cron (see README "CLI 工具 (acf)").
+ *   2. credentials can be injected per-invocation via ACF_API_KEY (API Key,
+ *      `acf_...`) or ACF_TOKEN / ACF_REFRESH_TOKEN (JWT lifecycle; URL via
+ *      ACF_API_URL) without ever touching disk — the recommended mode for
+ *      CI / cron (see README "CLI 工具 (acf)").
  */
 import Conf from 'conf';
 import * as fs from 'fs';
@@ -172,6 +173,15 @@ export function getApiUrl(): string {
   return process.env.ACF_API_URL || store.get('apiUrl');
 }
 
+/**
+ * Optional API Key. Never persisted: a plaintext API Key is shown only once
+ * by the server and is a long-lived credential, so env/--api-key is the only
+ * accepted channel. Takes precedence over the JWT access token.
+ */
+export function getApiKey(): string {
+  return process.env.ACF_API_KEY || '';
+}
+
 export function getToken(): string {
   return process.env.ACF_TOKEN || store.get('token');
 }
@@ -212,6 +222,7 @@ export function clearAuth(): void {
 export function showConfig(opts: { json?: boolean } = {}): void {
   const snapshot = {
     apiUrl: getApiUrl(),
+    apiKey: getApiKey() ? '[set]' : '[not set]',
     token: getToken() ? '[set]' : '[not set]',
     refreshToken: getRefreshToken() ? '[set]' : '[not set]',
     configFile: store.path,
@@ -221,6 +232,7 @@ export function showConfig(opts: { json?: boolean } = {}): void {
     return;
   }
   console.log('API URL :', snapshot.apiUrl);
+  console.log('API Key :', snapshot.apiKey);
   console.log('Token   :', snapshot.token);
   console.log('Refresh :', snapshot.refreshToken);
   console.log('Config file:', snapshot.configFile);

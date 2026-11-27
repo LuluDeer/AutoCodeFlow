@@ -40,6 +40,7 @@ import {
   registerAuditTools,
   registerProjectTools,
   registerSopTools,
+  registerTurnaroundTools,
 } from "../tools";
 
 function setup() {
@@ -70,6 +71,7 @@ function setup() {
     registerAuditTools,
     registerProjectTools,
     registerSopTools,
+    registerTurnaroundTools,
   ]) {
     fn(server as never, call as never);
   }
@@ -274,6 +276,90 @@ describe("deploy_application / deploy_app：目标机被静默替换必须说出
     const payload = JSON.parse(res.content[0].text);
     expect(payload.executorReassigned).toBe(true);
     expect(payload.actualExecutorId).toBe(execB);
+  });
+});
+
+describe("create_task：CreateTaskDto 写面字段完整性", () => {
+  const taskId = "33333333-3333-4333-8333-333333333333";
+
+  it("status / timeout / retry / dispatch 字段穿过 SDK 解析进入 POST body", async () => {
+    await invoke(tools, "create_task", {
+      name: "nightly-alignment",
+      triggerType: "cron",
+      cronExpression: "0 2 * * *",
+      status: "active",
+      timeout: 120,
+      timeoutWarnRatio: null,
+      timeoutAction: null,
+      estimatedDurationSec: 300,
+      retryableErrors: ["ETIMEDOUT", "429"],
+      alarmChannels: ["ops@example.com"],
+      blockStrategy: null,
+      misfireStrategy: "fire_once",
+      executorTags: ["gpu", "a100"],
+      executorAffinityTags: ["zone-a"],
+      executorAntiAffinityTags: ["zone-b"],
+      deploymentPolicy: null,
+      runOnUpstreamFailure: true,
+    });
+    expect(call.mock.calls[0][0]).toBe("POST");
+    expect(bodyOf(call)).toEqual({
+      name: "nightly-alignment",
+      triggerType: "cron",
+      cronExpression: "0 2 * * *",
+      status: "active",
+      timeout: 120,
+      timeoutWarnRatio: null,
+      timeoutAction: null,
+      estimatedDurationSec: 300,
+      retryableErrors: ["ETIMEDOUT", "429"],
+      alarmChannels: ["ops@example.com"],
+      blockStrategy: null,
+      misfireStrategy: "fire_once",
+      executorTags: ["gpu", "a100"],
+      executorAffinityTags: ["zone-a"],
+      executorAntiAffinityTags: ["zone-b"],
+      deploymentPolicy: null,
+      runOnUpstreamFailure: true,
+    });
+  });
+
+  it("simple-array 元素含逗号或 estimatedDurationSec 超 7 天 → 解析期拒绝", async () => {
+    await expect(
+      invoke(tools, "create_task", {
+        name: "bad",
+        triggerType: "manual",
+        retryableErrors: ["a,b"],
+      }),
+    ).rejects.toThrow();
+    await expect(
+      invoke(tools, "create_task", {
+        name: "bad",
+        triggerType: "manual",
+        alarmChannels: ["a,b"],
+      }),
+    ).rejects.toThrow();
+    await expect(
+      invoke(tools, "create_task", {
+        name: "bad",
+        triggerType: "manual",
+        estimatedDurationSec: 604801,
+      }),
+    ).rejects.toThrow();
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("dependencies 的 VALUE 才是上游任务 id，显式 null 语义留给 update_task", async () => {
+    await invoke(tools, "create_task", {
+      name: "with-deps",
+      triggerType: "manual",
+      dependencies: { after: taskId },
+    });
+    expect(bodyOf(call)).toEqual({
+      name: "with-deps",
+      triggerType: "manual",
+      dependencies: { after: taskId },
+    });
   });
 });
 

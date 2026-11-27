@@ -32,6 +32,7 @@ import {
   registerAuditTools,
   registerProjectTools,
   registerSopTools,
+  registerTurnaroundTools,
   SOP_PENDING_STATUSES,
   buildExecutionTimeline,
   ANALYZE_TIMEOUT_MS,
@@ -49,6 +50,7 @@ const registerFns = [
   registerAuditTools,
   registerProjectTools,
   registerSopTools,
+  registerTurnaroundTools,
 ];
 
 function setup(): {
@@ -166,6 +168,13 @@ describe("tool registry surface", () => {
       "agent_session_list",
       "agent_session_get",
       "sop_clarification_reply",
+      // turnaround core tools
+      "create_task",
+      "delete_task",
+      "list_artifacts",
+      "send_agent_message",
+      "cancel_agent_session",
+      "decide_agent_approval",
     ];
     expect([...tools.keys()].sort()).toEqual(expected.sort());
   });
@@ -2689,5 +2698,174 @@ describe('R114 list_dead_letters 对响应形状漂移的处理', () => {
     const res = await tools.get('list_dead_letters')!.handler({});
     expect(res.isError).toBe(true);
     expect(parse(res).errorCode).toBe('UNEXPECTED_RESPONSE_SHAPE');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Turnaround core tools (create_task / delete_task / list_artifacts /
+// send_agent_message / cancel_agent_session / decide_agent_approval)
+// ---------------------------------------------------------------------------
+describe("turnaround tools", () => {
+  const TASK_ID = "11111111-1111-4111-8111-111111111111";
+  const EXEC_ID = "22222222-2222-4222-8222-222222222222";
+  const SESSION_ID = "33333333-3333-4333-8333-333333333333";
+
+  it("create_task POSTs /tasks with provided fields and rejects [redacted] sentinel", async () => {
+    call.mockResolvedValueOnce({ id: TASK_ID, name: "nightly-job" });
+    const res = await tools.get("create_task")!.handler({
+      name: "nightly-job",
+      triggerType: "cron",
+      cronExpression: "0 2 * * *",
+      runtime: "python",
+      entrypoint: "main.py",
+    });
+    expect(res.isError).toBeUndefined();
+    expect(call).toHaveBeenCalledWith("POST", "/tasks", {
+      name: "nightly-job",
+      triggerType: "cron",
+      cronExpression: "0 2 * * *",
+      runtime: "python",
+      entrypoint: "main.py",
+    });
+    expect(parse(res)).toEqual({ id: TASK_ID, name: "nightly-job" });
+
+    call.mockClear();
+    const blocked = await tools.get("create_task")!.handler({
+      name: "bad",
+      triggerType: "manual",
+      params: { API_KEY: "[redacted]" },
+    });
+    expect(blocked.isError).toBe(true);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("delete_task calls DELETE /tasks/:id and is flagged destructive", async () => {
+    call.mockResolvedValueOnce({ id: TASK_ID, status: "deleted" });
+    expect(annotations.get("delete_task")?.destructiveHint).toBe(true);
+    const res = await tools.get("delete_task")!.handler({ taskId: TASK_ID });
+    expect(call).toHaveBeenCalledWith("DELETE", `/tasks/${TASK_ID}`);
+    expect(parse(res)).toEqual({ id: TASK_ID, status: "deleted" });
+  });
+
+  it("create_task forwards CreateTaskDto write fields unchanged through the handler", async () => {
+    call.mockResolvedValueOnce({ id: TASK_ID, name: "aligned-job" });
+    const res = await tools.get("create_task")!.handler({
+      name: "aligned-job",
+      triggerType: "manual",
+      status: "active",
+      timeout: 60,
+      retryableErrors: ["ETIMEDOUT"],
+      alarmChannels: ["ops@example.com"],
+      executorAffinityTags: ["zone-a"],
+      executorAntiAffinityTags: ["zone-b"],
+      deploymentPolicy: "prefer",
+      runOnUpstreamFailure: true,
+    });
+    expect(res.isError).toBeUndefined();
+    expect(call).toHaveBeenCalledWith("POST", "/tasks", {
+      name: "aligned-job",
+      triggerType: "manual",
+      status: "active",
+      timeout: 60,
+      retryableErrors: ["ETIMEDOUT"],
+      alarmChannels: ["ops@example.com"],
+      executorAffinityTags: ["zone-a"],
+      executorAntiAffinityTags: ["zone-b"],
+      deploymentPolicy: "prefer",
+      runOnUpstreamFailure: true,
+    });
+  });
+
+  it("list_artifacts queries GET /tasks/executions/:execId/artifacts when executionId is set", async () => {
+    call.mockResolvedValueOnce([{ name: "report.csv", size: 120 }]);
+    expect(annotations.get("list_artifacts")?.readOnlyHint).toBe(true);
+    const res = await tools.get("list_artifacts")!.handler({
+      executionId: EXEC_ID,
+      page: 1,
+      pageSize: 20,
+    });
+    expect(call).toHaveBeenCalledWith("GET", `/tasks/executions/${EXEC_ID}/artifacts`);
+    expect(parse(res)).toEqual([{ name: "report.csv", size: 120 }]);
+  });
+
+  it("list_artifacts queries GET /artifacts with query filters when executionId is omitted", async () => {
+    call.mockResolvedValueOnce({ items: [], total: 0 });
+    await tools.get("list_artifacts")!.handler({
+      taskId: TASK_ID,
+      q: "report",
+      ext: "csv",
+      mine: true,
+      page: 2,
+      pageSize: 10,
+    });
+    expect(call).toHaveBeenCalledWith(
+      "GET",
+      `/artifacts?page=2&pageSize=10&taskId=${TASK_ID}&q=report&ext=csv&mine=true`,
+    );
+  });
+
+  it("send_agent_message POSTs /agent/sessions/:id/messages with optional mode", async () => {
+    call.mockResolvedValueOnce({ ok: true, messageId: "m1" });
+    const res = await tools.get("send_agent_message")!.handler({
+      sessionId: SESSION_ID,
+      content: "Please check disk usage too",
+    });
+    expect(call).toHaveBeenCalledWith(
+      "POST",
+      `/agent/sessions/${SESSION_ID}/messages`,
+      { content: "Please check disk usage too" },
+    );
+    expect(parse(res)).toEqual({ ok: true, messageId: "m1" });
+
+    call.mockClear();
+    await tools.get("send_agent_message")!.handler({
+      sessionId: SESSION_ID,
+      content: "Check this at the next step",
+      mode: "steer",
+    });
+    expect(call).toHaveBeenCalledWith(
+      "POST",
+      `/agent/sessions/${SESSION_ID}/messages`,
+      { content: "Check this at the next step", mode: "steer" },
+    );
+  });
+
+  it("cancel_agent_session POSTs /agent/sessions/:id/cancel without a body", async () => {
+    call.mockResolvedValueOnce({ ok: true, status: "aborted" });
+    expect(annotations.get("cancel_agent_session")?.destructiveHint).toBe(true);
+    await tools.get("cancel_agent_session")!.handler({
+      sessionId: SESSION_ID,
+    });
+    expect(call).toHaveBeenCalledWith(
+      "POST",
+      `/agent/sessions/${SESSION_ID}/cancel`,
+    );
+  });
+
+  it("decide_agent_approval POSTs /grant or /deny with optional note", async () => {
+    expect(annotations.get("decide_agent_approval")?.destructiveHint).toBe(true);
+    await tools.get("decide_agent_approval")!.handler({
+      sessionId: SESSION_ID,
+      approvalKey: "apr-key-1",
+      decision: "grant",
+      note: "Approved in change window",
+    });
+    expect(call).toHaveBeenCalledWith(
+      "POST",
+      `/agent/sessions/${SESSION_ID}/approvals/apr-key-1/grant`,
+      { note: "Approved in change window" },
+    );
+
+    call.mockClear();
+    await tools.get("decide_agent_approval")!.handler({
+      sessionId: SESSION_ID,
+      approvalKey: "apr-key-2",
+      decision: "deny",
+    });
+    expect(call).toHaveBeenCalledWith(
+      "POST",
+      `/agent/sessions/${SESSION_ID}/approvals/apr-key-2/deny`,
+      undefined,
+    );
   });
 });

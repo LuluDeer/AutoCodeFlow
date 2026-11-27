@@ -11,7 +11,7 @@ import * as path from 'path';
  * at a throwaway directory, so no test touches the developer's real ~/.config.
  */
 
-const ENV_KEYS = ['ACF_CONFIG_DIR', 'ACF_TOKEN', 'ACF_REFRESH_TOKEN', 'ACF_API_URL'];
+const ENV_KEYS = ['ACF_CONFIG_DIR', 'ACF_API_KEY', 'ACF_TOKEN', 'ACF_REFRESH_TOKEN', 'ACF_API_URL'];
 
 let dir: string;
 
@@ -62,6 +62,27 @@ describe('acf-cli config at-rest hardening (SEC-NEW-4)', () => {
     // the repair must only tighten the mode — stored credentials survive
     expect(cfg.getToken()).toBe('legacy');
     expect(cfg.getRefreshToken()).toBe('legacy-r');
+  });
+
+  it('ACF_API_KEY is env-only (never persisted) and masked by config show', async () => {
+    process.env.ACF_API_KEY = 'acf_deadbeef';
+    const cfg = await loadConfig();
+    expect(cfg.getApiKey()).toBe('acf_deadbeef');
+
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation(((s: unknown) => {
+      logs.push(String(s));
+    }) as never);
+    try {
+      cfg.showConfig();
+      expect(logs.join('\n')).toContain('[set]');
+      expect(logs.join('\n')).not.toContain('acf_deadbeef');
+    } finally {
+      spy.mockRestore();
+    }
+
+    const raw = JSON.parse(fs.readFileSync(cfg.getConfigPath(), 'utf8'));
+    expect(raw).not.toHaveProperty('apiKey');
   });
 
   it('env injection takes precedence over on-disk credentials (CI / cron path)', async () => {

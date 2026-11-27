@@ -1,8 +1,8 @@
 /**
  * HTTP client for the AutoCodeFlow Admin API (used by the MCP server).
  * Kept free of MCP/zod imports so it can be unit-tested in isolation.
+ * Uses native global fetch (no external node-fetch dependency).
  */
-import fetch from 'node-fetch';
 // R145：已知错误码的「成因 + 下一步」层（表在 error-hints.ts，含与后端码表的对应关系）。
 import { formatBackendErrorHint } from './error-hints';
 
@@ -37,7 +37,14 @@ export function normalizeApiBase(url: string): string {
   }
   return out;
 }
+export const API_KEY = process.env.AUTOCODEFLOW_API_KEY || '';
 export const API_TOKEN = process.env.AUTOCODEFLOW_API_TOKEN || '';
+
+/** Prefix used by admin-api's JwtAuthGuard to dispatch API key auth (`Authorization: Bearer acf_...`). */
+export const API_KEY_PREFIX = 'acf_';
+
+/** Shared 401 next-step hint (single source for the HTTP error and help text). */
+export const API_KEY_REFRESH_HINT = `check AUTOCODEFLOW_API_KEY or refresh AUTOCODEFLOW_API_TOKEN (e.g. run "acf login")`;
 
 /**
  * BUG-14 (SEC-01 复审): 可选的 refresh token 自愈。
@@ -64,6 +71,29 @@ export const REQUEST_TIMEOUT_MS = 30_000;
 let currentToken = API_TOKEN;
 let currentRefreshToken = process.env.AUTOCODEFLOW_API_REFRESH_TOKEN || '';
 let refreshInFlight: Promise<boolean> | null = null;
+
+/**
+ * Resolve the active credential for Admin API requests.
+ *
+ * Precedence:
+ *   1. `AUTOCODEFLOW_API_KEY` (first-class API key env var; sent as `Authorization: Bearer <key>`,
+ *      matching admin-api's JwtAuthGuard dispatch on `acf_*` bearer credentials).
+ *   2. Active JWT / token (`currentToken`, refreshed in memory on 401 when refresh token is set,
+ *      or `AUTOCODEFLOW_API_TOKEN`).
+ */
+export function resolveAuthCredential(): { token: string; isApiKey: boolean } {
+  const envApiKey = process.env.AUTOCODEFLOW_API_KEY || API_KEY;
+  if (envApiKey) {
+    return { token: envApiKey, isApiKey: true };
+  }
+  const token = currentToken || process.env.AUTOCODEFLOW_API_TOKEN || '';
+  return { token, isApiKey: token.startsWith(API_KEY_PREFIX) };
+}
+
+/** True when either AUTOCODEFLOW_API_KEY or AUTOCODEFLOW_API_TOKEN is configured. */
+export function hasApiCredential(): boolean {
+  return resolveAuthCredential().token.length > 0;
+}
 
 /**
  * 刷新 access token。
@@ -121,19 +151,20 @@ export async function apiRequest<T>(
   _retried = false,
 ): Promise<T> {
   const signal = AbortSignal.timeout(timeoutMs);
-  let res;
+  const { token, isApiKey } = resolveAuthCredential();
+  let res: Response;
   try {
     res = await fetch(`${normalizeApiBase(API_URL)}${path}`, {
       method,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${currentToken}`,
+        Authorization: `Bearer ${token}`,
       },
       signal,
-      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
   } catch (err) {
-    // AbortSignal.timeout 触发时 node-fetch 抛 AbortError；以 signal 状态判定，
+    // AbortSignal.timeout 触发时原生 fetch 抛 TimeoutError/AbortError；以 signal 状态判定，
     // 不依赖错误名在不同实现下的差异。
     if (signal.aborted) {
       const budget = timeoutMs >= 1000 ? `${timeoutMs / 1000}s` : `${timeoutMs}ms`;
@@ -142,10 +173,11 @@ export async function apiRequest<T>(
     throw err;
   }
   if (!res.ok) {
-    // BUG-13 同款自愈（/_retried 钉死单次重放；/auth/* 自身不触发）
+    // BUG-13/14 同款自愈（/_retried 钉死单次重放；/auth/* 与 API Key 自身不触发——/auth/* 为 JWT-only 面）
     if (
       res.status === 401 &&
       !_retried &&
+      !isApiKey &&
       !path.includes('/auth/') &&
       (currentRefreshToken || process.env.AUTOCODEFLOW_API_REFRESH_TOKEN)
     ) {
@@ -159,6 +191,9 @@ export async function apiRequest<T>(
     }
     const text = await res.text();
     throw buildHttpError(method, path, res.status, text);
+  }
+  if (res.status === 204) {
+    return undefined as T;
   }
   // admin-api applies a global ResponseInterceptor that wraps every
   // successful response in `{ code, message, data }`. Strip the envelope so
@@ -276,7 +311,7 @@ function buildHttpError(method: string, path: string, status: number, text: stri
   let message: string;
   switch (status) {
     case 401:
-      message = `Unauthorized (401): ${detail} — token missing, expired or invalid; refresh AUTOCODEFLOW_API_TOKEN (e.g. run "acf login")`;
+      message = `Unauthorized (401): ${detail} — ${API_KEY_REFRESH_HINT}`;
       break;
     case 403:
       message = `Forbidden (403): ${detail} — your account is not allowed to perform this operation (some endpoints require the ADMIN role)`;

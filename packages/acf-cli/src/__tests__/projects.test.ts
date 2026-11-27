@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../client.js', () => ({
   get: vi.fn(),
+  getRaw: vi.fn(),
   post: vi.fn(),
   put: vi.fn(),
   del: vi.fn(),

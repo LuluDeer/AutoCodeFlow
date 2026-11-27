@@ -41,6 +41,7 @@ describe('parseCliArgs', () => {
   it('help text lists the environment variables actually consumed', () => {
     const { output } = parseCliArgs(['--help']);
     expect(output).toContain('AUTOCODEFLOW_API_URL');
+    expect(output).toContain('AUTOCODEFLOW_API_KEY');
     expect(output).toContain('AUTOCODEFLOW_API_TOKEN');
     // names must match what src/api.ts reads (no drift to *_BASE_URL etc.)
     const apiSource = readFileSync(
@@ -48,6 +49,7 @@ describe('parseCliArgs', () => {
       'utf-8',
     );
     expect(apiSource).toContain('process.env.AUTOCODEFLOW_API_URL');
+    expect(apiSource).toContain('process.env.AUTOCODEFLOW_API_KEY');
     expect(apiSource).toContain('process.env.AUTOCODEFLOW_API_TOKEN');
   });
 

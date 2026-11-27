@@ -48,6 +48,7 @@ export type ExecuteRequest = z.infer<typeof ExecuteRequestSchema>;
 export const HeartbeatPayloadSchema = z.looseObject({
   "registrationConflict": z.boolean().optional(),
   "taskSandbox": z.enum(["", "bwrap"]).optional(),
+  "capabilities": z.array(z.string()).optional(),
 });
 export type HeartbeatPayload = z.infer<typeof HeartbeatPayloadSchema>;
 

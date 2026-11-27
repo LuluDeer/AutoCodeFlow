@@ -18,7 +18,7 @@ const { axiosInstance, requestInterceptors, responseInterceptors, tokenState } =
     },
     requestInterceptors: { use: vi.fn() },
     responseInterceptors: { use: vi.fn() },
-    tokenState: { access: "test-token", refresh: "" },
+    tokenState: { access: "test-token", refresh: "", apiKey: "" },
   }));
 
 vi.mock("axios", () => ({
@@ -40,6 +40,7 @@ vi.mock("axios", () => ({
 
 vi.mock("../config.js", () => ({
   getApiUrl: () => "http://localhost:3105",
+  getApiKey: () => tokenState.apiKey,
   getToken: () => tokenState.access,
   getRefreshToken: () => tokenState.refresh,
   setToken: (t: string) => {
@@ -57,6 +58,7 @@ vi.mock("../config.js", () => ({
 import axios from "axios";
 import {
   get,
+  getRaw,
   normalizeApiBase,
   post,
   put,
@@ -79,6 +81,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   tokenState.access = "test-token";
   tokenState.refresh = "";
+  tokenState.apiKey = "";
+  vi.mocked(axios.post).mockClear();
 });
 
 /** 创建 client（注册拦截器）并取出 response onRejected 回调 */
@@ -179,6 +183,27 @@ describe("client methods (mocked axios)", () => {
     tokenState.access = "rotated-token";
     expect(onFulfilled({ headers: {} })).toMatchObject({
       headers: { Authorization: "Bearer rotated-token" },
+    });
+  });
+
+  it("getRaw returns bytes and headers without unwrapping", async () => {
+    const payload = new Uint8Array([1, 2, 3]).buffer;
+    axiosInstance.get.mockResolvedValueOnce({
+      data: payload,
+      headers: { "x-sha256": "deadbeef" },
+    });
+    const res = await getRaw("/artifacts/exec-1/report.csv");
+    expect(res.data).toEqual(new Uint8Array([1, 2, 3]));
+    expect(res.headers["x-sha256"]).toBe("deadbeef");
+  });
+
+  it("prefers ACF_API_KEY over the JWT token on every request", () => {
+    const onFulfilled = getOnFulfilled();
+    tokenState.access = "jwt-token";
+    tokenState.apiKey = "acf_deadbeef";
+
+    expect(onFulfilled({ headers: {} })).toMatchObject({
+      headers: { Authorization: "Bearer acf_deadbeef" },
     });
   });
 
@@ -339,6 +364,16 @@ describe("401 refresh self-heal (BUG-13)", () => {
     expect(tokenState.access).toBe("");
     expect(tokenState.refresh).toBe("");
     expect(axiosInstance.request).not.toHaveBeenCalled();
+  });
+
+  it("with an API key: never calls /auth/refresh on 401", async () => {
+    tokenState.apiKey = "acf_revoked";
+    const onRejected = getOnRejected();
+
+    await expect(onRejected(retriable401())).rejects.toMatchObject({
+      response: { status: 401 },
+    });
+    expect(vi.mocked(axios.post)).not.toHaveBeenCalled();
   });
 
   it("without a stored refresh token: fails fast without calling /auth/refresh", async () => {

@@ -12,6 +12,7 @@ import httpx
 from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 from startup_identity import executor_startup_id
+from executor_instance_id import get_executor_instance_id
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,50 @@ def has_dynamic_token() -> bool:
     # 与「动态（/token 下发）token 当前是否持有」——旧 health 只读静态 env，动态链路
     # 坏掉时探针仍报 tokenValid=true，运维无法从探针发现 token 轮换/自愈故障。
     return bool(_dynamic_token)
+
+# P1-1（协议 v8，v8 自愈）：/token 409 慢性冲突状态机。与 node
+# middleware/auth.ts 逐条对齐：409 单独指数退避（30s 起步 ×2，封顶 10min），
+# 任何非 409 结果（成功 / 网络错 / 其它 4xx）复位。冲突态经心跳
+# registrationConflict 上报，使 admin 的接管自愈窗不再被自己的心跳锁死。
+_registration_conflict = False
+_token_conflict_interval_seconds = 30.0
+_TOKEN_CONFLICT_BACKOFF_BASE_SECONDS = 30.0
+_TOKEN_CONFLICT_BACKOFF_MAX_SECONDS = 10 * 60.0
+
+
+def is_registration_conflict_active() -> bool:
+    """当前 /token 409 冲突态（心跳与 /health 同源读取）。"""
+    return _registration_conflict
+
+
+def reset_conflict_state_for_test() -> None:
+    global _registration_conflict, _token_conflict_interval_seconds
+    _registration_conflict = False
+    _token_conflict_interval_seconds = _TOKEN_CONFLICT_BACKOFF_BASE_SECONDS
+
+
+def _record_token_conflict() -> None:
+    global _registration_conflict, _token_conflict_interval_seconds, _token_fetch_failed_at
+    _token_conflict_interval_seconds = (
+        min(_token_conflict_interval_seconds * 2, _TOKEN_CONFLICT_BACKOFF_MAX_SECONDS)
+        if _registration_conflict else _TOKEN_CONFLICT_BACKOFF_BASE_SECONDS
+    )
+    _registration_conflict = True
+    # 与 node 同款：409 的锚点单独计量，不叠加普通失败退避。
+    _token_fetch_failed_at = time.monotonic()
+    logger.warning(
+        '/token rejected with 409 (executor address conflicts with another installation); '
+        'next attempt in %.0fs (exponential backoff, cap %.0fmin)',
+        _token_conflict_interval_seconds,
+        _TOKEN_CONFLICT_BACKOFF_MAX_SECONDS / 60,
+    )
+
+
+def _clear_token_conflict() -> None:
+    global _registration_conflict, _token_conflict_interval_seconds
+    _registration_conflict = False
+    _token_conflict_interval_seconds = _TOKEN_CONFLICT_BACKOFF_BASE_SECONDS
+
 
 # Dynamic token storage (refreshed periodically)
 _dynamic_token = None
@@ -181,18 +226,10 @@ def _get_admin_api_url() -> str:
 async def _fetch_token() -> Optional[str]:
     """Fetch a fresh token from admin-api.
 
-    ⚠️ 缺口登记（方案 b / 协议 v8，2026-10-26）：本函数**不识别 409**——地址
-    被另一份安装占用（EXECUTOR_ADDRESS_TAKEN）时走的是下方 `not 2xx → None`
-    的兜底，与"网络失败"不可区分。协议 v8 的 `registrationConflict` 心跳键
-    （方案 b，接管自愈死锁修复）在本执行器因此**恒缺席**（=「未上报」，中台
-    按 v7 语义不动活性判定——protocol.json v8 条目明示，行为合法）；node 侧
-    蓝本：heartbeat-state.ts（409 置位/成功清除）+ middleware/auth.ts
-    （recordTokenConflict/clearTokenConflict）+ scheduler.ts 心跳体。后续批
-    补齐时：本函数对 409 调 set_registration_conflict(True)、对任何非 409
-    结果调 set_registration_conflict(False)，scheduler._heartbeat_payload 加
-    `registrationConflict` 键（与 config.py PROTOCOL_VERSION 注释的两处缺席
-    裁定同步移除）。在那之前，admin 侧对 python 执行器的接管自愈依赖既有
-    stale sweep（无静态 token 心跳续命时本来就会判死，不受本缺口影响）。
+    409（EXECUTOR_ADDRESS_TAKEN）单独识别：置位 ``registrationConflict`` 并按
+    指数退避（30s→10min）安排下一次重试；任何非 409 结果（成功 / 网络错 /
+    其它 4xx）清除冲突态。心跳把该状态随 ``registrationConflict`` 上报，
+    中台据此打开接管自愈窗（协议 v8 方案 b，与 executor-node 同语义）。
     """
     try:
         # 网络性能审计（2026-09-18）：改用 O-24 共享连接池（延迟导入避免
@@ -222,6 +259,10 @@ async def _fetch_token() -> Optional[str]:
                 # semantics). Without it the admin falls back to the
                 # legacy 60s rotation window.
                 'startupId': executor_startup_id,
+                # 工单 11 / ADR-017 §3：本地持久化的行 id，供中台在同址多行
+                # 且指纹不可用时按行定位（仅线索；授权仍以 per-executor 令牌
+                # 为前提）。无记录时键缺席，legacy 行为不变。
+                **({'executorId': _eid} if (_eid := get_executor_instance_id()) else {}),
                 # ADR-017 阶段 3（复查补口）：指纹是**行定位键**。缺省即服务端
                 # 按 address 回落——pull 同址多行（ADR-017 §5）时任取一行，
                 # 会去轮换**别的执行器**的 token（那台随即 401，执行卡 RUNNING）。
@@ -232,6 +273,7 @@ async def _fetch_token() -> Optional[str]:
         # R9: the token endpoint is a Nest POST — it answers 201, not 200.
         # The old `== 200` check silently dropped every success.
         if 200 <= response.status_code < 300:
+            _clear_token_conflict()
             # R9 (root fix): admin-api's global ResponseInterceptor wraps
             # the payload in {code,message,data}; reading `token` off the
             # raw body yielded None forever, so the dynamic token never
@@ -249,8 +291,18 @@ async def _fetch_token() -> Optional[str]:
             # give main.py's re-register hook a fire-and-forget poke.
             notify_token_acquired()
             return token
+        if response.status_code == 409:
+            # 协议 v8 方案 b：地址被另一份安装占用——置位冲突态 + 指数退避，
+            # 心跳据此上报 registrationConflict，打开中台接管自愈窗。
+            _record_token_conflict()
+        elif _registration_conflict:
+            # 任何非 409 结果都清除冲突态（避免 401/5xx 让冲突标志永久粘住）。
+            _clear_token_conflict()
     except Exception as e:
         # Fall back to static token if dynamic token fetch fails
+        # 网络错不是 409 裁决：复位冲突标志，但保留普通失败退避计时。
+        if _registration_conflict:
+            _clear_token_conflict()
         logger.warning("Dynamic token fetch failed (will use static): %s", e)
     return None
 
@@ -267,7 +319,13 @@ async def _refresh_token_if_needed() -> None:
         # fetch timeout. Clock is monotonic (not wall-clock) — immune to system
         # time changes.
         now_mono = time.monotonic()
-        if _token_fetch_failed_at and (now_mono - _token_fetch_failed_at) < _TOKEN_FETCH_BACKOFF_SECONDS:
+        # P1-1（协议 v8）：409 冲突退避优先——单独按指数间隔（30s→10min）计算，
+        # 不与普通失败退避叠加；非 409 失败仍用固定 30s（与 node 对齐）。
+        effective_backoff = (
+            _token_conflict_interval_seconds if _registration_conflict
+            else _TOKEN_FETCH_BACKOFF_SECONDS
+        )
+        if _token_fetch_failed_at and (now_mono - _token_fetch_failed_at) < effective_backoff:
             return
         now = datetime.now(timezone.utc)
         # Refresh if no token, expired, or within 5 minutes of expiration

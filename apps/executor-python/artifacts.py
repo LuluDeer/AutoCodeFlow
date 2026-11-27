@@ -18,6 +18,9 @@ from typing import Any
 
 import httpx
 
+from admin_api import build_admin_api_url
+from auth import request_with_self_heal
+
 logger = logging.getLogger(__name__)
 
 # 与 admin 回调 DTO @ArrayMaxSize / 上传端点上限一致。
@@ -134,6 +137,22 @@ def _api_base(admin_base_url: str) -> str:
     return base
 
 
+def _candidate_bases(admin_base_url: str) -> list[str]:
+    """主 URL + 同一执行器配置里的备用 admin URL（去重，保序）。
+
+    与 node ``getAllAdminUrls`` 的 failover 语义对齐：主地址 401 自愈失败
+    （token 刷新不可用）或连接失败时，依次尝试备用地址（它们读同一个 DB，
+    令牌与产物互相可见）。"""
+    from config import settings
+
+    candidates = [admin_base_url]
+    for url in (settings.admin_api_url_external, settings.admin_api_url_internal,
+                settings.admin_api_url):
+        if url and url.strip() and url.strip().rstrip('/') not in [c.rstrip('/') for c in candidates]:
+            candidates.append(url.strip().rstrip('/'))
+    return [_api_base(c) for c in candidates if c]
+
+
 async def _upload_one(
     client: httpx.AsyncClient,
     admin_base_url: str,
@@ -141,42 +160,46 @@ async def _upload_one(
     item: dict[str, Any],
     token: str | None,
 ) -> bool:
-    """PUT 上传单个产物；成功返回 True。任何异常吞掉并记日志。"""
-    # ART-NAME-01: 纵深防御——即便调用方绕过 is_safe_artifact_name 传入非法名，
-    # 也在此处断言，绝不把原始文件名拼进 URL（`#` 会被当作 fragment、`?` 会被
-    # 当作查询串，导致「上传成功但名字不对」的静默错位）。
+    """PUT 上传单个产物；成功返回 True。任何异常吞掉并记日志。
+
+    走 :func:`request_with_self_heal`（401 → 强制刷新 token → 重试一次）并
+    在主地址失败时 failover 到配置里的备用 admin URL——与 node 侧
+    admin-client 的 401 自愈 + 多地址 failover 对齐。文件以流式
+    ``files={...: fh}`` 交给 httpx，多副本重试时重新 open，避免句柄耗尽。
+    """
     name = item["name"]
     if not is_safe_artifact_name(name):
         logger.warning("artifacts: 拒绝上传非法产物名 %r", name)
         return False
-    # ART-EXEC-ID-01（audit-r4 7-2）：executionId 拼进 URL 路径段前的白名单
-    # 断言——异常字符可能构造出错误 URL 或路径逃逸，纵深防御不许带病上传。
     if not is_safe_execution_id(execution_id):
         logger.warning("artifacts: 拒绝上传非法 executionId %r", execution_id)
         return False
-    url = f"{_api_base(admin_base_url)}/executions/{execution_id}/artifacts/{name}"
-    try:
-        with open(item["path"], "rb") as fh:
-            files = {"file": (item["name"], fh, "application/octet-stream")}
-            headers = {}
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-            resp = await client.put(
-                url,
-                files=files,
-                params={"sha256": item["sha256"]},
-                headers=headers,
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    for base in _candidate_bases(admin_base_url):
+        url = f"{base}/executions/{execution_id}/artifacts/{name}"
+        try:
+            with open(item["path"], "rb") as fh:
+                files = {"file": (name, fh, "application/octet-stream")}
+                resp = await request_with_self_heal(
+                    client, "put", url, token=token, files=files,
+                    params={"sha256": item["sha256"]}, headers=headers,
+                    timeout=30,
+                )
+            if 200 <= resp.status_code < 300:
+                return True
+            logger.warning(
+                "artifacts: 上传 %s 返回 HTTP %s（跳过，不阻塞回调）",
+                name, resp.status_code,
             )
-        if 200 <= resp.status_code < 300:
-            return True
-        logger.warning(
-            "artifacts: 上传 %s 返回 HTTP %s（跳过，不阻塞回调）",
-            item["name"], resp.status_code,
-        )
-        return False
-    except Exception as exc:  # noqa: BLE001 —— best-effort
-        logger.warning("artifacts: 上传 %s 失败: %s", item["name"], exc)
-        return False
+            # 确定性 4xx（非法名/id、sha 不符）failover 无意义；仅网络错 /
+            # 401 自愈失败 / 5xx 尝试备用地址。
+            if 400 <= resp.status_code < 500 and resp.status_code != 401:
+                return False
+        except Exception as exc:  # noqa: BLE001 —— best-effort
+            logger.warning("artifacts: 上传 %s 失败: %s", name, exc)
+    return False
 
 
 async def gather_artifacts_for_callback(
@@ -206,27 +229,24 @@ async def gather_artifacts_for_callback(
         return []
 
     manifest: list[dict[str, str]] = []
-    owns_client = client is None
-    if owns_client:
-        # NETOPT-D P3: trust_env=False 与同进程 scheduler.py/execute.py 对齐——
-        # 上传走 admin 内部通道，不经系统代理。
-        client = httpx.AsyncClient(timeout=30, trust_env=False)
-    try:
-        for item in items:
-            try:
-                ok = await _upload_one(client, admin_base_url, execution_id, item, token)
-            except Exception as exc:  # noqa: BLE001 —— 单文件上传异常不阻断其余/回调
-                logger.warning("artifacts: 上传 %s 抛出（跳过）: %s", item["name"], exc)
-                ok = False
-            if ok:
-                manifest.append({
-                    "name": item["name"],
-                    "size": item["size"],
-                    "sha256": item["sha256"],
-                })
-    finally:
-        if owns_client:
-            await client.aclose()
+    if client is None:
+        # NETOPT-D P3 / O-24：复用 scheduler 的 per-loop 共享连接池，不再
+        # 为每次回调产物上传新建/关闭一个 AsyncClient（冷连接抖动会放大
+        # 上传失败率）。延迟导入避免模块级 artifacts↔scheduler 环。
+        from scheduler import get_http_client
+        client = get_http_client()
+    for item in items:
+        try:
+            ok = await _upload_one(client, admin_base_url, execution_id, item, token)
+        except Exception as exc:  # noqa: BLE001 —— 单文件上传异常不阻断其余/回调
+            logger.warning("artifacts: 上传 %s 抛出（跳过）: %s", item["name"], exc)
+            ok = False
+        if ok:
+            manifest.append({
+                "name": item["name"],
+                "size": item["size"],
+                "sha256": item["sha256"],
+            })
     if manifest:
         logger.info("artifacts: 已上传 %d 个产物 for %s", len(manifest), execution_id)
     return manifest

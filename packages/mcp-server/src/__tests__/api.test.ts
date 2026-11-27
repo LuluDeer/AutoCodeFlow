@@ -1,12 +1,12 @@
 /**
  * Unit tests for the MCP server HTTP layer: envelope unwrapping and the
- * apiRequest fetch plumbing (path / method / body / Authorization header),
- * with node-fetch mocked.
+ * apiRequest native fetch plumbing (path / method / body / Authorization header),
+ * with globalThis.fetch mocked.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const fetchMock = vi.hoisted(() => vi.fn());
-vi.mock("node-fetch", () => ({ default: fetchMock }));
+vi.stubGlobal("fetch", fetchMock);
 
 import {
   apiRequest,
@@ -15,6 +15,7 @@ import {
   apiPost,
   apiPut,
   apiDelete,
+  hasApiCredential,
   REQUEST_TIMEOUT_MS,
 } from "../api";
 import contract from "../../../contract-fixtures/contract.json";
@@ -32,6 +33,7 @@ function jsonResponse(ok: boolean, body: unknown, status = ok ? 200 : 500) {
 }
 
 beforeEach(() => {
+  vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockReset();
   fetchMock.mockResolvedValue(
     jsonResponse(true, { code: 0, message: "success", data: null }),
@@ -354,7 +356,7 @@ describe("401 refresh self-heal (BUG-14)", () => {
     // 本用例要求"全新进程"语义（currentRefreshToken 为空）。同文件前序用例
     // 的轮换会把模块级内存 token 污染为 'r3'，refreshAccessToken 的
     // `currentRefreshToken || envRefresh` 会短路 env 判空——用 resetModules
-    // + 动态导入取一个干净模块实例（vi.mock('node-fetch') 对新导入仍生效）。
+    // + 动态导入取一个干净模块实例（stubGlobal fetch 对新导入仍生效）。
     vi.stubEnv("AUTOCODEFLOW_API_REFRESH_TOKEN", "");
     vi.resetModules();
     const fresh = await import("../api");
@@ -823,5 +825,51 @@ describe("R145 端到端：trigger_task 被拒时模型读到的文本", () => {
 
     expect(result.content[0].text).toBe("API error (400): 参数错");
     expect(result.structuredContent).toEqual({ errorCode: "TASK_SOMETHING_UNKNOWN" });
+  });
+});
+
+describe("AUTOCODEFLOW_API_KEY first-class support", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("sends Authorization: Bearer acf_... when AUTOCODEFLOW_API_KEY is set", async () => {
+    vi.stubEnv("AUTOCODEFLOW_API_KEY", "acf_deadbeef0123456789");
+    expect(hasApiCredential()).toBe(true);
+    await apiGet("/tasks");
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer acf_deadbeef0123456789",
+    );
+  });
+
+  it("treats AUTOCODEFLOW_API_TOKEN=acf_... as an API key and skips JWT refresh on 401", async () => {
+    vi.stubEnv("AUTOCODEFLOW_API_KEY", "");
+    vi.stubEnv("AUTOCODEFLOW_API_TOKEN", "acf_legacy_env_key");
+    vi.stubEnv("AUTOCODEFLOW_API_REFRESH_TOKEN", "should-not-be-used");
+    vi.resetModules();
+    const fresh = await import("../api");
+
+    await fresh.apiGet("/tasks");
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer acf_legacy_env_key",
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(false, { message: "API key revoked" }, 401),
+    );
+    await expect(fresh.apiGet("/tasks")).rejects.toThrow(/Unauthorized \(401\)/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not trigger JWT /auth/refresh on 401 when authenticating with AUTOCODEFLOW_API_KEY", async () => {
+    vi.stubEnv("AUTOCODEFLOW_API_KEY", "acf_revokedkey");
+    vi.stubEnv("AUTOCODEFLOW_API_REFRESH_TOKEN", "should-not-be-used");
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(false, { message: "API key revoked" }, 401),
+    );
+    await expect(apiGet("/tasks")).rejects.toThrow(/Unauthorized \(401\)/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
