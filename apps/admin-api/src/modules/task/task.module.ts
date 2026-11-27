@@ -4,6 +4,7 @@ import { BullModule } from "@nestjs/bullmq";
 import { TaskController } from "./task.controller";
 import { TaskBatchController } from "./task-batch.controller";
 import { TaskWebhookController } from "./task-webhook.controller";
+import { TaskDagChainController } from "./task-dag-chain.controller";
 import { TaskWebhookService } from "./task-webhook.service";
 import { ExecutionCallbackController } from "./execution-callback.controller";
 import { ExecutionCallbackMetricsService } from "./execution-callback-metrics.service";
@@ -70,6 +71,8 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
     TaskBatchController,
     // FEAT-21: 任务 webhook 入站触发（公开机器面，/webhooks/tasks/:taskId）
     TaskWebhookController,
+    // DAG 根节点链式触发（POST /tasks/dag/trigger-roots）
+    TaskDagChainController,
     ExecutionCallbackController,
   ],
   providers: [

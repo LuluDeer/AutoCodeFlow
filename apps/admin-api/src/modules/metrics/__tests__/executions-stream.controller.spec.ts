@@ -10,6 +10,7 @@
  */
 import { ServiceUnavailableException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { DataSource } from "typeorm";
 import { Test, TestingModule } from "@nestjs/testing";
 import { ExecutionsStreamController } from "../executions-stream.controller";
 import { MetricsStreamSlotService } from "../metrics-stream-slot.service";
@@ -19,6 +20,7 @@ import {
   ExecutionTerminalEventPayload,
 } from "../../../common/events/domain-events";
 import { resetRuntimeGauges } from "../runtime-metrics-entry";
+import { UserRole } from "../../users/entities/user.entity";
 
 interface MockRes {
   headers: Record<string, string>;
@@ -112,6 +114,16 @@ async function makeModule(config: Record<string, number> = {}) {
           },
         },
       },
+      {
+        provide: DataSource,
+        useValue: {
+          manager: {
+            getRepository: jest.fn().mockReturnValue({
+              find: jest.fn().mockResolvedValue([]),
+            }),
+          },
+        },
+      },
     ],
   }).compile();
   const controller = module.get<ExecutionsStreamController>(
@@ -138,7 +150,7 @@ describe("ExecutionsStreamController — GET /executions/stream（FEAT-16）", (
           closeCb = cb;
         },
       } as never,
-      res as never,
+      res as never, { id: 1, role: UserRole.ADMIN } as never,
     );
     await new Promise((r) => setImmediate(r));
 
@@ -163,7 +175,7 @@ describe("ExecutionsStreamController — GET /executions/stream（FEAT-16）", (
           closeCb = cb;
         },
       } as never,
-      res as never,
+      res as never, { id: 1, role: UserRole.ADMIN } as never,
     );
 
     // 等监听器注册完成（建流同步段内已注册）
@@ -211,7 +223,7 @@ describe("ExecutionsStreamController — GET /executions/stream（FEAT-16）", (
           closeCb = cb;
         },
       } as never,
-      res as never,
+      res as never, { id: 1, role: UserRole.ADMIN } as never,
     );
     await new Promise((r) => setImmediate(r));
 
@@ -251,7 +263,7 @@ describe("ExecutionsStreamController — GET /executions/stream（FEAT-16）", (
           closeCb = cb;
         },
       } as never,
-      res as never,
+      res as never, { id: 1, role: UserRole.ADMIN } as never,
     );
     await new Promise((r) => setImmediate(r));
     (closeCb as () => void)();
@@ -279,7 +291,7 @@ describe("ExecutionsStreamController — GET /executions/stream（FEAT-16）", (
           closeCb = cb;
         },
       } as never,
-      res as never,
+      res as never, { id: 1, role: UserRole.ADMIN } as never,
     );
     expect(slots.active).toBe(1);
     await new Promise((r) => setImmediate(r));
@@ -298,7 +310,7 @@ describe("ExecutionsStreamController — GET /executions/stream（FEAT-16）", (
 
     const { res } = makeMockRes();
     await expect(
-      controller.stream({ on: () => undefined } as never, res as never),
+      controller.stream({ on: () => undefined } as never, res as never, { id: 1, role: UserRole.ADMIN } as never),
     ).rejects.toThrow(ServiceUnavailableException);
     expect(Object.keys(res.headers)).toHaveLength(0);
     expect(res.writes).toHaveLength(0);
@@ -317,7 +329,7 @@ describe("ExecutionsStreamController — GET /executions/stream（FEAT-16）", (
           closeCb = cb;
         },
       } as never,
-      res as never,
+      res as never, { id: 1, role: UserRole.ADMIN } as never,
     );
     await new Promise((r) => setImmediate(r));
 
@@ -343,7 +355,7 @@ describe("ExecutionsStreamController — GET /executions/stream（FEAT-16）", (
           closeCb = cb;
         },
       } as never,
-      res as never,
+      res as never, { id: 1, role: UserRole.ADMIN } as never,
     );
     await new Promise((r) => setImmediate(r));
     bus.emit(DOMAIN_EVENTS.EXECUTION_COMPLETED, terminalPayload());
@@ -372,7 +384,7 @@ describe("ExecutionsStreamController — GET /executions/stream（FEAT-16）", (
           closeCb = cb;
         },
       } as never,
-      res as never,
+      res as never, { id: 1, role: UserRole.ADMIN } as never,
     );
     for (let i = 0; i < 40; i++) {
       if (parseFrames(res.writes).some((f) => f.comment)) break;

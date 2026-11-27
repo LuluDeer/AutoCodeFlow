@@ -48,6 +48,10 @@ import {
   ListArtifactRowsDto,
   ExecutionArtifactRowDto,
 } from "./dto/artifact-index.dto";
+import {
+  ArtifactPreviewQueryDto,
+  ArtifactPreviewResponseDto,
+} from "./dto/artifact-preview.dto";
 
 /**
  * FEAT-05：执行产物通道。
@@ -219,6 +223,42 @@ export class ArtifactsController {
     return this.svc.getManifest(execId, user);
   }
 
+  @Get("tasks/executions/:execId/artifacts/:name/preview")
+  @ApiBearerAuth("JWT")
+  @ApiOperation({
+    description:
+      "按与下载相同的归属校验读取产物开头做有界预览。ADMIN 全量；普通用户仅见本人属主或本人具 editor+ 项目的执行产物，无主产物恒 403。maxBytes 默认 65536、可取 1024..262144；文本（text/*、json、xml）按 UTF-8 返回 content，图片/二进制 content=null 且不会读取文件内容。超出上限时 truncated=true，文件路径穿越与非 UUID 执行 ID 一律 400。",
+    summary: "有界预览单个执行产物（文本 UTF-8 / 图片与二进制仅元数据）",
+  })
+  @ApiParam({ name: "execId", description: "执行 ID（UUID）" })
+  @ApiParam({ name: "name", description: "裸产物文件名" })
+  @ApiQuery({
+    name: "maxBytes",
+    required: false,
+    type: Number,
+    description:
+      "预览最多读取的字节数，默认 65536，允许 1024..262144；越界返回 400 VALIDATION_FAILED",
+  })
+  @ApiOkResponse({
+    type: ArtifactPreviewResponseDto,
+    description:
+      "有界预览结果（name/mimeType/size/truncated/kind/content）；非文本 content 恒为 null",
+  })
+  @ApiResponse({ status: 400, description: "执行 ID 或产物名非法、maxBytes 越界" })
+  @ApiResponse({ status: 403, description: "调用者无权访问该产物" })
+  @ApiResponse({ status: 404, description: "产物不存在" })
+  async preview(
+    @Param("execId") execId: string,
+    @Param("name") name: string,
+    @Query() query: ArtifactPreviewQueryDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    // 与 download 同口径：先按 execId 反查执行行归属，无权/无主执行即 403；
+    // 守卫在 service 内按 viewer 角色收窄，ADMIN 全量。
+    await this.svc.assertArtifactReadable(execId, user);
+    return this.svc.previewArtifact(execId, name, query.maxBytes);
+  }
+
   @Get("tasks/executions/:execId/artifacts/:name")
   @ApiBearerAuth("JWT")
   @ApiOperation({
@@ -238,14 +278,6 @@ export class ArtifactsController {
   })
   @ApiResponse({ status: 403, description: "调用者无权访问该产物" })
   @ApiResponse({ status: 404, description: "产物不存在" })
-  @ApiOkResponse({
-    description: "产物二进制内容（Res 直传）",
-    content: {
-      "application/octet-stream": {
-        schema: { type: "string", format: "binary" },
-      },
-    },
-  })
   async download(
     @Param("execId") execId: string,
     @Param("name") name: string,

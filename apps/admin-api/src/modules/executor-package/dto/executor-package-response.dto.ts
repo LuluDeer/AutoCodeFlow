@@ -89,6 +89,13 @@ export class ExecutorPackageResponseDto {
   })
   description: string | null;
 
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      "更新日志（包发布说明）。实体暂无该列，存量与新包统一返回 null，供前端按新契约渲染。",
+  })
+  changelog: string | null;
+
   @ApiProperty({ description: "生命周期状态（active / deprecated / …）" })
   status: string;
 

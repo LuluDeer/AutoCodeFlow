@@ -129,8 +129,31 @@ export class TaskTemplateService {
   }
 
   /**
-   * **清单导入**：把一份 `manifest.json`（或 registry 里的一条）落成
-   * `task_templates` 行。
+   * 清单导入时保留声明元数据（version/capabilities/params），不新增迁移：
+   * 这些字段没有独立列，也不塞进 CreateTaskDto 白名单字段（config.params 等
+   * 会改变实例化后的任务执行参数）。统一落在 config.metadata.skillManifest，
+   * 供审计/展示读取；instantiate 时剥离该键，实例化行为逐字节不变。
+   *
+   * 已有 config.metadata（显式 config）时保留其原有内容，仅覆盖本键。
+   */
+  private attachManifestMetadata(
+    config: Record<string, unknown>,
+    manifest: NormalizedTemplateManifest,
+  ): Record<string, unknown> {
+    const metadata: Record<string, unknown> =
+      config.metadata && typeof config.metadata === "object" && !Array.isArray(config.metadata)
+        ? { ...(config.metadata as Record<string, unknown>) }
+        : {};
+    metadata.skillManifest = {
+      version: manifest.version,
+      capabilities: manifest.capabilities,
+      params: manifest.params,
+    };
+    return { ...config, metadata };
+  }
+
+  /**
+   * 清单导入：**清单声明元数据**随落库 config 保留。
    *
    * 这是契约文档 `docs/skills/manifest-contract.md` 里**最后一步**的落库路径
    * （校验 → 导入 → 落库 → 审计），此前只做到「清单 + 守卫」。
@@ -146,10 +169,12 @@ export class TaskTemplateService {
    *
    * 落库字段全部是既有列（key/name/description/category/config/isOfficial/
    * createdBy，见 `entities/task-template.entity.ts`）。清单的 version /
-   * capabilities / params / entrypoints 是**声明元数据**，本表没有列、也刻意
-   * 不塞进 `config`（config 走的是 CreateTaskDto 白名单，塞进去会被 400）——
-   * 它们的事实源就是 `docs/skills/registry.json`，落库侧只留内容锚（审计 detail
-   * 的 contentHash）供对账。要「无损保存整份清单」才需要加列，那是另一件事。
+   * capabilities / params 是**声明元数据**，本表没有列，也不塞进 CreateTaskDto
+   * 白名单字段（config.params/defaultParams 会改变实例化后的任务执行参数）——
+   * 统一保存在 config.metadata.skillManifest（CreateTaskDto 校验之后附着），
+   * 供审计/展示读取；instantiate 时剥离，执行语义不受影响。entrypoints 的事实源
+   * 仍是 `docs/skills/registry.json`，落库侧另留内容锚（审计 detail 的
+   * contentHash）供对账。要「无损保存整份清单」才需要加列，那是另一件事。
    *
    * key 冲突即拒（409，复用既有 `TASK_TEMPLATE_KEY_EXISTS`）：导入是**幂等语义
    * 的创建**，不是 upsert——覆盖既有行会静默改掉别人正在用的模板。并发窗口里
@@ -168,6 +193,9 @@ export class TaskTemplateService {
     const { config, source } = resolveImportConfig(manifest, explicitConfig);
     // ③ 与 create 端点同源的 CreateTaskDto 语义校验（脏 config 400，不落库）。
     await assertValidTaskTemplateConfig(config);
+    // ④ 清单声明元数据在校验之后附着：metadata 不在 CreateTaskDto 白名单内，
+    //    先附着会被 forbidNonWhitelisted 拒绝；既保留事实又不改变执行参数。
+    const storedConfig = this.attachManifestMetadata(config, manifest);
 
     const key = manifest.name;
     const existing = await this.repo.findOne({ where: { key } });
@@ -181,7 +209,7 @@ export class TaskTemplateService {
       name: display.name,
       description: manifest.description,
       category: display.category,
-      config,
+      config: storedConfig,
       // 与 create 一致：官方标记只由迁移 seed 产生，导入的永远是自定义行。
       isOfficial: false,
       createdBy: creator ? buildTemplateOwnerKey(creator) : null,
@@ -216,6 +244,21 @@ export class TaskTemplateService {
     const overrides: Record<string, unknown> = { ...(body ?? {}) };
     delete overrides.templateId;
     const merged = expandTemplateConfigIntoTaskDto(tpl.config, overrides);
+    // 清单声明元数据（importManifest 附着在 config.metadata.skillManifest）只用于
+    // 审计/展示，不属于 CreateTaskDto；实例化前剥离，避免 forbidNonWhitelisted 400。
+    if (
+      merged.metadata &&
+      typeof merged.metadata === "object" &&
+      !Array.isArray(merged.metadata)
+    ) {
+      const { skillManifest: _skillManifest, ...restMetadata } = merged.metadata as Record<
+        string,
+        unknown
+      >;
+      void _skillManifest;
+      if (Object.keys(restMetadata).length > 0) merged.metadata = restMetadata;
+      else delete merged.metadata;
+    }
     const dto = await assertValidCreateTaskPayload(merged);
     // A2（第二轮审计）：实例化防重。落库前 best-effort 预检查：同 name 任务
     // 已存在即 409，错误信息含任务名（前端可直接展示）。

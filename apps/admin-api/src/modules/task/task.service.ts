@@ -3935,6 +3935,24 @@ export class TaskService implements OnModuleInit {
   }
 
   /**
+   * DAG 批次接线：读取已完成执行的 `params._dagRunId`。
+   * 非字符串 / 查询失败一律返回 null——批次标记是增强而非依赖，
+   * 旧执行与历史链路照常走「全量最新执行」判定。
+   */
+  private async loadDagRunId(executionId: string): Promise<string | null> {
+    try {
+      const row = await this.execRepo.findOne({
+        where: { id: executionId },
+        select: { params: true },
+      });
+      const value = row?.params?._dagRunId;
+      return typeof value === "string" && value.length > 0 ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * FEAT-21: 读上游执行行的透传上下文（结构化子集）。行不存在/查询失败一律
    * 返回 null——透传是增强而非依赖，绝不阻断扇出主链。
    */
@@ -4180,9 +4198,18 @@ export class TaskService implements OnModuleInit {
           : [],
       );
 
+      // 主控接线：DAG 标记批次内扇出时，依赖闸只认同批 `_dagRunId` 的执行，
+      // 消除跨 run 菱形汇合误触发；未携带标记的历史链路走原语义。
+      const completedDagRunId =
+        completedExecutionId && typeof completedExecutionId === "string"
+          ? await this.loadDagRunId(completedExecutionId)
+          : null;
       for (const task of dependentTasks) {
         // Check if all dependencies are satisfied
-        const canTrigger = await this.checkDependencies(task);
+        const canTrigger = await this.checkDependencies(
+          task,
+          completedDagRunId ?? undefined,
+        );
         if (!canTrigger) continue;
 
         // NETOPT-3②/4②: claim 前先读原 lastTriggerTime，trigger 失败时按它
@@ -4247,6 +4274,12 @@ export class TaskService implements OnModuleInit {
           } else {
             triggerPayload = { params: injected };
           }
+        }
+        if (completedDagRunId) {
+          triggerPayload.params = {
+            ...(triggerPayload.params ?? {}),
+            _dagRunId: completedDagRunId,
+          };
         }
         try {
           await this.trigger(task.id, triggerPayload, null, "dependency");
@@ -4518,9 +4551,13 @@ export class TaskService implements OnModuleInit {
    * B-6: 判定体抽至 dependency-gate.util（scheduler 的 misfire 补偿闸共用
    * 同一实现，两处永不漂移）；本方法保留为扇出路径的语义入口。
    */
-  private async checkDependencies(task: Task): Promise<boolean> {
+  private async checkDependencies(
+    task: Task,
+    dagRunId?: string,
+  ): Promise<boolean> {
     return areDependenciesSatisfied(this.execRepo, task.dependencies, {
       acceptFailure: task.runOnUpstreamFailure === true,
+      ...(dagRunId ? { dagRunId } : {}),
     });
   }
 

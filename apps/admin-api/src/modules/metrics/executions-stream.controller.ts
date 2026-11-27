@@ -1,5 +1,7 @@
 import { Controller, Get, Logger, Req, Res, UseGuards } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { InjectDataSource } from "@nestjs/typeorm";
+import { DataSource, In, IsNull, Not } from "typeorm";
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -18,6 +20,15 @@ import {
   ExecutionTerminalEventPayload,
 } from "../../common/events/domain-events";
 import { MetricsStreamSlotService } from "./metrics-stream-slot.service";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { AuthUser } from "../../common/interfaces/auth-user.interface";
+import { UserRole } from "../users/entities/user.entity";
+import { Task, TaskStatus } from "../task/entities/task.entity";
+import {
+  ProjectMember,
+  PROJECT_ROLE_RANK,
+  isProjectRole,
+} from "../project/entities/project-member.entity";
 
 /**
  * FEAT-16：GET /executions/stream —— 执行列表终态推送流（SSE）。
@@ -68,6 +79,8 @@ export class ExecutionsStreamController {
     private readonly eventBus: DomainEventBus,
     private readonly slots: MetricsStreamSlotService,
     private readonly configService: ConfigService,
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
   ) {}
 
   private get idlePingMs(): number {
@@ -87,13 +100,27 @@ export class ExecutionsStreamController {
   @Get("stream")
   @ApiOperation({
     description:
-      "Server-Sent Events 流，从进程内领域事件总线转发执行终态事件（execution.completed / execution.failed / execution.killed）。载荷：ExecutionTerminalEventPayload。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。",
-    summary: "执行终态 SSE 流（FEAT-16）",
+      "Server-Sent Events 流，从领域事件总线转发执行终态事件（execution.completed / execution.failed / execution.killed）。载荷：ExecutionTerminalEventPayload。ADMIN 转发全量；普通 USER 只转发其属主任务或具备 editor+ 角色的项目内任务的事件，无权任务的事件（含 taskName/errorMessage/logHead）一律丢弃，且建连时解析一次可见集合、事件热路径零数据库查询。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。",
+    summary: "执行终态 SSE 流（按任务归属过滤，FEAT-16）",
   })
   @SkipTimeout()
-  async stream(@Req() req: Request, @Res() res: Response): Promise<void> {
+  async stream(
+    @Req() req: Request,
+    @Res() res: Response,
+    @CurrentUser() user?: AuthUser,
+  ): Promise<void> {
     // 写 SSE 头之前占槽位（超限 503 由全局异常过滤器渲染——metrics/stream 先例）
     const releaseSlot = this.slots.acquireSlot();
+
+    // SEC（跨租户）：ADMIN 照旧全量（allowedTaskIds=null = 不过滤）；普通 USER
+    // 只在建连时解析一次可见 taskId 集合（属主 ∪ editor+ 项目），事件监听器里
+    // 纯内存判定，零 DB 查询。任何解析失败 fail-closed（视作空集合），绝不
+    // 因为查不到归属就把带 taskName/errorMessage/logHead 的事件漏给无权用户。
+    const isAdmin =
+      !!user && (user.role === UserRole.ADMIN || (user as { isAdmin?: boolean }).isAdmin === true);
+    const allowedTaskIds: Set<string> | null = isAdmin
+      ? null
+      : await this.resolveVisibleTaskIds(user);
 
     try {
       res.setHeader("Content-Type", "text/event-stream");
@@ -130,6 +157,16 @@ export class ExecutionsStreamController {
         DOMAIN_EVENTS.EXECUTION_KILLED,
       ].map((eventName) => {
         const listener = (payload: ExecutionTerminalEventPayload) => {
+          // 跨租户闸：USER 仅转发可见 taskId 的事件；taskId 为空（级联清理）
+          // 一律丢弃——无法归属的事件不能带 taskName/errorMessage/logHead
+          // 泄漏给任何非 ADMIN 连接。ADMIN（allowedTaskIds=null）保持全量。
+          if (
+            allowedTaskIds !== null &&
+            (typeof payload?.taskId !== "string" ||
+              !allowedTaskIds.has(payload.taskId))
+          ) {
+            return;
+          }
           sendEvent(eventName, payload);
           // rt-8：有真实帧就重置空闲定时器（与日志流同口径）。
           armIdle();
@@ -185,6 +222,63 @@ export class ExecutionsStreamController {
     } finally {
       // 双保险释放（acquireSlot release 幂等——metrics/stream 同款）
       releaseSlot();
+    }
+  }
+
+  /**
+   * 普通 USER 在建连时解析可见 taskId 集合（一次性，事件热路径零 DB）：
+   * 本人属主且未软删的任务 ∪ 本人具 editor+ 角色的项目内的有主任务。
+   * 与产物/执行列表的归属口径一致；无主任务恒不可见。任何失败 fail-closed
+   * 返回空集合——宁可漏推，绝不跨租户泄漏事件载荷里的任务名/错误摘要。
+   */
+  private async resolveVisibleTaskIds(
+    user: AuthUser | undefined,
+  ): Promise<Set<string>> {
+    if (!user || typeof user.id !== "number") return new Set();
+    try {
+      const manager = this.dataSource.manager;
+      const taskRepo = manager.getRepository(Task);
+      const owned = await taskRepo.find({
+        select: { id: true },
+        where: { ownerUserId: user.id, status: Not(TaskStatus.DELETED) },
+      });
+      const ids = new Set<string>(owned.map((row) => row.id));
+
+      const memberRows = await manager.getRepository(ProjectMember).find({
+        select: { projectId: true, role: true },
+        where: { userId: user.id },
+      });
+      const editorProjectIds: string[] = [];
+      const seen = new Set<string>();
+      for (const row of memberRows) {
+        if (seen.has(row.projectId)) continue;
+        seen.add(row.projectId);
+        if (
+          isProjectRole(row.role) &&
+          PROJECT_ROLE_RANK[row.role] >= PROJECT_ROLE_RANK.editor
+        ) {
+          editorProjectIds.push(row.projectId);
+        }
+      }
+      if (editorProjectIds.length > 0) {
+        const shared = await taskRepo.find({
+          select: { id: true },
+          where: {
+            ownerUserId: Not(IsNull()),
+            projectId: In(editorProjectIds),
+            status: Not(TaskStatus.DELETED),
+          },
+        });
+        for (const row of shared) ids.add(row.id);
+      }
+      return ids;
+    } catch (err: unknown) {
+      this.logger.warn(
+        `executions/stream 可见任务解析失败（fail-closed，本次连接不转发任何事件）: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return new Set();
     }
   }
 

@@ -1,6 +1,7 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as nodemailer from "nodemailer";
+import { createHash } from "node:crypto";
 import {
   BaseChannel,
   // R150-A1（轴2）：失败原因分类（仅进日志，不改状态契约）
@@ -12,15 +13,96 @@ import {
 import { ChannelConfigStore } from "../channel-config.store";
 
 @Injectable()
-export class EmailChannel extends BaseChannel {
+export class EmailChannel extends BaseChannel implements OnModuleDestroy {
   name = "email";
   private logger = new Logger(EmailChannel.name);
+
+  /**
+   * SMTP 连接池缓存：key = 连接配置的稳定 SHA256（不含收件人/邮件正文），
+   * value = pool:true 的 transporter。同一配置反复发信复用同一池，避免每封
+   * 告警都新建 TCP+TLS+登录；配置变化（host/port/secure/auth/from）时按新
+   * hash 建池并关闭旧池。from 只影响邮件信封，不参与连接身份，故不进 key。
+   */
+  private readonly transporterCache = new Map<
+    string,
+    nodemailer.Transporter
+  >();
 
   constructor(
     private config: ConfigService,
     private store: ChannelConfigStore,
   ) {
     super();
+  }
+
+  /** 关闭一个池：真实 transporter 有 close，测试替身可能只提供 sendMail。 */
+  private closeTransporter(transporter: nodemailer.Transporter): void {
+    try {
+      if (typeof transporter.close === "function") transporter.close();
+    } catch (err) {
+      this.logger.warn(
+        `[Email] 关闭连接池失败（忽略）: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  onModuleDestroy(): void {
+    for (const transporter of this.transporterCache.values()) {
+      this.closeTransporter(transporter);
+    }
+    this.transporterCache.clear();
+  }
+
+  /**
+   * 连接配置的稳定指纹：字段顺序固定，SHA256 十六进制。凭据明文只进哈希，
+   * 不进日志；相同配置（含密码轮换前后）产生不同 key ⇒ 旧池被关闭。
+   */
+  private configFingerprint(opts: {
+    host: string;
+    port: number;
+    secure: boolean;
+    user: string;
+    pass: string | undefined;
+  }): string {
+    const canonical = JSON.stringify([
+      opts.host,
+      opts.port,
+      opts.secure,
+      opts.user,
+      opts.pass ?? "",
+    ]);
+    return createHash("sha256").update(canonical).digest("hex");
+  }
+
+  /** 取（或按新配置重建）连接池；配置指纹变化时关闭并移除旧池。 */
+  private getTransporter(opts: {
+    host: string;
+    port: number;
+    secure: boolean;
+    user: string;
+    pass: string | undefined;
+  }): nodemailer.Transporter {
+    const key = this.configFingerprint(opts);
+    const cached = this.transporterCache.get(key);
+    if (cached) return cached;
+
+    for (const [oldKey, old] of this.transporterCache) {
+      this.transporterCache.delete(oldKey);
+      this.closeTransporter(old);
+    }
+
+    const transporter = nodemailer.createTransport({
+      host: opts.host,
+      port: opts.port,
+      secure: opts.secure,
+      auth: { user: opts.user, pass: opts.pass },
+      // 进程内复用：多封告警共享同一组 SMTP 连接，配置变更时由上方关闭。
+      pool: true,
+    });
+    this.transporterCache.set(key, transporter);
+    return transporter;
   }
 
   async send(
@@ -91,12 +173,7 @@ export class EmailChannel extends BaseChannel {
       this.config.get<string>("notification.email.from") ||
       user;
 
-    const transporter = nodemailer.createTransport({
-      host,
-      port,
-      secure,
-      auth: { user, pass },
-    });
+    const transporter = this.getTransporter({ host, port, secure, user, pass });
 
     try {
       await this.withRetry(async () => {

@@ -71,6 +71,13 @@ import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { ExecutorPushResultDto } from "./dto/executor-package-response.dto";
 
 /**
+ * 响应视图：实体暂无 changelog 列，但对外 DTO 已声明该可选字段。控制器在此
+ * 补 `changelog: null`，让实际响应 JSON 与 Swagger 契约一致；只做字段映射，
+ * 不改动服务层返回的实体（展开为新对象，避免污染共享实例）。
+ */
+type ExecutorPackageView = ExecutorPackage & { changelog: null };
+
+/**
  * QA10: build a header-safe Content-Disposition value. The filename comes
  * from the uploader's original filename (attacker-controlled on any
  * authenticated upload path) — embedding it raw would let CR/LF split the
@@ -141,6 +148,11 @@ export class ExecutorPackageController {
     private readonly usersService: UsersService,
   ) {}
 
+  /** 实体 → 对外视图：仅追加 changelog:null（实体无该列）。 */
+  private withChangelog(pkg: ExecutorPackage): ExecutorPackageView {
+    return { ...pkg, changelog: null };
+  }
+
   @Post()
   @HttpCode(HttpStatus.CREATED)
   // R9: diskStorage instead of memoryStorage — a 500 MB upload used to be
@@ -171,12 +183,12 @@ export class ExecutorPackageController {
     },
   })
   @ApiCreatedResponse({ type: ExecutorPackageResponseDto })
-  create(
+  async create(
     @Body() createDto: CreateExecutorPackageDto,
     @UploadedFile() file: Express.Multer.File,
     @CurrentUser("username") uploadedBy: string,
-  ): Promise<ExecutorPackage> {
-    return this.svc.create(createDto, file, uploadedBy);
+  ): Promise<ExecutorPackageView> {
+    return this.withChangelog(await this.svc.create(createDto, file, uploadedBy));
   }
 
   @Get()
@@ -190,12 +202,16 @@ export class ExecutorPackageController {
     description: "包列表",
     type: ExecutorPackageListDto,
   })
-  findAll(@Query() query: QueryExecutorPackageDto): Promise<{
-    items: ExecutorPackage[];
+  async findAll(@Query() query: QueryExecutorPackageDto): Promise<{
+    items: ExecutorPackageView[];
     total: number;
     nextCursor?: string | null;
   }> {
-    return this.svc.findAll(query);
+    const result = await this.svc.findAll(query);
+    return {
+      ...result,
+      items: result.items.map((pkg) => this.withChangelog(pkg)),
+    };
   }
 
   @Get("latest")
@@ -215,11 +231,12 @@ export class ExecutorPackageController {
     description: "最新包信息（无匹配时为 null）",
     type: ExecutorPackageResponseDto,
   })
-  findLatest(
+  async findLatest(
     @Query("type") type: string,
     @Query("platform") platform?: string,
-  ): Promise<ExecutorPackage | null> {
-    return this.svc.findLatest(type, platform);
+  ): Promise<ExecutorPackageView | null> {
+    const pkg = await this.svc.findLatest(type, platform);
+    return pkg ? this.withChangelog(pkg) : null;
   }
 
   // R5: POST /executor-packages/install-token removed — it generated an
@@ -236,8 +253,8 @@ export class ExecutorPackageController {
     type: ExecutorPackageResponseDto,
   })
   @ApiResponse({ status: 404, description: "包不存在" })
-  findOne(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
-    return this.svc.findOne(id);
+  async findOne(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackageView> {
+    return this.withChangelog(await this.svc.findOne(id));
   }
 
   @Patch(":id")
@@ -249,11 +266,11 @@ export class ExecutorPackageController {
     type: ExecutorPackageResponseDto,
   })
   @ApiResponse({ status: 404, description: "包不存在" })
-  update(
+  async update(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() updateDto: UpdateExecutorPackageDto,
-  ): Promise<ExecutorPackage> {
-    return this.svc.update(id, updateDto);
+  ): Promise<ExecutorPackageView> {
+    return this.withChangelog(await this.svc.update(id, updateDto));
   }
 
   @Delete(":id")
@@ -397,16 +414,16 @@ export class ExecutorPackageController {
   @ApiOperation({ summary: "弃用执行器包" })
   @ApiParam({ name: "id", description: "包 ID" })
   @ApiOkResponse({ type: ExecutorPackageResponseDto })
-  deprecate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
-    return this.svc.deprecate(id);
+  async deprecate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackageView> {
+    return this.withChangelog(await this.svc.deprecate(id));
   }
 
   @Patch(":id/activate")
   @ApiOperation({ summary: "激活执行器包" })
   @ApiParam({ name: "id", description: "包 ID" })
   @ApiOkResponse({ type: ExecutorPackageResponseDto })
-  activate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
-    return this.svc.activate(id);
+  async activate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackageView> {
+    return this.withChangelog(await this.svc.activate(id));
   }
 
   /**

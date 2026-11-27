@@ -59,6 +59,10 @@ import {
   PROJECT_ROLE_RANK,
   isProjectRole,
 } from "../project/entities/project-member.entity";
+import {
+  ARTIFACT_PREVIEW_DEFAULT_MAX_BYTES,
+  ArtifactPreviewResponseDto,
+} from "./dto/artifact-preview.dto";
 
 /**
  * 读面主体投影。ADMIN 恒全量（viewer.isAdmin 短路）；role=user 只见
@@ -221,6 +225,74 @@ export class ArtifactsService {
       fileSize,
       contentType: CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream",
       sha256,
+    };
+  }
+
+  /**
+   * 有界读取产物开头用于预览：只用 fs.promises.open/read 读至多 maxBytes 字节，
+   * 绝不整文件入内存。文本类（text/*、application/json、xml）按 UTF-8 解码返回
+   * content；图片/二进制 content 恒 null。size 是磁盘完整字节数，truncated=true
+   * 表示读取被 maxBytes 截断。
+   */
+  async previewArtifact(
+    execId: string,
+    name: string,
+    maxBytes: number = ARTIFACT_PREVIEW_DEFAULT_MAX_BYTES,
+  ): Promise<ArtifactPreviewResponseDto> {
+    const full = this.resolveArtifactPath(execId, name);
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(full);
+    } catch {
+      throw new AppError(ErrorCode.ARTIFACT_NOT_FOUND);
+    }
+    const ext = path.extname(name).toLowerCase();
+    const mimeType = CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream";
+    const kind: "text" | "image" | "binary" = mimeType.startsWith("image/")
+      ? "image"
+      : mimeType.startsWith("text/") ||
+          mimeType === "application/json" ||
+          mimeType === "application/xml"
+        ? "text"
+        : "binary";
+
+    const cap =
+      Number.isFinite(maxBytes) && maxBytes > 0
+        ? Math.trunc(maxBytes)
+        : ARTIFACT_PREVIEW_DEFAULT_MAX_BYTES;
+    const toRead = Math.min(cap, stat.size);
+    let content: string | null = null;
+    if (toRead > 0 && kind === "text") {
+      const handle = await fs.promises.open(full, "r");
+      try {
+        const buffer = Buffer.allocUnsafe(toRead);
+        const { bytesRead } = await handle.read(buffer, 0, toRead, 0);
+        // 用 bytesRead 切片：句柄读到文件尾可能少于请求字节数。
+        // 再回退到完整 UTF-8 字符边界：maxBytes 落在多字节字符中间时，
+        // toString 会产生 U+FFFD 替换符（3 字节），使预览反而超过上限，
+        // 也可能让前端渲染出乱码方块。丢弃尾部残字节是正确语义。
+        const read = buffer.subarray(0, bytesRead);
+        // 回退到不超过 maxBytes 的最后一个完整 UTF-8 字符边界：
+        // 逐字节试解码，遇到替换符 U+FFFD 就退回上一字节（多字节截半时
+        // toString 会产生 3 字节替换符，反而超过上限且前端显示乱码方块）。
+        let cut = read.length;
+        while (cut > 0) {
+          const candidate = read.subarray(0, cut).toString("utf8");
+          if (!candidate.includes("\uFFFD")) break;
+          cut--;
+        }
+        content = read.subarray(0, cut).toString("utf8");
+      } finally {
+        await handle.close();
+      }
+    }
+    return {
+      name,
+      mimeType,
+      size: stat.size,
+      truncated: stat.size > toRead,
+      kind,
+      content,
     };
   }
 

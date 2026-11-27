@@ -69,6 +69,14 @@ export interface DependencySatisfactionOptions {
    * 不能全局开启：那会让所有依赖任务在上游失败时被误触发。
    */
   acceptFailure?: boolean;
+
+  /**
+   * DAG 批次标记（加性可选）：传入时，依赖的「最新执行」优先在同一批次内
+   * 匹配——即 `exec.params?._dagRunId === dagRunId` 的执行；同批次找不到时
+   * 才回落既有「全量最新执行」语义（保兼容，未标记的历史执行照常判定）。
+   * 不传该字段时判定路径与改动前逐字节一致。
+   */
+  dagRunId?: string;
 }
 
 export async function areDependenciesSatisfied(
@@ -83,6 +91,7 @@ export async function areDependenciesSatisfied(
   const dependencyIds = Object.values(dependencies);
   if (dependencyIds.length === 0) return true;
 
+  // 既有路径（dagRunId 未传）逐字节不变：主扫描 + 定向兜底取每个依赖的最新真实执行。
   const recentExecutions = await execRepo.find({
     // G2-风险 1：`synthetic = false` —— 为可见性合成的行（如 G2 的 cancelled 行）
     // 不参与「最新执行」语义。真实尝试（false）的行集与判定与改动前逐字节相同。
@@ -117,6 +126,33 @@ export async function areDependenciesSatisfied(
       }
     }
     if (!latestExec) return false;
+
+    const dagRunId = options.dagRunId;
+    if (typeof dagRunId === "string" && dagRunId.length > 0) {
+      // DAG 批次语义：同批次有执行时只认同批次的那条；同批次一条都没有时
+      // 回落到上面的「最新执行」（未标记的历史执行照常判定，保兼容）。
+      // 同批次内按 createdAt 倒序取最新一条（主扫描已倒序，兜底也倒序）。
+      const tagged: TaskExecution | undefined = recentExecutions.find(
+        (exec) =>
+          exec.taskId === depId &&
+          (exec.params?._dagRunId as unknown) === dagRunId,
+      );
+      let chosen = tagged;
+      if (!chosen) {
+        const fallback = await execRepo.findOne({
+          where: {
+            taskId: depId as string,
+            synthetic: false,
+          },
+          order: { createdAt: "DESC" },
+        });
+        if (fallback && (fallback.params?._dagRunId as unknown) === dagRunId) {
+          chosen = fallback;
+        }
+      }
+      if (chosen) latestExec = chosen;
+    }
+
     if (latestExec.status === ExecutionStatus.SUCCESS) continue;
     if (
       options.acceptFailure === true &&
