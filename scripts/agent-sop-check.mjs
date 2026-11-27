@@ -1177,7 +1177,7 @@ console.log("\n── 3. 边界闸门（SOP 工具）──");
   // 计数**推导**而非硬编码：硬编码的 43 曾三次漂移（mcp 43→52→56 时无人提醒，
   // 本检查与 agent-boundary-check 各写一份数字，改一处漏一处）。现在从
   // mcp-server 的注册源推导，并显式扣掉两类不落在 AGENT_TOOL_SPECS 里的工具：
-  //   · 显式排除（EXCLUDED，共 7）——刻意不给 agent 的 mcp 工具；
+  //   · 显式排除（EXCLUDED，共 8）——刻意不给 agent 的 mcp 工具；
   //   · 经**内部表**纳管的（sop_list / sop_get）——它们同时是 mcp 工具与
   //     agent 内部工具，登记在 AGENT_INTERNAL_TOOL_SPECS 而非收编集。
   // 探针 scripts/mcp-tools-probe.cjs 另有真实 stdio 握手的绝对计数断言（56），
@@ -1205,6 +1205,10 @@ console.log("\n── 3. 边界闸门（SOP 工具）──");
     "sop_clarification_reply",
     "agent_session_list",
     "agent_session_get",
+    // tool_search 是按需检索**工具面本身**的元工具（读 _registeredTools 帮 LLM
+    // 在工具面检索）。让 Agent 用它检索自己的工具面属自我引用、无运行时用途，
+    // 还会摊薄预算；与上面的 agent_session_list（Agent 自省）同类，刻意排除。
+    "tool_search",
   ];
   const internalNames = reg.AGENT_INTERNAL_TOOL_SPECS.map((t) => t.name);
   // 经内部表纳管的 mcp 工具（sop_list / sop_get）——不计入收编集。

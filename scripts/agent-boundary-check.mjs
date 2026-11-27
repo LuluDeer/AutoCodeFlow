@@ -611,6 +611,10 @@ console.log("── 1. 工具注册表 ──");
     // 让 Agent 读自己的会话列表没有运行时用途。
     "agent_session_list",
     "agent_session_get",
+    // tool_search 是按需检索**工具面本身**的元工具（读 _registeredTools 帮 LLM
+    // 在工具面检索）。让 Agent 用它检索自己的工具面属自我引用、无运行时用途，
+    // 还会摊薄预算；与上面的 agent_session_list（Agent 自省）同类，刻意排除。
+    "tool_search",
   ];
 
   const ungated = mcpNames.filter(

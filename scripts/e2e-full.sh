@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
-# legacy 三份 Playwright e2e 全链编排（CI 与本地同一入口）
-# （NETOPT-6⑦ 核对基线：48 例 test() 声明（编号 1-47 唯一 + E-3）+ 5 例
+# legacy 四份 Playwright e2e 全链编排（CI 与本地同一入口）
+# （NETOPT-6⑦ 核对基线：49 例 test() 声明（编号 1-47 唯一 + E-3 + R5 真栈合体）+ 5 例
 #   条件 test.skip() 声明；用例数以 spec 内实际声明为准，增删用例须同步本行。）
 #
 # 链路：PG + Redis → admin-api(:3105) → executor-node(:8002 注册在线)
-#       → admin-web vite(:5176) → apps/admin-web/e2e/legacy/ 三份 spec
-#         （e2e/legacy 三份 spec 共 51 例 test() 声明，chromium；其中 e2e-full.spec.js 48 例；NETOPT-DEBT 收编自仓库根，
+#       → admin-web vite(:5176) → apps/admin-web/e2e/legacy/ 四份 spec
+#         （e2e/legacy 四份 spec 共 52 例 test() 声明，chromium；其中 e2e-full.spec.js 48 例、
+#         e2e-release-chain-fullstack.spec.js 1 例；NETOPT-DEBT 收编自仓库根，
 #         内容零变更，由根级 playwright.e2e.config.js 精确圈定 legacy/ 目录）
 #
 # E-45（DEEP_REVIEW 0ef3bbe）：新增 pull/token 轮换两例（NETOPT-6⑦ 重编号后
@@ -32,7 +33,7 @@
 # 设计注记（对齐 windows-findings W-22 教训——一律真实进程环境，不依赖 .env）：
 #   - 每次全新 DB：迁移链真实空库跑一遍，admin seed / 任务 / 执行记录零残留，
 #     断言不漂移（docker 模式 drop+create 重建，SKIP_DOCKER 模式要求空库）。
-#   - LOGIN_THROTTLE_LIMIT / THROTTLE_LIMIT 显式放大：51 例 ~60 次登录 +
+#   - LOGIN_THROTTLE_LIMIT / THROTTLE_LIMIT 显式放大：52 例 ~62 次登录 +
 #     高频 API 轮询，默认 20/60 必级联 429（Windows 首跑 W-22 同根）。
 #   - EXECUTION_CALLBACK_SECRET 两端同值：显式配置消除 fallback 语义漂移。
 #   - EXECUTOR_ALLOW_PRIVATE_NETWORK=true + 执行器注册到**宿主私网地址**：
@@ -456,13 +457,24 @@ echo "══ [5/6] 启动 admin-web vite(:$PORT_WEB) ══"
 (
   cd apps/admin-web
   [[ -d node_modules ]] || { echo "admin-web/node_modules 缺失，npm ci"; npm ci; }
-  exec env VITE_PORT=$PORT_WEB node_modules/.bin/vite --port $PORT_WEB --strictPort
+  # F-H1（R5 真栈验收）：真浏览器必须走 admin-api 的 /api 全局前缀。首轮实测时
+  # 本机 .env 的 VITE_API_URL_INTERNAL 是裸 http://localhost:3105（无 /api），
+  # 而 Vite proxy 只代理 /api ⇒ 浏览器 axios client 真请求 404（全 52 例登录超时）。
+  # 第 80 轮已把两个 .env.example 模板改为 /api，但本机 .env 可能仍是旧值；
+  # 这里显式钉死 /api + 同源 Origin 改写（admin-api .env 的 CORS_ORIGINS 只含
+  # localhost:5176，proxy 默认改写到 demo 栈 8088 会被 403），进程 env 优先级高于
+  # dotenv，故本机 .env 形态无论如何都不影响真栈口径；CI 无 .env 时同样生效。
+  exec env VITE_PORT=$PORT_WEB \
+  VITE_API_URL_INTERNAL=/api VITE_API_URL_EXTERNAL= \
+  VITE_API_PROXY_TARGET=http://localhost:$PORT_API \
+  VITE_API_PROXY_ORIGIN_REWRITE=http://localhost:$PORT_WEB \
+  node_modules/.bin/vite --port $PORT_WEB --strictPort
 ) >"$LOG_DIR/admin-web.log" 2>&1 &
 PIDS+=($!)
 wait_http "http://localhost:$PORT_WEB/" 60 "admin-web" "$LOG_DIR/admin-web.log"
 echo "vite OK"
 
-echo "══ [6/6] Playwright 51 例声明（legacy 三份 spec；根级 config 不在本脚本内）══"
+echo "══ [6/6] Playwright 52 例声明（legacy 四份 spec；根级 config 不在本脚本内）══"
 cd apps/admin-web
 npx playwright install chromium >/dev/null 2>&1 || true
 set +e

@@ -16,7 +16,7 @@
  *      漏行 = 真实模块没文档；多行 = 文档还在写一个已经不存在的模块；
  *   ③ `atlas/README.md` 的「N 个应用」必须等于 `apps/` 下真实应用数（排除非应用目录）；
  *   ④ 「（下一批次）」占位标记不得挂在**已存在**的文档上；
- *   ⑤ `07-testing/e2e-testing.md` 的「合计（入口口径）9 组 / 51 例」必须等于三份
+ *   ⑤ `07-testing/e2e-testing.md` 的「合计（入口口径）9 组 / 52 例」必须等于四份
  *      legacy spec 里**行首** `test(` / `test.only(` 声明数之和（排除 `test.skip(` 与注释）。
  *   ⑥ `07-testing/README.md` 的**测试数字表**（admin-api spec 文件数与 `it/test` 数、
  *      executor-node 两项、executor-python 两项、admin-web 文件数、packages（JS）行三项
@@ -43,16 +43,16 @@
  *
  * ## ⑤ 为什么是「e2e 例数」（第 5 轮的同一个腐烂点，换了个位置）
  *
- * `07-testing/e2e-testing.md` 2026-10-29 被整篇重写成 **51 例 / 9 组**（逐文件点数：
+ * `07-testing/e2e-testing.md` 2026-10-29 被整篇重写成 **52 例 / 9 组**（逐文件点数：
  * `e2e-full.spec.js` 48 + `e2e-python-executor.spec.js` 1 + `e2e-ui09-mobile.spec.js` 2）。
- * 但**没有任何守卫看过这个数**：把文档里的 51 改成 45，`check-docs` / `check-atlas-counts`
+ * 但**没有任何守卫看过这个数**：把文档里的 52 改成 45，`check-docs` / `check-atlas-counts`
  * 全绿——和 ①③ 的病一模一样（数字是手写的，描述的对象却由代码/文件决定）。
  *
  * 判据的形状刻意「窄且硬」：
- *   · 只认**行首**的 `test(` / `test.only(`（允许缩进：三份 spec 里 19 例在 `describe`
+ *   · 只认**行首**的 `test(` / `test.only(`（允许缩进：四份 spec 里 19 例在 `describe`
  *     体内，按顶格数会漏成 29 例）；`test.skip(` / `test.fixme(` 是**跳过声明**，不算例数；
  *   · 注释里的 `test(` 不算，块注释先整段抹成空白（保留换行）再逐行点数；
- *   · 文档那行必须**整行解析得到**（`| **合计（入口口径）** | **9** | **51** | …`），
+ *   · 文档那行必须**整行解析得到**（`| **合计（入口口径）** | **9** | **52** | …`），
  *     解析不到即**结构红**——否则「句子被改写 → 没有可比的东西 → 永真」；
  *   · 组数（第 2 列）与例数（第 3 列）一起核对：它们是同一句话里的同一个断言，
  *     只钉一个等于让另一半继续手抄。
@@ -110,7 +110,7 @@ export const ATLAS_DOC = "docs/atlas/README.md";
 export const APPS_DOC_DIR = "docs/atlas/01-apps";
 export const E2E_DOC = "docs/atlas/07-testing/e2e-testing.md";
 /**
- * 入口口径的三份 legacy spec（`playwright.e2e.config.js` 的 `testDir`
+ * 入口口径的四份 legacy spec（`playwright.e2e.config.js` 的 `testDir`
  * = `apps/admin-web/e2e/legacy`，`testMatch` 圈 `e2e-*.spec.js`）。
  * `apps/admin-web/e2e-full.spec.js`（顶层旧快照）与 `apps/admin-web/e2e/e2e-ui09-mobile.spec.js`
  * （同名副本）**都不在入口内**，绝不能拿来凑数（见 e2e-testing.md 开头那节）。
@@ -119,9 +119,11 @@ export const E2E_SPECS = [
   "apps/admin-web/e2e/legacy/e2e-full.spec.js",
   "apps/admin-web/e2e/legacy/e2e-python-executor.spec.js",
   "apps/admin-web/e2e/legacy/e2e-ui09-mobile.spec.js",
+  // R5（第 74–78 轮发布审批链真栈合体验收）：无 describe、1 例、无条件 skip。
+  "apps/admin-web/e2e/legacy/e2e-release-chain-fullstack.spec.js",
 ];
 
-/** 扫描面下界（2026-10-29 实测：迁移 122 / 模块 22 / 应用 7 / e2e 51 例）。只增不减，防「分母塌了」。 */
+/** 扫描面下界（2026-10-29 实测：迁移 122 / 模块 22 / 应用 7 / e2e 52 例）。只增不减，防「分母塌了」。 */
 export const MIN_MIGRATION_FILES = 20;
 export const MIN_MODULES = 10;
 export const MIN_APPS = 5;
@@ -173,7 +175,7 @@ export const E2E_SKIP_DECL_RE = /^test\.(?:skip|fixme)(?:\.[a-z]+)?\s*\(/;
 /** describe 组：`describe(` / `test.describe(`（含 `.serial` / `.parallel`）。 */
 export const E2E_GROUP_DECL_RE = /^(?:test\.)?describe(?:\.(?:serial|parallel))?\s*\(/;
 /**
- * 合计那行：`| **合计（入口口径）** | **9** | **51** | **7** | …`
+ * 合计那行：`| **合计（入口口径）** | **9** | **52** | **7** | …`
  * 捕获 `[1]` = describe 组数，`[2]` = `test()` 声明数。粗体、空白宽松；标签与列序不放宽
  * （这正是要钉的形状，改写即结构红）。
  */
@@ -444,11 +446,11 @@ export function countSpecCases(text) {
   return { tests, groups, skips };
 }
 
-/** 三份 spec 的逐份例数（只留文件名）；绿字与红字共用，保证「是哪份变了」一眼可见。 */
+/** 四份 spec 的逐份例数（只留文件名）；绿字与红字共用，保证「是哪份变了」一眼可见。 */
 const e2eBreakdown = (per) =>
   per.map((p) => `${p.file.split("/").pop()} ${p.tests} 例`).join(" + ");
 
-/* ⑤ 三份 legacy spec 的例数 ↔ e2e-testing.md 的「合计（入口口径）」行 */
+/* ⑤ 四份 legacy spec 的例数 ↔ e2e-testing.md 的「合计（入口口径）」行 */
 export function checkE2eCaseCount(root) {
   const per = [];
   const unreadable = [];
@@ -475,7 +477,7 @@ export function checkE2eCaseCount(root) {
     return {
       ok: false,
       out: [
-        `✖ 三份 legacy spec 只点到 ${tests} 个 \`test(\` 声明（下界 ${MIN_E2E_TESTS}）—— 解析器失效了，不是用例变少了。`,
+        `✖ 四份 legacy spec 只点到 ${tests} 个 \`test(\` 声明（下界 ${MIN_E2E_TESTS}）—— 解析器失效了，不是用例变少了。`,
         `  明细：${e2eBreakdown(per)}`,
       ],
     };
@@ -513,7 +515,7 @@ export function checkE2eCaseCount(root) {
       ok: false,
       out: [
         `✖ e2e 例数自述与实际不符：${wrong.join("；")}。`,
-        `  实际明细：${e2eBreakdown(per)} = ${tests} 例 / ${groups} 组（入口口径：三份 legacy spec 的行首 test( / test.only( 声明，排除 test.skip( 与注释）。`,
+        `  实际明细：${e2eBreakdown(per)} = ${tests} 例 / ${groups} 组（入口口径：四份 legacy spec 的行首 test( / test.only( 声明，排除 test.skip( 与注释）。`,
         "  修法：改 docs/atlas/07-testing/e2e-testing.md 的合计行；不要改守卫。",
       ],
     };
@@ -1419,6 +1421,16 @@ function specSource({ count, groups = 1, skips = 0, only = 0, deadComment = fals
   if (deadComment) {
     lines.push("// test('注释掉的用例，不算数', async () => {});", "/*", "test('块注释里的用例，也不算数', async () => {});", "*/", "");
   }
+  // R5 真栈合体 spec 没有 describe 组：groups=0 时直接生成顶层 test(，
+  // 否则 fixture 会生成 0 个用例，⑤ 的点数反证就失真了。
+  if (groups === 0) {
+    for (let i = 0; i < count; i += 1) {
+      lines.push(`test('case ${i + 1}', async () => {`);
+      lines.push("  expect(1).toBe(1);");
+      lines.push("});");
+    }
+    return lines.join("\n");
+  }
   let n = 0;
   for (let g = 0; g < groups; g += 1) {
     lines.push(`describe('group ${g + 1}', () => {`);
@@ -1434,16 +1446,17 @@ function specSource({ count, groups = 1, skips = 0, only = 0, deadComment = fals
   return lines.join("\n");
 }
 
-// fixture 的 e2e 事实源：48 + 1 + 2 = 51 例 / 7 + 1 + 1 = 9 组（与真实仓库同口径），
-// 并掺入 7 处 `test.skip(`（5 / 1 / 1）与注释掉的 `test(`——它们都不许被点数。
+// fixture 的 e2e 事实源：48 + 1 + 2 + 1 = 52 例 / 7 + 1 + 1 + 0 = 9 组（与真实仓库同口径），
+// 并掺入 7 处 `test.skip(`（5 / 1 / 1 / 0）与注释掉的 `test(`——它们都不许被点数。
 const E2E_FIXTURE = {
   [E2E_SPECS[0]]: { count: 48, groups: 7, skips: 5, deadComment: true },
   [E2E_SPECS[1]]: { count: 1, groups: 1, skips: 1 },
   [E2E_SPECS[2]]: { count: 2, groups: 1, skips: 1, only: 1 },
+  [E2E_SPECS[3]]: { count: 1, groups: 0, skips: 0 },
 };
 
 /** `07-testing/e2e-testing.md` 的最小形态：只需要「合计（入口口径）」那行 + 一张明细表。 */
-const e2eDoc = ({ groups = 9, tests = 51, totalRow = null } = {}) =>
+const e2eDoc = ({ groups = 9, tests = 52, totalRow = null } = {}) =>
   [
     "# 全链 E2E 测试（根级 Playwright）",
     "",
@@ -1647,8 +1660,8 @@ export function selftest() {
       "模块索引一致：12 个真实模块全部在表内（表内 12 行）",
       "应用数自述一致：7 个",
       "无「（下一批次）」占位标记",
-      // ⑤：48 + 1 + 2 = 51 例 / 7 + 1 + 1 = 9 组；7 处 test.skip( 与注释掉的 test( 都不计入
-      "e2e 例数自述一致：51 例 / 9 组（e2e-full.spec.js 48 例 + e2e-python-executor.spec.js 1 例 + e2e-ui09-mobile.spec.js 2 例）",
+      // ⑤：48 + 1 + 2 + 1 = 52 例 / 7 + 1 + 1 + 0 = 9 组；7 处 test.skip( 与注释掉的 test( 都不计入
+      "e2e 例数自述一致：52 例 / 9 组（e2e-full.spec.js 48 例 + e2e-python-executor.spec.js 1 例 + e2e-ui09-mobile.spec.js 2 例 + e2e-release-chain-fullstack.spec.js 1 例）",
       // ⑥：admin-api 3/4、executor-node 2/3、executor-python 2/5、admin-web 2、scripts 6、
       // 之后是第 23 轮扩面的 acf-cli 2 / mcp-server 3 / node-sdk 1 / registry-pypi 4
       "测试数字在门槛内（容差 5%",
@@ -1732,18 +1745,18 @@ export function selftest() {
     absent: ["迁移自述一致", "模块索引一致"],
   });
 
-  // ⑬ 2026-10-29 的原始症状：e2e 文档被整篇重写成 51 例后，把 51 改成 45，
+  // ⑬ 2026-10-29 的原始症状：e2e 文档被整篇重写成 52 例后，把 52 改成 45，
   // check-docs / check-atlas-counts 全绿——没有人看这个数。现在必须红，且两值都给。
   subprocess(
-    "⑬ 【反证·e2e 例数】合计行写 45 例（三份 spec 实际 51）→ 红并点名两值",
+    "⑬ 【反证·e2e 例数】合计行写 45 例（四份 spec 实际 52）→ 红并点名两值",
     atlasTree({ e2e: e2eDoc({ tests: 45 }) }),
     {
       code: 1,
       contains: [
         "e2e 例数自述与实际不符",
-        "例数 文档写 45 / 实际 51",
+        "例数 文档写 45 / 实际 52",
         "e2e-full.spec.js 48 例",
-        "= 51 例 / 9 组",
+        "= 52 例 / 9 组",
       ],
       absent: ["e2e 例数自述一致"],
     },
@@ -1753,10 +1766,10 @@ export function selftest() {
   // 「整行删掉」走的是同一条「解析不到」分支，所以这条同时钉住删与改写两种绕法。
   subprocess(
     "⑭ 【反证·合计行被改写】合计行换成散文（数字写对也不算）→ 结构红，不是绿",
-    atlasTree({ e2e: e2eDoc({ totalRow: "三份 spec 合计 9 组、51 例。" }) }),
+    atlasTree({ e2e: e2eDoc({ totalRow: "四份 spec 合计 9 组、52 例。" }) }),
     {
       code: 1,
-      contains: ["解析不到「| **合计（入口口径）** | **9** | **51** |」这一行", "实测：e2e-full.spec.js 48 例"],
+      contains: ["解析不到「| **合计（入口口径）** | **9** | **52** |」这一行", "实测：e2e-full.spec.js 48 例"],
       absent: ["e2e 例数自述一致"],
     },
   );
