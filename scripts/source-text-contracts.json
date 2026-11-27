@@ -2218,6 +2218,38 @@
       "owner": "web-ui",
       "reviewBy": "2027-02-28",
       "triageStatus": "triaged"
+    },
+    {
+      "tier": "P1",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "id": "STC-129",
+      "spec": "apps/admin-api/src/modules/agent/runtime/__tests__/ttfv-api-contract.spec.ts",
+      "specLine": 55,
+      "needle": "const scriptSrc = readFileSync(SCRIPT_PATH, \"utf8\");",
+      "reads": [
+        "scripts/ttfv-real-metrics.mjs"
+      ],
+      "asserts": "读 scripts/ttfv-real-metrics.mjs 源文本，正则提取 AUTHORITATIVE_SQL 模板字面量并与后端 ttfv-metrics.ts 的 SQL 常量逐字比对（含 :as_of 占位符与注释），防 CJS 后端复刻 ESM 脚本时口径静默漂移。",
+      "dispositionNote": "P1 跨语言同源契约：后端 CJS 无法 import ESM .mjs，故复刻 + 源文本逐字断言是唯一可比对的同源保障；已有单字符改动反证证明比较器有牙（改 PERCENTILE_CONT(0.5)→0.6 即红）。不改为 import 以避免引入构建链耦合；接受该脆弱性并签字。"
+    },
+    {
+      "tier": "P1",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "id": "STC-130",
+      "spec": "apps/admin-api/src/modules/agent/runtime/__tests__/ttfv-metrics.spec.ts",
+      "specLine": 67,
+      "needle": "const source = readFileSync(SCRIPT_REL, \"utf8\");",
+      "reads": [
+        "scripts/ttfv-real-metrics.mjs"
+      ],
+      "asserts": "读权威脚本源文本，断言后端 ttfv-metrics.ts 的 AUTHORITATIVE_SQL / computeTtfv / buildTtfvWarnings 与脚本逐字等价（同源断言 + 反证）。",
+      "dispositionNote": "P1 跨语言同源契约：与 STC-129 同因——口径单一事实源在 ESM 脚本，后端 CJS 复刻；源文本比对 + 变异反证是防漂移的显式签字。改动脚本口径时必须同步更新后端并跑这两个 spec，属有意的重构闸，保留。"
     }
   ],
   "discipline": [

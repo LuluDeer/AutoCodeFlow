@@ -1,10 +1,39 @@
 import { Injectable } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
-import { DataSource } from "typeorm";
+import { DataSource, QueryRunner } from "typeorm";
 
 import { AppError } from "../../../common/errors/app-error";
 import { ErrorCode } from "../../../common/errors/error-codes";
 import type { AgentNorthStarResponseDto } from "../dto/agent-north-star.dto";
+import {
+  buildTtfvPayload,
+  computeTtfv,
+  resolveTtfvDataStatus,
+  TTFV_DATA_STATUS,
+  TTFV_EVENTS_SQL,
+  TTFV_GATE_SQL,
+  TTFV_INSTALLS_SQL,
+  TTFV_RUNNABLE_SQL,
+  TTFV_SYSTEM_GATE_KEY,
+  TTFV_TABLES_SQL,
+  type TtfvComputed,
+  type TtfvEventRow,
+  type TtfvInstallRow,
+  type TtfvPayload,
+} from "./ttfv-metrics";
+
+/**
+ * TTFV 未启用/读失败时的中性载荷：三态为 gate_off，两个 nullable 指标为 null。
+ * 绝不把「没数据」伪装成「真零」。
+ */
+const EMPTY_TTFV_COMPUTED: TtfvComputed = {
+  ttfv_minutes: null,
+  converted_installs: 0,
+  eligible_installs: 0,
+  activated_installs: 0,
+  activation_24h: null,
+  sample_size: 0,
+};
 
 /**
  * R327（北极星 §6 步骤 5 的后端一半）：双口径看板的数据源。
@@ -167,10 +196,16 @@ export class NorthStarMetricsService {
    */
   async report(asOf?: string): Promise<AgentNorthStarResponseDto> {
     const resolved = this.resolveAsOf(asOf);
+    const resolvedIso = new Date(Date.parse(resolved)).toISOString();
 
     const qr = this.dataSource.createQueryRunner();
     let strictRows: StrictRow[] = [];
     let proxyRows: ProxyRow[] = [];
+    let ttfvPayload: TtfvPayload = buildTtfvPayload(
+      TTFV_DATA_STATUS.GATE_OFF,
+      EMPTY_TTFV_COMPUTED,
+      resolvedIso,
+    );
     try {
       await qr.connect();
       await qr.startTransaction();
@@ -182,6 +217,14 @@ export class NorthStarMetricsService {
       proxyRows = (await qr.query(BUSINESS_RESULTS_PROXY_SQL, [
         resolved,
       ])) as ProxyRow[];
+      // TTFV 与双口径周报共用同一连接 / 同一事务，且必须在 UTC_PIN 之后。
+      // 走 queryRunner 绑定的 EntityManager（EntityManager.query 内部把
+      // this.queryRunner 传给 dataSource.query），因此不会另开连接。
+      try {
+        ttfvPayload = await this.readTtfv(qr, resolvedIso);
+      } catch {
+        // fail-soft：缺表 / 读失败 / 总闸抖动一律降级 gate_off，不带崩整份报告。
+      }
       await qr.commitTransaction();
     } catch (err) {
       // 只读查询失败也要 rollback（事务已开），绝不把半截连接留在事务里。
@@ -214,7 +257,7 @@ export class NorthStarMetricsService {
     const pw = [...proxyWeeks].sort(byWeek);
 
     return {
-      as_of: new Date(Date.parse(resolved)).toISOString(),
+      as_of: resolvedIso,
       business_confirmed: {
         weeks: sw,
         totals: {
@@ -228,7 +271,76 @@ export class NorthStarMetricsService {
       },
       promotionEligibility: computePromotionEligibility(sw),
       warnings: [STRICT_CALIBER_WARNING, PROXY_CALIBER_WARNING],
+      ttfv: ttfvPayload,
     };
+  }
+
+  /**
+   * TTFV 只读块：系统总闸 → 表存在 → 实例授权行 → 原始行喂纯函数 → 权威 SQL 口径哨。
+   * 任一步失败由 report() 的 fail-soft 包裹收敛为 gate_off；本方法不碰事务控制。
+   */
+  private async readTtfv(qr: QueryRunner, asOf: string): Promise<TtfvPayload> {
+    const manager = qr.manager;
+    const gateOff = () =>
+      buildTtfvPayload(TTFV_DATA_STATUS.GATE_OFF, EMPTY_TTFV_COMPUTED, asOf);
+    // 测试替身可能不带 manager（例如只关心双口径周报的老 harness）⇒ 视为未启用。
+    if (!manager || typeof manager.query !== "function") return gateOff();
+
+    const tables = (await manager.query(TTFV_TABLES_SQL)) as Array<{
+      funnel_events?: unknown;
+      telemetry_optin?: unknown;
+    }>;
+    if (!tables?.[0]?.funnel_events || !tables?.[0]?.telemetry_optin) {
+      return gateOff();
+    }
+
+    const gateRows = (await manager.query(TTFV_GATE_SQL, [
+      TTFV_SYSTEM_GATE_KEY,
+    ])) as Array<{ value?: unknown }>;
+    const gateValue = gateRows?.[0]?.value;
+    const systemEnabled =
+      gateValue === "true" || gateValue === "1" || gateValue === true;
+    if (!systemEnabled) return gateOff();
+
+    const installs = ((await manager.query(TTFV_INSTALLS_SQL)) ??
+      []) as TtfvInstallRow[];
+    const hasOptedInRow = installs.some(
+      (r) => r?.opt_in === true || (r?.opt_in as unknown) === "t",
+    );
+    if (!hasOptedInRow) return gateOff();
+
+    const events = ((await manager.query(TTFV_EVENTS_SQL)) ??
+      []) as TtfvEventRow[];
+    // 口径同源：installs/events 行喂给与脚本 computeMetrics 逐字等价的纯函数。
+    const metrics = computeTtfv(installs, events, asOf);
+
+    // 权威 SQL 口径哨：与侧车脚本同一条 SQL、同一事务执行；读失败不崩报告。
+    let driftNote = "";
+    try {
+      const sqlRows = (await manager.query(TTFV_RUNNABLE_SQL, [
+        asOf,
+      ])) as Array<{
+        sample_size?: unknown;
+      }>;
+      const canonical = Number(sqlRows?.[0]?.sample_size ?? 0);
+      if (Number.isFinite(canonical) && canonical !== metrics.sample_size) {
+        driftNote = `；⚠️ 口径哨不一致：权威 SQL sample_size=${canonical} / 纯函数 sample_size=${metrics.sample_size}`;
+      }
+    } catch {
+      // fail-soft：权威 SQL 不可用时仍以纯函数结果为准。
+    }
+
+    const payload = buildTtfvPayload(
+      resolveTtfvDataStatus({
+        systemEnabled: true,
+        hasOptedInRow: true,
+        sampleSize: metrics.sample_size,
+      }),
+      metrics,
+      asOf,
+    );
+    if (driftNote) payload.note += driftNote;
+    return payload;
   }
 
   /** ISO 合法性校验：缺省 now，非法抛 VALIDATION_FAILED（400）。 */

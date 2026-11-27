@@ -4770,6 +4770,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workbench/release-approvals/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * R92：审批发起失败后由 ADMIN 重新发起审批单（不发布）
+         * @description sopId/cardHash/contentHash 来自失败审计 detail；服务端从 draft 重算 contentHash 严格比对，通过后重新发起审批单，仍需主管四眼批准 + 系统代理发布。
+         */
+        post: operations["ReleaseRetryController_requestReleaseRetry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workbench/release-approvals/{approvalKey}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * ADR-045：主管批准后发布失败的一键重试（仅 consume 前失败）
+         * @description expectedReason 必须来自失败审计 detail.reason 且在 consume 前失败白名单内；publish_failed 表示 consume 已完成，调用会被拒绝以防重复发布。
+         */
+        post: operations["ReleaseRetryController_retry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workbench/rewind": {
         parameters: {
             query?: never;
@@ -5002,8 +5042,27 @@ export interface components {
             business_results_proxy: components["schemas"]["AgentNorthStarProxyDto"];
             /** @description R448 升主判据（eligible 仅判数值阈值，运营前置 coverage=full 见 reasons） */
             promotionEligibility: components["schemas"]["AgentNorthStarPromotionDto"];
+            /** @description TTFV 真实口径（安装→首成中位数 / 24h 激活率 / 样本量），三态以 dataStatus 判定 */
+            ttfv: components["schemas"]["AgentNorthStarTtfvDto"];
             /** @description 强制口径护栏（不可省略）：严格口径说明 + 「有产物/有证据 ≠ 被业务确认，代理值勿当严格值」强警告 */
             warnings: string[];
+        };
+        AgentNorthStarTtfvDto: {
+            /** @description 满 24h 样本的首次触发执行激活率，比率 0~1（前端渲染 ×100 显示百分比）；无满 24h 样本为 null */
+            activation24h: number | null;
+            /** @description 观测截止时间（ISO-8601），与顶层 as_of 同值 */
+            asOf: string;
+            /**
+             * @description 数据状态：gate_off=未启用（总闸关/无授权行/缺表）；no_data=有授权但无符合口径样本；ok=有样本
+             * @enum {string}
+             */
+            dataStatus: "gate_off" | "no_data" | "ok";
+            /** @description 安装到首次成功的连续中位数（分钟）；gate_off/no_data 为 null */
+            medianMinutes: number | null;
+            /** @description 中文口径说明：仅 opt-in install、授权前不追溯、小样本警告；未启用/无数据时给出原因 */
+            note: string;
+            /** @description 样本量（converted_installs + 满 24h eligible） */
+            sampleSize: number;
         };
         AgentPendingApprovalItemDto: {
             /** @description 审批幂等键（= `agent_tool_calls.approvalId`，`apr-<sessionId>-<指纹>`）；处置端点用它定位 */
@@ -6168,10 +6227,18 @@ export interface components {
             };
         };
         CommitResultDto: {
-            /** @description ADR-045：发布审批单 key（业务人员提交后由主管四眼批准、系统代理发布）；缺席表示审批发起失败 */
+            /** @description ADR-045：发布审批单 key（业务人员提交后由主管四眼批准、系统代理发布）；仅 approvalStatus=submitted 时有 */
             approvalKey?: string;
-            /** @description 发布是独立审批动作，提交后仍需人工审阅 */
-            next: string;
+            /**
+             * @description ADR-045 发布审批发起状态（稳定码，非中文）：submitted=已发起并返回 approvalKey；failed=发起异常（端口未装配/策略指纹不可读等）但 draft 已落；not_requested=审批端口缺席或非 USER 上下文，未发起（非异常）
+             * @enum {string}
+             */
+            approvalStatus: "submitted" | "failed" | "not_requested";
+            /**
+             * @deprecated
+             * @description 已废弃：改用 approvalStatus + 前端 i18n，生产路径不再返回
+             */
+            next?: string;
             /** @description 本次提交放行的策略代际（16 位十六进制），供下游会话继承以做在途失效比对 */
             policyGeneration?: string;
             /** @description 确定性 slug：workbench-<cardHash 前 8> */
@@ -8617,6 +8684,17 @@ export interface components {
         RegistryUploadResponseDto: {
             success: boolean;
         };
+        ReleaseRetryResponseDto: {
+            /** @description 系统代理发布是否真正执行成功 */
+            published: boolean;
+            /**
+             * @description published=false 时的业务失败原因（不抛 5xx）
+             * @enum {string}
+             */
+            reason?: "dependency_unavailable" | "policy_fingerprint_unavailable" | "sop_not_found" | "content_changed" | "approval_not_consumed" | "publish_failed";
+            /** @description 本次是否受理了重试 */
+            retried: boolean;
+        };
         ReleaseWebhookResponseDto: {
             /** @enum {boolean} */
             ok: true;
@@ -8638,6 +8716,27 @@ export interface components {
             error?: string;
             /** @description 本次单次重放投递是否成功 */
             ok: boolean;
+        };
+        RequestReleaseRetryDto: {
+            /**
+             * @description 可选版本递增策略，原样透传 requestRelease
+             * @enum {string}
+             */
+            bump?: "patch" | "minor" | "major";
+            /** @description 失败审计 detail.cardHash：方案卡内容哈希 */
+            cardHash: string;
+            /** @description 失败审计 detail.contentHash：服务端从 draft 重算并严格比对，篡改即 400 */
+            contentHash: string;
+            /** @description 失败审计 detail.sopId：已落库的 SOP 草稿 id */
+            sopId: string;
+        };
+        RequestReleaseRetryResponseDto: {
+            /** @description 重新发起的审批单 key（待主管四眼批准） */
+            approvalKey: string;
+            /** @description 恒为 true：本次确实重新发起了审批单 */
+            retried: boolean;
+            /** @description 复核会话 id */
+            sessionId: string;
         };
         ResolveCapabilityDto: {
             /** @description 字段族规则表；省略则使用 service 的默认规则表 */
@@ -8664,6 +8763,13 @@ export interface components {
              * @example managed
              */
             name: string;
+        };
+        RetryReleaseDto: {
+            /**
+             * @description 失败审计 detail.reason；只接受 consume 前失败的 5 种原因，publish_failed 一律拒绝
+             * @enum {string}
+             */
+            expectedReason: "dependency_unavailable" | "policy_fingerprint_unavailable" | "sop_not_found" | "content_changed" | "approval_not_consumed";
         };
         RevokeOthersResponseDto: {
             /** @description 已撤销的会话数 */
@@ -18119,6 +18225,69 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["PlanCardPreviewResponseDto"];
                 };
+            };
+        };
+    };
+    ReleaseRetryController_requestReleaseRetry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestReleaseRetryDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestReleaseRetryResponseDto"];
+                };
+            };
+            /** @description contentHash 与服务端重算不一致 / draft 缺失 / 发起人缺失 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ReleaseRetryController_retry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                approvalKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetryReleaseDto"];
+            };
+        };
+        responses: {
+            /** @description 重试已受理；published=false 是业务结果而非服务错误 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseRetryResponseDto"];
+                };
+            };
+            /** @description expectedReason 非白名单（含 publish_failed）或字段非法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

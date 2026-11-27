@@ -120,6 +120,52 @@ export class AgentNorthStarPromotionDto {
   thresholds: AgentNorthStarPromotionThresholdsDto;
 }
 
+/**
+ * TTFV「真实口径」指标（R313 核心北极星指标上屏）。
+ *
+ * 三态必须结构化返回，前端按 `dataStatus` 区分「未启用 / 无数据 / 真零」：
+ * gate_off=总闸未开或 telemetry_optin 无 opt_in=true 行；
+ * no_data=双闸已开但无符合口径样本；ok=有样本。
+ * gate_off/no_data 时 medianMinutes / activation24h 为 null（绝不是 0）。
+ */
+export class AgentNorthStarTtfvDto {
+  @ApiProperty({
+    description:
+      "数据状态：gate_off=未启用（总闸关/无授权行/缺表）；no_data=有授权但无符合口径样本；ok=有样本",
+    enum: ["gate_off", "no_data", "ok"],
+  })
+  dataStatus: "gate_off" | "no_data" | "ok";
+
+  @ApiProperty({
+    description: "安装到首次成功的连续中位数（分钟）；gate_off/no_data 为 null",
+    type: Number,
+    nullable: true,
+  })
+  medianMinutes: number | null;
+
+  @ApiProperty({
+    description:
+      "满 24h 样本的首次触发执行激活率，比率 0~1（前端渲染 ×100 显示百分比）；无满 24h 样本为 null",
+    type: Number,
+    nullable: true,
+  })
+  activation24h: number | null;
+
+  @ApiProperty({
+    description: "样本量（converted_installs + 满 24h eligible）",
+  })
+  sampleSize: number;
+
+  @ApiProperty({ description: "观测截止时间（ISO-8601），与顶层 as_of 同值" })
+  asOf: string;
+
+  @ApiProperty({
+    description:
+      "中文口径说明：仅 opt-in install、授权前不追溯、小样本警告；未启用/无数据时给出原因",
+  })
+  note: string;
+}
+
 /** GET /agent/north-star/metrics —— 双口径周报完整载荷。 */
 export class AgentNorthStarResponseDto {
   @ApiProperty({
@@ -146,4 +192,11 @@ export class AgentNorthStarResponseDto {
       "强制口径护栏（不可省略）：严格口径说明 + 「有产物/有证据 ≠ 被业务确认，代理值勿当严格值」强警告",
   })
   warnings: string[];
+
+  @ApiProperty({
+    type: AgentNorthStarTtfvDto,
+    description:
+      "TTFV 真实口径（安装→首成中位数 / 24h 激活率 / 样本量），三态以 dataStatus 判定",
+  })
+  ttfv: AgentNorthStarTtfvDto;
 }

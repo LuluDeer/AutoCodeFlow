@@ -67,6 +67,7 @@ jest.mock("@nestjs/swagger", () => {
     ApiOkResponse: deco,
     ApiOperation: deco,
     ApiTags: deco,
+    ApiQuery: deco,
   };
 });
 

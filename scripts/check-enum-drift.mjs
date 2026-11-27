@@ -381,6 +381,21 @@ const TS_TO_PG = {
 const ALLOWLIST = [
   // ── 列是 varchar（非 PG enum），没有可比对的 PG 类型 ──────────────────────
   {
+    name: "TTFV_DATA_STATUS",
+    reason:
+      "gate_off/no_data/ok 是 GET /agent/north-star/metrics 的 ttfv.dataStatus 三态字面量，" +
+      "响应 DTO 字段非 DB 列、无 PG enum 可比；三态判定由 ttfv-metrics.ts 纯函数 + " +
+      "ttfv-metrics.spec.ts/ttfv-api-contract.spec.ts 双向单测钉死，口径 SQL 与 " +
+      "scripts/ttfv-real-metrics.mjs 逐字同源断言防漂移",
+  },
+  {
+    name: "SOP_RELEASE_AUDIT_ACTIONS",
+    reason:
+      "sop_publish.release_failed/release_succeeded 是 audit_logs.action 的取值，" +
+      "该列是 varchar（审计 action 是开放字符串命名空间，加值不重建 PG enum），PG 侧无 enum 可比；" +
+      "两个值的消费面仅审计页字典映射与结构化审计写入，已由前端 check:interface-maps 与 check:audit-doc 覆盖",
+  },
+  {
     name: "ExecutionFailureReason",
     reason:
       "task_executions.failureReason 列是 varchar（执行器上报的机器码），PG 侧无 enum 可比。" +
