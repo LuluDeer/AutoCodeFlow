@@ -340,12 +340,15 @@ export default function DashboardPage() {
         <StateError error={dashboardError} title={t('dashboard.error.title')} onRetry={refetchAll} />
       )}
 
-      {/* B1 首体验引导：收口横幅 + 空态引导卡（状态机/持久化在 onboarding 组件内） */}
+      {/* B1 首体验引导：收口横幅 + 空态引导卡（状态机/持久化在 onboarding 组件内）。
+          UX-AUDIT：业务用户的「创建第一个任务」改走工作台（他们被授权的自然语言入口），
+          并在引导卡上方给出一句解释；原 /tasks/new 对 USER 是禁用提交的死按钮。 */}
+      {!isAdmin && <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>{t('dashboard.createFirstHint')}</Text>}
       <DashboardOnboardingSection
         totalTasks={s?.totalTasks}
         executionCount={s?.executions?.total}
         successCount={s?.executions?.success}
-        onCreateTask={() => nav('/tasks/new')}
+        onCreateTask={() => nav(isAdmin ? '/tasks/new' : '/workbench')}
         onOpenTasks={() => nav('/tasks')}
         onOpenExecutions={() => nav('/executions')}
       />

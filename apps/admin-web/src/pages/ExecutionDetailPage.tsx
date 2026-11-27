@@ -13,6 +13,7 @@ import {
   invalidateExecutionData,
 } from '../api/queries';
 import { getErrMsg, showApiError } from '../utils/error';
+import { hasAiAnalysis } from '../utils/ai-analysis-result';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 // OBS-04: 分析报告/时间线面板（核心展示逻辑独立成组件文件，便于单独测试）
@@ -288,8 +289,11 @@ export default function ExecutionDetailPage() {
                 onClick={async () => {
                   setAnalyzing(true);
                   try {
-                    await tasksApi.analyzeExecution(taskId!, execId!);
-                    message.success(t('execDetail.aiAnalyzeDone'));
+                    const analysis = await tasksApi.analyzeExecution(taskId!, execId!);
+                    // UX-AUDIT：后端 analyze 走「永不抛错」封装，空串结果照常 200 返回——
+                    // 此前无条件 success 会把「没产出报告」谎报成「分析完成」。
+                    if (hasAiAnalysis(analysis)) message.success(t('execDetail.aiAnalyzeDone'));
+                    else message.warning(t('aiAnalysis.notReady'));
                     refresh(); handleTabChange('report');
                   } catch (err: unknown) {
                     showApiError(err, t('execDetail.aiAnalyzeFail'));

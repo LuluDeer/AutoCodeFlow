@@ -10,6 +10,8 @@ import { authApi } from '../api/auth';
 import { getApiBaseUrl } from '../api/client';
 import { useAuthStore, type AuthUser } from '../store/auth';
 import { getErrMsg } from '../utils/error';
+// UX-AUDIT：SSO 可用性探测（含失败提示/重试）外提为 hook，守住本函数体行数天花板。
+import { useSsoStatus } from '../hooks/useSsoStatus';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 // SEC-03：TOTP 第二步表单外提为独立子组件（含验证失败清码 + 返回重新登录出口）
@@ -44,8 +46,8 @@ export default function LoginPage() {
   const [sessionExpired, setSessionExpired] = useState(
     () => new URLSearchParams(window.location.search).get('reason') === 'expired',
   );
-  // AUTH-04：SSO 可用性（公开端点，失败静默——登录页不因它阻塞）
-  const [ssoEnabled, setSsoEnabled] = useState(false);
+  // AUTH-04：SSO 可用性（失败给 toast + 重试，见 hooks/useSsoStatus）。
+  const { enabled: ssoEnabled, checkFailed: ssoCheckFailed, retry: retrySsoCheck } = useSsoStatus();
   const errorRef = useRef<HTMLDivElement>(null);
   // P3-3（2026-10-26 审计）：登录失败后清空并聚焦密码框所需——受控清空走
   // Form 实例，聚焦走 InputRef（antd Input.Password ref 即 InputRef 形态）。
@@ -59,13 +61,6 @@ export default function LoginPage() {
     if (!totpStage) return;
     errorRef.current?.focus();
   }, [formError, totpStage]);
-  useEffect(() => {
-    authApi
-      .oidcStatus()
-      .then((r) => setSsoEnabled(!!r.enabled))
-      .catch(() => setSsoEnabled(false));
-  }, []);
-
   const completeLogin = (res: { accessToken?: string; refreshToken?: string; user?: AuthUser }) => {
     if (!res.accessToken || !res.refreshToken) {
       message.error(t('login.credentialsMissing'));
@@ -312,12 +307,20 @@ export default function LoginPage() {
             <div style={{ marginTop: 16 }}>
               <Button
                 block
+                data-testid="login-sso"
                 style={{ height: 44, borderRadius: 10, fontSize: 15 }}
                 onClick={() => {
                   window.location.href = `${getApiBaseUrl()}/auth/oidc/login`;
                 }}
               >
                 {t('login.sso')}
+              </Button>
+            </div>
+          )}
+          {!totpStage && ssoCheckFailed && (
+            <div style={{ marginTop: 8, textAlign: 'center' }}>
+              <Button type="link" size="small" data-testid="login-sso-retry" onClick={retrySsoCheck}>
+                {t('login.ssoRetry')}
               </Button>
             </div>
           )}

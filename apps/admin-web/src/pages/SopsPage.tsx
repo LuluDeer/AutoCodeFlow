@@ -944,7 +944,7 @@ export default function SopsPage() {
         <Form layout="vertical" component={false}>
           <Space orientation="vertical" style={{ width: '100%' }} size="small">
             <Form.Item label={t('sops.field.draftSlug')} htmlFor={SOPS_FIELD_ID.draftSlug} style={FIELD_ITEM_STYLE}>
-              <Input id={SOPS_FIELD_ID.draftSlug} placeholder="slug (daily-report)" value={draft.slug} maxLength={128}
+              <Input id={SOPS_FIELD_ID.draftSlug} placeholder={t('sops.field.draftSlug.placeholder')} value={draft.slug} maxLength={128}
                 onChange={(e) => setDraft({ ...draft, slug: e.target.value })} />
             </Form.Item>
             <Form.Item label={t('sops.field.draftTitle')} htmlFor={SOPS_FIELD_ID.draftTitle} style={FIELD_ITEM_STYLE}>

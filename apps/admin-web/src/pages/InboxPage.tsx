@@ -40,6 +40,7 @@ import { useRaceGuard } from '../utils/raceGuard';
 import { agentApprovalStatusLabel, agentKindLabel } from '../utils/agent-label';
 import { formatRelativeTime } from '../utils/timeFormat';
 import { useAuthStore, isAdminUser } from '../store/auth';
+import { isAdminOnlyRoute } from '../routes/route-registry';
 import {
   INBOX_REFRESH_EVENT,
   SECTION_PAGE_SIZE,
@@ -189,6 +190,17 @@ function inboxSubtitleText(item: InboxItem, t: ReturnType<typeof useTranslation>
 
 type InboxActingAction = 'approve' | 'reject' | 'grant' | 'deny' | 'resume';
 
+/**
+ * UX-AUDIT：详情深链若指向 ADMIN-only 路由（/agent-sessions、/sops 等），
+ * 业务用户点了只会撞 403。这里统一判定并在渲染层隐藏链接，
+ * 避免出现「看得见却打不开」的死路。
+ */
+function canFollowDetailUrl(url: string | undefined, canWrite: boolean): boolean {
+  if (!url) return false;
+  const pathname = url.split('?')[0];
+  return canWrite || !isAdminOnlyRoute(pathname);
+}
+
 interface InboxRowActionsProps {
   item: InboxItem;
   canWrite: boolean;
@@ -216,8 +228,8 @@ function InboxRowActions({
   const { t } = useTranslation();
 
   if (READONLY_SECTIONS.has(item.section)) {
-    return item.detailUrl ? (
-      <Link to={item.detailUrl} style={{ fontSize: 12 }}>
+    return canFollowDetailUrl(item.detailUrl, canWrite) ? (
+      <Link to={item.detailUrl!} style={{ fontSize: 12 }}>
         {t('inbox.action.viewDetail')}
       </Link>
     ) : null;
@@ -253,8 +265,8 @@ function InboxRowActions({
               {t('inbox.action.reject')}
             </Button>
           </Tooltip>
-          {item.detailUrl && (
-            <Link to={item.detailUrl} style={{ fontSize: 12 }}>
+          {canFollowDetailUrl(item.detailUrl, canWrite) && (
+            <Link to={item.detailUrl!} style={{ fontSize: 12 }}>
               {t('inbox.action.viewDetail')}
             </Link>
           )}
@@ -263,7 +275,7 @@ function InboxRowActions({
     case 'agentApprovals':
       return (
         <Space size={4} wrap>
-          {item.detailUrl && <Link to={item.detailUrl} style={{ fontSize: 12 }}>{t('inbox.action.reviewApproval')}</Link>}
+          {canFollowDetailUrl(item.detailUrl, canWrite) && <Link to={item.detailUrl!} style={{ fontSize: 12 }}>{t('inbox.action.reviewApproval')}</Link>}
           <Button
             size="small"
             danger
@@ -291,7 +303,7 @@ function InboxRowActions({
               {t('inbox.action.resume')}
             </Button>
           )}
-          {item.detailUrl && <Link to={item.detailUrl} style={{ fontSize: 12 }}>{t('inbox.action.viewSession')}</Link>}
+          {canFollowDetailUrl(item.detailUrl, canWrite) && <Link to={item.detailUrl!} style={{ fontSize: 12 }}>{t('inbox.action.viewSession')}</Link>}
         </Space>
       );
     default:
