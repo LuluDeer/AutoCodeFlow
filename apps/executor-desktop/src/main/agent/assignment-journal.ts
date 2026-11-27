@@ -22,6 +22,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { GateCounters } from './gates';
 import type { SopPayload } from './runtime';
+import type { ClarificationMediaRef } from './agent-events';
 
 /** 本地日志目录：<workDir>/agent-journal/。 */
 export function journalDirFor(workDir: string): string {
@@ -35,6 +36,10 @@ export interface JournalAsked {
   /** 发送时的预估轮次（中台的权威轮次随回复返回，仅供展示）。 */
   round: number;
   question: string;
+  /** 诊断附带的上下文快照（可选；崩溃重试重发澄清时保持一致）。 */
+  context?: Record<string, unknown>;
+  /** 诊断附带的已上传媒体引用（截图/录屏 mediaPath，可选）。 */
+  mediaRefs?: ClarificationMediaRef[];
 }
 
 /** 已消费的澄清回复（按 clarificationId 幂等去重的依据）。 */

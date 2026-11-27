@@ -145,6 +145,10 @@ interface ElectronApiBridge {
   }) => void) => () => void;
   onUpdateDownloaded: (cb: (payload: { version: string }) => void) => () => void;
   onUpdateError: (cb: (payload: { message: string }) => void) => () => void;
+  /** 工作台安全启动入口（独立 partition，不带任何执行器凭据）。 */
+  openWorkbench: () => Promise<{ ok: boolean; error?: string }>;
+  /** Agent 实时事件订阅（返回取消订阅函数）。 */
+  onAgentLiveEvent: (cb: (event: unknown) => void) => () => void;
 }
 
 declare global {

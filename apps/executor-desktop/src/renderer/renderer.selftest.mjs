@@ -1350,7 +1350,7 @@ if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classi
   };
 
   const uiLanguage = loadTsModule(resolve(root, '..', 'main', 'ui-language.ts'));
-  const i18n = loadTsModule(resolve(root, 'i18n.ts'), { '../main/ui-language': uiLanguage });
+  const i18n = loadTsModule(resolve(root, 'i18n.ts'), { '../main/ui-language': uiLanguage, './workbench-texts': loadTsModule(resolve(root, 'workbench-texts.ts')) });
   const { resolveRendererLocale, setRendererLanguageSetting, getRendererLanguageSetting, CFG_TEXTS } = i18n;
   const check = (cond, msg) => { if (!cond) throw new Error(`i18n-DESK-01：${msg}`); };
   const EN = () => 'en-US';

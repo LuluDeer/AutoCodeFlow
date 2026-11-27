@@ -51,13 +51,24 @@ function check(label: string, fn: () => void): void {
   const re = /\bipcRenderer\.(?:invoke|invokeSync|send|sendSync|on|once|postMessage)\(\s*['"]([^'"]+)['"]/g;
   for (const match of source.matchAll(re)) exposed.add(match[1]);
 
-  const expected = ['workbench:getUrl', 'workbench:navigate', 'workbench:close'];
+  const expected = [
+    'workbench:getUrl', 'workbench:navigate', 'workbench:close',
+    'workbench:getDesktopContext', 'workbench:cancelAgentAssignment',
+    'workbench:pickLocalFiles', 'workbench:getRecentAgentEvents',
+    'workbench:agentEvent', // ipcRenderer.on 订阅（单向推送）
+  ];
   check('workbench preload expose 的 channel 集合严格等于三项白名单', () => {
     assert.deepStrictEqual([...exposed].sort(), [...expected].sort());
     assert.deepStrictEqual([...WORKBENCH_CHANNEL_VALUES].sort(), [...expected].sort());
     assert.strictEqual(WORKBENCH_CHANNELS.getUrl, 'workbench:getUrl');
     assert.strictEqual(WORKBENCH_CHANNELS.navigate, 'workbench:navigate');
     assert.strictEqual(WORKBENCH_CHANNELS.close, 'workbench:close');
+    assert.strictEqual(WORKBENCH_CHANNELS.getDesktopContext, 'workbench:getDesktopContext');
+    assert.strictEqual(WORKBENCH_CHANNELS.cancelAgentAssignment, 'workbench:cancelAgentAssignment');
+    assert.strictEqual(WORKBENCH_CHANNELS.pickLocalFiles, 'workbench:pickLocalFiles');
+    assert.strictEqual(WORKBENCH_CHANNELS.getRecentAgentEvents, 'workbench:getRecentAgentEvents');
+    // 新增能力只暴露安全面：路径/凭据/执行器子进程 channel 仍一个都没有。
+    assert.ok(!source.includes('filePath'), '预加载不得过桥文件路径');
     assert.ok(source.includes("exposeInMainWorld('workbenchApi'"), '必须挂在 workbenchApi 命名空间');
   });
 

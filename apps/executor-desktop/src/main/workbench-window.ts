@@ -42,6 +42,13 @@ export function normalizePartition(raw: unknown): string | null {
 export const WORKBENCH_SENDER_FLAG = '__acfWorkbenchPartition';
 
 import * as path from 'path';
+import type { ResolvedTheme } from './theme-colors';
+import {
+  readWorkbenchBounds,
+  sanitizePickedFiles,
+  workbenchFallbackHtml,
+  writeWorkbenchBounds,
+} from './workbench-window-helpers';
 
 /** 生产构建时第二个 preload 的产物路径（bundle-preload.cjs 单文件 esbuild）。 */
 export const WORKBENCH_PRELOAD_PATH = path.join(__dirname, '../preload/workbench.js');
@@ -54,11 +61,18 @@ export const WORKBENCH_CHANNELS = {
   getUrl: 'workbench:getUrl',
   navigate: 'workbench:navigate',
   close: 'workbench:close',
+  getDesktopContext: 'workbench:getDesktopContext',
+  cancelAgentAssignment: 'workbench:cancelAgentAssignment',
+  pickLocalFiles: 'workbench:pickLocalFiles',
+  getRecentAgentEvents: 'workbench:getRecentAgentEvents',
 } as const;
 
 export type WorkbenchChannel = (typeof WORKBENCH_CHANNELS)[keyof typeof WORKBENCH_CHANNELS];
 
 export const WORKBENCH_CHANNEL_VALUES: readonly WorkbenchChannel[] = Object.values(WORKBENCH_CHANNELS);
+
+/** 预加载单向订阅 channel（不属于 invoke 白名单，但受同一 sender 闸保护）。 */
+export const WORKBENCH_EVENT_CHANNEL = 'workbench:agentEvent';
 
 /** 主进程侧可选日志面（注入 electron-log；裸 Node selftest 可省略）。 */
 export interface WorkbenchLog {
@@ -169,6 +183,11 @@ export function getWorkbenchWindow(): import('electron').BrowserWindow | null {
   return workbenchWindow;
 }
 
+export function setWorkbenchResolvedTheme(theme: ResolvedTheme): void {
+  const win = workbenchWindow;
+  if (win && !win.isDestroyed()) win.setBackgroundColor(windowBackground(theme));
+}
+
 /**
  * IPC handler 层的第二道闸：除 createGuardedIpcMain 的 URL 闸之外，还要求
  * 发送方就是本模块创建的窗口（webContents.id 全等）**且**来自独立 partition。
@@ -198,6 +217,27 @@ export interface CreateWorkbenchWindowOptions {
   /** 运行期读取配置里的中台地址（通常是 `() => configStore.get('adminApiUrl')`）。 */
   getWorkbenchUrl: () => unknown;
   log?: WorkbenchLog;
+  /** 首次创建时的主题（由 index.ts 注入 resolvedTheme）。 */
+  getTheme?: () => ResolvedTheme;
+  /** 桌面上下文投影（不含凭据/路径）。 */
+  getDesktopContext?: () => Record<string, unknown>;
+  /** 取消当前 Agent 指派。 */
+  cancelAgentAssignment?: (assignmentId?: string) => boolean;
+  /** 文件选择（由调用方接 electron dialog）。 */
+  pickLocalFiles?: () => Promise<unknown>;
+  /** 最近事件回放。 */
+  getRecentAgentEvents?: () => unknown[];
+}
+
+/** 未注入主题读取器时，回落到 Electron 系统深色偏好（与四页 nativeTheme 同源）。 */
+function resolveInitialTheme(getTheme?: () => ResolvedTheme): ResolvedTheme {
+  if (getTheme) return getTheme();
+  try {
+    const electron = require('electron') as typeof import('electron');
+    return electron.nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+  } catch {
+    return 'light';
+  }
 }
 
 /** 创建（或聚焦）独立工作台窗口；配置缺失时抛明确错误，绝不静默降级。 */
@@ -213,18 +253,22 @@ export function createWorkbenchWindow(options: CreateWorkbenchWindowOptions): im
 
   // 运行时才拉 electron：本模块保持裸 Node 可 import（selftest 直驱纯函数）。
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { BrowserWindow, session } = require('electron') as typeof import('electron');
+  const { BrowserWindow, session, screen } = require('electron') as typeof import('electron');
 
   installWorkbenchPermissionPolicy(session.fromPartition(WORKBENCH_SESSION_PARTITION));
 
+  const savedBounds = readWorkbenchBounds(logger);
+  const initialBounds: Rect | null = savedBounds === null ? null : resolveRestoreBounds(savedBounds, screen.getAllDisplays().map((d) => ({
+    id: String(d.id),
+    workArea: { x: d.workArea.x, y: d.workArea.y, width: d.workArea.width, height: d.workArea.height },
+  })));
   const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    ...(initialBounds !== null ? { x: initialBounds.x, y: initialBounds.y, width: initialBounds.width, height: initialBounds.height } : { width: 1280, height: 800 }),
     minWidth: 800,
     minHeight: 600,
     show: false,
-    backgroundColor: '#ffffff',
-    // 工作台是业务人员当 agent 用的常驻窗口，不记忆四页的窗口状态文件。
+    backgroundColor: windowBackground(resolveInitialTheme(options.getTheme)),
+    // 工作台是常驻窗口：bounds 记忆在独立文件，不污染四页的 status-window.json。
     webPreferences: buildWorkbenchWebPreferences(),
   });
   workbenchWindow = win;
@@ -246,7 +290,21 @@ export function createWorkbenchWindow(options: CreateWorkbenchWindowOptions): im
       logger.warn(`[workbench] blocked redirect to ${url}`);
     }
   });
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler((details) => {
+    const { url } = details;
+    // 仅用户点击且目标为 https 的外链交给系统浏览器；脚本触发的 window.open
+    // 与非 https 协议一律 deny（主 frame 导航仍锁中台同源，见 will-navigate）。
+    if (details.disposition === 'foreground-tab' || details.disposition === 'new-window') {
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol === 'https:') {
+          void import('electron').then(({ shell }) => shell.openExternal(url)).catch((err: unknown) => {
+            logger.warn(`[workbench] openExternal failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+          return { action: 'deny' };
+        }
+      } catch { /* 非法 URL 落到下方 deny */ }
+    }
     logger.warn(`[workbench] blocked window.open to ${url}`);
     return { action: 'deny' };
   });
@@ -264,14 +322,42 @@ export function createWorkbenchWindow(options: CreateWorkbenchWindowOptions): im
   win.once('ready-to-show', doShow);
   const showTimer = setTimeout(doShow, 3000);
   showTimer.unref?.();
+  let boundsTimer: NodeJS.Timeout | null = null;
+  for (const event of ['resize', 'move'] as const) {
+    win.on(event, () => {
+      if (boundsTimer !== null) clearTimeout(boundsTimer);
+      boundsTimer = setTimeout(() => {
+        boundsTimer = null;
+        if (!win.isDestroyed()) writeWorkbenchBounds(win.getBounds(), logger);
+      }, 400);
+      boundsTimer.unref?.();
+    });
+  }
   win.once('closed', () => {
     clearTimeout(showTimer);
+    if (boundsTimer !== null) clearTimeout(boundsTimer);
     if (workbenchWindow === win) workbenchWindow = null;
+    writeWorkbenchBounds(win.getBounds(), logger);
+  });
+
+  const fallback = (detail: string): void => {
+    if (win.isDestroyed()) return;
+    void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(workbenchFallbackHtml(workbenchUrl, detail))}`).catch((err: unknown) => {
+      logger.warn(`[workbench] fallback page failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  };
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || validatedURL !== workbenchUrl) return;
+    logger.warn(`[workbench] did-fail-load ${errorCode}: ${errorDescription}`);
+    fallback(`${errorDescription} (${errorCode})`);
   });
 
   // SEC-DSK-01：只 loadURL 配置白名单地址（中台 Workbench / 登录页），
   // 不使用 webview tag，也不 loadFile 任何本地页面。
-  void win.loadURL(workbenchUrl);
+  void win.loadURL(workbenchUrl).catch((err: unknown) => {
+    logger.warn(`[workbench] initial load failed: ${err instanceof Error ? err.message : String(err)}`);
+    fallback(err instanceof Error ? err.message : String(err));
+  });
   logger.info('[workbench] window opened');
   return win;
 }

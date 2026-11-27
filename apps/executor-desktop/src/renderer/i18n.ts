@@ -124,7 +124,7 @@ export function formatLocaleDateTime(
  * 放大成全局问题。**参数类型不能反向收窄**（`(p: string) => ...` 在
  * `strictFunctionTypes` 下不可赋给 `(...args: 联合[]) => ...`，实测 TS2322）。
  */
-export type CfgTextEntry = string | ((...args: (string | number | boolean)[]) => string | number | boolean);
+import { WORKBENCH_TEXTS } from './workbench-texts'; export type CfgTextEntry = string | ((...args: (string | number | boolean)[]) => string | number | boolean);
 
 export type CfgTextTable = Record<string, CfgTextEntry>;
 
@@ -144,7 +144,7 @@ export function createCfgTexts(locale: RendererLocale): (
 }
 
 export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
-  zh: {
+  zh: { ...WORKBENCH_TEXTS.zh,
     // ── 公共 ──
     'cfg.common.loading': '加载中...',
     'cfg.common.navHeading': '设置分区',
@@ -1032,7 +1032,7 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'historyx.detail.copyId': '复制执行 ID',
     'historyx.detail.recent': '同任务最近 5 次',
   },
-  en: {
+  en: { ...WORKBENCH_TEXTS.en,
     // ── Common ──
     'cfg.common.loading': 'Loading...',
     'cfg.common.navHeading': 'Sections',

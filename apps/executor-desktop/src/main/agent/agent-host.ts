@@ -51,7 +51,7 @@ import {
   type EffectiveAgentPermissions,
   type LocalAgentConfigInput,
 } from './permission-profile';
-import { runAgentLoop, type AgentLoopResult } from './loop';
+import { runAgentLoop, type AgentLoopResult, type ClarificationPayload } from './loop';
 import { buildLoopHandlers, isRetryableRelayError, newClarificationId, type SopPayload } from './runtime';
 import { DEFAULT_MAX_ASSIGNMENTS_PER_POLL, type CollabClient } from './collab-client';
 import type { GateCounters, GateLimits } from './gates';
@@ -67,6 +67,17 @@ import {
   type JournalAsked,
 } from './assignment-journal';
 import { REQUEUE_MISS_DROP_THRESHOLD, RequeueLedger } from './requeue-ledger';
+import {
+  createAgentLiveEvent,
+  type AgentLiveEvent,
+  type AgentLiveEventType,
+  type ClarificationMediaRef,
+} from './agent-events';
+
+export type { AgentLiveEvent, AgentLiveEventType };
+
+/** 默认长轮询等待时间（毫秒；服务端上限 25s；单测可通过 pollWaitMs: 0 保持瞬时返回）。 */
+export const DEFAULT_POLL_WAIT_MS = 25_000;
 
 /** 托管的最小配置面（渲染层消毒后的 config-store 读数）。 */
 export interface AgentHostConfig {
@@ -75,8 +86,10 @@ export interface AgentHostConfig {
   executorToken: string;
   /** 细粒度档位输入（preset + 覆盖轴），交给 permission-profile 解析。 */
   agent: LocalAgentConfigInput;
-  /** 中台媒体的公网 base URL（可选；设置后截图会作为 image_url 进 LLM）。 */
+  /** 中台媒体的公网 base URL（可选；设置后超大截图回退为 image_url 进 LLM）。 */
   mediaBaseUrl?: string;
+  /** 长轮询等待毫秒数（默认 25_000；测试可传 0 立即返回）。 */
+  pollWaitMs?: number;
 }
 
 export interface AgentHostDeps {
@@ -85,8 +98,10 @@ export interface AgentHostDeps {
   /** 每次读取最新配置（设置页改完即生效，不用重启托管）。 */
   getConfig: () => AgentHostConfig;
   client: CollabClient;
-  /** 轮询等待（交给调用方的定时器节奏决定；host 内部恒用 0 等待）。 */
+  /** 硬闸门覆盖（测试或运维调参用）。 */
   limits?: Partial<GateLimits> | null;
+  /** 实时事件流出钩子（worker 侧推给 stdout 协议，供主进程广播工作台与状态页）。 */
+  onEvent?: (event: AgentLiveEvent) => void;
   /**
    * 缺陷 A（P2）：连续「未产出工作的瞬态链路失败」上限。超过即如实上报
    * failed（stopMessage 说明 LLM 链路持续不可用），不再无限重排。
@@ -233,6 +248,12 @@ export class AgentHost {
    */
   private ledgerCache: RequeueLedger | null = null;
   private recovered = false;
+  /** 当前运行中指派的取消控制器与实时事件缓冲（用于中途取消与进度心跳摘要）。 */
+  private activeAssignmentId: string | null = null;
+  private activeAbortController: AbortController | null = null;
+  private activePollAbortController: AbortController | null = null;
+  private activeEvents: AgentLiveEvent[] = [];
+  private activePhaseLabel: string | null = null;
   readonly stats: AgentHostStats = {
     working: false,
     lastAssignmentId: null,
@@ -242,6 +263,48 @@ export class AgentHost {
   };
 
   constructor(private readonly deps: AgentHostDeps) {}
+
+  /** 中途取消当前正在运行的指派（立即中止 LLM/试跑/浏览器/GUI 操作）。 */
+  cancel(assignmentId?: string): boolean {
+    if (this.activeAbortController && this.activeAssignmentId) {
+      if (assignmentId && assignmentId !== this.activeAssignmentId) return false;
+      this.emitLiveEvent(this.activeAssignmentId, 'status', '收到取消指令，正在中止当前指派');
+      this.activeAbortController.abort(new Error('assignment cancelled by user'));
+      return true;
+    }
+    return false;
+  }
+
+  private emitLiveEvent(
+    assignmentId: string,
+    type: AgentLiveEventType,
+    summary: string,
+    detail?: string,
+  ): void {
+    const event = createAgentLiveEvent(assignmentId, type, summary, detail);
+    if (type === 'phase' || type === 'plan' || type === 'trial' || type === 'browser' || type === 'gui' || type === 'verify' || type === 'status') {
+      this.activePhaseLabel = event.summary;
+    }
+    this.activeEvents = [...this.activeEvents, event].slice(-20);
+    try {
+      this.deps.onEvent?.(event);
+    } catch {
+      /* 事件监听故障不影响托管主循环 */
+    }
+  }
+
+  /** 当前运行指派的实时事件快照（最多 20 条）。 */
+  recentEvents(): AgentLiveEvent[] {
+    return [...this.activeEvents];
+  }
+
+  private resolvePollWaitMs(cfg: AgentHostConfig): number {
+    const raw = cfg.pollWaitMs;
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+      return Math.min(Math.floor(raw), DEFAULT_POLL_WAIT_MS);
+    }
+    return DEFAULT_POLL_WAIT_MS;
+  }
 
   private journalDir(): string {
     return journalDirFor(this.deps.workDir);
@@ -280,20 +343,28 @@ export class AgentHost {
       );
       if (!preflight.ok) return { worked: false, detail: `capability failed: ${preflight.error ?? 'unknown'}` };
 
-      // poll 恒 0 等待——长等待由外部定时器节奏控制，host 不占住调用线程。
+      // 默认长轮询 waitMs=25_000（可由 cfg.pollWaitMs 覆盖，单测传 0 保持瞬时）。
       // 重发请求**只**有按 id 定向这一条通道（缺陷 B 修法：全局
       // resendAssignments=true 会把目标执行器名下所有 activeStatuses 一起
       // 投回来，包括正在等人工答复的单）。只在 poll 成功后清空，失败留待
       // 下轮重试。
       const resendAssignments: string[] | undefined =
         this.resendAssignmentIds.length > 0 ? [...this.resendAssignmentIds] : undefined;
-      const poll = await this.deps.client.poll(this.deps.address, {
-        waitMs: 0,
-        ...(resendAssignments !== undefined ? { resendAssignments } : {}),
-        capabilities: pollFacts.capabilities,
-        capabilityReport: pollReport,
-        effectiveProfile: pollFacts.effectiveProfile,
-      });
+      const pollAbort = new AbortController();
+      this.activePollAbortController = pollAbort;
+      let poll: Awaited<ReturnType<CollabClient['poll']>>;
+      try {
+        poll = await this.deps.client.poll(this.deps.address, {
+          waitMs: this.resolvePollWaitMs(cfg),
+          ...(resendAssignments !== undefined ? { resendAssignments } : {}),
+          capabilities: pollFacts.capabilities,
+          capabilityReport: pollReport,
+          effectiveProfile: pollFacts.effectiveProfile,
+          signal: pollAbort.signal,
+        });
+      } finally {
+        if (this.activePollAbortController === pollAbort) this.activePollAbortController = null;
+      }
       if (!poll.ok) return { worked: false, detail: `poll failed: ${poll.error ?? 'unknown'}` };
       this.resendAssignmentIds = [];
       // poll 成功即把本轮指派 id 写进 claim ledger——**处理前**落盘，之后无论
@@ -822,6 +893,7 @@ export class AgentHost {
 
   /** 关闭托管时撤销 Agent 能力；若正在处理指派，等回报完成后再撤销。 */
   async withdrawCapabilities(): Promise<void> {
+    this.activePollAbortController?.abort();
     if (this.working) {
       this.withdrawAfterWork = true;
       return;
@@ -999,6 +1071,12 @@ export class AgentHost {
   private async runWithJournal(journal: AssignmentJournal): Promise<void> {
     const dir = this.journalDir();
     const assignmentId = journal.assignmentId;
+    // 取消信号与事件缓冲：一次指派一个控制器。worker 的 cancel 消息与
+    // progress 心跳都读同一份状态，运行时所有长动作共用 signal。
+    this.activeAssignmentId = assignmentId;
+    this.activeAbortController = new AbortController();
+    this.activeEvents = [];
+    this.activePhaseLabel = null;
     // 这台单已经真的跑起来了（首跑或澄清续跑）：重置「跳过重发」的记账，
     // 下一轮若再进入等待答复 + 被中台重投，仍能回排一次。
     this.awaitingReplyResendOnce.delete(assignmentId);
@@ -1015,10 +1093,18 @@ export class AgentHost {
     // 而单轮 LLM 循环（规划+试跑+诊断）完全可能超过 10 分钟——必须持续报活。
     const progressTimer = setInterval(() => {
       void this.deps.client.reportProgress(this.deps.address, assignmentId, {
-        progressJson: { phase: journal.phase, iterations: journal.counters?.iterations ?? 0 },
+        progressJson: {
+          phase: journal.phase,
+          iterations: journal.counters?.iterations ?? 0,
+          ...(this.activePhaseLabel !== null ? { currentPhase: this.activePhaseLabel } : {}),
+          ...(this.activeEvents.length > 0
+            ? { recentEvents: this.activeEvents.slice(-5).map((e) => ({ type: e.type, summary: e.summary, timestamp: e.timestamp })) }
+            : {}),
+        },
       }).catch(() => undefined);
     }, 60_000);
     progressTimer.unref?.();
+    this.emitLiveEvent(assignmentId, 'status', '开始处理指派');
     try {
       const cfg = this.deps.getConfig();
 
@@ -1091,6 +1177,7 @@ export class AgentHost {
           },
           ...(history.length > 0 ? { clarificationHistory: history } : {}),
           guiActionsUsed: journal.guiActionsUsed,
+          signal: this.activeAbortController.signal,
           // GUI 动作预算按指派累计：每批动作后取回累计值落盘，续跑不清零
           onGuiActions: (n) => {
             journal.guiActionsUsed = n;
@@ -1105,7 +1192,10 @@ export class AgentHost {
           // relay 适配：空 content = 中台 LLM 不可用（fail-open 透传）——
           // 按错误上抛（loop 收敛为 outcome=error），不伪装成功
           chat: async ({ messages }) => {
-            const r = await this.deps.client.llmRelay(this.deps.address, { messages });
+            const r = await this.deps.client.llmRelay(this.deps.address, {
+              messages,
+              signal: this.activeAbortController?.signal,
+            });
             if (!r.ok) return { ok: false, error: r.error ?? 'relay failed', content: '' };
             if (!r.content) return { ok: false, error: '中台 LLM 未启用/不可用（relay 返回空）', content: '' };
             return { ok: true, content: r.content };
@@ -1118,6 +1208,7 @@ export class AgentHost {
       // result.counters.iterations > 快照.iterations ⇒ 确有工作轮。
       const countersBeforeAttempt: GateCounters | null =
         journal.counters ? { ...journal.counters } : null;
+      let loopClarify: (ClarificationPayload & { clientClarificationId: string }) | null = null;
 
       const result = await runAgentLoop({
         environment,
@@ -1140,9 +1231,17 @@ export class AgentHost {
         },
         // 预算跨续跑/崩溃恢复连续（墙钟自首次迭代起算，resume 不重置）
         ...(journal.counters ? { counters: journal.counters } : {}),
+        signal: this.activeAbortController.signal,
+        onEvent: (type, summary, detail) => this.emitLiveEvent(assignmentId, type, summary, detail),
+        // 结构化澄清载荷（真实 question/context/mediaRefs）直接落 journal，
+        // 重发时按同一幂等键重发，绝不退化成模板问句。
+        onClarify: (payload) => {
+          // 保留结构化载荷与幂等键，落盘/发送统一由 reportLoopResult 完成。
+          loopClarify = { ...payload, clientClarificationId: newClarificationId() };
+        },
       });
 
-      await this.reportLoopResult(journal, result, workspaceRoot, effective, countersBeforeAttempt);
+      await this.reportLoopResult(journal, result, workspaceRoot, effective, countersBeforeAttempt, loopClarify);
     } catch (err) {
       // 兜底：循环外的意外（poll 载荷畸形、磁盘故障……）也要如实回报
       this.stats.lastOutcome = 'host_error';
@@ -1158,6 +1257,11 @@ export class AgentHost {
       clearInterval(progressTimer);
       this.working = false;
       this.stats.working = false;
+      this.emitLiveEvent(assignmentId, 'status', `指派处理结束：${this.stats.lastOutcome ?? 'unknown'}`);
+      if (assignmentId === this.activeAssignmentId) {
+        this.activeAssignmentId = null;
+        this.activeAbortController = null;
+      }
       if (this.withdrawAfterWork && !this.deps.getConfig().agentEnabled) {
         await this.withdrawCapabilities().catch(() => undefined);
       }
@@ -1173,6 +1277,8 @@ export class AgentHost {
     effective: EffectiveAgentPermissions,
     /** 本次 attempt 前的计数快照（缺陷 A：判断有没有真的产出工作轮）。 */
     countersBeforeAttempt: GateCounters | null,
+    /** 本轮澄清的结构化载荷（真实问句/上下文/媒体引用，已预分配幂等键）。 */
+    loopClarify: (ClarificationPayload & { clientClarificationId: string }) | null = null,
   ): Promise<void> {
     const dir = this.journalDir();
     const assignmentId = journal.assignmentId;
@@ -1270,7 +1376,7 @@ export class AgentHost {
       // 澄清：指派在中台侧转 blocked，等回复经 poll 投递（11 §3.1）。
       // **先落盘后发送**：幂等键先持久化——崩溃窗口内重发同键，中台按
       // 幂等键去重，不产生第二条澄清（先发后存 = 可能问丢一轮）。
-      const clientClarificationId = newClarificationId();
+      const clientClarificationId = loopClarify?.clientClarificationId ?? newClarificationId();
       const question = result.pendingQuestion ?? '需要中台补充 SOP 信息';
       journal.phase = 'awaiting_reply';
       journal.pendingQuestion = question;
@@ -1278,6 +1384,8 @@ export class AgentHost {
         clientClarificationId,
         round: result.clarifications,
         question,
+        ...(loopClarify?.context ? { context: loopClarify.context } : result.pendingClarificationContext ? { context: result.pendingClarificationContext } : {}),
+        ...(loopClarify?.mediaRefs ? { mediaRefs: loopClarify.mediaRefs } : result.pendingMediaRefs ? { mediaRefs: result.pendingMediaRefs } : {}),
       };
       journal.asked = [...journal.asked, asked];
       try {
@@ -1390,6 +1498,8 @@ export class AgentHost {
       assignmentId,
       clientClarificationId: outstanding.clientClarificationId,
       question: outstanding.question,
+      ...(outstanding.context ? { context: outstanding.context } : {}),
+      ...(outstanding.mediaRefs ? { mediaRefs: outstanding.mediaRefs } : {}),
       targetAgentSessionId: assignmentId,
     });
     if (sent.ok) {

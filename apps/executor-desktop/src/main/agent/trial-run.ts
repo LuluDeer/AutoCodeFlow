@@ -55,6 +55,8 @@ export interface TrialRunInput {
   codeExecution: CodeExecutionMode;
   /** node 解释器实际可执行文件（Electron 下为 electron.exe）。 */
   nodeExecutable?: string;
+  /** 可选取消信号：触发时立即整组终止试跑进程树。 */
+  signal?: AbortSignal;
 }
 
 export interface TrialRunResult {
@@ -205,6 +207,7 @@ export async function runTrialInSandbox(input: TrialRunInput): Promise<TrialRunR
       cwd: input.workspaceRoot,
       env: childEnv,
       recordFile: path.join(input.workspaceRoot, TRIAL_RECORD_FILENAME),
+      signal: input.signal,
     }, timeoutMs, collect).then(({ exitCode, timedOut: to, errorMessage }) => {
       timedOutLocal = to;
       spawnError = errorMessage;

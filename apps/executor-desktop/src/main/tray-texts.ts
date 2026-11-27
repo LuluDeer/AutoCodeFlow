@@ -71,6 +71,8 @@ export interface TrayTexts {
   startExecutor: string;
   stopExecutor: string;
   viewStatus: string;
+  /** 阶段 A（ADR-044）：打开业务工作台窗口。 */
+  openWorkbench: string;
   openConfig: string;
   openHistory: string;
   /** V4-4：托盘菜单补齐第四 Tab（X-04 顺带项：菜单原只覆盖 3/4） */
@@ -125,6 +127,7 @@ export const TRAY_TEXTS: Record<TrayLocale, TrayTexts> = {
     startExecutor: '启动执行器',
     stopExecutor: '停止执行器',
     viewStatus: '查看状态...',
+    openWorkbench: '打开工作台...',
     openConfig: '打开配置...',
     openHistory: '历史日志...',
     openApps: '打开应用...',
@@ -174,6 +177,7 @@ export const TRAY_TEXTS: Record<TrayLocale, TrayTexts> = {
     startExecutor: 'Start Executor',
     stopExecutor: 'Stop Executor',
     viewStatus: 'View Status...',
+    openWorkbench: 'Open Workbench...',
     openConfig: 'Open Settings...',
     openHistory: 'History Logs...',
     openApps: 'Open Apps...',

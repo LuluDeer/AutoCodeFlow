@@ -86,6 +86,7 @@ function ensureHost(req: Extract<AgentWorkerRequest, { t: 'init' }>): void {
       // 主进程已在 init 前解密（enc: 信封不落 worker 协议之外的面）
       token: req.config.executorToken,
     }),
+    onEvent: (event) => send({ t: 'event', event }),
   });
   workerLog(`host created (address=${req.address}, workDir=${req.workDir})`);
 }
@@ -159,6 +160,14 @@ function handleRequest(req: AgentWorkerRequest): void {
           tickInFlight = false;
           pushStats();
         });
+      return;
+    }
+    case 'cancel': {
+      // 不回 tick-result：在飞的 tick 必须由循环自己收敛为终态，
+      // 提前回执会让主进程看门狗误清、把运行中的指派当成已完成。
+      const cancelled = host?.cancel(req.assignmentId) ?? false;
+      if (cancelled) workerLog('cancel requested for active assignment');
+      else workerLog('cancel ignored: no matching active assignment');
       return;
     }
     case 'withdraw':

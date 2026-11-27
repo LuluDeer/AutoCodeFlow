@@ -31,7 +31,12 @@ const WINDOW = path.join(ROOT, 'src', 'main', 'workbench-window.ts');
 const IPC = path.join(ROOT, 'src', 'main', 'workbench-ipc.ts');
 const WINDOW_MGR = path.join(ROOT, 'src', 'main', 'window-manager.ts');
 
-const ALLOW = ['workbench:getUrl', 'workbench:navigate', 'workbench:close'].sort();
+const ALLOW = [
+  'workbench:getUrl', 'workbench:navigate', 'workbench:close',
+  'workbench:getDesktopContext', 'workbench:cancelAgentAssignment',
+  'workbench:pickLocalFiles', 'workbench:getRecentAgentEvents',
+  'workbench:agentEvent',
+].sort();
 const FORBIDDEN = [
   'config:save', 'config:get', 'config:import', 'executor:stop', 'executor:start',
   'apps:uninstall', 'updater:install', 'agent:get-status',
@@ -63,6 +68,9 @@ function ok(label: string): void {
   assertWhiteList(src, 'workbench preload');
   assert.ok(src.includes("exposeInMainWorld('workbenchApi'"), '必须挂独立 workbenchApi 命名空间');
   assert.ok(!src.includes('electronAPI'), '不得挂四页 electronAPI 命名空间');
+  for (const forbiddenToken of ['filePath', 'executorToken', 'getConfig:', 'config:save:', 'shell:']) {
+    assert.ok(!src.includes(forbiddenToken), `工作台桥不得出现 ${forbiddenToken}`);
+  }
   ok('workbench preload 实际 channel 严格等于白名单，禁用 channel 零出现');
 }
 

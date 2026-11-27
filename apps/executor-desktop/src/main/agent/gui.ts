@@ -81,7 +81,8 @@ export class AgentGuiSession {
     return { ok: true };
   }
 
-  async run(raw: unknown): Promise<GuiActionResult> {
+  async run(raw: unknown, signal?: AbortSignal): Promise<GuiActionResult> {
+    if (signal?.aborted) return { ok: false, refusal: 'GUI 动作已取消' };
     if (!this.ready) return { ok: false, refusal: 'GUI 会话未通过启动闸门' };
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       return { ok: false, refusal: 'GUI 动作必须是对象' };
@@ -106,7 +107,22 @@ export class AgentGuiSession {
       if (!Number.isInteger(ms) || ms < 50 || ms > 5000) {
         return { ok: false, refusal: 'wait.ms 必须是 50..5000 的整数' };
       }
-      await new Promise((resolve) => setTimeout(resolve, ms));
+      await new Promise<void>((resolve) => {
+        if (signal?.aborted) {
+          resolve();
+          return;
+        }
+        const timer = setTimeout(() => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        }, ms);
+        const onAbort = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
+      if (signal?.aborted) return { ok: false, refusal: 'GUI 动作已取消' };
       return { ok: true, detail: `waited ${ms}ms` };
     }
 

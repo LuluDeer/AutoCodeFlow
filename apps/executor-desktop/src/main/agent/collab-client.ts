@@ -132,6 +132,8 @@ export class CollabClient {
       capabilityReport?: Record<string, unknown>;
       /** 首次领取快照：min(本地, 中台) 权限档位的可读串。 */
       effectiveProfile?: string;
+      /** 可选取消信号（长轮询期间提前中止）。 */
+      signal?: AbortSignal;
     } = {},
   ): Promise<{
     ok: boolean;
@@ -147,7 +149,7 @@ export class CollabClient {
       ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : {}),
       ...(opts.capabilityReport !== undefined ? { capabilityReport: opts.capabilityReport } : {}),
       ...(opts.effectiveProfile !== undefined ? { effectiveProfile: opts.effectiveProfile } : {}),
-    }, Math.max(this.timeoutMs, (opts.waitMs ?? 0) + 10_000));
+    }, Math.max(this.timeoutMs, (opts.waitMs ?? 0) + 10_000), opts.signal);
     if (!res.ok) {
       return {
         ok: false,
@@ -266,12 +268,15 @@ export class CollabClient {
    * 的 metrics 里）。content 为空 = 中台 LLM 未启用/不可用（fail-open 语义
    * 与 admin-api ai 模块一致）——调用方按「模型不可用」降级。
    */
-  async llmRelay(address: string, input: { messages: LlmRelayMessage[]; tools?: unknown[] }): Promise<LlmRelayResponse> {
+  async llmRelay(
+    address: string,
+    input: { messages: LlmRelayMessage[]; tools?: unknown[]; signal?: AbortSignal },
+  ): Promise<LlmRelayResponse> {
     const res = await this.post('/api/agent-collab/llm', address, {
       address,
       messages: input.messages,
       ...(input.tools ? { tools: input.tools } : {}),
-    }, 120_000); // LLM 调用天然慢，超时独立放宽
+    }, 120_000, input.signal); // LLM 调用天然慢，超时独立放宽
     if (!res.ok) return { ok: false, error: res.error ?? `llm relay failed (status=${res.status})`, content: '' };
     const parsed = unwrapEnvelope<{
       content?: string;
@@ -411,7 +416,13 @@ export class CollabClient {
   }
 
   /** 单发 POST（JSON）。所有错误收敛为 RawResult，不抛。 */
-  private post(path: string, _address: string, body: unknown, timeoutMs?: number): Promise<RawResult> {
+  private post(
+    path: string,
+    _address: string,
+    body: unknown,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+  ): Promise<RawResult> {
     const payload = Buffer.from(JSON.stringify(body), 'utf8');
     return this.rawRequest(
       'POST',
@@ -422,6 +433,7 @@ export class CollabClient {
       },
       payload,
       timeoutMs,
+      signal,
     );
   }
 
@@ -432,8 +444,13 @@ export class CollabClient {
     headers: Record<string, string>,
     payload: Buffer,
     timeoutMs?: number,
+    signal?: AbortSignal,
   ): Promise<RawResult> {
     return new Promise((resolve) => {
+      if (signal?.aborted) {
+        resolve({ ok: false, status: null, error: 'aborted', body: '' });
+        return;
+      }
       let url: URL;
       try {
         url = new URL(`${this.baseUrl}${path}`);
@@ -485,6 +502,10 @@ export class CollabClient {
           });
         },
       );
+      const onAbort = (): void => {
+        req.destroy(new Error('aborted'));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
       req.setTimeout(timeoutMs ?? this.timeoutMs, () => {
         req.destroy(new Error(`request timeout after ${timeoutMs ?? this.timeoutMs}ms`));
       });
@@ -503,6 +524,7 @@ export class CollabClient {
         hardDeadline.unref?.();
       });
       req.on('close', () => {
+        signal?.removeEventListener('abort', onAbort);
         if (hardDeadline !== null) clearTimeout(hardDeadline);
       });
       req.write(payload);

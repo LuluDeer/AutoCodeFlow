@@ -44,12 +44,12 @@ import {
   probePlaywright,
   type BrowserActionInput,
 } from './browser';
-import { filterAllowlistDomains } from './domain-allowlist';
 import { buildAgentContext } from './prompt-context';
 import { AgentGuiSession, GUI_ACTIONS_MAX, type GuiDriver } from './gui';
 import { WindowsGuiDriver } from './gui-windows';
 import type { CollabClient } from './collab-client';
-
+import type { AgentLiveEventType, ClarificationMediaRef } from './agent-events';
+import { appendRecentImageUrl, appendRecentMediaRef, buildDiagnoseOutcome, computeBrowserAllowedDomains, mimeForMedia, captureScreenshotObservation, sleepWithAbort } from './runtime-helpers';
 /** SOP 载荷（agent-collab poll 的 assignment 条目形状）。 */
 export interface SopPayload {
   slug: string;
@@ -104,6 +104,10 @@ export interface RuntimeDeps {
    */
   guiActionsUsed?: number;
   onGuiActions?: (totalUsed: number) => void;
+  /** 可选取消信号（中途取消当前指派的 LLM/试跑/浏览器/GUI 操作）。 */
+  signal?: AbortSignal;
+  /** 可选实时事件回调。 */
+  onEvent?: (type: AgentLiveEventType, summary: string, detail?: string) => void;
 }
 
 /** LLM 单轮对话的最小客户端面（CollabClient.llmRelay 已满足）。 */
@@ -248,37 +252,31 @@ async function chatJson(
   }>,
   label: string,
   repairInstruction: string,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   let current = messages;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    // ── relay 瞬态失败的分类重试（0.5s → 1s，最多 3 次尝试）──────────
-    // 与 admin-api 的 withLlmRetry 同哲学：只重试瞬态；确定性失败（401/
-    // 400/空 content）立即如实上抛——重试「配置错了」只是白烧调用并把
-    // 「该修配置」伪装成「偶发抖动」。错误分类见 isRetryableRelayError。
+    if (signal?.aborted) throw new Error('aborted');
     let res: { ok: boolean; error?: string; content: string } | null = null;
     let lastRelayError = '';
     for (let relayAttempt = 1; relayAttempt <= RELAY_RETRY_MAX_ATTEMPTS; relayAttempt += 1) {
+      if (signal?.aborted) throw new Error('aborted');
       res = await llm.chat({ messages: current });
+      if (signal?.aborted) throw new Error('aborted');
       if (res.ok) {
         lastRelayError = '';
         break;
       }
       lastRelayError = res.error ?? 'unknown';
-      // 确定性失败（含 fail-open 空 content 之外的 4xx）不重试
       if (!isRetryableRelayError(lastRelayError)) {
         throw new Error(`LLM relay 不可用：${lastRelayError}`);
       }
-      // 瞬态失败且还有余量 → 退避后重试
       if (relayAttempt < RELAY_RETRY_MAX_ATTEMPTS) {
-        const delayMs = Math.min(
-          RELAY_RETRY_INITIAL_MS * 2 ** (relayAttempt - 1),
-          RELAY_RETRY_MAX_MS,
-        );
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        const delayMs = Math.min(RELAY_RETRY_INITIAL_MS * 2 ** (relayAttempt - 1), RELAY_RETRY_MAX_MS);
+        await sleepWithAbort(delayMs, signal);
       }
     }
     if (res === null || lastRelayError !== '' || !res.ok) {
-      // 瞬态重试耗尽：如实上抛（loop 收敛为 outcome=error，会话可续）
       throw new Error(`LLM relay 不可用（已重试 ${RELAY_RETRY_MAX_ATTEMPTS - 1} 次）：${lastRelayError}`);
     }
 
@@ -379,8 +377,13 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
       entryPath: relPath,
       args,
       codeExecution: deps.permissions.codeExecution,
+      signal: deps.signal,
     });
-    if (r.refusal) return { ok: false, output: `[平台拒绝] ${r.refusal}` };
+    if (r.refusal) {
+      lastTrialStderr = r.refusal.slice(0, 4_000);
+      return { ok: false, output: `[平台拒绝] ${r.refusal}` };
+    }
+    lastTrialStderr = r.stderr.slice(-4_000);
     const output = [
       r.stdout ? `--- stdout ---\n${r.stdout}` : '',
       r.stderr ? `--- stderr ---\n${r.stderr}` : '',
@@ -392,38 +395,23 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
     return { ok: r.ok, output };
   };
 
-  // ── 浏览器（P7b）────────────────────────────────────────────────
-  // 最近一轮浏览器观察（进 baseContext，让下一轮规划看得到页面）。
+  // ── 浏览器与 GUI 观察状态 ────────────────────────────────────────
   let lastBrowserOutputs = '';
   let lastGuiOutputs = '';
-  /** 最近一轮 GUI 截图：优先 inline data URL，超大才用 mediaBaseUrl + mediaPath。 */
+  let lastTrialStderr = '';
+  /** 最近一轮 GUI / 浏览器截图：优先 inline data URL（≤1.5MB），超大才用 mediaBaseUrl + mediaPath。 */
   let lastGuiImageUrls: string[] = [];
+  /** 本次运行已上传的截图/录屏引用（随澄清透传中台）。 */
+  let uploadedMediaRefs: ClarificationMediaRef[] = [];
 
   const browserAllowed = (): boolean =>
-    // ① SOP 必须声明 browser 能力域（capabilities 是能力闸）；② 平台真的
-    // 有 playwright。两者缺一 → 拒绝原因回给模型，不静默丢弃。
     (deps.sop.frontMatter.capabilities ?? []).includes('browser') && probePlaywright().available;
 
-  const allowedDomainsForBrowser = (): string[] => {
-    const fromSop = (deps.sop.frontMatter.constraints as { allowedDomains?: unknown } | undefined)?.allowedDomains;
-    const sopDomains = Array.isArray(fromSop) ? fromSop.filter((d): d is string => typeof d === 'string') : [];
-    // SOP ∪ 权限档位——两份白名单的并集（档位白名单是机器级授权）。
-    // P2-2：并集**零复检**是漏洞——单标签条目（"com"）会让 endsWith 匹配
-    // 放大成放行一切 *.com。并集后逐域校验，非法域剔除 + warn（两个来源
-    // 各自的入口——admin 发布校验、config 消毒——理论上已拦，这里是最后一道）。
-    const { valid, invalid } = filterAllowlistDomains([...sopDomains, ...deps.permissions.allowedDomains]);
-    for (const bad of invalid) {
-      console.warn(`[agent] allowedDomains 非法条目已剔除（不进入浏览器白名单）: ${bad.slice(0, 120)}`);
-    }
-    return valid;
-  };
+  // 当本机配置了 allowedDomains 时，取交集（绝不允许不可信 SOP 拓宽本机白名单）。
+  const allowedDomainsForBrowser = (): string[] =>
+    computeBrowserAllowedDomains(deps.sop.frontMatter.constraints, deps.permissions.allowedDomains);
 
-  const mimeFor = (name: string): string =>
-    name.endsWith('.png') ? 'image/png' : name.endsWith('.webm') ? 'video/webm' : name.endsWith('.jpg') || name.endsWith('.jpeg') ? 'image/jpeg' : 'application/octet-stream';
-
-  // GUI 后端只在 Windows 系统可用；host 的能力上报也使用同一次探测结果。
   const guiDriver = deps.guiDriver ?? new WindowsGuiDriver();
-  // 预算按指派累计：host 传入已花费数（崩溃恢复/澄清续跑不清零）。
   let guiActionsUsed = deps.guiActionsUsed ?? 0;
   const guiAllowed = (): boolean =>
     deps.guiAvailable === true &&
@@ -451,57 +439,30 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
     });
     const started = await session.start();
     if (!started.ok) return `[GUI] 启动失败：${started.error ?? 'unknown'}`;
+    deps.onEvent?.('gui', `执行 ${actions.length} 步 GUI 动作`);
     const lines: string[] = [];
     for (const [i, action] of actions.entries()) {
-      const result = await session.run(action);
+      if (deps.signal?.aborted) break;
+      const result = await session.run(action, deps.signal);
       const name = action && typeof action === 'object' ? String((action as Record<string, unknown>).action).slice(0, 32) : '?';
       if (!result.ok) {
         lines.push(`${i + 1}. ${name} 失败：${result.refusal ?? 'unknown'}`);
-        // GUI 动作通常依赖上一步聚焦/定位结果。前一步失败后继续点击/键入
-        // 可能落到同名应用的错误窗口；立即停下交给下一轮诊断。
         break;
       }
       const bits = [`${i + 1}. ${name}`, result.detail ?? ''];
       if (result.screenshotPath) {
         bits.push(`screenshot=${result.screenshotPath}`);
-        // 单次读取：同一截图此前被 readFileSync 两次（上传一次、转 base64 又一次）
-        let png: Buffer | null = null;
-        try {
-          png = fs.readFileSync(path.join(deps.workspaceRoot, result.screenshotPath));
-        } catch {
-          /* 读不到本地截图：上传与 inline URL 都无从谈起 */
-        }
-        if (png) {
-          try {
-            const up = await deps.client.uploadMedia(deps.address, deps.assignmentId, {
-              name: path.basename(result.screenshotPath),
-              mime: 'image/png',
-              buf: png,
-            });
-            if (up.ok && up.mediaPath) {
-              bits.push(`mediaPath=${up.mediaPath}`);
-              // 优先 inline data URL：私有化部署不必把媒体目录暴露到公网，
-              // 且实测 provider 接受真实截图的 base64。单图原始 ≤1.5MB
-              //（base64 后 ~2MB，低于中台 3MB 上限）；更大才回退公网 URL。
-              if (png.length <= 1.5 * 1024 * 1024) {
-                lastGuiImageUrls = [
-                  ...lastGuiImageUrls,
-                  `data:image/png;base64,${png.toString('base64')}`,
-                ].slice(-2);
-              } else {
-                const base = deps.mediaBaseUrl?.replace(/\/+$/, '');
-                if (base && /^https?:\/\//i.test(base)) {
-                  lastGuiImageUrls = [
-                    ...lastGuiImageUrls,
-                    `${base}${up.mediaPath}`,
-                  ].slice(-2);
-                }
-              }
-            }
-          } catch {
-            /* 上传失败不抹掉本机截图位置，留给后续诊断 */
-          }
-        }
+        bits.push(...await captureScreenshotObservation({
+          workspaceRoot: deps.workspaceRoot,
+          screenshotRelPath: result.screenshotPath,
+          address: deps.address,
+          assignmentId: deps.assignmentId,
+          client: deps.client,
+          mediaBaseUrl: deps.mediaBaseUrl,
+          onEvent: deps.onEvent,
+          onMediaRef: (ref) => { uploadedMediaRefs = appendRecentMediaRef(uploadedMediaRefs, ref); },
+          onImageUrl: (url) => { lastGuiImageUrls = appendRecentImageUrl(lastGuiImageUrls, url); },
+        }));
       }
       lines.push(bits.filter(Boolean).join(' '));
     }
@@ -511,8 +472,7 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
 
   /**
    * 执行 LLM 请求的浏览器动作序列（封闭枚举 + 每次导航过域名白名单）。
-   * 截图/录屏先落工作区，再尽力上传中台（mediaPath 供澄清 mediaRefs 引用）。
-   * 每步结果汇成摘要文本返回（进 LLM 上下文，截断防塞爆）。
+   * 截图/录屏先落工作区并上传中台，同时 ≤1.5MB 截图内联 data URL 进下一轮 LLM。
    */
   const executeBrowserActions = async (actions: unknown): Promise<string> => {
     if (!browserAllowed()) {
@@ -525,41 +485,36 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
     const session = new AgentBrowserSession(deps.workspaceRoot, allowedDomainsForBrowser());
     const started = await session.start();
     if (!started.ok) return `[浏览器] 启动失败：${started.error ?? 'unknown'}`;
+    deps.onEvent?.('browser', `执行 ${actions.length} 步浏览器动作`);
 
+    const onAbort = (): void => { void session.close(); };
+    deps.signal?.addEventListener('abort', onAbort, { once: true });
     const lines: string[] = [];
     const uploads: string[] = [];
     try {
       for (const [i, a] of actions.entries()) {
+        if (deps.signal?.aborted) break;
         const input = (a ?? {}) as BrowserActionInput;
         const r = await session.run(input);
         if (r.ok) {
           const bits = [`${i + 1}. ${input.action}`, r.detail ?? '', r.text ? `text=${r.text.slice(0, 500)}` : ''];
           if (r.screenshotPath) {
             bits.push(`screenshot=${r.screenshotPath}`);
-            // 截图即传（best-effort）——mediaPath 进摘要，澄清时可直接引用
-            try {
-              const abs = path.join(deps.workspaceRoot, r.screenshotPath);
-              const up = await deps.client.uploadMedia(deps.address, deps.assignmentId, {
-                name: path.basename(r.screenshotPath),
-                mime: mimeFor(r.screenshotPath),
-                buf: fs.readFileSync(abs),
-              });
-              if (up.ok && up.mediaPath) {
-            bits.push(`mediaPath=${up.mediaPath}`);
-            const base = deps.mediaBaseUrl?.replace(/\/+$/, '');
-            if (base && /^https?:\/\//i.test(base)) {
-              lastGuiImageUrls = [...lastGuiImageUrls, `${base}${up.mediaPath}`].slice(-2);
-            }
-          }
-            } catch {
-              /* 上传失败不阻塞动作序列——文件在工作区，后续可重传 */
-            }
+            bits.push(...await captureScreenshotObservation({
+              workspaceRoot: deps.workspaceRoot,
+              screenshotRelPath: r.screenshotPath,
+              address: deps.address,
+              assignmentId: deps.assignmentId,
+              client: deps.client,
+              mediaBaseUrl: deps.mediaBaseUrl,
+              onEvent: deps.onEvent,
+              onMediaRef: (ref) => { uploadedMediaRefs = appendRecentMediaRef(uploadedMediaRefs, ref); },
+              onImageUrl: (url) => { lastGuiImageUrls = appendRecentImageUrl(lastGuiImageUrls, url); },
+            }));
           }
           lines.push(bits.filter(Boolean).join(' '));
         } else {
           lines.push(`${i + 1}. ${input.action} 失败：${r.refusal ?? r.detail ?? 'unknown'}`);
-          // P2-3：越界终止——会话已被强制关闭，后续动作必然全部失败，
-          // 立即停止动作循环（不再白耗尝试、也不再多烧一次页面交互）。
           if (r.sessionClosed) {
             lines.push('[浏览器] 会话因页面落在白名单外被终止，本轮剩余动作取消。');
             break;
@@ -567,16 +522,24 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
         }
       }
     } finally {
+      deps.signal?.removeEventListener('abort', onAbort);
       const closed = await session.close();
       if (closed.videoPath) {
         lines.push(`recording=${closed.videoPath}`);
         try {
           const up = await deps.client.uploadMedia(deps.address, deps.assignmentId, {
             name: path.basename(closed.videoPath),
-            mime: mimeFor(closed.videoPath),
+            mime: mimeForMedia(closed.videoPath),
             buf: fs.readFileSync(path.join(deps.workspaceRoot, closed.videoPath)),
           });
-          if (up.ok && up.mediaPath) uploads.push(up.mediaPath);
+          if (up.mediaPath) {
+            uploads.push(up.mediaPath);
+            uploadedMediaRefs = appendRecentMediaRef(uploadedMediaRefs, {
+              kind: 'video',
+              url: up.mediaPath,
+              note: path.basename(closed.videoPath),
+            });
+          }
         } catch {
           /* 同上 best-effort */
         }
@@ -605,10 +568,13 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
         ],
         'plan',
         PLAN_REPAIR,
+        deps.signal,
       );
       const mat = materializeFiles(deps.workspaceRoot, parsed.files);
       if (!mat.ok) throw new Error(`LLM 产出的文件不可落盘：${mat.error}`);
-      // 浏览器动作（P7b）：可选 "browser":[actions]，先看页面再写代码
+      if (mat.written.length > 0) {
+        deps.onEvent?.('file', `写入 ${mat.written.length} 个工作区文件`, mat.written.join(', '));
+      }
       let browserNote = '';
       if (parsed.browser !== undefined) {
         const summary = await executeBrowserActions(parsed.browser);
@@ -621,7 +587,9 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
       const spec = parseEntry(parsed.entry);
       if (!spec) throw new Error('LLM 输出缺合法 entry（interpreter 封闭枚举 + path 必填）');
       entry = spec;
-      return `${spec.interpreter} ${spec.path}${typeof parsed.notes === 'string' ? ` — ${parsed.notes.slice(0, 200)}` : ''}${browserNote}`;
+      const notes = typeof parsed.notes === 'string' ? parsed.notes.slice(0, 200) : '';
+      deps.onEvent?.('plan', `已产出候选入口 ${spec.interpreter} ${spec.path}`, notes);
+      return `${spec.interpreter} ${spec.path}${notes ? ` — ${notes}` : ''}${browserNote}`;
     },
 
     // ── trialRun：真沙箱执行 ─────────────────────────────────────────
@@ -637,8 +605,6 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
         `试跑结果：\n${trial.output}`,
         baseContext(),
         '若属 SOP 信息不足 → action=clarify 并给出问题；',
-        // P2-1：不再教「自评达成即可 deliver」的旁路——交付只由平台验收
-        // （acceptance）通过判定，verify 未通过时 deliver 会被降级为转人工。
         'action=deliver 不再被平台接受为交付：只有验收（acceptance）通过才会',
         '交付，验收未通过时 deliver 会被降级为转人工——不要用它表达「我觉得做完了」；',
         '无法在本机达成验收且不是 SOP 信息问题 → action=escalate；否则修正文件后 action=retry。',
@@ -651,20 +617,16 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
         ],
         'diagnose',
         DIAGNOSE_REPAIR,
+        deps.signal,
       );
       const mat = materializeFiles(deps.workspaceRoot, parsed.files);
       if (!mat.ok) throw new Error(`LLM 修正文件不可落盘：${mat.error}`);
-      // 浏览器动作（P7b）：诊断阶段同样可看页面（如确认按钮位置变化）
-      if (parsed.browser !== undefined) {
-        await executeBrowserActions(parsed.browser);
+      if (mat.written.length > 0) {
+        deps.onEvent?.('file', `诊断修正 ${mat.written.length} 个文件`, mat.written.join(', '));
       }
-      if (parsed.gui !== undefined) {
-        await executeGuiActions(parsed.gui);
-      }
+      if (parsed.browser !== undefined) await executeBrowserActions(parsed.browser);
+      if (parsed.gui !== undefined) await executeGuiActions(parsed.gui);
       const action = parsed.action;
-      // **显式映射，绝不 as 强转**：LLM 的 "clarify" 与 LoopNextAction 的
-      // "needs_clarification" 是两个名字——强转会让「请求澄清」静默变成
-      // 「重试」，Agent 继续烧轮次，中台永远收不到澄清（selftest 实测抓出）。
       const MAPPED: Record<string, LoopNextAction> = {
         retry: 'retry',
         clarify: 'needs_clarification',
@@ -675,31 +637,25 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
       if (!mapped) {
         throw new Error(`未知诊断动作 ${String(action).slice(0, 40)}（协议违规）`);
       }
-      return mapped;
+      return buildDiagnoseOutcome(mapped, parsed.question, {
+        lastBrowserOutputs,
+        lastGuiOutputs,
+        lastTrialStderr,
+        uploadedMediaRefs,
+      });
     },
 
     // ── verify：机器可执行的 acceptance（不信任 LLM 的自我评估）────────
     verify: async () => {
       const acceptance = Array.isArray(deps.sop.frontMatter.acceptance) ? deps.sop.frontMatter.acceptance : [];
-      if (acceptance.length === 0) {
-        // 没有 acceptance 的 SOP：验收锚点缺失，绝不能「默认通过」——
-        // 那会让任何能跑通的候选都算交付。如实报失败交由诊断路径。
-        return false;
-      }
+      if (acceptance.length === 0) return false;
       const commandItems = acceptance.filter((a) => a && (a as Record<string, unknown>).kind === 'command');
-      if (commandItems.length === 0) {
-        // 全是 platform 类（中台侧验收）：执行器侧没有可自证的锚点。
-        // P7a 语义：把「本地试跑成功」当必要条件、platform 留给中台独立
-        // 验证（04 §3 ⑤ 本来就要求中台不复读执行器的自评）。
-        return true;
-      }
+      if (commandItems.length === 0) return true;
       for (const item of commandItems) {
+        if (deps.signal?.aborted) return false;
         const run = (item as Record<string, unknown>).run;
         const parsed = parseAcceptanceCommand(typeof run === 'string' ? run : '');
-        if (!parsed.ok) return false; // 验收命令本身不合法 = 无法证明达标
-        // 只支持 `<interpreter> <工作区脚本> [args...]` 形态；`-c` 内联码
-        // 等其它形态**如实判失败**（本地无法按封闭枚举验证），绝不偷换成
-        // 跑别的文件——验收是目标锚点，验证语义打折比验证失败更危险。
+        if (!parsed.ok) return false;
         const script = parsed.args[0];
         if (!script || script.startsWith('-')) return false;
         const outcome = await runTrialInSandbox({
@@ -708,6 +664,7 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
           entryPath: script,
           args: parsed.args.slice(1),
           codeExecution: deps.permissions.codeExecution,
+          signal: deps.signal,
         });
         if (outcome.refusal || !outcome.ok) return false;
       }

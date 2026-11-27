@@ -53,6 +53,7 @@ import {
   type GateStopReason,
 } from './gates';
 import type { EnvironmentReport } from './perception';
+import type { AgentLiveEventType, ClarificationMediaRef } from './agent-events';
 /** 一步的处置（诊断结论 → 下一步动作）。 */
 export type LoopNextAction =
   /** 继续下一轮（改代码 → 回试跑）。 */
@@ -64,6 +65,14 @@ export type LoopNextAction =
   /** 达成验收，交付候选应用。 */
   | 'deliver';
 
+/** 诊断步骤的富返回（兼容仅返回 LoopNextAction 字符串的既有调用/测试替身）。 */
+export interface DiagnoseResult {
+  action: LoopNextAction;
+  question?: string;
+  context?: Record<string, unknown>;
+  mediaRefs?: ClarificationMediaRef[];
+}
+
 /** 循环终态。 */
 export type LoopOutcome =
   | 'delivered'
@@ -71,6 +80,7 @@ export type LoopOutcome =
   | 'escalated'
   | 'gate_stopped'
   | 'permission_denied'
+  | 'cancelled'
   | 'error';
 
 /** 注入的执行体：循环只调这些，不知道它们是 LLM 还是本地函数。 */
@@ -79,8 +89,8 @@ export interface LoopHandlers {
   plan: (input: { iteration: number; environment: EnvironmentReport; feedback: TrialOutcome | null }) => Promise<string>;
   /** 试跑：在 workspace 沙箱内执行候选实现。返回观察结果。 */
   trialRun: (input: { iteration: number; candidate: string }) => Promise<TrialOutcome>;
-  /** 诊断：失败 → 判定下一步动作。 */
-  diagnose: (input: { iteration: number; candidate: string; trial: TrialOutcome }) => Promise<LoopNextAction>;
+  /** 诊断：失败 → 判定下一步动作（可附真实澄清问题、上下文与截图引用）。 */
+  diagnose: (input: { iteration: number; candidate: string; trial: TrialOutcome }) => Promise<LoopNextAction | DiagnoseResult>;
   /** 验收自检（SOP 的 acceptance）。 */
   verify: (input: { iteration: number; candidate: string }) => Promise<boolean>;
 }
@@ -111,10 +121,21 @@ export interface AgentLoopResult {
   counters: GateCounters;
   /** 要发给中台的澄清问题（outcome=clarification_requested 时非空）。 */
   pendingQuestion?: string;
+  /** 伴随澄清上报的诊断上下文（最近浏览器/GUI 观察、试跑 stderr）。 */
+  pendingClarificationContext?: Record<string, unknown>;
+  /** 伴随澄清上报的已上传媒体引用（截图/录屏 mediaPath）。 */
+  pendingMediaRefs?: ClarificationMediaRef[];
   /** 最终候选实现（outcome=delivered 时为通过验收的版本）。 */
   candidate?: string;
   /** 闸门摘要，随回报一并上报（中台据此判断换机器是否有意义）。 */
   gateSummary: ReturnType<typeof summarizeGates>;
+}
+
+export interface ClarificationPayload {
+  round: number;
+  question: string;
+  context?: Record<string, unknown>;
+  mediaRefs?: ClarificationMediaRef[];
 }
 
 export interface AgentLoopInput {
@@ -127,6 +148,12 @@ export interface AgentLoopInput {
    * 中途被 kill 后重启才能从磁盘恢复（resume 不重置）。不传则纯内存计数。
    */
   onCounters?: (counters: GateCounters) => void;
+  /** 触发澄清时的结构化钩子（携带 LLM 真实问句、上下文与媒体引用）。 */
+  onClarify?: (payload: ClarificationPayload) => void;
+  /** 运行期实时事件流出（阶段切换/状态结论）。 */
+  onEvent?: (type: AgentLiveEventType, summary: string, detail?: string) => void;
+  /** 中途取消信号（工作台/主进程主动取消当前指派）。 */
+  signal?: AbortSignal;
   counters?: GateCounters;
   limits?: Partial<GateLimits> | null;
   now?: () => number;
@@ -151,6 +178,24 @@ function stopped(
   };
 }
 
+function cancelledResult(
+  snapshot: GateSnapshot,
+  counters: GateCounters,
+  now: number,
+  candidate?: string,
+): AgentLoopResult {
+  return {
+    outcome: 'cancelled',
+    stopMessage: '指派已被用户取消',
+    iterations: counters.iterations,
+    trialRuns: counters.trialRuns,
+    clarifications: counters.clarifications,
+    counters,
+    ...(candidate !== undefined ? { candidate } : {}),
+    gateSummary: summarizeGates(snapshot, now),
+  };
+}
+
 /**
  * 跑一次执行器 Agent 迭代循环（07 §7）。
  *
@@ -166,6 +211,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
   const snapshot = (): GateSnapshot => ({ counters, limits });
 
   let feedback: TrialOutcome | null = null;
+  let lastCandidate: string | undefined;
   /** 本轮记账前的快照（缺陷 A：plan 抛错时用它回退这一轮）。 */
   let countersBeforeRound: GateCounters = counters;
   /** 本轮模型是否真的产出了候选（plan 返回即 true）。 */
@@ -173,6 +219,10 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
 
   try {
     for (;;) {
+      if (input.signal?.aborted) {
+        input.onEvent?.('status', '指派已取消');
+        return cancelledResult(snapshot(), counters, now(), lastCandidate);
+      }
       const t = now();
 
       // ── ① 迭代闸门（动作之前判）─────────────────────────────────────
@@ -187,10 +237,16 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       const iteration = counters.iterations;
 
       // ── ② 规划 ──────────────────────────────────────────────────────
+      input.onEvent?.('phase', `第 ${iteration} 轮：规划实现方案`);
       const candidate = await input.handlers.plan({ iteration, environment: input.environment, feedback });
       // plan 返回 = 模型确实产出了东西（哪怕是空串这种坏候选）：
       // 从这一刻起这一轮是「工作轮」，不再回退（缺陷 A 的判据）。
       roundProduced = true;
+      lastCandidate = candidate;
+      if (input.signal?.aborted) {
+        input.onEvent?.('status', '指派已取消');
+        return cancelledResult(snapshot(), counters, now(), candidate);
+      }
       if (typeof candidate !== 'string' || candidate.trim() === '') {
         return {
           ...stopped(snapshot(), counters, 'iteration_limit', '', t),
@@ -222,12 +278,23 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
 
       counters = recordAction(counters, 'trial_run', t);
       input.onCounters?.(counters);
+      input.onEvent?.('trial', `第 ${iteration} 轮：沙箱试跑`);
       const trial = await input.handlers.trialRun({ iteration, candidate });
       feedback = trial;
+      if (input.signal?.aborted) {
+        input.onEvent?.('status', '指派已取消');
+        return cancelledResult(snapshot(), counters, now(), candidate);
+      }
 
       // ── ④ 验收自检 ──────────────────────────────────────────────────
+      input.onEvent?.('verify', `第 ${iteration} 轮：执行验收检查`);
       const passed = trial.ok && (await input.handlers.verify({ iteration, candidate }));
+      if (input.signal?.aborted) {
+        input.onEvent?.('status', '指派已取消');
+        return cancelledResult(snapshot(), counters, now(), candidate);
+      }
       if (passed) {
+        input.onEvent?.('status', `第 ${iteration} 轮验收通过，准备交付`);
         return {
           outcome: 'delivered',
           iterations: counters.iterations,
@@ -240,7 +307,14 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       }
 
       // ── ⑤ 诊断 ──────────────────────────────────────────────────────
-      const next = await input.handlers.diagnose({ iteration, candidate, trial });
+      input.onEvent?.('phase', `第 ${iteration} 轮：诊断失败原因`);
+      const rawNext = await input.handlers.diagnose({ iteration, candidate, trial });
+      if (input.signal?.aborted) {
+        input.onEvent?.('status', '指派已取消');
+        return cancelledResult(snapshot(), counters, now(), candidate);
+      }
+      const diag: DiagnoseResult = typeof rawNext === 'string' ? { action: rawNext } : rawNext;
+      const next = diag.action;
 
       if (next === 'deliver') {
         // P2-1（验收旁路修复）：能走到诊断阶段的轮次必然**验收未通过**——
@@ -265,10 +339,13 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
         // 澄清闸门：触顶即转人工（**不再**占用一次澄清、也不再循环）
         const cg = checkGate(snapshot(), 'clarify', t);
         if (!cg.allowed) {
+          const cgMessage = typeof cg === 'object' && cg !== null && 'message' in cg
+            ? String(cg.message)
+            : String(cg);
           return {
             outcome: 'escalated',
             stopReason: cg.reason,
-            stopMessage: `${cg instanceof Error ? cg.message : String(cg)}——转人工上报`,
+            stopMessage: cgMessage.includes('转人工') ? cgMessage : `${cgMessage}——转人工上报`,
             iterations: counters.iterations,
             trialRuns: counters.trialRuns,
             clarifications: counters.clarifications,
@@ -280,6 +357,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
         counters = recordAction(counters, 'clarify', t);
         input.onCounters?.(counters);
         if (next === 'escalate') {
+          input.onEvent?.('status', '诊断建议转人工处理');
           return {
             outcome: 'escalated',
             iterations: counters.iterations,
@@ -290,6 +368,18 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
             gateSummary: summarizeGates(snapshot(), now()),
           };
         }
+        const trimmedQuestion = typeof diag.question === 'string' ? diag.question.trim() : '';
+        const pendingQuestion = trimmedQuestion
+          || `第 ${counters.clarifications} 轮澄清：候选实现未通过验收，需要中台补充 SOP 信息`;
+        const pendingContext = diag.context && Object.keys(diag.context).length > 0 ? diag.context : undefined;
+        const pendingMediaRefs = Array.isArray(diag.mediaRefs) && diag.mediaRefs.length > 0 ? diag.mediaRefs : undefined;
+        input.onClarify?.({
+          round: counters.clarifications,
+          question: pendingQuestion,
+          ...(pendingContext ? { context: pendingContext } : {}),
+          ...(pendingMediaRefs ? { mediaRefs: pendingMediaRefs } : {}),
+        });
+        input.onEvent?.('status', `发起第 ${counters.clarifications} 轮澄清`, pendingQuestion);
         return {
           outcome: 'clarification_requested',
           iterations: counters.iterations,
@@ -297,7 +387,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
           clarifications: counters.clarifications,
           counters,
           candidate,
-          pendingQuestion: `第 ${counters.clarifications} 轮澄清：候选实现未通过验收，需要中台补充 SOP 信息`,
+          pendingQuestion,
+          ...(pendingContext ? { pendingClarificationContext: pendingContext } : {}),
+          ...(pendingMediaRefs ? { pendingMediaRefs } : {}),
           gateSummary: summarizeGates(snapshot(), now()),
         };
       }
@@ -314,9 +406,15 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       counters = { ...countersBeforeRound, startedAt: counters.startedAt };
       input.onCounters?.(counters); // 让宿主的落盘计数同步回退（否则日志留着幻影 +1）
     }
+    if (input.signal?.aborted) {
+      input.onEvent?.('status', '指派已取消');
+      return cancelledResult(snapshot(), counters, t, lastCandidate);
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    input.onEvent?.('error', '循环执行异常', msg);
     return {
       outcome: 'error',
-      stopMessage: err instanceof Error ? err.message : String(err),
+      stopMessage: msg,
       iterations: counters.iterations,
       trialRuns: counters.trialRuns,
       clarifications: counters.clarifications,

@@ -14,9 +14,9 @@ import { createCfgTexts, resolveRendererLocale } from '../i18n';
 // 都只在一处），抽到 concurrency-gauge.ts 由 test:renderer 真执行断言。
 import { concurrencyGauge } from '../concurrency-gauge';
 import RunningTaskChip from './status/RunningTaskChip';
+import WorkbenchOpenButton from './status/WorkbenchOpenButton';
 import { formatCopyLiveText, formatFailureTime, formatFailureTitle, formatRunningDuration, formatRunningMs, stopActionGate, useStatusCtrlF } from './status/status-helpers';
 import { useNowTicker } from '../time-tick';
-
 const locale = resolveRendererLocale(() => navigator.language);
 const t = createCfgTexts(locale);
 
@@ -31,7 +31,6 @@ interface TodaySummaryRecord {
   executionId?: string;
   errorMessage?: string;
 }
-
 
 // D-01：托盘常驻一次性提示的「已读」标记。读写失败（隐私模式等）降级为
 // 不显示/仅本会话隐藏——教育条缺位好过每次启动都打扰。
@@ -783,6 +782,17 @@ export default function StatusWindow({ active }: { active: boolean }) {
   const addr = String(config.executorAddressPublic || '');
   const name = String(config.executorName || 'Executor');
   const apiUrl = String(config.adminApiUrl || '—');
+
+
+  async function handleOpenWorkbench() {
+    setWorkbenchError(null);
+    try {
+      const result = await window.electronAPI.openWorkbench();
+      if (!result?.ok) setWorkbenchError(t('status.workbenchOpenFailed'));
+    } catch {
+      setWorkbenchError(t('status.workbenchOpenFailed'));
+    }
+  }
   // status 经 IPC 以裸字符串到达（snapshot.status as Status 只是断言）：主进程
   // 未来新增状态（或异常值）时不得让状态大字渲染成空白——已知值查表、未知值
   // 原样透出（与 HistoryPage.statusBadge 的「未知」回退、agentOutcomeLabel 的
@@ -853,8 +863,18 @@ export default function StatusWindow({ active }: { active: boolean }) {
             </div>
             <p className="hero-status-text" key={statusDescription}>{statusDescription}</p>
             {actionError && <div className="hero-error" role="alert">{actionError}</div>}
+            {workbenchError && <div className="hero-error" role="alert">{workbenchError}</div>}
           </div>
           <div className="hero-controls">
+            <WorkbenchOpenButton />
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={() => void handleOpenWorkbench()}
+              title={t('status.openWorkbenchTitle')}
+            >
+              <Icon name="external" className="icon-xs" /> {t('status.openWorkbench')}
+            </button>
             {status === 'offline' && running && (
               <button className="btn btn-primary" onClick={() => requestTabSwitch('config')}>
                 {t('status.checkConnection')}
@@ -1075,12 +1095,12 @@ export default function StatusWindow({ active }: { active: boolean }) {
                 <span className="overview-label"><Icon name="link" className="overview-label-icon" />{t('status.publicLabel')}</span>
                 <CopyValue value={addr || t('ui.publicAuto', port)} />
               </div>
+              <WorkbenchOpenButton />
+              <button type="button" className="btn btn-sm" onClick={() => void handleOpenWorkbench()} title={t('status.openWorkbenchTitle')}>
+                <Icon name="external" className="icon-xs" /> {t('status.openWorkbench')}
+              </button>
             </section>
             {agentStatus && !agentStatus.enabled ? (
-              /* B-02（§2.4）：未启用时常驻的「死卡」降级为极简入口卡——
-                 标题 + 灰点 + 一行说明（原 hint 文案）+ 轻量「去开启」钮。
-                 活动标签走 agentActivityLabel（disabled→「未启用」，关开关后
-                 仍在处理当前指派时也不会谎报）。enabled 时维持下方工作信息卡。 */
               <section className="overview-card" aria-label={t('status.agentHeading')}>
                 <div className="overview-heading">{t('status.agentHeading')}</div>
                 <div className="overview-agent-entry">
@@ -1088,12 +1108,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
                     <span className="agent-status-dot" aria-hidden="true" />
                     <span>{t('status.agentEntryHint', agentActivityLabel(agentStatus, locale))}</span>
                   </span>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={() => requestTabSwitch('config')}
-                    title={t('status.agentEntryTitle')}
-                  >
+                  <button type="button" className="btn btn-sm" onClick={() => requestTabSwitch('config')} title={t('status.agentEntryTitle')}>
                     {t('status.agentOpen')}
                   </button>
                 </div>

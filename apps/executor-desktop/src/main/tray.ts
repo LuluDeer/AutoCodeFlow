@@ -28,6 +28,8 @@ export class TrayManager {
   /** P1-TRAY-STOP：active 时的原生二次确认，由 index.ts 与 stop 入口同处注入。 */
   confirmStop: (() => Promise<boolean>) | null = null;
   onOpenStatus: (() => void) | null = null;
+  /** 阶段 A（ADR-044）：打开独立工作台窗口（由 index.ts 注入）。 */
+  onOpenWorkbench: (() => void) | null = null;
   onOpenConfig: (() => void) | null = null;
   onOpenHistory: (() => void) | null = null;
   onOpenApps: (() => void) | null = null;
@@ -200,6 +202,16 @@ export class TrayManager {
       {
         label: t.viewStatus,
         click: () => this.onOpenStatus?.(),
+      },
+      {
+        label: t.openWorkbench,
+        click: () => {
+          try {
+            this.onOpenWorkbench?.();
+          } catch (err) {
+            log.warn(`open workbench from tray failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        },
       },
       {
         label: t.openConfig,

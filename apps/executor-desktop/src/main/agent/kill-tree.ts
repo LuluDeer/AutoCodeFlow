@@ -287,11 +287,15 @@ function killProcessGroup(pid: number): Promise<boolean> {
 export function spawnWithTreeTimeout(
   command: string,
   args: string[],
-  opts: { cwd: string; env: NodeJS.ProcessEnv; recordFile?: string },
+  opts: { cwd: string; env: NodeJS.ProcessEnv; recordFile?: string; signal?: AbortSignal },
   timeoutMs: number,
   onChunk?: (buf: Buffer, isErr: boolean) => void,
 ): Promise<{ exitCode: number | null; timedOut: boolean; killed: boolean; errorMessage: string | null }> {
   return new Promise((resolve) => {
+    if (opts.signal?.aborted) {
+      resolve({ exitCode: null, timedOut: false, killed: true, errorMessage: 'aborted' });
+      return;
+    }
     let child: ChildProcess;
     try {
       child = spawnDetached(command, args, opts);
@@ -321,6 +325,7 @@ export function spawnWithTreeTimeout(
       }
     };
     let timedOut = false;
+    let aborted = false;
     let killed = false;
     let settled = false;
     let errorMessage: string | null = null;
@@ -336,8 +341,13 @@ export function spawnWithTreeTimeout(
     let graceTimer: NodeJS.Timeout | null = null;
     const KILL_GRACE_MS = 5_000;
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const triggerTreeKill = (reason: 'timeout' | 'abort'): void => {
+      if (settled) return;
+      if (reason === 'timeout') timedOut = true;
+      else {
+        aborted = true;
+        errorMessage = errorMessage ?? 'aborted';
+      }
       // killed 语义 = 「终止信号已发出」（同步置位）。异步等待 killTree 完成
       // 会与 close 事件竞速：taskkill /F 后进程以 exit code 1 触发 close，
       // 若先走 finish 会拿到 killed=false / exitCode=1 的失真快照。
@@ -346,23 +356,31 @@ export function spawnWithTreeTimeout(
         // 击杀真实失败（EPERM/权限/工具缺失）≠ 已死即成功：树可能仍在跑。
         // errorMessage 进试跑结果（→ LLM 上下文/证据日志），上层据此判断
         // 「这个工作区的产物不可信」，而不是在树偷跑时还当正常超时处理。
-        if (!ok) {
+        if (!ok && reason === 'timeout') {
           errorMessage = errorMessage ?? 'kill failed: process tree may still be alive (kill signal was not delivered)';
         }
       });
-      graceTimer = setTimeout(() => {
-        graceTimer = null;
-        errorMessage = 'kill grace expired: child stdout/stderr destroyed (escaped process may hold the pipe)';
-        try {
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-        } catch { /* 尽力而为 */ }
-        // destroy 不保证触发 child 'close'（stdio 引用计数是实现细节）——
-        // 显式落定，finish 的 settled 幂等让两条路径天然安全。
-        finish(null);
-      }, KILL_GRACE_MS);
-      graceTimer.unref?.();
-    }, timeoutMs);
+      if (graceTimer === null) {
+        graceTimer = setTimeout(() => {
+          graceTimer = null;
+          if (reason === 'timeout') {
+            errorMessage = 'kill grace expired: child stdout/stderr destroyed (escaped process may hold the pipe)';
+          }
+          try {
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+          } catch { /* 尽力而为 */ }
+          // destroy 不保证触发 child 'close'（stdio 引用计数是实现细节）——
+          // 显式落定，finish 的 settled 幂等让两条路径天然安全。
+          finish(null);
+        }, reason === 'abort' ? 1_000 : KILL_GRACE_MS);
+        graceTimer.unref?.();
+      }
+    };
+
+    const timer = setTimeout(() => triggerTreeKill('timeout'), timeoutMs);
+    const onAbort = (): void => triggerTreeKill('abort');
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     child.stdout?.on('data', (b: Buffer) => onChunk?.(b, false));
     child.stderr?.on('data', (b: Buffer) => onChunk?.(b, true));
@@ -371,14 +389,15 @@ export function spawnWithTreeTimeout(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
       if (graceTimer !== null) {
         clearTimeout(graceTimer);
         graceTimer = null;
       }
       unregister();
-      // 超时强杀下进程可能以任意退出码触发 close（Windows taskkill /F → 1）
-      // ——退出码已无意义，归 null（调用方以 timedOut 判定，不是 exitCode）
-      resolve({ exitCode: timedOut ? null : exitCode, timedOut, killed, errorMessage });
+      // 超时或取消强杀下进程可能以任意退出码触发 close（Windows taskkill /F → 1）
+      // ——退出码已无意义，归 null（调用方以 timedOut / aborted 判定，不是 exitCode）
+      resolve({ exitCode: timedOut || aborted ? null : exitCode, timedOut, killed, errorMessage });
     };
 
     child.on('error', (err) => {

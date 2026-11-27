@@ -74,6 +74,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 重新运行初始化向导（配置页入口）：唤出/聚焦向导窗口；向导保存走既有
   // config:save-and-close-wizard 链路，未保存前关闭不改动任何配置。
   openWizard: () => ipcRenderer.invoke('config:open-wizard'),
+  // 阶段 A（ADR-044）：打开业务工作台（独立 partition，不带执行器凭据）。
+  openWorkbench: () => ipcRenderer.invoke('workbench:open'),
+  // Agent 托管实时事件（工作台与状态页共用同一份推流，桥上只做最小透传）。
+  onAgentLiveEvent: (cb: (event: unknown) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, event: unknown) => cb(event);
+    ipcRenderer.on('agent:live-event', handler);
+    return () => ipcRenderer.removeListener('agent:live-event', handler);
+  },
   // B-8：host 透传——端口可用性检测必须按调用方表单的 executorHost 监听
   // （与执行器实际 bind 的 host 同源），缺省仍回落 0.0.0.0（主进程归一化）。
   checkPort: (port: number, host?: string) => ipcRenderer.invoke('config:check-port', port, host),

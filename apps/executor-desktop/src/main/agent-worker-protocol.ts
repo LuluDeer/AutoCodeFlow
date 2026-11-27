@@ -6,14 +6,15 @@
  * 内容——库的偶发 console.log 会毒化协议流，worker 侧统一在入口拦 console。
  *
  * 消息方向：
- *   主 → worker：init / config / tick / withdraw / shutdown
- *   worker → 主：ready / tick-result / withdraw-done / stats / log
+ *   主 → worker：init / config / tick / withdraw / shutdown / cancel
+ *   worker → 主：ready / tick-result / withdraw-done / stats / log / event
  *
  * 纪律：解析走 fail-closed——畸形消息丢弃并回 log，绝不带病进入状态机
  * （同 gui.ts 的动作消毒哲学）。
  */
 
 import type { AgentHostConfig, AgentHostStats } from './agent/agent-host';
+import { isAgentLiveEvent, type AgentLiveEvent } from './agent/agent-events';
 
 /** 主 → worker：创建托管（首个 tick 前必须先到）。 */
 export interface AgentWorkerInit {
@@ -51,12 +52,19 @@ export interface AgentWorkerShutdown {
   t: 'shutdown';
 }
 
+/** 主 → worker：中途取消当前指派（可选 assignmentId 用于错单保护）。 */
+export interface AgentWorkerCancel {
+  t: 'cancel';
+  assignmentId?: string;
+}
+
 export type AgentWorkerRequest =
   | AgentWorkerInit
   | AgentWorkerConfigUpdate
   | AgentWorkerTick
   | AgentWorkerWithdraw
-  | AgentWorkerShutdown;
+  | AgentWorkerShutdown
+  | AgentWorkerCancel;
 
 /** worker → 主：协议握手（主进程等它之后才发 tick）。 */
 export interface AgentWorkerReady {
@@ -87,12 +95,19 @@ export interface AgentWorkerLog {
   line: string;
 }
 
+/** worker → 主：实时事件（工作台订阅与 reportProgress 摘要共用）。 */
+export interface AgentWorkerEventMessage {
+  t: 'event';
+  event: AgentLiveEvent;
+}
+
 export type AgentWorkerEvent =
   | AgentWorkerReady
   | AgentWorkerTickResult
   | AgentWorkerWithdrawDone
   | AgentWorkerStats
-  | AgentWorkerLog;
+  | AgentWorkerLog
+  | AgentWorkerEventMessage;
 
 /** 解析主进程→worker 的请求；畸形返回 null（调用方丢弃并记日志）。 */
 export function parseAgentWorkerRequest(line: string): AgentWorkerRequest | null {
@@ -120,6 +135,9 @@ export function parseAgentWorkerRequest(line: string): AgentWorkerRequest | null
       return r as unknown as AgentWorkerWithdraw;
     case 'shutdown':
       return r as unknown as AgentWorkerShutdown;
+    case 'cancel':
+      if (r.assignmentId !== undefined && (typeof r.assignmentId !== 'string' || r.assignmentId.length === 0)) return null;
+      return r as unknown as AgentWorkerCancel;
     default:
       return null;
   }
@@ -155,6 +173,9 @@ export function parseAgentWorkerEvent(line: string): AgentWorkerEvent | null {
       if (r.level !== 'info' && r.level !== 'warn' && r.level !== 'error') return null;
       if (typeof r.line !== 'string') return null;
       return r as unknown as AgentWorkerLog;
+    case 'event':
+      if (!isAgentLiveEvent(r.event)) return null;
+      return r as unknown as AgentWorkerEventMessage;
     default:
       return null;
   }

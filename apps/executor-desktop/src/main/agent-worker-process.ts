@@ -20,6 +20,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import { LineSplitter } from './child-line-splitter';
 import { DEFAULT_GATE_LIMITS } from './agent/gates';
 import type { AgentHostConfig, AgentHostStats } from './agent/agent-host';
+import type { AgentLiveEvent } from './agent/agent-events';
 import {
   parseAgentWorkerEvent,
   parseAgentWorkerRequest,
@@ -89,6 +90,8 @@ export interface AgentWorkerHandleDeps {
   log: AgentWorkerLogger;
   /** stats 差量到达回调（index.ts 据此刷新托盘，不必等 2s 轮询）。 */
   onStats?: (stats: AgentHostStats) => void;
+  /** 实时事件回调（index.ts 广播给工作台与四页状态窗）。 */
+  onEvent?: (event: AgentLiveEvent) => void;
   /** 意外退出回调（托管链诊断用；自愈由 tick 驱动，这里只通知）。 */
   onUnexpectedExit?: (info: { code: number | null; signal: NodeJS.Signals | null }) => void;
   /**
@@ -253,6 +256,16 @@ export class AgentWorkerHandle {
     });
   }
 
+  /** 中途取消当前指派（无指派时返回 false，不打断其它 worker）。 */
+  cancel(assignmentId?: string): boolean {
+    if (!this.alive) return false;
+    this.writeLine(JSON.stringify({
+      t: 'cancel',
+      ...(assignmentId ? { assignmentId } : {}),
+    }));
+    return true;
+  }
+
   /**
    * 撤销 Agent 能力（working 时由 worker 侧延后到指派终态之后）。
    *
@@ -402,6 +415,10 @@ export class AgentWorkerHandle {
           resolve(event);
         }
         this.deps.log.info(`[agent-worker] ready (browsers.json readable=${event.playwrightContract.browsersJson})`);
+        return;
+      }
+      case 'event': {
+        this.deps.onEvent?.(event.event);
         return;
       }
       case 'tick-result': {

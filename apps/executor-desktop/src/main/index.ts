@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, dialog, powerMonitor, nativeTheme } from 'electron';
+import { app, BrowserWindow, Menu, dialog, powerMonitor, nativeTheme, ipcMain as electronIpcMain } from 'electron';
 import { ConfigStore } from './config-store';
 import { ExecutorProcess } from './executor-process';
 import { AgentWorkerHandle } from './agent-worker-process';
@@ -26,8 +26,11 @@ import { uiText } from './ui-texts';
 import * as path from 'path';
 import log, { applyLogLevel, initLogCleanup } from './logger';
 import { parseCliDispatch } from './cli-dispatch';
-import { createWorkbenchWindow } from './workbench-window';
+import { createWorkbenchWindow, getWorkbenchWindow, isWorkbenchSender, setWorkbenchResolvedTheme, WORKBENCH_EVENT_CHANNEL } from './workbench-window';
 import { registerWorkbenchIpcHandlers } from './workbench-ipc';
+import { createGuardedIpcMain } from './ipc-sender-guard';
+import { resolveRendererIndex } from './window-manager';
+import { readLocalFileSelection, WORKBENCH_EVENT_REPLAY_MAX } from './workbench-window-helpers';
 
 /**
  * i18n-DESK-01：主进程侧读取「界面语言」设置的唯一入口。
@@ -102,6 +105,13 @@ export const windowManager = new WindowManager();
 windowManager.setResolvedTheme(
   resolveStoredTheme(configStore.get('theme'), nativeTheme.shouldUseDarkColors),
 );
+// 工作台底色跟随深浅主题（与四页 windowManager.setResolvedTheme 同轨）。
+nativeTheme.on('updated', () => {
+  if (configStore.get('theme') === 'system' || configStore.get('theme') === undefined) {
+    setWorkbenchResolvedTheme(nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
+  }
+});
+setWorkbenchResolvedTheme(resolveStoredTheme(configStore.get('theme'), nativeTheme.shouldUseDarkColors));
 // DSK-04：系统通知（任务终态 / 执行器离线）
 export const notifier = new Notifier();
 
@@ -139,7 +149,20 @@ export const historyWatcher = new HistoryWatcher({
   },
 });
 
-app.on('second-instance', () => {
+app.on('second-instance', (_event, argv) => {
+  // --workbench：第二实例带此旗标时，直接聚焦/打开工作台，不改变四页行为。
+  if (argv.slice(2).includes('--workbench')) {
+    try {
+      createWorkbenchWindow({
+        getWorkbenchUrl: () => configStore.get('adminApiUrl'),
+        log,
+        getTheme: () => resolveStoredTheme(configStore.get('theme'), nativeTheme.shouldUseDarkColors),
+      });
+    } catch (err) {
+      log.error(`[workbench] open failed from second-instance: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
   // P3-3：未配置态与托盘「打开配置」（B-14）同语义——用户再次启动应用时
   // 显然想进入应用；尚未完成向导就拉状态页，页面只有空状态与「未配置」，
   // 引导入口错位。开向导与首次启动行为一致；已配置保持原语义。
@@ -297,6 +320,19 @@ app.whenReady().then(async () => {
     refreshRunningCount();
   });
 
+  // 托盘入口（阶段 A）：与状态页「打开工作台」同一条安全启动链。
+  trayManager.onOpenWorkbench = () => {
+    try {
+      createWorkbenchWindow({
+        getWorkbenchUrl: () => configStore.get('adminApiUrl'),
+        log,
+        getTheme: () => resolveStoredTheme(configStore.get('theme'), nativeTheme.shouldUseDarkColors),
+      });
+    } catch (err) {
+      log.error(`[workbench] open failed (tray): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   // 初始化托盘
   trayManager.init();
 
@@ -328,7 +364,52 @@ app.whenReady().then(async () => {
   registerIpcHandlers();
   // 阶段 A（ADR-044）：独立工作台的窄 channel 面，独立于四页注册链；
   // ipc-handlers.ts 是棘轮文件，新增段放在 workbench-ipc.ts（既有 handler 零改动）。
-  registerWorkbenchIpcHandlers({ getAdminApiUrl: () => configStore.get('adminApiUrl'), log });
+  registerWorkbenchIpcHandlers({
+    getAdminApiUrl: () => configStore.get('adminApiUrl'),
+    log,
+    getDesktopContext: () => {
+      const cfg = configStore.getAll();
+      return {
+        executorName: cfg.executorName,
+        agentEnabled: cfg.agentEnabled === true,
+        platformConfigured: typeof cfg.adminApiUrl === 'string' && cfg.adminApiUrl.trim() !== '',
+      };
+    },
+    cancelAgentAssignment: (assignmentId) => {
+      const host = agentHost;
+      return host !== null && host.cancel(assignmentId);
+    },
+    pickLocalFiles: async () => {
+      const { dialog } = await import('electron');
+      const result = await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'] });
+      return result.canceled ? [] : readLocalFileSelection(result.filePaths);
+    },
+    getRecentAgentEvents: () => recentAgentEvents.slice(-WORKBENCH_EVENT_REPLAY_MAX),
+  });
+
+  // 工作台安全启动入口（四页 renderer 专属）：sender 闸按 renderer index/dev
+  // server 收窄，四页调用只能打开**独立 partition**的工作台窗口，拿不到任何
+  // 凭据或 worker 句柄。工作台页面自己不能调这个 channel。
+  const guardedIpc = createGuardedIpcMain(electronIpcMain, {
+    policy: () => ({
+      devServerUrl: process.env.VITE_DEV_SERVER_URL ?? null,
+      rendererIndexPath: resolveRendererIndex(),
+    }),
+    log,
+  });
+  guardedIpc.handle('workbench:open', (event) => {
+    if (isWorkbenchSender(event.sender)) throw new Error('workbench:open: sender not allowed');
+    try {
+      createWorkbenchWindow({
+        getWorkbenchUrl: () => configStore.get('adminApiUrl'),
+        log,
+        getTheme: () => resolveStoredTheme(configStore.get('theme'), nativeTheme.shouldUseDarkColors),
+      });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
   // DSK-03：自动更新仅生产包启用（dev 下 electron-updater 无 app-update.yml
   // 会报错；且开发期不应触发升级流程）。initUpdater 内部延迟 30s 检查、
@@ -394,6 +475,7 @@ app.whenReady().then(async () => {
       createWorkbenchWindow({
         getWorkbenchUrl: () => configStore.get('adminApiUrl'),
         log,
+        getTheme: () => resolveStoredTheme(configStore.get('theme'), nativeTheme.shouldUseDarkColors),
       });
     } catch (err) {
       log.error(`[workbench] open failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -454,6 +536,8 @@ let agentHost: AgentWorkerHandle | null = null;
 let agentHostIdentity: string | null = null;
 let agentHostReady: Promise<void> = Promise.resolve();
 let agentTickPromise: Promise<unknown> | null = null;
+/** Agent 实时事件的有界回放缓冲（工作台打开时补历史）。 */
+const recentAgentEvents: unknown[] = [];
 // B：连续 defer 计数——agentHostTransition 用它封顶（MAX_AGENT_HOST_DEFERS），
 // 超限即强制重建，防「tick 一直不结束 ⇒ 身份替换永久 defer ⇒ 旧身份继续收单」。
 let agentHostDeferStreak = 0;
@@ -536,6 +620,17 @@ export function syncAgentHostWithConfig(): void {
           spawnEnv: buildAgentWorkerSpawnEnv(pathInput),
           log,
           onStats: () => refreshTrayAgentStatus(),
+          onEvent: (event) => {
+            recentAgentEvents.push(event);
+            if (recentAgentEvents.length > WORKBENCH_EVENT_REPLAY_MAX) recentAgentEvents.shift();
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) win.webContents.send('agent:live-event', event);
+            }
+            const workbench = getWorkbenchWindow();
+            if (workbench && !workbench.isDestroyed()) {
+              workbench.webContents.send(WORKBENCH_EVENT_CHANNEL, event);
+            }
+          },
         });
         // spawn 不 await：worker 起不来不影响桌面主链，tick 自愈会重试
         handle.start().catch((err) => {

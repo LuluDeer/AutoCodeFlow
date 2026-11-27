@@ -31,6 +31,9 @@ function main(): void {
   assert.ok(parseAgentWorkerRequest(JSON.stringify({ t: 'tick' })));
   assert.ok(parseAgentWorkerRequest(JSON.stringify({ t: 'withdraw' })));
   assert.ok(parseAgentWorkerRequest(JSON.stringify({ t: 'shutdown' })));
+  assert.ok(parseAgentWorkerRequest(JSON.stringify({ t: 'cancel' })));
+  const cancelScoped = parseAgentWorkerRequest(JSON.stringify({ t: 'cancel', assignmentId: 'a1' }));
+  assert.ok(cancelScoped && cancelScoped.t === 'cancel' && cancelScoped.assignmentId === 'a1');
 
   // ── 请求侧：fail-closed 矩阵 ───────────────────────────────────────
   for (const bad of [
@@ -43,6 +46,8 @@ function main(): void {
     JSON.stringify({ t: 'config', config: null }),
     JSON.stringify({ t: 'unknown-kind' }),                            // 未知类型
     JSON.stringify({ t: 'tick-result' }),                             // 事件混入请求通道
+    JSON.stringify({ t: 'cancel', assignmentId: 42 }),
+    JSON.stringify({ t: 'cancel', assignmentId: '' }),
   ]) {
     assert.strictEqual(parseAgentWorkerRequest(bad), null, `must reject: ${bad}`);
   }
@@ -70,6 +75,12 @@ function main(): void {
   const log = parseAgentWorkerEvent(JSON.stringify({ t: 'log', level: 'warn', line: 'x' }));
   assert.ok(log && log.t === 'log' && log.level === 'warn');
 
+  const live = parseAgentWorkerEvent(JSON.stringify({
+    t: 'event',
+    event: { assignmentId: 'a1', type: 'phase', summary: 'round 1', timestamp: new Date().toISOString() },
+  }));
+  assert.ok(live && live.t === 'event' && live.event.type === 'phase' && live.event.assignmentId === 'a1');
+
   // ── 事件侧：fail-closed 矩阵 ───────────────────────────────────────
   for (const bad of [
     'not json',
@@ -83,6 +94,9 @@ function main(): void {
     JSON.stringify({ t: 'stats', stats: { working: true, lastAssignmentId: 'a', lastOutcome: 'x', processed: '2', lastEffectiveProfile: null } }),
     JSON.stringify({ t: 'log', level: 'verbose', line: 'x' }),        // 级别封闭
     JSON.stringify({ t: 'init', address: 'a' }),                      // 请求混入事件通道
+    JSON.stringify({ t: 'event' }),
+    JSON.stringify({ t: 'event', event: { assignmentId: 'a', type: 'unknown', summary: 'x', timestamp: 't' } }),
+    JSON.stringify({ t: 'event', event: { type: 'phase', summary: 'x', timestamp: 't' } }),
   ]) {
     assert.strictEqual(parseAgentWorkerEvent(bad), null, `must reject: ${bad}`);
   }
