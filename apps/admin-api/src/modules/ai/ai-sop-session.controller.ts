@@ -12,6 +12,7 @@ import {
 } from "@nestjs/common";
 import {
   ApiBearerAuth,
+  ApiOkResponse,
   ApiOperation,
   ApiProperty,
   ApiPropertyOptional,
@@ -26,6 +27,10 @@ import { Roles } from "../../common/decorators/roles.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { AiSopSessionService } from "./ai-sop-session.service";
+import {
+  AiSopSessionListResponseDto,
+  AiSopSessionViewDto,
+} from "./dto/ai-sop-session-response.dto";
 
 export class CreateSopSessionDto {
   @ApiProperty({ description: "上传接口返回的 mediaId（UUID）" })
@@ -90,6 +95,7 @@ export class AiSopSessionController {
   @ApiOperation({
     summary: "用一段录屏开启 SOP 编写会话（模型可能追问或直接出稿）",
   })
+  @ApiOkResponse({ type: AiSopSessionViewDto })
   async create(
     @Body() dto: CreateSopSessionDto,
     @CurrentUser() user?: { id: number | string },
@@ -107,6 +113,7 @@ export class AiSopSessionController {
   @ApiOperation({ summary: "列出本人的编写会话（最近更新在前）" })
   @ApiQuery({ name: "page", required: false, type: String })
   @ApiQuery({ name: "pageSize", required: false, type: String })
+  @ApiOkResponse({ type: AiSopSessionListResponseDto })
   async list(
     @CurrentUser() user?: { id: number | string },
     @Query("page") page?: string,
@@ -121,6 +128,7 @@ export class AiSopSessionController {
   @Get(":id")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "读取会话（messages/media/draft/剩余追问次数）" })
+  @ApiOkResponse({ type: AiSopSessionViewDto })
   async detail(
     @Param("id") id: string,
     @CurrentUser() user?: { id: number | string },
@@ -134,6 +142,7 @@ export class AiSopSessionController {
   @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "补充一句话或一段录屏，继续下一轮" })
+  @ApiOkResponse({ type: AiSopSessionViewDto })
   async turn(
     @Param("id") id: string,
     @Body() dto: SopSessionTurnDto,
@@ -229,6 +238,7 @@ export class AiSopSessionController {
   @ApiOperation({
     summary: "标记会话已保存为 SOP 草稿（前端在 POST /sop 成功后调用）",
   })
+  @ApiOkResponse({ type: AiSopSessionViewDto })
   async markSaved(
     @Param("id") id: string,
     @CurrentUser() user?: { id: number | string },

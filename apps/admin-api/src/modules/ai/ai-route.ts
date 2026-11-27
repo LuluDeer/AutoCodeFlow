@@ -90,10 +90,7 @@ export interface ResolvedRoute {
   temperature?: number;
   /**
    * 由 variant 解析出的推理强度语义，无 variant 或未知 variant 时缺席。
-   *
-   * 本层只暴露该值，不写进 provider 请求体：OpenAI 兼容下游对此参数的支持
-   * 并不统一（部分端点认 `reasoning_effort`，部分完全不接受），由 provider
-   * 适配层按端点能力决定透传方式，避免在通用请求体上塞一个下游不认识的字段。
+   * 仅当显式存在时由调用层下发 `reasoning_effort`，避免向未配置变体的端点发送额外字段。
    */
   reasoningEffort?: "low" | "medium" | "high";
   transport: "openai" | "ollama";
@@ -121,6 +118,15 @@ export type RouteResolution =
 function positiveInt(value: unknown, fallback: number): number {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+/**
+ * Ollama 的 OpenAI 兼容端点位于 `<host>/v1/chat/completions`：
+ * 若配置的 baseUrl 尚未以 `/v1` 结尾则自动补齐，避免重复拼接 `/v1/v1`。
+ */
+function normalizeOllamaOpenAiBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
 /** 解析一次路由（纯函数；配置脏值一律回落或如实拒绝，绝不抛）。 */
@@ -176,13 +182,12 @@ export function resolveAiRoute(ctx: RouteContext): RouteResolution {
         `（在 AI 设置里勾选该模型的支持视频能力）`,
     };
   }
-  if (ctx.purpose === "agent" && entry.transport !== "openai") {
+  if (ctx.purpose === "video" && entry.transport !== "openai") {
     return {
       status: "error",
       reason: "capability_missing",
       message:
-        `provider「${providerId}」只有 /api/generate（无 tool-calling 面），不能承载 Agent 推理；` +
-        `请选一个 OpenAI 兼容端点（/chat/completions）`,
+        `provider「${providerId}」当前传输协议不支持视频理解；请选一个 OpenAI 兼容多模态端点`,
     };
   }
 
@@ -203,6 +208,15 @@ export function resolveAiRoute(ctx: RouteContext): RouteResolution {
     };
   }
 
+  // Ollama 用于 agent 用途时走其 OpenAI 兼容 `/v1/chat/completions` 接口（支持 tools 与 SSE 流式），
+  // analysis 用途仍保留原有 `/api/generate` 路径以保证存量行为不变。
+  const useOllamaOpenAi =
+    ctx.purpose === "agent" && entry.transport === "ollama";
+  const resolvedBaseUrl = useOllamaOpenAi
+    ? normalizeOllamaOpenAiBaseUrl(entry.baseUrl)
+    : entry.baseUrl;
+  const resolvedTransport = useOllamaOpenAi ? "openai" : entry.transport;
+
   const model = override.model?.trim() || entry.model.trim();
   if (!model) {
     return {
@@ -214,6 +228,11 @@ export function resolveAiRoute(ctx: RouteContext): RouteResolution {
 
   // ── 参数分配（Agent 下限）──────────────────────────────────────
   const notes: string[] = [];
+  if (useOllamaOpenAi) {
+    notes.push(
+      `Ollama 智能体路由已切换至 OpenAI 兼容端点（${resolvedBaseUrl}/chat/completions）`,
+    );
+  }
   const overrideMax =
     typeof override.maxTokens === "number" && override.maxTokens > 0
       ? Math.floor(override.maxTokens)
@@ -269,13 +288,13 @@ export function resolveAiRoute(ctx: RouteContext): RouteResolution {
       purpose: ctx.purpose,
       provider: providerId,
       model,
-      baseUrl: entry.baseUrl,
+      baseUrl: resolvedBaseUrl,
       apiKey,
       maxTokens,
       timeoutMs,
       ...(temperature !== undefined ? { temperature } : {}),
       ...(reasoningEffort !== null ? { reasoningEffort } : {}),
-      transport: entry.transport,
+      transport: resolvedTransport,
       supportsVideo: entry.supportsVideo,
       notes,
     },

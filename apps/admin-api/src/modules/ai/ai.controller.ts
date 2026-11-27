@@ -42,8 +42,12 @@ import { ErrorCode } from "../../common/errors/error-codes";
 import {
   AiConfigResponseDto,
   AiConfigSaveResponseDto,
-  AiTestResponseDto,
+  AiProviderAdminViewDto,
 } from "./dto/ai-response.dto";
+import {
+  TestAiProviderDto,
+  TestAiProviderResponseDto,
+} from "./dto/ai-test.dto";
 
 export class SaveAiConfigDto {
   @IsString()
@@ -360,20 +364,12 @@ export class AiController {
   @Post("test")
   @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "用示例提示词测试当前 AI 配置" })
-  @ApiOkResponse({ type: AiTestResponseDto })
-  async testConfig() {
-    const result = await this.aiService.analyzeFailure(
-      { name: "test-task", runtime: "node" },
-      "Error: Cannot find module 'express'\n    at Function.Module._resolveFilename (internal/modules/cjs/loader.js:880:15)",
-    );
-    if (!result) {
-      return {
-        ok: false,
-        message: "AI provider is disabled or returned empty response",
-      };
-    }
-    return { ok: true, message: result };
+  @ApiOperation({
+    summary: "连通性自检：按指定模型接入/用途真实请求一次并返回结构化诊断",
+  })
+  @ApiOkResponse({ type: TestAiProviderResponseDto })
+  async testConfig(@Body() dto: TestAiProviderDto = {}) {
+    return this.aiService.testProvider(dto ?? {});
   }
 
   // ── 模型接入与分配（推理质量轮）───────────────────────────────────
@@ -383,6 +379,7 @@ export class AiController {
   @Get("providers")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "模型接入注册表 + 各用途当前指向" })
+  @ApiOkResponse({ type: AiProviderAdminViewDto })
   async listProviders() {
     return this.aiService.providerAdminView();
   }
@@ -391,6 +388,7 @@ export class AiController {
   @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "新增/更新一个模型接入（密钥 `***` = 不改）" })
+  @ApiOkResponse({ type: AiProviderAdminViewDto })
   async saveProvider(@Body() dto: SaveAiProviderDto) {
     await this.aiService.saveProvider(dto);
     return this.aiService.providerAdminView();
@@ -400,6 +398,7 @@ export class AiController {
   @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "删除一个模型接入（连同其密钥）" })
+  @ApiOkResponse({ type: AiProviderAdminViewDto })
   async deleteProvider(@Param("id") id: string) {
     await this.aiService.deleteProvider(id);
     return this.aiService.providerAdminView();
@@ -409,6 +408,7 @@ export class AiController {
   @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "设置某个用途使用的模型（空 = 跟随全局）" })
+  @ApiOkResponse({ type: AiProviderAdminViewDto })
   async assignRoute(@Body() dto: AssignAiRouteDto) {
     await this.aiService.assignRoute(
       dto.purpose,

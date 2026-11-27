@@ -59,10 +59,27 @@ export function parseSseFrames(buffer: string): {
   return { frames, rest };
 }
 
+export interface StreamToolCallDelta {
+  /** 并行工具调用的序号索引（默认从 0 起）。 */
+  index: number;
+  /** 工具调用唯一编号（通常仅在首帧出现）。 */
+  id?: string;
+  /** 目标函数名称（通常在首帧出现，部分端点可能分片下发）。 */
+  name?: string;
+  /** JSON 参数增量片段。 */
+  argumentsDelta?: string;
+}
+
 export interface StreamDelta {
   /** 本帧新增的文本（可能为空串）。 */
   text: string;
-  /** 本帧是否宣告结束（`[DONE]`）。 */
+  /** 本帧新增的思考链文本（reasoning_content / reasoning）。 */
+  reasoning?: string;
+  /** 本帧携带的工具调用增量（delta.tool_calls）。 */
+  toolCallDeltas?: StreamToolCallDelta[];
+  /** 上游返回的结束原因（stop / length / tool_calls 等）。 */
+  finishReason?: string;
+  /** 本帧是否宣告结束（`[DONE]` 或携带终止 finish_reason）。 */
   done: boolean;
   /** 本帧携带的 usage（通常只在最后一帧）。 */
   usage?: { tokensIn: number; tokensOut: number; cachedTokens?: number };
@@ -71,6 +88,49 @@ export interface StreamDelta {
 function num(v: unknown): number {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function extractToolCallDeltas(raw: unknown): StreamToolCallDelta[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const deltas: StreamToolCallDelta[] = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const item = raw[i];
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const index =
+      typeof rec.index === "number" &&
+      Number.isInteger(rec.index) &&
+      rec.index >= 0
+        ? rec.index
+        : i;
+    const id =
+      typeof rec.id === "string" && rec.id.length > 0 ? rec.id : undefined;
+    const fn =
+      rec.function && typeof rec.function === "object"
+        ? (rec.function as Record<string, unknown>)
+        : undefined;
+    const name =
+      typeof fn?.name === "string" && fn.name.length > 0 ? fn.name : undefined;
+    let argumentsDelta: string | undefined;
+    if (typeof fn?.arguments === "string") {
+      if (fn.arguments.length > 0) argumentsDelta = fn.arguments;
+    } else if (fn?.arguments !== undefined && fn?.arguments !== null) {
+      argumentsDelta = JSON.stringify(fn.arguments);
+    }
+    if (
+      id !== undefined ||
+      name !== undefined ||
+      argumentsDelta !== undefined
+    ) {
+      deltas.push({
+        index,
+        ...(id !== undefined ? { id } : {}),
+        ...(name !== undefined ? { name } : {}),
+        ...(argumentsDelta !== undefined ? { argumentsDelta } : {}),
+      });
+    }
+  }
+  return deltas;
 }
 
 /** 解析一帧 `data:` 的载荷；不认识/畸形 → null（忽略而不中断整条流）。 */
@@ -100,6 +160,18 @@ export function parseStreamDelta(json: string): StreamDelta | null {
   const first = choices[0] as Record<string, unknown> | undefined;
   const delta = first?.delta as Record<string, unknown> | undefined;
   const piece = typeof delta?.content === "string" ? delta.content : "";
+  const reasoning =
+    typeof delta?.reasoning_content === "string" &&
+    delta.reasoning_content.length > 0
+      ? delta.reasoning_content
+      : typeof delta?.reasoning === "string" && delta.reasoning.length > 0
+        ? delta.reasoning
+        : undefined;
+  const toolCallDeltas = extractToolCallDeltas(delta?.tool_calls);
+  const finishReason =
+    typeof first?.finish_reason === "string" && first.finish_reason.length > 0
+      ? first.finish_reason
+      : undefined;
 
   const usageRaw = obj.usage as Record<string, unknown> | undefined;
   const usage = usageRaw
@@ -120,7 +192,13 @@ export function parseStreamDelta(json: string): StreamDelta | null {
 
   return {
     text: piece,
-    done: first?.finish_reason === "stop" || first?.finish_reason === "length",
+    done:
+      finishReason === "stop" ||
+      finishReason === "length" ||
+      finishReason === "tool_calls",
+    ...(reasoning !== undefined ? { reasoning } : {}),
+    ...(toolCallDeltas.length > 0 ? { toolCallDeltas } : {}),
+    ...(finishReason !== undefined ? { finishReason } : {}),
     ...(usage ? { usage } : {}),
   };
 }

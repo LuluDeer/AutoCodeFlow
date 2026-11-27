@@ -48,6 +48,7 @@ import {
   AiService,
   type MultimodalMessage,
   type MultimodalPart,
+  type ToolCall,
 } from "../ai/ai.service";
 import {
   POLL_ASSIGNMENTS_MAX,
@@ -353,6 +354,40 @@ export class AgentCollabAckReplyDto {
   clarificationId!: string;
 }
 
+/** 校验并透传 assistant 轮次的 tool_calls（上游要求 id/name/arguments 均就绪）。 */
+function parseRelayToolCalls(raw: unknown, index: number): ToolCall[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 32) {
+    throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+  }
+  const calls: ToolCall[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") {
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+    }
+    const rec = item as Record<string, unknown>;
+    const fn = rec.function && typeof rec.function === "object"
+      ? (rec.function as Record<string, unknown>)
+      : undefined;
+    const id = typeof rec.id === "string" ? rec.id.trim() : "";
+    const name = typeof fn?.name === "string" ? fn.name.trim() : "";
+    if (!id || !name || rec.type !== "function") {
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+    }
+    const rawArgs = fn?.arguments;
+    const args = typeof rawArgs === "string"
+      ? rawArgs
+      : rawArgs !== undefined && rawArgs !== null
+        ? JSON.stringify(rawArgs)
+        : "{}";
+    if (args.length > 100_000) {
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+    }
+    calls.push({ id, type: "function", function: { name, arguments: args } });
+  }
+  return calls;
+}
+
 /**
  * 解析 LLM relay 的 message content：允许 string（历史形态）或 OpenAI
  * 多模态 part 数组（text + image_url）。图片接受两类：
@@ -360,19 +395,48 @@ export class AgentCollabAckReplyDto {
  *   · `data:image/(png|jpeg|webp);base64,...`（执行器本地截图直传，单图 ≤3MB）。
  * 后者实测被 provider 接受，且不触发服务端出站抓取（SSRF 面为零）；视频
  * 与未知 part 一律拒绝（当前 provider 无视频能力）。
+ *
+ * 工具往返：assistant 轮可带 `tool_calls`（上一轮模型发起的调用），
+ * `role:'tool'` 轮用 `tool_call_id` 回指对应调用，content 为执行结果文本。
+ * 这两类消息必须原样透传，否则多轮 function-calling 会在上游直接 400。
  */
 function parseRelayMessages(
-  raw: Array<{ role?: string; content?: unknown }>,
+  raw: Array<{
+    role?: string;
+    content?: unknown;
+    tool_call_id?: unknown;
+    tool_calls?: unknown;
+  }>,
 ): MultimodalMessage[] {
   let imageCount = 0;
   return raw.map((m, index) => {
     const role = m?.role;
-    if (role !== "system" && role !== "user" && role !== "assistant") {
+    if (
+      role !== "system" && role !== "user" && role !== "assistant" &&
+      role !== "tool"
+    ) {
       throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_ROLE_INVALID, { index });
     }
     const content = m?.content;
+    // role:'tool' 的 content 是工具执行结果文本（非多模态 part），必带 tool_call_id。
+    if (role === "tool") {
+      const toolCallId = typeof m.tool_call_id === "string" ? m.tool_call_id.trim() : "";
+      if (!toolCallId) {
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_ROLE_INVALID, { index });
+      }
+      if (typeof content !== "string" || content.length === 0) {
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+      }
+      if (content.length > 100_000) {
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+      }
+      return { role: "tool", content, tool_call_id: toolCallId } as MultimodalMessage;
+    }
+    const toolCalls = role === "assistant"
+      ? parseRelayToolCalls(m.tool_calls, index)
+      : [];
     if (typeof content === "string") {
-      if (content.length === 0) {
+      if (content.length === 0 && toolCalls.length === 0) {
         throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
           index,
         });
@@ -382,15 +446,19 @@ function parseRelayMessages(
           index,
         });
       }
-      return { role, content } as MultimodalMessage;
+      return {
+        role,
+        content,
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      } as MultimodalMessage;
     }
-    if (!Array.isArray(content) || content.length === 0) {
+    if (content !== undefined && (!Array.isArray(content) || content.length === 0)) {
       throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
         index,
       });
     }
     const parts: MultimodalPart[] = [];
-    for (const part of content) {
+    for (const part of Array.isArray(content) ? content : []) {
       if (!part || typeof part !== "object") {
         throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
           index,
@@ -444,12 +512,16 @@ function parseRelayMessages(
         index,
       });
     }
-    if (parts.length === 0) {
+    if (parts.length === 0 && toolCalls.length === 0) {
       throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
         index,
       });
     }
-    return { role, content: parts } as MultimodalMessage;
+    return {
+      role,
+      content: parts,
+      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    } as MultimodalMessage;
   });
 }
 
@@ -746,10 +818,8 @@ export class SopCollabController {
    *
    * ## 载荷边界
    * messages ≤64 条、单条 content ≤100KB（防塞爆上游上下文/烧穿配额）；
-   * role 白名单（system/user/assistant——tool 往返由中台 Agent 自己用，
-   * 不对执行器开放）。provider 未启用/不可用时 chatMultimodal fail-open
-   * 返回空 content——**原样透传**，执行器按「模型不可用」降级（不掩盖、
-   * 不造成功假象）。
+   * 与 assistant.tool_calls，缺一即拒）。provider 未启用/不可用（空 content
+   * + 0 token + 无 toolCalls）时抛 503，不再用 200 空串掩盖。
    */
   @WriteGuard("agent-collab-llm", {
     scope: "token",
@@ -763,7 +833,12 @@ export class SopCollabController {
     body: {
       address: string;
       deviceFingerprint?: string | null;
-      messages?: Array<{ role?: string; content?: unknown }>;
+      messages?: Array<{
+        role?: string;
+        content?: unknown;
+        tool_call_id?: unknown;
+        tool_calls?: unknown;
+      }>;
       tools?: unknown;
     },
     @Headers("authorization") auth: string,
@@ -784,6 +859,17 @@ export class SopCollabController {
       messages,
       ...(tools ? { tools: tools as never } : {}),
     });
+    // fail-open 语义此前让"provider 不可用"以 200 空串回给执行器，模型真的
+    // 说"没内容"与"根本没答"无法区分——执行器可能据此误判为终态结论。
+    // 用三元组（空 content + 0 token + 无 toolCalls）判定不可用并抛 503。
+    if (
+      !res.content.trim() &&
+      !res.usage?.tokensIn &&
+      !res.usage?.tokensOut &&
+      !(res.toolCalls && res.toolCalls.length > 0)
+    ) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE);
+    }
     return {
       content: res.content,
       toolCalls: res.toolCalls ?? null,

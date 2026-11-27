@@ -69,6 +69,11 @@ export const SSE_TICKET_PATH_SUFFIXES = [
   "/executions/stream",
 ];
 
+/** Dynamic SSE stream routes (with session ID path param) accepting `?ticket=`. */
+export const SSE_TICKET_PATH_PATTERNS = [
+  /\/(?:agent|workbench)\/sessions\/[^/]+\/stream$/,
+];
+
 export function extractJwtFromRequest(req: Request): string | null {
   const headerToken = req?.headers
     ? ExtractJwt.fromAuthHeaderAsBearerToken()(req)
@@ -100,9 +105,12 @@ export function requestPath(req: unknown): string {
   return url.split("?")[0].replace(/\/+$/, "");
 }
 
-/** True when the request path is one of the three SSE stream endpoints. */
+/** True when the request path is one of the allowed SSE stream endpoints. */
 export function isSseTicketPath(path: string): boolean {
-  return SSE_TICKET_PATH_SUFFIXES.some((suffix) => path.endsWith(suffix));
+  return (
+    SSE_TICKET_PATH_SUFFIXES.some((suffix) => path.endsWith(suffix)) ||
+    SSE_TICKET_PATH_PATTERNS.some((pattern) => pattern.test(path))
+  );
 }
 
 /**

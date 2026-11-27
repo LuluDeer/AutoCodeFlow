@@ -34,7 +34,19 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
 import { PROMPT_DATA_HEADER, tagDelimited } from "./prompt-guard";
-import { parseSseFrames, parseStreamDelta } from "./ai-sse";
+import {
+  consumeOpenAiSseStream,
+  type MultimodalStreamHandlers,
+} from "./ai-stream.util";
+import {
+  AI_TEST_PROBE_PROMPT,
+  AI_TEST_PROBE_TOOLS,
+  classifyAiTestError,
+  formatTestPreview,
+  routeReasonToErrorCode,
+  type TestAiProviderOptions,
+  type TestAiProviderResult,
+} from "./ai-provider-test.util";
 import { recordRuntime } from "../metrics/runtime-metrics-entry";
 import {
   isTruncatedFinish,
@@ -115,10 +127,11 @@ export interface MultimodalRequest {
   toolChoice?: "auto" | "none";
   /**
    * 用途 → 决定路由与参数（注册表 + `ai.routes.<purpose>.*`）：
+   *   · `analysis`——失败日志/健康/排程分析（连通性自检也可指定）；
    *   · `agent`（默认）——Agent 推理 / 执行器 relay，要求 tool-calling 面；
    *   · `video`——视频理解（转 SOP），要求该 provider 声明支持视频。
    */
-  purpose?: "agent" | "video";
+  purpose?: AiPurpose;
   /**
    * 覆盖本次调用的 provider id（设置页"用这个模型做视频分析"的直接选择）。
    * 只影响这一次调用，不改 `ai.routes.*` 的持久化配置。
@@ -1091,6 +1104,9 @@ export class AiService {
       body.tools = req.tools;
       body.tool_choice = req.toolChoice ?? "auto";
     }
+    if (route.reasoningEffort !== undefined) {
+      body.reasoning_effort = route.reasoningEffort;
+    }
     if (req.responseFormat) {
       body.response_format = { type: req.responseFormat };
     }
@@ -1155,7 +1171,7 @@ export class AiService {
    */
   async chatMultimodalStream(
     req: MultimodalRequest,
-    handlers: { onDelta?: (text: string) => void; signal?: AbortSignal } = {},
+    handlers: MultimodalStreamHandlers = {},
   ): Promise<MultimodalResponse> {
     const purpose: AiPurpose = req.purpose ?? "agent";
     const resolved = await this.routeFor(purpose, req.provider);
@@ -1185,6 +1201,13 @@ export class AiService {
       stream_options: { include_usage: true },
     };
     if (route.temperature !== undefined) body.temperature = route.temperature;
+    if (req.tools && req.tools.length > 0) {
+      body.tools = req.tools;
+      body.tool_choice = req.toolChoice ?? "auto";
+    }
+    if (route.reasoningEffort !== undefined) {
+      body.reasoning_effort = route.reasoningEffort;
+    }
     if (req.responseFormat) body.response_format = { type: req.responseFormat };
 
     const r = await axios.post(`${route.baseUrl}/chat/completions`, body, {
@@ -1197,64 +1220,26 @@ export class AiService {
       ...pinCfg,
     });
 
-    let content = "";
-    let usage: { tokensIn: number; tokensOut: number; cachedTokens?: number } =
-      {
-        tokensIn: 0,
-        tokensOut: 0,
-      };
+    const streamed = await consumeOpenAiSseStream(
+      r.data as NodeJS.ReadableStream,
+      handlers,
+    );
 
-    await new Promise<void>((resolve, reject) => {
-      const stream = r.data as NodeJS.ReadableStream;
-      let buffer = "";
-      const onData = (chunk: Buffer | string) => {
-        buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-        let parsedFrames: ReturnType<typeof parseSseFrames>;
-        try {
-          parsedFrames = parseSseFrames(buffer);
-        } catch (err) {
-          reject(err);
-          return;
-        }
-        buffer = parsedFrames.rest;
-        for (const frame of parsedFrames.frames) {
-          let delta: ReturnType<typeof parseStreamDelta>;
-          try {
-            delta = parseStreamDelta(frame.data);
-          } catch (err) {
-            // 流内错误帧：如实上抛（调用方据此报错，而不是当成"模型没说话"）
-            reject(err);
-            return;
-          }
-          if (!delta) continue;
-          if (delta.usage) usage = delta.usage;
-          if (delta.text) {
-            content += delta.text;
-            try {
-              handlers.onDelta?.(delta.text);
-            } catch {
-              // 下游（HTTP 连接）断了不该中断已产生的推理——继续收完
-            }
-          }
-        }
-      };
-      stream.on("data", onData);
-      stream.on("end", () => resolve());
-      stream.on("error", (err: Error) => reject(err));
-    });
-
-    if (usage.tokensIn > 0) {
+    if (streamed.usage.tokensIn > 0) {
       recordRuntime("autoflow_ai_cache_lookup_total", {
-        result: usage.cachedTokens ? "hit" : "miss",
+        result: streamed.usage.cachedTokens ? "hit" : "miss",
       });
     }
 
     return {
-      content,
+      content: streamed.content,
+      ...(streamed.toolCalls ? { toolCalls: streamed.toolCalls } : {}),
       usage: {
-        tokensIn: usage.tokensIn,
-        tokensOut: usage.tokensOut,
-        ...(usage.cachedTokens ? { cachedTokens: usage.cachedTokens } : {}),
+        tokensIn: streamed.usage.tokensIn,
+        tokensOut: streamed.usage.tokensOut,
+        ...(streamed.usage.cachedTokens
+          ? { cachedTokens: streamed.usage.cachedTokens }
+          : {}),
       },
       model: route.model,
       provider: route.provider,
@@ -1346,5 +1331,74 @@ export class AiService {
     const entry = entries.find((e) => e.id === global);
     if (!entry || entry.transport !== "openai") return false;
     return !!keys[entry.id]?.trim();
+  }
+
+  /**
+   * 连通性自检：按指定 provider / purpose 实测一次真实推理（不吞真实错误）。
+   *
+   * 空参数时走显式指定的 purpose（缺省使用 agent）与默认路由，保持旧
+   * POST /ai/test「用当前配置探一下」的兼容语义；`testTools` 未指定用途时
+   * 默认按 agent 路由，因为只有 agent 用途保证工具调用面。
+   */
+  async testProvider(options: TestAiProviderOptions = {}): Promise<TestAiProviderResult> {
+    const purpose: AiPurpose = options.purpose ?? "agent";
+    const started = Date.now();
+    const base: TestAiProviderResult = {
+      ok: false,
+      provider: null,
+      model: null,
+      purpose,
+      latencyMs: 0,
+      message: "",
+      errorCode: null,
+      preview: null,
+    };
+
+    try {
+      const resolved = await this.routeFor(
+        purpose,
+        options.providerId?.trim() || undefined,
+      );
+      if (resolved.status === "error") {
+        return {
+          ...base,
+          errorCode: routeReasonToErrorCode(resolved.reason),
+          message: sanitizeSecrets(resolved.message),
+          latencyMs: Date.now() - started,
+        };
+      }
+      const route = resolved.route;
+      const request: MultimodalRequest = {
+        purpose,
+        messages: [{ role: "user", content: AI_TEST_PROBE_PROMPT }],
+        ...(options.testTools
+          ? { tools: AI_TEST_PROBE_TOOLS, toolChoice: "auto" as const }
+          : {}),
+      };
+      const res: MultimodalResponse = options.testStreaming
+        ? await this.chatMultimodalStream(request)
+        : await this.chatMultimodal(request);
+      const preview = formatTestPreview(res.content, res.toolCalls);
+      const ok = res.content.trim().length > 0 || (res.toolCalls?.length ?? 0) > 0;
+      return {
+        ...base,
+        ok,
+        provider: route.provider,
+        model: route.model,
+        latencyMs: Date.now() - started,
+        message: ok
+          ? "模型连通性测试通过"
+          : "模型返回空内容（接入可能不可用，请检查配置或日志）",
+        preview,
+      };
+    } catch (err) {
+      const classified = classifyAiTestError(err);
+      return {
+        ...base,
+        latencyMs: Date.now() - started,
+        errorCode: classified.errorCode,
+        message: classified.message,
+      };
+    }
   }
 }
