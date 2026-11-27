@@ -109,6 +109,8 @@ import { AgentNorthStarResponseDto } from "./dto/agent-north-star.dto";
 import { SteerInboxService } from "./runtime/steer-inbox.service";
 // ADR-045 发布结果可见性：审计/重试说明外提，避免 decideApproval 破体量棘轮。
 import { auditReleaseOutcome } from "./runtime/release-outcome.audit";
+// W1-S2：deny 后保守自动恢复（独立 collaborator，避免本棘轮文件增长）。
+import { maybeResumeAfterDeny } from "./runtime/agent-deny-resume.collaborator";
 
 /**
  * R279：把 `since` query（ISO-8601）解析成 `Date`；**解析不出 ⇒ `undefined`（不筛）**。
@@ -610,7 +612,7 @@ export class AgentController {
 
   private enqueueResume(
     session: AgentSession,
-    reason: "resume:manual" | "resume:approval",
+    reason: "resume:manual" | "resume:approval" | "resume:approval_denied",
   ) {
     const { id: sessionId, totalSteps } = session;
     return this.queue.add(
@@ -687,7 +689,16 @@ export class AgentController {
       if (settled > 0) {
         await this.emitToolCallSettledEvents(sessionId, approvalKey);
       }
-      return false;
+      // W1-S2：deny 后保守自动恢复——仅 waiting_input 且无其它 pending 单时入队，
+      // 判定体在独立 collaborator（避免本棘轮文件增长）；失败只回 false。
+      const resumed = await maybeResumeAfterDeny(
+        this.sessions,
+        this.approvals,
+        (s, reason) => this.enqueueResume(s, reason),
+        sessionId,
+        session,
+      );
+      return resumed;
     }
 
     // granted：worker 可能先落 pending 单、后 markWaiting；处置时旧快照还是

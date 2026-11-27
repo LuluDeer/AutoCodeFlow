@@ -56,8 +56,12 @@ import { TelemetryOptinService } from "./runtime/telemetry-optin.service";
 import {
   autoResumeJobId,
   autoResumeJobOptions,
+  manualResumeJobOptions,
 } from "./runtime/agent-job-options";
 import { AgentController } from "./agent.controller";
+import { AgentInteractionController } from "./agent-interaction.controller";
+import { AgentEventStreamService } from "./runtime/agent-event-stream.service";
+import { AgentDoomLoopGuard } from "./runtime/agent-doom-loop.guard";
 import { AgentSessionRetentionService } from "./agent-session-retention.service";
 // R278：待办收件箱的服务端聚合（S1，独立 provider）。
 import { AgentInboxService } from "./runtime/agent-inbox.service";
@@ -124,7 +128,7 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
     // P5/P6: SOP 工具体（ToolBinder 绑定 sop_* 到 SopService）。
     forwardRef(() => SopModule),
   ],
-  controllers: [AgentController],
+  controllers: [AgentController, AgentInteractionController],
   providers: [
     AgentSessionService,
     // R202：与队列「对账」（积压判据的接线层）。独立 provider ——
@@ -162,6 +166,11 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
     AgentInboxService,
     // N8：waiting_input 期 steer 意图的进程内 inbox（独立 provider，无 DB/队列依赖）。
     SteerInboxService,
+    // W1-S2：实时事件流（Redis Pub/Sub + agent_events 重放 + SSE）。类 token
+    // 注册并导出，workbench 侧通过 ModuleRef.get(AgentEventStreamService) 解析。
+    AgentEventStreamService,
+    // W1-S2：连续重复工具调用守卫（纯状态；runtime/controller 共享同一实例）。
+    AgentDoomLoopGuard,
     // R302：TTFV 阶段2 的 append-only 漏斗事件写入口（独立 provider，不碰顶格文件）。
     FunnelEventsService,
     // R303：90 天滚动清理（TTFV §3.2；独立 provider，不改写入口/实体）。
@@ -187,6 +196,8 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
     AgentBudgetService,
     AgentBoundaryService,
     AgentApiClient,
+    // W1-S2：workbench / 实时交互面消费（ModuleRef 惰性代理按类 token 解析）。
+    AgentEventStreamService,
   ],
 })
 export class AgentModule implements OnModuleInit {
@@ -205,6 +216,9 @@ export class AgentModule implements OnModuleInit {
     private readonly agentQueue: Queue<AgentJobData>,
     // N8：runtime 只持有 drain 口；装配在 onModuleInit，缺席即 fail-open（同 toolExecutor）。
     private readonly steerInboxes: SteerInboxService,
+    // W1-S2：实时事件流（装配入队口/审批查口，避免它直接依赖 BullMQ/审批服务）。
+    private readonly eventStream: AgentEventStreamService,
+    private readonly doomLoop: AgentDoomLoopGuard,
   ) {}
 
   /**
@@ -225,6 +239,8 @@ export class AgentModule implements OnModuleInit {
       this.wakeup.probe.bind(this.wakeup),
     );
     this.runtime.setToolExecutor(this.executor);
+    this.runtime.setEventStream(this.eventStream);
+    this.runtime.setDoomLoopGuard(this.doomLoop);
     // TOOLS-02：重放文案要知道审批单真实状态（已批准 → 提示重提执行）。
     this.runtime.setApprovals(this.approvals);
     // N8：同一个进程内 inbox 实例同时供 controller.park 与 runtime.drain。
@@ -266,6 +282,23 @@ export class AgentModule implements OnModuleInit {
         return false;
       }
     };
+    // W1-S2：消息续跑复用同一条 agent-jobs 队列（与手动 resume 同 job 去重口径）。
+    this.eventStream.enqueueResume = async (
+      sessionId: string,
+      stepSeq: number,
+      mode: "followup" | "steer",
+    ) => {
+      await queue.add(
+        "run",
+        { sessionId, reason: `resume:message:${mode}`, expectTotalSteps: stepSeq },
+        {
+          ...manualResumeJobOptions(sessionId, stepSeq, false),
+        },
+      );
+    };
+    // W1-S2：有未处置审批单时消息走 steer，不自动恢复（与 manual resume 同闸门）。
+    this.eventStream.hasPendingApprovals = (sessionId: string) =>
+      this.approvals.hasPendingForSession(sessionId);
     this.logger.log(
       `Agent tool executor wired. Implemented tools: ${this.api.implementedTools().length}`,
     );

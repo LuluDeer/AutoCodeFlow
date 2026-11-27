@@ -357,6 +357,9 @@ export class AgentInboxService {
     this.requireWiring();
 
     const scope = await this.resolveViewerScope(input.viewer);
+    // W1-S2：waiting/stalled/failed 是**全局运营计数**，只对 ADMIN（或内部无
+    // viewer 调用）可见；普通用户看到 null=不适用，不泄露全平台会话规模。
+    const adminOnly = !input.viewer || input.viewer.role === UserRole.ADMIN;
 
     // 窗口先解析：两个新字段都要用它，且它是**配置**（同步可读）⇒ 不必进
     // `Promise.all`，也不会成为降级来源（读不到就回默认，见 resolveFailedWindowHours）。
@@ -380,21 +383,29 @@ export class AgentInboxService {
         : await this.read("counts.pendingApprovals", () =>
             this.approvals.count({ where: pendingWhere(scope) }),
           ),
-      this.read("counts.waitingSessions", () =>
-        this.sessionsTotal({ status: "waiting_input" }),
-      ),
+      // W1-S2：非 ADMIN 不查这些全局计数，返回 null（不适用，非 0）。
+      !adminOnly
+        ? { value: null, degraded: false }
+        : this.read("counts.waitingSessions", () =>
+            this.sessionsTotal({ status: "waiting_input" }),
+          ),
       // 判据复用既有 `list({stalled})`：`getManyAndCount` 的 COUNT 就是独立计数，
       // `pageSize: 1` 只为拿 total（不搬行体）。
-      this.read("counts.stalled", () => this.sessionsTotal({ stalled: {} })),
+      !adminOnly
+        ? { value: null, degraded: false }
+        : this.read("counts.stalled", () => this.sessionsTotal({ stalled: {} })),
       // 一次性把「条数 + 截断位」拿回来：截断位必须与条数**同源**，否则并发下
       // 一个请求的 `backlogged=3` 可能配上另一个请求的 `truncated`。
       this.read("counts.backlogged", () => this.backlog.findBacklogged()),
       this.read("counts.queueStall", () => this.findQueueStall()),
       this.read("counts.deployments", () => this.findPendingDeployments()),
-      // R279：窗口内的失败会话（`failed` + `budget_exceeded`，**不含 `aborted`**）。
-      this.read("counts.failedSessions", () =>
-        this.countFailedSessions(failedWindowHours),
-      ),
+      // R279：窗口内的失败会话（`failed` + `budget_exceeded`，**不含 `aborted`**）；
+      // W1-S2：普通用户不查（全局运营计数，null=不适用）。
+      !adminOnly
+        ? { value: null, degraded: false }
+        : this.read("counts.failedSessions", () =>
+            this.countFailedSessions(failedWindowHours),
+          ),
     ]);
 
     return {

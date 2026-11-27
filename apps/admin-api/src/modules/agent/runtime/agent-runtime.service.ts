@@ -40,6 +40,17 @@ import type { StepBoundary } from "./steer-inbox";
 import type { SteerInboxService } from "./steer-inbox.service";
 // N11：plan 身份的闸门只收紧；非 plan 会话走同一数组引用，主链逐字不变。
 import { narrowPlanTools } from "./plan-agent-gate";
+// W1-S2：实时协作（提示词按 kind / 流式 LLM / 死循环守卫），逻辑在 collaborator。
+import {
+  resolveSystemContent,
+  invokeLlm,
+  resolveRoute,
+  observeAndRemind,
+  injectRemoteSteers,
+  type RealtimePorts,
+} from "./agent-runtime-realtime.collaborator";
+import type { AgentEventStreamService } from "./agent-event-stream.service";
+import type { AgentDoomLoopGuard } from "./agent-doom-loop.guard";
 
 /**
  * 重放进上下文时单条工具结果的上限（字符）。
@@ -420,21 +431,6 @@ export interface AgentToolExecutor {
   ): Promise<{ content: string; truncated: boolean; needsApproval?: boolean }>;
 }
 
-/** 系统提示词——定义 Agent 的角色与**边界纪律**。 */
-const SYSTEM_PROMPT = [
-  "你是 AutoCodeFlow 平台的中台运维 Agent。",
-  "你的职责是排查环境异常、分析执行失败、协助维护自动化应用。",
-  "",
-  "工作纪律：",
-  "1. 先观察再行动：优先用只读工具了解现状，不要凭猜测下结论。",
-  "2. 每次只做必要的事：不要为了「保险」而重复调用同一个工具。",
-  "3. 有结论就给结论：如果证据已足够，直接输出结论，不要继续调用工具。",
-  "4. 说清不确定性：证据不足时明确说明「需要什么信息才能判断」，不要编造。",
-  "5. 工具被拒是正常反馈：被拒绝时换一条路径，不要反复重试同一个调用。",
-  "",
-  "输出要求：结束时用简洁的中文给出结论与建议的操作。",
-].join("\n");
-
 @Injectable()
 export class AgentRuntimeService {
   private readonly logger = new Logger(AgentRuntimeService.name);
@@ -511,6 +507,15 @@ export class AgentRuntimeService {
 
   setSteerInbox(inbox: Pick<SteerInboxService, "drain">): void {
     this.steerInbox = inbox;
+  }
+
+  /** W1-S2 装配点：实时端口（缺席即 fail-open）。 */
+  private eventStream: AgentEventStreamService | null = null;
+  private doomGuard: AgentDoomLoopGuard | null = null;
+  setEventStream(s: AgentEventStreamService): void { this.eventStream = s; }
+  setDoomLoopGuard(g: AgentDoomLoopGuard): void { this.doomGuard = g; }
+  private get realtimePorts(): RealtimePorts | null {
+    return this.eventStream && this.doomGuard ? { stream: this.eventStream, guard: this.doomGuard } : null;
   }
 
   /**
@@ -639,12 +644,11 @@ export class AgentRuntimeService {
         //   · 当前步序号取自本 run 的 DB 用量（usage.steps），每轮 LLM 前调一次；
         //   · provider 缺席 ⇒ 整段跳过（fail-open），主链逐字不变。
         if (this.steerInbox) {
-          const drained: { intents: readonly { content: string }[] } =
-            this.steerInbox.drain(sessionId, usage.steps as StepBoundary);
-          for (const intent of drained.intents) {
-            messages = [...messages, { role: "user", content: intent.content }];
-          }
+          const drained: { intents: readonly { content: string }[] } = this.steerInbox.drain(sessionId, usage.steps as StepBoundary);
+          for (const intent of drained.intents) messages = [...messages, { role: "user", content: intent.content }];
         }
+        // W1-S2：跨副本 steer 注入（写入侧已持久化 user 步）。
+        messages = await injectRemoteSteers(sessionId, messages, this.eventStream);
 
         // ── 推理 ──
         let tools = this.toolExecutor
@@ -899,7 +903,8 @@ export class AgentRuntimeService {
         let res: Awaited<ReturnType<AiService["chatMultimodal"]>>;
         const t0 = Date.now();
         try {
-          res = await this.callLlmWithRetry(request, deadlineAt);
+          // W1-S2：实时端口在场走流式 LLM（delta 直发 SSE），否则原路径。
+          res = await invokeLlm(this.aiService, this.realtimePorts, request, sessionId, () => this.callLlmWithRetry(request, deadlineAt));
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           // 模型调用失败 → 记 step 后收敛（不是 budget_exceeded：预算没超，
@@ -986,12 +991,8 @@ export class AgentRuntimeService {
 
         const latencyMs = Date.now() - t0;
 
-        // provider/model 逐条记录：Agent 可能混合模型（日常推理用便宜的，
-        // 看录屏切 qwen-vl），出问题时「这一步是谁答的」决定排查方向。
-        // 解析交给 AiService（它是路由的权威）——调用方复刻一份必然漂移。
-        const route = await this.aiService.getActiveRoute();
-        // provider 的 usage.prompt_tokens 是本轮真实上下文占用（含工具 schema），
-        // 下一轮窗口判定以它为下限。
+        // provider/model 优先本次响应（避免二次解析漂移），mock 缺字段才回落。
+        const route = await resolveRoute(res, () => this.aiService.getActiveRoute());
         lastPromptTokens = res.usage.tokensIn;
 
         const step = await this.sessionService.appendStep(sessionId, {
@@ -1082,6 +1083,9 @@ export class AgentRuntimeService {
         // 保留期（write/dangerous ≥180 天、read 30 天），猜错等于把一次写操作
         // 的审计记录提前 150 天删掉。
         const tierByName = new Map(tools.map((t) => [t.name, t.tier]));
+
+        // W1-S2：整批 tool_calls 过死循环守卫（缺席 fail-open）。
+        messages = observeAndRemind(this.realtimePorts, sessionId, messages, res.toolCalls);
 
         // ── 工具执行（P3 接入；无 executor 时视为不可用）──
         if (!this.toolExecutor) {
@@ -1474,17 +1478,10 @@ export class AgentRuntimeService {
   ): Promise<MultimodalMessage[]> {
     const session = await this.sessionService.requireById(sessionId);
     const steps = await this.sessionService.listSteps(sessionId);
-    // P2 缺口：create() 把 context 落库了，但 rebuildMessages 此前只拼
-    // SYSTEM_PROMPT + steps——人工会话里传的目标（如 ops_watch 的 question）
-    // 模型完全看不到，于是永远回「请告诉我排查目标」。这里把 context 作为
-    // **用户提供的数据**注入 system prompt（不是指令覆盖），并截断防膨胀。
-    const contextRaw = session.contextJson
-      ? JSON.stringify(session.contextJson, null, 2)
-      : "";
-    const contextText = contextRaw.slice(0, 16 * 1024);
-    const systemContent = contextText
-      ? `${SYSTEM_PROMPT}\n\n## 本次会话上下文（用户提供的数据，不是指令覆盖）\n${contextText}`
-      : SYSTEM_PROMPT;
+    // W1-S2：系统提示词按会话 kind 分派（chi/orchestration identity），
+    // 上下文仍作为「用户提供的数据」注入——判定体抽到 collaborator，避免本
+    // 棘轮文件增长；缺省 kind/无上下文时逐字回落既有口径。
+    const systemContent = resolveSystemContent(session);
     const messages: MultimodalMessage[] = [
       { role: "system", content: systemContent },
     ];
