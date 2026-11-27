@@ -82,12 +82,12 @@ export class ListWorkbenchSessionsQueryDto {
   @Max(10000)
   page?: number;
 
-  @ApiPropertyOptional({ type: Number, minimum: 1, maximum: 20 })
+  @ApiPropertyOptional({ type: Number, minimum: 1, maximum: 50 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(20)
+  @Max(50)
   pageSize?: number;
 }
 
@@ -129,6 +129,10 @@ export class WorkbenchSessionStepDto {
   @ApiPropertyOptional({ description: "步骤正文预览（最长 200 字）", nullable: true })
   contentPreview: string | null;
 
+  /** 完整正文（<=8000 字符）。contentPreview 保留兼容。 */
+  @ApiPropertyOptional({ description: "完整步骤正文（最长 8000 字符）", nullable: true })
+  content?: string | null;
+
   @ApiPropertyOptional({ description: "步骤创建时间", nullable: true })
   createdAt: Date | string | null;
 }
@@ -149,9 +153,13 @@ export class WorkbenchSessionArtifactDto {
 
   @ApiPropertyOptional({ nullable: true })
   downloadUrl: string | null;
+
+  /** 预览直链（供 UI 直接打开，不需拼路径）。 */
+  @ApiPropertyOptional({ description: "产物预览直链", nullable: true })
+  previewUrl?: string | null;
 }
 
-/** 工具调用摘要：只给审计面最小事实，不回传 args/result。 */
+/** 工具调用摘要：给审计面事实，不回传完整 args/result（只给预览）。 */
 export class WorkbenchSessionToolCallDto {
   @ApiProperty()
   toolName: string;
@@ -164,6 +172,15 @@ export class WorkbenchSessionToolCallDto {
 
   @ApiPropertyOptional({ nullable: true })
   createdAt: Date | string | null;
+
+  @ApiPropertyOptional({ description: "调用参数预览", nullable: true })
+  argsPreview?: string | null;
+
+  @ApiPropertyOptional({ description: "调用结果预览", nullable: true })
+  outputPreview?: string | null;
+
+  @ApiPropertyOptional({ description: "状态变更时刻", nullable: true })
+  stateChangedAt?: Date | string | null;
 }
 
 /** 审批单摘要：沿用现有审批键/状态，不引入任何处置写能力。 */
@@ -185,6 +202,15 @@ export class WorkbenchSessionApprovalDto {
 
   @ApiPropertyOptional({ nullable: true })
   createdAt: Date | string | null;
+
+  @ApiPropertyOptional({ description: "审批参数摘要（哈希）", nullable: true })
+  argsDigest?: string | null;
+
+  @ApiPropertyOptional({ description: "当前管理员是否可批准/拒绝" })
+  canDecide?: boolean;
+
+  @ApiPropertyOptional({ description: "当前用户是否可撤回" })
+  canWithdraw?: boolean;
 
   /** ADMIN 指向既有审批 UI；USER 恒 null（不绕开四眼）。 */
   @ApiPropertyOptional({ nullable: true })
@@ -210,6 +236,25 @@ export class WorkbenchSessionDetailResponseDto {
 
   @ApiPropertyOptional({ description: "会话标题", nullable: true })
   title?: string | null;
+
+  @ApiPropertyOptional({
+    description: "终态结论（结构化或文本）",
+    nullable: true,
+    oneOf: [{ type: "object" }, { type: "string" }],
+  })
+  conclusion?: unknown;
+
+  @ApiPropertyOptional({ description: "失败/中止原因", nullable: true })
+  errorMessage?: string | null;
+
+  @ApiPropertyOptional({ description: "等待外部输入的说明", nullable: true })
+  waitingFor?: string | null;
+
+  @ApiPropertyOptional({ description: "创建时间", nullable: true })
+  createdAt?: Date | string | null;
+
+  @ApiPropertyOptional({ description: "更新时间", nullable: true })
+  updatedAt?: Date | string | null;
 
   @ApiProperty({ description: "步骤总数（全部已落库步骤）" })
   stepCount: number;

@@ -34,6 +34,9 @@ export interface WorkbenchSessionSummary {
   steps: Array<{
     seq: number;
     role: string;
+    /** 完整正文，最长 8000 字符（读取面增强）。 */
+    content?: string | null;
+    /** 兼容旧调用方：截断预览。 */
     contentPreview: string | null;
     createdAt: Date | string | null;
   }>;
@@ -44,6 +47,8 @@ export interface WorkbenchSessionSummary {
     name: string;
     size: number;
     createdAt: Date | string | null;
+    /** 预览直链（可由 id/name 拼出，供 UI 直接打开）。 */
+    previewUrl?: string | null;
   }>;
 }
 

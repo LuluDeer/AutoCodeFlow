@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import {
+  IsBoolean,
   IsIn,
   IsNotEmpty,
   IsObject,
@@ -9,13 +10,20 @@ import {
   MaxLength,
 } from "class-validator";
 
-/** preview 契约固定三档 cron；顺序即枚举顺序，前端按此发送。 */
-export const PREVIEW_CADENCES = ["daily", "weekly", "monthly"] as const;
+/** preview 契约固定五档触发周期；顺序即枚举顺序，前端按此发送。 */
+export const PREVIEW_CADENCES = [
+  "once",
+  "hourly",
+  "daily",
+  "weekly",
+  "monthly",
+] as const;
 export type PreviewCadence = (typeof PREVIEW_CADENCES)[number];
 
 /** POST /api/workbench/preview 入参（字段名固定，前端 agent 依赖）。 */
 export class PreviewPlanCardRequestDto {
   @ApiProperty({
+    description: "业务目标描述",
     minLength: 1,
     maxLength: 500,
     example: "汇总昨日订单异常并推送日报",
@@ -25,7 +33,11 @@ export class PreviewPlanCardRequestDto {
   @MaxLength(500)
   goal: string;
 
-  @ApiProperty({ enum: PREVIEW_CADENCES, example: "daily" })
+  @ApiProperty({
+    description: "触发频率档位（once/hourly/daily/weekly/monthly）",
+    enum: PREVIEW_CADENCES,
+    example: "daily",
+  })
   @IsIn(PREVIEW_CADENCES)
   cadence: PreviewCadence;
 
@@ -36,6 +48,14 @@ export class PreviewPlanCardRequestDto {
   @IsOptional()
   @IsObject()
   params?: Record<string, string>;
+
+  @ApiPropertyOptional({
+    description: "是否启用大模型辅助方案规划（可选；不影响确定性方案卡哈希）",
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  useAi?: boolean;
 }
 
 export class PlanCardBudgetDto {
@@ -66,22 +86,53 @@ export class PlanCardCheckDto {
 }
 
 export class PlanCardDto {
-  @ApiProperty()
+  @ApiProperty({ description: "方案卡标题" })
   title: string;
 
   @ApiProperty({
-    description: "cron 回读出的确定性业务语句（每天/每周/每月 N 日）",
+    description:
+      "触发频率回读出的确定性业务语句（手动触发一次/每小时执行一次/每天/每周/每月 N 日）",
   })
   triggerText: string;
 
-  @ApiProperty({ type: [String] })
+  @ApiProperty({ description: "能力白名单提示列表", type: [String] })
   capabilityHints: string[];
 
-  @ApiProperty()
+  @ApiProperty({ description: "确定性验收说明" })
   acceptanceText: string;
 
-  @ApiProperty({ type: PlanCardBudgetDto })
+  @ApiProperty({ description: "方案卡预算配置", type: PlanCardBudgetDto })
   budget: PlanCardBudgetDto;
+}
+
+/** 大模型辅助规划建议（仅作展示增强，不参与 cardHash 计算）。 */
+export class PlanCardAiSuggestionsDto {
+  @ApiProperty({ description: "大模型生成的方案概要" })
+  summary: string;
+
+  @ApiProperty({ description: "大模型建议的执行步骤列表", type: [String] })
+  suggestedSteps: string[];
+
+  @ApiProperty({ description: "大模型识别的风险提示列表", type: [String] })
+  riskNotes: string[];
+
+  @ApiPropertyOptional({ description: "大模型建议的标题" })
+  title?: string;
+
+  @ApiPropertyOptional({
+    description: "经白名单过滤后的大模型能力建议列表",
+    type: [String],
+  })
+  capabilityHints?: string[];
+
+  @ApiPropertyOptional({ description: "大模型建议的验收说明" })
+  acceptanceText?: string;
+
+  @ApiPropertyOptional({ description: "实际命中的模型名称" })
+  model?: string;
+
+  @ApiPropertyOptional({ description: "实际命中的模型提供方标识" })
+  provider?: string;
 }
 
 /** 响应契约：card + checks + eligible + cardHash（N7 留痕锚点）。 */
@@ -89,10 +140,10 @@ export class PlanCardPreviewResponseDto {
   @ApiProperty({ description: "是否通过确定性闸门；任一 fail 即 false" })
   eligible: boolean;
 
-  @ApiProperty({ type: PlanCardDto })
+  @ApiProperty({ description: "确定性生成的方案卡", type: PlanCardDto })
   card: PlanCardDto;
 
-  @ApiProperty({ type: [PlanCardCheckDto] })
+  @ApiProperty({ description: "确定性校验项列表", type: [PlanCardCheckDto] })
   checks: PlanCardCheckDto[];
 
   @ApiProperty({
@@ -105,6 +156,19 @@ export class PlanCardPreviewResponseDto {
       "策略代际指纹（16 位十六进制）——能力/预算策略变更后需重新 preview",
   })
   policyGeneration: string;
+
+  @ApiPropertyOptional({
+    enum: ["ai", "deterministic"],
+    description:
+      "规划模式：ai 表示已附加大模型建议，deterministic 表示纯确定性规划",
+  })
+  plannerMode?: "ai" | "deterministic";
+
+  @ApiPropertyOptional({
+    type: PlanCardAiSuggestionsDto,
+    description: "大模型辅助生成的步骤与风险建议（仅启用且模型可用时返回）",
+  })
+  aiSuggestions?: PlanCardAiSuggestionsDto;
 }
 
 /**

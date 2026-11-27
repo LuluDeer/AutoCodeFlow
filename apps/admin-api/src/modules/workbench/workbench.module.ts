@@ -59,13 +59,29 @@ import {
   type WorkbenchSessionSummary,
   type WorkbenchSessionsPort,
 } from "./workbench-sessions.port";
+import { WorkbenchSessionController } from "./workbench-session.controller";
+import { WORKBENCH_SESSION_INTERACTION_PORT } from "./workbench-session-interaction.port";
+import { createWorkbenchSessionInteractionPort } from "./workbench-session-interaction.adapter";
+import { WorkbenchAiPlannerService } from "./workbench-ai-planner.service";
+import { AiModule } from "../ai/ai.module";
 
 type WorkbenchSessionDetailRead = Omit<WorkbenchSessionSummary, "artifacts"> & {
+  title?: string | null;
+  kind?: string;
+  status?: string;
+  conclusion?: unknown;
+  errorMessage?: string | null;
+  waitingFor?: string | null;
+  createdAt?: Date | string | null;
+  updatedAt?: Date | string | null;
   toolCalls: Array<{
     toolName: string;
     status: string;
     errorSummary: string | null;
     createdAt: Date | string | null;
+    argsPreview?: string | null;
+    outputPreview?: string | null;
+    stateChangedAt?: Date | string | null;
   }>;
   approvalItems: Array<{
     approvalKey: string;
@@ -74,6 +90,9 @@ type WorkbenchSessionDetailRead = Omit<WorkbenchSessionSummary, "artifacts"> & {
     reason: string | null;
     decidedBy: string | null;
     createdAt: Date | string | null;
+    argsDigest?: string | null;
+    canDecide?: boolean;
+    canWithdraw?: boolean;
   }>;
   artifacts: Array<{
     id: string;
@@ -81,6 +100,7 @@ type WorkbenchSessionDetailRead = Omit<WorkbenchSessionSummary, "artifacts"> & {
     size: number;
     createdAt: Date | string | null;
     downloadUrl: string | null;
+    previewUrl?: string | null;
   }>;
 };
 
@@ -96,6 +116,7 @@ type WorkbenchSessionsRuntimePort = WorkbenchSessionsPort & {
       sessionId: string;
       status: string;
       title: string | null;
+      kind?: string;
       createdAt: Date | string | null;
       sopId: string | null;
     }>;
@@ -108,6 +129,25 @@ function clipText(value: unknown, max = 200): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
   return trimmed.length > max ? `${trimmed.slice(0, max)}...` : trimmed;
+}
+
+/** 步骤完整正文上限（8000 字符）；contentPreview 另留 200 字兼容。 */
+const STEP_CONTENT_MAX = 8_000;
+
+/** 把 jsonb 参数/结果投影成有界预览字符串（避免把完整大字段外发）。 */
+function jsonPreview(value: unknown, max = 400): string | null {
+  if (value === null || value === undefined) return null;
+  let text: string;
+  if (typeof value === "string") text = value;
+  else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      return null;
+    }
+  }
+  if (!text) return null;
+  return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
 function toolErrorSummary(row: {
@@ -147,9 +187,11 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
     CapabilityActivationModule,
     SystemConfigModule,
     AuditModule,
+    AiModule,
   ],
-  controllers: [WorkbenchController, ReleaseRetryController],
+  controllers: [WorkbenchController, ReleaseRetryController, WorkbenchSessionController],
   providers: [
+    WorkbenchAiPlannerService,
     {
       provide: CapabilityActivationRecorder,
       useExisting: CapabilityActivationService,
@@ -339,13 +381,13 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
           listOwn: async ({ createdBy, createdByAlias, page, pageSize }) => {
             const dataSource = moduleRef.get(DataSource, { strict: false });
             const safePage = Math.max(1, Math.trunc(Number(page) || 1));
-            const safePageSize = Math.min(20, Math.max(1, Math.trunc(Number(pageSize) || 20)));
+            const safePageSize = Math.min(50, Math.max(1, Math.trunc(Number(pageSize) || 20)));
             const offset = (safePage - 1) * safePageSize;
             const alias = createdByAlias || createdBy;
-            const where = `s."createdBy" IN ($1, $2) AND s.kind = 'sop_authoring'`;
+            const where = `s."createdBy" IN ($1, $2) AND s.kind IN ('chat','plan','sop_authoring')`;
             const [rows, totalRows] = await Promise.all([
               dataSource.query(
-                `SELECT s.id, s.status, s.title, s."createdAt",
+                `SELECT s.id, s.status, s.title, s.kind, s."createdAt",
                         s."scopeJson"::jsonb -> 'sops' ->> 0 AS "sopId"
                    FROM agent_sessions s
                   WHERE ${where}
@@ -365,6 +407,7 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
                 sessionId: String(row.id),
                 status: String(row.status),
                 title: row.title == null ? null : String(row.title),
+                kind: row.kind == null ? null : String(row.kind),
                 createdAt: row.createdAt ?? null,
                 sopId: row.sopId == null ? null : String(row.sopId),
               })),
@@ -373,7 +416,8 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
           },
           readSummary: async (id) => {
             const svc = sessions();
-            const [steps, toolCalls, approvals] = await Promise.all([
+            const [sessionRow, steps, toolCalls, approvals] = await Promise.all([
+              svc.findById(id),
               svc.listSteps(id),
               svc.listToolCalls(id),
               moduleRef
@@ -389,6 +433,7 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
               size: number;
               createdAt: Date | string | null;
               downloadUrl: string | null;
+              previewUrl: string | null;
             }> = [];
             try {
               const dataSource = moduleRef.get(DataSource, { strict: false });
@@ -401,13 +446,17 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
                   LIMIT 20`,
                 [id],
               );
-              artifacts = rows.map((r: Record<string, unknown>) => ({
-                id: String(r.id),
-                name: String(r.name),
-                size: Number(r.size),
-                createdAt: r.createdAt ?? null,
-                downloadUrl: artifactDownloadUrl(r.executionId, r.name),
-              }));
+              artifacts = rows.map((r: Record<string, unknown>) => {
+                const url = artifactDownloadUrl(r.executionId, r.name);
+                return {
+                  id: String(r.id),
+                  name: String(r.name),
+                  size: Number(r.size),
+                  createdAt: r.createdAt ?? null,
+                  downloadUrl: url,
+                  previewUrl: url,
+                };
+              });
             } catch {
               // 读面降级：产物摘要缺席必须可见（空数组），不伪造内容。
             }
@@ -416,22 +465,43 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
               approvalCounts[a.status] = (approvalCounts[a.status] ?? 0) + 1;
             }
             return {
+              // 会话头字段（读回时间线所需上下文）。
+              ...(sessionRow
+                ? {
+                    title: sessionRow.title ?? null,
+                    kind: sessionRow.kind,
+                    status: sessionRow.status,
+                    conclusion: sessionRow.resultJson ?? null,
+                    errorMessage: sessionRow.errorMessage ?? null,
+                    waitingFor: sessionRow.waitingFor ?? null,
+                    createdAt: sessionRow.createdAt ?? null,
+                    updatedAt: sessionRow.updatedAt ?? null,
+                  }
+                : {}),
               stepCount: steps.length,
-              steps: steps.slice(-5).map((s) => ({
-                seq: Number(s.seq),
-                role: String(s.role),
-                contentPreview:
-                  typeof s.content === "string"
-                    ? s.content.slice(0, 200)
-                    : null,
-                createdAt: s.createdAt ?? null,
-              })),
+              // 完整时间线：最多 50 步，每步正文 <=8000 字符。
+              steps: steps.slice(-50).map((s) => {
+                const full = typeof s.content === "string" ? s.content : null;
+                const bounded = full !== null && full.length > STEP_CONTENT_MAX
+                  ? full.slice(0, STEP_CONTENT_MAX)
+                  : full;
+                return {
+                  seq: Number(s.seq),
+                  role: String(s.role),
+                  content: bounded,
+                  contentPreview: full !== null ? full.slice(0, 200) : null,
+                  createdAt: s.createdAt ?? null,
+                };
+              }),
               toolCallCount: toolCalls.length,
               toolCalls: toolCalls.map((tc) => ({
                 toolName: String(tc.toolName),
                 status: String(tc.status),
                 errorSummary: toolErrorSummary(tc),
                 createdAt: tc.createdAt ?? null,
+                argsPreview: jsonPreview((tc as { argsJson?: unknown }).argsJson),
+                outputPreview: jsonPreview((tc as { resultJson?: unknown }).resultJson),
+                stateChangedAt: (tc as { stateChangedAt?: Date | null }).stateChangedAt ?? null,
               })),
               approvals: approvalCounts,
               approvalItems: approvals.map((a) => ({
@@ -441,12 +511,24 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
                 reason: clipText(a.reason),
                 decidedBy: a.decidedBy ?? null,
                 createdAt: a.createdAt ?? null,
+                argsDigest: (a as { argsDigest?: string | null }).argsDigest ?? null,
+                canDecide: a.status === "pending",
+                canWithdraw: a.status === "pending",
               })),
               artifacts,
             };
           },
         };
       },
+    },
+    // 交互式会话端口：prompt-first 创建 / SSE / 消息 / 中止 / 审批处置。
+    // 惰性解析 AgentModule 导出的 AgentEventStreamService（w1-agent-realtime），
+    // 缺席时端点报 DEPENDENCY_UNAVAILABLE，绝不回空壳。
+    {
+      provide: WORKBENCH_SESSION_INTERACTION_PORT,
+      inject: [ModuleRef],
+      useFactory: (moduleRef: ModuleRef) =>
+        createWorkbenchSessionInteractionPort(moduleRef),
     },
   ],
 })

@@ -33,16 +33,19 @@ export const PREVIEW_DEFAULT_MAX_TURNS = 10;
 /**
  * 能力白名单：取自 SOP frontmatter 的真实能力域
  * （apps/admin-api/src/modules/sop/sop-frontmatter.ts 的 SOP_CAPABILITIES =
- *  ["browser","gui","filesystem","http"]），只放 3 个真实存在的 key，禁止编造。
+ *  ["browser","gui","filesystem","http"]），禁止编造未登记能力键。
  */
 export const PREVIEW_CAPABILITY_WHITELIST = [
   "browser",
   "gui",
   "filesystem",
+  "http",
 ] as const;
 
-/** cron 档 → 业务语句回读表：唯一事实源，纯查表，无 LLM、无格式化分支。 */
+/** 触发周期档位 → 业务语句回读表：唯一事实源，纯查表，无 LLM、无格式化分支。 */
 const CADENCE_TRIGGER_TEXT: Readonly<Record<PreviewCadence, string>> = {
+  once: "手动触发一次",
+  hourly: "每小时执行一次",
   daily: "每天",
   weekly: "每周",
   monthly: "每月 N 日",
@@ -55,7 +58,7 @@ export interface PreviewResult {
   cardHash: string;
 }
 
-/** cron 值 → 业务语句（daily→每天 / weekly→每周 / monthly→每月 N 日）。 */
+/** 触发频率值 → 确定性业务语句（once/hourly/daily/weekly/monthly）。 */
 export function cadenceToTriggerText(cadence: PreviewCadence): string {
   return CADENCE_TRIGGER_TEXT[cadence];
 }
@@ -174,7 +177,7 @@ export function buildPreview(dto: PreviewPlanCardRequestDto): PreviewResult {
     !Object.prototype.hasOwnProperty.call(CADENCE_TRIGGER_TEXT, dto.cadence)
   ) {
     throw new AppError(ErrorCode.VALIDATION_FAILED, {
-      detail: "cadence 必须是 daily | weekly | monthly",
+      detail: "cadence 必须是 once | hourly | daily | weekly | monthly",
     });
   }
 

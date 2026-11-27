@@ -95,14 +95,24 @@ import {
   type WorkbenchSessionSummary,
   type WorkbenchSessionsPort,
 } from "./workbench-sessions.port";
+import { WorkbenchAiPlannerService } from "./workbench-ai-planner.service";
 
 /** 读回摘要的增强投影：模块适配器提供，控制器对老替身缺字段做安全回落。 */
 type WorkbenchSessionDetailRead = Omit<WorkbenchSessionSummary, "artifacts"> & {
+  title?: string | null;
+  conclusion?: unknown;
+  errorMessage?: string | null;
+  waitingFor?: string | null;
+  createdAt?: Date | string | null;
+  updatedAt?: Date | string | null;
   toolCalls?: Array<{
     toolName: string;
     status: string;
     errorSummary: string | null;
     createdAt: Date | string | null;
+    argsPreview?: string | null;
+    outputPreview?: string | null;
+    stateChangedAt?: Date | string | null;
   }>;
   approvalItems?: Array<{
     approvalKey: string;
@@ -111,6 +121,9 @@ type WorkbenchSessionDetailRead = Omit<WorkbenchSessionSummary, "artifacts"> & {
     reason: string | null;
     decidedBy: string | null;
     createdAt: Date | string | null;
+    argsDigest?: string | null;
+    canDecide?: boolean;
+    canWithdraw?: boolean;
   }>;
   artifacts: Array<{
     id: string;
@@ -118,6 +131,7 @@ type WorkbenchSessionDetailRead = Omit<WorkbenchSessionSummary, "artifacts"> & {
     size: number;
     createdAt: Date | string | null;
     downloadUrl?: string | null;
+    previewUrl?: string | null;
   }>;
 };
 
@@ -316,6 +330,10 @@ export class WorkbenchController {
     @Optional()
     @Inject(WORKBENCH_SESSIONS_PORT)
     private readonly sessions?: WorkbenchSessionsPort | null,
+    // AI 辅助方案规划（展示增强）。@Optional 追加在末尾以兼容既有定位参数单测；
+    // 缺席或 useAi 未开时 preview 的确定性语义（cardHash/eligible）逐字不变。
+    @Optional()
+    private readonly aiPlanner?: WorkbenchAiPlannerService | null,
   ) {}
 
   /**
@@ -367,9 +385,14 @@ export class WorkbenchController {
     );
 
     // N14+/持久化：把生成当下的**运行时**策略代际随卡一并返回，供 commit 回读比对。
+    // AI 建议只做展示增强：失败回落 deterministic，绝不进入 card/cardHash/eligible。
+    const ai = this.aiPlanner
+      ? await this.aiPlanner.enhance(dto, result.card)
+      : {};
     return {
       ...result,
       policyGeneration: await this.currentGeneration(),
+      ...ai,
     };
   }
 
@@ -880,11 +903,19 @@ export class WorkbenchController {
       scope,
       ...(session.title ? { title: session.title } : {}),
       ...summary,
+      conclusion: session.resultJson ?? summary.conclusion ?? null,
+      errorMessage: session.errorMessage ?? summary.errorMessage ?? null,
+      waitingFor: session.waitingFor ?? summary.waitingFor ?? null,
+      createdAt: session.createdAt ?? summary.createdAt ?? null,
+      updatedAt: session.updatedAt ?? summary.updatedAt ?? null,
       toolCalls: (summary.toolCalls ?? []).map((tc) => ({
         toolName: String(tc.toolName),
         status: String(tc.status),
         errorSummary: tc.errorSummary ?? null,
         createdAt: tc.createdAt ?? null,
+        argsPreview: tc.argsPreview ?? null,
+        outputPreview: tc.outputPreview ?? null,
+        stateChangedAt: tc.stateChangedAt ?? null,
       })),
       approvalItems: (summary.approvalItems ?? []).map((item) => ({
         approvalKey: String(item.approvalKey),
@@ -893,6 +924,9 @@ export class WorkbenchController {
         reason: item.reason ?? null,
         decidedBy: item.decidedBy ?? null,
         createdAt: item.createdAt ?? null,
+        argsDigest: item.argsDigest ?? null,
+        canDecide: isAdmin && item.canDecide === true,
+        canWithdraw: !isAdmin && item.canWithdraw === true,
         reviewUrl: isAdmin
           ? `${reviewBase}&approvalKey=${encodeURIComponent(item.approvalKey)}`
           : null,
@@ -903,6 +937,7 @@ export class WorkbenchController {
         size: Number(artifact.size),
         createdAt: artifact.createdAt ?? null,
         downloadUrl: artifact.downloadUrl ?? null,
+        previewUrl: artifact.previewUrl ?? artifact.downloadUrl ?? null,
       })),
     };
   }
