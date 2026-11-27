@@ -457,6 +457,18 @@ export class TaskExecutionResponseDto {
   })
   executorAddress: string | null;
 
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "claim 时落库的执行模式快照（single/broadcast），不随任务当前 executeMode 变化",
+  })
+  executeMode?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "本次执行是否按广播派发，claim 时落库；null 表示没有快照的历史执行行",
+  })
+  isBroadcast?: boolean | null;
+
   /**
    * ADR-017 阶段 3：派发到的那台执行器行的 `executors.id`（行身份）。
    *
@@ -824,9 +836,23 @@ export class ExecutionLogsPageResponseDto {
   totalLines: number;
 
   @ApiProperty({
-    description: "fromLine + lines.length < totalLines 时为 true",
+    description:
+      "是否还有 lineNumber >= nextCursor 的行。按真实行号判定，行号有洞时不会因 fromLine + lines.length 漂移而误报/漏报",
   })
   hasMore: boolean;
+
+  @ApiProperty({
+    type: [Number],
+    description:
+      "与 lines 下标一一对应的真实行号（行号有洞时如实给出，可用于与 SSE 帧按行号去重）",
+  })
+  lineNumbers: number[];
+
+  @ApiProperty({
+    description:
+      "下一页 fromLine = 本页最后一行 lineNumber + 1；空页时等于本次请求的 fromLine。客户端不再用行数推进游标",
+  })
+  nextCursor: number;
 
   /**
    * R284-LOGPURGE-01：日志是否**已被保留期清理**（日志行留 `logRetention.days`，
@@ -856,6 +882,21 @@ export class ExecutionLogsPageResponseDto {
       "清理截止时刻（当前时间减去日志保留期天数）；仅 logsPurged 为 true 时非 null。",
   })
   logsPurgedAt?: string | null;
+}
+
+/** SSE 日志帧：`data` 直接是本对象的 JSON（不再把整行文本当 data 字符串）。 */
+export class ExecutionLogStreamFrameDto {
+  @ApiProperty({
+    description: "该行的全局行号；前端按它去重、断线重连时作为 fromLine",
+    example: 42,
+  })
+  lineNumber: number;
+
+  @ApiProperty({
+    description: "原始日志行文本（与 REST lines 元素同义）",
+    example: "[INFO] task started",
+  })
+  content: string;
 }
 
 /** GET /tasks/:id/executions/:execId/report（OBS-04 一次性三合一载荷）。 */

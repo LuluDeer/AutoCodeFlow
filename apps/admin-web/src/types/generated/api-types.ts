@@ -3864,7 +3864,7 @@ export interface paths {
         put?: never;
         /**
          * 创建任务
-         * @description 创建新的自动化任务。支持 cron、webhook 与事件三种触发方式。任务创建后处于暂停状态。
+         * @description 创建新的自动化任务。支持 cron、webhook 与事件三种触发方式。任务创建后缺省处于暂停状态；请求体显式传入 status 时以传入值为准。
          */
         post: operations["TaskController_create"];
         delete?: never;
@@ -4168,7 +4168,7 @@ export interface paths {
         put?: never;
         /**
          * 导入任务定义（JSON 导出载荷）
-         * @description E-1：用 GET /tasks/:id/export 的载荷创建任务。校验走完整的 POST /tasks 创建链路。名称冲突绝不覆盖：追加 ' (imported)'，再依次尝试 ' (imported) 2'、' (imported) 3'……直到找到可用名称。密钥绝不参与传输（SEC-02 红线）：载荷中携带的 secrets 键会被忽略，导入的任务在无密钥状态下启动——warnings 中始终包含重新配置的提示。新任务初始为暂停状态。
+         * @description E-1：用 GET /tasks/:id/export 的载荷创建任务。校验走完整的 POST /tasks 创建链路。名称冲突绝不覆盖：追加 ' (imported)'，再依次尝试 ' (imported) 2'、' (imported) 3'……直到找到可用名称。密钥绝不参与传输（SEC-02 红线）：载荷中携带的 secrets 键会被忽略，导入的任务在无密钥状态下启动——warnings 中始终包含重新配置的提示。新任务缺省为暂停状态（定义导出不含 status，导入后需显式 resume 才会调度）。
          */
         post: operations["TaskController_importDefinition"];
         delete?: never;
@@ -4834,7 +4834,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** 列出当前用户创建的工作台会话 */
+        get: operations["WorkbenchController_listSessions"];
         put?: never;
         /** 运行我的 SOP 草稿：创建限权 Agent 会话并入 agent-jobs 队列 */
         post: operations["WorkbenchController_createSession"];
@@ -4965,7 +4966,18 @@ export interface components {
         AgentCollabPollDto: {
             /** @example office-pc-07:8002 */
             address: string;
+            /** @description 本轮执行器声明的能力域（快照来源，不授予权限） */
+            capabilities?: string[];
+            /** @description EnvironmentReport 形态的富能力报告（快照来源） */
+            capabilityReport?: {
+                [key: string]: unknown;
+            };
+            /** @description 领取时生效的权限档位字符串（截断到 32 字） */
+            effectiveProfile?: string;
             inflight?: string[];
+            report?: {
+                [key: string]: unknown;
+            };
             resendAssignments?: boolean | string[];
             /** @description 长轮询等待（服务端钳位 ≤25s） */
             waitMs?: number;
@@ -5663,6 +5675,11 @@ export interface components {
             retained: boolean;
         };
         AppReleaseRowDto: {
+            /**
+             * Format: date-time
+             * @description 版本行创建时刻（快照诞生时间）；纯部署行时为部署完成时刻
+             */
+            createdAt: string | null;
             /** @description 最近一次部署完成时间（ISO 字符串 —— 本视图做了字符串化） */
             deployedAt: string | null;
             /** @description 该版本的部署次数 */
@@ -5683,13 +5700,22 @@ export interface components {
             /** @description 取 deployments.operator，回退到 versions.createdBy */
             operator: string | null;
             /** @description operator 为 null 时的原因（RELEASE_OPERATOR_MISSING_REASON） */
-            operatorMissingReason: string;
+            operatorMissingReason: string | null;
             /** @enum {string} */
             operatorSource: "deployments.operator" | "application_versions.createdBy";
             /** @description 快照中的 packageUrl（部署时刻的值 —— 不回退到应用当前 URL） */
             packageUrl: string | null;
             /** @enum {string|null} */
             runMode: "once" | "daemon" | "scheduled" | null;
+            /**
+             * Format: uuid
+             * @description 生成该版本快照的来源部署行 id；纯部署行取最近一次部署行 id（深链命中键之一）
+             */
+            sourceDeploymentId: string | null;
+            /** @description application_versions.status（released/deploying/failed）；纯部署行时为部署状态字符串 */
+            status: string;
+            /** @description 是否由部署记录合成（应用从未为本次部署保存版本快照，如心跳先到的竞态） */
+            synthetic: boolean;
             /**
              * @description 优先取持久化列，legacy 行推导得出（无法判定时为 unknown）
              * @enum {string|null}
@@ -5863,6 +5889,8 @@ export interface components {
             } | null;
             /** @description 处置是否成功（成功恒为 true，失败由错误码表示） */
             ok: boolean;
+            /** @description 本次处置是否把会话重新入队恢复（与 grant/deny 端点同口径：仅允许且会话挂起等待审批、无其它 pending 单时为 true） */
+            resumed: boolean;
         };
         ArtifactManifestItemDto: {
             /** @description 产物文件名（裸文件名，不含任何路径分隔符） */
@@ -5983,6 +6011,8 @@ export interface components {
         CallbackItemDto: {
             /** @description FEAT-05：执行产物清单（best-effort，最多 20 条）。文件字节通过产物上传端点单独上传；清单在终态回调时持久化到 task_executions.artifacts。 */
             artifacts?: components["schemas"]["ArtifactManifestItemDto"][];
+            /** @description 尝试世代：claim 时由 admin 写入派发载荷，执行器原样回传。终态写入优先用它做并发世代门禁；缺省回退服务端快照以兼容旧执行器。非有限整数按缺省处理。 */
+            attemptSeq?: number;
             /**
              * @description ADR-017 阶段 3（protocol v6）：发起回调的执行器的稳定安装标识——sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符，与 register/heartbeat 同值。它是本次回调的**行身份**：共享/旧版 token 不绑定任何行，且当 pull 模式的执行器共用同一地址后，`executorAddress` 已无法唯一标识一行（ADR-017 §5）。admin 用它把回调归属到该执行实际派发到的那一行。可选——旧版执行器、采集失败以及 SDK 调用方会省略；此时 admin 依次回落到凭据持有行、再回落到地址相等（绝不因缺失而拒绝）。
              * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
@@ -6017,6 +6047,8 @@ export interface components {
              * @enum {string}
              */
             status: "success" | "failed";
+            /** @description OBS-01: 执行器回传的 W3C traceparent。admin 主通道从请求头解析，本字段仅为协议兼容而声明——不声明时 forbidNonWhitelisted 会把执行器既有回调整批 400。 */
+            traceparent?: string;
         };
         CallbackItemResultDto: {
             /** @description success=false 时的原因 */
@@ -6236,6 +6268,11 @@ export interface components {
         CollabPollResponseDto: {
             /** @description 混合条目：指派（首次领取/重发）与澄清回复 */
             items: (components["schemas"]["CollabAssignmentItemDto"] | components["schemas"]["CollabClarificationReplyItemDto"])[];
+            /**
+             * @description 服务端事实源 POLL_ASSIGNMENTS_MAX 下发的单次 poll 最大领取数；缺省按 3 处理
+             * @example 3
+             */
+            maxAssignmentsPerPoll?: number;
             /** @description 每次轮询都会下发的企业策略（执行器本地配置无法覆盖） */
             sopPolicy?: {
                 allowedProfiles: string[];
@@ -6653,7 +6690,12 @@ export interface components {
             secrets?: {
                 [key: string]: string;
             };
-            status?: string;
+            /**
+             * @description 任务初始状态；缺省 paused（创建后不自动调度），显式传入时以传入值为准。
+             * @default paused
+             * @enum {string}
+             */
+            status?: "active" | "paused" | "deleted";
             /** @description 任务执行超时秒数（遗留字段；建议使用 timeoutSeconds）。0 = 不限制；上限为执行器的 1..86400 窗口（executor-node 每次尝试都会以 400 拒绝更大的值）。 */
             timeout?: number;
             /**
@@ -7018,6 +7060,8 @@ export interface components {
             /** Format: date-time */
             endTime: string | null;
             errorMessage: string | null;
+            /** @description claim 时落库的执行模式快照（single/broadcast），不随任务当前 executeMode 变化 */
+            executeMode?: string | null;
             /** @description 该次执行被派发到的执行器地址 */
             executorAddress: string | null;
             /** Format: uuid */
@@ -7047,6 +7091,8 @@ export interface components {
             ] | null;
             /** Format: uuid */
             id: string;
+            /** @description 本次执行是否按广播派发，claim 时落库；null 表示没有快照的历史执行行 */
+            isBroadcast?: boolean | null;
             /** @description 日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键 */
             logObjectKey: string | null;
             /** @description 日志后端的标记：'db' 或对象存储 */
@@ -7106,8 +7152,10 @@ export interface components {
             version: number;
         };
         ExecutionLogsPageResponseDto: {
-            /** @description fromLine + lines.length < totalLines 时为 true */
+            /** @description 是否还有 lineNumber >= nextCursor 的行。按真实行号判定，行号有洞时不会因 fromLine + lines.length 漂移而误报/漏报 */
             hasMore: boolean;
+            /** @description 与 lines 下标一一对应的真实行号（行号有洞时如实给出，可用于与 SSE 帧按行号去重） */
+            lineNumbers: number[];
             /** @description 从 fromLine 起的原始日志行（给定级别过滤时生效） */
             lines: string[];
             /** @description 日志是否已被保留期清理（日志行保留期短于执行行）。true=已按策略清理；false=日志为空但不是清理造成的；null=未知（保留期配置不可读）。仅当本次读取的日志为空时有判定意义。 */
@@ -7117,6 +7165,8 @@ export interface components {
              * @description 清理截止时刻（当前时间减去日志保留期天数）；仅 logsPurged 为 true 时非 null。
              */
             logsPurgedAt?: string | null;
+            /** @description 下一页 fromLine = 本页最后一行 lineNumber + 1；空页时等于本次请求的 fromLine。客户端不再用行数推进游标 */
+            nextCursor: number;
             /** @description （过滤后）行集合的真实总数 */
             totalLines: number;
         };
@@ -9482,6 +9532,8 @@ export interface components {
             /** Format: date-time */
             endTime: string | null;
             errorMessage: string | null;
+            /** @description claim 时落库的执行模式快照（single/broadcast），不随任务当前 executeMode 变化 */
+            executeMode?: string | null;
             /** @description 该次执行被派发到的执行器地址 */
             executorAddress: string | null;
             /** Format: uuid */
@@ -9511,6 +9563,8 @@ export interface components {
             ] | null;
             /** Format: uuid */
             id: string;
+            /** @description 本次执行是否按广播派发，claim 时落库；null 表示没有快照的历史执行行 */
+            isBroadcast?: boolean | null;
             /** @description 日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键 */
             logObjectKey: string | null;
             /** @description 日志后端的标记：'db' 或对象存储 */
@@ -10241,7 +10295,12 @@ export interface components {
             secrets?: {
                 [key: string]: string;
             };
-            status?: string;
+            /**
+             * @description 任务初始状态；缺省 paused（创建后不自动调度），显式传入时以传入值为准。
+             * @default paused
+             * @enum {string}
+             */
+            status?: "active" | "paused" | "deleted";
             /** @description 任务执行超时秒数（遗留字段；建议使用 timeoutSeconds）。0 = 不限制；上限为执行器的 1..86400 窗口（executor-node 每次尝试都会以 400 拒绝更大的值）。 */
             timeout?: number;
             /**
@@ -10436,9 +10495,19 @@ export interface components {
             /** @description 带签名的入站触发 URL */
             url: string;
         };
+        WorkbenchSessionApprovalDto: {
+            approvalKey: string;
+            createdAt?: Record<string, never> | null;
+            decidedBy?: string | null;
+            reason?: string | null;
+            reviewUrl?: string | null;
+            status: string;
+            toolName: string;
+        };
         WorkbenchSessionArtifactDto: {
             /** @description 产物创建时间 */
             createdAt?: Record<string, never> | null;
+            downloadUrl?: string | null;
             /** @description 产物 id */
             id: string;
             /** @description 产物名称 */
@@ -10455,6 +10524,7 @@ export interface components {
             toolCount?: number;
         };
         WorkbenchSessionDetailResponseDto: {
+            approvalItems: components["schemas"]["WorkbenchSessionApprovalDto"][];
             /** @description 审批单状态计数（pending/granted/consumed/denied/expired） */
             approvals: {
                 [key: string]: number;
@@ -10481,6 +10551,19 @@ export interface components {
             title?: string | null;
             /** @description 工具调用总数 */
             toolCallCount: number;
+            toolCalls: components["schemas"]["WorkbenchSessionToolCallDto"][];
+        };
+        WorkbenchSessionListItemDto: {
+            createdAt: Record<string, never> | null;
+            /** Format: uuid */
+            sessionId: string;
+            sopId: string | null;
+            status: string;
+            title: string | null;
+        };
+        WorkbenchSessionListResponseDto: {
+            items: components["schemas"]["WorkbenchSessionListItemDto"][];
+            total: number;
         };
         WorkbenchSessionStepDto: {
             /** @description 步骤正文预览（最长 200 字） */
@@ -10491,6 +10574,12 @@ export interface components {
             role: string;
             /** @description 步骤序号 */
             seq: number;
+        };
+        WorkbenchSessionToolCallDto: {
+            createdAt?: Record<string, never> | null;
+            errorSummary?: string | null;
+            status: string;
+            toolName: string;
         };
     };
     responses: never;
@@ -17624,7 +17713,16 @@ export interface operations {
     };
     TaskController_streamLogs: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description 起始行号，缺省 0 */
+                fromLine?: string;
+                /** @description 每页行数，缺省 500，最大 2000 */
+                limit?: string;
+                /** @description 按推断出的日志级别过滤日志行（SQL 层等值匹配）；级别未知（NULL）的行被排除 */
+                level?: "ERROR" | "WARN" | "INFO" | "DEBUG";
+                /** @description SSE 专用短效票据（POST /auth/sse-ticket 获取，TTL 30 秒）；仅供 EventSource 建连鉴权，不参与日志查询。长度 1..4096。 */
+                ticket?: string;
+            };
             header?: never;
             path: {
                 /** @description 任务 ID */
@@ -18415,6 +18513,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RewindResultDto"];
+                };
+            };
+        };
+    };
+    WorkbenchController_listSessions: {
+        parameters: {
+            query?: {
+                page?: number;
+                pageSize?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkbenchSessionListResponseDto"];
                 };
             };
         };

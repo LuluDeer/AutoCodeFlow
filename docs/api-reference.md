@@ -1443,7 +1443,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 302 个操作，覆盖 260 个路径。
+共 305 个操作，覆盖 262 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1749,5 +1749,8 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/workbench/release-approvals/{approvalKey}/retry` | ADR-045：主管批准后发布失败的一键重试（仅 consume 前失败） |
 | POST | `/workbench/release-approvals/request` | R92：审批发起失败后由 ADMIN 重新发起审批单（不发布） |
 | POST | `/workbench/rewind` | N18：作废旧代在途异步写入与通知并留审计（代际只读服务端注册表，不信任客户端） |
+| GET | `/workbench/sessions` | 列出当前用户创建的工作台会话 |
+| POST | `/workbench/sessions` | 运行我的 SOP 草稿：创建限权 Agent 会话并入 agent-jobs 队列 |
+| GET | `/workbench/sessions/{id}` | 读取工作台会话进度（仅创建者或管理员） |
 
 <!-- API-APPENDIX:END -->

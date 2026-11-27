@@ -1835,7 +1835,13 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           await runUpdate(
             execs,
             {
-              status: ExecutionStatus.FAILED,
+              // TIMEOUT 口径统一（本轮）：sweep 按任务超时回收的行此前落
+              // FAILED + failureReason=TIMEOUT，而执行器超时回调落 TIMEOUT
+              // + failureReason=TIMEOUT。同一个「超时」在详情状态上分裂成两种，
+              // 只看 status=FAILED 的读面于是「趋势说失败、详情说没有」。
+              // 两路统一落 TIMEOUT；FAILED_EXECUTION_STATUSES 同时含两者，
+              // 失败统计口径不变。
+              status: ExecutionStatus.TIMEOUT,
               endTime: finishedAt,
               errorMessage: `Execution timed out after ${timeoutSec}s`,
               failureReason: ExecutionFailureReason.TIMEOUT,

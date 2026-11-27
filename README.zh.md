@@ -14,7 +14,7 @@ git clone https://github.com/LuluDeer/AutoCodeFlow.git && cd AutoCodeFlow && ./s
 
 一条命令起一套隔离的本地栈（不动你的 `.env`），seed 演示任务与 SOP、触发一次运行并打印 UI 地址和管理员口令。首次构建镜像约 3–8 分钟。详见[快速上手](docs/quickstart.md) · [定位说明](docs/POSITIONING.md)。
 
-### 是什么 / 还不是什么
+## 是什么 / 还不是什么
 
 | 现在是什么 | 现在还不是 |
 |---|---|

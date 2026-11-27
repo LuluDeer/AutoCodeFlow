@@ -14,7 +14,7 @@ git clone https://github.com/LuluDeer/AutoCodeFlow.git && cd AutoCodeFlow && ./s
 
 One command starts an isolated local stack (own `.env` untouched), seeds demo tasks and SOPs, triggers a run and prints the UI URL and admin password. First run builds images (~3–8 min). Details: [quickstart](docs/quickstart.md) · [positioning brief](docs/POSITIONING.md).
 
-### What it is / What it is not
+## What it is / What it is not
 
 | It is (today) | It is not (yet) |
 |---|---|

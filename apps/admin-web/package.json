@@ -17,6 +17,10 @@
     "test:watch": "vitest",
     "test:e2e:agent": "playwright test --config=playwright.agent.config.ts",
     "test:e2e:deeplink": "playwright test --config=playwright.deeplink.config.ts",
+    "test:e2e:ux:stub": "playwright test --config=scripts/playwright.ux-stub.config.ts",
+    "test:e2e:ux:real": "playwright test --config=scripts/playwright.ux-real.config.ts",
+    "check:e2e-wiring": "node scripts/check-e2e-wiring.mjs",
+    "ux:walkthrough": "node scripts/ux-walkthrough.mjs",
     "verify:task-detail-ux": "node scripts/verify-task-detail-ux.mjs",
     "gen:api-types": "openapi-typescript ../admin-api/openapi.json -o src/types/generated/api-types.ts --default-non-nullable=false",
     "lighthouse": "lhci autorun"

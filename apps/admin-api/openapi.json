@@ -272,11 +272,36 @@
             "example": "office-pc-07:8002",
             "type": "string"
           },
+          "capabilities": {
+            "description": "本轮执行器声明的能力域（快照来源，不授予权限）",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array",
+            "x-i18n-en": "Capability domains declared by the executor for this poll (snapshot source; does not grant permissions)"
+          },
+          "capabilityReport": {
+            "additionalProperties": true,
+            "description": "EnvironmentReport 形态的富能力报告（快照来源）",
+            "type": "object",
+            "x-i18n-en": "Rich capability report in EnvironmentReport shape (snapshot source)"
+          },
+          "effectiveProfile": {
+            "description": "领取时生效的权限档位字符串（截断到 32 字）",
+            "maxLength": 32,
+            "type": "string",
+            "x-i18n-en": "Effective permission profile at claim time (truncated to 32 chars)"
+          },
           "inflight": {
             "items": {
               "type": "string"
             },
             "type": "array"
+          },
+          "report": {
+            "additionalProperties": true,
+            "type": "object"
           },
           "resendAssignments": {
             "oneOf": [
@@ -2379,6 +2404,13 @@
       },
       "AppReleaseRowDto": {
         "properties": {
+          "createdAt": {
+            "description": "版本行创建时刻（快照诞生时间）；纯部署行时为部署完成时刻",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Version row creation time (when the snapshot was created); for a deployment-only row, the deployment completion time"
+          },
           "deployedAt": {
             "description": "最近一次部署完成时间（ISO 字符串 —— 本视图做了字符串化）",
             "nullable": true,
@@ -2438,6 +2470,7 @@
           },
           "operatorMissingReason": {
             "description": "operator 为 null 时的原因（RELEASE_OPERATOR_MISSING_REASON）",
+            "nullable": true,
             "type": "string",
             "x-i18n-en": "Reason why operator is null (RELEASE_OPERATOR_MISSING_REASON)"
           },
@@ -2462,6 +2495,23 @@
             ],
             "nullable": true,
             "type": "string"
+          },
+          "sourceDeploymentId": {
+            "description": "生成该版本快照的来源部署行 id；纯部署行取最近一次部署行 id（深链命中键之一）",
+            "format": "uuid",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Source deployment row id that produced this version snapshot; for a deployment-only row, the latest deployment row id (one of the deep-link keys)"
+          },
+          "status": {
+            "description": "application_versions.status（released/deploying/failed）；纯部署行时为部署状态字符串",
+            "type": "string",
+            "x-i18n-en": "application_versions.status (released/deploying/failed); for a deployment-only row, the deployment status string"
+          },
+          "synthetic": {
+            "description": "是否由部署记录合成（应用从未为本次部署保存版本快照，如心跳先到的竞态）",
+            "type": "boolean",
+            "x-i18n-en": "Whether this row is synthesized from a deployment record (the application never saved a version snapshot for this deployment, e.g. a heartbeat-first race)"
           },
           "triggerType": {
             "description": "优先取持久化列，legacy 行推导得出（无法判定时为 unknown）",
@@ -2496,6 +2546,10 @@
           "operator",
           "operatorSource",
           "operatorMissingReason",
+          "sourceDeploymentId",
+          "status",
+          "createdAt",
+          "synthetic",
           "devices"
         ],
         "type": "object"
@@ -2921,11 +2975,17 @@
             "description": "处置是否成功（成功恒为 true，失败由错误码表示）",
             "type": "boolean",
             "x-i18n-en": "Whether the disposition succeeded (true on success; failures are expressed via a stable error code)."
+          },
+          "resumed": {
+            "description": "本次处置是否把会话重新入队恢复（与 grant/deny 端点同口径：仅允许且会话挂起等待审批、无其它 pending 单时为 true）",
+            "type": "boolean",
+            "x-i18n-en": "Whether this decision re-enqueued the session for resume (same rule as grant/deny: true only when allowed, the session is waiting for approval, and no other pending approval remains)"
           }
         },
         "required": [
           "ok",
-          "approval"
+          "approval",
+          "resumed"
         ],
         "type": "object"
       },
@@ -3281,6 +3341,11 @@
             "type": "array",
             "x-i18n-en": "FEAT-05: list of execution artifacts (best-effort, at most 20 entries)."
           },
+          "attemptSeq": {
+            "description": "尝试世代：claim 时由 admin 写入派发载荷，执行器原样回传。终态写入优先用它做并发世代门禁；缺省回退服务端快照以兼容旧执行器。非有限整数按缺省处理。",
+            "type": "number",
+            "x-i18n-en": "Attempt generation: written into the dispatch payload by admin at claim time and echoed back verbatim by the executor. Terminal writes use it first as the concurrent-generation guard; when absent, the server snapshot is used for legacy executors. Non-finite integers are treated as absent."
+          },
           "deviceFingerprint": {
             "description": "ADR-017 阶段 3（protocol v6）：发起回调的执行器的稳定安装标识——sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符，与 register/heartbeat 同值。它是本次回调的**行身份**：共享/旧版 token 不绑定任何行，且当 pull 模式的执行器共用同一地址后，`executorAddress` 已无法唯一标识一行（ADR-017 §5）。admin 用它把回调归属到该执行实际派发到的那一行。可选——旧版执行器、采集失败以及 SDK 调用方会省略；此时 admin 依次回落到凭据持有行、再回落到地址相等（绝不因缺失而拒绝）。",
             "example": "3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9",
@@ -3353,6 +3418,11 @@
             ],
             "type": "string",
             "x-i18n-en": "Execution result"
+          },
+          "traceparent": {
+            "description": "OBS-01: 执行器回传的 W3C traceparent。admin 主通道从请求头解析，本字段仅为协议兼容而声明——不声明时 forbidNonWhitelisted 会把执行器既有回调整批 400。",
+            "type": "string",
+            "x-i18n-en": "OBS-01: W3C traceparent echoed by the executor. admin's main channel parses it from the request header; this field exists only for protocol compatibility - omitting it would make forbidNonWhitelisted reject the executor's existing callback batch with 400."
           }
         },
         "required": [
@@ -3905,6 +3975,13 @@
             },
             "type": "array",
             "x-i18n-en": "Mixed entries: assignments (first claim/resend) and clarification replies"
+          },
+          "maxAssignmentsPerPoll": {
+            "description": "服务端事实源 POLL_ASSIGNMENTS_MAX 下发的单次 poll 最大领取数；缺省按 3 处理",
+            "example": 3,
+            "minimum": 1,
+            "type": "number",
+            "x-i18n-en": "Maximum assignments per poll from the server-side source of truth POLL_ASSIGNMENTS_MAX; defaults to 3"
           },
           "sopPolicy": {
             "description": "每次轮询都会下发的企业策略（执行器本地配置无法覆盖）",
@@ -4877,7 +4954,15 @@
             "x-i18n-en": "Task-level secrets (credential key-value pairs, independent of the ordinary run parameters in params; persisted encrypted with AES-256-GCM when SEC_SECRETS_KEY is configured, otherwise degraded to plaintext with a warning). Read paths always mask them with the literal ******. Dispatch uses two channels: merged into params (AUTOFLOW_<KEY>, the legacy executor channel) and sent as a separate payload field so the executor injects them under their **original names** (third-party SDKs require canonical names). On PATCH they are merged **key by key**: a missing key or a leaf value of ****** keeps the stored value, a leaf value of null deletes that key, any other value overwrites; an explicit null for the whole field clears all secrets."
           },
           "status": {
-            "type": "string"
+            "default": "paused",
+            "description": "任务初始状态；缺省 paused（创建后不自动调度），显式传入时以传入值为准。",
+            "enum": [
+              "active",
+              "paused",
+              "deleted"
+            ],
+            "type": "string",
+            "x-i18n-en": "Initial task status; defaults to paused (no automatic scheduling after creation); an explicit value takes precedence."
           },
           "timeout": {
             "description": "任务执行超时秒数（遗留字段；建议使用 timeoutSeconds）。0 = 不限制；上限为执行器的 1..86400 窗口（executor-node 每次尝试都会以 400 拒绝更大的值）。",
@@ -5758,6 +5843,12 @@
             "nullable": true,
             "type": "string"
           },
+          "executeMode": {
+            "description": "claim 时落库的执行模式快照（single/broadcast），不随任务当前 executeMode 变化",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Execution-mode snapshot captured at claim time (single/broadcast), independent of the task's current executeMode"
+          },
           "executorAddress": {
             "description": "该次执行被派发到的执行器地址",
             "nullable": true,
@@ -5803,6 +5894,12 @@
           "id": {
             "format": "uuid",
             "type": "string"
+          },
+          "isBroadcast": {
+            "description": "本次执行是否按广播派发，claim 时落库；null 表示没有快照的历史执行行",
+            "nullable": true,
+            "type": "boolean",
+            "x-i18n-en": "Whether this execution was dispatched in broadcast mode, captured at claim time; null means a legacy row without a snapshot"
           },
           "logObjectKey": {
             "description": "日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键",
@@ -5977,9 +6074,17 @@
       "ExecutionLogsPageResponseDto": {
         "properties": {
           "hasMore": {
-            "description": "fromLine + lines.length < totalLines 时为 true",
+            "description": "是否还有 lineNumber >= nextCursor 的行。按真实行号判定，行号有洞时不会因 fromLine + lines.length 漂移而误报/漏报",
             "type": "boolean",
-            "x-i18n-en": "true when fromLine + lines.length < totalLines"
+            "x-i18n-en": "Whether any line with lineNumber >= nextCursor remains. Based on real line numbers so gaps do not cause false or missed pages from fromLine + lines.length drift"
+          },
+          "lineNumbers": {
+            "description": "与 lines 下标一一对应的真实行号（行号有洞时如实给出，可用于与 SSE 帧按行号去重）",
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "x-i18n-en": "Real line numbers aligned by index with lines (gaps are preserved; usable for line-level dedupe against SSE frames)"
           },
           "lines": {
             "description": "从 fromLine 起的原始日志行（给定级别过滤时生效）",
@@ -6002,6 +6107,11 @@
             "type": "string",
             "x-i18n-en": "Purge cutoff (now minus the log retention days); non-null only when logsPurged is true."
           },
+          "nextCursor": {
+            "description": "下一页 fromLine = 本页最后一行 lineNumber + 1；空页时等于本次请求的 fromLine。客户端不再用行数推进游标",
+            "type": "number",
+            "x-i18n-en": "Next-page fromLine = last lineNumber of this page + 1; for an empty page it equals the requested fromLine. Clients must not advance the cursor by line count"
+          },
           "totalLines": {
             "description": "（过滤后）行集合的真实总数",
             "type": "number",
@@ -6011,7 +6121,9 @@
         "required": [
           "lines",
           "totalLines",
-          "hasMore"
+          "hasMore",
+          "lineNumbers",
+          "nextCursor"
         ],
         "type": "object"
       },
@@ -12385,6 +12497,12 @@
             "nullable": true,
             "type": "string"
           },
+          "executeMode": {
+            "description": "claim 时落库的执行模式快照（single/broadcast），不随任务当前 executeMode 变化",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Execution-mode snapshot captured at claim time (single/broadcast), independent of the task's current executeMode"
+          },
           "executorAddress": {
             "description": "该次执行被派发到的执行器地址",
             "nullable": true,
@@ -12430,6 +12548,12 @@
           "id": {
             "format": "uuid",
             "type": "string"
+          },
+          "isBroadcast": {
+            "description": "本次执行是否按广播派发，claim 时落库；null 表示没有快照的历史执行行",
+            "nullable": true,
+            "type": "boolean",
+            "x-i18n-en": "Whether this execution was dispatched in broadcast mode, captured at claim time; null means a legacy row without a snapshot"
           },
           "logObjectKey": {
             "description": "日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键",
@@ -14191,7 +14315,15 @@
             "x-i18n-en": "Task-level secrets (credential key-value pairs, independent of the ordinary run parameters in params; persisted encrypted with AES-256-GCM when SEC_SECRETS_KEY is configured, otherwise degraded to plaintext with a warning). Read paths always mask them with the literal ******. Dispatch uses two channels: merged into params (AUTOFLOW_<KEY>, the legacy executor channel) and sent as a separate payload field so the executor injects them under their **original names** (third-party SDKs require canonical names). On PATCH they are merged **key by key**: a missing key or a leaf value of ****** keeps the stored value, a leaf value of null deletes that key, any other value overwrites; an explicit null for the whole field clears all secrets."
           },
           "status": {
-            "type": "string"
+            "default": "paused",
+            "description": "任务初始状态；缺省 paused（创建后不自动调度），显式传入时以传入值为准。",
+            "enum": [
+              "active",
+              "paused",
+              "deleted"
+            ],
+            "type": "string",
+            "x-i18n-en": "Initial task status; defaults to paused (no automatic scheduling after creation); an explicit value takes precedence."
           },
           "timeout": {
             "description": "任务执行超时秒数（遗留字段；建议使用 timeoutSeconds）。0 = 不限制；上限为执行器的 1..86400 窗口（executor-node 每次尝试都会以 400 拒绝更大的值）。",
@@ -14723,6 +14855,41 @@
         ],
         "type": "object"
       },
+      "WorkbenchSessionApprovalDto": {
+        "properties": {
+          "approvalKey": {
+            "type": "string"
+          },
+          "createdAt": {
+            "nullable": true,
+            "type": "object"
+          },
+          "decidedBy": {
+            "nullable": true,
+            "type": "string"
+          },
+          "reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "reviewUrl": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "toolName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "approvalKey",
+          "toolName",
+          "status"
+        ],
+        "type": "object"
+      },
       "WorkbenchSessionArtifactDto": {
         "properties": {
           "createdAt": {
@@ -14730,6 +14897,10 @@
             "nullable": true,
             "type": "object",
             "x-i18n-en": "Artifact creation time"
+          },
+          "downloadUrl": {
+            "nullable": true,
+            "type": "string"
           },
           "id": {
             "description": "产物 id",
@@ -14780,6 +14951,12 @@
       },
       "WorkbenchSessionDetailResponseDto": {
         "properties": {
+          "approvalItems": {
+            "items": {
+              "$ref": "#/components/schemas/WorkbenchSessionApprovalDto"
+            },
+            "type": "array"
+          },
           "approvals": {
             "additionalProperties": {
               "type": "number"
@@ -14846,6 +15023,12 @@
             "description": "工具调用总数",
             "type": "number",
             "x-i18n-en": "Total tool-call count"
+          },
+          "toolCalls": {
+            "items": {
+              "$ref": "#/components/schemas/WorkbenchSessionToolCallDto"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -14856,8 +15039,59 @@
           "stepCount",
           "steps",
           "toolCallCount",
+          "toolCalls",
           "approvals",
+          "approvalItems",
           "artifacts"
+        ],
+        "type": "object"
+      },
+      "WorkbenchSessionListItemDto": {
+        "properties": {
+          "createdAt": {
+            "nullable": true,
+            "type": "object"
+          },
+          "sessionId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sopId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "status",
+          "title",
+          "createdAt",
+          "sopId"
+        ],
+        "type": "object"
+      },
+      "WorkbenchSessionListResponseDto": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkbenchSessionListItemDto"
+            },
+            "type": "array"
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "total"
         ],
         "type": "object"
       },
@@ -14889,6 +15123,29 @@
         "required": [
           "seq",
           "role"
+        ],
+        "type": "object"
+      },
+      "WorkbenchSessionToolCallDto": {
+        "properties": {
+          "createdAt": {
+            "nullable": true,
+            "type": "object"
+          },
+          "errorSummary": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "toolName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "toolName",
+          "status"
         ],
         "type": "object"
       }
@@ -26484,7 +26741,7 @@
         }
       },
       "post": {
-        "description": "创建新的自动化任务。支持 cron、webhook 与事件三种触发方式。任务创建后处于暂停状态。",
+        "description": "创建新的自动化任务。支持 cron、webhook 与事件三种触发方式。任务创建后缺省处于暂停状态；请求体显式传入 status 时以传入值为准。",
         "operationId": "TaskController_create",
         "parameters": [],
         "requestBody": {
@@ -26520,7 +26777,7 @@
           "Task Management"
         ],
         "x-i18n-en": {
-          "description": "Create a new automation task. Supports cron, webhook, and event triggers. The task starts in a paused state after creation.",
+          "description": "Create a new automation task. Supports cron, webhook and event triggers. Tasks are paused by default on creation; an explicit status in the request body takes precedence.",
           "summary": "Create task"
         }
       }
@@ -27532,7 +27789,7 @@
     },
     "/tasks/import": {
       "post": {
-        "description": "E-1：用 GET /tasks/:id/export 的载荷创建任务。校验走完整的 POST /tasks 创建链路。名称冲突绝不覆盖：追加 ' (imported)'，再依次尝试 ' (imported) 2'、' (imported) 3'……直到找到可用名称。密钥绝不参与传输（SEC-02 红线）：载荷中携带的 secrets 键会被忽略，导入的任务在无密钥状态下启动——warnings 中始终包含重新配置的提示。新任务初始为暂停状态。",
+        "description": "E-1：用 GET /tasks/:id/export 的载荷创建任务。校验走完整的 POST /tasks 创建链路。名称冲突绝不覆盖：追加 ' (imported)'，再依次尝试 ' (imported) 2'、' (imported) 3'……直到找到可用名称。密钥绝不参与传输（SEC-02 红线）：载荷中携带的 secrets 键会被忽略，导入的任务在无密钥状态下启动——warnings 中始终包含重新配置的提示。新任务缺省为暂停状态（定义导出不含 status，导入后需显式 resume 才会调度）。",
         "operationId": "TaskController_importDefinition",
         "parameters": [],
         "requestBody": {
@@ -27580,7 +27837,7 @@
           "Task Management"
         ],
         "x-i18n-en": {
-          "description": "E-1: create a task from the payload of GET /tasks/:id/export. Validation goes through the full POST /tasks creation path. Name conflicts are never overwritten: append ' (imported)', then try ' (imported) 2', ' (imported) 3'... until an available name is found. Secrets are never transferred (SEC-02 red line): secrets keys carried in the payload are ignored and the imported task starts with no secrets -- warnings always include a prompt to reconfigure them. The new task starts paused.",
+          "description": "E-1: create a task from the payload of GET /tasks/:id/export. Validation goes through the full POST /tasks creation path. Name conflicts are never overwritten: append ' (imported)', then try ' (imported) 2', ' (imported) 3', ... until a free name is found. Secrets are never transported (SEC-02 red line): secrets keys in the payload are ignored and the imported task starts without credentials - warnings always include a reconfiguration hint. New tasks are paused by default (definition export excludes status; an explicit resume is required before scheduling).",
           "summary": "Import task definitions (JSON export payload)"
         }
       }
@@ -28158,6 +28415,52 @@
               "type": "string"
             },
             "x-i18n-en": "Execution record ID"
+          },
+          {
+            "description": "起始行号，缺省 0",
+            "in": "query",
+            "name": "fromLine",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Start line number, default 0"
+          },
+          {
+            "description": "每页行数，缺省 500，最大 2000",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Rows per page, default 500, maximum 2000"
+          },
+          {
+            "description": "按推断出的日志级别过滤日志行（SQL 层等值匹配）；级别未知（NULL）的行被排除",
+            "in": "query",
+            "name": "level",
+            "required": false,
+            "schema": {
+              "enum": [
+                "ERROR",
+                "WARN",
+                "INFO",
+                "DEBUG"
+              ],
+              "type": "string"
+            },
+            "x-i18n-en": "Filter log lines by inferred log level (exact-match at the SQL layer); rows with an unknown level (NULL) are excluded"
+          },
+          {
+            "description": "SSE 专用短效票据（POST /auth/sse-ticket 获取，TTL 30 秒）；仅供 EventSource 建连鉴权，不参与日志查询。长度 1..4096。",
+            "in": "query",
+            "name": "ticket",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Short-lived SSE ticket (obtained via POST /auth/sse-ticket, TTL 30s); used only for EventSource connection authentication, not part of the log query. Length 1..4096."
           }
         ],
         "responses": {
@@ -29599,6 +29902,55 @@
       }
     },
     "/workbench/sessions": {
+      "get": {
+        "operationId": "WorkbenchController_listSessions",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pageSize",
+            "required": false,
+            "schema": {
+              "maximum": 20,
+              "minimum": 1,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkbenchSessionListResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "列出当前用户创建的工作台会话",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "summary": "List workbench sessions created by the current user"
+        }
+      },
       "post": {
         "operationId": "WorkbenchController_createSession",
         "parameters": [],

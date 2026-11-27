@@ -2,7 +2,8 @@
 //
 // 背景:三轮移动端治理(R5/R6)与多轮 UX 修复全部基于 jsdom 断言,从未经过真实
 // 布局引擎。本脚本用 playwright-core(本目录 node_modules)直接驱动本机
-// Chromium(%LOCALAPPDATA%/ms-playwright/chromium-1234),在 vite dev(5176)上
+// Chromium(优先 chromium.executablePath() / WALKTHROUGH_CHROME_PATH,旧 Windows
+// LOCALAPPDATA 仅作为最后兜底),在 vite dev(5176)上
 // 访问 router.tsx 全部页面:
 //   - 375×812:检测 document 横向溢出(scrollWidth > innerWidth+1)+ 找出超出
 //     视口最宽的元素(tag.class + 文本片段);
@@ -39,7 +40,7 @@
 // `test-results/` 已覆盖该目录,不会入库)。
 
 import { chromium } from 'playwright-core';
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -47,10 +48,71 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const OUT_DIR = join(ROOT, 'test-results', 'ux-walkthrough');
 const BASE_URL = process.env.WALKTHROUGH_BASE_URL || 'http://localhost:5176';
+const ARGV = process.argv.slice(2);
+const HELP = ARGV.includes('--help') || ARGV.includes('-h');
+const DRY_RUN = ARGV.includes('--dry-run');
 const ISO = (offsetMs = 0) => new Date(Date.now() + offsetMs).toISOString();
 const MIN = 60_000;
 
 mkdirSync(OUT_DIR, { recursive: true });
+
+/** 可复现的静态清单:CI/本地只跑 --dry-run 也能核对覆盖矩阵,不启动浏览器。 */
+function printConfig() {
+  console.log('ux-walkthrough configuration (static; no browser launched)');
+  console.log(`baseUrl: ${BASE_URL}`);
+  console.log(`outDir: ${OUT_DIR}`);
+  console.log(`chromePathEnv: ${process.env.WALKTHROUGH_CHROME_PATH || '(unset)'}`);
+  console.log(`pages (${PAGES.length}): ${PAGES.map((p) => `${p.key}=${p.path}`).join(', ')}`);
+  console.log(`viewports: ${VIEWPORTS.map((v) => `${v.w}x${v.h}`).join(', ')} (dark: ${DARK_VIEWPORTS_LABELS.join(', ')})`);
+  console.log(`interactions (${INTERACTIONS.length}): ${INTERACTIONS.map((i) => `${i.key}:${i.kind}`).join(', ')}`);
+  console.log(`report: ${join(OUT_DIR, 'report.md')}`);
+  console.log(`screenshots: ${OUT_DIR}/<key>-<width>[-dark|-open].png`);
+  console.log('flags: --help, -h, --dry-run; env: WALKTHROUGH_CHROME_PATH, WALKTHROUGH_BASE_URL');
+}
+
+/**
+ * 浏览器路径解析顺序(跨平台复现):
+ *   ① WALKTHROUGH_CHROME_PATH 显式指定(容器/CI 固定版本);
+ *   ② playwright-core 自带解析(chromium.executablePath(),随安装版本变化自动跟随);
+ *   ③ 旧 Windows LOCALAPPDATA 固定目录(仅在没有前两者时兜底,不再写死首选)。
+ * 返回 undefined 表示交给 chromium.launch() 用默认注册表决策。
+ */
+function resolveChromeExecutablePath() {
+  const fromEnv = process.env.WALKTHROUGH_CHROME_PATH?.trim();
+  if (fromEnv) {
+    if (!existsSync(fromEnv)) {
+      console.error(`[ux-walkthrough] WALKTHROUGH_CHROME_PATH 不存在: ${fromEnv}`);
+    }
+    return fromEnv;
+  }
+  try {
+    const fromPlaywright = chromium.executablePath();
+    if (fromPlaywright && existsSync(fromPlaywright)) return fromPlaywright;
+  } catch (err) {
+    console.error(`[ux-walkthrough] chromium.executablePath() unavailable: ${err.message}`);
+  }
+  const legacy = join(process.env.LOCALAPPDATA || '', 'ms-playwright', 'chromium-1234', 'chrome-win64', 'chrome.exe');
+  return legacy && existsSync(legacy) ? legacy : undefined;
+}
+
+async function launchBrowser() {
+  const exe = resolveChromeExecutablePath();
+  const attempts = [];
+  if (exe) attempts.push({ label: `executablePath=${exe}`, options: { executablePath: exe } });
+  attempts.push({ label: 'playwright default registry', options: {} });
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      const browser = await chromium.launch(attempt.options);
+      console.error(`[ux-walkthrough] chromium launched via ${attempt.label}`);
+      return browser;
+    } catch (err) {
+      lastError = err;
+      console.error(`[ux-walkthrough] chromium launch failed (${attempt.label}): ${err.message}`);
+    }
+  }
+  throw lastError ?? new Error('no chromium launch strategy available');
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 夹具数据(形状对齐 src/api/*.ts 的接口)
@@ -575,7 +637,7 @@ const ROUTES = [
   ['GET', /^\/agent\/sessions\/([^/]+)\/approvals$/, (u, q, m) => [
     { id: 'apr-1', approvalKey: `apr-${m[1]}-write`, sessionId: m[1], toolName: 'shell.exec', reason: 'write 类操作需要人工点头（审批策略 writeRequiresApproval=true）', status: 'pending', decidedBy: null, decidedAt: null, consumedAt: null, createdAt: ISO(-30 * MIN) },
   ]],
-  ['GET', /^\/agent\/sessions\/([^/]+)$/, (u, q, m) => ({
+  ['GET', /^\/agent\/sessions\/(?!queue-idle$)([^/]+)$/, (u, q, m) => ({
     session: AGENT_SESSIONS.find((s) => s.id === m[1]) || AGENT_SESSIONS[0],
     steps: [
       { id: 'st-1', sessionId: m[1], seq: 1, role: 'system', content: '你是 AutoFlow 运维 Agent', reasoning: null, toolCallsJson: null, toolCallId: null, tokensIn: 320, tokensOut: 0, latencyMs: 12, provider: 'dashscope', model: 'qwen-max', summary: null, createdAt: ISO(-50 * MIN) },
@@ -631,6 +693,49 @@ const ROUTES = [
     const hit = TEMPLATES.find((t) => t.id === m[1]) ?? TEMPLATES[0];
     return { ...hit, name: `${hit.name}（已编辑）` };
   }],
+  // ── 2026-11-27 新增真实用户路径所需读面 ──
+  ['GET', /^\/capabilities$/, () => [{
+    id: 'cap-1', key: 'shell.exec', kind: 'skill', label: 'Shell 执行', description: '走查夹具能力',
+    version: '1.0.0', source: { type: 'builtin' }, visibility: 'global',
+    scope: { mode: 'managed', guidance: 'L1' }, manifest: {}, enabled: true,
+    createdBy: 'admin', createdAt: ISO(-30 * 24 * 3600e3), updatedAt: ISO(-1 * 24 * 3600e3),
+  }]],
+  ['GET', /^\/capability-activation\/stats$/, () => ({
+    total: 3,
+    byCapability: [{ capabilityKey: 'shell.exec', count: 3, success: 2, failure: 1, blocked: 0 }],
+    byProject: [{ projectId: null, count: 3 }],
+    dualBasis: {
+      basis: 'per-million-tokens', invocations: 3, successfulDeliveries: 2, skipped: 0,
+      note: '走查夹具', tokenSample: null, currencyValue: null, priceReason: 'NO_TOKEN_SAMPLE',
+      allocationNote: '不分摊', byCapability: [], byProject: [],
+    },
+  })],
+  ['GET', /^\/capability-activation\/quota-status$/, () => []],
+  ['GET', /^\/capability-activation\/(prices|quotas)$/, () => []],
+  ['GET', /^\/ai\/providers$/, () => ({
+    providers: [{ id: 'video-qwen', label: 'Qwen VL', transport: 'openai', baseUrl: 'http://example.local/v1', model: 'qwen-vl', maxTokens: 2048, timeoutMs: 30000, supportsVideo: true, enabled: true, hasApiKey: true, legacy: false }],
+    errors: [],
+    routes: {},
+  })],
+  ['GET', /^\/ai\/sop-sessions$/, () => ({ items: [], total: 0 })],
+  ['GET', /^\/agent\/inbox\/counts$/, () => ({
+    deployments: 1, pendingApprovals: 0, waitingSessions: 1, failedSessions: 1,
+    stalled: 0, backlogged: 1, queueStall: 1, degraded: false, failedWindowHours: 24,
+  })],
+  ['GET', /^\/agent\/approvals\/pending$/, () => ({ items: [], total: 0, truncated: false, degraded: false })],
+  ['GET', /^\/agent\/sessions\/queue-idle$/, () => ({
+    idleStuck: false, oldestAgeMs: 0, thresholdMs: 900000, waitingCount: 0,
+    retried: false, suppressedBy: null, degraded: false,
+  })],
+  ['GET', /^\/sop\/clarifications\/pending$/, () => ({ items: [], total: 0, truncated: false, degraded: false })],
+  ['GET', /^\/sop\/assignments\/lagging$/, () => ({ items: [], total: 0, truncated: false, degraded: false })],
+  // 写动作:收件箱 approve / reject / resume 的真实提交路径(返回更新后的夹具行)
+  ['POST', /^\/app-deployments\/([^/]+)\/approval\/(approve|reject)$/, (u, q, m) => ({
+    ...APP_DEPLOYMENTS[0], id: m[1], status: m[2] === 'approve' ? 'running' : 'failed',
+    approvalStatus: m[2] === 'approve' ? 'approved' : 'rejected',
+    approvalMeta: { ...APP_DEPLOYMENTS[0].approvalMeta, actedBy: 1, actedByName: 'admin', actedAt: ISO() },
+  })],
+  ['POST', /^\/agent\/sessions\/([^/]+)\/resume$/, (u, q, m) => ({ ok: true, sessionId: m[1] })],
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -695,6 +800,7 @@ const PAGES = [
   { key: 'tasks', path: '/tasks' },
   { key: 'task-new', path: '/tasks/new' },
   { key: 'task-detail', path: '/tasks/t-1001' },
+  { key: 'task-edit', path: '/tasks/t-1001/edit' },
   { key: 'execution-detail', path: '/tasks/t-1001/executions/e-9001' },
   { key: 'executions', path: '/executions' },
   { key: 'artifacts', path: '/artifacts' },
@@ -716,10 +822,16 @@ const PAGES = [
   { key: 'applications', path: '/applications' },
   { key: 'app-detail', path: '/applications/app-2001' },
   { key: 'executors', path: '/executors' },
+  { key: 'executor-install', path: '/executors/install' },
   { key: 'executor-detail', path: '/executors/ex-3001' },
   { key: 'executor-packages', path: '/executor-packages' },
   { key: 'task-templates', path: '/task-templates' },
+  { key: 'capabilities', path: '/capabilities' },
+  { key: 'activation-stats', path: '/activation-stats' },
+  { key: 'workbench', path: '/workbench' },
+  { key: 'sop-from-video', path: '/sops/from-video' },
   { key: 'audit', path: '/audit' },
+  { key: 'not-found', path: '/this-route-does-not-exist-xyz' },
 ];
 
 const VIEWPORTS = [
@@ -730,6 +842,7 @@ const VIEWPORTS = [
 ];
 // 溢出检测执行宽度(≤600);1280 保持纯冒烟(向后兼容首轮语义)
 const OVERFLOW_W = (w) => w <= 600;
+const DARK_VIEWPORTS_LABELS = VIEWPORTS.filter((v) => v.w !== 600).map((v) => v.w);
 
 // ── 交互态(第二轮):每页挑最主要的一个抽屉/弹窗入口。trigger 为 Playwright
 // 定位器:文案取自 zh locale(autoflow-lang=zh 基线),或页面自带
@@ -746,6 +859,12 @@ const INTERACTIONS = [
   { key: 'settings-config', path: '/settings?tab=config', trigger: 'button[aria-label*="变更历史"]', kind: 'modal', desc: '配置变更历史 Modal' },
   { key: 'executor-packages', path: '/executor-packages', trigger: 'button:has-text("上传新包")', kind: 'modal', desc: '上传执行器包弹窗' },
   { key: 'executor-detail', path: '/executors/ex-3001', trigger: 'button >> text=/编\\s*辑/', kind: 'modal', desc: '执行器编辑弹窗' },
+  // 2026-11-27:真实用户路径(不再只做抽屉/弹窗几何)。flow 由 testInteraction 按名派发,
+  // 断言提交请求真的发生,而不是「页面渲染了就算过」。
+  { key: 'login-submit', path: '/login', auth: false, trigger: 'button[type="submit"]', kind: 'flow', flow: 'login', desc: '真实登录表单提交', expectWrite: 'POST /auth/login' },
+  { key: 'inbox-approve', path: '/inbox', trigger: 'button >> text=/批\\s*准/', kind: 'flow', flow: 'inbox-approve', desc: '收件箱部署批准', expectWrite: 'POST /app-deployments/dep-pending-1/approval/approve' },
+  { key: 'inbox-reject', path: '/inbox', trigger: 'button >> text=/拒\\s*绝/', kind: 'flow', flow: 'inbox-reject', desc: '收件箱部署拒绝', expectWrite: 'POST /app-deployments/dep-pending-1/approval/reject' },
+  { key: 'inbox-resume', path: '/inbox', trigger: 'button >> text=/接\\s*管\\s*\\/\\s*恢\\s*复/', kind: 'flow', flow: 'inbox-resume', desc: '收件箱会话接管/恢复', expectWrite: 'POST /agent/sessions/ag-6003/resume' },
 ];
 // 暗色交互态抽检(不求全覆盖):详情抽屉 ×2 + 新建弹窗 ×1
 const DARK_INTERACTION_KEYS = ['task-detail', 'agent-sessions', 'applications'];
@@ -1090,14 +1209,49 @@ function overlayFindings(probe) {
   return out;
 }
 
+/**
+ * 真实交互流程(区别于纯几何探针):按 flow 名执行用户动作,并返回可断言的证据。
+ * 写请求由 testInteraction 的 request 监听统一收集,这里只负责把 UI 走完。
+ */
+async function runFlow(page, ix) {
+  switch (ix.flow) {
+    case 'login':
+      await page.locator('input[autocomplete="username"]').fill('admin');
+      await page.locator('input[autocomplete="current-password"]').fill('walkthrough-password');
+      await page.locator('button[type="submit"]').click();
+      await page.waitForURL(/\/dashboard(?:\?|$)/, { timeout: 8000 });
+      return { url: new URL(page.url()).pathname, storedToken: await page.evaluate(() => !!localStorage.getItem('autoflow-auth')) };
+    case 'inbox-approve':
+    case 'inbox-resume':
+      await page.click(ix.trigger, { timeout: 8000 });
+      await page.waitForSelector('.ant-modal-confirm', { timeout: 8000 });
+      await page.click('.ant-modal-confirm .ant-btn-primary', { timeout: 8000 });
+      await page.waitForTimeout(600);
+      return { confirmed: true };
+    case 'inbox-reject':
+      await page.click(ix.trigger, { timeout: 8000 });
+      await page.waitForSelector('.ant-modal', { timeout: 8000 });
+      await page.locator('.ant-modal textarea').first().fill('ux-walkthrough 自动走查拒绝');
+      await page.click('.ant-modal .ant-btn-dangerous', { timeout: 8000 });
+      await page.waitForTimeout(600);
+      return { confirmed: true };
+    default:
+      throw new Error(`unknown flow: ${ix.flow}`);
+  }
+}
+
 async function testInteraction(browser, ix, viewport, opts = {}) {
   const dark = !!opts.dark;
   const context = await browser.newContext({ viewport: { width: viewport.w, height: viewport.h } });
   await context.route('**/api/**', apiHandler);
-  await context.addInitScript(([auth]) => {
-    localStorage.setItem('autoflow-auth', auth);
-    localStorage.setItem('autoflow-lang', 'zh');
-  }, [JSON.stringify({ state: { token: 'mock-access-token', refreshToken: 'mock-refresh-token', user: USER }, version: 0 })]);
+  if (ix.auth !== false) {
+    await context.addInitScript(([auth]) => {
+      localStorage.setItem('autoflow-auth', auth);
+      localStorage.setItem('autoflow-lang', 'zh');
+    }, [JSON.stringify({ state: { token: 'mock-access-token', refreshToken: 'mock-refresh-token', user: USER }, version: 0 })]);
+  } else {
+    await context.addInitScript(() => localStorage.setItem('autoflow-lang', 'zh'));
+  }
   if (dark) {
     await context.addInitScript(([theme]) => localStorage.setItem('autoflow-theme', theme),
       [JSON.stringify({ state: { mode: 'dark' }, version: 0 })]);
@@ -1121,9 +1275,19 @@ async function testInteraction(browser, ix, viewport, opts = {}) {
       }
     } catch { /* ignore */ }
   });
+  const writeRequests = [];
+  page.on('request', (req) => {
+    try {
+      const u = new URL(req.url());
+      if (u.pathname.startsWith('/api/') && req.method() !== 'GET') {
+        writeRequests.push(`${req.method()} ${u.pathname.replace(/^\/api/, '')}`);
+      }
+    } catch { /* ignore */ }
+  });
 
   let findings = []; // { level: 'A'|'info', text } — A 级复测消解时可能整体重排(见下)
   let probe = null;
+  let flowEvidence = null;
   let gotoError = null;
   try {
     await page.goto(BASE_URL + ix.path, { waitUntil: 'load', timeout: 45000 });
@@ -1136,12 +1300,24 @@ async function testInteraction(browser, ix, viewport, opts = {}) {
 
   if (!gotoError) {
     try {
-      await page.click(ix.trigger, { timeout: 8000 });
-      await page.waitForSelector(ix.kind === 'drawer' ? '.ant-drawer-open' : '.ant-modal', { timeout: 8000 });
-      await page.waitForTimeout(1000); // 详情数据/表单渲染
-      probe = await probeOverlay(page);
+      if (ix.flow) {
+        flowEvidence = await runFlow(page, ix);
+        if (ix.expectWrite && !writeRequests.includes(ix.expectWrite)) {
+          findings.push({ level: 'A', text: `真实提交未发生: 期望 ${ix.expectWrite}, 实际写请求 ${writeRequests.join(' | ') || '无'}` });
+        } else if (ix.expectWrite) {
+          findings.push({ level: 'info', text: `真实提交已命中: ${ix.expectWrite}` });
+        }
+        if (ix.flow === 'login' && (!flowEvidence.storedToken || flowEvidence.url !== '/dashboard')) {
+          findings.push({ level: 'A', text: `登录提交未落地: url=${flowEvidence.url}, tokenStored=${flowEvidence.storedToken}` });
+        }
+      } else {
+        await page.click(ix.trigger, { timeout: 8000 });
+        await page.waitForSelector(ix.kind === 'drawer' ? '.ant-drawer-open' : '.ant-modal', { timeout: 8000 });
+        await page.waitForTimeout(1000); // 详情数据/表单渲染
+        probe = await probeOverlay(page);
+      }
     } catch (err) {
-      findings.push({ level: 'A', text: `触发失败(trigger 点击或开启超时 8s): ${String(err && err.message || err).slice(0, 160)}` });
+      findings.push({ level: 'A', text: `${ix.flow ? `流程执行失败(${ix.flow})` : '触发失败(trigger 点击或开启超时 8s)'}: ${String(err && err.message || err).slice(0, 160)}` });
     }
   }
   if (probe && probe.found) {
@@ -1167,7 +1343,7 @@ async function testInteraction(browser, ix, viewport, opts = {}) {
         probe = probe2;
       }
     }
-  } else if (!gotoError && findings.length === 0) {
+  } else if (!gotoError && !ix.flow && findings.length === 0) {
     findings.push({ level: 'A', text: '开启后未找到抽屉/弹窗容器(.ant-drawer-content-wrapper / .ant-modal)' });
   }
 
@@ -1184,10 +1360,12 @@ async function testInteraction(browser, ix, viewport, opts = {}) {
   const consoleErrors = consoleMsgs.filter((c) => c.type === 'error');
   return {
     key: ix.key, path: ix.path, desc: ix.desc, trigger: ix.trigger, kind: ix.kind,
-    viewport: viewport.w, dark, shot, probe, findings, gotoError,
+    flow: ix.flow ?? null, expectWrite: ix.expectWrite ?? null,
+    viewport: viewport.w, dark, shot, probe, flowEvidence, findings, gotoError,
     errors: consoleErrors.map((c) => c.text),
     pageErrors,
     pageApi404,
+    writeRequests,
   };
 }
 
@@ -1220,17 +1398,12 @@ function pushDesktopMetrics(lines, results) {
 }
 
 async function main() {
-  const runStartedAt = new Date().toISOString();
-  // 本机只装了 chromium-1234 完整版(chrome-win64),playwright-core 1.63 默认
-  // 找 chromium_headless_shell-1243 会落空 → 首选显式 executablePath。
-  let exe = join(process.env.LOCALAPPDATA || '', 'ms-playwright', 'chromium-1234', 'chrome-win64', 'chrome.exe');
-  let browser;
-  try {
-    browser = await chromium.launch({ executablePath: exe });
-  } catch (err) {
-    console.error(`[ux-walkthrough] explicit launch failed, falling back to default registry: ${err.message}`);
-    browser = await chromium.launch();
+  if (HELP || DRY_RUN) {
+    printConfig();
+    return;
   }
+  const runStartedAt = new Date().toISOString();
+  const browser = await launchBrowser();
 
   const results = [];
   const ixResults = [];
@@ -1290,7 +1463,8 @@ async function main() {
   lines.push(`- 基址:${BASE_URL}(vite dev,端口 5176;API 经 Playwright route 拦截供数,无后端)`);
   lines.push(`- 视口:375×812 + 600×900(溢出检测 + 截图)、1280×800(冒烟)`);
   lines.push(`- 页面数:${PAGES.length} × 视口 3 = ${results.length} 次访问`);
-  lines.push(`- 登录态:addInitScript 注入 localStorage 'autoflow-auth'(role=admin,zustand persist 形状)`);
+  lines.push(`- 登录态:addInitScript 注入 localStorage 'autoflow-auth'(role=admin,zustand persist 形状);login-submit 交互单独走真实登录表单提交`);
+  lines.push(`- 浏览器解析:WALKTHROUGH_CHROME_PATH → chromium.executablePath() → 旧 LOCALAPPDATA 兜底 → playwright 默认注册表`);
   lines.push(`- 截图目录:${OUT_DIR}`);
   lines.push('');
 
@@ -1406,8 +1580,8 @@ async function main() {
 
   lines.push(`## 交互态开启态明细(375/600)`);
   lines.push('');
-  lines.push(`| 页面 | 交互 | 视口 | 容器 | 容器几何 | 容器自身溢出 | 关闭按钮 | A 级发现 | 截图 |`);
-  lines.push(`|---|---|---|---|---|---|---|---|---|`);
+  lines.push(`| 页面 | 交互 | 视口 | 容器 | 容器几何 | 容器自身溢出 | 关闭按钮 | A 级发现 | 写请求/证据 | 截图 |`);
+  lines.push(`|---|---|---|---|---|---|---|---|---|---|`);
   for (const r of ixResults) {
     const kindCell = r.probe && r.probe.found ? `${r.probe.kind} ${r.probe.rect.width}px` : (r.gotoError ? 'n/a(goto 异常)' : '未开启');
     const geoCell = r.probe && r.probe.found ? `left=${r.probe.rect.left} right=${r.probe.rect.right}(vw=${r.probe.vw})` : '—';
@@ -1420,7 +1594,10 @@ async function main() {
     const findCell = r.findings.filter((f) => f.level === 'A').length
       ? r.findings.filter((f) => f.level === 'A').map((f) => f.text.slice(0, 120)).join('<br>')
       : (r.findings.length ? r.findings.map((f) => f.text.slice(0, 100)).join('<br>') : '无');
-    lines.push(`| ${r.key} (${r.desc}) | \`${r.trigger}\` | ${r.viewport} | ${kindCell} | ${geoCell} | ${shellCell} | ${closeCell} | ${findCell} | ${r.shot.split(/[\\/]/).pop()} |`);
+    const writeCell = r.flow
+      ? `flow=${r.flow}; expect=${r.expectWrite ?? '—'}; actual=${r.writeRequests.join(' | ') || '无'}; evidence=${JSON.stringify(r.flowEvidence ?? null)}`
+      : '—(几何态)';
+    lines.push(`| ${r.key} (${r.desc}) | \`${r.trigger}\` | ${r.viewport} | ${kindCell} | ${geoCell} | ${shellCell} | ${closeCell} | ${findCell} | ${writeCell} | ${r.shot.split(/[\\/]/).pop()} |`);
   }
   lines.push('');
   lines.push(`### 交互态 info 级(合规内滚动,留档)`);

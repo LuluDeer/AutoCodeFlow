@@ -1244,6 +1244,10 @@ jobs:
         run: |
           node scripts/check-spec-coupling-surfaces.mjs --selftest
           node scripts/check-spec-coupling-surfaces.mjs
+      # attemptSeq 世代字段的跨端 fail-fast：协议字段必须 ⊆ admin CallbackItemDto，
+      # 四条派发路径必须都写入；任一端漏接会让迟到回调污染新世代，单端测试看不出来。
+      - name: Callback contract drift guard
+        run: npm run check:callback-contract-drift
       # 守卫的守卫：脚本存在但没人跑 = 它保护不了任何东西，且**完全静默**
       # （本地能跑、README 里可能还写着它，CI 从不执行）。本仓踩过同型的
       # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。
@@ -2496,6 +2500,107 @@ jobs:
       - name: R437 telemetry enablement (real backend + real PG)
         run: npx playwright test --config playwright.telemetry.config.ts
         working-directory: apps/admin-web
+
+  # ── UX 权威 Playwright 门禁：browser-stub 与 browser-real 双轨 ──────────
+  # 此前 ux-*.spec.ts 与 scripts/playwright.ux-*.config.ts 在 .github/ 零引用，
+  # 属于「写了但从不运行」的孤儿套件。本 job 把两份权威配置固化为 PR/push
+  # 门禁，并显式区分两条验收级别：
+  #   · browser-stub  = 真构建产物 + 真浏览器 + Playwright route 夹具（快、确定）；
+  #   · browser-real  = 真浏览器 + 真 admin-api dist + 真 PG/Redis（最高级别）。
+  # 两类都跑同一组 UX 用户路径断言，禁止用低级别结果冒充高级别结论。
+  admin-web-e2e-authoritative:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [browser-stub, browser-real]
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+        env:
+          POSTGRES_USER: autoflow
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: autoflow_ux_e2e
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USERNAME: autoflow
+      DB_PASSWORD: test
+      DB_DATABASE: autoflow_ux_e2e
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      JWT_SECRET: test-jwt-secret-32chars-long-here
+      JWT_REFRESH_SECRET: test-refresh-secret-32chars-long
+      EXECUTOR_SECRET: test-executor-secret
+      INITIAL_ADMIN_USERNAME: admin
+      INITIAL_ADMIN_PASSWORD: admin123
+      AI_PROVIDER: disabled
+      UX_E2E_DB_NAME: autoflow_ux_e2e
+      UX_E2E_USERNAME: admin
+      UX_E2E_PASSWORD: admin123
+      PLAYWRIGHT_CHROMIUM_CHANNEL: chrome
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/admin-api/package-lock.json
+            apps/admin-web/package-lock.json
+      - run: npm ci
+        working-directory: apps/admin-api
+      - run: npm ci
+        working-directory: apps/admin-web
+      - name: Build admin-api dist (browser-real only)
+        if: matrix.mode == 'browser-real'
+        run: npm run build
+        working-directory: apps/admin-api
+      - name: Apply migrations (browser-real only)
+        if: matrix.mode == 'browser-real'
+        run: npm run migration:run
+        working-directory: apps/admin-api
+      - name: Install chromium (+ system deps)
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/google-chrome.sources
+          npx playwright install --with-deps chromium
+        working-directory: apps/admin-web
+      - name: E2E wiring guard (orphan spec detector)
+        run: npm run check:e2e-wiring
+        working-directory: apps/admin-web
+      - name: browser-stub — UX 用户路径（真构建 + API 夹具）
+        if: matrix.mode == 'browser-stub'
+        run: npm run test:e2e:ux:stub
+        working-directory: apps/admin-web
+      - name: browser-real — UX 用户路径（真后端 + 真 PG）
+        if: matrix.mode == 'browser-real'
+        run: npm run test:e2e:ux:real
+        working-directory: apps/admin-web
+      - name: Upload UX e2e artifacts
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: admin-web-ux-e2e-${{ matrix.mode }}
+          path: apps/admin-web/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # ── W-28：Windows 全栈 e2e（29 例）— PR / 手动触发 ──────────────
   # ubuntu e2e 全绿的盲区恰是 Windows：本轮 W-22/W-26 都是 Windows runner

@@ -1,5 +1,70 @@
 # AutoCodeFlow Agent Handoff
 
+## 本次交接（2026-11-27 · 空降负责人下一轮，已完成）
+
+**方向来源**：用户要求继续下一轮。目标锁定剩余最高价值硬骨头：真实浏览器、真实 HTTP 执行器、审批事件投影 expired 语义、无 token 日志丢行、应用发布行契约。先派 5 路实现/验收 agent（`impl-browser-real`、`impl-http-attemptseq`、`impl-approval-projection`、`impl-python-notoken`、`impl-apprelease-contract`），浏览器验收发现 SSE ticket 400 后再派 `impl-sse-ticket-fix`、最后派 `impl-workbench-split` 拆大函数收口；主控串行重导与验收，避免 OOM。
+
+**本轮交付**：
+- 真浏览器：新增 `hardening-browser.spec.ts` / `playwright.hardening.config.ts` / `verify-hardening-browser.sh`。真实 Chrome 158 + 真 PG/Redis/admin-api/vite 跑通工作台 URL session 恢复、刷新续轮询、产物入口与下载、日志 SSE 重连不重复，共 **3 tests / 10 assertions PASS**，证据在 `artifacts/verification/hardening-browser-20261127-162903/report.json`。过程中抓到产品缺陷：SSE 建连 `?ticket=` 被全局 whitelist 400；已修。
+- SSE ticket 修复：新增 `ExecutionLogsStreamQueryDto`，streamLogs 专用 DTO 放行并校验 `ticket`（1..4096），REST 日志端点仍拒绝 ticket；`forbidNonWhitelisted` 未关闭。
+- 真 HTTP 世代链：`attemptseq-http.e2e-spec.ts` + `verify-attemptseq-http.sh` 用真 Nest HTTP + 真 executor-node 子进程 + 真 PG/Redis 验证 attemptSeq 1 回传、re-claim 1→2、旧世代回调不污染、新世代写终态，3/3 PASS，throwaway DB/Redis/子进程全清理。
+- 审批投影：expired 用 `ProjectionSnapshot.approvalStatuses` 注入，不再新增事件类型；runtime/projection/event-audit/context-token 四处 golden 句逐字一致；漂移反证真红。
+- 无 token 日志：node/python 都把无 token 从 debug 后静默丢行改为 `NoTokenError` → 回填重试 → 上限 marker；无 token 不消耗 5xx 预算，marker 不递归。
+- 应用发布行契约：后端 `AppReleaseRowDto` 补 `sourceDeploymentId/status/createdAt/synthetic`，投影真填值；前端改为生成 schema 派生；字段漂移再收缩到 **20**（missing 16 / extra 4）。
+- 工作台大函数：新增 `workbench-form.ts` 与三个展示组件，`WorkbenchPage` 函数体 326→115 行、行内 ALLOW 已删；preview/commit/session 三段职责解耦，文案与既有测试不变。
+
+**集成验收**：
+- `npm run typecheck:all` exit 0；`git diff --check` exit 0。
+- 静态门禁全绿：`test:docs`、`check-infra-doc-counts`、`check-size-caps`、`check-migrations`、`check-migration-symmetry`、`check-index-drift`、`check-callback-contract-drift`、`check-web-type-drift`、`check-web-type-field-drift`、`check-guards-wired`、`check-openapi-response-schema`、`check:api-i18n`（2193 处注入）、`check:api-reference`、`check-workflow-yaml`、`check-user-facing-language`、`agent-event-projection-audit --selftest`、`agent-context-token-audit --selftest`、`e2e-wiring`。size-caps 两条新超线按实测重签。
+- 定向测试：admin-api 4 suites / 27 passed；node pusher 32 passed；python pusher 27 passed；web 8 files（含 workbench split/positioning）/ 90 passed / 1 skipped；真浏览器 3/3 PASS；真 HTTP attemptSeq 3/3 PASS。
+- 主控集成修复：OpenAPI 单 worker 重导、API-I18N 补 6 条映射、生成类型/API 参考/response-schema 重导；node/python 混合英文日志文案改中文；SSE ticket 与 apprelease 生成物对齐。
+- 定级与边界：本轮最高为**真实浏览器第 4 级 + 真 HTTP/真 PG 第 3 级**。未跑全量 Playwright 矩阵；S3 仍以桩层验证；`projectSession` 生产调用点为 0，expired 投影分支未来切读路径时才进入生产，当前模型重建快照路径已修；未 git commit/push。
+
+---
+
+## 本次交接（2026-11-27 · 空降负责人硬骨轮，已完成）
+
+**方向来源**：用户要求继续自定目标、啃硬骨头、打磨所有链路功能和体验。先跑 6 路只读 triage（真栈验收、日志管线、迁移实跑、类型债、工作台续跑、审批链），再按写域并行派发 9 个实现/验证 agent（`impl-log-api`、`impl-log-web`、`impl-log-python`、`impl-real-e2e`、`impl-migration-verify`、`impl-type-debt`、`impl-workbench-resume`、`impl-approval-hardening`、`impl-migration-downfix`），另用只读 `verify-approval-chain` 复核旧文档结论。所有实现 agent 明令不跑全量构建，编译/测试由主控串行收口。
+
+**本轮交付**：
+- 日志链路：REST 增 `nextCursor` 与平行 `lineNumbers`，SSE 支持 `fromLine` 且帧带 `lineNumber`；前端按真实行号建权威表，重连续传、分页、断流 refresh 三源去重；S3 运行态合并 DB 实时行、append 冲突不再覆盖前页；Python pusher 对齐 node 的重试/marker 语义。
+- 真栈验收：新增 4 个真 PG/Redis/Nest e2e spec，覆盖 attemptSeq 世代门禁、广播槽位 SETNX、timeout 策略、任务默认 PAUSED；`scripts/verify-hardening-realstack.sh` 单 Jest 进程跑 4 suites / 8 tests 全绿并清理 throwaway DB/槽位键。
+- 迁移：新增 `scripts/verify-migrations-0108-0109-0110.sh`，真 PG16 容器 up→31 项断言→down×3→EXPLAIN，全绿。实测发现并修复产品缺陷：`migration-lock-cli.ts down` 原先硬走事务，0109 的 `DROP INDEX CONCURRENTLY` 必败；`migration-runner.util.ts` 现在按台账最后一条迁移实例动态选择 `transaction:'none'`/`'each'`。
+- 类型债：`User.isActive/totpEnabled`、`ExecutorPackage.uploadedBy/originalFilename`、`Application` 归属字段改为生成 schema 派生；字段漂移 41→24，删除 17 条基线，5 条已消费但后端契约缺位保留理由。
+- 工作台续跑：sessionId 写入 URL query 并 fallback localStorage；新增 `GET /workbench/sessions` 仅当前用户可见；会话面板补工具调用/审批项/产物下载明细，审批入口沿用既有 ADMIN 四眼口径。
+- 审批旁路：phrase allow/deny 与 grant/deny 共用决策副作用 helper（恢复入队、台账结清、事件）与四眼 guard；`replayedToolResult` 对 expired 给显式文案，不再误导「批准后会恢复」。
+
+**集成验收**：
+- `npm run typecheck:all` exit 0；`git diff --check` exit 0；OpenAPI 单 worker 重导 + API-I18N（2188 处注入）+ `gen:api-types` + `gen:api-reference` + response-schema（280/305）全部 exit 0。
+- 静态门禁全绿：`test:docs`、`check-infra-doc-counts`、`check-size-caps`、`check-migrations`、`check-migration-symmetry`、`check-index-drift`、`check-callback-contract-drift`、`check-web-type-drift`、`check-web-type-field-drift`（24 处冻结）、`check-guards-wired`、`check-openapi-response-schema`、`check:api-i18n`、`check:api-reference`、`check-workflow-yaml`、`check-user-facing-language`、`agent-event-projection-audit --selftest`、`e2e-wiring` 均 exit 0。size-caps 4 个新超线条目按实测重签并写明原因；i18n 新增孤儿 `nav.edit/nav.install` 已删除。
+- 定向测试：admin-api 9 suites / 87 passed；真栈 e2e 4 suites / 8 passed（第 3 级，无 SKIP）；真 PG 迁移脚本 PASS=31 / FAIL=0（第 3 级，CLI down 无绕行）；python pusher 23 passed；admin-web 6 files / 37 passed / 1 skipped。
+- 主控集成修复：API-I18N 补 6 条映射；DTO/日志/pusher 英文文案改中文；size 基线重签；locale 孤儿清理；生成物与文档重导；`TaskService.handleCallback` 补 attemptSeq facade 字段；workbench `downloadUrl` 类型修复。
+- 定级与边界：本轮最高为**真 PG/Redis 进程内集成（第 3 级）**；未跑全栈浏览器矩阵与真实 admin↔executor HTTP dispatch 联调，浏览器级刷新/下载仅单测与 CI 双轨接线。S3 合并与 EXPLAIN 在脚本/替身层验证，未接真实 S3 服务。审批事件投影侧仍有 expired 旧文案（需新事件语义，当前模型重建路径已修）。Python no-token 路径仍沿用既有静默返回，未在本轮范围。未 git commit/push。
+
+---
+
+## 本次交接（2026-11-27 · 空降负责人总纠偏轮，已完成）
+
+**方向来源**：objective 明确「不要盲信 md、很多功能没实现、定位有问题、体验不好、允许大刀阔斧、调研 agent 不限数量但编译 agent 少」。先同步 CodeGraph（1.6.4，sync 34 changed files，index up to date），再用 8 个只读 agent 并行调查主链路、agent-collab、admin-web UX、数据一致性、测试覆盖、执行器一致性、文档偏差与 /data/project/opensource 参考。调查阶段最高验证级别均为 **static**，未把静态结论冒充实测。
+
+**已登记的高危问题（仅列决定本轮切片的项）**：
+- 控制面：创建/导入任务 Swagger 承诺 paused，实现默认 ACTIVE；attemptSeq 未随派发/回调闭合；广播槽位用任务当前 executeMode 判历史执行，存在泄漏；回调 DTO 静默吞字段；timeout 终态落两个桶。
+- Agent 工单：终态回报失败不同进程内重排、ACK 早于回报成功、sop_amended 重领回退旧版本；领取能力快照/权限档位从未落库；browser 能力只探测模块；poll 上限双端硬编码；浏览器观察动作缺越界复核。
+- 数据/UX：Dashboard 计入 synthetic 行，totalTasks 计入 deleted 存量；artifacts N+1 + 删除态过滤缺失 + 排序索引缺口；任务列表一次性读全量执行行；Inbox 普通用户可见 ADMIN-only 深链；hydration 首帧空白；路由注册表与手写菜单重复；走查缺登录/审批/治理页且浏览器路径写死 Windows；前端 55 处类型漂移靠基线冻结。
+
+**本轮编排**：9 个写域并行（`impl-taskcore`、`impl-dataops`、`impl-callback-admin`、`impl-callback-executors`、`impl-agenthost`、`impl-sop-admin`、`impl-browser`、`impl-webux`、`impl-webtools`），文件边界互斥；所有子 agent 明令不跑全量构建/测试，由主控在集成后统一做受控验证，避免 OOM。跨切片契约：`attemptSeq?: number` 同时进入 dispatch/callback payload；poll 响应 `maxAssignmentsPerPoll?: number` 由服务端下发、桌面端消费；sop_amended 以 journal 中最高修订版为准。
+
+**集成与验收结果**：
+- 9 个写域全部回报；主控逐域审阅 diff 并统一收口。跨端 `attemptSeq?: number`（dispatch 4 条路径 + callback）、poll 请求快照三字段与响应 `maxAssignmentsPerPoll?: number`、sop_amended journal 优先级均已落地。
+- 主控受控验证（一次只跑一个编译/测试进程，避免 OOM）：`npm run typecheck:all` exit 0；`git diff --check` exit 0；OpenAPI 单 worker 重导 + API-I18N 注入 + `gen:api-types` + `gen:api-reference` + response-schema 基线更新全部 exit 0。
+- 静态门禁全绿：`test:docs`、`check-infra-doc-counts`、`check-size-caps`、`check-migrations`、`check-migration-symmetry`、`check-index-drift`、`check-callback-contract-drift`、`check-web-type-drift`、`check-web-type-field-drift`、`check-guards-wired`、`check-openapi-response-schema`、`check:api-i18n`、`check:api-reference`、`check-workflow-yaml`、`check-user-facing-language`、`check-protocol-breaking`、`check-protocol-three-way` 均 exit 0。协议生成物二次生成 diff 与首次一致（幂等）；`check:protocol-sync` 对未提交改动的 `git diff --exit-code` 红灯属预期，提交后自然转绿。
+- 定向测试：admin-api 8 suites / 43 passed / 3 skipped（含 taskcore、callback、metrics/artifacts、sop、迁移）；node callback-attemptseq 4/4；python callback-attemptseq 5/5（`--no-cov`，单文件不套全局覆盖率门）；desktop agent-host/collab-client/browser selftest 三段全绿；admin-web 5 suites / 57 passed。SOP 领取切片另有 agent 实测真 PG 5/5（第 3 级）：两列落库、poll 上限、>100 台远端机器可见、resultJson 待部署语义。
+- 主控集成修复：README 标题层级（H3→H2）并重生成三语切片；infra 文档 job/迁移计数 42/154；size-caps 7 个既有条目按实测重签、agent-host.ts 新增 ALLOW；新增两个守卫接入根 package.json 与 CI；生成的 `api-types.ts` 同步 executeMode/isBroadcast；WorkbenchSessionView 适配生成 DTO 可空字段；DTO 英文描述改中文并补 API-I18N 英文映射。
+- 定级：绝大多数切片最高为**单测/内存替身 + 静态守卫**；SOP 领取为**真 PG 进程内集成（第 3 级）**；未跑全栈浏览器矩阵/真机（仅 ux-walkthrough --help、e2e-wiring 静态接线，CI 双轨 browser-stub/browser-real 已接但本地未跑）。本机缺 Chromium executable，浏览器能力 selftest 如实跳过真机段。曾有一次全量 openapi 导出并行导致 OOM，随后改为单 worker `--runInBand` 完成，未再发生。
+- 参考项目 /data/project/opensource 仅用于只读调研（审批成对事件、窄 port 契约、子agent 追踪、能力预设等做法），未把参考过程写入项目代码或交接文档。未 git commit/push。
+
+---
+
 ## 本轮（2026-11-27 · 空降负责人纠偏轮）：定位纠偏 + 业务用户 403 死路闭环 + 工作台会话能力落地
 
 **方向来源**：objective 明确「外部空降负责人、不要盲信 md、项目定位有问题/功能没实现/体验不好、允许大刀阔斧」。先派 5 路**只读**侦察（定位、UX、未完成功能、参考项目、验证可信度），再按用户可验收路径切成 3 个写域并行实现（admin-web / admin-api / docs），主会话负责集成与定级验收。**结论：此前「功能可落地接近穷尽」不成立**——业务用户主路径系统性撞 ADMIN-only 403 墙、旗舰工作台只有 preview/commit 草稿无可运行会话、README 自我矛盾（「面向开发者」vs「面向业务人员/老板」）、文档宣称的「全绿」无留存日志佐证（仅有的两份归档日志实为红灯）。
