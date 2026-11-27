@@ -24,7 +24,7 @@ import {
   KeyOutlined, CopyOutlined, EyeOutlined, EyeInvisibleOutlined,
   PlusOutlined, EditOutlined, DeleteOutlined, HistoryOutlined,
   ReloadOutlined, RobotOutlined, ThunderboltOutlined, SafetyCertificateOutlined,
-  ApiOutlined, BellOutlined, BarChartOutlined,
+  ApiOutlined, BellOutlined, BarChartOutlined, DollarOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory, type UpsertConfigPayload } from '../../api/config';
@@ -48,6 +48,8 @@ import AiProvidersSettings from './AiProvidersSettings';
 import ApiKeysSettings from './ApiKeysSettings';
 // FEAT-15: 事件订阅 Tab（webhook 出站事件 + 死信 replay），独立文件
 import EventSubscriptionsSettings from './EventSubscriptionsSettings';
+// N20: token 价目表 Tab（列出 + 新增/覆盖；后端无 DELETE，不做删除入口）
+import PriceSettings from './PriceSettings';
 import { useTranslation } from 'react-i18next';
 // D-P2-14：Tab 选择进 URL ?tab=（与 ExecutionDetailPage 同源范式）。
 import { useSearchParams } from 'react-router-dom';
@@ -997,6 +999,12 @@ export default function SettingsPage() {
       key: 'event-subscriptions',
       label: <Space><BellOutlined aria-hidden />{t('sysSettings.tab.events')}</Space>,
       children: <EventSubscriptionsSettings />,
+    },
+    // N20 成本线 P1：价目表置于末位，保持既有 Tab 排序与 ?tab= 默认回退不变。
+    {
+      key: 'price',
+      label: <Space><DollarOutlined aria-hidden />{t('sysSettings.tab.price')}</Space>,
+      children: <PriceSettings />,
     },
   ];
 

@@ -70,6 +70,8 @@ function reasonLabel(
 interface PromotionReasonView {
   label: string;
   tone: 'warning' | 'secondary';
+  /** 结构化原因的稳定码，供 gate_off 未采集态筛掉依赖严格值的阈值原因。 */
+  code?: string;
 }
 
 /**
@@ -83,6 +85,7 @@ function buildPromotionReasons(
   const details = pe.reasonDetails ?? [];
   if (details.length > 0) {
     return details.map((detail) => ({
+      code: detail.code,
       label: reasonLabel(pe, detail, t),
       tone: detail.code === REASON_CODE.OPS_PREREQ_COVERAGE ? 'warning' : 'secondary',
     }));
@@ -207,6 +210,26 @@ export default function NorthStarCard() {
 
   const isEmpty = totals.confirmed === 0 && totals.installs === 0 && totals.proxy === 0;
 
+  // 唯一「未采集」信号：ttfv 双闸任一未开 ⇒ gate_off ⇒ funnel_events 未授权零落库，
+  // 因此严格值 0 是「没采到」而非真零。no_data/ok/字段缺席一律不反向推断。
+  const strictUncollected = data?.ttfv?.dataStatus === 'gate_off';
+
+  const promotionReasons = data?.promotionEligibility
+    ? buildPromotionReasons(data.promotionEligibility, t)
+    : [];
+  // 升主判据的周数/活跃数同样来自 strict 周序列；gate_off 且两数为 0 时不能
+  // 继续画「0 周 / 0 活跃」，只保留不依赖 strict 的运营前置提示 + 一条诚实说明。
+  const promotionStrictUncollected =
+    strictUncollected &&
+    data?.promotionEligibility?.weeks === 0 &&
+    data?.promotionEligibility?.activeInstallWeeks === 0;
+  const visiblePromotionReasons = promotionStrictUncollected
+    ? [
+        { label: t('dashboard.northStar.promotion.uncollectedReason'), tone: 'secondary' as const },
+        ...promotionReasons.filter((reason) => reason.code === REASON_CODE.OPS_PREREQ_COVERAGE),
+      ]
+    : promotionReasons;
+
   return (
     <CardShell title={title}>
       {/* 周口径说明：按周 + 截止 as_of（本地化时间格式） */}
@@ -224,22 +247,32 @@ export default function NorthStarCard() {
             <Text type="secondary" style={{ fontSize: 11 }}>{t('dashboard.northStar.strictHint')}</Text>
           </div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 16 }}>
-            <div>
-              <Text style={{ fontSize: 28, fontWeight: 700, color: 'var(--color-success)' }} data-testid="north-star-confirmed">
-                {totals.confirmed}
-              </Text>
-              <Text type="secondary" style={{ fontSize: 11, display: 'block' }}>
-                {t('dashboard.northStar.confirmedExecutions')}
-              </Text>
-            </div>
-            <div>
-              <Text style={{ fontSize: 18, fontWeight: 600 }} data-testid="north-star-installs">
-                {totals.installs}
-              </Text>
-              <Text type="secondary" style={{ fontSize: 11, display: 'block' }}>
-                {t('dashboard.northStar.activeInstalls')}
-              </Text>
-            </div>
+            {strictUncollected ? (
+              <Tooltip title={t('dashboard.northStar.strictUncollectedHint')}>
+                <Text type="warning" style={{ fontSize: 16, fontWeight: 600 }} data-testid="north-star-strict-uncollected">
+                  {t('dashboard.northStar.strictUncollected')}
+                </Text>
+              </Tooltip>
+            ) : (
+              <>
+                <div>
+                  <Text style={{ fontSize: 28, fontWeight: 700, color: 'var(--color-success)' }} data-testid="north-star-confirmed">
+                    {totals.confirmed}
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: 11, display: 'block' }}>
+                    {t('dashboard.northStar.confirmedExecutions')}
+                  </Text>
+                </div>
+                <div>
+                  <Text style={{ fontSize: 18, fontWeight: 600 }} data-testid="north-star-installs">
+                    {totals.installs}
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: 11, display: 'block' }}>
+                    {t('dashboard.northStar.activeInstalls')}
+                  </Text>
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -281,14 +314,16 @@ export default function NorthStarCard() {
                 : t('dashboard.northStar.promotion.notEligible')}
             </Tag>
             <Text type="secondary" style={{ fontSize: 11 }} data-testid="north-star-promotion-detail">
-              {t('dashboard.northStar.promotion.detail', {
-                weeks: data.promotionEligibility.weeks,
-                installs: data.promotionEligibility.activeInstallWeeks,
-              })}
+              {promotionStrictUncollected
+                ? t('dashboard.northStar.promotion.uncollectedDetail')
+                : t('dashboard.northStar.promotion.detail', {
+                    weeks: data.promotionEligibility.weeks,
+                    installs: data.promotionEligibility.activeInstallWeeks,
+                  })}
             </Text>
           </div>
           <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }} data-testid="north-star-promotion-reasons">
-            {buildPromotionReasons(data.promotionEligibility, t).map((reason, idx) => (
+            {visiblePromotionReasons.map((reason, idx) => (
               <Text
                 key={idx}
                 type={reason.tone}
@@ -304,7 +339,7 @@ export default function NorthStarCard() {
 
       {isEmpty && (
         <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 8 }} data-testid="north-star-empty">
-          {t('dashboard.northStar.empty')}
+          {strictUncollected ? t('dashboard.northStar.emptyUncollected') : t('dashboard.northStar.empty')}
         </Text>
       )}
 

@@ -29,12 +29,16 @@ import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
 import RecentFailuresCard from '../components/dashboard/RecentFailuresCard';
 import KpiRow from '../components/dashboard/KpiRow';
 import TrendChart from '../components/dashboard/TrendChart';
+import ApprovalQueueCard from '../components/dashboard/ApprovalQueueCard';
+import CostPostureCard from '../components/dashboard/CostPostureCard';
 import { buildTrendSeries } from '../utils/trendSeries';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
 import NorthStarCard from '../components/dashboard/NorthStarCard';
+import TtfvCard from '../components/dashboard/TtfvCard';
 import DashboardOnboardingSection from '../components/onboarding/DashboardOnboardingSection';
 import { useMetricsStream, useMetricsStreamDegraded, type MetricsStreamStatus } from '../hooks/useMetricsStream';
 import { useProjectFilter } from '../hooks/useProjectFilter';
+import { isAdminUser, useAuthStore } from '../store/auth';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
@@ -191,6 +195,7 @@ export default function DashboardPage() {
   const [trendDays, setTrendDays] = useState<number>(7);
   // UI-02：图表双主题——网格线/轴文字随 data-theme 切换
   const isDark = useThemeStore(selectResolvedTheme) === 'dark';
+  const isAdmin = isAdminUser(useAuthStore(s => s.user));
 
   // P1-2：全局当前项目上下文（?project=）。任务/执行派生的聚合按项目过滤；
   // 执行器机队与调度器无项目归属，保持全局口径并在对应卡片显式标注。
@@ -359,6 +364,15 @@ export default function DashboardPage() {
         sparkTrend={sparkTrend}
       />
 
+      {/* 老板驾驶舱：首屏聚合待审批、成本诚实标缺与北极星价值（全局口径）。 */}
+      <div data-testid="boss-cockpit" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <Text strong style={{ fontSize: 15 }}>{t('dashboard.cockpit.title')}</Text>
+        <Row gutter={[16, 16]} align="stretch">
+          <Col xs={24} sm={12} xl={6}><ApprovalQueueCard /></Col>
+          {isAdmin && <><Col xs={24} sm={12} xl={6}><CostPostureCard /></Col><Col xs={24} sm={12} xl={6}><NorthStarCard /></Col><Col xs={24} sm={12} xl={6}><TtfvCard /></Col></>}
+        </Row>
+      </div>
+
       {/* 趋势图 */}
       <Card
         size="small" variant="borderless"
@@ -468,9 +482,6 @@ export default function DashboardPage() {
         </Col>
       </Row>
 
-      {/* R328：北极星双口径看板 —— 周级全局指标（请求不带 projectId，切项目不变），
-          放在全局口径分组内；严格值主 / 近似值参考并列，warnings 常驻。 */}
-      <NorthStarCard />
     </div>
   );
 }

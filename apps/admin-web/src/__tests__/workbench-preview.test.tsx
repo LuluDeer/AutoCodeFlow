@@ -53,6 +53,7 @@ const commitOk: CommitResult = {
   sopId: 'sop-0001',
   slug: 'workbench-card-abc1',
   status: 'draft',
+  approvalStatus: 'submitted',
   next: '请在 SOP 页面审阅并发布',
 };
 

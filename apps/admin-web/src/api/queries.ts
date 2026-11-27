@@ -26,6 +26,8 @@ import { artifactsApi, type ExecutionArtifact, type ArtifactRow, type ArtifactIn
 import { type ExecutionReportPayload, executionReportsApi } from './execution-reports';
 import { taskTemplatesApi, type TaskTemplate } from './task-templates';
 import { applicationsApi, type Application } from './applications';
+import { agentApi, type AgentInboxCountsResponse, type AgentPendingApprovalsResponse } from './agent';
+import { getActivationStats, type ActivationStats } from './capability-activation';
 
 // ── queryKey 工厂 ────────────────────────────────────────────────────────
 
@@ -52,6 +54,15 @@ export const queryKeys = {
    */
   northStar: {
     report: ['north-star-report'] as const,
+  },
+  /** 老板驾驶舱：审批收件箱计数/摘要与成本折算态，均不带项目维度。 */
+  inbox: {
+    counts: ['inbox-counts'] as const,
+    pendingApprovals: (limit = 5) => ['inbox-pending-approvals', limit] as const,
+  },
+  activation: {
+    statsBrief: (from: string, to: string) =>
+      ['capability-activation-stats-brief', from, to] as const,
   },
   executions: {
     all: ['executions'] as const,
@@ -287,6 +298,48 @@ export function useNorthStarReport(): UseQueryResult<NorthStarReport> {
     queryKey: queryKeys.northStar.report,
     queryFn: ({ signal }) => metricsApi.getNorthStar(undefined, signal),
     refetchInterval: 5 * 60_000,
+    gcTime: 10 * 60_000,
+  });
+}
+
+/** 成本卡的近 30 天窗口：与 ActivationStatsPage 的 DEFAULT_DAYS=30 同口径。 */
+function activationStatsBriefWindow(): { from: string; to: string } {
+  const to = new Date();
+  to.setHours(23, 59, 59, 999);
+  const from = new Date(to);
+  from.setDate(from.getDate() - 29);
+  from.setHours(0, 0, 0, 0);
+  return { from: from.toISOString(), to: to.toISOString() };
+}
+
+/**
+ * 老板驾驶舱：待审批计数。单字段 null / degraded 都是「未知」，不是 0——
+ * hook 只负责如实透传契约，三态判定留给卡片（避免薄层误吞语义）。
+ */
+export function useInboxCounts(): UseQueryResult<AgentInboxCountsResponse> {
+  return useQuery({
+    queryKey: queryKeys.inbox.counts,
+    queryFn: ({ signal }) => agentApi.inboxCounts(signal),
+    retry: false,
+  });
+}
+
+/** 最久等待的几张待审批单摘要（只取 items，不拿它替代独立计数）。 */
+export function usePendingApprovals(limit = 5): UseQueryResult<AgentPendingApprovalsResponse> {
+  return useQuery({
+    queryKey: queryKeys.inbox.pendingApprovals(limit),
+    queryFn: ({ signal }) => agentApi.listPendingApprovals(limit, signal),
+    retry: false,
+  });
+}
+
+/** 成本诚实标缺数据源：近 30 天 stats，金额不可得时由卡片显式标缺。 */
+export function useActivationStatsBrief(): UseQueryResult<ActivationStats> {
+  const { from, to } = activationStatsBriefWindow();
+  return useQuery({
+    queryKey: queryKeys.activation.statsBrief(from, to),
+    queryFn: () => getActivationStats(from, to),
+    retry: false,
     gcTime: 10 * 60_000,
   });
 }

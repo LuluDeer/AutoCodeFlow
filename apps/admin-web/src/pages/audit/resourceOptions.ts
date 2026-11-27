@@ -31,7 +31,7 @@ export const AUDIT_RESOURCE_GROUPS: readonly { labelKey: string; resources: read
   { labelKey: 'audit.group.task', resources: ['task', 'task_execution', 'task_template'] },
   { labelKey: 'audit.group.application', resources: ['application', 'app_deployment', 'artifact'] },
   { labelKey: 'audit.group.sop', resources: ['sop', 'sop_assignment', 'sop_clarification'] },
-  { labelKey: 'audit.group.auth', resources: ['api_key', 'auth', 'user'] },
+  { labelKey: 'audit.group.auth', resources: ['agent_approval', 'api_key', 'auth', 'user'] },
   { labelKey: 'audit.group.project', resources: ['project', 'project_member'] },
   {
     labelKey: 'audit.group.notification',

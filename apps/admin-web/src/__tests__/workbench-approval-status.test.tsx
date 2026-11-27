@@ -1,17 +1,19 @@
 /**
- * ADR-045 · 工作台提交成功后的「已提交四眼审批」区块（`pages/WorkbenchPage.tsx`）。
+ * ADR-045 · 工作台提交后的「发布审批三态」诚实反馈（`pages/WorkbenchPage.tsx`）。
  *
  * 判据是**渲染副作用**，不是「代码里有 approvalKey」：
- *   · commit 回带 `approvalKey` ⇒ 区块在场，状态文案 / 审批单标识原文 / `/inbox` 入口可见；
- *   · `approvalKey` 缺席（后端 `required: false`，= 审批发起失败）⇒ **整块不渲染**，
- *     绝不编造「已提交审批」；
- *   · 原有草稿结果（sopId / slug / 后续步骤 / 去 SOP 页审阅）逐字不变。
+ *   · submitted ⇒ success Alert + 审批卡（状态文案 / 审批单标识原文 / /inbox 入口）
+ *     + 既有 /sops 深链，全部逐字保留；
+ *   · failed ⇒ **warning Alert**（草稿已落但审批发起失败），无审批卡、无 /sops 链接
+ *     （USER 点进去是 ADMIN-only 页 ⇒ 403），不给「已提交审批」的假象；
+ *   · not_requested ⇒ 中性 info Alert，同样无审批卡、无 /sops 链接；
+ *   · 三态文案全走 i18n，英文界面不得出现后端硬编码中文 `next`。
  *
  * 验收级别：单测 / 内存替身（`api/workbench` 被 mock，HTTP 边界不触网）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
-import '../i18n';
+import { setLanguage } from '../i18n';
 import WorkbenchPage from '../pages/WorkbenchPage';
 import { previewPlan, commitPlan } from '../api/workbench';
 import type { CommitResult, PreviewPlanResult } from '../api/workbench';
@@ -61,18 +63,12 @@ const commitOk: CommitResult = {
   sopId: 'sop-0001',
   slug: 'workbench-card-abc1',
   status: 'draft',
+  approvalStatus: 'submitted',
+  // 废弃字段刻意留在 fixture：前端若仍渲染它，下面「无硬编码中文」断言会红。
   next: '请在 SOP 页面审阅并发布',
 };
 
 const APPROVAL_KEY = 'apr-11111111-1111-4111-8111-111111111111-cccccccccccccccc';
-
-/**
- * commit 响应 + ADR-045 的 `approvalKey`。
- *
- * `api/workbench.ts` 的 `CommitResult` 尚未登记该字段（本轮写域不含该文件），
- * 故测试侧用同一形状收窄——与 `WorkbenchPage` 的本地扩展类型逐字一致。
- */
-type CommitResultWithApproval = CommitResult & { approvalKey?: string | null };
 
 const button = (label: string): HTMLButtonElement =>
   screen.getByText(label).closest('button') as HTMLButtonElement;
@@ -88,20 +84,22 @@ async function submitCommit() {
   await screen.findByTestId('workbench-commit-success');
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await setLanguage('zh');
   vi.mocked(previewPlan).mockReset().mockResolvedValue(okResult);
   vi.mocked(commitPlan).mockReset().mockResolvedValue(commitOk);
   useAuthStore.setState({ user: { id: 7, username: 'boss', role: 'admin' } });
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   vi.restoreAllMocks();
+  await setLanguage('zh');
 });
 
 describe('ADR-045 工作台提交后的四眼审批状态', () => {
-  it('有 approvalKey：状态文案 + 审批单标识原文 + 去 /inbox 入口', async () => {
-    vi.mocked(commitPlan).mockResolvedValue({ ...commitOk, approvalKey: APPROVAL_KEY } as CommitResultWithApproval);
+  it('submitted：success Alert + 状态文案 + 审批单标识原文 + /inbox + 既有 /sops 深链', async () => {
+    vi.mocked(commitPlan).mockResolvedValue({ ...commitOk, approvalKey: APPROVAL_KEY });
     await submitCommit();
 
     const block = screen.getByTestId('workbench-commit-approval');
@@ -109,33 +107,84 @@ describe('ADR-045 工作台提交后的四眼审批状态', () => {
     expect(withinText(block, 'workbench-approval-key')).toBe(APPROVAL_KEY);
     expect(withinText(block, 'workbench-approval-link')).toBe('去待我审批');
     expect(block.querySelector('[data-testid="workbench-approval-link"]')?.getAttribute('href')).toBe('/inbox');
-    // 原有草稿结果逐字不变
-    expect(block.ownerDocument.body.textContent).toContain('sop-0001');
-    expect(block.ownerDocument.body.textContent).toContain('workbench-card-abc1');
-    expect(block.ownerDocument.body.textContent).toContain('去 SOP 页审阅');
+    // happy path 既有草稿结果与深链逐字不变
+    const card = screen.getByTestId('workbench-commit-success');
+    expect(card.querySelector('.ant-alert-success')).not.toBeNull();
+    expect(card.textContent).toContain('sop-0001');
+    expect(card.textContent).toContain('workbench-card-abc1');
+    expect(card.textContent).toContain('后续步骤：方案卡已提交发布审批，待主管四眼批准');
+    expect(screen.getByRole('link', { name: '去 SOP 页审阅' }).getAttribute('href')).toBe(
+      '/sops?sop=sop-0001',
+    );
     // 面向业务人员：不出现运行时术语
-    expect(block.ownerDocument.body.textContent ?? '').not.toMatch(/cron|uuid|glue|executor/i);
+    expect(card.textContent ?? '').not.toMatch(/cron|uuid|glue|executor/i);
   });
 
-  it('无 approvalKey（审批发起失败）⇒ 整块不渲染，也不编造「已提交审批」', async () => {
-    vi.mocked(commitPlan).mockResolvedValue(commitOk);
+  it('failed（审批发起异常）：warning Alert + 草稿保留 + 无 /sops 链接 + 无审批卡', async () => {
+    vi.mocked(commitPlan).mockResolvedValue({ ...commitOk, approvalStatus: 'failed' });
     await submitCommit();
 
+    const card = screen.getByTestId('workbench-commit-success');
+    expect(card.querySelector('.ant-alert-warning')).not.toBeNull();
+    expect(card.querySelector('.ant-alert-success')).toBeNull();
+    expect(card.textContent).toContain('方案已存为草稿，但发布审批发起失败，请联系管理员后重试');
+    // 草稿确实已落：draft 标签 + sopId + slug 仍在
+    expect(card.textContent).toContain('草稿');
+    expect(card.textContent).toContain('sop-0001');
+    expect(card.textContent).toContain('workbench-card-abc1');
+    // 不编造「已提交审批」，也不给 USER 指向 ADMIN-only 页的 403 链接
     expect(screen.queryByTestId('workbench-commit-approval')).toBeNull();
     expect(screen.queryByTestId('workbench-approval-status')).toBeNull();
     expect(screen.queryByTestId('workbench-approval-key')).toBeNull();
     expect(screen.queryByTestId('workbench-approval-link')).toBeNull();
+    expect(card.querySelector('a[href^="/sops"]')).toBeNull();
+    expect(screen.queryByRole('link', { name: '去 SOP 页审阅' })).toBeNull();
+    expect(card.textContent).toContain('发布审批发起失败，请勿直接前往 SOP 页；待管理员处理后重试');
+    expect(card.textContent).not.toContain('请在 SOP 页面审阅并发布');
     expect(document.body.textContent).not.toContain('已提交四眼审批');
-    // 草稿结果照常（提交本身成功，只是审批发起失败）
-    expect(screen.getByTestId('workbench-commit-success').textContent).toContain('sop-0001');
   });
 
-  it('approvalKey 为空串 ⇒ 视同缺席（不渲染空壳区块）', async () => {
-    vi.mocked(commitPlan).mockResolvedValue({ ...commitOk, approvalKey: '   ' } as CommitResultWithApproval);
+  it('not_requested（端口缺席/非 USER 上下文）：中性 Alert + 无 /sops 链接 + 无审批卡', async () => {
+    vi.mocked(commitPlan).mockResolvedValue({ ...commitOk, approvalStatus: 'not_requested' });
+    await submitCommit();
+
+    const card = screen.getByTestId('workbench-commit-success');
+    expect(card.querySelector('.ant-alert-info')).not.toBeNull();
+    expect(card.querySelector('.ant-alert-success')).toBeNull();
+    expect(card.querySelector('.ant-alert-warning')).toBeNull();
+    expect(card.textContent).toContain('方案已存草稿，请联系管理员发起发布审批');
+    expect(card.textContent).toContain('sop-0001');
+    expect(screen.queryByTestId('workbench-commit-approval')).toBeNull();
+    expect(card.querySelector('a[href^="/sops"]')).toBeNull();
+    expect(card.textContent).not.toContain('请在 SOP 页面审阅并发布');
+  });
+
+  it('submitted 但 approvalKey 为空白 ⇒ 不渲染空壳审批卡', async () => {
+    vi.mocked(commitPlan).mockResolvedValue({ ...commitOk, approvalKey: '   ' });
     await submitCommit();
 
     expect(screen.queryByTestId('workbench-commit-approval')).toBeNull();
     expect(document.body.textContent).not.toContain('已提交四眼审批');
+  });
+
+  it('英文界面 failed 态无硬编码中文：三态文案全走 i18n', async () => {
+    await setLanguage('en');
+    vi.mocked(commitPlan).mockResolvedValue({ ...commitOk, approvalStatus: 'failed' });
+    // 英文界面下中文选择器不再成立，走英文 label 的同一条用户路径。
+    render(<WorkbenchPage />);
+    fireEvent.change(screen.getAllByRole('textbox')[0], {
+      target: { value: 'Weekly project status summary' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview plan' }));
+    await screen.findByText(okResult.card.title);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm plan' }));
+    await screen.findByTestId('workbench-commit-success');
+
+    const card = screen.getByTestId('workbench-commit-success');
+    expect(card.textContent).toContain('release approval request failed');
+    expect(card.textContent).not.toMatch(/[\u4e00-\u9fa5]/);
+    expect(card.querySelector('a[href^="/sops"]')).toBeNull();
+    expect(screen.queryByTestId('workbench-commit-approval')).toBeNull();
   });
 });
 

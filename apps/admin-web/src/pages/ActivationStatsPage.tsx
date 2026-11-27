@@ -24,15 +24,27 @@ import {
   type ActivationStatsEntry,
   type QuotaStatusRow,
 } from '../api/capability-activation';
+import { useTranslation } from 'react-i18next';
+import i18n from '../i18n';
+import { costReasonLabel } from '../components/dashboard/CostPostureCard';
 
 const { Text, Title } = Typography;
 const DEFAULT_DAYS = 30;
 
-const QUOTA_STATUS_LABEL: Record<QuotaStatusRow['status'], string> = {
-  ok: '正常',
-  warn: '预警',
-  exceeded: '已超限',
-};
+type Translate = import('i18next').TFunction;
+
+function quotaStatusLabel(t: Translate, status: QuotaStatusRow['status']): string {
+  switch (status) {
+    case 'ok':
+      return t('activation.quota.status.ok');
+    case 'warn':
+      return t('activation.quota.status.warn');
+    case 'exceeded':
+      return t('activation.quota.status.exceeded');
+    default:
+      return status;
+  }
+}
 
 const QUOTA_STATUS_COLOR: Record<QuotaStatusRow['status'], string> = {
   ok: 'success',
@@ -52,19 +64,22 @@ function formatAmount(row: QuotaStatusRow, amount: number): string {
   return row.currency ? `${row.currency} ${value}` : value;
 }
 
-function amountUnavailableDetail(row: QuotaStatusRow): string {
+function amountUnavailableDetail(row: QuotaStatusRow, t: Translate): string {
   const parts: string[] = [];
   if (row.amountNote?.trim()) parts.push(row.amountNote.trim());
-  if (row.priceReason) parts.push(`原因：${row.priceReason}`);
-  if (parts.length === 0) parts.push('零样本或缺价目');
-  if (!parts.some((part) => part.includes('未与 0 比较'))) {
-    parts.push('未与 0 比较');
+  if (row.priceReason) parts.push(t('activation.quota.reason', { reason: row.priceReason }));
+  if (parts.length === 0) parts.push(t('activation.quota.noSamplePrice'));
+  const notComparedZh = i18n.t('activation.quota.notComparedToZero', { lng: 'zh' }) as string;
+  const notCompared = t('activation.quota.notComparedToZero');
+  if (!parts.some((part) => part.includes(notComparedZh) || part.includes(notCompared))) {
+    parts.push(notCompared);
   }
   return parts.join(' / ');
 }
 
 /** 配额状态面板：金额闸不可得时明说"硬闸已跳过"，绝不退化成 0 元/未超限。 */
 function QuotaStatusPanel({ windowDays }: { windowDays: number }) {
+  const { t } = useTranslation();
   const { data, error, isFetching, refetch } = useQuery({
     queryKey: ['capability-activation-quota-status', windowDays],
     queryFn: () => getQuotaStatus(windowDays),
@@ -73,12 +88,12 @@ function QuotaStatusPanel({ windowDays }: { windowDays: number }) {
 
   const columns: ColumnsType<QuotaStatusRow> = [
     {
-      title: '范围',
+      title: t('activation.quota.col.scope'),
       key: 'scope',
       render: (_value, row) => `${row.scope} / ${row.target}`,
     },
     {
-      title: '状态',
+      title: t('activation.quota.col.status'),
       dataIndex: 'status',
       key: 'status',
       render: (status: QuotaStatusRow['status']) => (
@@ -86,34 +101,34 @@ function QuotaStatusPanel({ windowDays }: { windowDays: number }) {
           color={QUOTA_STATUS_COLOR[status] ?? 'default'}
           data-testid="quota-status-badge"
         >
-          {QUOTA_STATUS_LABEL[status] ?? status}
+          {quotaStatusLabel(t, status)}
         </Tag>
       ),
     },
     {
-      title: '用量 / 硬阈',
+      title: t('activation.quota.col.usage'),
       key: 'usage',
       render: (_value, row) => `${row.usage} / ${row.hardLimit}`,
     },
     {
-      title: '计量单位',
+      title: t('activation.quota.col.unit'),
       dataIndex: 'unit',
       key: 'unit',
       render: (unit: QuotaStatusRow['unit']) => unit ?? 'invocations',
     },
     {
-      title: '金额 / 闸说明',
+      title: t('activation.quota.col.gate'),
       key: 'gate',
       render: (_value, row) => {
         if (row.unit !== 'amount') {
-          return <Text type="secondary">按调用次数判定</Text>;
+          return <Text type="secondary">{t('activation.quota.byCount')}</Text>;
         }
         const amount = usableAmount(row);
         if (amount === null) {
           return (
             <Space orientation="vertical" size={0}>
-              <Text type="warning">金额不可得，硬闸已跳过</Text>
-              <Text type="secondary">{amountUnavailableDetail(row)}</Text>
+              <Text type="warning">{t('activation.quota.amountUnavailable')}</Text>
+              <Text type="secondary">{amountUnavailableDetail(row, t)}</Text>
             </Space>
           );
         }
@@ -123,21 +138,21 @@ function QuotaStatusPanel({ windowDays }: { windowDays: number }) {
   ];
 
   return (
-    <Card title="配额状态" style={{ marginTop: 16 }}>
+    <Card title={t('activation.quota.title')} style={{ marginTop: 16 }}>
       <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
         <Space wrap>
-          <Text>统计窗口：近 {windowDays} 天</Text>
-          {isFetching ? <Text type="secondary">正在更新配额状态…</Text> : null}
+          <Text>{t('activation.quota.window', { days: windowDays })}</Text>
+          {isFetching ? <Text type="secondary">{t('activation.quota.updating')}</Text> : null}
         </Space>
         {error ? (
           <Alert
             type="error"
-            title="配额状态加载失败，请稍后重试。"
-            action={<Button onClick={() => void refetch()}>重试</Button>}
+            title={t('activation.quota.loadFailed')}
+            action={<Button onClick={() => void refetch()}>{t('activation.retry')}</Button>}
           />
         ) : null}
         {!error && rows.length === 0 ? (
-          <Empty description="暂无配额状态记录" />
+          <Empty description={t('activation.quota.empty')} />
         ) : null}
         {!error && rows.length > 0 ? (
           <Table<QuotaStatusRow>
@@ -157,6 +172,7 @@ function QuotaStatusPanel({ windowDays }: { windowDays: number }) {
  * 所有聚合口径由后端 stats 端点给出，页面不做二次派生（总数直接取 total）。
  */
 export default function ActivationStatsPage() {
+  const { t } = useTranslation();
   const [range, setRange] = useState<[Dayjs, Dayjs]>(() => [
     dayjs().subtract(DEFAULT_DAYS - 1, 'day').startOf('day'),
     dayjs().endOf('day'),
@@ -176,34 +192,34 @@ export default function ActivationStatsPage() {
 
   const capabilityColumns: ColumnsType<ActivationStatsEntry> = useMemo(
     () => [
-      { title: '能力标识', dataIndex: 'capabilityKey', key: 'capabilityKey' },
+      { title: t('activation.col.capability'), dataIndex: 'capabilityKey', key: 'capabilityKey' },
       {
-        title: '激活次数',
+        title: t('activation.col.count'),
         dataIndex: 'count',
         key: 'count',
         sorter: (a, b) => a.count - b.count,
         defaultSortOrder: 'descend',
       },
       {
-        title: '成功',
+        title: t('activation.status.success'),
         dataIndex: 'success',
         key: 'success',
-        render: (value: number) => <Tag color="success">成功 {value}</Tag>,
+        render: (value: number) => <Tag color="success">{t('activation.success.count', { count: value })}</Tag>,
       },
       {
-        title: '失败',
+        title: t('activation.status.failure'),
         dataIndex: 'failure',
         key: 'failure',
-        render: (value: number) => <Tag color="error">失败 {value}</Tag>,
+        render: (value: number) => <Tag color="error">{t('activation.failure.count', { count: value })}</Tag>,
       },
       {
-        title: '拦截',
+        title: t('activation.status.blocked'),
         dataIndex: 'blocked',
         key: 'blocked',
-        render: (value: number) => <Tag color="warning">拦截 {value}</Tag>,
+        render: (value: number) => <Tag color="warning">{t('activation.blocked.count', { count: value })}</Tag>,
       },
       {
-        title: '用量占比',
+        title: t('activation.col.share'),
         key: 'share',
         render: (_value, record) => (
           <Progress
@@ -213,18 +229,18 @@ export default function ActivationStatsPage() {
         ),
       },
     ],
-    [data?.total],
+    [data?.total, t],
   );
 
   const projectColumns: ColumnsType<ActivationProjectStat> = [
     {
-      title: '项目标识',
+      title: t('activation.col.project'),
       dataIndex: 'projectId',
       key: 'projectId',
-      render: (value: string | null) => value ?? '未归属项目',
+      render: (value: string | null) => value ?? t('activation.unassigned'),
     },
     {
-      title: '激活次数',
+      title: t('activation.col.count'),
       dataIndex: 'count',
       key: 'count',
       sorter: (a, b) => a.count - b.count,
@@ -236,11 +252,11 @@ export default function ActivationStatsPage() {
 
   return (
     <div data-testid="activation-stats-page" style={{ padding: 24 }}>
-      <Title level={4}>能力用量</Title>
+      <Title level={4}>{t('activation.page.title')}</Title>
       <Card>
         <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
           <Space wrap>
-            <Text>统计时间范围</Text>
+            <Text>{t('activation.range.label')}</Text>
             <DatePicker.RangePicker
               value={range}
               allowClear={false}
@@ -250,17 +266,17 @@ export default function ActivationStatsPage() {
                 }
               }}
             />
-            {isFetching ? <Text type="secondary">正在更新用量数据…</Text> : null}
+            {isFetching ? <Text type="secondary">{t('activation.updating')}</Text> : null}
           </Space>
           <Row gutter={16}>
             <Col xs={24} sm={8}>
-              <Statistic title="累计激活次数" value={data?.total ?? 0} />
+              <Statistic title={t('activation.total')} value={data?.total ?? 0} />
             </Col>
             <Col xs={24} sm={8}>
-              <Statistic title="覆盖能力数" value={data?.byCapability.length ?? 0} />
+              <Statistic title={t('activation.capabilities')} value={data?.byCapability.length ?? 0} />
             </Col>
             <Col xs={24} sm={8}>
-              <Statistic title="覆盖项目数" value={data?.byProject.length ?? 0} />
+              <Statistic title={t('activation.projects')} value={data?.byProject.length ?? 0} />
             </Col>
           </Row>
           {data?.dualBasis ? (
@@ -271,13 +287,16 @@ export default function ActivationStatsPage() {
               message={
                 data.dualBasis.priceReason === 'OK' &&
                 data.dualBasis.currencyValue != null
-                  ? `折算金额：${data.dualBasis.currencyValue}`
-                  : '成本金额不可用（未折算）'
+                  ? t('activation.convertedAmount', { amount: data.dualBasis.currencyValue })
+                  : t('activation.costUnavailable')
               }
               description={
                 data.dualBasis.priceReason === 'OK'
                   ? data.dualBasis.note
-                  : `原因：${data.dualBasis.priceReason}。${data.dualBasis.note}`
+                  : t('activation.costReason', {
+                    reason: costReasonLabel(data.dualBasis.priceReason, t),
+                    note: data.dualBasis.note,
+                  })
               }
             />
           ) : null}
@@ -288,21 +307,21 @@ export default function ActivationStatsPage() {
         <Alert
           style={{ marginTop: 16 }}
           type="error"
-          message="用量数据加载失败，请稍后重试。"
-          action={<Button onClick={() => void refetch()}>重试</Button>}
+          message={t('activation.loadFailed')}
+          action={<Button onClick={() => void refetch()}>{t('activation.retry')}</Button>}
         />
       ) : null}
 
       {empty ? (
         <Card style={{ marginTop: 16 }}>
-          <Empty description="暂无能力激活记录，先到工作台提交一个方案" />
+          <Empty description={t('activation.empty')} />
         </Card>
       ) : null}
 
       {data && !empty ? (
         <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
           <Col xs={24} xl={14}>
-            <Card title="按能力分布">
+            <Card title={t('activation.byCapability')}>
               <Table<ActivationStatsEntry>
                 rowKey="capabilityKey"
                 columns={capabilityColumns}
@@ -312,9 +331,9 @@ export default function ActivationStatsPage() {
             </Card>
           </Col>
           <Col xs={24} xl={10}>
-            <Card title="按项目分布">
+            <Card title={t('activation.byProject')}>
               <Table<ActivationProjectStat>
-                rowKey={(record) => record.projectId ?? '未归属项目'}
+                rowKey={(record) => record.projectId ?? t('activation.unassigned')}
                 columns={projectColumns}
                 dataSource={data.byProject}
                 pagination={false}

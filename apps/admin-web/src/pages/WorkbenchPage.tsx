@@ -27,13 +27,26 @@ interface SubmittedInput {
   params?: Record<string, string>;
 }
 
-const CADENCE_OPTIONS: Array<{ value: WorkbenchCadence; label: string }> = [
-  { value: 'daily', label: '每天' },
-  { value: 'weekly', label: '每周' },
-  { value: 'monthly', label: '每月' },
+type Translate = import('i18next').TFunction;
+
+const cadenceOptions = (t: Translate): Array<{ value: WorkbenchCadence; label: string }> => [
+  { value: 'daily', label: t('workbench.cadence.daily') },
+  { value: 'weekly', label: t('workbench.cadence.weekly') },
+  { value: 'monthly', label: t('workbench.cadence.monthly') },
 ];
 
-const CHECK_LABEL = { ok: '通过', warn: '提醒', fail: '未通过' } as const;
+function checkLabel(t: Translate, status: string): string {
+  switch (status) {
+    case 'ok':
+      return t('workbench.check.ok');
+    case 'warn':
+      return t('workbench.check.warn');
+    case 'fail':
+      return t('workbench.check.fail');
+    default:
+      return status;
+  }
+}
 const CHECK_COLOR = { ok: 'green', warn: 'orange', fail: 'red' } as const;
 
 /**
@@ -103,12 +116,15 @@ export default function WorkbenchPage() {
 
   const hasFail = result?.checks.some((c) => c.status === 'fail') ?? false;
   const canConfirm = Boolean(result?.eligible) && !hasFail;
-  // ADR-045：发布审批单标识（缺席/空串 = 审批发起失败 ⇒ 下面整块不渲染）。
+  // ADR-045：发布审批单标识（仅 submitted 时有；空串按缺席处理）。
   const approvalKey = commitResult?.approvalKey?.trim() ?? '';
+  // 三态稳定码驱动界面：后端必填；老后端未回带时按 key 保守回退，绝不冒充「已提交」。
+  const approvalStatus: CommitResult['approvalStatus'] =
+    commitResult?.approvalStatus ?? (approvalKey ? 'submitted' : 'not_requested');
 
   async function handlePreview() {
     if (!goal.trim()) {
-      setError('请先填写业务目标。');
+      setError(t('workbench.goalRequired'));
       return;
     }
     setPreviewing(true);
@@ -128,7 +144,7 @@ export default function WorkbenchPage() {
       setResult(data);
       setSubmittedInput(input);
     } catch {
-      setError('方案预览失败，请稍后重试。');
+      setError(t('workbench.previewFailed'));
     } finally {
       setPreviewing(false);
     }
@@ -138,7 +154,7 @@ export default function WorkbenchPage() {
     if (!result || !canConfirm || committingRef.current) return;
     // 没有 cardHash / policyGeneration 就没有校验锚点：绝不发写请求，给出可操作的提示。
     if (!result.cardHash || !result.policyGeneration || !submittedInput) {
-      setCommitError('方案缺少标识，请重新预览后再确认。');
+      setCommitError(t('workbench.missingIds'));
       return;
     }
     committingRef.current = true;
@@ -164,7 +180,7 @@ export default function WorkbenchPage() {
           cardHash,
           policyGeneration: recordedGeneration,
           at: new Date().toISOString(),
-          user: user?.username ?? '当前用户',
+          user: user?.username ?? t('workbench.currentUser'),
         },
         ...prev,
       ]);
@@ -172,7 +188,9 @@ export default function WorkbenchPage() {
       // generation 失配等后端业务错误把中文原因写在 detail，内联 Alert 必须透出。
       const detail = pickBackendErrorMessage(err);
       setCommitError(
-        detail ? `确认失败：${detail}` : '确认失败，方案未能保存为草稿，请稍后重试。',
+        detail
+          ? t('workbench.confirmFailedDetail', { detail })
+          : t('workbench.confirmFailed'),
       );
     } finally {
       committingRef.current = false;
@@ -182,40 +200,40 @@ export default function WorkbenchPage() {
 
   return (
     <div data-testid="workbench-page">
-      <Typography.Title level={3}>工作台 · 最小验证</Typography.Title>
+      <Typography.Title level={3}>{t('workbench.page.title')}</Typography.Title>
       <Typography.Paragraph type="secondary">
-        填写业务信息，预览方案后确认即可存为草稿；审阅发布后才会执行。
+        {t('workbench.page.desc')}
       </Typography.Paragraph>
 
-      <Card title="业务信息" style={{ marginBottom: 16 }}>
+      <Card title={t('workbench.card.business')} style={{ marginBottom: 16 }}>
         <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
           <div>
-            <div style={{ marginBottom: 4 }}>业务目标</div>
+            <div style={{ marginBottom: 4 }}>{t('workbench.field.goal')}</div>
             <Input
-              placeholder="例如：每周汇总项目状态并生成报告"
+              placeholder={t('workbench.goal.placeholder')}
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>执行频率</div>
+            <div style={{ marginBottom: 4 }}>{t('workbench.field.cadence')}</div>
             <Select<WorkbenchCadence>
               value={cadence}
               onChange={setCadence}
-              options={CADENCE_OPTIONS}
+              options={cadenceOptions(t)}
               style={{ width: 200 }}
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>可选参数</div>
+            <div style={{ marginBottom: 4 }}>{t('workbench.field.params')}</div>
             <Input
-              placeholder="键=值，多个用逗号分隔"
+              placeholder={t('workbench.params.placeholder')}
               value={paramText}
               onChange={(e) => setParamText(e.target.value)}
             />
           </div>
           <Button type="primary" loading={previewing} onClick={() => void handlePreview()}>
-            预览方案
+            {t('workbench.preview.action')}
           </Button>
         </Space>
       </Card>
@@ -223,22 +241,22 @@ export default function WorkbenchPage() {
       {error ? <Alert type="error" showIcon title={error} style={{ marginBottom: 16 }} /> : null}
 
       {result ? (
-        <Card title="方案预览" style={{ marginBottom: 16 }}>
+        <Card title={t('workbench.preview.title')} style={{ marginBottom: 16 }}>
           <Typography.Title level={4}>{result.card.title}</Typography.Title>
-          <p>触发节奏：{result.card.triggerText}</p>
+          <p>{t('workbench.card.trigger', { text: result.card.triggerText })}</p>
           <div style={{ marginBottom: 8 }}>
-            能力提示：
+            {t('workbench.card.hints')}
             {result.card.capabilityHints.map((hint, i) => (
               <Tag key={`${hint}-${i}`} color="blue">{hint}</Tag>
             ))}
           </div>
-          <p>验收标准：{result.card.acceptanceText}</p>
-          <p>预算上限：最多 {result.card.budget.maxTurns} 轮</p>
+          <p>{t('workbench.card.acceptance', { text: result.card.acceptanceText })}</p>
+          <p>{t('workbench.card.budget', { max: result.card.budget.maxTurns })}</p>
           <div style={{ marginBottom: 8 }}>
-            核查结果：
+            {t('workbench.card.checks')}
             {result.checks.map((check, i) => (
               <Tag key={`${check.field}-${i}`} color={CHECK_COLOR[check.status]}>
-                {CHECK_LABEL[check.status]} · {check.field} · {check.message}
+                {checkLabel(t, check.status)} · {check.field} · {check.message}
               </Tag>
             ))}
           </div>
@@ -246,7 +264,7 @@ export default function WorkbenchPage() {
             <Alert
               type="warning"
               showIcon
-              title="当前方案尚不满足执行条件，请调整业务信息后重新预览。"
+              title={t('workbench.notEligible')}
               style={{ marginBottom: 12 }}
             />
           ) : null}
@@ -256,11 +274,11 @@ export default function WorkbenchPage() {
             disabled={!canConfirm || committing}
             onClick={() => void handleConfirm()}
           >
-            确认方案
+            {t('workbench.confirm.action')}
           </Button>
           {!canConfirm && result.eligible ? (
             <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
-              存在未通过的核查项，暂不能确认。
+              {t('workbench.hasFail')}
             </Typography.Text>
           ) : null}
           {commitError ? (
@@ -270,23 +288,54 @@ export default function WorkbenchPage() {
       ) : null}
 
       {commitResult ? (
-        <Card title="确认结果" data-testid="workbench-commit-success" style={{ marginBottom: 16 }}>
-          <Alert
-            type="success"
-            showIcon
-            title="已存为草稿，需在 SOP 页审阅发布后才执行；当前未执行。"
-            style={{ marginBottom: 12 }}
-          />
+        <Card title={t('workbench.confirm.title')} data-testid="workbench-commit-success" style={{ marginBottom: 16 }}>
+          {approvalStatus === 'failed' ? (
+            <Alert
+              type="warning"
+              showIcon
+              title={t('workbench.commit.approvalFailed')}
+              style={{ marginBottom: 12 }}
+            />
+          ) : approvalStatus === 'not_requested' ? (
+            <Alert
+              type="info"
+              showIcon
+              title={t('workbench.commit.approvalNotRequested')}
+              style={{ marginBottom: 12 }}
+            />
+          ) : approvalStatus === 'submitted' ? (
+            <Alert
+              type="success"
+              showIcon
+              title={t('workbench.confirm.success')}
+              style={{ marginBottom: 12 }}
+            />
+          ) : (
+            <Alert
+              type="warning"
+              showIcon
+              title={t('workbench.commit.approvalUnknown')}
+              style={{ marginBottom: 12 }}
+            />
+          )}
           <Space orientation="vertical" size="small">
             <div>
-              <Typography.Text type="secondary">状态：</Typography.Text>
-              <Tag color="orange">草稿</Tag>
+              <Typography.Text type="secondary">{t('workbench.status.label')}</Typography.Text>
+              <Tag color="orange">{t('workbench.status.draft')}</Tag>
             </div>
-            <div>SOP 编号：{commitResult.sopId}</div>
-            <div data-testid="workbench-commit-slug">标识名：{commitResult.slug}</div>
-            <div>后续步骤：{commitResult.next}</div>
-            <a href={`/sops?sop=${encodeURIComponent(commitResult.sopId)}`}>去 SOP 页审阅</a>
-            {approvalKey ? (
+            <div>{t('workbench.sopId', { id: commitResult.sopId })}</div>
+            <div data-testid="workbench-commit-slug">{t('workbench.slug', { slug: commitResult.slug })}</div>
+            {approvalStatus === 'submitted' ? (
+              <div>{t('workbench.approval.submittedNext')}</div>
+            ) : null}
+            {approvalStatus === 'submitted' ? (
+              <a href={`/sops?sop=${encodeURIComponent(commitResult.sopId)}`}>{t('workbench.sopLink')}</a>
+            ) : approvalStatus === 'failed' ? (
+              <div>{t('workbench.approval.failedNoSopLink')}</div>
+            ) : (
+              <div>{t('workbench.sopLink.textOnly')}</div>
+            )}
+            {approvalStatus === 'submitted' && approvalKey ? (
               <div data-testid="workbench-commit-approval" style={{ marginTop: 4 }}>
                 <Alert
                   type="info"
@@ -311,7 +360,7 @@ export default function WorkbenchPage() {
       ) : null}
 
       {records.length > 0 ? (
-        <Card title="确认留痕">
+        <Card title={t('workbench.history.title')}>
           <Space orientation="vertical">
             {records.map((record, i) => (
               <div
@@ -319,11 +368,11 @@ export default function WorkbenchPage() {
                 data-testid="workbench-confirm-record"
                 data-generation={record.policyGeneration}
               >
-                <span>已确认并留痕，方案已存为草稿，审阅发布后才会执行</span>
-                <span>方案标识：{record.cardHash}</span>
-                <span>策略代际：{record.policyGeneration.slice(0, 8)}</span>
-                <span>时间：{record.at}</span>
-                <span>操作人：{record.user}</span>
+                <span>{t('workbench.history.note')}</span>
+                <span>{t('workbench.history.cardHash', { hash: record.cardHash })}</span>
+                <span>{t('workbench.history.generation', { generation: record.policyGeneration.slice(0, 8) })}</span>
+                <span>{t('workbench.history.time', { time: record.at })}</span>
+                <span>{t('workbench.history.user', { user: record.user })}</span>
               </div>
             ))}
           </Space>

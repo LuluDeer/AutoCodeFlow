@@ -56,13 +56,24 @@ export interface CommitResult {
   sopId: string;
   slug: string;
   status: 'draft';
-  next: string;
+  /**
+   * ADR-045 发布审批发起状态（稳定码，后端必填）：
+   * submitted=已发起且带 approvalKey；failed=发起异常但 draft 已落；
+   * not_requested=端口缺席/非 USER 上下文，本就未发起（非异常）。
+   * 页面按此三态给出诚实提示，绝不用 approvalKey 缺席去猜「不需要审批」。
+   */
+  approvalStatus: 'submitted' | 'failed' | 'not_requested';
+  /**
+   * @deprecated 后端不再返回硬编码中文；界面改由 approvalStatus + i18n 文案驱动。
+   * 仅为兼容旧客户端/fixture 保留为可选，新代码不得读取。
+   */
+  next?: string;
   /** 本次提交放行的策略代际（16 位 hex），供下游会话继承以做在途失效比对。 */
   policyGeneration?: string;
   /**
    * ADR-045：发布审批单 key（业务人员提交后由主管四眼批准、系统代理发布）。
    * 与后端 `CommitResultDto.approvalKey` 同源（`required: false`）——
-   * **缺席表示审批发起失败**（fail-open），不是「这次不需要审批」；
+   * **仅 approvalStatus==='submitted' 时有**；failed/not_requested 一律缺席。
    * 页面必须「有则渲染、无则整块不渲染」，绝不在缺席时编造「已提交审批」。
    */
   approvalKey?: string;

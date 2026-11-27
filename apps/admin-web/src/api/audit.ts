@@ -1,4 +1,5 @@
 import { client } from './client';
+import type { components } from '../types/generated/api-types';
 
 /**
  * 审计日志行——后端 `GET /audit` 的 data 元素。
@@ -179,3 +180,49 @@ export async function exportAuditCsv(filters: AuditExportFilters): Promise<void>
   a.remove();
   URL.revokeObjectURL(url);
 }
+
+/**
+ * POST /workbench/release-approvals/:approvalKey/retry 的响应。
+ *
+ * `published=false` 不是请求失败：审批已 consume、系统代理这次仍未发布；
+ * 前端要如实呈现“重试已受理但仍未发布”，不能谎报成“已发布”。
+ */
+export type RetryReleaseResult = components['schemas']['ReleaseRetryResponseDto'];
+
+/**
+ * 一键重试系统代理发布（ADMIN-only）。
+ *
+ * 第二参是审计行里的原始 reason，服务端在 consume 前再白名单校验一次；
+ * 前端不在这里重复判白名单——按钮组件已对不可重试 reason 不渲染，而服务端
+ * 才是唯一权威。skipGlobalToast 由按钮组件统一弹错，避免拦截器 + 组件双弹。
+ */
+export function retryRelease(
+  approvalKey: string,
+  expectedReason: string,
+): Promise<RetryReleaseResult> {
+  return client.post<RetryReleaseResult>(
+    `/workbench/release-approvals/${encodeURIComponent(approvalKey)}/retry`,
+    { expectedReason },
+    { skipGlobalToast: true },
+  );
+}
+
+/**
+ * R92 跨角色闭环：ADMIN 对「审批发起失败」审计行重新发起审批单。
+ *
+ * 请求/返回类型直接派生自 OpenAPI 生成物（DTO 与 operation 已重导出）。
+ * 审计 detail 不带 bump，按后端「无 bump」语义不传该参；
+ * skipGlobalToast 同 retryRelease：错误提示由 ReinitApprovalButton 分 400/403 统一处理。
+ */
+export function requestReleaseRetry(
+  body: components['schemas']['RequestReleaseRetryDto'],
+): Promise<components['schemas']['RequestReleaseRetryResponseDto']> {
+  return client.post<components['schemas']['RequestReleaseRetryResponseDto']>(
+    '/workbench/release-approvals/request',
+    body,
+    { skipGlobalToast: true },
+  );
+}
+
+/** 命名空间出口：与 sopsApi / applicationsApi 同款消费形态。 */
+export const auditApi = { retryRelease, requestReleaseRetry };

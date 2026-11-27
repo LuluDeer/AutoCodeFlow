@@ -1,5 +1,5 @@
 import { client } from './client';
-import type { operations } from '../types/generated/api-types';
+import type { components, operations } from '../types/generated/api-types';
 
 /**
  * GET /api/capability-activation/stats 的返回结构（对齐 admin-api
@@ -111,4 +111,31 @@ export function getQuotaStatus(windowDays = 30): Promise<QuotaStatusRow[]> {
   return client.get<QuotaStatusRow[]>('/capability-activation/quota-status', {
     params,
   });
+}
+
+// ─── Showback token pricing ──────────────────────────────────────────────────
+// N20 成本线：价目表读写面。generated 已含 SetPriceDto（PUT 请求体），但
+// listPrices/setPrice 的响应 content 在 OpenAPI 里为 never——读面形状直接
+// 从同一 schema 派生（去掉后端不落库的 note），不新增手写视图类型，避免
+// web-type-drift 棘轮 + 合同字段漂移。
+
+/** PUT /capability-activation/price 的请求体（合同派生，字段随生成物更新）。 */
+export type SetPriceDto = components['schemas']['SetPriceDto'];
+
+/** 价目单行（= SetPriceDto 去掉仅请求侧的可选 note；后端 PricingConfig 同形）。 */
+export type PricingConfig = Omit<components['schemas']['SetPriceDto'], 'note'>;
+
+/**
+ * GET /capability-activation/price：列出全部价目（ADMIN-only，零价目返回 []）。
+ * client baseURL 已含 /api；读取失败照常 reject，UI 必须显示错误而非空表。
+ */
+export function listPrices(signal?: AbortSignal): Promise<PricingConfig[]> {
+  return signal
+    ? client.get<PricingConfig[]>('/capability-activation/price', { signal })
+    : client.get<PricingConfig[]>('/capability-activation/price');
+}
+
+/** PUT /capability-activation/price：按 provider/model/direction upsert 一条价目。 */
+export function setPrice(dto: SetPriceDto): Promise<PricingConfig> {
+  return client.put<PricingConfig>('/capability-activation/price', dto);
 }

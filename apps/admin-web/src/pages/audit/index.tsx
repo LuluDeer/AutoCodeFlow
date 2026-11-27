@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, DatePicker, Empty, theme, Card } from 'antd';
+import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, DatePicker, Empty, Card } from 'antd';
 import type { TablePaginationConfig } from 'antd';
 import { SearchOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
@@ -20,10 +20,10 @@ import { formatDateTime } from '../../utils/timeFormat';
 import { eventsRangeToSinceUntil } from '../../utils/timeRange';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useTranslation } from 'react-i18next';
-import PageHeader from '../../components/PageHeader';
-import PageSkeleton from '../../components/PageSkeleton';
+import PageHeader from '../../components/PageHeader'; import PageSkeleton from '../../components/PageSkeleton';
 // UI-16：toast-only 页补齐页内错误态标准块（错误块 + 重试，对齐 UI-08 形态）
 import StateError from '../../components/StateError';
+import AuditDetailFooter from '../../components/audit/AuditDetailFooter';
 import { StablePagingSwitch } from '../../components/StablePagingSwitch';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级，CSS 做不到）
 import { useIsMobile } from '../../hooks/useIsMobile';
@@ -172,7 +172,7 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'sop.clarify': 'audit.action.sop_clarify',
   'sop.complete': 'audit.action.sop_complete',
   'sop.draft': 'audit.action.sop_draft',
-  'sop.publish': 'audit.action.sop_publish',
+  'sop.publish': 'audit.action.sop_publish', 'sop_publish.release_failed': 'audit.action.sop_publish_release_failed', 'sop_publish.release_succeeded': 'audit.action.sop_publish_release_succeeded', 'sop_publish.approval_request_failed': 'audit.action.sop_publish_approval_request_failed', 'sop_publish.approval_request_retried': 'audit.action.sop_publish_approval_request_retried',
   'sop.deprecate': 'audit.action.sop_deprecate',
   'sop.assignment.cancel': 'audit.action.sop_assignment_cancel',
   'sop.restore': 'audit.action.sop_restore',
@@ -235,8 +235,6 @@ export default function AuditLogPage() {
   const { t } = useTranslation();
   // MOBILE-CARD-01：≤768px 表格 → 卡片列表
   const isMobile = useIsMobile();
-  // F-15（DEEP_REVIEW 0ef3bbe）：详情 pre 背景走 antd token，暗色主题自适应。
-  const { token } = theme.useToken();
   const resultLabels = RESULT_LABELS(t);
   const [page, setPage] = useState(1);
   // ?resource=<token> 深链：从告警/文档点进来时首屏即按该 resource 过滤（filters 与草稿同源，
@@ -246,7 +244,7 @@ export default function AuditLogPage() {
   // AUTH-05: 新增 resourceId 精确筛选（与 resource 组成组合筛选）
   const [filters, setFilters] = useState({ action: '', resource: initialResource, resourceId: '', username: '', result: '' as '' | 'success' | 'failure', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
   const [pending, setPending] = useState({ action: '', resource: initialResource, resourceId: '', username: '', result: '' as '' | 'success' | 'failure', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
-  const [detailModal, setDetailModal] = useState<{ open: boolean; data?: Record<string, unknown> }>({ open: false });
+  const [detailModal, setDetailModal] = useState<{ open: boolean; data?: Record<string, unknown>; action?: string }>({ open: false });
   /**
    * §2.1「稳定翻页」开关——默认**关闭**（照 ExecutionsPage 范式）。
    *
@@ -548,12 +546,12 @@ export default function AuditLogPage() {
       title: t('audit.col.detail'),
       dataIndex: 'detail',
       width: 80,
-      render: (v: Record<string, unknown>) => v && Object.keys(v).length > 0 ? (
+      render: (v: Record<string, unknown>, r: AuditLog) => v && Object.keys(v).length > 0 ? (
         <Button
           type="link"
           size="small"
           icon={<EyeOutlined />}
-          onClick={() => setDetailModal({ open: true, data: v })}
+          onClick={() => setDetailModal({ open: true, data: v, action: r.action })}
         >
           {t('audit.action.view')}
         </Button>
@@ -761,7 +759,7 @@ export default function AuditLogPage() {
                         type="link"
                         size="small"
                         icon={<EyeOutlined />}
-                        onClick={() => setDetailModal({ open: true, data: r.detail })}
+                        onClick={() => setDetailModal({ open: true, data: r.detail, action: r.action })}
                       >
                         {t('audit.action.view')}
                       </Button>
@@ -848,10 +846,11 @@ export default function AuditLogPage() {
         width={600}
         destroyOnHidden
       >
-        {/* UI 打磨：长 detail JSON 限高内滚，避免弹窗被撑出视口 */}
-        <pre style={{ background: token.colorFillQuaternary, padding: 16, borderRadius: 4, fontSize: 13, overflowX: 'auto', maxHeight: 480, overflowY: 'auto' }}>
-          {detailModal.data ? JSON.stringify(detailModal.data, null, 2) : ''}
-        </pre>
+        <AuditDetailFooter
+          action={detailModal.action}
+          detail={detailModal.data}
+          onRetryDone={() => { void refetch(); setDetailModal({ open: false }); }}
+        />
       </Modal>
     </div>
   );

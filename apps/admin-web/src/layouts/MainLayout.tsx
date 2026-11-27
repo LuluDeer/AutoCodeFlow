@@ -202,9 +202,9 @@ function buildMenuItems(t: (k: string) => string): MenuEntry[] {
       label: t('nav.group.gov'),
       children: [
         { key: '/audit', icon: <AuditOutlined />, label: t('nav.audit') },
-        // P3 中台管控：文案直写中文，与工作台页先例一致（不改 locales）
-        { key: '/capabilities', icon: <SafetyCertificateOutlined />, label: '能力治理' },
-        { key: '/activation-stats', icon: <DashboardOutlined />, label: '能力用量' },
+        // P3 中台管控：文案走 nav.* 词条，随语言切换
+        { key: '/capabilities', icon: <SafetyCertificateOutlined />, label: t('nav.capabilities') },
+        { key: '/activation-stats', icon: <DashboardOutlined />, label: t('nav.activationStats') },
         { key: '/notifications', icon: <BellOutlined />, label: t('nav.notifications') },
         { key: '/settings', icon: <SettingOutlined />, label: t('nav.settings') },
       ],
@@ -217,8 +217,8 @@ function buildMenuItems(t: (k: string) => string): MenuEntry[] {
         { key: '/sops', icon: <FileTextOutlined />, label: t('nav.sops') },
         { key: '/agent-sessions', icon: <RobotOutlined />, label: t('nav.agents') },
         // 工作台最小验证页：属于辅助操作面，菜单与路由同为 ADMIN 口径。
-        // 文案直接写中文：新增 i18n key 需改写域外的 locales 文件；守卫仅要求文案中文。
-        { key: '/workbench', icon: <AppstoreOutlined />, label: '工作台' },
+        // 文案走 nav.* 词条，随语言切换。
+        { key: '/workbench', icon: <AppstoreOutlined />, label: t('nav.workbench') },
       ],
     },
   ];

@@ -42,6 +42,15 @@ const promotion = (eligible: boolean, weeks: number, installs: number) => {
   return { eligible, reasons, reasonDetails, weeks, activeInstallWeeks: installs, thresholds: { minWeeks: 4, minActiveInstallWeeks: 20 } };
 };
 
+const ttfvFixture = {
+  dataStatus: 'ok' as const,
+  medianMinutes: 8.5,
+  activation24h: 0.5,
+  sampleSize: 7,
+  asOf: '2026-11-20T10:30:00.000Z',
+  note: '真实口径仅覆盖 opt-in install',
+};
+
 const fullReport: NorthStarReport = {
   as_of: '2026-11-20T10:30:00.000Z',
   business_confirmed: {
@@ -53,6 +62,7 @@ const fullReport: NorthStarReport = {
     totals: { executions: 99 },
   },
   promotionEligibility: promotion(true, 1, 7),
+  ttfv: ttfvFixture,
   warnings: [GUARD],
 };
 
@@ -106,6 +116,7 @@ describe('R328 北极星双口径看板卡片', () => {
       business_confirmed: { weeks: [], totals: { active_install_weeks: 0, confirmed_events: 0 } },
       business_results_proxy: { weeks: [], totals: { executions: 0 } },
       promotionEligibility: promotion(false, 0, 0),
+      ttfv: ttfvFixture,
       warnings: [GUARD],
     });
 
@@ -122,6 +133,7 @@ describe('R328 北极星双口径看板卡片', () => {
       business_confirmed: { weeks: [], totals: { active_install_weeks: 0, confirmed_events: 0 } },
       business_results_proxy: { weeks: [], totals: { executions: 0 } },
       promotionEligibility: promotion(false, 0, 0),
+      ttfv: ttfvFixture,
       warnings: [],
     });
 

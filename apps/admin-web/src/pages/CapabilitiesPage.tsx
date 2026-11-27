@@ -37,50 +37,62 @@ import {
 import { message } from '../utils/toast';
 import { showApiError } from '../utils/error';
 import { isAdminUser, useAuthStore } from '../store/auth';
+import { useTranslation } from 'react-i18next';
+import i18n from '../i18n';
 
 const { Text, Paragraph } = Typography;
 
-const KIND_OPTIONS: Array<{ value: CapabilityKind; label: string }> = [
-  { value: 'skill', label: '技能（skill）' },
-  { value: 'mcp', label: 'MCP 服务（mcp）' },
-  { value: 'agent', label: '智能体（agent）' },
-  { value: 'provider', label: '模型渠道（provider）' },
-  { value: 'template', label: '模板（template）' },
+type Translate = import('i18next').TFunction;
+
+/** 选项/映射表的文案在渲染期由组件 hook 的 t 构造，语言切换即时生效。 */
+const kindOptions = (t: Translate): Array<{ value: CapabilityKind; label: string }> => [
+  { value: 'skill', label: t('capabilities.kind.skill') },
+  { value: 'mcp', label: t('capabilities.kind.mcp') },
+  { value: 'agent', label: t('capabilities.kind.agent') },
+  { value: 'provider', label: t('capabilities.kind.provider') },
+  { value: 'template', label: t('capabilities.kind.template') },
 ];
-const VISIBILITY_OPTIONS: Array<{ value: CapabilityVisibility; label: string }> = [
-  { value: 'global', label: '全局（global）' },
-  { value: 'project', label: '项目（project）' },
-  { value: 'private', label: '私有（private）' },
+const visibilityOptions = (t: Translate): Array<{ value: CapabilityVisibility; label: string }> => [
+  { value: 'global', label: t('capabilities.visibility.global') },
+  { value: 'project', label: t('capabilities.visibility.project') },
+  { value: 'private', label: t('capabilities.visibility.private') },
 ];
-const MODE_OPTIONS: Array<{ value: CapabilityScopeMode; label: string }> = [
-  { value: 'managed', label: '强监管（managed）' },
-  { value: 'supervised', label: '监督（supervised）' },
-  { value: 'self_service', label: '自治（self_service）' },
+const modeOptions = (t: Translate): Array<{ value: CapabilityScopeMode; label: string }> => [
+  { value: 'managed', label: t('capabilities.scope.managed') },
+  { value: 'supervised', label: t('capabilities.scope.supervised') },
+  { value: 'self_service', label: t('capabilities.scope.selfService') },
 ];
-const GUIDANCE_OPTIONS: Array<{ value: CapabilityGuidance; label: string }> = [
-  { value: 'L1', label: 'L1 · 强引导' },
-  { value: 'L2', label: 'L2 · 需确认' },
-  { value: 'L3', label: 'L3 · 高自治' },
+const guidanceOptions = (t: Translate): Array<{ value: CapabilityGuidance; label: string }> => [
+  { value: 'L1', label: t('capabilities.guidance.l1') },
+  { value: 'L2', label: t('capabilities.guidance.l2') },
+  { value: 'L3', label: t('capabilities.guidance.l3') },
 ];
 /**
  * N25：选项 value 由 CapabilitySourceType 约束；八源闭包由后端 source-policy
  * 单一事实源派生，主控统一回填前端派生类型前，新源值用类型断言保持本切片可编译。
  */
-const SOURCE_OPTIONS: Array<{ value: CapabilitySourceType; label: string }> = [
-  { value: 'builtin', label: '内置（builtin）' },
-  { value: 'registry', label: '登记处（registry）' },
-  { value: 'git', label: '代码库（git）' },
-  { value: 'folder', label: '目录（folder）' },
-  { value: 'npm' as CapabilitySourceType, label: 'npm 包（npm）' },
-  { value: 'github' as CapabilitySourceType, label: 'GitHub 仓库（github）' },
-  { value: 'server' as CapabilitySourceType, label: '服务端（server）' },
-  { value: 'mcp:' as CapabilitySourceType, label: 'MCP 服务（mcp:）' },
+const sourceOptions = (t: Translate): Array<{ value: CapabilitySourceType; label: string }> => [
+  { value: 'builtin', label: t('capabilities.source.builtin') },
+  { value: 'registry', label: t('capabilities.source.registry') },
+  { value: 'git', label: t('capabilities.source.git') },
+  { value: 'folder', label: t('capabilities.source.folder') },
+  { value: 'npm' as CapabilitySourceType, label: t('capabilities.source.npm') },
+  { value: 'github' as CapabilitySourceType, label: t('capabilities.source.github') },
+  { value: 'server' as CapabilitySourceType, label: t('capabilities.source.server') },
+  { value: 'mcp:' as CapabilitySourceType, label: t('capabilities.source.mcp') },
 ];
-const DECISION_LABEL: Record<string, string> = {
-  allow: '允许（allow）',
-  ask: '需确认（ask）',
-  deny: '拒绝（deny）',
-};
+function decisionLabel(t: Translate, decision: string): string {
+  switch (decision) {
+    case 'allow':
+      return t('capabilities.decision.allow');
+    case 'ask':
+      return t('capabilities.decision.ask');
+    case 'deny':
+      return t('capabilities.decision.deny');
+    default:
+      return decision;
+  }
+}
 const DECISION_COLOR: Record<string, string> = {
   allow: 'green',
   ask: 'orange',
@@ -112,7 +124,7 @@ function parseOptionalObject(text: string, label: string): OptionalObjectResult 
   try {
     return { ok: true, value: parseJsonObject(trimmed, label) };
   } catch {
-    message.error(`${label}不是合法 JSON 对象。`);
+    message.error(i18n.t('capabilities.parse.invalidJson', { label }));
     return { ok: false };
   }
 }
@@ -167,49 +179,50 @@ function CapabilityTableCard({
   onRemove,
   onTransfer,
 }: CapabilityTableCardProps) {
+  const { t } = useTranslation();
   return (
     <>
       <Space style={{ marginBottom: 16 }} wrap>
         <Button icon={<ReloadOutlined />} loading={isFetching} onClick={onRefresh}>
-          刷新
+          {t('capabilities.refresh')}
         </Button>
         {admin ? (
           <Button type="primary" icon={<PlusOutlined />} onClick={onCreate}>
-            新建能力
+            {t('capabilities.create')}
           </Button>
         ) : null}
       </Space>
 
       {error ? (
-        <Alert type="error" showIcon message="能力列表加载失败" style={{ marginBottom: 16 }} />
+        <Alert type="error" showIcon message={t('capabilities.loadFailed')} style={{ marginBottom: 16 }} />
       ) : null}
 
-      <Card title="能力列表" style={{ marginBottom: 16 }}>
+      <Card title={t('capabilities.list.title')} style={{ marginBottom: 16 }}>
         <Table<Capability>
           data-testid="capabilities-table"
           rowKey="id"
           loading={isLoading}
           dataSource={capabilities}
           pagination={false}
-          locale={{ emptyText: '暂无已登记的能力' }}
+          locale={{ emptyText: t('capabilities.empty') }}
           columns={[
-            { title: '标识', dataIndex: 'key', key: 'key' },
+            { title: t('capabilities.col.key'), dataIndex: 'key', key: 'key' },
             {
-              title: '类型',
+              title: t('capabilities.col.kind'),
               dataIndex: 'kind',
               key: 'kind',
               render: (v: string) => <Tag color="blue">{v}</Tag>,
             },
-            { title: '名称', dataIndex: 'label', key: 'label' },
-            { title: '版本', dataIndex: 'version', key: 'version' },
+            { title: t('capabilities.col.label'), dataIndex: 'label', key: 'label' },
+            { title: t('capabilities.col.version'), dataIndex: 'version', key: 'version' },
             {
-              title: '可见范围',
+              title: t('capabilities.col.visibility'),
               dataIndex: 'visibility',
               key: 'visibility',
               render: (v: string) => <Tag>{v}</Tag>,
             },
             {
-              title: '作用域',
+              title: t('capabilities.col.scope'),
               key: 'scope',
               render: (_: unknown, row: Capability) => (
                 <span data-testid={`cap-scope-${row.key}`}>
@@ -218,17 +231,17 @@ function CapabilityTableCard({
               ),
             },
             {
-              title: '启用',
+              title: t('capabilities.col.enabled'),
               dataIndex: 'enabled',
               key: 'enabled',
               render: (v: boolean) => (
-                <Tag color={v ? 'green' : 'default'}>{v ? '启用' : '停用'}</Tag>
+                <Tag color={v ? 'green' : 'default'}>{v ? t('capabilities.enabled') : t('capabilities.disabled')}</Tag>
               ),
             },
             ...(admin
               ? [
                   {
-                    title: '操作',
+                    title: t('capabilities.col.actions'),
                     key: 'actions',
                     render: (_: unknown, row: Capability) => (
                       <Space size={4}>
@@ -238,15 +251,15 @@ function CapabilityTableCard({
                           icon={<EditOutlined aria-hidden />}
                           onClick={() => onEdit(row)}
                         >
-                          编辑
+                          {t('capabilities.edit')}
                         </Button>
                         <Button
                           type="link"
                           size="small"
-                          aria-label={`移交能力 ${row.key}`}
+                          aria-label={t('capabilities.transfer.aria', { key: row.key })}
                           onClick={() => onTransfer(row)}
                         >
-                          移交
+                          {t('capabilities.transfer')}
                         </Button>
                         <Button
                           type="link"
@@ -254,12 +267,12 @@ function CapabilityTableCard({
                           loading={busyId === row.id}
                           onClick={() => onToggle(row)}
                         >
-                          {row.enabled ? '停用' : '启用'}
+                          {row.enabled ? t('capabilities.toggle.disable') : t('capabilities.toggle.enable')}
                         </Button>
                         <Popconfirm
-                          title="确认删除这条能力？"
-                          okText="确认删除"
-                          cancelText="取消"
+                          title={t('capabilities.delete.confirm')}
+                          okText={t('capabilities.delete.confirmOk')}
+                          cancelText={t('capabilities.cancel')}
                           onConfirm={() => onRemove(row)}
                         >
                           <Button
@@ -267,9 +280,9 @@ function CapabilityTableCard({
                             size="small"
                             danger
                             icon={<DeleteOutlined aria-hidden />}
-                            aria-label={`删除能力 ${row.key}`}
+                            aria-label={t('capabilities.delete.aria', { key: row.key })}
                           >
-                            删除
+                            {t('capabilities.delete')}
                           </Button>
                         </Popconfirm>
                       </Space>
@@ -302,13 +315,14 @@ function CapabilityFormModal({
   onCancel,
   onSubmit,
 }: CapabilityFormModalProps) {
+  const { t } = useTranslation();
   return (
     <Modal
-      title={isNew ? '新建能力' : '编辑能力'}
+      title={isNew ? t('capabilities.form.create') : t('capabilities.form.edit')}
       open={open}
       forceRender
-      okText="提交"
-      cancelText="取消"
+      okText={t('capabilities.submit')}
+      cancelText={t('capabilities.cancel')}
       confirmLoading={saving}
       onCancel={onCancel}
       onOk={() => void form.submit()}
@@ -316,53 +330,53 @@ function CapabilityFormModal({
     >
       <Form form={form} layout="vertical" onFinish={onSubmit}>
         <Form.Item
-          label="标识（key）"
+          label={t('capabilities.field.key')}
           name="key"
-          rules={[{ required: true, message: '请填写标识。' }]}
+          rules={[{ required: true, message: t('capabilities.field.key.required') }]}
         >
           <Input data-testid="cap-key" disabled={!isNew} />
         </Form.Item>
-        <Form.Item label="类型" name="kind" rules={[{ required: true }]}>
-          <Select data-testid="cap-kind" options={KIND_OPTIONS} />
+        <Form.Item label={t('capabilities.field.kind')} name="kind" rules={[{ required: true }]}>
+          <Select data-testid="cap-kind" options={kindOptions(t)} />
         </Form.Item>
         <Form.Item
-          label="名称"
+          label={t('capabilities.field.label')}
           name="label"
-          rules={[{ required: true, message: '请填写名称。' }]}
+          rules={[{ required: true, message: t('capabilities.field.label.required') }]}
         >
           <Input data-testid="cap-label" />
         </Form.Item>
-        <Form.Item label="说明" name="description">
+        <Form.Item label={t('capabilities.field.description')} name="description">
           <Input.TextArea data-testid="cap-description" rows={2} />
         </Form.Item>
-        <Form.Item label="版本" name="version">
+        <Form.Item label={t('capabilities.field.version')} name="version">
           <Input data-testid="cap-version" />
         </Form.Item>
-        <Form.Item label="可见范围" name="visibility" rules={[{ required: true }]}>
-          <Select data-testid="cap-visibility" options={VISIBILITY_OPTIONS} />
+        <Form.Item label={t('capabilities.field.visibility')} name="visibility" rules={[{ required: true }]}>
+          <Select data-testid="cap-visibility" options={visibilityOptions(t)} />
         </Form.Item>
-        <Form.Item label="作用域模式" name="scopeMode" rules={[{ required: true }]}>
-          <Select data-testid="cap-scope-mode" options={MODE_OPTIONS} />
+        <Form.Item label={t('capabilities.field.scopeMode')} name="scopeMode" rules={[{ required: true }]}>
+          <Select data-testid="cap-scope-mode" options={modeOptions(t)} />
         </Form.Item>
-        <Form.Item label="引导档位" name="guidance" rules={[{ required: true }]}>
-          <Select data-testid="cap-guidance" options={GUIDANCE_OPTIONS} />
+        <Form.Item label={t('capabilities.field.guidance')} name="guidance" rules={[{ required: true }]}>
+          <Select data-testid="cap-guidance" options={guidanceOptions(t)} />
         </Form.Item>
         <Alert
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="强监管（managed）模式不允许最高自治档 L3，只能选择 L1 或 L2。"
+          message={t('capabilities.form.managedWarning')}
         />
-        <Form.Item label="来源类型" name="sourceType" rules={[{ required: true }]}>
-          <Select data-testid="cap-source-type" options={SOURCE_OPTIONS} />
+        <Form.Item label={t('capabilities.field.sourceType')} name="sourceType" rules={[{ required: true }]}>
+          <Select data-testid="cap-source-type" options={sourceOptions(t)} />
         </Form.Item>
-        <Form.Item label="来源引用" name="sourceRef">
+        <Form.Item label={t('capabilities.field.sourceRef')} name="sourceRef">
           <Input data-testid="cap-source-ref" />
         </Form.Item>
         <Form.Item
-          label="能力声明（JSON）"
+          label={t('capabilities.field.manifest')}
           name="manifestText"
-          rules={[{ required: true, message: '请填写能力声明。' }]}
+          rules={[{ required: true, message: t('capabilities.field.manifest.required') }]}
         >
           <Input.TextArea data-testid="cap-manifest" rows={8} />
         </Form.Item>
@@ -373,6 +387,7 @@ function CapabilityFormModal({
 
 /** 配置解析（resolve）区：三层配置 → 生效值与策略结论；状态自治。 */
 function CapabilityResolveCard({ capabilities }: { capabilities: Capability[] }) {
+  const { t } = useTranslation();
   const [resolveKey, setResolveKey] = useDefaultCapabilityKey(capabilities);
   const [managedText, setManagedText] = useState('{}');
   const [projectText, setProjectText] = useState('');
@@ -388,12 +403,12 @@ function CapabilityResolveCard({ capabilities }: { capabilities: Capability[] })
 
   async function runResolve() {
     if (!resolveKey) {
-      setResolveError('请先选择一个能力标识。');
+      setResolveError(t('capabilities.resolve.selectFirst'));
       return;
     }
-    const managed = parseOptionalObject(managedText, '托管层配置');
-    const project = parseOptionalObject(projectText, '项目层配置');
-    const privateLayer = parseOptionalObject(privateText, '私有层配置');
+    const managed = parseOptionalObject(managedText, t('capabilities.layer.managed'));
+    const project = parseOptionalObject(projectText, t('capabilities.layer.project'));
+    const privateLayer = parseOptionalObject(privateText, t('capabilities.layer.private'));
     if (!managed.ok || !project.ok || !privateLayer.ok) return;
     const layers: ResolveLayer[] = [{ name: 'managed', config: managed.value ?? {} }];
     if (project.value) layers.push({ name: 'project', config: project.value });
@@ -404,21 +419,21 @@ function CapabilityResolveCard({ capabilities }: { capabilities: Capability[] })
     try {
       setResolveResult(await capabilitiesApi.resolve({ key: resolveKey, layers }));
     } catch (err) {
-      setResolveError('配置解析失败，请检查标识与层配置后重试。');
-      showApiError(err, '配置解析失败。');
+      setResolveError(t('capabilities.resolve.failed'));
+      showApiError(err, t('capabilities.resolve.failedToast'));
     } finally {
       setResolving(false);
     }
   }
 
   return (
-    <Card title="配置解析（resolve）" style={{ marginBottom: 16 }}>
+    <Card title={t('capabilities.resolve.title')} style={{ marginBottom: 16 }}>
       <Paragraph type="secondary">
-        选择能力并给出三层配置，查看最终生效值与策略结论；托管层来自能力声明与作用域。
+        {t('capabilities.resolve.desc')}
       </Paragraph>
       <Space direction="vertical" style={{ width: '100%' }} size="middle">
         <div>
-          <div style={{ marginBottom: 4 }}>能力标识</div>
+          <div style={{ marginBottom: 4 }}>{t('capabilities.field.capability')}</div>
           <Select
             data-testid="resolve-key"
             showSearch
@@ -426,11 +441,11 @@ function CapabilityResolveCard({ capabilities }: { capabilities: Capability[] })
             value={resolveKey || undefined}
             onChange={setResolveKey}
             options={keyOptions}
-            placeholder="请选择能力"
+            placeholder={t('capabilities.selectCapability')}
           />
         </div>
         <div>
-          <div style={{ marginBottom: 4 }}>托管层配置（JSON）</div>
+          <div style={{ marginBottom: 4 }}>{t('capabilities.layer.managedJson')}</div>
           <Input.TextArea
             data-testid="resolve-managed"
             rows={3}
@@ -439,7 +454,7 @@ function CapabilityResolveCard({ capabilities }: { capabilities: Capability[] })
           />
         </div>
         <div>
-          <div style={{ marginBottom: 4 }}>项目层配置（JSON，可留空）</div>
+          <div style={{ marginBottom: 4 }}>{t('capabilities.layer.projectJsonEmpty')}</div>
           <Input.TextArea
             data-testid="resolve-project"
             rows={3}
@@ -448,7 +463,7 @@ function CapabilityResolveCard({ capabilities }: { capabilities: Capability[] })
           />
         </div>
         <div>
-          <div style={{ marginBottom: 4 }}>私有层配置（JSON，可留空）</div>
+          <div style={{ marginBottom: 4 }}>{t('capabilities.layer.privateJsonEmpty')}</div>
           <Input.TextArea
             data-testid="resolve-private"
             rows={3}
@@ -462,7 +477,7 @@ function CapabilityResolveCard({ capabilities }: { capabilities: Capability[] })
           loading={resolving}
           onClick={() => void runResolve()}
         >
-          解析
+          {t('capabilities.resolve.run')}
         </Button>
       </Space>
       {resolveError ? (
@@ -471,15 +486,15 @@ function CapabilityResolveCard({ capabilities }: { capabilities: Capability[] })
       {resolveResult ? (
         <div data-testid="resolve-result" style={{ marginTop: 12 }}>
           <Space style={{ marginBottom: 8 }}>
-            <Text>策略结论：</Text>
+            <Text>{t('capabilities.resolve.decisionLabel')}</Text>
             <Tag
               data-testid="resolve-decision"
               color={DECISION_COLOR[resolveResult.decision] ?? 'default'}
             >
-              {DECISION_LABEL[resolveResult.decision] ?? resolveResult.decision}
+              {decisionLabel(t, resolveResult.decision)}
             </Tag>
           </Space>
-          <div style={{ marginBottom: 4 }}>生效配置：</div>
+          <div style={{ marginBottom: 4 }}>{t('capabilities.resolve.effectiveLabel')}</div>
           <pre data-testid="resolve-effective" style={{ margin: 0 }}>
             {JSON.stringify(resolveResult.effective, null, 2)}
           </pre>
@@ -491,6 +506,7 @@ function CapabilityResolveCard({ capabilities }: { capabilities: Capability[] })
 
 /** 配置审计（dump）区：三栏表格；状态自治。 */
 function CapabilityDumpCard({ capabilities }: { capabilities: Capability[] }) {
+  const { t } = useTranslation();
   const [dumpKey, setDumpKey] = useDefaultCapabilityKey(capabilities);
   const [dumpProjectText, setDumpProjectText] = useState('');
   const [dumpPrivateText, setDumpPrivateText] = useState('');
@@ -505,11 +521,11 @@ function CapabilityDumpCard({ capabilities }: { capabilities: Capability[] }) {
 
   async function runDump() {
     if (!dumpKey) {
-      setDumpError('请先选择一个能力标识。');
+      setDumpError(t('capabilities.resolve.selectFirst'));
       return;
     }
-    const project = parseOptionalObject(dumpProjectText, '项目层配置');
-    const privateLayer = parseOptionalObject(dumpPrivateText, '私有层配置');
+    const project = parseOptionalObject(dumpProjectText, t('capabilities.layer.project'));
+    const privateLayer = parseOptionalObject(dumpPrivateText, t('capabilities.layer.private'));
     if (!project.ok || !privateLayer.ok) return;
     setDumping(true);
     setDumpError(null);
@@ -522,21 +538,21 @@ function CapabilityDumpCard({ capabilities }: { capabilities: Capability[] }) {
         }),
       );
     } catch (err) {
-      setDumpError('配置审计导出失败，请稍后重试。');
-      showApiError(err, '配置审计导出失败。');
+      setDumpError(t('capabilities.dump.failed'));
+      showApiError(err, t('capabilities.dump.failedToast'));
     } finally {
       setDumping(false);
     }
   }
 
   return (
-    <Card title="配置审计（dump）">
+    <Card title={t('capabilities.dump.title')}>
       <Paragraph type="secondary">
-        三栏展示每个字段在各层的来源值、最终生效值、生效来源与合并规则；凭据字段由后端脱敏。
+        {t('capabilities.dump.desc')}
       </Paragraph>
       <Space direction="vertical" style={{ width: '100%' }} size="middle">
         <div>
-          <div style={{ marginBottom: 4 }}>能力标识</div>
+          <div style={{ marginBottom: 4 }}>{t('capabilities.field.capability')}</div>
           <Select
             data-testid="dump-key"
             showSearch
@@ -544,11 +560,11 @@ function CapabilityDumpCard({ capabilities }: { capabilities: Capability[] }) {
             value={dumpKey || undefined}
             onChange={setDumpKey}
             options={keyOptions}
-            placeholder="请选择能力"
+            placeholder={t('capabilities.selectCapability')}
           />
         </div>
         <div>
-          <div style={{ marginBottom: 4 }}>项目层配置（JSON，可留空）</div>
+          <div style={{ marginBottom: 4 }}>{t('capabilities.layer.projectJsonEmpty')}</div>
           <Input.TextArea
             data-testid="dump-project"
             rows={3}
@@ -557,7 +573,7 @@ function CapabilityDumpCard({ capabilities }: { capabilities: Capability[] }) {
           />
         </div>
         <div>
-          <div style={{ marginBottom: 4 }}>私有层配置（JSON，可留空）</div>
+          <div style={{ marginBottom: 4 }}>{t('capabilities.layer.privateJsonEmpty')}</div>
           <Input.TextArea
             data-testid="dump-private"
             rows={3}
@@ -571,7 +587,7 @@ function CapabilityDumpCard({ capabilities }: { capabilities: Capability[] }) {
           loading={dumping}
           onClick={() => void runDump()}
         >
-          导出三栏审计
+          {t('capabilities.dump.export')}
         </Button>
       </Space>
       {dumpError ? (
@@ -585,9 +601,9 @@ function CapabilityDumpCard({ capabilities }: { capabilities: Capability[] }) {
           pagination={false}
           dataSource={dumpResult.dump}
           columns={[
-            { title: '字段', dataIndex: 'field', key: 'field' },
+            { title: t('capabilities.dump.col.field'), dataIndex: 'field', key: 'field' },
             {
-              title: '各层来源值',
+              title: t('capabilities.dump.col.layers'),
               key: 'layers',
               render: (_: unknown, row: CapabilityDump['dump'][number]) => (
                 <Space direction="vertical" size={0}>
@@ -600,13 +616,13 @@ function CapabilityDumpCard({ capabilities }: { capabilities: Capability[] }) {
               ),
             },
             {
-              title: '生效值',
+              title: t('capabilities.dump.col.effective'),
               key: 'effective',
               render: (_: unknown, row: CapabilityDump['dump'][number]) =>
                 formatValue(row.effective),
             },
-            { title: '生效来源', dataIndex: 'source', key: 'source' },
-            { title: '合并规则', dataIndex: 'rule', key: 'rule' },
+            { title: t('capabilities.dump.col.source'), dataIndex: 'source', key: 'source' },
+            { title: t('capabilities.dump.col.rule'), dataIndex: 'rule', key: 'rule' },
           ]}
         />
       ) : null}
@@ -615,6 +631,7 @@ function CapabilityDumpCard({ capabilities }: { capabilities: Capability[] }) {
 }
 
 export default function CapabilitiesPage() {
+  const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
   const admin = isAdminUser(user);
   const [form] = Form.useForm<CapabilityFormValues>();
@@ -657,11 +674,11 @@ export default function CapabilitiesPage() {
         owner: transferOwner.trim(),
         backer: transferBacker.trim(),
       });
-      message.success('能力已移交。');
+      message.success(t('capabilities.transfer.success'));
       closeTransfer();
       void refetch();
     } catch (err) {
-      showApiError(err, '移交能力失败，请稍后重试。');
+      showApiError(err, t('capabilities.transfer.failed'));
     } finally {
       setBusyId(null);
     }
@@ -704,14 +721,14 @@ export default function CapabilitiesPage() {
   async function submitForm(values: CapabilityFormValues) {
     // 前端先挡住后端必拒的组合，避免一次注定 400 的写请求。
     if (values.scopeMode === 'managed' && values.guidance === 'L3') {
-      message.error('强监管模式（managed）不允许最高自治档 L3，请选择 L1 或 L2。');
+      message.error(t('capabilities.form.managedError'));
       return;
     }
     let manifest: Record<string, unknown>;
     try {
-      manifest = parseJsonObject(values.manifestText, '能力声明');
+      manifest = parseJsonObject(values.manifestText, t('capabilities.form.manifestLabel'));
     } catch {
-      message.error('能力声明不是合法 JSON 对象。');
+      message.error(t('capabilities.form.invalidManifest'));
       return;
     }
     const scope = { mode: values.scopeMode, guidance: values.guidance };
@@ -736,15 +753,15 @@ export default function CapabilitiesPage() {
         const { key: _ignored, ...changes } = payload;
         void _ignored;
         await capabilitiesApi.update(editing.id, changes);
-        message.success('能力已更新。');
+        message.success(t('capabilities.update.success'));
       } else {
         await capabilitiesApi.create(payload);
-        message.success('能力已创建。');
+        message.success(t('capabilities.create.success'));
       }
       setEditing(null);
       void refetch();
     } catch (err) {
-      showApiError(err, '保存能力失败，请稍后重试。');
+      showApiError(err, t('capabilities.save.failed'));
     } finally {
       setSaving(false);
     }
@@ -754,10 +771,10 @@ export default function CapabilitiesPage() {
     setBusyId(cap.id);
     try {
       await capabilitiesApi.update(cap.id, { enabled: !cap.enabled });
-      message.success(cap.enabled ? '能力已停用。' : '能力已启用。');
+      message.success(cap.enabled ? t('capabilities.toggle.disabled') : t('capabilities.toggle.enabled'));
       void refetch();
     } catch (err) {
-      showApiError(err, '更新启用状态失败，请稍后重试。');
+      showApiError(err, t('capabilities.toggle.failed'));
     } finally {
       setBusyId(null);
     }
@@ -767,10 +784,10 @@ export default function CapabilitiesPage() {
     setBusyId(cap.id);
     try {
       await capabilitiesApi.remove(cap.id);
-      message.success('能力已删除。');
+      message.success(t('capabilities.remove.success'));
       void refetch();
     } catch (err) {
-      showApiError(err, '删除能力失败，请稍后重试。');
+      showApiError(err, t('capabilities.remove.failed'));
     } finally {
       setBusyId(null);
     }
@@ -778,9 +795,9 @@ export default function CapabilitiesPage() {
 
   return (
     <div data-testid="capabilities-page">
-      <Typography.Title level={3}>中台管控 · 能力注册表</Typography.Title>
+      <Typography.Title level={3}>{t('capabilities.page.title')}</Typography.Title>
       <Paragraph type="secondary">
-        登记 skill / MCP / 智能体 / 模型渠道等能力，查看分层配置如何合并生效与策略结论。
+        {t('capabilities.page.desc')}
       </Paragraph>
 
       <CapabilityTableCard
@@ -808,10 +825,10 @@ export default function CapabilitiesPage() {
       />
 
       <Modal
-        title="移交能力所有权"
+        title={t('capabilities.transfer.title')}
         open={transferTarget !== null}
-        okText="提交"
-        cancelText="取消"
+        okText={t('capabilities.submit')}
+        cancelText={t('capabilities.cancel')}
         okButtonProps={{ disabled: !transferOwner.trim() || !transferBacker.trim() }}
         confirmLoading={busyId === transferTarget?.id}
         onCancel={closeTransfer}
@@ -819,20 +836,20 @@ export default function CapabilitiesPage() {
         data-testid="capability-transfer-modal"
       >
         <Form layout="vertical">
-          <Form.Item label="新 owner" required>
+          <Form.Item label={t('capabilities.transfer.owner')} required>
             <Input
               data-testid="transfer-owner"
               value={transferOwner}
               onChange={(e) => setTransferOwner(e.target.value)}
-              placeholder="发布者"
+              placeholder={t('capabilities.transfer.publisher')}
             />
           </Form.Item>
-          <Form.Item label="新 backer" required>
+          <Form.Item label={t('capabilities.transfer.backer')} required>
             <Input
               data-testid="transfer-backer"
               value={transferBacker}
               onChange={(e) => setTransferBacker(e.target.value)}
-              placeholder="部门 / 角色"
+              placeholder={t('capabilities.transfer.role')}
             />
           </Form.Item>
         </Form>

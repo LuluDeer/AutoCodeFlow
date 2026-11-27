@@ -1,5 +1,7 @@
 import type { components } from '../types/generated/api-types';
 import { client } from './client';
+// 非组件路径：与 api/client.ts / api/tasks.ts 同款，直接引用 i18n 单例。
+import i18n from '../i18n';
 
 /**
  * 中台管控 · 能力注册表前端契约。
@@ -134,7 +136,7 @@ export interface CapabilityDump {
 function parseJsonObject(text: string, fieldName: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(text);
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`${fieldName}必须是 JSON 对象。`);
+    throw new Error(i18n.t('capabilities.invalidJsonObject', { field: fieldName }));
   }
   return parsed as Record<string, unknown>;
 }
