@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Alert, Button, Card, Input, Select, Space, Tag, Typography } from 'antd';
 import {
   previewPlan,
@@ -7,8 +7,11 @@ import {
   type PreviewPlanResult,
   type WorkbenchCadence,
 } from '../api/workbench';
+import WorkbenchSessionAction from '../components/workbench/WorkbenchSessionAction';
+import { sessionAnchor, useWorkbenchSession } from '../hooks/useWorkbenchSession';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../store/auth';
+
 
 interface ConfirmRecord {
   cardHash: string;
@@ -111,6 +114,9 @@ export default function WorkbenchPage() {
   const [commitResult, setCommitResult] = useState<CommitResult | null>(null);
   const [records, setRecords] = useState<ConfirmRecord[]>([]);
   const user = useAuthStore((s) => s.user);
+  // UX-AUDIT：/sops 为 ADMIN-only。业务用户提交后不得被引导到 403 墙——
+  // 用一句诚实的话说明「已提交审阅、草稿未运行、等待通知」，管理员保留原链接。
+  const isAdmin = user?.role === 'admin';
   // 真正的互斥锁：state 更新在同一 tick 的两次点击之间可能还没生效，用 ref 兜住防重复提交。
   const committingRef = useRef(false);
 
@@ -122,24 +128,24 @@ export default function WorkbenchPage() {
   const approvalStatus: CommitResult['approvalStatus'] =
     commitResult?.approvalStatus ?? (approvalKey ? 'submitted' : 'not_requested');
 
+  // Writer B：受限起草会话编排外提为 hook（轮询/错误/创建），页面只消费状态。
+  const anchor = sessionAnchor(commitResult, result?.cardHash, submittedInput?.goal);
+  const sessionCtl = useWorkbenchSession(useCallback(() => anchor, [anchor]));
+  const { sessionId, session, error: sessionError, starting: startingSession, start: startSession, reset: resetSession } = sessionCtl;
+
   async function handlePreview() {
-    if (!goal.trim()) {
-      setError(t('workbench.goalRequired'));
-      return;
-    }
+    if (!goal.trim()) { setError(t('workbench.goalRequired')); return; }
     setPreviewing(true);
     setError(null);
     setResult(null);
     setSubmittedInput(null);
     setCommitResult(null);
     setCommitError(null);
+    // Writer B：新一轮预览清空上一轮会话面板，避免展示过期草稿的会话。
+    resetSession();
     try {
       const params = parseParams(paramText);
-      const input: SubmittedInput = {
-        goal: goal.trim(),
-        cadence,
-        ...(Object.keys(params).length > 0 ? { params } : {}),
-      };
+      const input: SubmittedInput = { goal: goal.trim(), cadence, ...(Object.keys(params).length > 0 ? { params } : {}) };
       const data = await previewPlan(input);
       setResult(data);
       setSubmittedInput(input);
@@ -328,14 +334,24 @@ export default function WorkbenchPage() {
             {approvalStatus === 'submitted' ? (
               <div>{t('workbench.approval.submittedNext')}</div>
             ) : null}
-            {approvalStatus === 'submitted' ? (
+            {!isAdmin ? (
+              // 业务用户：不链接 ADMIN-only 的 /sops，也不出现仅管理员可用的审批单深链。
+              <div data-testid="workbench-submitted-for-review">{t('workbench.submittedForReview')}</div>
+            ) : approvalStatus === 'submitted' ? (
               <a href={`/sops?sop=${encodeURIComponent(commitResult.sopId)}`}>{t('workbench.sopLink')}</a>
             ) : approvalStatus === 'failed' ? (
               <div>{t('workbench.approval.failedNoSopLink')}</div>
             ) : (
               <div>{t('workbench.sopLink.textOnly')}</div>
             )}
-            {approvalStatus === 'submitted' && approvalKey ? (
+            {/* Writer B：受限起草会话——提交成功即可用，不发布 SOP。 */}
+            {approvalStatus === 'submitted' && (
+              <WorkbenchSessionAction
+                error={sessionError} starting={startingSession} sessionId={sessionId}
+                session={session} onStart={() => void startSession()}
+              />
+            )}
+            {isAdmin && approvalStatus === 'submitted' && approvalKey ? (
               <div data-testid="workbench-commit-approval" style={{ marginTop: 4 }}>
                 <Alert
                   type="info"

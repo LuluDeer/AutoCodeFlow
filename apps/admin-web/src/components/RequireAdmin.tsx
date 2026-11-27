@@ -73,7 +73,8 @@ export default function RequireAdmin({ children }: { children: ReactNode }) {
     return (
       <Result
         status="403"
-        title="403"
+        // UX-AUDIT：裸「403」是 HTTP 状态码 jargon，业务用户看不懂——换成自然语言标题。
+        title={t('requireAdmin.title')}
         subTitle={
           <>
             {/* P1-20（UX 审计）：403 页只说`仅管理员可见''却不告诉用户缺什么、找谁开通 */}

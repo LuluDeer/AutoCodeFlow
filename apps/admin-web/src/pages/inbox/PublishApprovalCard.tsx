@@ -217,7 +217,9 @@ export default function PublishApprovalCard({
         ) : null}
 
         <Space size={4} wrap>
-          {item.detailUrl ? (
+          {/* UX-AUDIT：详情深链指向 ADMIN-only 的 /agent-sessions；业务用户不渲染链接避免 403 死路，
+              管理员（canWrite）保留原深链（既有测试钉住该行为）。 */}
+          {canWrite && item.detailUrl ? (
             <Link to={item.detailUrl} data-testid="inbox-publish-review" style={{ fontSize: 12 }}>
               {t('inbox.publish.review')}
             </Link>

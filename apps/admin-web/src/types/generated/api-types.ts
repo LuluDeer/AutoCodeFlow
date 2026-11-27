@@ -4827,6 +4827,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workbench/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 运行我的 SOP 草稿：创建限权 Agent 会话并入 agent-jobs 队列 */
+        post: operations["WorkbenchController_createSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workbench/sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 读取工作台会话进度（仅创建者或管理员） */
+        get: operations["WorkbenchController_getSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -6679,6 +6713,21 @@ export interface components {
             role?: "admin" | "user";
             /** @example admin */
             username: string;
+        };
+        CreateWorkbenchSessionDto: {
+            /** @description 随会话携带的业务上下文（服务端脱敏后落库） */
+            context?: {
+                [key: string]: unknown;
+            };
+            /** @description commit 回带的 cardHash（16 位十六进制）——方案卡锚点 */
+            expectedCardHash: string;
+            /** @example 按草稿汇总昨日订单异常并推送日报 */
+            goal: string;
+            /**
+             * Format: uuid
+             * @description 用户自己提交的 SOP draft 行 id（UUID）
+             */
+            sopId: string;
         };
         DeleteTaskResponseDto: {
             deleted: boolean;
@@ -10386,6 +10435,62 @@ export interface components {
             enabled: boolean;
             /** @description 带签名的入站触发 URL */
             url: string;
+        };
+        WorkbenchSessionArtifactDto: {
+            /** @description 产物创建时间 */
+            createdAt?: Record<string, never> | null;
+            /** @description 产物 id */
+            id: string;
+            /** @description 产物名称 */
+            name: string;
+            /** @description 产物字节数 */
+            size: number;
+        };
+        WorkbenchSessionCreateResponseDto: {
+            /** @description 会话 id（用于 GET /workbench/sessions/:id 轮询） */
+            sessionId: string;
+            /** @description 会话初始状态（pending） */
+            status: string;
+            /** @description 会话可用工具数（若可判定） */
+            toolCount?: number;
+        };
+        WorkbenchSessionDetailResponseDto: {
+            /** @description 审批单状态计数（pending/granted/consumed/denied/expired） */
+            approvals: {
+                [key: string]: number;
+            };
+            /** @description 会话关联的产物（若可判定；无则空数组） */
+            artifacts: components["schemas"]["WorkbenchSessionArtifactDto"][];
+            /** @description 发起人（user:<id>） */
+            createdBy?: string | null;
+            /** @description 会话 kind（本端点恒为 sop_authoring） */
+            kind: string;
+            /** @description 作用域（固定为 {sops:[sopId]}） */
+            scope: {
+                [key: string]: unknown;
+            };
+            /** @description 会话 id */
+            sessionId: string;
+            /** @description 会话状态 */
+            status: string;
+            /** @description 步骤总数（全部已落库步骤） */
+            stepCount: number;
+            /** @description 最新步骤摘要（按 seq 升序取末尾若干条） */
+            steps: components["schemas"]["WorkbenchSessionStepDto"][];
+            /** @description 会话标题 */
+            title?: string | null;
+            /** @description 工具调用总数 */
+            toolCallCount: number;
+        };
+        WorkbenchSessionStepDto: {
+            /** @description 步骤正文预览（最长 200 字） */
+            contentPreview?: string | null;
+            /** @description 步骤创建时间 */
+            createdAt?: Record<string, never> | null;
+            /** @description 步骤角色 */
+            role: string;
+            /** @description 步骤序号 */
+            seq: number;
         };
     };
     responses: never;
@@ -18310,6 +18415,50 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RewindResultDto"];
+                };
+            };
+        };
+    };
+    WorkbenchController_createSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWorkbenchSessionDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkbenchSessionCreateResponseDto"];
+                };
+            };
+        };
+    };
+    WorkbenchController_getSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkbenchSessionDetailResponseDto"];
                 };
             };
         };

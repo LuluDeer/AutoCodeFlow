@@ -5000,6 +5000,40 @@
         ],
         "type": "object"
       },
+      "CreateWorkbenchSessionDto": {
+        "properties": {
+          "context": {
+            "additionalProperties": true,
+            "description": "随会话携带的业务上下文（服务端脱敏后落库）",
+            "type": "object",
+            "x-i18n-en": "Business context carried with the session (sanitized and stored server-side)"
+          },
+          "expectedCardHash": {
+            "description": "commit 回带的 cardHash（16 位十六进制）——方案卡锚点",
+            "pattern": "^[0-9a-fA-F]{16}$",
+            "type": "string",
+            "x-i18n-en": "cardHash returned by commit (16 hex chars) - plan-card anchor"
+          },
+          "goal": {
+            "example": "按草稿汇总昨日订单异常并推送日报",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "sopId": {
+            "description": "用户自己提交的 SOP draft 行 id（UUID）",
+            "format": "uuid",
+            "type": "string",
+            "x-i18n-en": "SOP draft row id submitted by the user (UUID)"
+          }
+        },
+        "required": [
+          "sopId",
+          "goal",
+          "expectedCardHash"
+        ],
+        "type": "object"
+      },
       "DeleteTaskResponseDto": {
         "properties": {
           "deleted": {
@@ -14686,6 +14720,175 @@
         "required": [
           "enabled",
           "url"
+        ],
+        "type": "object"
+      },
+      "WorkbenchSessionArtifactDto": {
+        "properties": {
+          "createdAt": {
+            "description": "产物创建时间",
+            "nullable": true,
+            "type": "object",
+            "x-i18n-en": "Artifact creation time"
+          },
+          "id": {
+            "description": "产物 id",
+            "type": "string",
+            "x-i18n-en": "Artifact id"
+          },
+          "name": {
+            "description": "产物名称",
+            "type": "string",
+            "x-i18n-en": "Artifact name"
+          },
+          "size": {
+            "description": "产物字节数",
+            "type": "number",
+            "x-i18n-en": "Artifact size in bytes"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "size"
+        ],
+        "type": "object"
+      },
+      "WorkbenchSessionCreateResponseDto": {
+        "properties": {
+          "sessionId": {
+            "description": "会话 id（用于 GET /workbench/sessions/:id 轮询）",
+            "type": "string",
+            "x-i18n-en": "Session id (poll via GET /workbench/sessions/:id)"
+          },
+          "status": {
+            "description": "会话初始状态（pending）",
+            "type": "string",
+            "x-i18n-en": "Initial session status (pending)"
+          },
+          "toolCount": {
+            "description": "会话可用工具数（若可判定）",
+            "type": "number",
+            "x-i18n-en": "Number of tools available to the session (when determinable)"
+          }
+        },
+        "required": [
+          "sessionId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "WorkbenchSessionDetailResponseDto": {
+        "properties": {
+          "approvals": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "审批单状态计数（pending/granted/consumed/denied/expired）",
+            "type": "object",
+            "x-i18n-en": "Approval counts by status (pending/granted/consumed/denied/expired)"
+          },
+          "artifacts": {
+            "description": "会话关联的产物（若可判定；无则空数组）",
+            "items": {
+              "$ref": "#/components/schemas/WorkbenchSessionArtifactDto"
+            },
+            "type": "array",
+            "x-i18n-en": "Artifacts linked to the session (when determinable; empty array otherwise)"
+          },
+          "createdBy": {
+            "description": "发起人（user:<id>）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Initiator (user:<id>)"
+          },
+          "kind": {
+            "description": "会话 kind（本端点恒为 sop_authoring）",
+            "type": "string",
+            "x-i18n-en": "Session kind (always sop_authoring on this endpoint)"
+          },
+          "scope": {
+            "additionalProperties": true,
+            "description": "作用域（固定为 {sops:[sopId]}）",
+            "type": "object",
+            "x-i18n-en": "Scope (fixed to {sops:[sopId]})"
+          },
+          "sessionId": {
+            "description": "会话 id",
+            "type": "string",
+            "x-i18n-en": "Session id"
+          },
+          "status": {
+            "description": "会话状态",
+            "type": "string",
+            "x-i18n-en": "Session status"
+          },
+          "stepCount": {
+            "description": "步骤总数（全部已落库步骤）",
+            "type": "number",
+            "x-i18n-en": "Total step count (all persisted steps)"
+          },
+          "steps": {
+            "description": "最新步骤摘要（按 seq 升序取末尾若干条）",
+            "items": {
+              "$ref": "#/components/schemas/WorkbenchSessionStepDto"
+            },
+            "type": "array",
+            "x-i18n-en": "Recent step summaries (last few, ascending seq)"
+          },
+          "title": {
+            "description": "会话标题",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Session title"
+          },
+          "toolCallCount": {
+            "description": "工具调用总数",
+            "type": "number",
+            "x-i18n-en": "Total tool-call count"
+          }
+        },
+        "required": [
+          "sessionId",
+          "kind",
+          "status",
+          "scope",
+          "stepCount",
+          "steps",
+          "toolCallCount",
+          "approvals",
+          "artifacts"
+        ],
+        "type": "object"
+      },
+      "WorkbenchSessionStepDto": {
+        "properties": {
+          "contentPreview": {
+            "description": "步骤正文预览（最长 200 字）",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Step content preview (up to 200 characters)"
+          },
+          "createdAt": {
+            "description": "步骤创建时间",
+            "nullable": true,
+            "type": "object",
+            "x-i18n-en": "Step creation time"
+          },
+          "role": {
+            "description": "步骤角色",
+            "type": "string",
+            "x-i18n-en": "Step role"
+          },
+          "seq": {
+            "description": "步骤序号",
+            "type": "number",
+            "x-i18n-en": "Step sequence number"
+          }
+        },
+        "required": [
+          "seq",
+          "role"
         ],
         "type": "object"
       }
@@ -29392,6 +29595,85 @@
         ],
         "x-i18n-en": {
           "summary": "N18: invalidate stale-generation in-flight async writes and notifications with an audit trail (generation is read only from the server-side registry, never from the client)"
+        }
+      }
+    },
+    "/workbench/sessions": {
+      "post": {
+        "operationId": "WorkbenchController_createSession",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkbenchSessionDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkbenchSessionCreateResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "运行我的 SOP 草稿：创建限权 Agent 会话并入 agent-jobs 队列",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "summary": "Run my SOP draft: create a scoped Agent session and enqueue it on agent-jobs"
+        }
+      }
+    },
+    "/workbench/sessions/{id}": {
+      "get": {
+        "operationId": "WorkbenchController_getSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkbenchSessionDetailResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "读取工作台会话进度（仅创建者或管理员）",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "summary": "Read workbench session progress (creator or admin only)"
         }
       }
     }

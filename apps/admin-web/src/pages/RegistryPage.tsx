@@ -130,10 +130,10 @@ function PypiTab({ uploadOpen, setUploadOpen }: { uploadOpen: boolean; setUpload
       >
         <Form form={form} layout="vertical" onFinish={handleUpload}>
           <Form.Item name="name" label={t('registry.field.name')} rules={[{ required: true, message: t('registry.field.nameRequired') }]}>
-            <Input placeholder="my-package" />
+            <Input placeholder={t('registry.field.name.placeholder')} />
           </Form.Item>
           <Form.Item name="version" label={t('registry.field.version')} rules={[{ required: true, message: t('registry.field.versionRequired') }]}>
-            <Input placeholder="1.0.0" />
+            <Input placeholder={t('registry.field.version.placeholder')} />
           </Form.Item>
           <Form.Item
             name="file"

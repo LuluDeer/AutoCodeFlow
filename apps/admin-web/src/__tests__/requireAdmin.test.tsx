@@ -33,10 +33,12 @@ describe('RequireAdmin', () => {
     expect(screen.queryByText('403')).toBeNull();
   });
 
-  it('普通用户（role=user）：渲染 403 提示页，不渲染 children', () => {
+  it('普通用户（role=user）：渲染自然语言 403 提示页，不渲染 children', () => {
     useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
     renderGated();
-    expect(screen.getByText('403')).toBeTruthy();
+    // UX-AUDIT：标题已由裸「403」改为人类可读文案（test 原先钉住了 jargon bug）
+    expect(screen.getByText('无权访问该页面')).toBeTruthy();
+    expect(screen.queryByText('403')).toBeNull();
     expect(screen.getByText(/仅管理员可见/)).toBeTruthy();
     // P1-20（UX 审计）：403 页须明确缺什么角色、找谁开通（旧实现只说`仅管理员可见''）
     expect(screen.getByText(/需要管理员/)).toBeTruthy();

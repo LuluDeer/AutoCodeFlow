@@ -1,10 +1,17 @@
 import { Module } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
+import { getQueueToken } from "@nestjs/bullmq";
+import { DataSource } from "typeorm";
+import type { Queue } from "bullmq";
 
 import { AuditModule } from "../audit/audit.module";
 import { AuditService } from "../audit/audit.service";
 import { AgentSessionService } from "../agent/runtime/agent-session.service";
 import { AgentApprovalsService } from "../agent/runtime/agent-approvals.service";
+import {
+  AGENT_QUEUE_NAME,
+  type AgentJobData,
+} from "../agent/runtime/agent.processor";
 import { SopService } from "../sop/sop.service";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -47,6 +54,10 @@ import {
   WorkbenchPartProvider,
 } from "./part-projection.service";
 import { WorkbenchBlobStore } from "./workbench-blob.store";
+import {
+  WORKBENCH_SESSIONS_PORT,
+  type WorkbenchSessionsPort,
+} from "./workbench-sessions.port";
 
 /**
  * 最小方案卡面：preview 纯内存；commit 先过硬阈闸（超限 429、不落 draft），
@@ -222,6 +233,97 @@ import { WorkbenchBlobStore } from "./workbench-blob.store";
             } catch {
               return false;
             }
+          },
+        };
+      },
+    },
+    // 「运行我的草稿」会话端口：真实 AgentSessionService + agent-jobs 队列。
+    // 生产装配恒真；裁剪部署里没有 AgentModule 时，注入会在启动期立即失败
+    // （fail-fast），绝不回一个假端口让业务用户的会话静默不执行。
+    {
+      provide: WORKBENCH_SESSIONS_PORT,
+      inject: [ModuleRef],
+      useFactory: (moduleRef: ModuleRef): WorkbenchSessionsPort => {
+        // 惰性取真服务：与 RELEASE_* 端口同款时机约束——useFactory 在模块
+        // 实例化期执行，那时 AgentModule 的 provider 可能还是空壳；调用时才 get。
+        const sessions = () =>
+          moduleRef.get(AgentSessionService, { strict: false });
+        const queue = () =>
+          moduleRef.get<Queue<AgentJobData>>(getQueueToken(AGENT_QUEUE_NAME), {
+            strict: false,
+          });
+        return {
+          create: (input) => sessions().create(input),
+          enqueue: async (sessionId, reason) => {
+            await queue().add(
+              "run",
+              { sessionId, reason },
+              {
+                jobId: sessionId,
+                attempts: 1,
+                removeOnComplete: true,
+                removeOnFail: false,
+              },
+            );
+          },
+          findById: (id) => sessions().findById(id),
+          readSummary: async (id) => {
+            const svc = sessions();
+            const [steps, toolCalls, approvals] = await Promise.all([
+              svc.listSteps(id),
+              svc.listToolCalls(id),
+              moduleRef
+                .get(AgentApprovalsService, { strict: false })
+                .listForSession(id),
+            ]);
+            // 产物摘要：task_executions.agentSessionId → execution_artifacts。
+            // 用 DataSource 直读窄投影，避免反向依赖 ArtifactsModule；读失败
+            // 降级为空数组（产物是附加信息，不能让会话详情整页 500）。
+            let artifacts: Array<{
+              id: string;
+              name: string;
+              size: number;
+              createdAt: Date | string | null;
+            }> = [];
+            try {
+              const dataSource = moduleRef.get(DataSource, { strict: false });
+              const rows = await dataSource.query(
+                `SELECT a.id, a.name, a.size, a."createdAt"
+                   FROM execution_artifacts a
+                   JOIN task_executions e ON e.id = a."executionId"
+                  WHERE e."agentSessionId" = $1
+                  ORDER BY a."createdAt" DESC
+                  LIMIT 20`,
+                [id],
+              );
+              artifacts = rows.map((r) => ({
+                id: String(r.id),
+                name: String(r.name),
+                size: Number(r.size),
+                createdAt: r.createdAt ?? null,
+              }));
+            } catch {
+              // 读面降级：产物摘要缺席必须可见（空数组），不伪造内容。
+            }
+            const approvalCounts: Record<string, number> = {};
+            for (const a of approvals) {
+              approvalCounts[a.status] = (approvalCounts[a.status] ?? 0) + 1;
+            }
+            return {
+              stepCount: steps.length,
+              steps: steps.slice(-5).map((s) => ({
+                seq: Number(s.seq),
+                role: String(s.role),
+                contentPreview:
+                  typeof s.content === "string"
+                    ? s.content.slice(0, 200)
+                    : null,
+                createdAt: s.createdAt ?? null,
+              })),
+              toolCallCount: toolCalls.length,
+              approvals: approvalCounts,
+              artifacts,
+            };
           },
         };
       },

@@ -1,4 +1,7 @@
 import { client } from './client';
+import type { components } from '../types/generated/api-types';
+
+type GeneratedSessionDetail = components['schemas']['WorkbenchSessionDetailResponseDto'];
 
 /** 业务侧频率（界面只呈现中文标签，这里保留后端契约的英文枚举值）。 */
 export type WorkbenchCadence = 'daily' | 'weekly' | 'monthly';
@@ -95,4 +98,25 @@ export function commitPlan(input: CommitPlanInput): Promise<CommitResult> {
   return client.post<CommitResult>('/workbench/commit', input);
 }
 
-export const workbenchApi = { preview: previewPlan, commit: commitPlan };
+/**
+ * UX-AUDIT / Writer B 会话切片：创建「受限 SOP 起草会话」。
+ * 契约 = admin-api `CreateWorkbenchSessionDto` / `WorkbenchSessionCreateResponseDto`，
+ * 由 openapi.json → api-types.ts 生成链派生（禁止手写顶层类型，web-type-drift 棘轮）。
+ */
+export function createWorkbenchSession(
+  input: components['schemas']['CreateWorkbenchSessionDto'],
+): Promise<components['schemas']['WorkbenchSessionCreateResponseDto']> {
+  return client.post('/workbench/sessions', input);
+}
+
+/** 读取受限会话的实时摘要（状态由后端 worker 推进，前端不锁定为 pending）。 */
+export function getWorkbenchSession(id: string): Promise<GeneratedSessionDetail> {
+  return client.get(`/workbench/sessions/${encodeURIComponent(id)}`);
+}
+
+export const workbenchApi = {
+  preview: previewPlan,
+  commit: commitPlan,
+  createSession: createWorkbenchSession,
+  getSession: getWorkbenchSession,
+};

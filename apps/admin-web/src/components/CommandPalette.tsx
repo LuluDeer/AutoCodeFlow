@@ -47,6 +47,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import PaletteGroupTruncationHint from './PaletteGroupTruncationHint';
+import { PaletteCandidateTruncation, PaletteRetry } from './PaletteResultNotices';
 import type { TFunction } from 'i18next';
 import '../i18n';
 import { Input, Modal, Typography, theme } from 'antd';
@@ -58,6 +59,7 @@ import {
   AuditOutlined,
   BellOutlined,
   ClusterOutlined,
+  DashboardOutlined,
   DatabaseOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
@@ -69,6 +71,7 @@ import {
   PlayCircleOutlined,
   PlusOutlined,
   RobotOutlined,
+  SafetyCertificateOutlined,
   SearchOutlined,
   SettingOutlined,
   TeamOutlined,
@@ -83,6 +86,7 @@ import { useAuthStore, isAdminUser } from '../store/auth';
 import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { computeSections, GROUP_ORDER, IDLE_RESULTS, LOADING_RESULTS } from './palette-sections';
+import { paletteRoutes } from '../routes/route-registry';
 import type {
   EntityKind,
   EntityResultsKind,
@@ -155,13 +159,14 @@ const TASK_ACTION_LABEL_KEY: Record<TaskActionKind, string> = {
   resume: 'palette.action.resume',
 };
 
-const getStaticActions = (t: TFunction): StaticAction[] => [
+const getStaticActions = (t: TFunction, isAdmin: boolean): StaticAction[] => [
   {
     key: 'action-new-task',
     id: 'new-task',
     title: t('palette.action.createTask'),
-    description: t('palette.action.createTaskDesc'),
-    to: '/tasks/new',
+    // UX-AUDIT：业务用户在 /tasks/new 的提交是禁用死按钮——直接送他们去工作台。
+    description: t(isAdmin ? 'palette.action.createTaskDesc' : 'palette.action.createViaWorkbench'),
+    to: isAdmin ? '/tasks/new' : '/workbench',
     icon: <PlusOutlined />,
   },
   {
@@ -183,25 +188,30 @@ const getStaticActions = (t: TFunction): StaticAction[] => [
  * /audit、/executor-packages、/sops、/agent-sessions）；/projects、/settings
  * 为普通用户可达，不做门控。角色过滤优于跳转后 403。
  */
-const getPageNavActions = (t: TFunction): StaticAction[] => [
-  { key: 'nav-dashboard', id: 'nav-dashboard', title: t('nav.dashboard'), description: t('palette.pageNav.dashboardDesc'), to: '/dashboard', icon: <HomeOutlined /> },
-  { key: 'nav-tasks', id: 'nav-tasks', title: t('nav.tasks'), description: t('palette.pageNav.tasksDesc'), to: '/tasks', icon: <ThunderboltOutlined /> },
-  { key: 'nav-task-templates', id: 'nav-task-templates', title: t('nav.taskTemplates'), description: t('palette.pageNav.taskTemplatesDesc'), to: '/task-templates', icon: <FileTextOutlined /> },
-  { key: 'nav-executions', id: 'nav-executions', title: t('nav.executions'), description: t('palette.pageNav.executionsDesc'), to: '/executions', icon: <HistoryOutlined /> },
-  { key: 'nav-artifacts', id: 'nav-artifacts', title: t('nav.artifacts'), description: t('palette.pageNav.artifactsDesc'), to: '/artifacts', adminOnly: true, icon: <FolderOpenOutlined /> },
-  { key: 'nav-executors', id: 'nav-executors', title: t('nav.executors'), description: t('palette.pageNav.executorsDesc'), to: '/executors', icon: <ClusterOutlined /> },
-  { key: 'nav-executor-packages', id: 'nav-executor-packages', title: t('nav.executorPackages'), description: t('palette.pageNav.executorPackagesDesc'), to: '/executor-packages', adminOnly: true, icon: <DatabaseOutlined /> },
-  { key: 'nav-applications', id: 'nav-applications', title: t('nav.applications'), description: t('palette.pageNav.applicationsDesc'), to: '/applications', icon: <AppstoreOutlined /> },
-  { key: 'nav-registry', id: 'nav-registry', title: t('nav.registry'), description: t('palette.pageNav.registryDesc'), to: '/registry', icon: <DatabaseOutlined /> },
-  { key: 'nav-users', id: 'nav-users', title: t('nav.users'), description: t('palette.pageNav.usersDesc'), to: '/users', adminOnly: true, icon: <UserOutlined /> },
-  { key: 'nav-projects', id: 'nav-projects', title: t('nav.projects'), description: t('palette.pageNav.projectsDesc'), to: '/projects', icon: <TeamOutlined /> },
-  { key: 'nav-audit', id: 'nav-audit', title: t('nav.audit'), description: t('palette.pageNav.auditDesc'), to: '/audit', adminOnly: true, icon: <AuditOutlined /> },
-  { key: 'nav-notifications', id: 'nav-notifications', title: t('nav.notifications'), description: t('palette.pageNav.notificationsDesc'), to: '/notifications', adminOnly: true, icon: <BellOutlined /> },
-  { key: 'nav-settings', id: 'nav-settings', title: t('nav.settings'), description: t('palette.pageNav.settingsDesc'), to: '/settings', icon: <SettingOutlined /> },
-  { key: 'nav-sops', id: 'nav-sops', title: t('nav.sops'), description: t('palette.pageNav.sopsDesc'), to: '/sops', adminOnly: true, icon: <FileTextOutlined /> },
-  { key: 'nav-agent-sessions', id: 'nav-agent-sessions', title: t('nav.agents'), description: t('palette.pageNav.agentsDesc'), to: '/agent-sessions', adminOnly: true, icon: <RobotOutlined /> },
-  { key: 'nav-inbox', id: 'nav-inbox', title: t('inbox.title'), description: t('inbox.description'), to: '/inbox', adminOnly: true, icon: <MailOutlined /> },
-];
+/**
+ * P1-6 / UX-AUDIT：静态页面导航由共享路由注册表派生（routes/route-registry.ts）。
+ * 侧栏与命令面板的消费方同读一份 adminOnly 口径，杜绝「侧栏能点、面板撞 403」。
+ */
+const PAGE_NAV_ICON: Record<string, ReactNode> = {
+  '/dashboard': <HomeOutlined />, '/tasks': <ThunderboltOutlined />, '/task-templates': <FileTextOutlined />,
+  '/artifacts': <FolderOpenOutlined />, '/executions': <HistoryOutlined />, '/executors': <ClusterOutlined />,
+  '/executor-packages': <DatabaseOutlined />, '/applications': <AppstoreOutlined />, '/registry': <DatabaseOutlined />,
+  '/users': <UserOutlined />, '/projects': <TeamOutlined />, '/audit': <AuditOutlined />,
+  '/capabilities': <SafetyCertificateOutlined />, '/activation-stats': <DashboardOutlined />,
+  '/notifications': <BellOutlined />, '/settings': <SettingOutlined />, '/sops': <FileTextOutlined />,
+  '/agent-sessions': <RobotOutlined />, '/workbench': <AppstoreOutlined />, '/inbox': <MailOutlined />,
+};
+
+const getPageNavActions = (t: TFunction): StaticAction[] =>
+  paletteRoutes(true).map((route) => ({
+    key: `nav-${route.path.slice(1)}`,
+    id: `nav-${route.path.slice(1)}`,
+    title: t(route.labelKey),
+    description: t(route.descriptionKey),
+    to: route.path,
+    adminOnly: route.adminOnly,
+    icon: PAGE_NAV_ICON[route.path] ?? <HomeOutlined />,
+  }));
 
 export interface CommandPaletteProps {
   open: boolean;
@@ -229,6 +239,10 @@ export default function CommandPalette({
   const isAdmin = isAdminUser(user);
   const [keyword, setKeyword] = useState('');
   const debouncedKeyword = useDebounce(keyword, DEBOUNCE_MS);
+  /** UX-AUDIT：加载失败后手动重试的触发键（递增即重跑四路请求）。 */
+  const [retryToken, setRetryToken] = useState(0);
+  /** UX-AUDIT：候选池截断告知——记录服务端命中总数，与已取回条数对比。 */
+  const [totals, setTotals] = useState<{ task: number; execution: number }>({ task: 0, execution: 0 });
   const [results, setResults] = useState<SearchResults>(IDLE_RESULTS);
   const [activeIndex, setActiveIndex] = useState(0);
   /** UI-11 行内动作在途 id（触发/暂停/恢复 loading 态，与 TaskListPage togglingId 同语义） */
@@ -303,6 +317,7 @@ export default function CommandPalette({
       .list({ page: 1, pageSize: TASK_PAGE_SIZE, q: kw })
       .then((page) => {
         if (!alive()) return;
+        setTotals((prev) => ({ ...prev, task: page.total ?? (page.items?.length ?? 0) }));
         setResults((prev) => ({ ...prev, task: { status: 'ok', items: page.items ?? [] } }));
       })
       .catch(() => {
@@ -340,19 +355,23 @@ export default function CommandPalette({
       .allExecutions({ page: 1, pageSize: EXECUTION_PAGE_SIZE, taskName: kw })
       .then((page) => {
         if (!alive()) return;
+        setTotals((prev) => ({ ...prev, execution: page.total ?? (page.items?.length ?? 0) }));
         setResults((prev) => ({ ...prev, execution: { status: 'ok', items: page.items ?? [] } }));
       })
       .catch(() => {
         if (!alive()) return;
         setResults((prev) => ({ ...prev, execution: { status: 'error', items: [] } }));
       });
-  }, [debouncedKeyword]);
+  }, [debouncedKeyword, retryToken]);
+
+  /** 手动重试：只重跑当前关键词的四路请求，不清空输入。 */
+  const retrySearch = useCallback(() => setRetryToken((n) => n + 1), []);
 
   const kwLower = debouncedKeyword.trim().toLowerCase();
 
   /** UI-11 静态动作按角色过滤（admin-only 项对普通用户隐藏，优于跳转后 403） */
   const visibleActions = useMemo(
-    () => getStaticActions(t).filter((a) => !a.adminOnly || isAdmin),
+    () => getStaticActions(t, isAdmin).filter((a) => !a.adminOnly || isAdmin),
     [isAdmin, t],
   );
 
@@ -593,9 +612,12 @@ export default function CommandPalette({
           </Text>
         )}
         {res.status === 'error' && (
-          <Text type="warning" style={{ display: 'block', padding: '4px 8px', fontSize: 12 }}>
-            {t('palette.loadFailed', { group: metaTitle })}
-          </Text>
+          <span style={{ display: 'flex', alignItems: 'center' }}>
+            <Text type="warning" style={{ display: 'block', padding: '4px 8px', fontSize: 12 }}>
+              {t('palette.loadFailed', { group: metaTitle })}
+            </Text>
+            <PaletteRetry onRetry={retrySearch} />
+          </span>
         )}
         {res.status === 'ok' && section.items.length > 0 && (
           <div role="group" aria-label={t('palette.aria.searchResults', { group: metaTitle })}>
@@ -771,6 +793,15 @@ export default function CommandPalette({
         style={{ maxHeight: 380, overflowY: 'auto' }}
       >
         {sections.map(renderSection)}
+        {/* UX-AUDIT：候选池截断告知（tasks 前 50 / executions 前 20），指向完整列表页。 */}
+        <PaletteCandidateTruncation
+          total={totals.task} shown={results.task.items.length}
+          href={`/tasks?q=${encodeURIComponent(kwLower)}`} label={t('palette.viewFullList')}
+        />
+        <PaletteCandidateTruncation
+          total={totals.execution} shown={results.execution.items.length}
+          href={`/executions?q=${encodeURIComponent(kwLower)}`} label={t('palette.viewFullList')}
+        />
         {showGlobalEmpty && (
           <Text type="secondary" style={{ display: 'block', textAlign: 'center', padding: '16px 0', fontSize: 13 }}>
             {t('palette.noResults')}

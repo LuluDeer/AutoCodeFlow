@@ -42,6 +42,7 @@ import {
   TranslationOutlined,
   RobotOutlined,
   FolderOpenOutlined,
+  MailOutlined,
   MoreOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons';
@@ -171,6 +172,9 @@ function buildMenuItems(t: (k: string) => string): MenuEntry[] {
       ],
     },
     { key: '/executions', icon: <HistoryOutlined />, label: t('nav.executions') },
+    // UX-AUDIT：待办收件箱对所有登录用户开放（只读视图），此前只在命令面板可搜到、
+    // 侧栏无入口， ApprovalQueueCard 又把业务用户引到这里 ⇒ 找不到页面。
+    { key: '/inbox', icon: <MailOutlined />, label: t('inbox.title') },
     {
       key: 'g-executors',
       label: t('nav.group.executors'),
@@ -224,11 +228,11 @@ function buildMenuItems(t: (k: string) => string): MenuEntry[] {
   ];
 }
 
-// ADMIN-only 菜单入口：普通用户不渲染（后端对应接口均 @Roles(ADMIN)）
-// R6：/notifications 收紧——GET/PATCH /notification/channels 为 ADMIN-only
-// 第70轮/ADR-044：/artifacts 与 /workbench 下沉为业务人员可见（我的交付物/自然语言工作台），
-// 数据面由后端按归属过滤；/sops、/agent-sessions 管理面仍在 Set 内。
-const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', '/notifications', '/sops', '/agent-sessions', '/capabilities', '/activation-stats']);
+// UX-AUDIT / NAV-UNIFY：ADMIN-only 菜单集合改由共享路由注册表派生，
+// 不再在此手写一份（原手抄列表漏了 inbox 口径、且和 CommandPalette 各自漂移）。
+// 保留常量名与导出形态，既有测试/同仓消费方无需改动。
+import { ADMIN_ONLY_PATHS } from '../routes/route-registry';
+const ADMIN_ONLY_MENU_KEYS: ReadonlySet<string> = ADMIN_ONLY_PATHS;
 
 // F-12（DEEP_REVIEW 0ef3bbe）: 实时时钟提取为独立 memoized 子组件。
 // 此前 setInterval 每秒触发 MainLayout 整棵组件树重渲；现在时钟自管 state
@@ -325,8 +329,7 @@ export default function MainLayout() {
   const [projectOptions, setProjectOptions] = useState<ProjectViewRow[]>([]);
   useEffect(() => {
     let alive = true;
-    projectsApi
-      .list()
+    projectsApi.list()
       .then((rows) => { if (alive) setProjectOptions(rows); })
       .catch(() => { /* 降级：见上注 */ });
     return () => { alive = false; };
@@ -392,9 +395,7 @@ export default function MainLayout() {
     .map((entry) => {
       // 直达一级入口（叶子）原样保留；分组按角色裁掉 ADMIN-only 子项
       if (!('children' in entry)) return entry;
-      const children = isAdmin
-        ? entry.children
-        : entry.children.filter((c) => !ADMIN_ONLY_MENU_KEYS.has(c.key));
+      const children = isAdmin ? entry.children : entry.children.filter((c) => !ADMIN_ONLY_MENU_KEYS.has(c.key));
       return { ...entry, children };
     })
     .filter((entry) => !('children' in entry) || entry.children.length > 0);

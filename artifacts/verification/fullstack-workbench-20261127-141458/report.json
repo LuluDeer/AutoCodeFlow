@@ -1,0 +1,126 @@
+{
+  "generatedAt": "2026-11-27T06:15:48.776Z",
+  "level": "L4-real-browser-real-backend",
+  "branch": "feat/positioning-ux-overhaul",
+  "ports": {
+    "postgres": 15432,
+    "redis": 16379,
+    "api": 3105,
+    "web": 5176
+  },
+  "throwawayDatabase": "autoflow_l4wb_20261127-141458",
+  "commandsAndExitCodes": [
+    "admin-api build+tsc+migration:run :: exit=0",
+    "admin-api health wait :: exit=0",
+    "admin-web vite health wait :: exit=0",
+    "npx playwright test --config=playwright.workbench.config.ts :: exit=0"
+  ],
+  "overallExitCode": 0,
+  "playwright": {
+    "counts": {
+      "passed": 1
+    },
+    "reportPath": "/data/project/AutoCodeFlow/artifacts/verification/fullstack-workbench-20261127-141458/playwright-results.json"
+  },
+  "screenshots": [
+    "/data/project/AutoCodeFlow/artifacts/verification/fullstack-workbench-20261127-141458/workbench-panel-success.png"
+  ],
+  "apiAssertions": {
+    "createdUser": {
+      "id": 2,
+      "username": "l4user_60140228",
+      "role": "user",
+      "via": "POST /api/users (admin token)"
+    },
+    "userLogin": {
+      "username": "l4user_60140228",
+      "gotAccessToken": true,
+      "via": "POST /api/auth/login"
+    },
+    "sidebar": {
+      "snippet": "控制台 自动化 任务 模板 产物库 执行记录 待办收件箱 节点 执行器 应用 应用 注册中心 组织 项目 治理 设置 辅助 工作台",
+      "keys": [
+        "控制台",
+        "自动化",
+        "任务",
+        "模板",
+        "产物库",
+        "执行记录",
+        "待办收件箱",
+        "节点",
+        "执行器",
+        "应用",
+        "应用",
+        "注册中心",
+        "组织",
+        "项目",
+        "治理",
+        "设置",
+        "辅助",
+        "工作台"
+      ]
+    },
+    "palette": {
+      "sopsQueryText": " 操作 新建任务 前往工作台描述需求（业务人员入口） 未找到匹配结果"
+    },
+    "commitSuccessPanel": "确认结果 已存为草稿，需在 SOP 页审阅发布后才执行；当前未执行。 状态：草稿 SOP 编号：13b5ad50-734d-4367-91ba-abcc09fc1c69 标识名：workbench-254e8411 后续步骤：方案卡已提交发布审批，待主管四眼批准 方案已提交审阅，草稿尚未运行；主管批准后您会收到通知，无需前往其他页面。 将用您的草稿启动一个受限的起草会话（不会发布 SOP）。 运行我的草稿",
+    "committedSopId": "13b5ad50-734d-4367-91ba-abcc09fc1c69",
+    "uiSessionId": "b4bc0c63-9549-40cc-b35c-44bee3356269",
+    "uiPanel": {
+      "status": "状态：运行中运行中",
+      "steps": "步骤（0）",
+      "approvals": "审批：0 待处理 / 0 已通过 / 0 已拒绝",
+      "artifacts": "产物（0）",
+      "toolCalls": "工具调用：0 次",
+      "claim": "session created + panel shows real backend state (NOT asserting terminal success)"
+    },
+    "sessionReadback": {
+      "endpoint": "GET /api/workbench/sessions/b4bc0c63-9549-40cc-b35c-44bee3356269",
+      "statusCode": 200,
+      "kind": "sop_authoring",
+      "sessionStatus": "failed",
+      "scope": {
+        "sops": [
+          "13b5ad50-734d-4367-91ba-abcc09fc1c69"
+        ]
+      },
+      "createdBy": "user:2",
+      "expectedCreatedBy": "user:2",
+      "assertions": [
+        "kind===sop_authoring",
+        "scope.sops contains 13b5ad50-734d-4367-91ba-abcc09fc1c69",
+        "createdBy===user:2"
+      ]
+    },
+    "directSopsUrl": {
+      "expected": "RequireAdmin page (403) — acceptable for direct URL; no in-app link led here (asserted earlier)",
+      "observed": "无权访问该页面"
+    }
+  },
+  "steps": [
+    "2026-11-27T06:15:39.990Z Step 1: admin login via real API",
+    "2026-11-27T06:15:40.228Z Step 1: POST /api/users -> l4user_60140228 (role=user)",
+    "2026-11-27T06:15:40.436Z Step 1: created USER id=2",
+    "2026-11-27T06:15:40.641Z Step 2: real browser login as USER",
+    "2026-11-27T06:15:42.054Z Step 2: browser auth user={\"id\":0,\"username\":\"\"}",
+    "2026-11-27T06:15:42.197Z Step 2: assert sidebar menu entries for USER role",
+    "2026-11-27T06:15:43.894Z Step 2: sidebar text snippet: 控制台 自动化 任务 模板 产物库 执行记录 待办收件箱 节点 执行器 应用 应用 注册中心 组织 项目 治理 设置 辅助 工作台",
+    "2026-11-27T06:15:43.934Z Step 2: open command palette with Control+k",
+    "2026-11-27T06:15:44.897Z Step 2: palette(SOP) text:  操作 新建任务 前往工作台描述需求（业务人员入口） 未找到匹配结果",
+    "2026-11-27T06:15:44.968Z Step 3: navigate to /workbench, real preview -> commit",
+    "2026-11-27T06:15:46.474Z Step 3: success panel: 确认结果 已存为草稿，需在 SOP 页审阅发布后才执行；当前未执行。 状态：草稿 SOP 编号：13b5ad50-734d-4367-91ba-abcc09fc1c69 标识名：workbench-254e8411 后续步骤：方案卡已提交发布审批，待主管四眼批准 方案已提交审阅，草稿尚未运行；主管批准后您会收到通知，无需前往其他页面。 将用您的草稿启动一个受限的起草会话（不会发布 SOP）。 运行我的草稿",
+    "2026-11-27T06:15:46.489Z Step 3: committed sopId=13b5ad50-734d-4367-91ba-abcc09fc1c69 (status=draft)",
+    "2026-11-27T06:15:46.489Z Step 4: click 运行我的草稿 (real POST /api/workbench/sessions)",
+    "2026-11-27T06:15:46.687Z Step 4: sessionId=b4bc0c63-9549-40cc-b35c-44bee3356269",
+    "2026-11-27T06:15:46.700Z Step 4: live panel status=\"状态：运行中运行中\"; sections present",
+    "2026-11-27T06:15:46.847Z Step 4: success screenshot -> /data/project/AutoCodeFlow/artifacts/verification/fullstack-workbench-20261127-141458/workbench-panel-success.png",
+    "2026-11-27T06:15:46.847Z Step 5: GET /api/workbench/sessions/b4bc0c63-9549-40cc-b35c-44bee3356269 with USER token",
+    "2026-11-27T06:15:46.867Z Step 5: detail={\"sessionId\":\"b4bc0c63-9549-40cc-b35c-44bee3356269\",\"kind\":\"sop_authoring\",\"status\":\"failed\",\"createdBy\":\"user:2\",\"scope\":{\"sops\":[\"13b5ad50-734d-4367-91ba-abcc09fc1c69\"]},\"title\":\"工作台草稿运行 · workbench-254e8411\",\"stepCount\":1,\"steps\":[{\"seq\":1,\"role\":\"assistant\",\"contentPreview\":null,\"createdAt\":\"2026-11-26T22:15:46.632Z\"}],\"toolCallCount\":0,\"approvals\":{},\"artifacts\":[]}",
+    "2026-11-27T06:15:46.868Z Step 6: direct /sops URL -> RequireAdmin page for USER",
+    "2026-11-27T06:15:47.294Z Step 6: RequireAdmin page shown as expected"
+  ],
+  "gaps": [
+    "Session reached failed status because AI_PROVIDER=disabled / no LLM route or executor in this stack (route_unavailable); no terminal success is asserted by design."
+  ],
+  "logsDir": "/data/project/AutoCodeFlow/artifacts/verification/fullstack-workbench-20261127-141458/logs"
+}

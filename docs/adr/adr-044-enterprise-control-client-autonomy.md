@@ -29,7 +29,12 @@
 - **N26（独立 CLI / 客户端自主）**：CLI 只做"列能力 / 按 agent 挂载 / 启停 / 提交审批"四类命令，不承载工作台 UI、不改 executor-desktop 四页；CLI 与 Workbench 共用同一 capability resolveFor/policy 引擎，CLI scope 可提高普通配置优先级但硬策略由 managed restrict 层先于 CLI 求值；不改造执行器为业务入口（ADR-042）。
 - **N24 P4（进程外隔离）**：进程外 host/IPC 触发条件为"出现第三方不可信能力"或坏版本回退需求，当前一等代码不做；本轮先把 slots/streams 上限收口到配置层与 enforcement 事实，坏版本回退用 N23 disposer 语义，不做非等价 rollback 伪装。
 
-- **N27（客户端形态定位，2026-11-27 operator 明确）**：**只有 desktop 客户端提供工作台 UI，供公司内业务人员使用**；`executor-node` 与 `executor-python` **只做 headless 执行器模式**（注册/心跳/拉取/回调/usage 上报），不承载工作台、不做业务入口。这条把 N26「不把工作台塞进执行器」从 CLI 推广到全部 headless 执行器；后续客户端侧功能规划按此边界——业务人员体验只在 executor-desktop 四页迭代，node/python 只按执行正确性（协议/回调/usage）验收。
+- **N27（客户端形态定位，2026-11-27 operator 明确；同日按已落地实现修订）**：**desktop 客户端提供工作台 UI，供公司内业务人员使用**；`executor-node` 与 `executor-python` **只做 headless 执行器模式**（注册/心跳/拉取/回调/usage 上报），不承载工作台、不做业务入口。这条把 N26「不把工作台塞进执行器」从 CLI 推广到全部 headless 执行器；后续客户端侧功能规划按此边界——node/python 只按执行正确性（协议/回调/usage）验收。**原表述「业务人员体验只在 executor-desktop 四页迭代」已过时**：第 96 轮已交付独立的隔离工作台窗口（`apps/executor-desktop/src/main/workbench-window.ts`，独立 session partition / preload / `/workbench` URL），与四页（status/config/history/apps）并存且隔离；四页本身不变。
+
+## 当前状态（2026-11-27）
+
+- **阶段 A 已交付**：独立工作台 `BrowserWindow` + 隔离 session partition（`persist:acf-workbench`）+ 最小 preload，加载中台 `/workbench` 页面；执行器四页（status/config/history/apps）保持不变。
+- **阶段 B/C 正在实现，尚未完成**：会话内能力（goal → preview → commit → 审批 → 记录）、session manager、工具进程与产物通道仍在落地中，**不宣称已完成**。工作台不以生产级业务人员产品对外承诺。
 
 ## 影响面（后果与代价）
 

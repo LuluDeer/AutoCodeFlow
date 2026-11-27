@@ -92,7 +92,8 @@ describe('UX-07：ADMIN 门控的「加载中 / 加载失败 / 无权限」三�
   it('非管理员（role=user）→ 403，且不显示 profile 错误', () => {
     useAuthStore.setState({ user: { id: 2, username: 'u', role: 'user' } });
     renderGate();
-    expect(screen.getByText('403')).toBeTruthy();
+    // UX-AUDIT：裸「403」jargon 标题已改为自然语言文案
+    expect(screen.getByText(zhDict['requireAdmin.title'])).toBeTruthy();
     expect(screen.queryByText(zhDict['requireAdmin.profileFailTitle'])).toBeNull();
     expect(screen.queryByTestId('admin-content')).toBeNull();
   });

@@ -280,14 +280,16 @@ describe('ADR-045 收件箱发布审批卡', () => {
     await waitFor(() => expect(vi.mocked(loadInbox).mock.calls.length).toBeGreaterThanOrEqual(2));
   });
 
-  it('业务人员（非 ADMIN）只读：卡内连「拒绝」也不出现', async () => {
+  it('业务人员（非 ADMIN）只读：无按钮，且不渲染指向 ADMIN-only 会话页的核对链接', async () => {
     useAuthStore.setState({ user: { id: 3, username: 'dev', role: 'user' } });
     vi.mocked(loadInbox).mockResolvedValue(sections([publishItem()]));
     renderPage();
 
     const card = await screen.findByTestId('inbox-publish-card');
     expect(within(card).queryByRole('button')).toBeNull();
-    expect(within(card).getByTestId('inbox-publish-review')).toBeTruthy();
+    // UX-AUDIT：核对深链指向 /agent-sessions（RequireAdmin）——业务用户点了只会撞 403，
+    // 原测试钉住的是这个死链 bug；现在按角色隐藏，四眼红线说明仍可见。
+    expect(within(card).queryByTestId('inbox-publish-review')).toBeNull();
     expect(within(card).getByTestId('inbox-publish-four-eyes')).toBeTruthy();
   });
 
