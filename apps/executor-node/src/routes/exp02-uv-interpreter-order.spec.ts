@@ -10,7 +10,8 @@
  *   该文案既不含 `解释器 <X.Y> 无法获取` 骨架，也不匹配
  *   `prepareFailureReason` 的解释器规则（那条要求 `No interpreter found` /
  *   `No download found` / `Python downloads are set to manual` /
- *   `解释器…无法获取`），于是落到**最后兜底 `unknown`**。
+ *   `解释器…无法获取`），于是落到**executor 兜底 null**（让位给 admin 文本
+ *   兜底，callback 不设 failureReason）。
  *
  * 后果不是"文案难看"，而是**分类语义丢失**：
  *   · 执行详情页的失败分类、Dashboard 失败榜、重试策略表都以 failureReason 分流；
@@ -33,12 +34,12 @@ const SRC = readFileSync(join(__dirname, 'execute.ts'), 'utf-8');
 const normalize = (s: string) => s.replace(/\s+/g, ' ');
 
 describe('EXP-02 前提：uv 缺失的文案确实**不会**被归到解释器分类', () => {
-  it('resolveUvForExecute 的原文落到 unknown（这正是要避免的结局）', () => {
+  it('resolveUvForExecute 的原文不被归到解释器分类（executor 让位给 admin）', () => {
     // 与 resolveUvForExecute 里 throw 的字符串逐字一致
     const uvMissing =
       'uv is not available on this executor (no UV_BIN, not on PATH, no bundled binary); ' +
       'install uv or use a client build that bundles it';
-    expect(prepareFailureReason(uvMissing)).toBe('unknown');
+    expect(prepareFailureReason(uvMissing)).toBeNull();
   });
 
   it('解释器缺失的文案则正确归类为 interpreter_unavailable', () => {

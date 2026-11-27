@@ -365,8 +365,8 @@
         "usesExecutorDefault": true
       }
     ],
-    "xConsumption": "guard-only",
-    "xConsumptionNote": "任务超时的键名与范围。**运行时零消费**：node 的 routes/execute.ts 与 python 的 routers/execute.py 各自手写解析与校验。测试点（executor-protocol-contract.spec.ts ×2）读它。"
+    "xConsumption": "runtime",
+    "xConsumptionNote": "任务超时的键名与范围。运行时消费点：node `routes/execute.ts` 的 `resolveTaskTimeoutRaw` 手检（0=不限时、其余必须是 1..86400 的整数）与 python `routers/execute.py` 的 accept 手检 + `_resolve_task_timeout`。多键优先级见本文件 `timeoutPrecedence`；两侧共用同一份规范化规则，契约只描述解释规则，不改线缆字段。"
   },
   "failureReason": {
     "$comment": "失败原因**码表**（元数据化，P1-a）+ **分类器**（P1-b）。\n\n## all：码元数据表（唯一事实源）\n改造前是三个 string[]（all / adminInternalOnly / executorReportable）：只能表达「有哪些码」，无法承载「这个码对用户叫什么、谁该动手、执行器能不能上报」。于是同一份语义在三端各写一份：\n  · admin-api task-execution.entity.ts 的 enum ExecutionFailureReason（只有码）\n  · admin-web utils/failure-reason-label.ts 的 FAILURE_REASON_T_KEYS（码→i18n key，手抄）\n  · admin-web locales/{zh,en}.ts 的 execDetail.failure.<x> 与 <x>Hint（码→文案，两处手写）\n现在 all 是唯一码表；adminInternalOnly / executorReportable 降级为它的**机械投影**（scripts/check-failure-reasons.mjs 逐值断言，不是第二份事实源）。\n\n**码值集合与改造前逐字相同（15 个，顺序不变）** ⇒ **不 bump protocolVersion**。依据 versioning.evolutionRules 第 1/2 条：它们约束的是**线缆/载荷形状与语义**的变化。本段是**文档侧元数据**——执行器不上报它、中台不校验它、线上字节一个也没变。故按规则不该 bump。（码值增删改则必须 bump，那由 scripts/check-protocol-breaking.mjs 机械判定，不靠人记。）\n\n字段：code 线缆取值；zh/en 用户可见短标签（与 admin-web locales 逐字一致）；remediationKey 处置提示的 i18n key——**标签 key = 本值去掉尾部 Hint**，故 FAILURE_REASON_T_KEYS 可由本表机械生成；owner 处置责任方（给用户看的「我该找谁」，取值域见 ownerValues）；reportable 执行器是否允许上报（false ⇒ admin 内部专用）。\n\n历史沿革（原 $comment 保留）：全集以 admin 的 ExecutionFailureReason 为准；adminInternalOnly 的取值由 admin 内部（stale sweep 等）写入，**执行器不得上报**——本契约建立前 admin 的 @IsIn 用的是全集，等于允许执行器上报一个语义上只有 admin 才该写的取值；python 侧则完全没有枚举约束，只靠字符串字面量。",
@@ -916,8 +916,8 @@
         ]
       }
     },
-    "xConsumption": "guard-only",
-    "xConsumptionNote": "失败原因码表（all 的元数据）+ 分类器契约（classifiers）。**运行时零消费**：admin-api 的 task-execution.entity.ts 的 enum ExecutionFailureReason 是手抄的；admin-web 的 FAILURE_REASON_T_KEYS 与 locales/{zh,en}.ts 是手抄的；node 的 prepareFailureReason 与 python 的 _refine_failure_reason 各有一份手写正则。本轮把**目标态**写进契约并加上机械守卫，但**运行时切换是下一轮的事**（双轨）。"
+    "xConsumption": "runtime",
+    "xConsumptionNote": "失败原因码表的元数据 + 分类器契约。运行时消费点：admin `apps/admin-api/src/common/failure-classification/failure-patterns.ts` 先做 errorCode 码化优先、no-match 前置、exitCode 非零后置三条非文本判据，再 import `./generated/failure-classifier` 调 `classify(parts, 'admin')`；node `apps/executor-node/src/routes/execute.ts` import `../generated/failure-classifier`，`prepareFailureReason` 经 `asCallbackFailureReason(classify([message], 'executor'))` 把 null/非白名单码让位；python `apps/executor-python/routers/execute.py` import `generated.failure_classifier`，`_refine_failure_reason` 调 `classify([message], 'executor')`，None 时回调省略 failureReason。bwrap 启动失败另走独立日志入口（`runtimeSandboxStartupFailureReason` / `_sandbox_startup_failure_reason`），不承担文本规则职责。"
   },
   "secrets": {
     "$comment": "SEC-02 续（本轮协议 SSOT 补全）：任务级 secrets 的**键名规则**。这是审计确认的向量盲区——键名白名单/保留名拒绝此前只在端侧单测（node secret-env.ts isInjectableSecretName / python secret_env.py is_injectable_secret_name），两侧实现逐条对等但无共享向量，任一侧回退另一侧不知情。**为什么不在 schemas.ExecuteRequest 里闸键名**：非法键的线上语义是「静默跳过并 warn」（一个手滑的键名不该让整个任务跑不起来），不是 400——若把 keyPattern 收进 schema 闸门，派发会从「跳过注入」变成「拒绝执行」，改变线上行为，违背本文件的描述性收编原则。故键名规则以**运行时语义向量**钉在这里：三端契约测试对真实实现逐条断言（node src/__tests__/executor-protocol-contract.spec.ts / python tests/test_executor_protocol_contract.py）。注入语义：合法键按**原名**写进子进程 env（params 仍走 AUTOFLOW_<KEY>，两种读法并存）；值为 null 的键跳过而不写 'None' 字面量；被跳过的键名由调用方记一条 warn。保留名全集 = 执行器注入的任务作用域变量 + 环境白名单透传的宿主变量（ENV_WHITELIST 全集，按大写归一）+ 执行器密钥；另有 AUTOFLOW_ 与 PYTHON 两条**前缀**规则（前者是 params 命名空间，后者是解释器行为开关，执行器必须独占）。",
@@ -3292,8 +3292,8 @@
         "reason": "内嵌 privateIPv4 ⇒ 按 privateIPv4 判 ⇒ 开关**开启**时放行（与 `10.0.0.1` 同档）"
       }
     ],
-    "xConsumption": "guard-only",
-    "xConsumptionNote": "出站地址的 SSRF 拒绝清单。**运行时零消费**：node 的 `routes/execute.ts` 闸门是**字符串级**（两条正则），python 的 `routers/execute.py` 闸门是**真实 DNS 解析**（`_host_is_restricted`）—— 两者对 link-local / CGNAT / unspecified / IPv6 回环给出**相反结论**。本段把它固化为契约事实源；两侧按它实现的接线属 P1b（行为变更批次）。"
+    "xConsumption": "runtime",
+    "xConsumptionNote": "出站地址的 SSRF 拒绝清单，运行时消费：node `src/lib/ssrf-guard.ts`（`assertSafeHttpUrl` / `assertSafeDnsResolution`，从 `generated/protocol-categories` 与 `generated/protocol-metadata-addresses` 读本段类别表/恒拒表）→ `src/git-repo-network-policy.ts`（`assertGitRepoNetworkPolicy[Resolved]`）→ `src/routes/execute.ts` 的 gitRepo / packageUrl 双重闸门（accept 期同步 400 + DNS 预闸，fail-closed）；python `network_policy.py`（`host_safety_verdict` / `validated_addresses`）→ `routers/execute.py` 的 `_validate_git_repo_task` / `_assert_safe_package_url` / `_guard_user_supplied_package_url`。同一 URL 两端同结论；解析失败一律 deny，metadataAddresses 恒拒，开关只放行 privateIPv4。"
   },
   "errorStatusCodes": {
     "$comment": "R2-1/P1a：执行器**拒绝**（4xx）语义的契约化。\n\n## 为什么这一段是契约（而不是框架细节）\n\n`packages/executor-protocol/protocol.json` 的 `schemas.ExecuteRequest` 明写 `required: [\"executionId\",\"task\"]`、`executionId.type = \"string\"` ⇒ **畸形载荷本就违反契约**。但此前 python 侧由 FastAPI 反序列化层给出 **422**（框架默认）、node 侧由手写闸门给出 **400**（契约语义）⇒ 同一非法载荷两台执行器结论不同，admin 侧 `executor.service.ts:5786` 对非 2xx 一律抛错 ⇒ 派发失败归因文本不同。\n\nR2-1/P0 已把 python 侧改为 400（`ExecuteRequestRoute`，经 `route_class_override` **只作用于 `/execute` 一个 route**）。本段把该结论**固化进契约**，使「改回 422」成为可被守卫发现的漂移。",
@@ -3553,8 +3553,8 @@
         "$comment": "0 = 显式不限时；旁键 `timeout: 999999` **不得**导致拒绝。"
       }
     ],
-    "xConsumption": "guard-only",
-    "xConsumptionNote": "timeout 多键并存的优先级。**运行时零消费**：node 的 `resolveTaskTimeoutRaw`（首现键，无声明规则）与 python 的 accept 三键循环（逐键全检）**语义不同** ⇒ 本段固化裁定。两侧改为按本段实现属 P1b（行为变更：python 侧从「逐键全检」改为「只校验选中键」）。"
+    "xConsumption": "runtime",
+    "xConsumptionNote": "timeout 多键并存的优先级，运行时消费：node `routes/execute.ts` 的 `selectTimeoutKey` / `taskForTimeoutProtocolValidation`（手检只判选中键，协议闸只喂规范化副本）与 python `routers/execute.py` accept 段的 `_TIMEOUT_PRECEDENCE` 选中键 + 协议闸前剥掉非选中键的规范化副本。顺序固定 timeoutSeconds > timeout_seconds > timeout；旁键忽略且不校验；选中键非法（含类型错、越界）两端同拒 400。契约是唯一事实源，不依赖 `??` 链的巧合顺序。"
   },
   "callbackLogRetention": {
     "$comment": "R2-1/P1a：执行器回调载荷里**日志**的保留策略 —— 头部/尾部各留多少、超限怎么标。\n\n## 漂移本体（实测）\n\n· **node**（`routes/execute.ts:3032-3033`）= `LOG_HEAD_LIMIT = 500_000` + `LOG_TAIL_LIMIT = 500_000` ⇒ **头 + 尾**各 ~500KB。\n· **python**（`routers/execute.py` 的 `MAX_LOG_MEMORY_CHARS = 10_000_000`）= **只留前 10MB**，之后全部只写文件、不进内存 ⇒ **尾部（错误栈！）永远进不了回调载荷**。\n\n**尾部的诊断价值最高**（异常栈、失败输出几乎总在末尾）⇒ python 现状会把最有价值的部分丢掉。\n\n## 裁定：统一为「头 + 尾各 500KB」\n\n⚠️ 注意区分**两层上限**（R2-1 评估轮已核）：\n  · 本段规定的是**内存里保留多少**（决定回调载荷的**内容**）。\n  · **上报给 admin 的最终长度**由 `CALLBACK_LOG_MAX_LENGTH = 10_000` 控制（两侧同为 10000，node 硬编码、python 可经 `CALLBACK_LOGS_MAX_CHARS` 覆盖）—— 那是**另一段**（`callbackLogRetention.finalCallbackChars`）。",
@@ -3602,8 +3602,8 @@
         "$comment": "**本段的核心向量**：尾部必须被保留 —— python 现状（只留前 10MB）在此向量下丢失。"
       }
     ],
-    "xConsumption": "guard-only",
-    "xConsumptionNote": "回调日志的内存保留策略与截断标记。**运行时零消费**：node 用 `BoundedLogBuffer`（头尾各 500KB）、python 用 `MAX_LOG_MEMORY_CHARS`（只留前 10MB）—— 策略不同。两侧改为按本段实现属 P1b（行为变更）。"
+    "xConsumption": "runtime",
+    "xConsumptionNote": "回调日志的内存保留策略与截断标记，运行时消费：node `routes/execute.ts` 的 `BoundedLogBuffer`（LOG_HEAD_LIMIT / LOG_TAIL_LIMIT 各 500000，`toString` 插 marker）；python `routers/execute.py` 的 `_BoundedLogBuffer`（CALLBACK_LOG_HEAD_CHARS / CALLBACK_LOG_TAIL_CHARS 各 500000）+ `_build_callback_logs` 的 marker。两侧都保留尾部错误，marker 命中 admin 的 LOG_TRUNCATION_MARKER 触发回填；最终上报长度仍由 finalCallbackChars 单独约束。MAX_LOG_MEMORY_CHARS（python 10MB）只是防 OOM 硬上限，与本策略并存。"
   },
   "$schemaVersionNote": "R2-1/P1a：从 1 → 2。\n\n**为什么 bump**：`$schemaVersion` 标识**协议文件自身的形态**（不是线缆版本 —— 线缆版本是 `versioning.currentProtocolVersion`，仍是 9）。本批做了两件事使其形态改变：\n  ① **新增 5 个契约段**（`networkPolicy` / `errorStatusCodes` / `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention`）—— 段的存在与形状属于协议文件的形态。\n  ② **修正 `versioning.xConsumptionNote` 的事实错误**（此前声称 node/python 各手抄一份 `PROTOCOL_SUPPORTED_MIN`，实际该常量只在中台侧存在一处、node 侧只有注释、python 侧没有该常量）。\n\n**为什么不 bump `versioning.currentProtocolVersion`**：本批**不改任何线缆载荷形状** ——\n  · `networkPolicy` / `errorStatusCodes` / `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention` 五段全部是**执行器内部判定规则**的契约化，不是中台↔执行器之间传输的新字段；\n  · `taskFieldAliases` 里的别名是**读取端**的解析规则（载荷里本来就可能出现别名键，admin 侧本来就发 `gitRepo`）⇒ 线缆形状不变；\n  · `timeoutPrecedence` / `callbackLogRetention` 改的是执行器**如何解释**收到的载荷与**如何组装**回调载荷，不是载荷的字段集合。\n⇒ 按本文件 `versioning.evolutionRules`（「新增**可选**字段且旧端可忽略时：仍需 bump protocolVersion」），**本次不满足 bump 条件** —— 没有新增/修改任何线缆字段。\n⇒ 旧执行器收到新协议文件不影响任何行为（执行器不读本文件的新段），**两侧无需同批发布**（P1b 的行为变更批次才需要）。\n\n**R2-1/P1b：2 → 3**。① `networkPolicy.addresses.linkLocal.examples` 补 `fd00:ec2::254`（AWS IPv6 元数据，把此前只在 `$comment` 提到的地址变成**可断言条目**）；② `errorStatusCodes` 新增 `pullPathEquivalent` 段（登记 pull 入口的等价失败形态 —— 此前契约只描述了 HTTP 入口，pull 路径的 failed 回调形态**没有契约位置**，下一个人会以为是漂移）+ 1 条向量。\n**仍不 bump `currentProtocolVersion`**：线缆字段未变（这两项都是判定规则/文档性补全）。\n\n**R2-1/P1b：3 → 4**。`networkPolicy.vectors` 里的 `allow-private-under-switch` **自相矛盾**（`expected: deny` 与 `switch: on` 打架）—— 错的是**向量本身**、不是语义。处置 = **追加**两条自洽向量（`deny-private-under-switch-default` / `allow-private-under-switch-enabled`），**保留原向量不改写**（append-only 纪律），并在其 `$comment` 里显式声明「已被拆分取代」。**仍不 bump `currentProtocolVersion`**：向量是契约侧的判据文档，不改线缆字段。\n\n**R2-1/R5：4 → 5**。两条理由：\n  ① **`networkPolicy.addresses` 新增 `ipv4Mapped` 类**（协议文件形态变化）—— 此前该形态是**契约沉默区**：node 把它一律归 `reserved`（拒）、python 按内嵌 IPv4 判（公网映射放行）⇒ **两侧对同一形态给出相反结论**，且攻击者可用映射形态（`::ffff:169.254.169.254`）绕过整张地址表。新类取「**完全按内嵌 IPv4 判定**」（Lead 裁定 Q-A ①），两侧按它实现 ⇒ 标签 == 语义。\n  ② **`failureReason.all` 与 admin 枚举对齐**——实测**三方集合本就逐值相等**（admin 15 / 契约 15 / py 白名单 12 vs executorReportable 12，双向差为空）⇒ **契约侧零改动**；真正的缺陷在**文档站同步判据的形状假设**（`all.includes(v)` 拿字符串找对象 ⇒ 恒 false ⇒ 33 项 drift），已修判据（见 `packages/docs-site/scripts/sync-check.mjs`）。\n**仍不 bump `currentProtocolVersion`**：① 是**判定规则**的契约化、② 是判据修复 —— **两者都不改任何线缆字段**（`failureReason.all` 的值集合本来就与 admin 枚举一致）。"
 }

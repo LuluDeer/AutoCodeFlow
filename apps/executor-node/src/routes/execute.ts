@@ -13,7 +13,10 @@ import {
   registerDeadLetterCountProvider,
 } from '../scheduler';
 import { loadManifest, mergeTaskWithManifest } from '../manifest';
-import { pushCallback, CallbackFailureReason } from '../callback';
+import {
+  pushCallback,
+  CallbackFailureReason,
+} from '../callback';
 import { noteDispatchAttemptSeq, forgetDispatchAttemptSeq } from '../callback-attemptseq';
 import { gatherArtifacts, artifactsDirFor, ArtifactManifestEntry } from '../artifacts';
 import { getCurrentToken } from '../middleware/auth';
@@ -58,7 +61,10 @@ import {
   ExecuteRequestSchema,
   type ExecuteRequest,
   KillResponseSchema,
+  CallbackPayloadSchema,
 } from '../generated/protocol.schemas';
+// P1-b：失败分类规则本体（三端共用生成物）——executor 侧只消费，不再复写判据。
+import { classify } from '../generated/failure-classifier';
 // R75：渠道判定唯一事实源（与 python `_zip_channel_enabled` 逐条对齐）。
 import { isZipChannelEnabled, readTaskAlias } from '../task-channel';
 // R2-1/P1b·A7：gitRepo 出站地址闸——按协议契约 networkPolicy 实现（见该模块头注）。
@@ -492,24 +498,50 @@ export interface AcceptExecutionOptions {
 }
 
 /**
- * E-02（P2 双端一致性）：任务超时字段的三键别名解析——与 executor-python
- * `_resolve_task_timeout`（routers/execute.py）同构：``timeoutSeconds ??
- * timeout_seconds ?? timeout``，逐键 null 判空而非 or-链（0 = 显式不限时，
- * or-链会把 0 当 falsy 吞掉；同一载荷此前在 python 侧按 timeoutSeconds 生效、
- * 在 node 侧被整体忽略回落 300s 默认——双端行为必须一致）。
+ * E-02 / R2-1·P1b：任务超时字段的多键解析——唯一事实源是契约
+ * `packages/executor-protocol/protocol.json` 的 `timeoutPrecedence`：
+ * `order = [timeoutSeconds, timeout_seconds, timeout]`、`rule = canonical-first`、
+ * `ignoredAliasesAreNotValidated = true`。
  *
- * 返回解析出的原始值（number | null | undefined），调用方接既有语义：
- * 全部缺省 → 回落 config.taskTimeoutSeconds；0 → 不限时；负数/越界/非数值
- * → 既有的 400 校验闸（协议 schema 对 timeoutSeconds/timeout 已有
- * 0..86400 边界，timeout_seconds 无边界，故三键都必须过同一道闸）。
- * 导出供测试固化解析顺序。
+ * 三键同时出现时**正名优先**，旁键被忽略（不校验、不报错、不 warn）。
+ * `null` / `undefined` 视为缺席（0 = 显式不限时，能穿过）。
  */
+const TIMEOUT_PRECEDENCE = ['timeoutSeconds', 'timeout_seconds', 'timeout'] as const;
+
+/** 按契约顺序返回被选中的键；全部缺席返回 undefined。 */
+export function selectTimeoutKey(
+  task: Record<string, unknown> | null | undefined,
+): (typeof TIMEOUT_PRECEDENCE)[number] | undefined {
+  if (task === null || typeof task !== 'object') return undefined;
+  const rec = task as Record<string, unknown>;
+  for (const key of TIMEOUT_PRECEDENCE) {
+    if (rec[key] !== undefined && rec[key] !== null) return key;
+  }
+  return undefined;
+}
+
+/**
+ * 构造**协议闸专用**的规范化任务副本：只保留被选中的 timeout 键，
+ * 其余别名从副本里剥掉。原始 `body.task` 不变（运行时仍按选中键取值），
+ * 这样协议 schema 不会替「根本不会被使用」的旁键做越界/类型校验——
+ * 正是 `timeoutPrecedence.ignoredAliasesAreNotValidated` 的运行时落地。
+ */
+export function taskForTimeoutProtocolValidation<T extends Record<string, unknown>>(
+  task: T,
+): T {
+  const selected = selectTimeoutKey(task);
+  const copy: Record<string, unknown> = { ...task };
+  for (const alias of TIMEOUT_PRECEDENCE) {
+    if (alias !== selected) delete copy[alias];
+  }
+  return copy as T;
+}
+
 export function resolveTaskTimeoutRaw(
   task: Record<string, unknown> | null | undefined,
 ): unknown {
-  if (task === null || typeof task !== 'object') return undefined;
-  const rec = task as Record<string, unknown>;
-  return rec.timeoutSeconds ?? rec.timeout_seconds ?? rec.timeout;
+  const selected = selectTimeoutKey(task);
+  return selected ? (task as Record<string, unknown>)[selected] : undefined;
 }
 
 /**
@@ -821,16 +853,22 @@ export function acceptExecution(
         );
       }
     }
-    // timeout=0 表示不限时（admin 侧 task.entity/scheduler 语义，改动4）——
-    // 仅 null/undefined 才回退默认值；越界与非数值保持原 400 语义。
-    // P2（双端一致性）：三键别名解析 timeoutSeconds ?? timeout_seconds ??
-    // timeout（resolveTaskTimeoutRaw），与 python `_resolve_task_timeout`
-    // 同构——此前只读 task.timeout，admin 若以 camelCase/别名键派发，python
-    // 执行器按声明超时跑、node 执行器却回落默认 300s。
+    // 契约 `timeoutPrecedence`（runtime 消费）：正名优先选中唯一键，旁键忽略
+    // 且不校验。手检只针对选中值：0 = 显式不限时，缺省 = 执行器默认值，
+    // 其余必须是 1..86400 的整数，与 executor-python 的 accept 手检同判。
     const rawTimeout = resolveTaskTimeoutRaw(body.task as Record<string, unknown>);
-    const timeout = rawTimeout === 0 ? 0 : (rawTimeout as number) || config.taskTimeoutSeconds;
-    if (timeout !== 0 && (!Number.isFinite(timeout) || timeout < 1 || timeout > 86_400)) {
-      return reject(400, `无效的任务超时：${timeout}（期望 0（不限时）或 1..86400 秒）`);
+    if (rawTimeout !== undefined && rawTimeout !== null && rawTimeout !== 0) {
+      if (
+        typeof rawTimeout !== 'number' ||
+        !Number.isInteger(rawTimeout) ||
+        rawTimeout < 1 ||
+        rawTimeout > 86_400
+      ) {
+        return reject(
+          400,
+          `无效的任务超时：${String(rawTimeout)}（期望 0（不限时）或 1..86400 秒）`,
+        );
+      }
     }
     // Glue 语言的字符串校验是同步 400 语义（与原实现一致），语言支持性判定
     // 依赖 runtime（可能被 manifest 覆盖），留在后台 prepare。
@@ -843,7 +881,17 @@ export function acceptExecution(
     // 手检的 400 文案更具体且已被既有用例钉住，闸门兜的是它们没覆盖的部分
     // （params/executionId 的类型、task 各字段类型、timeoutSeconds 边界等），
     // 以及「以后往协议里加约束即自动生效」——契约不再依赖某个人记得补手检。
-    const parsed = ExecuteRequestSchema.safeParse(body);
+    // 协议闸门喂**规范化副本**：非选中 timeout 键已剥离，故 schema 不会
+    // 替被忽略的旁键报错（与 python 侧同一份规范化规则）。其余形状约束不变。
+    const validationBody = body.task && typeof body.task === 'object'
+      ? {
+          ...body,
+          task: taskForTimeoutProtocolValidation(
+            body.task as Record<string, unknown>,
+          ),
+        }
+      : body;
+    const parsed = ExecuteRequestSchema.safeParse(validationBody);
     if (!parsed.success) {
       const first = parsed.error.issues[0];
       const where = first.path.length ? first.path.join('.') : '(root)';
@@ -954,7 +1002,8 @@ async function startExecutionInBackground(
   params: Record<string, unknown> | undefined,
   entry: ExecutionEntry,
 ): Promise<void> {
-  const failStart = (message: string, failureReason: CallbackFailureReason, logs?: string) => {
+  const failStart = (message: string, logs?: string) => {
+    const failureReason = prepareFailureReason(message);
     appendLog(executionId, `[prepare] ${message}`);
     writeExecMeta(executionId, {
       executionId,
@@ -966,7 +1015,7 @@ async function startExecutionInBackground(
       executionId,
       status: 'failed',
       errorMessage: truncateCallbackErrorMessage(message),
-      failureReason,
+      ...(failureReason ? { failureReason } : {}),
       logs: truncateCallbackLogs(logs),
       ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
     });
@@ -994,158 +1043,66 @@ async function startExecutionInBackground(
     // 的 TOCTOU 窗口，这里在真正使用前复查一次。
     const guardError = validateExecutionWorkDir(workDir, config.workDir);
     if (guardError) {
-      failStart(guardError, 'unknown');
+      failStart(guardError);
       return;
     }
     await dispatchExecutionToWorker(executionId, body, params, workDir, entry);
   } catch (err) {
-    failStart(err instanceof Error ? err.message : '执行器后台启动失败', 'unknown');
+    failStart(err instanceof Error ? err.message : '执行器后台启动失败');
   }
 }
 
-/** prepare 失败信息的 failureReason 归类（对齐 admin ExecutionFailureReason）：
- *  BUG-10 细化——git 拉取 / 依赖安装 / 运行时缺失拆分为独立分类，便于
- *  统计与告警；未命中细分的获取类错误保持 package_fetch_failed 兜底。
- *  导出供测试固化该映射。
+/**
+ * prepare 失败信息的 failureReason 归类。
  *
- *  WS5（python_task_upload_and_multiversion, CONTRACT.md §3.3-5）：解释器规则
- *  **必须排在 dependency 规则之前**，理由是三条既有规则的正则都很宽：
- *    - uv 对缺失解释器的原文是 `No interpreter found for Python 3.7 in managed
- *      installations, search path, or registry`，对不可下载版本是
- *      `No download found for request: cpython-3.7-<platform>`；我们把
- *      `uv venv` 的失败包装成 `uv venv failed: ...`，一旦先跑 dependency 规则
- *      就会被 `uv pip install failed|...` 家族误吞；
- *    - `No such file or directory`（runtime_missing 规则）也是 `uv venv --python
- *      <失效路径>` 的真实报错形态，会把它错判成 runtime_missing。
- *  两者都是"环境缺东西"，但处置完全不同（装运行时二进制 vs 预填/下载解释器
- *  缓存池），绝不能混为一类。 */
-export function prepareFailureReason(message: string): CallbackFailureReason {
-  // WS5：解释器无法获取——必须最先判定（见上方注释）。
-  //
-  // LANG-ZH-01（面向用户文字中文化）配套：本函数是**执行器侧自己的**分类器，
-  // 与 admin 的 inferFailureReason 各有一份判据（两侧独立发版）。执行器产出的
-  // 用户可见文案已中文化，故每条规则都**英中并列**——只留英文会让新文案全部
-  // 落到 unknown（TIMEOUT/INTERPRETER_UNAVAILABLE 这类语义会退化），只留中文
-  // 则会让存量日志/旧文案失配。与 admin 侧同款纪律。
-  if (
-    /interpreter \d+\.\d+ unavailable|No interpreter found|No download found|Python downloads are set to ['"]?manual|解释器[^\n]{0,20}?(?:无法获取|不可用|不可获得|缺失|找不到)/i.test(
-      message,
-    )
-  ) {
-    return 'interpreter_unavailable';
-  }
-  // LANG-ZH-01 缺口（本轮审计，与 python `_refine_failure_reason` 同款规则）：
-  // **任务执行超时**的结构化归类，必须在 git / dependency 规则**之前**。
-  //
-  // 为什么必须在前面：runProcess 的超时拒绝抛的是
-  // `任务执行超时（${timeoutSec}s）`，但对**阶段预算**超时（uv venv / git
-  // clone）我们拼的是 `uv venv failed: ...` / `git clone failed: ...` —— 一旦
-  // 把泛化的 "timed out" 收进来，`uv venv timed out after 600s` 会被本规则
-  // 抢走，而它语义上是**依赖装不上**（既有用例
-  // 'Dependency installation failed (timeout)' → dependency_install_failed 就
-  // 钉住了这条）。故本规则**只认执行器的任务超时骨架**，不收任何泛化短语。
-  //
-  // 为什么仍要在执行器侧分类（admin 的 inferFailureReason 也会按 /timeout|
-  // 超时/ 兜底）：`timeout` 是唯一会被"用户文案改动"静默摧毁的语义——文案里
-  // 一旦不再出现"超时"二字，admin 就落到 UNKNOWN，用户看到「未知原因」，且
-  // timeout 的可重试语义（RETRYABLE_ERROR_OPTIONS）随之后移。执行器是唯一
-  // 知道自己有无挂超时定时器的一方（timeout=0 = 不限时），结构化上报更诚实。
-  // 判据与 python 侧逐条同形，是两侧**同一份**分类契约。
-  if (/任务执行超时|execution timed out|task execution timed out/i.test(message)) {
-    return 'timeout';
-  }
-  // git clone/fetch/checkout 或 CalledProcessError 形态（node 侧 git 也是子进程）
-  //
-  // 「阶段预算超时」也在本条内：`git fetch timed out after 60s`（runCommand 的
-  // timeout 命中 → 抛裸 Error，无 "failed" 字样）此前落兜底 unknown，而 python
-  // `_refine_failure_reason` 的 `'git'.{0,80}returned non-zero` / git 规则对同
-  // 类文本给出 git_fetch_failed——双端分因漂移。git 阶段超时的语义就是"代码
-  // 拉不下来"（仓库太大/网络慢），处置动作是查仓库与网络，与 timeout（调大任务
-  // 超时）不同，故归 git_fetch_failed。注意本条**必须**在 timeout 规则之后、
-  // 且 timeout 规则不认 "git fetch timed out"（只认任务超时骨架），两条互不侵吞。
-  if (
-    /git (clone|fetch|checkout) failed|git (clone|fetch|checkout) 执行失败|\bgit\b.*returned non-zero|\bgit\b.*\b(clone|fetch|checkout)\b.*fail|git (clone|fetch|checkout)[^\n]{0,20}?(timed out|超时)/i.test(
-      message,
-    )
-  ) {
-    return 'git_fetch_failed';
-  }
-  if (
-    /npm install failed|uv pip install failed|pip install failed|Dependency installation failed|npm install[^\n]{0,10}?失败|uv pip install[^\n]{0,10}?失败|pip install[^\n]{0,10}?失败|依赖安装失败|uv venv[^\n]{0,20}?超时/i.test(
-      message,
-    )
-  ) {
-    return 'dependency_install_failed';
-  }
-  // 双端一致性补口（本轮审计）：`uv venv timed out`（venv 建置**阶段预算**超时，
-  // UV_VENV_TIMEOUT_MS=120s）此前在 node 侧落到兜底 unknown，而 python
-  // `_refine_failure_reason` 的 `uv venv timed out` 规则**一直**归入
-  // dependency_install_failed——同一份 uv 失败文本在两个执行器上分因不同，
-  // admin 的统计与重试白名单随之漂移。阶段预算超时语义是"依赖装不上"
-  // （环境/网络/私有源问题），不是"任务跑太久"，故与 python 同归一类；
-  // **绝不能**并进上面的 timeout 规则（那会把用户指向"调大任务超时"这条
-  // 完全错的处置动作）。单独的 uv venv 规则也覆盖 uv 原文不含 "failed" 的形态。
-  if (/uv venv timed out|uv venv[^\n]{0,20}?超时/i.test(message)) {
-    return 'dependency_install_failed';
-  }
-  if (
-    /spawn .*ENOENT|runtime .*not (supported|available)|executable .*not found|No such file or directory|runtime[^\n]{0,20}?(?:不可用|缺失|未安装|未找到)|不支持的 runtime|unsupported runtime/i.test(
-      message,
-    )
-  ) {
-    return 'runtime_missing';
-  }
-  if (/Invalid npm package name|无效的 npm 包名/i.test(message)) {
-    return 'package_fetch_failed';
-  }
-  // 本轮审计补口：**执行器停机**导致"已领取但尚未 spawn"的执行被终态化。
-  //
-  // 场景：执行器正在优雅停机（SIGTERM / config-reload），prepare 或排队阶段的
-  // 执行从未拿到进程。此前这条消息（`Executor is shutting down before this
-  // execution started` / python 侧 `执行器正在停机，该执行尚未开始`）不带
-  // failureReason，落 admin 的 inferFailureReason 兜底 → UNKNOWN——用户看到
-  // 「未知原因」，而这是一个 100% 已知、且处置动作明确的场景。
-  //
-  // 取值依据：`executor_restart` 在协议里是 **executorReportable**（protocol.json
-  // failureReason 段，adminInternalOnly 只有 stale_recovered / application_missing
-  // / never_dispatched），语义正是"执行器重启导致运行中任务中断"——admin 的标签
-  // （execDetail.failure.executorRestart「执行器重启」）与 runbook（"瞬时中断——
-  // 调度 sweep 已自动重新入队"）都精确匹配这个场景。故**不新增枚举值**，复用既有
-  // 正确取值（用户红线：绝不发明枚举）。
-  //
-  // 位置在 unknown 兜底之前、具体 prepare 规则之后——它与 git/依赖/运行时都无关，
-  // 但必须早于兜底。判据英中并列（停机消息两侧各有一份文案，且执行器独立发版）。
-  if (/shutting down before this execution started|正在停机/i.test(message)) {
-    return 'executor_restart';
-  }
-  // WS5：zip 整包渠道的获取类失败（缺 packageUrl / 下载失败 / 归档被安全闸
-  // 拒绝）归入既有的 package_fetch_failed 兜底桶——它们都是"包没拿到"，
-  // 复用既有分类，不为它们新增枚举值。
-  if (
-    /packageUrl|Package download failed|Unsafe or invalid package archive|压缩包下载失败|压缩包不安全或不合法/i.test(
-      message,
-    )
-  ) {
-    return 'package_fetch_failed';
-  }
-  // P2（双端一致性）：沙箱配置启用但不可用（bwrap 缺失 / 宿主拒绝用户命名
-  // 空间 / 平台不支持）→ sandbox_unavailable。python `_refine_failure_reason`
-  // 末段同款规则（routers/execute.py，SEC-NEW F-1）——同一份失败文本在两个
-  // 执行器上必须归入同一 failureReason，admin 才能区分「任务代码问题」与
-  // 「执行器沙箱配置问题」。放在兜底 unknown 之前、所有具体 prepare 阶段
-  // 规则之后（与 python 的规则次序一致）。
-  if (/task_sandbox|\bsandbox\b|\bbwrap\b/i.test(message)) {
-    return 'sandbox_unavailable';
-  }
-  return 'unknown';
+ * 文本兜底规则本体已收敛到 `../generated/failure-classifier.ts`（三端共用生成物）。
+ * 这里增加一条**结构化码优先**通道：执行器自己抛出的已知产品错误会携带
+ * `executorFailureReason`，由 callback 构造点读出来优先使用；生成物只负责
+ * 文本兜底，二者不混写。
+ *
+ * `null` 仍是阶段语义：执行器不表态，callback **省略** failureReason，交给 admin
+ * 的文本兜底；绝不在这里压成 'unknown'。
+ */
+function asCallbackFailureReason(code: unknown): CallbackFailureReason | null {
+  if (typeof code !== 'string') return null;
+  // 用协议生成物校验，避免执行器写出 CallbackPayload 不接受的枚举值。
+  // 刻意不从 `../callback` 取常量：多份 spec 会替身化该模块，运行时取不到真值。
+  const parsed = CallbackPayloadSchema.shape.failureReason.safeParse(code);
+  return parsed.success ? (parsed.data as CallbackFailureReason) : null;
+}
+
+export function prepareFailureReason(
+  message: string,
+  explicitReason?: unknown,
+): CallbackFailureReason | null {
+  const explicit = asCallbackFailureReason(explicitReason);
+  if (explicit) return explicit;
+  return asCallbackFailureReason(classify([message], 'executor'));
+}
+
+/** 给已知产品错误打上稳定的结构化归因；不改文案，也不碰生成物规则。 */
+function withExplicitFailureReason<E extends Error>(
+  error: E,
+  reason: CallbackFailureReason,
+): E & { readonly executorFailureReason: CallbackFailureReason } {
+  Object.defineProperty(error, 'executorFailureReason', {
+    value: reason,
+    enumerable: false,
+    configurable: true,
+  });
+  return error as E & { readonly executorFailureReason: CallbackFailureReason };
+}
+
+function readExplicitFailureReason(err: unknown): CallbackFailureReason | null {
+  return asCallbackFailureReason(
+    (err as { executorFailureReason?: unknown } | null)?.executorFailureReason,
+  );
 }
 
 /**
  * P2（双端一致性）：运行期失败回调的 failureReason 附件——分类命中才携带，
- * 不命中（'unknown'）不设字段。python `_run_and_callback` 的运行期分支同款
- * 纪律（`_refine_failure_reason` 返回 None 即不设 reason，admin
- * inferFailureReason 兜底）；node 的 prepareFailureReason 以 'unknown' 兜底
- * 是给 prepare 阶段用的，两个调用方不能共用同一种"总是返回值"的形状。
+ * 不命中（契约 executor 兜底 `null`）不设字段，交给 admin 的文本兜底。
+ * python 侧同款纪律（_refine_failure_reason 返回 None 即不设 reason）。
  *
  * P2-11（本轮审计，对齐 executor-python execute.py:546-573 的
  * `_SANDBOX_STARTUP_FAILURE_RE` + `_sandbox_startup_failure_reason`，注释互指）：
@@ -1176,7 +1133,7 @@ export function runtimeSandboxStartupFailureReason(logs: string | undefined): Ca
   return 'sandbox_unavailable';
 }
 
-function withClassifiedFailureReason(
+export function withClassifiedFailureReason(
   message: string,
   logs?: string,
 ): { failureReason: CallbackFailureReason } | Record<string, never> {
@@ -1185,7 +1142,7 @@ function withClassifiedFailureReason(
   const sandboxReason = runtimeSandboxStartupFailureReason(logs);
   if (sandboxReason) return { failureReason: sandboxReason };
   const reason = prepareFailureReason(message);
-  return reason === 'unknown' ? {} : { failureReason: reason };
+  return reason ? { failureReason: reason } : {};
 }
 
 // ---------------------------------------------------------------------------
@@ -1456,16 +1413,18 @@ function venvReuseProblem(
  * 此前只发文本，于是同一类失败在两个执行器上留痕能力不对等（CONTRACT §3.3
  * 要求"全对等"）。
  *
- * 保留 `interpreter <X.Y> unavailable` 消息骨架：`prepareFailureReason` 靠它
- * 把这类失败归到 `interpreter_unavailable`，绝不能因为加了结构化字段而改文案。
+ * callback 主归因走错误对象上的 `executorFailureReason`；消息骨架保留给 admin
+ * 文本兜底与运维日志，不依赖文案改动维持分类。
  */
 export class InterpreterUnavailablePrepareError extends Error {
   readonly snapshot: Record<string, unknown>;
+  readonly executorFailureReason: CallbackFailureReason;
 
   constructor(message: string, snapshot: Record<string, unknown>) {
     super(message);
     this.name = 'InterpreterUnavailablePrepareError';
     this.snapshot = snapshot;
+    this.executorFailureReason = 'interpreter_unavailable';
   }
 }
 
@@ -1808,8 +1767,9 @@ async function resolveUvForExecute(): Promise<string> {
  * `解释器 <X.Y> 无法获取（缓存缺失 + 下载失败：<reason>：<detail>）；` +
  * `候选执行器: <appName>[已缓存: <v1, v2>]`。
  *
- * 两个要点：① 必须保留 `解释器 <X.Y> 无法获取` 骨架——`prepareFailureReason`
- * 靠它把这类失败归到 `interpreter_unavailable`；② 「候选执行器」段不可省，
+ * 两个要点：① 保留 `解释器 <X.Y> 无法获取` 骨架供 admin 兜底与日志检索；
+ * callback 主归因走 `InterpreterUnavailablePrepareError.executorFailureReason`。
+ * ② 「候选执行器」段不可省，
  * 调度侧据此判断该把任务改派到哪台执行器（AC-09b/AC-12a 的消费方读的就是
  * appName + 已缓存版本清单），此前 node 只发 `；已缓存: …`、缺候选执行器段，
  * 同一失败在两侧消息里形状不一致。appName 取 `config.appName`（APP_NAME，
@@ -1889,6 +1849,7 @@ export async function dispatchExecutionToWorker(
       // （原实现经 HTTP 500 反馈，现已 accepted），容量仍由 worker 的
       // onComplete 释放——不留悬挂状态。
       const message = err instanceof Error ? err.message : '任务准备阶段失败';
+      const failureReason = prepareFailureReason(message, readExplicitFailureReason(err));
       appendLog(executionId, `[prepare] ${message}`);
       writeExecMeta(executionId, {
         status: 'failed',
@@ -1899,7 +1860,7 @@ export async function dispatchExecutionToWorker(
         executionId,
         status: 'failed',
         errorMessage: truncateCallbackErrorMessage(message),
-        failureReason: prepareFailureReason(message),
+        ...(failureReason ? { failureReason } : {}),
         // FR-12/AC-12a：解释器类失败附带结构化快照（与 python 侧对等）。
         // admin 把它原样落进 task_executions.result，运维据此判断"池里缺还是
         // 下载失败还是 uv 没装"，不必翻执行器日志。
@@ -1921,12 +1882,13 @@ export async function dispatchExecutionToWorker(
   } catch (err) {
     // 移交失败：worker 不会调用 onComplete，这里负责失败回调 + 释放。
     const message = err instanceof Error ? err.message : '任务入队失败';
+    const failureReason = prepareFailureReason(message);
     appendLog(executionId, `[prepare] ${message}`);
     pushCallback({
       executionId,
       status: 'failed',
       errorMessage: truncateCallbackErrorMessage(message),
-      failureReason: 'unknown',
+      ...(failureReason ? { failureReason } : {}),
       ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
     });
     entry.release();
@@ -2061,10 +2023,13 @@ async function prepareExecution(
       // 绝不静默跑一个空工作目录（那会把"配置缺失"伪装成"脚本报错"）。
       // 只有**确实是** zip 任务（codeSource 显式声明）才会走到这里：歧义分支
       // 本就要求 packageUrl 存在，所以存量 git+applicationId 行不受影响。
-      throw new Error(
-        `application_zip 任务的派发载荷中没有 packageUrl `
-          + `（中台必须附带已解析的 applications.packageUrl）；`
-          + `applicationId=${String(applicationId)}`,
+      throw withExplicitFailureReason(
+        new Error(
+          `application_zip 任务的派发载荷中没有 packageUrl `
+            + `（中台必须附带已解析的 applications.packageUrl）；`
+            + `applicationId=${String(applicationId)}`,
+        ),
+        'package_fetch_failed',
       );
     }
     const zipPath = path.join(workDir, 'package.zip');
@@ -2707,13 +2672,16 @@ async function prepareExecution(
     const nodeTool = (await resolveToolchain()).node;
     // 明确失败，绝不静默回落到裸 `node.exe`：静默回落正是本缺陷的形态——
     // 任务在 spawn 时以 ENOENT 收场，而归因信息只剩一句 ENOENT，没人知道是
-    // "这台机器根本没有 node"。消息骨架写作 `runtime "node" not available`，
-    // 使 prepareFailureReason 命中 runtime_missing（见 :745 的分类规则）。
+    // "这台机器根本没有 node"。消息骨架仍带 runtime 不可用线索供 admin
+    // 文本兜底与日志检索；callback 主归因走随错误携带的显式 `runtime_missing`。
     if (!nodeTool.verified || !nodeTool.path) {
-      throw new Error(
-        '本执行器上 runtime "node" 不可用：' +
-          `${nodeTool.detail ?? '未解析出可用的 node 解释器'} ` +
-          '（请安装 Node.js，或使用可复用其内置 Electron 运行时的桌面客户端）',
+      throw withExplicitFailureReason(
+        new Error(
+          '本执行器上 runtime "node" 不可用：' +
+            `${nodeTool.detail ?? '未解析出可用的 node 解释器'} ` +
+            '（请安装 Node.js，或使用可复用其内置 Electron 运行时的桌面客户端）',
+        ),
+        'runtime_missing',
       );
     }
     // **关键**：source==='self' 时必须置 ELECTRON_RUN_AS_NODE=1，否则 Electron
@@ -2822,11 +2790,12 @@ async function prepareExecution(
           // 诊断包装吞成一次普通 prepare 失败（否则终态回调会重复/错位）。
           if (err instanceof ExecutionCancelledError || entry.aborted) throw err;
           if (err instanceof InterpreterUnavailablePrepareError) {
-            // 最后一环：宿主解释器与 uv 兜底**双双**不可用。消息骨架仍以
-            // `解释器 <X.Y> 无法获取` 开头（→ `prepareFailureReason` 命中
-            // interpreter_unavailable），并把原本只在"宿主解释器缺失"时才出现的
-            // Store stub 诊断**追加**在后面——两类归因都在，运维既能按分类筛出
-            // "该预填池/该改派"的机器，又能看到 Windows 上最常见的那个坑。
+            // 最后一环：宿主解释器与 uv 兜底**双双**不可用。显式结构化码由
+            // `InterpreterUnavailablePrepareError` 继承；消息骨架仍以
+            // `解释器 <X.Y> 无法获取` 开头供 admin 兜底，并把原本只在
+            // "宿主解释器缺失"时才出现的 Store stub 诊断**追加**在后面——
+            // 两类归因都在，运维既能按分类筛出"该预填池/该改派"的机器，又能
+            // 看到 Windows 上最常见的那个坑。
             // 直接 throw 原始错误也满足分类要求，但会把 Store stub 指引丢掉
             // （那条指引是上一轮事故修复的产物，不能因为加了兜底就回归丢失）。
             const message = `${err.message}；${HOST_PYTHON_MISSING_DIAGNOSTIC}`;
@@ -2861,7 +2830,10 @@ async function prepareExecution(
       args = [actualEntrypoint];
     }
   } else {
-    throw new Error(`不支持的 runtime：${actualRuntime}`);
+    throw withExplicitFailureReason(
+      new Error(`不支持的 runtime：${actualRuntime}`),
+      'runtime_missing',
+    );
   }
 
   // Hardening: the entrypoint is resolved against the work dir by every

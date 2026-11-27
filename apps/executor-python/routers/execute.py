@@ -80,6 +80,10 @@ from generated.protocol_schemas import (
     KillResponse as ProtocolKillResponse,
     CallbackPayload as ProtocolCallbackPayload,
 )
+# FR-CLS（失败归因单轨化）：执行器侧分类器只保留**一处事实源**——契约生成物。
+# `classify(parts, 'executor')` 返回码或 None；None = 让位给 admin inferFailureReason，
+# 回调必须省略 failureReason 字段（不能压成 unknown）。
+from generated.failure_classifier import classify as _classify_failure_reason
 # RT-LOG: Import log stream pusher for real-time log streaming
 try:
     from log_stream_pusher import LogStreamPusher
@@ -493,6 +497,30 @@ def _kill_process_tree_sync(proc) -> None:
 _PREPARE_REAP_TIMEOUT_SECONDS = 5.0
 
 
+class _StructuredPrepareTimeout(subprocess.TimeoutExpired):
+    """prepare 阶段超时的结构化载体（git phase / rlimit launcher 显式 catch）。
+
+    两路出口同时保留归因，避免切到契约生成物后丢失这类**执行器已知**的信息：
+
+    * ``failure_reason``：回调构造点直接采用的结构化码（不经文本二次猜测）；
+    * ``__str__`` 前缀：生成物**本来就能识别**的 `git <verb> timed out` 骨架，
+      使 ``_refine_failure_reason(str(exc))`` 仍给出同一码。生成物规则零放宽。
+
+    异常仍是 ``subprocess.TimeoutExpired`` 的子类，既有测试断言（cmd / timeout /
+    "timed out after N seconds" 文案）逐条保持不变。
+    """
+
+    def __init__(self, cmd: list[str], timeout: float,
+                 failure_reason: str, classify_hint: str):
+        super().__init__(cmd, timeout)
+        self.failure_reason = failure_reason
+        self._classify_hint = classify_hint
+
+    def __str__(self) -> str:
+        base = super().__str__()
+        return f'{self._classify_hint}: {base}' if self._classify_hint else base
+
+
 def _run_prepare_cmd(cmd: list[str], limits, *, timeout: float):
     """P2-6 + EXEC-02: 在资源上限下运行一个 prepare 阶段的子进程（git）。
 
@@ -517,10 +545,11 @@ def _run_prepare_cmd(cmd: list[str], limits, *, timeout: float):
     （``lib/run-command.ts`` 的 ``killProcessTree``，git prepare 走
     ``routes/execute.ts`` 的 ``runCommand``）一直是整树杀，此处逐条对齐。
 
-    超时**文案**与 ``subprocess.run`` 的既有形状保持逐字同义
-    （``Command '...' timed out after N seconds``，cmd 是未包装的真实命令），
-    故 ``_refine_failure_reason`` 的既有分类规则（``git…clone/fetch/checkout``
-    → git_fetch_failed，admin 侧兜底 timeout）不受影响。
+    超时**文案**保留 ``subprocess.run`` 的既有形状
+    （``Command '...' timed out after N seconds``，cmd 是未包装的真实命令）；
+    另在显式 catch 处加生成物本就认得的 ``git <verb> timed out`` 前缀并挂上
+    ``failure_reason`` 属性——git phase 超时是执行器已知的结构化归因，
+    切到契约生成物后仍须稳定归 ``git_fetch_failed``（不放宽生成物规则）。
     """
     wrapped = build_launcher_cmd(cmd, limits)
     spawn_kwargs = {} if sys.platform == 'win32' else {'start_new_session': True}
@@ -542,8 +571,13 @@ def _run_prepare_cmd(cmd: list[str], limits, *, timeout: float):
                 proc.pid, _PREPARE_REAP_TIMEOUT_SECONDS,
             )
         # 与 CalledProcessError 分支同款：异常里的 cmd 还原成未包装的真实命令
-        # （launcher 的 argv 是内部实现细节）。
-        raise subprocess.TimeoutExpired(cmd, timeout) from None
+        # （launcher 的 argv 是内部实现细节）。显式 catch 同时挂结构化码与
+        # 生成物可识别的 git <verb> timed out 骨架（契约既有 git phase 超时向量
+        # 同形），两路出口给出同一归因。
+        _verb = next((a for a in cmd if a in ('clone', 'fetch', 'checkout')), None)
+        _hint = f'git {_verb} timed out' if _verb else ''
+        raise _StructuredPrepareTimeout(
+            cmd, timeout, 'git_fetch_failed', _hint) from None
     if proc.returncode != 0:
         # 与改动前逐字同形：cmd 是未包装的真实命令，output/stderr 均为 None
         # （没有 capture，与 subprocess.run 未设 PIPE 时一致）。
@@ -617,166 +651,32 @@ logger = logging.getLogger(__name__)
 
 
 def _refine_failure_reason(message: str) -> Optional[str]:
-    """BUG-10：从 prepare/运行期异常文本归类细粒度 failureReason。
+    """把 prepare/运行期异常文本交给**契约生成物**归类细粒度 failureReason。
 
-    对齐 admin ExecutionFailureReason 与 node 侧 prepareFailureReason 的
-    细化规则：git 拉取 / 依赖安装（uv venv + uv pip install）/ 运行时缺失
-    （uv/git/python 可执行文件不存在）。返回 None 表示不设 reason，交给
-    admin 端 inferFailureReason 兜底（旧语义不变）。
+    入参形态不变：仍是调用方拼好的单个错误串（错误串 / 日志拼接串）。
+    判据本体已收敛到 ``generated/failure_classifier.py`` 的
+    ``classify(parts, 'executor')``——本函数只是一层保持旧调用点的薄适配器，
+    不再持有任何手写正则，避免执行器 / 中台 / node 三份判据各自漂移。
 
-    FR-08（python_task_multiversion）：新增 `interpreter_unavailable` 规则，
-    **必须排在依赖安装规则之前**。理由：解释器池缺版本时 uv 的原文是
-    ``uv venv failed: ... No interpreter found for Python 3.9 ...``——先撞上
-    dependency_install_failed 的正则就被误吞，用户看到"依赖装不上"而不是
-    "解释器取不到"，排查方向直接跑偏（AC-12a）。
+    None 语义（跨切片契约）：executor 阶段"我不知道"，回调**省略**
+    failureReason 字段，由 admin 的 inferFailureReason 兜底；绝不能压成
+    ``unknown`` 上报（那会把 admin 的兜底通道变成假签名）。
+
+    边界：归一是生成物的事（ASCII 小写、astral 折叠、sentinel 补齐）；
+    bwrap 启动失败的日志扫描仍走独立入口 ``_sandbox_startup_failure_reason``，
+    其文案由 run_task 在构造 errorMessage 时优先采用，本函数不重复扫描日志。
     """
     if not message:
         return None
-    # LANG-ZH-01（面向用户文字中文化）配套：本函数是**执行器侧自己的**分类器，
-    # 与 admin 的 inferFailureReason 各有一份判据（两侧独立发版）。执行器产出的
-    # 用户可见文案已中文化，故每条规则都**英中并列**——只留英文会让新文案全部
-    # 落到 None（TIMEOUT/INTERPRETER_UNAVAILABLE 这类语义会退化），只留中文则会让
-    # 存量日志/旧文案失配。与 node prepareFailureReason 同款纪律。
-    lowered = message.lower()
-    if re.search(
-        r"no interpreter found"
-        r"|no download found"
-        r"|interpreter .{0,80}(unavailable|not found)"
-        r"|interpreterunavailable"
-        # WS3 `InterpreterUnavailable.__str__` 的原文形状：
-        #   "Python 3.7 unavailable (not_downloadable): …"（改版前）
-        #   "Python 3.7 不可用（not_downloadable）：…"（LANG-ZH-01 中文化后）
-        # 以及 reason 取值表（CONTRACT.md §3.2 + uv_missing 扩展）。这两条让
-        # 原始异常文本即使没经过执行器的中文包装也能被正确归类。
-        #
-        # ⚠️ LANG-ZH-01 真实缺陷（本轮由执行器测试抓出，勿退回）：
-        # `interpreters.py` 的 `__str__` 中文化后用了**全角括号**「（…）」，
-        # 而本条原先把括号写死为 ASCII `\(…\)` 且只认英文 `unavailable` ——
-        # 于是 `_refine_failure_reason(str(exc))` 对**本仓自己抛出的**异常
-        # 返回 None（落 unknown），直接违背本函数 docstring 的承诺。
-        # 故 reason 支改为**括号无关** + 兼容中英两种骨架；`python \d+…不可用`
-        # 支覆盖裸版本号形态。类型判定 `_is_interpreter_unavailable()` 不受影响
-        # （它按异常类型判），坏的只是这条**字符串兜底**——而兜底正是给
-        # 「异常被包装成字符串后再分类」的路径（execute.py 的两处调用点）用的。
-        r"|python \d+(\.\d+)*( unavailable| not found| 不可用| 未找到)"
-        r"|[（(](not_downloadable|download_failed|download_timeout|mirror_unreachable|corrupt|uv_missing)[）)]"
-        r"|解释器.{0,40}(无法获取|不可用|未找到)",
-        lowered,
-    ):
-        return "interpreter_unavailable"
-    # LANG-ZH-01 缺口（本轮审计）：任务执行超时的**结构化归类**。
-    #
-    # 背景：`run_task` 的超时分支（下方 `except asyncio.TimeoutError`）产出的是
-    # `任务执行超时（600s）`（全角括号、中文），而本函数此前**没有任何 timeout
-    # 规则**——于是执行器自己判定的"超时"落回 None，回调不带 failureReason，
-    # 最终由 admin 的 `inferFailureReason` 按 `/timeout|超时/` 兜底成 TIMEOUT。
-    #
-    # 为什么仍要在这里补：① admin 的兜底是**文本匹配**，而 `timeout` 是唯一
-    # 可以被"用户文案改动"静默摧毁的语义——一旦文案里不再出现"超时"二字
-    # （如改成"执行超过了 {{n}} 秒"），admin 会落到 UNKNOWN，用户看到
-    # 「未知原因」，且 timeout 的可重试语义（RETRYABLE_ERROR_OPTIONS）随之后移。
-    # ② 执行器是**唯一**知道自己有无挂超时定时器的一方（timeout=0 不限时），
-    # 结构化上报比让 admin 猜更诚实——与 node 侧同款纪律（见 node
-    # prepareFailureReason 的 timeout 规则）。
-    #
-    # 位置：**必须在 git / dependency 规则之前**。理由是这两条规则很宽——
-    # 一个 git clone 超时的任务，uv/git 的原文里常同时出现 "timed out" 与
-    # "clone" 字样，后置会让"任务超时"被误吞成 `git_fetch_failed`（用户被
-    # 指引去查仓库地址，而真实成因是超时预算太小）。interpreter_unavailable
-    # 仍排在最前（其原文含 "No interpreter found"，不可能被本条抢走）。
-    #
-    # ⚠️ 判据必须**锚定在"任务本身超时"**，绝不能收任何泛化的 "timed out"：
-    # `uv venv timed out after 600s` / `git fetch timed out` 是**阶段预算**超时，
-    # 语义是"依赖装不上"/"代码拉不下来"，各自有更精确的分类（既有测试
-    # test_refine_failure_reason_dependency_variants 就以
-    # `uv venv timed out after 600s` → dependency_install_failed 钉住了这条）。
-    # 本条只认 `run_task` 自己产出的消息骨架 `任务执行超时（<n>s）`
-    # （execute.py 的 except asyncio.TimeoutError 分支）及其英文对等骨架。
-    if re.search(
-        r"任务执行超时"
-        r"|execution timed out"
-        r"|task execution timed out",
-        lowered,
-    ):
-        return "timeout"
-    # FR-08（zip 渠道）：包下载/体积/安全审查失败。`package_fetch_failed` 本就
-    # 在协议枚举里（executorReportable），此前执行器没有任何路径会产出它。
-    if re.search(
-        r"package download failed"
-        r"|package exceeds the"
-        r"|zip package rejected"
-        r"|packageurl"
-        r"|包下载失败|包体积超过|zip 包未通过安全检查|zip 包渠道不可用",
-        lowered,
-    ):
-        return "package_fetch_failed"
-    if "git" in lowered and (
-        re.search(r"git.{0,40}(clone|fetch|checkout)", lowered)
-        or re.search(r"'git'.{0,80}returned non-zero", lowered)
-    ):
-        return "git_fetch_failed"
-    if re.search(
-        r"uv (pip install|venv) (install )?failed|uv venv timed out|pip install failed"
-        r"|dependency installation failed"
-        r"|uv venv 执行失败|uv pip install 执行失败|uv venv 超时|依赖安装失败",
-        lowered,
-    ):
-        return "dependency_install_failed"
-    if re.search(
-        r"no such file or directory.{0,60}(uv|git|python3?)"
-        r"|spawn .*enoent|runtime.{0,20}not (supported|available)"
-        r"|runtime[^\n]{0,20}(不可用|缺失|未安装|未找到)"
-        # 双端一致性补口（本轮审计）：`不支持的 runtime：<x>`（run_task 的 runtime
-        # 分派兜底，见下方 else 分支）此前落 None → admin 兜底 UNKNOWN。它与
-        # node 侧 `不支持的 runtime：${actualRuntime}` 是**逐字同形**的消息，
-        # node `prepareFailureReason` 同批补入 runtime_missing（两侧必须同判，
-        # 否则同一份载荷在两个执行器上分因不同）。
-        #
-        # 归 runtime_missing 而非 unknown 的依据：枚举里它是"运行时类"环境/配置
-        # 失败，与"声明的 runtime 在这台机器上不可用"同族——处置动作也一致
-        # （改任务 runtime 声明或换执行器），且它在 RETRYABLE_ERROR_OPTIONS 里
-        # 是可选可重试项，用户能按分类筛出来。
-        r"|不支持的 run ?time|unsupported runtime",
-        lowered,
-    ):
-        return "runtime_missing"
-    # 本轮审计补口：**执行器停机**导致"已领取但尚未 spawn"的执行被终态化。
-    #
-    # 主路径是 fail_prepare_stage_executions_on_shutdown 的**显式赋值**（见该
-    # 函数）；本条只覆盖"同一文案经其它路径上报"的情形，与 node
-    # prepareFailureReason 的同名规则逐条同形（两侧同判）。
-    #
-    # 取值 `executor_restart`：它在 protocol.json 里是 executorReportable
-    # （adminInternalOnly 仅 stale_recovered / application_missing /
-    # never_dispatched），admin 标签「执行器重启」+ runbook「瞬时中断——调度
-    # sweep 已自动重新入队」精确匹配本场景。此前不带 reason → admin 的
-    # inferFailureReason 无规则命中（它的 executor_offline 只认"离线/不可用/
-    # 可达"）→ UNKNOWN，用户只能看到「未知原因」。**复用既有枚举值，不新增**。
-    if re.search(r"正在停机|shutting down before", lowered):
-        return "executor_restart"
-    # EXEC-02（审计 P2）：资源限制启动器（task_launcher.py）拒绝启动任务。
-    # 与 bwrap 同族：都是「执行器侧隔离/限制机制在该机器上不可用 → fail-closed
-    # 拒绝运行」——所以复用 `sandbox_unavailable`（枚举里唯一「执行器环境问题
-    # 而非任务代码问题」的 fail-closed 分类），而不是让文案落到 script_error
-    # 把用户引去查自己的脚本。
-    if 'task_launcher' in lowered or '资源限制启动器' in message:
-        return "sandbox_unavailable"
-    # SEC-NEW (F-1): 沙箱配置启用但不可用（bwrap 缺失 / 用户命名空间被禁）。
-    # 独立归类便于 admin 端区分「任务代码问题」与「执行器沙箱配置问题」。
-    if re.search(r"task_sandbox|sandbox|bwrap", lowered):
-        return "sandbox_unavailable"
-    return None
+    return _classify_failure_reason([message], 'executor')
 
 
-# SEC-NEW (F-1) 运行期补口：bwrap 二进制在、但**启动即失败**（宿主禁非特权
-# userns / Docker 默认 seccomp+apparmor 拦 mount）时，子进程 stderr 是唯一证据，
-# 而通用文案「进程以退出码 1 结束」让 `_refine_failure_reason` 无从分类，最终
-# 以 script_error 上报——用户会去查自己的脚本，而不是查宿主前置条件（真机实测：
-# `bwrap: setting up uid map: Permission denied`，证据见
+# SEC-NEW (F-1) 独立日志入口：bwrap 二进制在、但**启动即失败**（宿主禁非特权
+# userns / Docker 默认 seccomp+apparmor 拦 mount）时，子进程 stderr 是唯一证据。
+# 这是**日志扫描专用**字面集，不并入生成物的文本分类规则：只有日志证据能证明
+# 沙箱启动失败；在 TASK_SANDBOX=bwrap 显式启用时才兜底，避免正常任务打印
+# "bwrap" 被误判（真机证据见
 # docs/archive/verifies/verify-2026-10-23-sec07-sandbox-failclosed.md）。
-#
-# 只在 `TASK_SANDBOX=bwrap` 显式启用时兜底：logs 是**任务输出**，正常任务也可能
-# 打印 "bwrap"，沙箱关闭时不得据此改判。
 _SANDBOX_STARTUP_FAILURE_RE = re.compile(
     r"bwrap:\s"
     r"|failed to make / slave"
@@ -3175,31 +3075,20 @@ def accept_execution(
     # req.task 由外层反序列化模型透传，畸形载荷（协议向量）下可能不是
     # dict——手检对非 dict 形态跳过，交给后面的协议闸门以 400 拒收。
     #
-    # R2-1/P1b·A5：**只校验被选中的那个键**（契约 `timeoutPrecedence` 的
-    # `ignoredAliasesAreNotValidated: true` + `rule: "canonical-first"`）。
-    #
-    # 改前（本批之前）：**逐键全校验** —— 三个别名里**任何一个**非零值越界都
-    # 400。而 node 侧是「首现键生效、只校验解析出的那一个」。后果：
-    #   载荷 {"timeoutSeconds": 60, "timeout": 999999}
-    #     · node → 取 60 ⇒ **200**
-    #     · python（改前）→ 第二个键越界 ⇒ **400**
-    # 即一个**根本不会被使用**的旁键能让整个请求被拒 —— 用户改了个无关字段就
-    # 被拒，排查成本极高。
-    #
-    # 改后：按契约的优先级取**第一个存在的键**，只对它做 1..86400 边界校验；
-    # 旁键**忽略且不校验**（不报错、不 warn）。
-    #
-    # 与 node 的差异说明（如实）：node 的 `resolveTaskTimeoutRaw` 是
-    # `rec.timeoutSeconds ?? rec.timeout_seconds ?? rec.timeout`（`??` 链），
-    # 语义上等价于「正名优先」，但它是**巧合产物**而非声明过的规则；契约现在
-    # 把顺序写死（`timeoutPrecedence.order`），两侧都按它实现。
+    # R2-1/P1b·A5 + runtime-parity：**只校验被选中的那个键**（契约
+    # `timeoutPrecedence` 的 `rule: canonical-first` +
+    # `ignoredAliasesAreNotValidated: true`）。第一存在的键获胜，旁键忽略
+    # （不改运行时 task、不校验、不报错、不 warn），两侧同规则。
     _task_for_timeout = req.task if isinstance(req.task, dict) else {}
-    _selected_timeout = None
-    for _timeout_key in _TIMEOUT_PRECEDENCE:
-        _candidate = _task_for_timeout.get(_timeout_key)
-        if _candidate is not None:
-            _selected_timeout = _candidate
-            break
+    _selected_timeout_key = next(
+        (k for k in _TIMEOUT_PRECEDENCE
+         if _task_for_timeout.get(k) is not None),
+        None,
+    )
+    _selected_timeout = (
+        _task_for_timeout.get(_selected_timeout_key)
+        if _selected_timeout_key is not None else None
+    )
     # 0 = 显式不限时（放行）；None/缺省 = 回落执行器默认（放行）。
     if _selected_timeout is not None and _selected_timeout != 0:
         if not isinstance(_selected_timeout, int) or isinstance(_selected_timeout, bool) \
@@ -3298,7 +3187,16 @@ def accept_execution(
         #
         # 注意 `task` 在外层 FastAPI 模型里是 `Dict[str, Any]`，值原样透传，故
         # 这里的 strict 是唯一能拦住 `task.timeoutSeconds: "300"` 的一层。
-        ProtocolExecuteRequest.model_validate(req.model_dump(), strict=True)
+        # 协议闸喂**规范化副本**：非选中 timeout 键已剥掉，schema 不会替
+        # 被忽略的旁键报错（与 node 侧 taskForTimeoutProtocolValidation 同规则）。
+        # 原始 req.task 不变，运行时仍按选中键取值。
+        _validation_payload = req.model_dump()
+        if isinstance(req.task, dict):
+            _validation_payload['task'] = {
+                k: v for k, v in req.task.items()
+                if k not in _TIMEOUT_PRECEDENCE or k == _selected_timeout_key
+            }
+        ProtocolExecuteRequest.model_validate(_validation_payload, strict=True)
     except ValidationError as exc:
         first = exc.errors()[0]
         where = '.'.join(str(p) for p in first['loc']) or '(root)'
@@ -4523,7 +4421,7 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                 # reason（admin inferFailureReason 兜底，旧语义不变）
                 if not result.get('success'):
                     reason = _refine_failure_reason(str(result.get('errorMessage') or ''))
-                    if reason:
+                    if reason is not None:
                         payload['failureReason'] = reason
                 # FR-12/AC-12a（python_task_multiversion）：解释器失败的结构化
                 # 留痕。只有任务侧真的产出了 result（解释器获取失败）才挂上——
@@ -4554,8 +4452,12 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                 if entry is not None and entry.traceparent:
                     payload['traceparent'] = entry.traceparent
                 # BUG-10: prepare 阶段异常（git/venv/pip/uv）细分类
-                reason = _refine_failure_reason(str(exc))
-                if reason:
+                # EXEC-02 / P2-6：prepare 超时等显式 catch 自带结构化码时优先——
+                # 执行器在发生地就知道归因，不让文本二次猜测把它覆盖掉。
+                reason = getattr(exc, 'failure_reason', None)
+                if reason is None:
+                    reason = _refine_failure_reason(str(exc))
+                if reason is not None:
                     payload['failureReason'] = reason
             finally:
                 if entry is not None and entry.slot_released:

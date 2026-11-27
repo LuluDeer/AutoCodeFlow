@@ -1436,9 +1436,11 @@ describe('桌面自包含改造 — cmd 来自 toolchain（单一真值源）', 
     expect(prepared.error).toBeDefined();
     const message = prepared.error.message as string;
     expect(message).toContain('node');
-    // 断言**分类**而非只断言抛错：错误文案必须能被 prepareFailureReason 正确
-    // 归类，否则运维按 runtime_missing 筛"该装运行时的机器"时会漏掉这台。
-    expect(prepareFailureReason(message)).toBe('runtime_missing');
+    // 断言**显式结构化归因**：错误对象必须携带已知产品错误码，callback 据此
+    // 上报 runtime_missing，运维按此筛"该装运行时的机器"时才不会漏掉这台。
+    expect(
+      prepareFailureReason(message, (prepared.error as any).executorFailureReason),
+    ).toBe('runtime_missing');
     const fail = failedCallback();
     expect(fail?.errorMessage).toBe(message);
     expect(fail?.failureReason).toBe('runtime_missing');
@@ -1478,7 +1480,9 @@ describe('桌面自包含改造 — cmd 来自 toolchain（单一真值源）', 
     expect(message).toMatch(/请从 python\.org 安装 Python 3\.8\+/i);
     // 兜底确实针对的是默认版本 3.12，而非某个瞎猜的版本。
     expect(message).toMatch(/解释器 3\.12 无法获取/);
-    expect(prepareFailureReason(message)).toBe('interpreter_unavailable');
+    expect(
+      prepareFailureReason(message, (prepared.error as any).executorFailureReason),
+    ).toBe('interpreter_unavailable');
     expect(failedCallback()?.failureReason).toBe('interpreter_unavailable');
     // 结构化池快照（FR-12/AC-12a）：admin 据此判断"该下载还是该离线预填"。
     expect((failedCallback()?.result as any)?.interpreter?.requested).toBe('3.12');
@@ -1600,7 +1604,9 @@ describe('桌面自包含改造 — cmd 来自 toolchain（单一真值源）', 
     const message = prepared.error.message as string;
     // 必须指向**默认版本**取不到，而不是含糊的 unknown/ENOENT。
     expect(message).toMatch(/解释器 3\.12 无法获取/);
-    expect(prepareFailureReason(message)).toBe('interpreter_unavailable');
+    expect(
+      prepareFailureReason(message, (prepared.error as any).executorFailureReason),
+    ).toBe('interpreter_unavailable');
     const fail = failedCallback();
     expect(fail?.failureReason).toBe('interpreter_unavailable');
     expect((fail?.result as any)?.interpreter?.requested).toBe('3.12');

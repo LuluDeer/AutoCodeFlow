@@ -2235,7 +2235,8 @@ describe('timeout alias parsing (P2 双端一致性)', () => {
     expect(resolveTaskTimeoutRaw({ timeoutSeconds: null, timeout_seconds: 6, timeout: 7 })).toBe(6);
     expect(resolveTaskTimeoutRaw({ timeoutSeconds: null, timeout_seconds: null, timeout: 7 })).toBe(7);
     expect(resolveTaskTimeoutRaw({})).toBeUndefined();
-    expect(resolveTaskTimeoutRaw({ timeoutSeconds: null, timeout_seconds: null, timeout: null })).toBeNull();
+    // 全 null 与缺席同义：没有可解析的正数/0 键 ⇒ undefined（走执行器默认超时）。
+    expect(resolveTaskTimeoutRaw({ timeoutSeconds: null, timeout_seconds: null, timeout: null })).toBeUndefined();
     expect(resolveTaskTimeoutRaw(null)).toBeUndefined();
     expect(resolveTaskTimeoutRaw(undefined)).toBeUndefined();
     // 0 能穿过（显式不限时）——or-链会把 0 当 falsy 吞掉

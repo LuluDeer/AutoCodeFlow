@@ -100,14 +100,16 @@ describe("派发路径 vs 回调路径：归因等值（H-1 / H-2 防回归）",
       "Traceback (most recent call last):\n  File \"main.py\", line 1\nModuleNotFoundError: No module named 'requests'",
       ExecutionFailureReason.PACKAGE_FETCH_FAILED,
     ],
+    // 协议目标态（CLS-09）：安装失败已有细粒度码，admin 文本分支切到生成物后
+    // 不再被旧的宽口径 package_fetch_failed 接走。
     [
       "npm install failed with exit code 1",
-      ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+      ExecutionFailureReason.DEPENDENCY_INSTALL_FAILED,
     ],
     ["git clone 失败：认证被拒绝", ExecutionFailureReason.PACKAGE_FETCH_FAILED],
     [
       "依赖安装失败：pip install 返回非零",
-      ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+      ExecutionFailureReason.DEPENDENCY_INSTALL_FAILED,
     ],
     // ── 规则顺序的偏序（改顺序 = 改语义，见 failure-patterns 头注） ────
     [

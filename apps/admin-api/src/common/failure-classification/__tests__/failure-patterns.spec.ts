@@ -140,9 +140,11 @@ describe("classifyFailure —— 失败归因的唯一裁决入口", () => {
 
     // ── ⑥ package_fetch_failed（含 module not found —— 历史分叉点） ────
     {
-      name: "依赖安装失败（npm install）",
+      // 协议目标态（contract.json 向量 dep-npm-install-failed）：安装失败走
+      // dependency_install_failed，不再被旧的宽口径 package_fetch_failed 接走。
+      name: "依赖安装失败（npm install）—— 协议生成物细粒度归因",
       errorMessage: "npm install failed with exit code 1",
-      expected: ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+      expected: ExecutionFailureReason.DEPENDENCY_INSTALL_FAILED,
     },
     {
       // ⚠️ 这条是**真分叉点**：此前**派发路径**的 PACKAGE_FETCH 正则不含

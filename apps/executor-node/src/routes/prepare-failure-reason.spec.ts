@@ -1,7 +1,62 @@
 /**
  * BUG-10: prepare 失败分类细化——git 拉取 / 依赖安装 / 运行时缺失独立分类。
+ *
+ * P1-b：规则本体已收敛到 `../generated/failure-classifier.ts`，本文件从
+ * `packages/contract-fixtures/contract.json` 读同一批向量，钉住
+ * `classify(parts, 'executor')`、wrapper 与生成物三者的逐字一致。
  */
-import { prepareFailureReason } from './execute';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { config } from '../config';
+import { classify } from '../generated/failure-classifier';
+import {
+  prepareFailureReason,
+  runtimeSandboxStartupFailureReason,
+  withClassifiedFailureReason,
+} from './execute';
+
+interface FailureVector {
+  id: string;
+  parts: string[];
+  expected: {
+    executor: string | null;
+    admin: string;
+  };
+}
+
+const CONTRACT = JSON.parse(
+  readFileSync(
+    join(__dirname, '../../../../packages/contract-fixtures/contract.json'),
+    'utf8',
+  ),
+) as { failureClassification: { vectors: FailureVector[] } };
+const VECTORS = CONTRACT.failureClassification.vectors;
+
+function vectorById(id: string): FailureVector {
+  const vector = VECTORS.find((v) => v.id === id);
+  if (!vector) throw new Error(`contract vector ${id} missing`);
+  return vector;
+}
+
+function messageOf(vector: FailureVector): string {
+  return vector.parts.join('\n');
+}
+
+/** 一条契约向量同时断言 classify 两端结果、prepare 同码与 wrapper 的 null 语义。 */
+function expectVectorBehavior(vector: FailureVector): void {
+  const message = messageOf(vector);
+  expect(classify(vector.parts, 'executor')).toBe(vector.expected.executor);
+  expect(classify(vector.parts, 'admin')).toBe(vector.expected.admin);
+  // 非 null 同码；executor 让位（null）时 prepareFailureReason 也必须是 null，
+  // 绝不压成 'unknown'。
+  expect(prepareFailureReason(message)).toBe(vector.expected.executor);
+  const wrapped = withClassifiedFailureReason(message);
+  if (vector.expected.executor === null) {
+    expect(wrapped).toEqual({});
+  } else {
+    expect(wrapped).toEqual({ failureReason: vector.expected.executor });
+  }
+}
 
 describe('prepareFailureReason (BUG-10 refinement)', () => {
   it('classifies git clone/fetch/checkout failures as git_fetch_failed', () => {
@@ -29,9 +84,9 @@ describe('prepareFailureReason (BUG-10 refinement)', () => {
     expect(prepareFailureReason('runtime not supported on this executor')).toBe('runtime_missing');
   });
 
-  it('keeps package-name validation in package_fetch_failed and unknown as the fallback', () => {
+  it('keeps package-name validation in package_fetch_failed and null as the fallback', () => {
     expect(prepareFailureReason('Invalid npm package name')).toBe('package_fetch_failed');
-    expect(prepareFailureReason('manifest merge blew up')).toBe('unknown');
+    expect(prepareFailureReason('manifest merge blew up')).toBeNull();
   });
 
   it('orders rules: git-specific wins over the generic package bucket', () => {
@@ -42,12 +97,8 @@ describe('prepareFailureReason (BUG-10 refinement)', () => {
 /**
  * LANG-ZH-01 缺口（本轮审计）：**任务超时**的结构化分类。
  *
- * 此前 node 侧没有任何 timeout 规则——`runProcess` 的超时拒绝抛
- * `任务执行超时（${n}s）`，经 `withClassifiedFailureReason` 落到 unknown →
- * **不设** failureReason → admin 按 /timeout|超时/ 文本兜底。执行器是唯一知道
- * 自己有无挂超时定时器的一方（timeout=0 = 不限时），结构化上报更诚实，且不
- * 依赖用户文案里恰好还留着"超时"二字（文案一改，分类静默失效，timeout 的
- * 可重试语义随之后移）。
+ * 执行器不命中时返回 null（交给 admin 兜底），不再返回 'unknown'；但命中
+ * 任务超时骨架时必须结构化上报 timeout，不让文案改动静默抹掉可重试语义。
  */
 describe('prepareFailureReason — timeout（本轮审计新增）', () => {
   it('classifies the executor\'s own task-timeout message (zh + en)', () => {
@@ -176,9 +227,10 @@ describe('prepareFailureReason — interpreter_unavailable (WS5)', () => {
   });
 
   it('does not fire on unrelated messages that merely mention Python', () => {
-    expect(prepareFailureReason('Python script exited with code 1')).toBe('unknown');
+    expect(prepareFailureReason('Python script exited with code 1')).toBeNull();
+    // ModuleNotFoundError 走 package_fetch_failed（生成物规则 80），不是脚本错误。
     expect(prepareFailureReason('Traceback: ModuleNotFoundError: No module named requests')).toBe(
-      'unknown',
+      'package_fetch_failed',
     );
   });
 });
@@ -234,5 +286,80 @@ describe('prepareFailureReason — sandbox_unavailable (P2 parity)', () => {
         'uv venv failed: error: No interpreter found for Python 3.7; bwrap also missing',
       ),
     ).toBe('interpreter_unavailable');
+  });
+});
+
+describe('failure-classifier 生成物 / contract.json 单一事实源（executor-node）', () => {
+  for (const vector of VECTORS) {
+    it(`${vector.id}: classify + prepareFailureReason + wrapper 与契约逐字一致`, () => {
+      expectVectorBehavior(vector);
+    });
+  }
+
+  it('script_error：Traceback 命中脚本错误码', () => {
+    expectVectorBehavior(vectorById('script-traceback'));
+  });
+
+  it('application_missing_defer：executor 让位（null），admin 仍归 application_missing', () => {
+    const vector = vectorById('app-missing');
+    expectVectorBehavior(vector);
+    expect(vector.expected.executor).toBeNull();
+    expect(classify(vector.parts, 'admin')).toBe('application_missing');
+  });
+
+  it('git/dependency timeout：阶段预算超时不被任务超时规则抢走', () => {
+    expectVectorBehavior(vectorById('git-phase-timeout'));
+    expectVectorBehavior(vectorById('dep-uv-venv-timeout'));
+  });
+
+  it('invalid npm package：归 package_fetch_failed', () => {
+    expectVectorBehavior(vectorById('pkg-invalid-npm-name'));
+  });
+
+  it('窄 runtime：No such file or directory 只在紧跟 uv/git/python 时归 runtime_missing', () => {
+    expectVectorBehavior(vectorById('runtime-no-such-file-uv'));
+  });
+
+  it('fallback：executor 不命中返回 null，wrapper 省略 failureReason（绝不压成 unknown）', () => {
+    expectVectorBehavior(vectorById('fallback-unknown-text'));
+    expectVectorBehavior(vectorById('fallback-empty'));
+  });
+});
+
+describe('prepareFailureReason：显式结构化码优先，生成物只做文本兜底', () => {
+  it('显式码优先于文本分类结果', () => {
+    expect(prepareFailureReason('Traceback', 'script_error')).toBe('script_error');
+    expect(prepareFailureReason('manifest merge blew up', 'package_fetch_failed')).toBe(
+      'package_fetch_failed',
+    );
+  });
+
+  it('显式码缺省/让位时仍走生成物，null 不压成 unknown', () => {
+    expect(prepareFailureReason('Traceback')).toBe('script_error');
+    expect(prepareFailureReason('some entirely unrelated failure text', null)).toBeNull();
+    expect(prepareFailureReason('some entirely unrelated failure text')).toBeNull();
+  });
+});
+
+describe('runtimeSandboxStartupFailureReason：bwrap 日志入口独立且优先', () => {
+  const originalTaskSandbox = config.taskSandbox;
+  const bwrapLogs = 'bwrap: setting up uid map: permission denied';
+
+  afterEach(() => {
+    config.taskSandbox = originalTaskSandbox;
+  });
+
+  it('TASK_SANDBOX=bwrap 时日志命中优先于 message-only 分类', () => {
+    config.taskSandbox = 'bwrap';
+    expect(runtimeSandboxStartupFailureReason(bwrapLogs)).toBe('sandbox_unavailable');
+    expect(withClassifiedFailureReason('进程以退出码 1 结束', bwrapLogs)).toEqual({
+      failureReason: 'sandbox_unavailable',
+    });
+  });
+
+  it('沙箱未启用时同样的日志不参与归因', () => {
+    config.taskSandbox = '';
+    expect(runtimeSandboxStartupFailureReason(bwrapLogs)).toBeNull();
+    expect(withClassifiedFailureReason('进程以退出码 1 结束', bwrapLogs)).toEqual({});
   });
 });

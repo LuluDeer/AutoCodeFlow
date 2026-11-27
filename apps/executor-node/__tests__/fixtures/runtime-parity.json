@@ -1,0 +1,34 @@
+{
+  "$comment": "executor-node / executor-python 共享运行时一致性向量。两份文件（apps/executor-node/__tests__/fixtures/runtime-parity.json 与 apps/executor-python/tests/fixtures/runtime-parity.json）必须逐字节相同；任一端修改都要同步。语义来源：packages/executor-protocol/protocol.json 的 networkPolicy / timeoutPrecedence / callbackLogRetention。",
+  "urlVectors": [
+    { "name": "deny-cloud-metadata", "url": "http://169.254.169.254/latest/meta-data/", "expected": "deny", "switch": "off" },
+    { "name": "deny-ipv6-loopback", "url": "http://[::1]/x.git", "expected": "deny", "switch": "off" },
+    { "name": "deny-unspecified", "url": "http://0.0.0.0/x.git", "expected": "deny", "switch": "off" },
+    { "name": "deny-cgnat", "url": "http://100.64.0.1/x.git", "expected": "deny", "switch": "off" },
+    { "name": "deny-private-default", "url": "http://10.0.0.1/x.git", "expected": "deny", "switch": "off" },
+    { "name": "allow-private-under-switch-enabled", "url": "http://10.0.0.1/x.git", "expected": "allow", "switch": "on" },
+    { "name": "deny-loopback-hostname", "url": "http://localhost/x.git", "expected": "deny", "switch": "off" },
+    { "name": "allow-public", "url": "http://8.8.8.8/x.git", "expected": "allow", "switch": "off" },
+    { "name": "deny-ipv4-mapped-cloud-metadata", "url": "http://[::ffff:169.254.169.254]/x.git", "expected": "deny", "switch": "off" },
+    { "name": "allow-ipv4-mapped-public", "url": "http://[::ffff:8.8.8.8]/x.git", "expected": "allow", "switch": "off" }
+  ],
+  "dnsVectors": [
+    { "name": "dns-resolves-to-metadata-denied", "host": "metadata.example.test", "addresses": ["169.254.169.254"], "expected": "deny" },
+    { "name": "dns-resolves-to-public-allowed", "host": "public.example.test", "addresses": ["8.8.8.8"], "expected": "allow" },
+    { "name": "dns-resolution-failure-denied", "host": "no-answer.example.test", "addresses": [], "expected": "deny" }
+  ],
+  "timeoutVectors": [
+    { "name": "canonical-only", "task": { "timeoutSeconds": 60 }, "selected": "timeoutSeconds", "effective": 60, "expectedStatus": 200 },
+    { "name": "canonical-wins-over-alias", "task": { "timeoutSeconds": 60, "timeout_seconds": 120 }, "selected": "timeoutSeconds", "effective": 60, "expectedStatus": 200 },
+    { "name": "alias-used-when-canonical-absent", "task": { "timeout_seconds": 120 }, "selected": "timeout_seconds", "effective": 120, "expectedStatus": 200 },
+    { "name": "legacy-used-as-last-resort", "task": { "timeout": 300 }, "selected": "timeout", "effective": 300, "expectedStatus": 200 },
+    { "name": "ignored-alias-out-of-range-does-not-reject", "task": { "timeoutSeconds": 60, "timeout": 999999 }, "selected": "timeoutSeconds", "effective": 60, "expectedStatus": 200 },
+    { "name": "selected-out-of-range-rejects", "task": { "timeoutSeconds": 999999 }, "selected": "timeoutSeconds", "expectedStatus": 400 },
+    { "name": "zero-means-unlimited", "task": { "timeoutSeconds": 0, "timeout": 999999 }, "selected": "timeoutSeconds", "effective": 0, "expectedStatus": 200 },
+    { "name": "conflicting-alias-selected-by-precedence", "task": { "timeoutSeconds": 60, "timeout_seconds": 999999, "timeout": -1 }, "selected": "timeoutSeconds", "effective": 60, "expectedStatus": 200 }
+  ],
+  "logVectors": [
+    { "name": "short-output", "inputChars": 1000, "tailProbe": "FINAL-ERROR-LINE", "expectedTruncated": false, "expectedHeadContains": "START", "expectedTailContainsProbe": true },
+    { "name": "over-limit-keeps-both-ends", "inputChars": 2000000, "tailProbe": "FINAL-ERROR-LINE", "expectedTruncated": true, "expectedHeadContains": "START", "expectedTailContainsProbe": true }
+  ]
+}
