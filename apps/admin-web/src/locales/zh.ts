@@ -239,6 +239,7 @@ export default {
   'dashboard.cockpit.cost.amount': '折算金额：{{value}}',
   'dashboard.cockpit.cost.unavailable': '成本金额不可用（未折算）',
   'dashboard.cockpit.cost.detail': '原因：{{reason}}。{{note}}',
+  'dashboard.cockpit.cost.window': '统计口径：最近 30 天',
   // 成本原因码（后端 PriceReason 五种值）；未知码由 costReasonLabel（utils/cost-reason-label.ts）原样回退，不进字典。
   'costReason.OK': '已折算',
   'costReason.NO_TOKEN_SAMPLE': '无 token 样本',

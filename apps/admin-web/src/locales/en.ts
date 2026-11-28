@@ -232,6 +232,7 @@ export default {
   'dashboard.cockpit.cost.amount': 'Converted amount: {{value}}',
   'dashboard.cockpit.cost.unavailable': 'Cost amount unavailable (not converted)',
   'dashboard.cockpit.cost.detail': 'Reason: {{reason}}. {{note}}',
+  'dashboard.cockpit.cost.window': 'Window: last 30 days',
   // Cost reason codes (the five backend PriceReason values); unknown codes are
   // passed through verbatim by costReasonLabel (utils/cost-reason-label.ts) and are not listed here.
   'costReason.OK': 'Converted',
