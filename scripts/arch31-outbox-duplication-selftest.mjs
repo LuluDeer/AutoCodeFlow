@@ -457,13 +457,21 @@ async function main() {
   // ── [5] 制造 N 个派发失败终态执行（无执行器在线 → BUG-21 修复后发 execution.failed）
   const task = await api(PORT_A, tokenA, 'POST', '/api/tasks', {
     name: `arch31-dup-${STAMP}`,
+    // TASKCORE-STATUS-01：create 缺省 status=paused。B-11 会让 PAUSED 任务的
+    // PENDING 执行在 TaskProcessor 里直接跳过派发（实测日志：「is queued but
+    // the task is not ACTIVE — skipping dispatch (B-11)」），于是 execution.failed
+    // 根本不会 emit，outbox 恒 0 行、两订阅各 0 条。本套件要验的是「派发失败
+    // 终态 → 出站事件 → outbox → 双实例补投」链，必须显式 ACTIVE；triggerType
+    // 仍是 manual，不会被调度器自动触发。
+    status: 'active',
     triggerType: 'manual',
     runtime: 'node',
     entrypoint: 'main.js',
     maxRetry: 0,
   });
   const taskId = task.body?.id;
-  ok('测试任务创建成功（maxRetry=0，无执行器 → 派发失败即终态）', task.status === 201 && !!taskId,
+  ok('测试任务创建成功（status=active + maxRetry=0，无执行器 → 派发失败即终态）',
+    task.status === 201 && !!taskId && task.body?.status === 'active',
     `status=${task.status} body=${JSON.stringify(task.raw)?.slice(0, 200)}`);
   if (!taskId) return summary();
 
