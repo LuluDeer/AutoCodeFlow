@@ -291,7 +291,7 @@ create task
 | **Alerting** | WeCom, DingTalk, Slack webhooks, SMTP email; rules, silences, HMAC-signed webhooks |
 | **Security** | Project-scoped RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs, two-person deploy approval, optional bubblewrap sandbox for Python tasks (secure overlay) |
 | **AI** | OpenAI / Ollama / Qwen for failure root-cause analysis, schedule suggestions and app health checks; MCP server for agents |
-| **Tooling** | `acf` CLI (69 subcommands), Node/Python SDKs, MCP server (63 tools), VitePress docs site |
+| **Tooling** | `acf` CLI (74 subcommands), Node/Python SDKs, MCP server (63 tools), VitePress docs site |
 
 ## 🚀 Quick start
 

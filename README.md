@@ -322,7 +322,7 @@ create task
 | **Alerting** | WeCom, DingTalk, Slack webhooks, SMTP email; rules, silences, HMAC-signed webhooks |
 | **Security** | Project-scoped RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs, two-person deploy approval, optional bubblewrap sandbox for Python tasks (secure overlay) |
 | **AI** | OpenAI / Ollama / Qwen for failure root-cause analysis, schedule suggestions and app health checks; MCP server for agents |
-| **Tooling** | `acf` CLI (69 subcommands), Node/Python SDKs, MCP server (63 tools), VitePress docs site |
+| **Tooling** | `acf` CLI (74 subcommands), Node/Python SDKs, MCP server (63 tools), VitePress docs site |
 
 ## 🚀 Quick start
 
@@ -881,7 +881,7 @@ flowchart LR
 | **告警通知** | 企业微信、钉钉、Slack Webhook、SMTP 邮件；规则、静默期、HMAC 签名校验 |
 | **安全** | RBAC（项目级角色）、作用域 API Key、TOTP 双因子、OIDC SSO、审计日志、部署第二人审批、Python 任务可选 bubblewrap 沙箱（secure overlay） |
 | **AI** | OpenAI / Ollama / Qwen：失败根因分析、调度建议、应用健康分析；MCP Server 让 Agent 直接管理任务 |
-| **交付** | `acf` CLI（69 个子命令）、Node/Python 双 SDK、MCP Server（63 个工具）、VitePress 文档站 |
+| **交付** | `acf` CLI（74 个子命令）、Node/Python 双 SDK、MCP Server（63 个工具）、VitePress 文档站 |
 
 ## 🚀 快速开始
 
