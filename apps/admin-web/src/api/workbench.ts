@@ -99,6 +99,33 @@ export function commitPlan(input: CommitPlanInput): Promise<CommitResult> {
 }
 
 /**
+ * 切片 E1（workbench→SOP 直连）：把一个 commit 锚定的工作台会话转写为
+ * 业务人名下的新 SOP 草稿（POST /api/workbench/sessions/:id/convert-to-sop）。
+ *
+ * goal/cardHash 由后端从会话 contextJson 读取（commit 锚点）；这里只回带
+ * preview 时的 cadence/params，服务端确定性重建方案卡并校验未漂移。
+ * 审批未 consumed → 409 `WORKBENCH_CONVERT_APPROVAL_NOT_CONSUMED`；
+ * 卡漂移 → 409 `WORKBENCH_CONVERT_CARD_DRIFT`；无 commit 锚点 →
+ * 409 `WORKBENCH_CONVERT_NO_COMMIT`。返回类型刻意内联（generated schema
+ * 未更新前不引入 generated 依赖，与 chat-session 系列同口径）。
+ */
+export function convertSessionToSop(
+  sessionId: string,
+  input: { cadence: WorkbenchCadence; params?: Record<string, string> },
+): Promise<{
+  slug: string;
+  sopId: string;
+  status: 'draft';
+  published: boolean;
+  deeplink: string;
+}> {
+  return client.post(
+    `/workbench/sessions/${encodeURIComponent(sessionId)}/convert-to-sop`,
+    input,
+  );
+}
+
+/**
  * UX-AUDIT / Writer B 会话切片：创建「受限 SOP 起草会话」。
  * 契约 = admin-api `CreateWorkbenchSessionDto` / `WorkbenchSessionCreateResponseDto`，
  * 由 openapi.json → api-types.ts 生成链派生（禁止手写顶层类型，web-type-drift 棘轮）。

@@ -1,9 +1,10 @@
 /**
  * Legacy plan preview/commit/run flow, retained for existing behavior and
  * test contracts. Kept as a separate component so WorkbenchPage stays focused
- * on the 3-pane shell. All props are injected by the page; no new i18n keys or
- * test IDs are introduced here.
+ * on the 3-pane shell. Own i18n keys/test IDs are unchanged; the slice-E1
+ * convert CTA arrives as a ready-made `convertAction` node from the page.
  */
+import type { ReactNode } from 'react';
 import type { PreviewPlanResult, WorkbenchCadence } from '../../api/workbench';
 import { Alert, Button, Input, Select, Space } from 'antd';
 import { useTranslation } from 'react-i18next';
@@ -41,6 +42,8 @@ export interface LegacyFlowProps {
   approvalStatus: Parameters<typeof WorkbenchSubmitSection>[0]['approvalStatus'];
   approvalKey: string;
   isAdmin: boolean;
+  /** 切片 E1：convert CTA 节点（页面已包好 i18n/条件渲染），塞进 submitted 卡的 sessionAction 插槽。 */
+  convertAction?: ReactNode;
   error: string | null;
   previewing: boolean;
   handlePreview: () => void;
@@ -61,7 +64,7 @@ export interface LegacyFlowProps {
 export default function LegacyFlow({
   goal, setGoal, cadence, setCadence, paramText, setParamText,
   result, canConfirm, committing, commitError, handleConfirm,
-  commitResult, approvalStatus, approvalKey, isAdmin,
+  commitResult, approvalStatus, approvalKey, isAdmin, convertAction,
   error, previewing, handlePreview, records,
   sessionError, startingSession, sessionId, session, activeAnchor, startSession,
   sessions, sessionsState, sessionsError, restoreSession, reloadSessions,
@@ -114,13 +117,16 @@ export default function LegacyFlow({
           approvalKey={approvalKey}
           isAdmin={isAdmin}
           sessionAction={approvalStatus === 'submitted' ? (
-            <WorkbenchSessionAction
-              error={sessionError}
-              starting={startingSession}
-              sessionId={sessionId}
-              session={session}
-              onStart={startSession}
-            />
+            <>
+              <WorkbenchSessionAction
+                error={sessionError}
+                starting={startingSession}
+                sessionId={sessionId}
+                session={session}
+                onStart={startSession}
+              />
+              {convertAction}
+            </>
           ) : null}
         />
       ) : null}

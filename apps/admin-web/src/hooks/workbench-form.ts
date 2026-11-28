@@ -8,12 +8,14 @@
 import { useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  convertSessionToSop,
   previewPlan,
   commitPlan,
   type CommitResult,
   type PreviewPlanResult,
   type WorkbenchCadence,
 } from '../api/workbench';
+import { getErrMsg } from '../utils/error';
 import { useAuthStore } from '../store/auth';
 import {
   clearWorkbenchAnchor,
@@ -66,8 +68,22 @@ export interface UseWorkbenchFormResult {
   approvalKey: string;
   approvalStatus: CommitResult['approvalStatus'];
   isAdmin: boolean;
+  /** 切片 E1：会话 → SOP 草稿转换的进行态 / 内联错误 / 成功结果。 */
+  converting: boolean;
+  convertError: string | null;
+  convertResult: {
+    slug: string;
+    sopId: string;
+    status: 'draft';
+    published: boolean;
+    deeplink: string;
+  } | null;
   handlePreview: () => Promise<void>;
   handleConfirm: () => Promise<void>;
+  /** 切片 E1：把 commit 锚定的工作台会话转写为 SOP 草稿（返回 null = 未执行）。 */
+  handleConvertToSop: (
+    sessionId: string,
+  ) => Promise<{ slug: string; sopId: string; status: 'draft'; published: boolean; deeplink: string } | null>;
 }
 
 /**
@@ -139,6 +155,17 @@ export function useWorkbenchForm(
   const isAdmin = user?.role === 'admin';
   // 真正的互斥锁：state 更新在同一 tick 的两次点击之间可能还没生效，用 ref 兜住防重复提交。
   const committingRef = useRef(false);
+  // 切片 E1：convert 同样防重入（连续双击不得落两份草稿）。
+  const convertingRef = useRef(false);
+  const [converting, setConverting] = useState(false);
+  const [convertError, setConvertError] = useState<string | null>(null);
+  const [convertResult, setConvertResult] = useState<{
+    slug: string;
+    sopId: string;
+    status: 'draft';
+    published: boolean;
+    deeplink: string;
+  } | null>(null);
   const onPreviewStartRef = useRef(onPreviewStart);
   onPreviewStartRef.current = onPreviewStart;
 
@@ -226,6 +253,42 @@ export function useWorkbenchForm(
     }
   }
 
+  /**
+   * 切片 E1：把当前 commit 锚定的工作台会话转写为 SOP 草稿。
+   * cadence/params 取 preview 时的 submittedInput（服务端按它重建方案卡并与
+   * commit 锚点比对）；goal 由服务端从会话 context 读取，客户端无权指定。
+   * 失败按 errorCode 取可读文案（err.WORKBENCH_CONVERT_* 由生成链覆盖）。
+   */
+  async function handleConvertToSop(
+    sessionId: string,
+  ): Promise<{ slug: string; sopId: string; status: 'draft'; published: boolean; deeplink: string } | null> {
+    if (convertingRef.current) return null;
+    if (!submittedInput || !result?.cardHash) {
+      setConvertError(t('workbench.convert.missingInputs'));
+      return null;
+    }
+    convertingRef.current = true;
+    setConverting(true);
+    setConvertError(null);
+    setConvertResult(null);
+    try {
+      const saved = await convertSessionToSop(sessionId, {
+        cadence: submittedInput.cadence,
+        ...(Object.keys(submittedInput.params ?? {}).length > 0 ? { params: submittedInput.params } : {}),
+      });
+      setConvertResult(saved);
+      return saved;
+    } catch (err: unknown) {
+      // err.WORKBENCH_CONVERT_NO_COMMIT / _CARD_DRIFT / _APPROVAL_NOT_CONSUMED
+      // 均有生成词条；未知码回落服务端 message，再回落本地兜底。
+      setConvertError(getErrMsg(err, t('workbench.convert.failed')));
+      return null;
+    } finally {
+      convertingRef.current = false;
+      setConverting(false);
+    }
+  }
+
   return {
     goal, setGoal,
     cadence, setCadence,
@@ -237,6 +300,7 @@ export function useWorkbenchForm(
     hasFail, canConfirm,
     approvalKey, approvalStatus,
     isAdmin,
-    handlePreview, handleConfirm,
+    converting, convertError, convertResult,
+    handlePreview, handleConfirm, handleConvertToSop,
   };
 }

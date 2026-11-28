@@ -5022,6 +5022,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workbench/sessions/{id}/convert-to-sop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 把工作台会话转写为 SOP 草稿（不发布）
+         * @description 校验会话归属、commit 锚点与发布审批 consumed 后，将方案卡与会话步骤固化为一份新的 SOP 草稿（归属当前用户）。返回 slug/sopId/deeplink；发布与指派仍需管理员在 SOP 页人工完成。未提交方案卡、卡片漂移或审批未 consumed 一律 409。
+         */
+        post: operations["WorkbenchSessionController_convertSessionToSop"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workbench/sessions/{id}/messages": {
         parameters: {
             query?: never;
@@ -6790,6 +6810,17 @@ export interface components {
              * @enum {string|null}
              */
             valueType?: "string" | "number" | "boolean" | "json" | null;
+        };
+        ConvertWorkbenchSessionToSopDto: {
+            /**
+             * @description 与 commit 时一致的执行节奏（用于服务端确定性重建方案卡）
+             * @enum {string}
+             */
+            cadence: "once" | "hourly" | "daily" | "weekly" | "monthly";
+            /** @description 与 preview/commit 时完全一致的参数（缺失或漂移都会导致重建 hash 不匹配） */
+            params?: {
+                [key: string]: string;
+            };
         };
         CreateActivationDto: {
             /** @description N5 基线指标名（业务结果归因）；≤64 字符 */
@@ -9664,6 +9695,21 @@ export interface components {
             targetExecutorId: string | null;
             /** Format: date-time */
             updatedAt: string;
+            /**
+             * Format: date-time
+             * @description 验收结论落定时间（unverified 恒为 null）
+             */
+            verificationCheckedAt: string | null;
+            /**
+             * Format: uuid
+             * @description 验收复核会话锚；spawn 失败 fail-closed 路径为 null
+             */
+            verificationSessionId: string | null;
+            /**
+             * @description 机器验收状态（切片 D1）：unverified=已进验收流程未出结论（含 spawn 失败 fail-closed）；passed/failed/unclear=复核会话 VERDICT 落账；null=迁移前存量行，无验收语义
+             * @enum {string|null}
+             */
+            verificationStatus: "unverified" | "passed" | "failed" | "unclear" | null;
         };
         SopAssignmentLagItemDto: {
             /**
@@ -11111,6 +11157,21 @@ export interface components {
             previewUrl?: string | null;
             /** @description 产物字节数 */
             size: number;
+        };
+        WorkbenchSessionConvertResponseDto: {
+            /** @description SOP 页深链（/sops?sop=<sopId>，SopsPage 现行深链契约） */
+            deeplink: string;
+            /** @description 恒为 false——本端点不触碰发布闸 */
+            published: boolean;
+            /** @description 新草稿 slug（由 goal 归一化生成；冲突自动追加 -2/-3…） */
+            slug: string;
+            /** @description 新落库 SOP 草稿行 id */
+            sopId: string;
+            /**
+             * @description 恒为 draft——转换绝不发布
+             * @enum {string}
+             */
+            status: "draft";
         };
         WorkbenchSessionCreateResponseDto: {
             /** @description 会话 id（用于 GET /workbench/sessions/:id 轮询） */
@@ -19431,6 +19492,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkbenchSessionActionResponseDto"];
+                };
+            };
+        };
+    };
+    WorkbenchSessionController_convertSessionToSop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConvertWorkbenchSessionToSopDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkbenchSessionConvertResponseDto"];
                 };
             };
         };
