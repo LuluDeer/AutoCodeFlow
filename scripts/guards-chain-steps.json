@@ -16,6 +16,7 @@
     "npm run check:constant-time",
     "npm run check:guards-wired",
     "npm run check:guards-wired:selftest",
+    "npm run check:admin-api-lock-consistency",
     "npm run check:guard-harness",
     "npm run check:private-ip",
     "npm run check:actions-pinned",

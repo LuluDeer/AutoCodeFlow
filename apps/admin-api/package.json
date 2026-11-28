@@ -99,7 +99,7 @@
     "ts-loader": "^9.6.2",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.9.3",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.2"
   },
   "//jest-forceExit": "R14-fix（run 37345065125 shard-1 实证）：全部 69 套件/1726 例 111s 全绿后，jest 因残留异步句柄拒绝退出，空挂 27min 被 job 超时击杀（30min 烧在空等上）。与 test/jest-e2e.json 的 forceExit 同源同裁决：BullMQ worker/ioredis/TypeORM 连接池的残余句柄收尾是概率性竞态（Windows 本机不复现，Linux CI 偶发），句柄泄漏本体由 onModuleDestroy 体系治理，CI 语境下 forceExit 不影响断言正确性。",
@@ -167,6 +167,7 @@
     "follow-redirects": "^1.16.2",
     "minimatch": "^11.0.4"
   },
+  "//typescript": "CI run 46136854131 ERESOLVE 修复（commit 8372175d 曾把本值改成 ^5.9.3，而 package-lock.json 的 packages[\"\"].devDependencies.typescript 仍是 ^6.0.3）：统一回 ^6.0.3，与 lock 根声明逐字一致且 >=6。@nestjs/schematics@^12.0.12 的最新版 12.0.17 的 peer 是 typescript@^6.0.0；npm ci 在 manifest↔lock 根声明漂移时按 manifest 重解析 peer，^5.9.3 即 ERESOLVE（11 个 job 红灯）。不选 overrides 钉 schematics：lock 已钉 12.0.13，真正的病是两侧声明漂移，钉版本只掩盖漂移还引入额外解析差异；零依赖守卫 scripts/check-admin-api-lock-consistency.mjs 钉住这条不变量。",
   "_comment-deps": "F-15（本轮审计）: class-validator ^0.14.4 = npm 当前 0.14.x 最新（0.14.1+ 的既定安全修复线；升级前实测 node_modules 已解析到 0.14.4，manifest 与解析结果对齐）。class-transformer 保持 ^0.5.1：0.5.1 即 npm 最新版（不存在 0.5.2）。0.15.x 属 0.x 语义内的大步进（潜在 breaking），未纳入本轮，待全量回归后另行评估。",
   "_comment-overrides": "F-16（本轮审计）: overrides.multer=2.3.0 为统一规避 multer <2.x 的安全公告（busboy 解析 DoS 等）；npm 不支持 JSON 注释，故以 _comment 键登记锁定原因。升级 @nestjs/platform-express 自带 multer 前，任何改动须先核对 CVE 状态。package.json 顶层 _ 前缀键仅供本地记录，不影响 npm install 解析。",
   "_comment_overrides": "overrides.multer=2.4.0 为统一规避 multer <2.x 的安全公告；overrides.typeorm.ioredis=$ioredis 用于让 typeorm@1.1.1 的 peerOptional ioredis@^5.0.4 放行到根依赖的 ioredis@6（typeorm 仅在配置 Redis 缓存/订阅时才触碰 ioredis，本服务未使用，peer 范围未跟上 ioredis 6 属上游滞后），待 typeorm 放宽 peer 后可移除。overrides.fast-uri=^3.1.9 为清偿 GHSA-hrr3-gc8f-f4qj（主机名大小写归一化，medium；2026-09-30）**及** 2026-10-26 新发的四条（GHSA-w74x-v6f9-j3xg 百分号编码 scheme 伪装 medium / GHSA-wjr9-j795-jxcr WHATWG 主机归一化 host confusion medium / GHSA-xhq7-xmqj-769h 相对引用路径等价 low / GHSA-333x-w4r6-6crp 后缀引用未转义首段冒号 scheme 注入 low——四条同修于 3.1.9，故下界从 3.1.8 提到 3.1.9；链路仍是 ajv→fast-uri，dev-only）。js-yaml 5.2.3→5.4.2 为清偿 GHSA-r3ph-w7gj-g6xm（maxTotalMergeKeys CPU 放大，medium；5.0.0–5.4.0 全中，直接依赖与 @nestjs/swagger 作用域 override 同步升，2026-09-30）。"

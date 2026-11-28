@@ -886,6 +886,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
+      - name: Admin-api manifest/lock TypeScript parity
+        # run 46136854131：manifest=^5.9.3 与 lock 根 ^6.0.3 漂移 ⇒ npm ci ERESOLVE
+        # （@nestjs/schematics@12.0.17 peer typescript@^6.0.0）。零依赖、装依赖前先跑。
+        run: npm run check:admin-api-lock-consistency
       # 2026-11-08 修接线缺陷：本 job 里的 `check:ssrf-parity`（第 ~995 行）三端探针
       # **需要真依赖**——admin / node 两臂各用**自己 node_modules 的** `ts-node/register`
       # 跑真 TS 实现（见 scripts/ssrf-category-matrix.mjs 的 spawn 调用）。本 job 此前

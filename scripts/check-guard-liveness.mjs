@@ -54,6 +54,7 @@ export const SELF_SCRIPT = "check-guard-liveness.mjs";
  * 清单里的脚本若不再存在会被过滤，并从分母里消失（登记同步回收）。
  */
 export const COVERED_DEFAULT = [
+  "check-admin-api-lock-consistency.mjs",
   "check-agent-event-causation.mjs",
   "check-agent-event-limits.mjs",
   "check-agent-index-names.mjs",

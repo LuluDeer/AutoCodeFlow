@@ -78,6 +78,8 @@
     "check:constant-time": "node scripts/check-constant-time-compare.mjs --selftest && node scripts/check-constant-time-compare.mjs",
     "check:guards-wired": "node scripts/check-guards-wired.mjs --selftest && node scripts/check-guards-wired.mjs",
     "check:guards-wired:selftest": "node scripts/check-guards-wired.mjs --selftest",
+    "//check:admin-api-lock-consistency": "CI run 46136854131 的 11 个 admin-api job 全在 npm ci 死在 ERESOLVE：manifest typescript=^5.9.3，而 @nestjs/schematics@12.0.17 的 peer 要 ^6.0.0、lock 根声明是 ^6.0.3。零依赖守卫钉住「manifest↔lock 根声明逐字一致且 >=6」；--selftest 7 例真子进程夹具（含两侧一起降到 ^5.9.3 的假一致反例）；接线：test:guards:chain + ci.yml check-migrations job。",
+    "check:admin-api-lock-consistency": "node scripts/check-admin-api-lock-consistency.mjs --selftest && node scripts/check-admin-api-lock-consistency.mjs",
     "//check:actions-pinned": "CIR-05（第 3 轮审计）：workflow 里的第三方 action 必须固定到 40 位 commit SHA。`uses: actions/checkout@v4` 是**可变引用**——上游可移动 tag（发布事故/账号被盗/仓库接管），CI 这边零代码变更就执行了另一份代码，而这些 job 里恰好都有 secrets 与 GITHUB_TOKEN。判据：每个 uses 只能是 ./ 本地路径、docker:// 或 owner/repo@<40位hex>；另两条反漂移：① 同一 action 被固定成两个不同 SHA → warn（通常是 tag/branch 各解析了一次）；② pull_request_target 需 `# allow-prt: 理由` 显式人工确认。解析不到的 action 绝不猜 SHA，走脚本内 ALLOWED_UNPINNED（须写理由）。零依赖（逐行正则，不引 yaml 包），秒级。",
     "check:actions-pinned": "node scripts/check-workflow-actions-pinned.mjs --selftest && node scripts/check-workflow-actions-pinned.mjs",
     "//check:runner-labels": "CIR-07：GitHub Actions 的 runner 标签不许用 `-latest`。2026-10-19 起 `ubuntu-latest` 从 24.04 迁到 26（actions/runner-images#14748）——与「action 用可变 tag」「镜像用可变 tag」是同一条供应链问题的第三处：仓库零改动，某天 CI 跑在另一套镜像上。判据：`runs-on`/matrix 里的取值必须是固定版本，`windows-latest`/`macos-latest` 走带复查日的 ALLOW（腐烂即红）；扫描面下界防「0 处违规=假绿」。",
