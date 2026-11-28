@@ -104,7 +104,10 @@ const test = base.extend<{ accountRole: Role; api: Traffic }>({
         'access-control-allow-origin': origin, 'access-control-allow-methods': 'GET,POST,OPTIONS',
         'access-control-allow-headers': 'authorization,content-type',
       } });
-      if (req.headers().authorization !== `Bearer ${ACCESS}`) return block('缺少测试会话的认证头');
+      // SSE/EventSource 不能设置 Authorization 头：产品用 ?ticket= 短效票据建流，
+      // 这与 POST /auth/sse-ticket 配套（30 秒有效、仅 /stream 路由读取）。
+      const viaTicket = method === 'GET' && path.endsWith('/stream') && q.has('ticket');
+      if (req.headers().authorization !== `Bearer ${ACCESS}` && !viaTicket) return block('缺少测试会话的认证头');
       if (path.startsWith('/api/agent/')) traffic.agentRequests.push(`${method} ${path}`);
       if (accountRole !== 'admin' && path.startsWith('/api/agent/')) return block('普通用户请求了 Agent API');
       if (method === 'POST' && path === LIST) {
