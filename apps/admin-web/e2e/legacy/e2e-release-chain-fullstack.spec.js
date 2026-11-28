@@ -113,22 +113,36 @@ async function ensureUser(request, adminTok, username, password, role) {
   }
 }
 
-// ── 真库连接：e2e-full.sh 每次新建时间戳库，自动发现最新一个 ────────────────
-async function connectE2eDb() {
-  const admin = new Client({ ...DB_CFG, database: 'postgres' });
-  await admin.connect();
-  let dbName;
-  try {
-    const { rows } = await admin.query(
-      `SELECT datname FROM pg_database
-        WHERE datname LIKE 'autoflow_e2e_ci\\_%'
-        ORDER BY datname DESC LIMIT 1`,
-    );
-    dbName = rows?.[0]?.datname;
-  } finally {
-    await admin.end();
+// ── 真库连接：E2E_DB_NAME 显式指定时直连（CI 固定库名）；缺省才发现时间戳库 ──
+// 安全守卫：只放行 e2e/test 专用库名，避免 env 写错时误连生产库。
+const E2E_DB_NAME_SAFE_RE = /^autoflow_(?:e2e_ci(?:_[A-Za-z0-9]+)?|e2e_[A-Za-z0-9]+|test)$/;
+function assertSafeE2eDbName(dbName, source) {
+  if (!E2E_DB_NAME_SAFE_RE.test(dbName)) {
+    throw new Error(`拒绝连接非 e2e/test 库（${source}）：${dbName || '<空>'}`);
   }
-  if (!dbName) throw new Error('未发现 e2e-full.sh 创建的时间戳库 autoflow_e2e_ci_*');
+  return dbName;
+}
+async function connectE2eDb() {
+  let dbName;
+  const explicitDbName = process.env.E2E_DB_NAME?.trim();
+  if (explicitDbName) {
+    dbName = assertSafeE2eDbName(explicitDbName, 'E2E_DB_NAME');
+  } else {
+    const admin = new Client({ ...DB_CFG, database: 'postgres' });
+    await admin.connect();
+    try {
+      const { rows } = await admin.query(
+        `SELECT datname FROM pg_database
+          WHERE datname LIKE 'autoflow_e2e_ci\\_%'
+          ORDER BY datname DESC LIMIT 1`,
+      );
+      dbName = rows?.[0]?.datname;
+    } finally {
+      await admin.end();
+    }
+    if (!dbName) throw new Error('未发现 e2e-full.sh 创建的时间戳库 autoflow_e2e_ci_*');
+    dbName = assertSafeE2eDbName(dbName, 'LIKE 自动发现');
+  }
   const client = new Client({ ...DB_CFG, database: dbName });
   await client.connect();
   return { client, dbName };
