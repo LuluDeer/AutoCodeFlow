@@ -38,6 +38,25 @@ vi.mock('chalk', () => ({
   },
 }));
 
+// ESM 命名空间不可 spyOn（Cannot redefine property）⇒ 用 vi.mock 替换
+// fs/promises 的 writeFile。写盘载荷仍需断言：捕获进可变状态。
+const writeFileState = vi.hoisted(() => ({
+  calls: [] as Array<{ dest: string; data: Buffer }>,
+}));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    writeFile: async (dest: string, data: Uint8Array | string) => {
+      writeFileState.calls.push({
+        dest: String(dest),
+        data: Buffer.from(typeof data === 'string' ? data : data),
+      });
+      return undefined;
+    },
+  };
+});
+
 vi.mock('../client.js', () => ({
   get: vi.fn(),
   getRaw: vi.fn(),
@@ -69,6 +88,7 @@ beforeEach(() => {
   mockedGet.mockReset();
   mockedGetRaw.mockReset();
   mockedPost.mockReset();
+  writeFileState.calls.length = 0;
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
   vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 });
@@ -93,7 +113,7 @@ describe('acf artifact', () => {
     ]);
     expect(mockedGet).toHaveBeenCalledWith('/artifacts', {
       page: '1',
-      pageSize: '20',
+      pageSize: 20,
       taskId: 'task-1',
       applicationId: undefined,
       q: undefined,
@@ -124,7 +144,7 @@ describe('acf artifact', () => {
       ]);
       expect(mockedGet).toHaveBeenCalledWith(
         '/tasks/executions/exec-1/artifacts/run.log/preview',
-        { maxBytes: '1024' },
+        { maxBytes: 1024 },
       );
       expect(write).toHaveBeenCalledWith('abc');
     } finally {
@@ -137,8 +157,6 @@ describe('acf artifact', () => {
       data: new Uint8Array([1, 2, 3]),
       headers: { 'x-sha256': 'deadbeef' },
     });
-    const fs = await import('node:fs/promises');
-    const writeFile = vi.spyOn(fs, 'writeFile').mockResolvedValue(undefined);
     try {
       await run('artifact', artifactCommand, [
         'download',
@@ -150,12 +168,11 @@ describe('acf artifact', () => {
       expect(mockedGetRaw).toHaveBeenCalledWith(
         '/tasks/executions/exec-1/artifacts/report.csv',
       );
-      expect(writeFile).toHaveBeenCalledWith(
-        '/tmp/report.csv',
-        Buffer.from([1, 2, 3]),
-      );
+      expect(writeFileState.calls).toEqual([
+        { dest: '/tmp/report.csv', data: Buffer.from([1, 2, 3]) },
+      ]);
     } finally {
-      writeFile.mockRestore();
+      writeFileState.calls.length = 0;
     }
   });
 });

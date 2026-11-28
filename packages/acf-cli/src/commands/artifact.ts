@@ -85,7 +85,7 @@ export function artifactCommand(): Command {
     .option('--to <iso>', 'createdAt upper bound (ISO-8601, inclusive)')
     .option('--mine', 'Only artifacts for tasks owned by the caller')
     .option('-p, --page <n>', 'Page number', '1')
-    .option('-n, --page-size <n>', 'Items per page (1-100)', (v) => intOption('--page-size', 1, 100)(v))
+    .option('-n, --page-size <n>', 'Items per page (1-100, default 20)', (v) => intOption('--page-size', 1, 100)(v), 20)
     .option('--json', 'Emit raw JSON (CI-consumable, no table)')
     .action(
       async (opts: {
@@ -98,7 +98,7 @@ export function artifactCommand(): Command {
         to?: string;
         mine?: boolean;
         page: string;
-        pageSize: string;
+        pageSize: number;
         json?: boolean;
       }) => {
         try {
@@ -178,7 +178,7 @@ export function artifactCommand(): Command {
       async (
         execId: string,
         name: string,
-        opts: { maxBytes?: string; json?: boolean },
+        opts: { maxBytes?: number; json?: boolean },
       ) => {
         try {
           const preview = await get<ArtifactPreview>(

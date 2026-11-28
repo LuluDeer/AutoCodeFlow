@@ -69,10 +69,12 @@ describe('acf-cli config at-rest hardening (SEC-NEW-4)', () => {
     const cfg = await loadConfig();
     expect(cfg.getApiKey()).toBe('acf_deadbeef');
 
+    // showConfig 用 console.log(label, maskedValue) 两个实参输出；旧 spy 只收
+    // 第一个实参，把 [set] 丢在第二个参数里，误报成“脱敏失效”。
     const logs: string[] = [];
-    const spy = vi.spyOn(console, 'log').mockImplementation(((s: unknown) => {
-      logs.push(String(s));
-    }) as never);
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((a) => String(a)).join(' '));
+    });
     try {
       cfg.showConfig();
       expect(logs.join('\n')).toContain('[set]');

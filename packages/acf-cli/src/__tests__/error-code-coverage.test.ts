@@ -1,12 +1,12 @@
 /**
  * R108：**错误码 → CLI 处置类别 的覆盖率**（未归类即静默无建议）。
  *
- * 背景：admin-api 的错误码目录（`src/common/errors/catalog/*.ts`）已有 **383** 个码；CLI 侧
+ * 背景：admin-api 的错误码目录（`src/common/errors/catalog/*.ts`）已有 **440** 个码（2026-11-28 实测）；CLI 侧
  * `error-code.ts` 刻意**不逐码写建议**（注释原话：「三百多个码逐条写建议必然腐化」），而是用 6 类
  * 前缀/后缀规则归类，未归类就**不追加**任何提示。
  *
  * 于是一类静默缺口：**新码撞不上任何规则时，用户永远拿不到处置建议**，而且没有任何东西会提醒 ——
- * 它只是安静地退化成原始文案。实测当前 69/383（18%）在这个状态。
+ * 它只是安静地退化成原始文案。实测 79/440（18%）在这个状态（2026-11-28，含下方 3 个 workbench 码）。
  *
  * ## 为什么是一个 vitest 用例而不是 scripts/ 下的守卫脚本
  *
@@ -144,6 +144,19 @@ const UNCLASSIFIED_BASELINE = new Set<string>([
   // 不可用」。与上两条**逐字同因**（装配缺失、不代表队列在正常消费），故同入基线；
   // 不单独归类是为了不让这三个码在 CLI 侧出现「同一个病、三种说法」的漂移。
   'AGENT_QUEUE_IDLE_CHECK_UNAVAILABLE',
+  // —— 2026-11-28（切片 E1 · workbench→SOP 直连域）────────────────────
+  // 这 3 个码是 convert-to-sop 的**服务端状态闸**（409），共同点：都不是 CLI
+  // 调用方「改入参/重登录/重试」能解决的——
+  //  · WORKBENCH_CONVERT_NO_COMMIT：会话没有 commit 锚点（prompt-first 等
+  //    非方案卡会话），属于「此会话本就不可转写」，不是入参错；
+  //  · WORKBENCH_CONVERT_CARD_DRIFT：方案卡相对 commit 时漂移，处置是
+  //    「回工作台重新预览/commit」——业务面动作，6 类给不出准确建议；
+  //  · WORKBENCH_CONVERT_APPROVAL_NOT_CONSUMED：四眼审批未走完，处置是
+  //    「等审批完成」——流程面动作，塞进 conflict 只会说「重读一次」。
+  // ⇒ 与 AI_* / AGENT_*_UNAVAILABLE 同口径入基线（未知码好过错建议）。
+  'WORKBENCH_CONVERT_NO_COMMIT',
+  'WORKBENCH_CONVERT_CARD_DRIFT',
+  'WORKBENCH_CONVERT_APPROVAL_NOT_CONSUMED',
 ]);
 
 function loadCatalogCodes(): string[] {

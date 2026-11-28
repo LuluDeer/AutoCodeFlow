@@ -131,11 +131,11 @@ describe('help 覆盖守卫（集中式 EXAMPLES × 真实命令树）', () => {
   });
 
   it('命令树规模护栏：叶子命令数量符合预期（防止守卫意外失效/空转）', () => {
-    // 69 个叶子 = login(1)+whoami(1)+logout(1)+task(23,含 webhook/glue)
+    // 74 个叶子 = login(1)+whoami(1)+logout(1)+task(23,含 webhook/glue)
     //            +app(14,含 upload/upgrade-all/releases/set-current-version/deploy-version)
     //            +executor(4)+deploy(4,含 list/remove)+audit(1)+exec(1)+project(2)
     //            +sop(2)+agent(1)+apikey(3)+approval(4)+config(3)
-    //            +mutex(4: list/create/update/delete)
+    //            +mutex(4: list/create/update/delete) +artifact(3) +template(2)
     // whoami/logout 由 CLI-AGENT-UX-AUDIT（2026-10-08）补：agent 开工前需要
     // 自检身份/角色（后端大量 ADMIN-only 面），收工时需要吊销并清本地凭据。
     // mutex 由 MUTEX-CLI（2026-10）补：后端 4 端点自 MUTEX-01 起就存在且中台
@@ -143,8 +143,10 @@ describe('help 覆盖守卫（集中式 EXAMPLES × 真实命令树）', () => {
     // 没人知道），「有哪些组可选」在 CLI 侧完全不可见。
     // app set-current-version / deploy-version 由 R1（2026-10-24 部署模型评审
     // §4.2）补：应用回滚拆分出的两个显式动作（admin-web 已切双动作，CLI 对齐）。
+    // artifact(3)/template(2) 由 76f2ee80（executor 交付链）补：CLI 直连产物
+    // 跨执行索引与模板实例化（两组顶层入口，README 与命令地图同步 74）。
     const leaves = leafCommands(program);
-    expect(leaves.length).toBe(69);
+    expect(leaves.length).toBe(74);
   });
 });
 
