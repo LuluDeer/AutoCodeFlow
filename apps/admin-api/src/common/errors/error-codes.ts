@@ -6,6 +6,7 @@ import { PROJECT_CODES } from "./catalog/project";
 import { AUTH_CODES } from "./catalog/auth";
 import { APPLICATION_CODES } from "./catalog/application";
 import { CAPABILITY_CODES } from "./catalog/capability";
+import { WORKBENCH_CODES } from "./catalog/workbench";
 
 /**
  * LANG-ERR-01：**错误码目录（合并点）**。
@@ -54,6 +55,7 @@ export const ERROR_CATALOG = {
   ...AUTH_CODES,
   ...APPLICATION_CODES,
   ...CAPABILITY_CODES,
+  ...WORKBENCH_CODES,
 } as const satisfies Record<string, ErrorCodeDef>;
 
 /** 全部错误码的联合类型——`AppError` 的入参用它，拼错码即**编译期**报错。 */

@@ -20,6 +20,9 @@ module.exports = [
       // 的字面量 vs 契约 `categories.order`）立刻红。
       // ⇒ 把生成目录整体排除，而不是让守卫去容忍尾逗号（后者是**放松判据**）。
       'src/generated/**',
+      // failure-classifier 生成物同判据（generate-failure-classifiers 的字节级
+      // 漂移闸 vs eslint --fix 的引号/尾逗号重排——P1-b 纪律同上）。
+      'src/common/failure-classification/generated/**',
       'src/modules/executor/install-script.content.ts',
       'dist/**',
       'coverage/**',
