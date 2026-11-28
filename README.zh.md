@@ -291,7 +291,7 @@ flowchart LR
 | **告警通知** | 企业微信、钉钉、Slack Webhook、SMTP 邮件；规则、静默期、HMAC 签名校验 |
 | **安全** | RBAC（项目级角色）、作用域 API Key、TOTP 双因子、OIDC SSO、审计日志、部署第二人审批、Python 任务可选 bubblewrap 沙箱（secure overlay） |
 | **AI** | OpenAI / Ollama / Qwen：失败根因分析、调度建议、应用健康分析；MCP Server 让 Agent 直接管理任务 |
-| **交付** | `acf` CLI（69 个子命令）、Node/Python 双 SDK、MCP Server（57 个工具）、VitePress 文档站 |
+| **交付** | `acf` CLI（69 个子命令）、Node/Python 双 SDK、MCP Server（63 个工具）、VitePress 文档站 |
 
 ## 🚀 快速开始
 
@@ -440,10 +440,10 @@ ctx.report_success(summary="etl done", duration_ms=412)
 
 `AUTOCODEFLOW_API_TOKEN` **既接受 API Key，也接受用户 JWT**：
 
-- **API Key（常驻 MCP 推荐）**——中台「系统 → 系统设置 → API Keys → 新建」，选 `readonly` / `trigger` / `manage`，弹窗里的 `acf_…` 明文**只显示一次**（服务端只存哈希）。可设有效期或永不过期，吊销下一次调用即生效。它是 JWT 的真子集，但 MCP 的 57 个工具都不碰凭证/用户/系统配置端点，所以够用。
+- **API Key（常驻 MCP 推荐）**——中台「系统 → 系统设置 → API Keys → 新建」，选 `readonly` / `trigger` / `manage`，弹窗里的 `acf_…` 明文**只显示一次**（服务端只存哈希）。可设有效期或永不过期，吊销下一次调用即生效。它是 JWT 的真子集，但 MCP 的 63 个工具都不碰凭证/用户/系统配置端点，所以够用。
 - **用户 JWT（只有它能用 ADMIN-only 工具）**——中台前端没有「复制我的 token」入口，用 `acf login` 后从 `~/.config/acf-cli/config.json` 取 `token`（15 分钟）；再配 `AUTOCODEFLOW_API_REFRESH_TOKEN`（同文件的 `refreshToken`，30 天）才能在 401 时自动续期，否则每 15 分钟要重启进程换新 token。
 
-57 个工具覆盖任务、执行、执行器、应用部署、SOP、审计与审批；权限由 **API Key scope 或 JWT 角色**在服务端强制。
+63 个工具覆盖任务、执行、执行器、应用部署、SOP、审计与审批；权限由 **API Key scope 或 JWT 角色**在服务端强制。
 详见 [packages/mcp-server/README.md](packages/mcp-server/README.md) 与 [MCP 工具地图](docs/atlas/05-interfaces/mcp-tools.md)。
 
 ## 📦 技术栈
@@ -472,7 +472,7 @@ AutoCodeFlow/
 │   └── registry-pypi/        私有 PyPI 仓库（FastAPI）
 ├── packages/
 │   ├── acf-cli/              acf 命令行工具（@autocodeflow/cli）
-│   ├── mcp-server/           MCP Server（AI Agent 集成，57 个工具）
+│   ├── mcp-server/           MCP Server（AI Agent 集成，63 个工具）
 │   ├── autocodeflow-node-sdk/ Node.js SDK（@autocodeflow/sdk）
 │   ├── autoflow-sdk/         Python SDK（autoflow-sdk）
 │   ├── autocodeflow-ai/      Python AI 辅助库（0.3.2，仓内冻结）

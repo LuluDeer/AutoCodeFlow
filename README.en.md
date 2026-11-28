@@ -291,7 +291,7 @@ create task
 | **Alerting** | WeCom, DingTalk, Slack webhooks, SMTP email; rules, silences, HMAC-signed webhooks |
 | **Security** | Project-scoped RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs, two-person deploy approval, optional bubblewrap sandbox for Python tasks (secure overlay) |
 | **AI** | OpenAI / Ollama / Qwen for failure root-cause analysis, schedule suggestions and app health checks; MCP server for agents |
-| **Tooling** | `acf` CLI (69 subcommands), Node/Python SDKs, MCP server (57 tools), VitePress docs site |
+| **Tooling** | `acf` CLI (69 subcommands), Node/Python SDKs, MCP server (63 tools), VitePress docs site |
 
 ## 🚀 Quick start
 
@@ -444,7 +444,7 @@ Capability matrix and known divergences: [SDK guide](docs/sdk-guide.md). Runnabl
 - **API key (recommended for a long-lived server)** — admin web → **System → Settings → API Keys → New API Key**, pick `readonly` / `trigger` / `manage`, and copy the `acf_…` plaintext **once** (only its hash is stored). Keys never expire unless you set a validity; revocation applies on the next call. An API key is a strict subset of a JWT, but no MCP tool touches the credential/user/config endpoints, so it is enough here.
 - **User JWT (needed for ADMIN-only tools)** — there is no "copy my token" button in the web UI; run `acf login` and read `token` (15 min) from `~/.config/acf-cli/config.json`. Add `AUTOCODEFLOW_API_REFRESH_TOKEN` (the `refreshToken` field, 30 days) so the server refreshes on 401 instead of needing a restart.
 
-57 tools cover tasks, executions, executors, app deployments, SOPs, audit and approvals; permissions are enforced server-side from the API-key scope or the JWT role.
+63 tools cover tasks, executions, executors, app deployments, SOPs, audit and approvals; permissions are enforced server-side from the API-key scope or the JWT role.
 See [packages/mcp-server/README.md](packages/mcp-server/README.md) and the [MCP tools map](docs/atlas/05-interfaces/mcp-tools.md).
 
 ## 📦 Tech stack
@@ -473,7 +473,7 @@ AutoCodeFlow/
 │   └── registry-pypi/        private PyPI registry (FastAPI)
 ├── packages/
 │   ├── acf-cli/              the acf command line tool (@autocodeflow/cli)
-│   ├── mcp-server/           MCP server for AI agents (57 tools)
+│   ├── mcp-server/           MCP server for AI agents (63 tools)
 │   ├── autocodeflow-node-sdk/ Node.js SDK (@autocodeflow/sdk)
 │   ├── autoflow-sdk/         Python SDK (autoflow-sdk)
 │   ├── autocodeflow-ai/      Python AI helper library (0.3.2, frozen in-repo)

@@ -95,6 +95,8 @@ ResponseInterceptor 的 `code = statusCode ?? 200` 恒数值语义），
 |------|------|
 | `executionId` | 必填（SDK 自动补齐本执行） |
 | `status` | `success` \| `failed` |
+| `attemptSeq` | 尝试世代（可选，int ≥ 0）：claim 时由 admin 写入派发载荷，执行器原样回传。终态写入优先用它做并发世代门禁；缺省回退服务端快照以兼容旧执行器。非有限整数按缺省处理 |
+| `traceparent` | 执行器回传的 W3C traceparent（可选，≤256 字符）。admin 主通道从请求头解析，本字段仅为协议兼容而声明——不声明时 `forbidNonWhitelisted` 会把执行器既有回调整批 400 |
 | `executorAddress` | 执行器注册地址（SDK 自动补齐，缺省不发送空串） |
 | `deviceFingerprint` | 稳定安装身份（协议 v6 起，可选）：SDK 从环境变量 `AUTOFLOW_DEVICE_FINGERPRINT` 读取并**自动补齐**，与执行器 register/heartbeat 上报的是同一个值。**它是回调的行身份**——当两台执行器共用同一 `executorAddress`（pull 模式允许，见 ADR-017 §5）时，仅靠地址无法判断回调来自哪一行。服务端按「指纹 → 凭据归属行 → 地址」三级阶梯判定归属；**缺省时逐级回落，绝不会因缺少该字段拒绝合法回调**。采集失败时不发送该键（不是发空串/`null`） |
 | `logs` | 阶段性摘要（截断 512 KB） |

@@ -1,5 +1,46 @@
 # AutoCodeFlow Agent Handoff
 
+## 本次交接（2026-11-28 · 空降负责人第六轮，重定位 + 大修收口）
+
+**方向来源**：用户「编排 agent 去调查、优化、改造、打磨 功能/业务/UI；大刀阔斧；调研 agent 不限、编译类串行防 OOM；参考项目只用于调研不写进项目」。本轮 = 重定位拍板 + 6 路只读调研 + 10 个互斥写域实现切片 + 全量守卫链/typecheck 收口。参考项目（/data/project/opensource）仅进入 `artifacts/overhaul/findings/`（gitignored），未写入任何产品代码。
+
+**重定位拍板（依据 artifacts/overhaul/findings/positioning-review.md）**：AutoCodeFlow = 「跑在内网里的 SOP 执行运行时」——人把「怎么算做完」写成 SOP，AI agent 在真实桌面照做，每步留可审计证据。受众①内网开发/运维②流程 owner（业务工作台收编为入口形态，不再是平行产品线）。已落地 docs/POSITIONING.md 重写 + ROADMAP 先行指标 + PROJECT-STATUS 头部对齐；MCP 工具数 57→63 全仓修正（EXPECTED_TOOL_COUNT=63 实测）；plan-card 口径如实（默认确定性 + useAi 可选增强不进闸门 hash）。
+
+**六路调研结论**（artifacts/overhaul/findings/，全部静态+实测证据）：定位漂移成立（21 轮砸在无数据源的三张驾驶舱卡）；SOP 主线六环 UI 俱全但机器验收 fail-open 是最薄弱环（sop.service.ts:2051 自认）；技术债 top3=契约双轨/模块环/守卫链串行；UI 三 P0（桌面重试死循环/首屏混排/收件箱 USER 403——第三条系复核后新发现）。
+
+**十个切片**（全部互斥写域、编译串行）：
+1. **W1 仓库卫生**：删 turbo.json（零调用）+ 空目录；Makefile dev 去 4 连 npm install；admin-api TS ^6.0.3→^5.9.3（追源无迁移理由）；axios 三形态收敛 ^1.21.1。
+2. **W2 守卫链并行化**：scripts/guards-chain-steps.json（134 段逐字事实源）+ run-guards-chain.mjs runner（串行批 lint/test 子进程类、并发批 ≤4 其余）+ 5 个接线守卫等价代入适配（R22 先例手法）；实测 3-5 分钟 → 10-12 分钟 wall（含重守卫大头，收益在 CI 分片口径；本地全绿时间受 guard-liveness 284s 主导）。
+3. **W3 定位重写**：三文档 + docs-site contract 同步（顺带修了基线 attemptSeq/traceparent 漂移）。
+4. **A3 首跑引导**：quickstart「启用 AI 能力」节 + demo.sh 尾注（provider 默认 disabled → 会话 failed route_unavailable 是设计行为，指向 /settings?tab=ai）。
+5. **A4 砍 Jaeger 空门面**：compose 删 jaeger+collector（TracingService 架构不动）、deployment.md 如实化、infra-doc-counts 基线同步。
+6. **A9 atlas 补缺**：22 模块唯一缺失的 workbench.md（14 端点/7 会话 kind/五道闸/rewind 无前端入口标注）。
+7. **B1 桌面 P0**：reload 死循环→retryUrl 真地址重载；USER 首屏 legacy 收进折叠（ADMIN 保留）；render-process-gone 兜底；安装向导轮询静默→可见错误+重试；面包屑/Logo 按 homePathForRole 解析。
+8. **C1 驾驶舱瘦身**：砍 Cost/TTFV 两卡（无数据源永久空），保审批+北极星；TtfvCard 整删、costReasonLabel 抽 utils；e2e 6/6 真浏览器过。
+9. **D1 机器验收 fail-closed**：迁移 111 加 verification_status/session_id/checked_at 三列（可空零回填）；spawn 双路径置 unverified；复核会话终态按 triggerSource=verify: 识别、VERDICT: pass|fail|unclear 解析回写（解析不到=unclear 绝不假 passed）；反向注册端口 attachVerificationSettle；DTO/OpenAPI/前端 Tag 列全链透出；9 个新单测。
+10. **D2+E1**：收件箱两端点 USER 放行（照 agent.controller.ts:1066 先例，数据面核对无越权）；workbench→SOP 直连 POST /workbench/sessions/:id/convert-to-sop（五闸 fail-closed：归属/commit 锚点/cardHash 重建/审批 consumed/源 SOP 存在；绝不自动发布）+ 前端 CTA（USER 不跳 ADMIN-only /sops，给深链）。
+
+**集成收口（lead 亲自）**：lint ×7 全零（api 590→0 含 generated/ 排除、web 6 个存量 e2e error 修复、mcp/desktop 未用 import 清理）；typecheck 8 端+specs 全零（require→import 的类型收紧用 as never 替身桥接）；api-i18n 2396 处注入（D1/E1 的 12 条描述补进 openapi-en-map）；openapi.json 重导 + gen:api-types；守卫基线重签 5 文件（size-caps ×9 文件、conditional-writes 2 处 exempt、enum-drift WORKBENCH_CODES、web-type-drift/field-drift 桌面桥豁免+AgentApprovalDecision 转合同派生）；audit 文档 97 action 头部对齐 + 前端标签映射；test:agent/test:sop 修复（6 个新 MCP 工具显式排除登记、VERDICT fail-closed 锚点替换 fail-open、sop_review 排除算术 63-14-2=47）；guard-liveness × protocol-three-way 探针竞争修掉（size-caps 扫描器跳过 dot 临时文件——「读不到 ≠ 没问题」判据不放松）。
+
+**验收与证据（分级）**：
+- **静态+类型第 2 级**：`typecheck:api/specs/node/cli/mcp/node-sdk/desktop(×2)/web` 全 exit 0；`lint:api/web/node/cli/mcp/node-sdk/desktop` 全 0 error。
+- **守卫链第 2 级**：`npm run test:guards:chain` **134/134 段 / 21 批全绿 exit 0**（742.6s，本轮最终复跑）；`check:guards-wired/selftests-wired/live-specs-wired/lint-gates/race-selftests-wired` 全过（W2 指针化后接线守卫等价展开 160=160、可达面 190=190）。
+- **单测第 2 级**：admin-api 定向回归（sop/agent/workbench/convert/verification-settle 等 9 套件）139+29+43 passed；admin-web 定向（dashboard/boss-cockpit/sops/workbench/inbox/install-wizard 等 30+ 套件）全绿。
+- **浏览器第 4 级**：`playwright test e2e/boss-cockpit.spec.ts` 6/6（真 Chromium，stub 传输层）。
+- **迁移第 3 级**：migration 111 落库 autoflow_test 真跑（check:e2e-migration-readiness 155=155）；check-migrations/check-migration-symmetry 全过；PLAN-CLAIMS 分配表已登记。
+
+**诚实边界 / 后续项**：
+- 最高验收级别=真浏览器（stub 传输层）+真 PG 迁移；D1 的复核会话 VERDICT 回写未做真 LLM 端到端（runtime 依赖真 provider），现有证据=纯函数单测+条件写替身 spec。
+- admin-api 全量回归（9900+ tests）本轮未整跑（历史上 30-60 分钟 × 本机内存限制；改动面已全部定向回归过）——接手者按 CI 分片口径跑一次即可确认。
+- 未 commit 未 push（按协作规则等待明确指令）。
+- 已知存量（非本轮引入，留待后续轮）：`lint:i18n` 9 处命中全在 api/desktop-bridge.spec.ts 测试夹具（历史提交 398d0ce2）；`test:main` 的 updater/theme-bridge selftest 2 处干净树既有失败（B1 已留证 stash 前后一致）；SOP 黑话文案 P1（front-matter/patch 术语直给业务用户）未动；桌面工单卡片（func-gaps-sop #5）、im-identity 降级决策、4 个 Python 库 90 天处置、CLI capability 三命令等调研建议项已登记未实施。
+
+**调度纪律记录**：本轮一次 bash/tmpfs 配额事故（202 个 acf-live-* 覆盖率临时目录塞爆 /tmp 触发 EDQUOT）+ 两次内存压力（swagger:export/jest 大堆被 SIGTERM；子 agent 免费 provider 配额耗尽×3），均通过「主控串行重进程 + 调度令暂停并发 agent」恢复；最终全链/typecheck 在单并发下全绿。事故根因已修（见下）。
+
+**tmp 配额事故根因修复（第六轮追加收口）**：事故真因不是 `deadJudgesIn` 的 finally 缺陷，而是 **wired ↔ liveness 互指递归**——`check-guards-wired` 的 coverage-registry 登记 liveness（runGuard 120s 探针），liveness 的 COVERED_DEFAULT 又登记 wired ⇒ wired→liveness→wired→… 每次全量必发生：wired main() 176s > 自身 120s SIGKILL ⇒ SIGKILL 下 liveness 的 finally rmSync 不执行（进程整体被杀），泄漏一个 acf-live-* 目录 + 一批孤儿探针；链 runner 被强杀时（npm→sh→node 子树）孤儿 liveness 继续跑 main()，每个再泄 ~99 目录。修复四件：① `scripts/coverage-registry.json` liveness 条目 `args:["--selftest"]`（8 用例 30s 内，掐断 120s 强杀泄漏）；② liveness `COVERED_DEFAULT` 移除 wired + UNCOVERED_REGISTRY 登记理由（掐断反向环）；③ `deadJudgesIn` coverage 目录落点改 `ACF_COVERAGE_TMPDIR || /dev/shm`（tmpfs 无 usrquota，/tmp 是 dsh 工具链地盘；/dev/shm 不可写自动回落 tmpdir()+sweep）；④ 启动时 `sweepStaleLiveDirs` 清 30 分钟以上的陈年 acf-live-* 残留。同批修复同型泄漏源：`check-docs.selftest.mjs` 36 个用例 + 9 个裸块的 acf-docs-* 夹具从不清理（test() 包装器 finally + 汇总兜底）、`check-live-probes-intact.mjs` 的 385 个 r229-* 残留（checkCase finally）。验证：wired 全量跑零孤儿零残留；liveness 连跑两次 /dev/shm 归零；test:docs/check:docs 连跑 /tmp 归零；全链 134/134 复跑 **308.5s（对比修复前 742.6s——递归环掐断后 wired 40s、liveness 143s，链条整体提速 2.4 倍）** 全绿。
+
+---
+
 ## 本次交接（2026-11-28 · 空降负责人第五轮，收口）
 
 **方向来源**：用户「继续」。本轮把上一轮留下的证据缺口补齐：admin-api 全量回归、e2e-full 真栈全链、桌面 Electron 真机桥验收，并把当前 diff 的集成审查问题全部收口。主控只串行跑重进程，调研 agent 不限但编译/真机一次只跑一个，未产生 OOM。
