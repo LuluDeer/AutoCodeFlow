@@ -465,7 +465,21 @@ async function main() {
     return t.body?.id ?? null;
   });
   const taskIds = created.filter(Boolean);
-  const executions = await mapLimit(taskIds, 50, async (taskId) => {
+  // B-11 派发前提：create 默认 PAUSED（迁移 1790000000110 / TASKCORE-STATUS-01），
+  // task.processor 对非 ACTIVE 任务的 PENDING 执行跳过派发 ⇒ 探针 0/1000、
+  // 回调落 not_dispatched、终态 winner 0。按 pull-dispatch-selftest.mjs:284-293
+  // 先例，触发前先 resume=active 并断言；本档 THROTTLE_OPS_LIMIT=100000 不会限流。
+  const resumed = await mapLimit(taskIds, 50, async (taskId) => {
+    const r = await api(token, 'POST', `/api/tasks/${taskId}/resume`, {});
+    return r.status < 300 && r.body?.status === 'active' ? taskId : null;
+  });
+  const activeIds = resumed.filter(Boolean);
+  ok(`任务恢复 ACTIVE（B-11 派发前提，${activeIds.length}/${taskIds.length}）`,
+    activeIds.length === taskIds.length,
+    `active=${activeIds.length} tasks=${taskIds.length}`);
+  if (activeIds.length !== taskIds.length) return summary();
+
+  const executions = await mapLimit(activeIds, 50, async (taskId) => {
     const r = await api(token, 'POST', `/api/tasks/${taskId}/trigger`, {});
     return r.body?.executionId ?? r.body?.id ?? null;
   });
@@ -496,7 +510,9 @@ async function main() {
       items.push({
         executionId: execId,
         status: 'failed',
-        error: 'qa05 callback tier probe',
+        // CallbackItemDto 的白名单字段是 errorMessage（execution-callback.dto.ts:180），
+        // 旧写法 `error` 会被 ParseArrayPipe(forbidNonWhitelisted) 整批 400。
+        errorMessage: 'qa05 callback tier probe',
         executorAddress: probe.address,
       });
     }
