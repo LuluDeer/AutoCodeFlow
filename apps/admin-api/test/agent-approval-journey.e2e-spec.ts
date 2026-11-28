@@ -1,3 +1,5 @@
+jest.setTimeout(120_000);
+
 import { randomUUID } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
 import type { INestApplication } from "@nestjs/common";

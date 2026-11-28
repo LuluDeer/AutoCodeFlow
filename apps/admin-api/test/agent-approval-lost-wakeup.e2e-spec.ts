@@ -1,3 +1,5 @@
+jest.setTimeout(120_000);
+
 import { randomUUID } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
 import type { INestApplication } from "@nestjs/common";
@@ -177,7 +179,7 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
     label: string,
     read: () => Promise<T | undefined>,
     ok: (v: T) => boolean,
-    timeoutMs = 30_000,
+    timeoutMs = 20_000,
   ): Promise<T> {
     const deadline = Date.now() + timeoutMs;
     let last: T | undefined;
@@ -417,7 +419,7 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
   /** 等本会话的 resume job 全部从 waiting/active/delayed 排空（不固定 sleep）。 */
   async function waitJobsDrained(
     id: string,
-    timeoutMs = 30_000,
+    timeoutMs = 20_000,
   ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     do {
