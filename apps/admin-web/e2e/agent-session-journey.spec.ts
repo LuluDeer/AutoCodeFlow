@@ -66,6 +66,23 @@ function reply(route: Route, data: unknown, status = 200) {
 
 type Role = 'admin' | 'user';
 type Traffic = { creates: unknown[]; agentRequests: string[] };
+// 普通用户收件箱只读渲染会读到的端点。counts / approvals/pending 后端方法级
+// @Roles(ADMIN, USER) 明确放行（agent.controller.ts:1063、1093）；另三条是已知
+// 前端越权读缺口：InboxPage 对 USER 仍会请求，后端类级 @Roles(ADMIN) 的真实防线
+// 是 403。本用例只验 UI 路径不验后端权限：记 403、不计入 agentRequests、不阻断，
+// 也绝不给成功空数据假装有权。
+const USER_AGENT_READS: ReadonlySet<string> = new Set([
+  '/api/agent/inbox/counts',
+  '/api/agent/approvals/pending',
+  '/api/agent/sessions',
+  '/api/agent/sessions/backlogged',
+  '/api/agent/sessions/queue-stall',
+]);
+const USER_AGENT_ADMIN_ONLY_READS: ReadonlySet<string> = new Set([
+  '/api/agent/sessions',
+  '/api/agent/sessions/backlogged',
+  '/api/agent/sessions/queue-stall',
+]);
 const test = base.extend<{ accountRole: Role; api: Traffic }>({
   accountRole: ['admin', { option: true }],
   // Playwright 每例一个 BrowserContext，sessionStorage 自然为空。只在新上下文建种子；
@@ -108,8 +125,22 @@ const test = base.extend<{ accountRole: Role; api: Traffic }>({
       // 这与 POST /auth/sse-ticket 配套（30 秒有效、仅 /stream 路由读取）。
       const viaTicket = method === 'GET' && path.endsWith('/stream') && q.has('ticket');
       if (req.headers().authorization !== `Bearer ${ACCESS}` && !viaTicket) return block('缺少测试会话的认证头');
-      if (path.startsWith('/api/agent/')) traffic.agentRequests.push(`${method} ${path}`);
-      if (accountRole !== 'admin' && path.startsWith('/api/agent/')) return block('普通用户请求了 Agent API');
+      // agentRequests 只记录普通用户无权访问的 ADMIN-only Agent 数据；
+      // USER 可读端点不计入、不阻断（后端 @Roles(ADMIN, USER) 明确放行）。
+      if (path.startsWith('/api/agent/')) {
+        const userRead = accountRole !== 'admin' && USER_AGENT_READS.has(path);
+        if (!userRead) traffic.agentRequests.push(`${method} ${path}`);
+        if (accountRole !== 'admin' && !userRead) {
+          return block('普通用户请求了 ADMIN-only Agent API');
+        }
+        // 已知前端越权读缺口的真实后端防线：类级 ADMIN-only 端点对 USER 返回 403，
+        // 让 InboxPage 走 error 态承接；不在这里发 200 空数据伪装成有权。
+        if (userRead && USER_AGENT_ADMIN_ONLY_READS.has(path)) {
+          return route.fulfill({ status: 403, headers: {
+            'access-control-allow-origin': '*',
+          }, json: { code: 403, message: 'Forbidden', data: null } });
+        }
+      }
       if (method === 'POST' && path === LIST) {
         traffic.creates.push(req.postDataJSON());
         return reply(route, { id: CHAT_ID, status: 'pending' }, 201);
@@ -271,12 +302,32 @@ test.describe('Agent 会话交付', { tag: '@agent-journey' }, () => {
   test.describe('普通用户', { tag: '@permissions' }, () => {
     test.use({ accountRole: 'user' });
     test('直接打开审批深链或收件箱得到 403，且不请求 Agent 数据', async ({ page, api }) => {
-      for (const path of [`/agent-sessions?session=${second.id}&tab=approvals`, '/inbox']) {
-        await page.goto(path);
-        await expect(page.getByText('403', { exact: true })).toBeVisible();
-        await expect(page.getByText(/此页面仅管理员可见/)).toBeVisible();
-        await expect(page.getByRole('dialog')).toHaveCount(0);
-      }
+      // ADMIN-only 深链：RequireAdmin 仍是 Result status="403"，但标题/副标题已换成
+      // i18n 人话（requireAdmin.title「无权访问该页面」zh.ts:4731、subTitle zh.ts:3529），
+      // 页面不再渲染字面 "403"；断言无权限语义的真实可见文案，且无会话抽屉。
+      await page.goto(`/agent-sessions?session=${second.id}&tab=approvals`);
+      await expect(page.getByText('无权访问该页面', { exact: true })).toBeVisible();
+      await expect(page.getByText(/此页面仅管理员可见/)).toBeVisible();
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+
+      // /inbox 对 USER 开放只读（router.tsx:121 无 RequireAdmin；route-registry.ts:58
+      // adminOnly:false）：页面标题与只读引导可见，写动作按钮渲染但全部禁用。
+      await page.goto('/inbox');
+      await expect(page.getByTestId('inbox-page').getByText('待办收件箱', { exact: true })).toBeVisible();
+      await expect(page.getByTestId('inbox-user-actions')).toBeVisible();
+      // 后端 403 必须由页内 error 态承接（不是 200 空数据假装有权）。
+      await expect(page.getByTestId('inbox-page').getByTestId('state-error').first()).toBeVisible();
+      const writeActions = page.getByTestId('inbox-page')
+        .getByRole('button', { name: /批\s*准|拒\s*绝|授\s*予|恢\s*复|接\s*管/ });
+      // 先确认行已装配（否则「零个启用按钮」只是页面没加载完的假绿），再查禁用态。
+      await expect.poll(async () => (await writeActions.all()).length).toBeGreaterThan(0);
+      await expect.poll(async () => {
+        const buttons = await writeActions.all();
+        return (await Promise.all(buttons.map((b) => b.isEnabled()))).filter(Boolean).length;
+      }).toBe(0);
+
+      // 字面不动：agentRequests 只记普通用户无权拿到的数据；counts / approvals/pending
+      // 与三条类级 ADMIN-only 小节端点（fixture 已用 403 承接）均不计入。
       expect(api.agentRequests).toEqual([]);
     });
   });
