@@ -56,8 +56,15 @@ const UNREACHABLE_ADDRESS = 'unreachable-nat-host.invalid:9999';
 const EXECUTOR_SECRET = 'pull-dispatch-executor-secret';
 const ADMIN = { username: 'admin', password: 'admin123' };
 
-/** 终态等待上限：拉取节拍 1s + 长轮询窗口 25s 内必有交付，余量给构建。 */
-const EXECUTION_TIMEOUT_MS = 90_000;
+/**
+ * ④ 终态等待上限（硬期限，断言仍要求真实 success）。
+ *
+ * 旧值 90s 在空载本机够用；CI selftests 与 60+ job 并发跑，PG/Redis/Nest 同机
+ * 竞争时「触发 → BullMQ processor → pull 长轮询（25s 窗口）→ 回调落库」全链
+ * 明显变慢。提到 270s（旧值 3×）覆盖满载；到点仍是硬超时，按真实终态判红，
+ * 不把断言改成恒真/跳过。
+ */
+const EXECUTION_TIMEOUT_MS = 270_000;
 
 const results = [];
 const children = [];
@@ -273,6 +280,17 @@ return { ok: true, msg };`,
     const taskId = created.body?.id;
     ok('② glue 任务创建', Boolean(taskId), `taskId=${taskId}`);
     if (!taskId || !registered) return summary();
+
+    // B-11 派发前提：create 落库的 Task 默认 PAUSED（迁移 1790000000110），
+    // task.processor.handle 对非 ACTIVE 任务的 PENDING 执行直接跳过派发
+    // （task.processor.ts 的 B-11 门）。漏掉这一步，执行行会永远停在 pending，
+    // ④ 只能等到硬超时并打出 status=timeout errorMessage=-（本机与 CI 同款）。
+    // 先 resume=active 再触发；仍然保留 ④ 的真实 success 断言。
+    const resumed = await api(API_PORT, token, 'POST', `/api/tasks/${taskId}/resume`, {});
+    const taskActive = resumed.status < 300 && resumed.body?.status === 'active';
+    ok('②a 任务恢复 ACTIVE（B-11 派发前提）', taskActive,
+      `HTTP ${resumed.status} status=${resumed.body?.status ?? '-'}`);
+    if (!taskActive) return summary();
 
     const trig = await api(API_PORT, token, 'POST', `/api/tasks/${taskId}/trigger`, {});
     // 契约：返回执行行本体（{id, taskId, status:'pending', ...}）
