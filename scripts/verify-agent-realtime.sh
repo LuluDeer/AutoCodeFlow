@@ -260,7 +260,7 @@ const client = new Client({
   process.exit(1);
 });
 NODE
-) || finish 1 "PG 前置检查失败（$DB_HOST:$DB_PORT/$MAINTENANCE_DB）"
+) || finish 1 "PG 前置检查失败（$DB_HOST:$DB_PORT/${MAINTENANCE_DB}）"
 
 (cd "$API_DIR" && node <<'NODE'
 const Redis = require("ioredis");
@@ -284,7 +284,7 @@ const client = new Redis({
   process.exit(1);
 });
 NODE
-) || finish 1 "Redis 前置检查失败（$REDIS_HOST:$REDIS_DB db=$REDIS_DB）"
+) || finish 1 "Redis 前置检查失败（$REDIS_HOST:$REDIS_DB db=${REDIS_DB}）"
 
 # ── 1. 建 throwaway 库并迁移 ───────────────────────────────────────────
 (cd "$API_DIR" && node - "$DB_NAME" "$MAINTENANCE_DB" <<'NODE'
@@ -325,7 +325,7 @@ set +e
 TEST_EXIT=$?
 set -e
 if [ "$TEST_EXIT" -ne 0 ]; then
-  finish "$TEST_EXIT" "jest 失败（exit=$TEST_EXIT）"
+  finish "$TEST_EXIT" "jest 失败（exit=${TEST_EXIT}）"
 fi
 
 # ── 3. 反 skip 闸：必须有 5 组真实断言摘要 ────────────────────────────

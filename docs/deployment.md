@@ -35,7 +35,7 @@
   - [数据库操作](#数据库操作)
   - [上传面 zip bomb 防护与病毒扫描（SEC-05）](#上传面-zip-bomb-防护与病毒扫描sec-05)
   - [读写分离与只读副本（可选，ARCH-24，默认关闭）](#读写分离与只读副本可选arch-24默认关闭)
-  - [OTEL / Jaeger 分布式追踪（OBS-01）](#otel--jaeger-分布式追踪obs-01)
+  - [分布式追踪现状（OBS-01，OTLP 出站未实现）](#分布式追踪现状obs-01otlp-出站未实现)
   - [Redis 操作](#redis-操作)
   - [日志对象存储（profile: rustfs，LOG-02）](#日志对象存储profile-rustfslog-02)
   - [定时备份（profile: backup，M-1）](#定时备份profile-backupm-1)
@@ -222,7 +222,7 @@ docker compose -f docker-compose.yml -f docker-compose.secure.yml up -d
 | `CLAMD_ENABLED` | `false` | SEC-05 可选 clamd（ClamAV 守护进程）病毒扫描钩子。**默认 false = 零影响**；`true` 时 application / executor-package 上传包流式 INSTREAM 送扫。**失败策略 = fail-closed**：扫描不可达/超时/异常一律拒绝上传（503），检出威胁 400（签名名仅入服务端日志）——未获 verdict 绝不放行（安全缺省） |
 | `CLAMD_HOST` / `CLAMD_PORT` | `127.0.0.1` / `3310` | SEC-05——clamd TCP 地址（`CLAMD_ENABLED=true` 时必达，否则上传全拒） |
 | `CLAMD_TIMEOUT_MS` | `10000` | SEC-05——单次扫描超时（毫秒），超时按 fail-closed 拒绝 |
-| `OTEL_ENABLED` | `false` | OBS-01 OpenTelemetry 分布式追踪开关。**默认 false = 零开销零行为变化**（不生成 traceId、不带头、不落库）；`true` 时 traceId 贯穿落库（`task_executions.traceId`）+ W3C traceparent 头 dispatch 透传/回调回传，执行详情页展示追踪标识（详见下方「OTEL / Jaeger」段） |
+| `OTEL_ENABLED` | `false` | OBS-01 OpenTelemetry 分布式追踪开关。**默认 false = 零开销零行为变化**（不生成 traceId、不带头、不落库）；`true` 时 traceId 贯穿落库（`task_executions.traceId`）+ W3C traceparent 头 dispatch 透传/回调回传，执行详情页展示追踪标识（详见下方「分布式追踪现状」段；OTLP 出站未实现，无 trace backend） |
 | `PYTHON_RUNTIME_VERSION_MIN` / `PYTHON_RUNTIME_VERSION_MAX` | `3.7` / `3.14` | Python 任务可声明的运行时版本区间（主.次，`^\d+\.\d+$`）。**admin-api（写面校验）与 executor-python（运行时）必须同源一致**，compose 已对两侧注入同一变量；非法值静默回退契约缺省，不会让写面 500。区间外声明 → 400。3.7 需离线预填（见「解释器缓存与私有化模式」段） |
 
 > 注：以上变量均已收入 `.env.example`；其中 `THROTTLE_*`、`STALE_RECOVERY_RETRY_ENABLED`、`EXECUTOR_ALLOW_PRIVATE_NETWORK`、`EXECUTION_CALLBACK_SECRET`、`NPM_REGISTRY_*`、`REGISTRY_UPLOAD_TIMEOUT_MS`、`DISK_CLEANUP_*` 由服务进程直接读取，根 compose 默认未注入——独立部署时通过进程环境传入，或在 compose 的 `environment:` 中显式添加。
@@ -768,21 +768,11 @@ docker compose --profile replica up -d postgres-replica
 3. **副本必须是真只读/流复制形态**：云 RDS read replica 天然满足；自建用 `standby.signal` + `primary_conninfo`。compose 的 `postgres-replica`（`--profile replica`）**只是演示形态**（独立空实例，不自动同步主库数据），仅用于本地联调连接与路由行为。
 4. **迁移不写副本**：`migrationsRun`/手动迁移恒走 master；副本以只读身份跟随回放 WAL，请勿给应用配置带写权限的副本账号，避免误写。
 
-### OTEL / Jaeger 分布式追踪（OBS-01）
+### 分布式追踪现状（OBS-01，OTLP 出站未实现）
 
 平台在 `OTEL_ENABLED=true` 时启用 admin-api → 执行器 → 回调的全链路 traceId 贯穿（W3C Trace Context）；**默认 `false`，开启与否不影响任何既有行为**（关闭时不生成 traceId、不加请求头、`task_executions.traceId` 保持 null）。trace-id 在触发/入队侧生成落库，dispatch 指令以 `traceparent` 头透传执行器并注入任务 env `AUTOFLOW_TRACE_ID`（任务代码可读），执行器终态回调回传同名头关联。管理台执行详情页在 traceId 有值时展示追踪标识与「复制 traceId」按钮。契约细节见 api-reference.md「Distributed Tracing」段。
 
-**架构决策（@opentelemetry/api-only）**：范围上只用 `@opentelemetry/api`（轻量 API 包，无 SDK 实现）——span 树在 admin-api 进程内管理并以 `[trace] start/end` 结构化日志输出，**不引入 `@opentelemetry/sdk-*` 全家桶与 exporter**。注意该包**当前零 import**（手写 `TracingService` 只依赖 `crypto`）：它是有意保留的 **SDK 挂载锚点**，而且 `prom-client` 本就把 `@opentelemetry/api` 作为硬运行时依赖引入——**删掉 admin-api 的直接声明不会把它从依赖树移除**，只会让将来的 import 退回"依赖传递依赖"，故保留（直接声明即钉版本；**版本号以 `apps/admin-api/package.json` 的声明为准，当前 `^1.10.0`**，复核命令：`grep -n "@opentelemetry/api" apps/admin-api/package.json`）。理由（不引 SDK）：本项目无稳定部署的 collector，SDK 捆绑大量传递依赖并引入每 span 出站序列化开销，而当前唯一消费场景是「traceId 贯穿 + UI 展示/复制检索」；埋点边界（trigger/enqueue/dispatch/callback）已按 OpenAPI 语义收敛，未来接 Jaeger/Tempo 时只需实现 SDK `TracerProvider` 挂载到 `@opentelemetry/api` 全局并配置 OTLP exporter，无需改动任何埋点代码。
-
-**Jaeger 接入（可选 profile，当前为预置）**：
-
-```bash
-# 启动 Jaeger all-in-one（未启用 profile 时零资源占用）
-docker compose --profile jaeger up -d jaeger
-# UI: http://localhost:16686
-```
-
-> 注意：collector 容器已预置（OTLP gRPC 4317 / HTTP 4318 + UI 16686，loopback-only），但平台 span **尚未出站**——需先完成上述 SDK TracerProvider 挂载（一次性、埋点零改动），并在 admin-api 侧设置 `OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317`。挂载后从执行详情页复制 traceId 粘贴到 Jaeger「Search」框即可定位整条 span 树。
+**现状（如实）**：traceId **仅存在于进程内**——admin-api 进程内以 `[trace] start/end` 结构化日志输出 span 树（`TracingService` 只依赖 `crypto`，不引 `sdk-*`/exporter），并随 SSE 日志流透出；**OTLP 出站导出未实现**，没有 trace backend 可消费。Jaeger collector 组件已从 compose 移除（此前预置的 `--profile jaeger` 服务对运维是个恒空 UI 的陷阱）。将来实现 SDK `TracerProvider` 挂载 + OTLP exporter 后，会随实现一并把 Jaeger/Tempo 组件加回 compose 并更新本节。
 
 **执行器侧行为**：双执行器读取 dispatch 头 → 记日志（trace-id 段）→ 注入 `AUTOFLOW_TRACE_ID` env → 回调回传；执行器侧不做完整 span 树（缩水声明，见 api-reference 契约段）。
 
@@ -810,7 +800,7 @@ docker compose exec redis redis-cli -a "$REDIS_PASSWORD" INFO keyspace
 #    RUSTFS_ACCESS_KEY 默认 autoflow；接云 S3/OSS 时另配 LOG_STORAGE_* 与 SSL/region
 grep -E '^RUSTFS_(ACCESS|SECRET)_KEY=' .env
 
-# 1) 起对象存储（21 个服务里 13 个在 profile 下；8 个常驻服务不受影响，默认零资源占用）
+# 1) 起对象存储（20 个服务里 12 个在 profile 下；8 个常驻服务不受影响，默认零资源占用）
 docker compose --profile rustfs up -d rustfs
 #    S3 API 127.0.0.1:9000 / Console 127.0.0.1:9001（loopback-only）
 curl -fsS http://127.0.0.1:9000/health && echo OK

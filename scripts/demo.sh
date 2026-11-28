@@ -572,6 +572,9 @@ ${SEED_LINES}    - demo-hello-fixed ran once and reached SUCCESS
     2. Tasks → demo-fragile → Trigger (a deliberate failure, for the
        failure-reason + AI-analysis flow)
     3. Task templates → "use template" → run it (no code needed)
+    4. AI sessions (workbench/agent, SOP from screen recording) need an AI
+       provider first: Settings → AI (admin, /settings?tab=ai) — without one
+       those sessions end in failed (route_unavailable), by design not a bug.
 
   Logs   ./scripts/demo.sh --logs
   Stop   ./scripts/demo.sh --down

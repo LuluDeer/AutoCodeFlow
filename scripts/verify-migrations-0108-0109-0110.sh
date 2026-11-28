@@ -121,7 +121,7 @@ if docker run -d --name "$PG_CONTAINER" \
   -e POSTGRES_DB="$DB" -p "${PG_PORT}:5432" \
   postgres:16-alpine >"$LOG_DIR/docker-run.log" 2>&1; then
   CONTAINER_STARTED=1
-  ok "容器 $PG_CONTAINER 已启动（POSTGRES_DB=$DB）"
+  ok "容器 $PG_CONTAINER 已启动（POSTGRES_DB=${DB}）"
 else
   sed 's/^/    | /' "$LOG_DIR/docker-run.log"
   block "容器启动失败"
@@ -156,7 +156,7 @@ LEDGER="$(psql_db 'SELECT count(*)::text FROM migrations;')"
 for COL in executeMode isBroadcast; do
   R="$(psql_db "SELECT coalesce(is_nullable,'?')||'|'||coalesce(column_default,'<NULL>') FROM information_schema.columns WHERE table_schema='public' AND table_name='task_executions' AND column_name='$COL';")"
   [[ "$R" == "YES|<NULL>" ]] \
-    && ok "$COL 存在且 nullable=YES / default=NULL（实测 $R）" \
+    && ok "$COL 存在且 nullable=YES / default=NULL（实测 ${R}）" \
     || bad "$COL 列属性异常（实测 '$R'）"
 done
 
@@ -237,7 +237,7 @@ step "6. down ×3：undoLastMigration 逐条回滚 0110 → 0109 → 0108"
 # --- down #1: 回滚 0110（status default → active）---
 down_one 1 || true
 S1="$(status_default)"
-[[ "$S1" == *active* ]] && ok "down#1 后 tasks.status default=$S1（0110 已回滚）" || bad "down#1 后 status default 仍非 active（'$S1'）"
+[[ "$S1" == *active* ]] && ok "down#1 后 tasks.status default=${S1}（0110 已回滚）" || bad "down#1 后 status default 仍非 active（'$S1'）"
 [[ "$(col_present executeMode)" == "1" && "$(col_present isBroadcast)" == "1" ]] \
   && ok "down#1 后 0108 两列仍在（符合逐条回滚）" || bad "down#1 后 0108 两列异常消失"
 [[ "$(idx_present idx_execution_artifacts_task_created_at_id)" == "1" && "$(idx_present idx_execution_artifacts_application_created_at_id)" == "1" ]] \
@@ -259,11 +259,11 @@ down_one 3 || true
 [[ "$(idx_present idx_execution_artifacts_task_created_at_id)" == "0" ]] \
   && ok "down#3 后 0109 索引保持消失" || bad "down#3 后 0109 索引复活"
 S3="$(status_default)"
-[[ "$S3" == *active* ]] && ok "down#3 后 tasks.status default=$S3（回到 active）" || bad "down#3 后 status default 异常（'$S3'）"
+[[ "$S3" == *active* ]] && ok "down#3 后 tasks.status default=${S3}（回到 active）" || bad "down#3 后 status default 异常（'$S3'）"
 LEDGER_END="$(psql_db 'SELECT count(*)::text FROM migrations;')"
 EXP_END=$((N_MIG - 3))
 [[ "$LEDGER_END" == "$EXP_END" ]] \
-  && ok "往返后台账 count=$LEDGER_END == N-3=$EXP_END（三条各回滚一次）" \
+  && ok "往返后台账 count=$LEDGER_END == N-3=${EXP_END}（三条各回滚一次）" \
   || bad "往返后台账 count=$LEDGER_END != 期望 $EXP_END"
 
 step "7. 清理临时 PG"

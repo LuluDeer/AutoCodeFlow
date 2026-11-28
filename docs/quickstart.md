@@ -332,6 +332,21 @@ docker compose logs executor-node | grep '429\|throttle\|rate'
 
 ---
 
+## 启用 AI 能力（workbench 会话、SOP 录屏转草稿等）
+
+工作台/agent 会话、SOP 录屏转草稿、失败日志 AI 分析、中台 ops Agent 等能力依赖 AI provider，**默认关闭**（`AI_PROVIDER=disabled`，源码口径见 `apps/admin-api/src/modules/ai/ai.service.ts:343` 的 `getAiConfig("provider", "disabled")`）。**未配置 provider 时创建的 AI 会话会进入终态 `failed`（日志原因 `route_unavailable`，模型根本未被调用）——这是预期行为，不是产品故障**；先按下面任一方式配置，再回到会话重试。
+
+**方式一：UI 配置（推荐）**——以 admin 登录后打开 admin-web 的 **设置 → AI 配置** 页（URL 路径 `/settings?tab=ai`，仅管理员可见，源码见 `apps/admin-web/src/pages/settings/index.tsx` 的 `?tab=` 深链）：
+
+1. 添加一个 provider 条目：填 id、OpenAI 兼容 baseUrl、API Key、模型名，勾选「启用」；
+2. 在同页的用途路由（analysis / agent / video）下拉中为对应用途选上该 provider（写入 `ai.routes.<purpose>.provider`，优先生效于全局开关）。
+
+**方式二：环境变量**——在 `.env` 设 `AI_PROVIDER=openai | qwen | ollama` 并填对应密钥（openai 用 `OPENAI_API_KEY`；qwen 用 `QWEN_API_KEY` / `QWEN_BASE_URL` / `QWEN_MODEL`），然后重启 admin-api。env 名以 `.env.example` 的「AI 集成」段为准。
+
+一键 demo 也可在首次生成 `.env.demo` 时带上 `ACF_LLM_API_KEY=...`（见上方「可选真实模型」），provider 会自动写入 demo 栈。
+
+---
+
 ## 下一步
 
 - 🧭 [教程系列：从 0 到生产](tutorials) — 第一个定时任务、私服依赖、多执行器扩容、告警接入值班

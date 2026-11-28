@@ -41,7 +41,7 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production --build
 |---|---|
 | 分支拓扑 | `branch-topology-guard`（PR/schedule 事件下验远端 develop 存在 + ci.yml `push.branches` 含 develop，防 auto-delete 误删 develop 导致 push 触发器与 coverage 门静默失效；2026-11-24） |
 | 镜像闸 | `docker-multiarch-build`：admin-api / executor-node / executor-python 三镜像 matrix，`linux/amd64+arm64` **只 build 不 push**（BUG-20） |
-| admin-api | `admin-api-test`（PG16+Redis7 services；typecheck+lint+jest coverage+迁移+e2e `--runInBand`）；`admin-api-migrations`（空库全链 154 个迁移 + 二跑幂等守卫 + 每次触发均执行 revert drill 与副作用断言；schedule 轮追加实体/迁移漂移检查） |
+| admin-api | `admin-api-test`（PG16+Redis7 services；typecheck+lint+jest coverage+迁移+e2e `--runInBand`）；`admin-api-migrations`（空库全链 155 个迁移 + 二跑幂等守卫 + 每次触发均执行 revert drill 与副作用断言；schedule 轮追加实体/迁移漂移检查） |
 | Node 包 | `executor-node-test`、`acf-cli-test`、`mcp-server-test`、`autocodeflow-node-sdk-test`（coverage）、`admin-web-build`（lint+build） |
 | 安全 | `npm-audit`（5 项目 matrix，moderate 红灯，GHSA 豁免清单 fail-closed）；`lockfile-integrity`（8 项目含 `packages/docs-site` 执行 `npm ci --dry-run --ignore-scripts` 防锁文件漂移）；`secret-scan`（gitleaks 全量历史） |
 | Python | `executor-python-test`、`autoflow-sdk-python-test`、`python-packages-test`（autocodeflow-http/notify/db/ai matrix）、`registry-pypi-test`（均 py3.12） |
