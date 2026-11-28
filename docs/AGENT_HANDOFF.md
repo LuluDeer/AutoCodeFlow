@@ -1,5 +1,39 @@
 # AutoCodeFlow Agent Handoff
 
+## 本次交接（2026-11-28 · CI 红灯修复轮，8 切片并行 + lead 串行集成）
+
+**方向来源**：用户「看 gh action 快速编排 agent 进行修复」。对 CI run 46136854131（develop push，commit 1beabcbc）做 job 级诊断——68 个 job 中 28 个失败，归为 8 个互斥写域切片并行修，lead 串行做跨切片集成、bundle 回填与总验收。全程未 git commit/push。
+
+**根因与修复（按 CI job 面）**：
+1. **admin-api 依赖漂移（解锁 ~19 个 job）**：commit 8372175d 把 `apps/admin-api/package.json` TS 从 `^6.0.3` 降到 `^5.9.3`，而 lock 根声明仍 `^6.0.3`；CI 上 npm 解析到新版 `@nestjs/schematics@12.0.17`（peer TS≥6）⇒ ERESOLVE。修：TS 声明回 `^6.0.3`；新增零依赖守卫 `scripts/check-admin-api-lock-consistency.mjs`（manifest↔lock 根声明一致 + ≥6，7 例真子进程自检），接入根 chain + ci.yml check-migrations job。
+2. **acf-cli 测试漂移（acf-cli-test / windows-node-tests acf-cli）**：pageSize 缺省漏发是产品缺陷（补默认 20），maxBytes 类型期望、ESM writeFile spy、`[set]` 探针双实参、叶子命令 69→74 是测试过期；3 个 WORKBENCH_CONVERT_* 入 UNCLASSIFIED_BASELINE（理由已写）。全包 476 tests 全绿。
+3. **admin-web-build i18n**：9 处命中是 `desktop-bridge.spec.ts` 的 it/describe 描述（非渲染文案），测试描述英文化、断言原样；lead 补缺键 `dashboard.cockpit.cost.window` zh/en 成对（成本卡固定近 30 天口径）。
+4. **executor-node-test / windows-node-tests node**：artifacts-streaming 的 mock 路径 `./admin-client`→`../admin-client`；attemptseq-http-fixture 是 e2e 子进程夹具却被 Jest 收集成空套件，加显式 describe.skip + argv 双判；auth.spec mock 补 `resolveInstanceKind`。全量 1964 passed。
+5. **executor-python-test**：协议闸漏把 attemptSeq 喂进 strict schema（产品修，字符串 "7" 不再绕过）；注册能力清单期望 2 项 → 完整 7 项 + runtime 兼容键。全量 2120 passed。
+6. **desktop-selftests**：updater/theme-bridge 断言前提过期（af4260ad 改真实接线），用真实模块行为断言替代内联源码断言。
+7. **desktop runtime.selftest**：澄清问句断言过期（真实问句原样透传，空问句才加轮次前缀），补两分支断言 + 等价压缩回 size-caps 基线。
+8. **desktop-e2e-smoke**：preload 白名单从 56 → 59（补 bootTheme/onAgentLiveEvent/openWorkbench）+ 给 token fixture 预置非空值让 `******` 掩码断言真生效。
+
+**lead 集成期修复**：
+- `isBundleInput` 注释称排除测试文件却漏 `.selftest.ts`，导致改 selftest 假报 bundle 语义漂移；补排除 + 第 11 条反证用例（`COVERAGE_CASES` 10→11，floor=5 不变）。
+- `digest:regen` 回填 agent-worker source-digest 30b387bd→657f10d0；按真实重打产物（确定性已实测）回填两个 manifest 字节行：executor-node 53aa2ffc→21ea0cde（与 CI actual 逐字一致）、agent-worker 0de3893d→492280ae。
+- 修 executor-node fixture 文件 EOF 多余空行使 `git diff --check` 转绿。
+- 同机另一会话改了 README 的 CLI 命令数 69→74，与本轮判定一致，保留未回退。
+
+**验收与证据（分级）**：
+- **真子进程守卫链（第 2 级）**：`npm run test:guards:chain` **135/135 段 / 21 批全绿 exit 0**（322.5s）。
+- **CI 配置守卫（静态第 2 级）**：workflow-yaml / actions-pinned / runner-labels / guards-wired 全 exit 0；atlas-counts / size-caps / mutation-residue / script-main-guard / test:docs / git diff --check 全 0。
+- **定向单测（第 2 级）**：admin-api typecheck:specs 0、acf-cli 476 passed 0、executor-node 全量 1964 passed 0、executor-python 全量 2120 passed 0（agent 实测）、desktop test:main 全链 0、web lint:i18n 0、bundle 两闸 0。
+- **未达级别**：未在 GitHub Actions runner 上复跑完整 CI（本地无 CI 环境，仅修复根因后由逻辑推断全绿）；desktop e2e smoke 未本机真机重跑（仅静态白名单比对 + CI 口径留 lead 复核命令）。
+
+**诚实边界 / 后续项**：
+- 本轮所有验证为本地真进程/静态守卫级，最高为守卫链真子进程级；**未实跑 GH Actions**，建议 push 前由 operator 决定是否在 CI 上先验证。
+- CI run 46136854131 还有 concurrency 取消/超时类 job（如 desktop-e2e-smoke retry）与资源抖动可能，本轮只修确定性根因，不碰 flake 策略。
+- 工作树含前会话未提交的 22 个 admin-api e2e spec 格式化改动（纯 prettier/require→import，lint 与 typecheck:specs 已过），本轮未触碰、未回退。
+- 未 git commit、未 push（House Rules；需 operator 明确指令）。
+
+---
+
 ## 本次交接（2026-11-28 · 空降负责人第六轮，重定位 + 大修收口）
 
 **方向来源**：用户「编排 agent 去调查、优化、改造、打磨 功能/业务/UI；大刀阔斧；调研 agent 不限、编译类串行防 OOM；参考项目只用于调研不写进项目」。本轮 = 重定位拍板 + 6 路只读调研 + 10 个互斥写域实现切片 + 全量守卫链/typecheck 收口。参考项目（/data/project/opensource）仅进入 `artifacts/overhaul/findings/`（gitignored），未写入任何产品代码。
