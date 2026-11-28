@@ -12,8 +12,7 @@ process.env.JWT_SECRET ||= "test-jwt-secret-0123456789abcdef0123";
 process.env.JWT_REFRESH_SECRET ||= "test-jwt-refresh-secret-0123456789ab";
 process.env.EXECUTOR_SECRET ||= "test-executor-secret-16";
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const appHelper = require("./helpers/app.helper") as typeof import("./helpers/app.helper");
+import * as appHelper from "./helpers/app.helper";
 
 import type { INestApplication } from "@nestjs/common";
 import { randomUUID } from "node:crypto";

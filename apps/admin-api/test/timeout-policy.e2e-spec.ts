@@ -12,15 +12,18 @@ process.env.JWT_SECRET ||= "test-jwt-secret-0123456789abcdef0123";
 process.env.JWT_REFRESH_SECRET ||= "test-jwt-refresh-secret-0123456789ab";
 process.env.EXECUTOR_SECRET ||= "test-executor-secret-16";
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { createTestApp } = require("./helpers/app.helper") as typeof import("./helpers/app.helper");
+import { createTestApp } from "./helpers/app.helper";
 
 import { randomBytes, randomUUID } from "node:crypto";
 import type { INestApplication } from "@nestjs/common";
 import { DataSource } from "typeorm";
 import { RedisLockService } from "../src/common/services/redis-lock.service";
 import { buildTask } from "./factories/task.factory";
-import { Task, TaskStatus, ExecuteMode } from "../src/modules/task/entities/task.entity";
+import {
+  Task,
+  TaskStatus,
+  ExecuteMode,
+} from "../src/modules/task/entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -117,8 +120,12 @@ describe("timeout policy · kill_retry / notify_only / 重复 timeout 真栈验�
     app = await createTestApp();
     dataSource = app.get(DataSource);
     taskRepo = dataSource.getRepository(Task) as unknown as Repo<Task>;
-    execRepo = dataSource.getRepository(TaskExecution) as unknown as Repo<TaskExecution>;
-    executorRepo = dataSource.getRepository(Executor) as unknown as Repo<Executor>;
+    execRepo = dataSource.getRepository(
+      TaskExecution,
+    ) as unknown as Repo<TaskExecution>;
+    executorRepo = dataSource.getRepository(
+      Executor,
+    ) as unknown as Repo<Executor>;
     taskService = app.get(TaskService);
     lockService =
       (taskService as unknown as { redisLockService?: RedisLockService })
@@ -143,7 +150,8 @@ describe("timeout policy · kill_retry / notify_only / 重复 timeout 真栈验�
     setIfAbsentSpy?.mockRestore();
     setIfAbsentSpy = undefined;
     for (const f of fixtures) {
-      if (f.slotKey) await lockService.deleteKey(f.slotKey).catch(() => undefined);
+      if (f.slotKey)
+        await lockService.deleteKey(f.slotKey).catch(() => undefined);
       await execRepo.delete({ taskId: f.task.id });
       await taskRepo.delete({ id: f.task.id });
       if (f.executor) await executorRepo.delete({ id: f.executor.id });
@@ -199,7 +207,13 @@ describe("timeout policy · kill_retry / notify_only / 重复 timeout 真栈验�
     }
 
     const execution = await execRepo.save(
-      makeExecutionRow(task, randomUUID(), address, executor?.id ?? null, broadcast),
+      makeExecutionRow(
+        task,
+        randomUUID(),
+        address,
+        executor?.id ?? null,
+        broadcast,
+      ),
     );
     const fixture: Fixture = {
       task,
@@ -228,7 +242,9 @@ describe("timeout policy · kill_retry / notify_only / 重复 timeout 真栈验�
     const before = await execRepo.count({ where: { taskId: f.task.id } });
     expect(before).toBe(1);
 
-    const result = await taskService.handleCallback([timeoutCallback(f)] as never[]);
+    const result = await taskService.handleCallback([
+      timeoutCallback(f),
+    ] as never[]);
     expect(result[0]?.success).toBe(true);
 
     const after = await execRepo.count({ where: { taskId: f.task.id } });
@@ -250,7 +266,9 @@ describe("timeout policy · kill_retry / notify_only / 重复 timeout 真栈验�
   it("② notify_only：真 PG 无新 execution 行", async () => {
     const f = await createFixture({ timeoutAction: "notify_only" });
 
-    const result = await taskService.handleCallback([timeoutCallback(f)] as never[]);
+    const result = await taskService.handleCallback([
+      timeoutCallback(f),
+    ] as never[]);
     expect(result[0]?.success).toBe(true);
 
     const after = await execRepo.count({ where: { taskId: f.task.id } });
@@ -262,25 +280,35 @@ describe("timeout policy · kill_retry / notify_only / 重复 timeout 真栈验�
   });
 
   it("③ 迟到重复 timeout：SETNX 只首次释放广播槽位", async () => {
-    const f = await createFixture({ timeoutAction: "notify_only", broadcast: true });
+    const f = await createFixture({
+      timeoutAction: "notify_only",
+      broadcast: true,
+    });
     const original = lockService.setIfAbsent.bind(lockService);
     setIfAbsentSpy = jest
       .spyOn(lockService, "setIfAbsent")
-      .mockImplementation(async (key: string, ttlMs: number, value?: string) => {
-        const ok = await original(key, ttlMs, value);
-        setIfAbsentResults.push(ok);
-        return ok;
-      });
+      .mockImplementation(
+        async (key: string, ttlMs: number, value?: string) => {
+          const ok = await original(key, ttlMs, value);
+          setIfAbsentResults.push(ok);
+          return ok;
+        },
+      );
 
     const cb = timeoutCallback(f);
-    const results = await taskService.handleCallback([cb, { ...cb }] as never[]);
+    const results = await taskService.handleCallback([
+      cb,
+      { ...cb },
+    ] as never[]);
     expect(results.map((r) => r.success)).toEqual([true, true]);
 
     expect(setIfAbsentResults).toEqual([true, false]);
     const key = await lockService.getValue(f.slotKey!);
     expect(key).not.toBeNull();
 
-    const executorRow = await executorRepo.findOne({ where: { id: f.executor!.id } });
+    const executorRow = await executorRepo.findOne({
+      where: { id: f.executor!.id },
+    });
     expect(executorRow?.broadcastReservedCount).toBe(0);
 
     const terminal = await execRepo.findOne({ where: { id: f.execution.id } });

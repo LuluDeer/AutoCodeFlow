@@ -93,10 +93,9 @@ describe("Release approval cross-instance recovery (two real Nest apps, real PG 
 
   const contextOf = async (db: DataSource, sessionId: string) =>
     (
-      await db.query(
-        'SELECT "contextJson" FROM agent_sessions WHERE id = $1',
-        [sessionId],
-      )
+      await db.query('SELECT "contextJson" FROM agent_sessions WHERE id = $1', [
+        sessionId,
+      ])
     )[0]?.contextJson as Record<string, unknown> | undefined;
 
   /**
@@ -111,7 +110,9 @@ describe("Release approval cross-instance recovery (two real Nest apps, real PG 
     const creatorName = `${E2E_PREFIX}-${label}-${runId}`;
     const bodyMarkdown = `# 审批跨实例恢复 e2e ${label} ${runId}\n\n两真实例共享真库副作用验证用正文。`;
     const frontMatter = {
-      acceptance: [{ kind: "command" as const, run: `echo crossinst-${label}` }],
+      acceptance: [
+        { kind: "command" as const, run: `echo crossinst-${label}` },
+      ],
     } as unknown as SopFrontMatter;
     const contentHash = sopContentHash(frontMatter, bodyMarkdown);
     // strict 归一化后哈希必须与申请锚点一致，否则会因 content_changed 假红。
@@ -140,7 +141,7 @@ describe("Release approval cross-instance recovery (two real Nest apps, real PG 
     earlySopIds.push(sopId);
     // 同一 draft 必须对 B 实例的 DataSource 可见（证明两实例共享同一库）。
     const seenByB = (
-      await dbB.query('SELECT id, status FROM sops WHERE id = $1', [sopId])
+      await dbB.query("SELECT id, status FROM sops WHERE id = $1", [sopId])
     )[0];
     expect(seenByB).toMatchObject({ id: sopId, status: "draft" });
 
@@ -258,7 +259,9 @@ describe("Release approval cross-instance recovery (two real Nest apps, real PG 
             ]),
           );
           await step(`sessions:${f.label}`, () =>
-            dbA.query("DELETE FROM agent_sessions WHERE id = $1", [f.sessionId]),
+            dbA.query("DELETE FROM agent_sessions WHERE id = $1", [
+              f.sessionId,
+            ]),
           );
           await step(`versions:${f.label}`, () =>
             dbA.query('DELETE FROM sop_versions WHERE "sopId" = $1', [f.sopId]),
@@ -329,9 +332,10 @@ describe("Release approval cross-instance recovery (two real Nest apps, real PG 
     expect(rowAfter.status).toBe("consumed");
     expect(rowAfter.consumedAt).not.toBeNull();
     const sopRow = (
-      await dbB.query('SELECT status, "currentVersion" FROM sops WHERE id = $1', [
-        f.sopId,
-      ])
+      await dbB.query(
+        'SELECT status, "currentVersion" FROM sops WHERE id = $1',
+        [f.sopId],
+      )
     )[0];
     expect(sopRow.status).toBe("published");
     expect(sopRow.currentVersion).toBe(versions[0].version);
@@ -367,7 +371,10 @@ describe("Release approval cross-instance recovery (two real Nest apps, real PG 
     const findSpyOnB = jest.spyOn(approvalsB, "findByKey");
     try {
       const result = await releaseB.releaseByApprovalKey(f.approvalKey, null);
-      expect(result).toEqual({ published: false, reason: "dependency_unavailable" });
+      expect(result).toEqual({
+        published: false,
+        reason: "dependency_unavailable",
+      });
       // B 仍走持久化恢复读到了被篡改的 context，只是被 digest 闸挡下。
       expect(findSpyOnB).toHaveBeenCalledWith(f.approvalKey);
     } finally {
@@ -380,9 +387,10 @@ describe("Release approval cross-instance recovery (two real Nest apps, real PG 
     expect(rowAfter.status).toBe("granted");
     expect(rowAfter.consumedAt).toBeNull();
     const sopRow = (
-      await dbB.query('SELECT status, "currentVersion" FROM sops WHERE id = $1', [
-        f.sopId,
-      ])
+      await dbB.query(
+        'SELECT status, "currentVersion" FROM sops WHERE id = $1',
+        [f.sopId],
+      )
     )[0];
     expect(sopRow.status).toBe("draft");
     expect(sopRow.currentVersion).toBeNull();

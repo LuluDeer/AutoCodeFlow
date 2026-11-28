@@ -79,10 +79,9 @@ describe("Release approval restart recovery (real PG e2e)", () => {
 
   const contextOf = async (sessionId: string) =>
     (
-      await db.query(
-        'SELECT "contextJson" FROM agent_sessions WHERE id = $1',
-        [sessionId],
-      )
+      await db.query('SELECT "contextJson" FROM agent_sessions WHERE id = $1', [
+        sessionId,
+      ])
     )[0]?.contextJson as Record<string, unknown> | undefined;
 
   /** 真库建 draft + 真 requestRelease 建单； fixture 入账供 afterAll 清理。 */
@@ -267,9 +266,10 @@ describe("Release approval restart recovery (real PG e2e)", () => {
     expect(rowAfter.status).toBe("consumed");
     expect(rowAfter.consumedAt).not.toBeNull();
     const sopRow = (
-      await db.query('SELECT status, "currentVersion" FROM sops WHERE id = $1', [
-        f.sopId,
-      ])
+      await db.query(
+        'SELECT status, "currentVersion" FROM sops WHERE id = $1',
+        [f.sopId],
+      )
     )[0];
     expect(sopRow.status).toBe("published");
     expect(sopRow.currentVersion).toBe(versions[0].version);
@@ -290,16 +290,19 @@ describe("Release approval restart recovery (real PG e2e)", () => {
     expect(stored?.cardHash).toBe(tamperedCardHash);
     // 篡改后的 args 摘要必须与审批单落库的 argsDigest 不同。
     const rowBefore = await approvalRow(f.approvalKey);
-    expect(computeApprovalArgsDigest({ ...f.args, cardHash: tamperedCardHash })).not.toBe(
-      rowBefore.argsDigest,
-    );
+    expect(
+      computeApprovalArgsDigest({ ...f.args, cardHash: tamperedCardHash }),
+    ).not.toBe(rowBefore.argsDigest);
 
     expect(await versionRows(f.sopId)).toHaveLength(0);
     const decided = await approvals.decide(f.approvalKey, "granted", "admin");
     expect(decided?.status).toBe("granted");
 
     const result = await release.releaseByApprovalKey(f.approvalKey, null);
-    expect(result).toEqual({ published: false, reason: "dependency_unavailable" });
+    expect(result).toEqual({
+      published: false,
+      reason: "dependency_unavailable",
+    });
 
     // 真库副作用：零版本行、审批单停在 granted 未被 consume、draft 未发布。
     expect(await versionRows(f.sopId)).toHaveLength(0);
@@ -307,9 +310,10 @@ describe("Release approval restart recovery (real PG e2e)", () => {
     expect(rowAfter.status).toBe("granted");
     expect(rowAfter.consumedAt).toBeNull();
     const sopRow = (
-      await db.query('SELECT status, "currentVersion" FROM sops WHERE id = $1', [
-        f.sopId,
-      ])
+      await db.query(
+        'SELECT status, "currentVersion" FROM sops WHERE id = $1',
+        [f.sopId],
+      )
     )[0];
     expect(sopRow.status).toBe("draft");
     expect(sopRow.currentVersion).toBeNull();

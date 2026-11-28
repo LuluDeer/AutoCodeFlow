@@ -138,7 +138,11 @@ describe("Release failure retry (real PG e2e)", () => {
     expect(requested.approvalKey).toMatch(/^apr-/);
     expect(requested.sessionId).toBeTruthy();
 
-    const decided = await approvals.decide(requested.approvalKey, "granted", "admin");
+    const decided = await approvals.decide(
+      requested.approvalKey,
+      "granted",
+      "admin",
+    );
     expect(decided?.status).toBe("granted");
 
     const fixture: Fixture = {
@@ -275,9 +279,14 @@ describe("Release failure retry (real PG e2e)", () => {
     expect(published.status).toBe("published");
     expect(published.currentVersion).toBe(versions[0].version);
 
-    const audits = await waitAudit(f.approvalKey, "sop_publish.release_succeeded");
+    const audits = await waitAudit(
+      f.approvalKey,
+      "sop_publish.release_succeeded",
+    );
     expect(audits.length).toBeGreaterThan(0);
-    expect(audits[0]).toMatchObject({ action: "sop_publish.release_succeeded" });
+    expect(audits[0]).toMatchObject({
+      action: "sop_publish.release_succeeded",
+    });
   });
 
   it("② 二次 retry：consume 幂等，sop_versions 不新增版本行", async () => {
@@ -317,8 +326,12 @@ describe("Release failure retry (real PG e2e)", () => {
     expect((await sopRow(f.sopId)).status).toBe("draft");
 
     // 400 是入参闸门拒绝，根本没有 retry 尝试：审计表也不该出现重试记录。
-    expect(await auditRows(f.approvalKey, "sop_publish.release_failed")).toHaveLength(0);
-    expect(await auditRows(f.approvalKey, "sop_publish.release_succeeded")).toHaveLength(0);
+    expect(
+      await auditRows(f.approvalKey, "sop_publish.release_failed"),
+    ).toHaveLength(0);
+    expect(
+      await auditRows(f.approvalKey, "sop_publish.release_succeeded"),
+    ).toHaveLength(0);
   });
 
   it("⑦ 受理后真发布失败（content_changed）⇒ published:false + release_failed 审计", async () => {

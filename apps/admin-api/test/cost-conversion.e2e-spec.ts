@@ -43,7 +43,11 @@ describe("Cost conversion makes stats produce real money (real PG e2e)", () => {
     pricePerMillionTokens: 2,
     currency: "CNY",
   };
-  const priceAOut: PricingConfig = { ...priceAIn, direction: "out", pricePerMillionTokens: 3 };
+  const priceAOut: PricingConfig = {
+    ...priceAIn,
+    direction: "out",
+    pricePerMillionTokens: 3,
+  };
   const keyAIn = priceKey(providerA, modelA, "in");
   const keyAOut = priceKey(providerA, modelA, "out");
 
@@ -58,7 +62,6 @@ describe("Cost conversion makes stats produce real money (real PG e2e)", () => {
     pricePerMillionTokens: 1.5,
     currency: "CNY",
   };
-  const keyBIn = priceKey(providerB, modelB, "in");
 
   // 所有本用例写入的 key 都以 runId 收尾段区分；LIKE 精确命中，不碰别的用例。
   const keyLike = `${PRICE_KEY_PREFIX}e2e-conv-%-${runId}.%`;
@@ -147,14 +150,16 @@ describe("Cost conversion makes stats produce real money (real PG e2e)", () => {
           'DELETE FROM agent_steps WHERE "sessionId" = ANY($1::uuid[])',
           [sessionIds],
         );
-        await db.query("DELETE FROM agent_sessions WHERE id = ANY($1::uuid[])", [
-          sessionIds,
-        ]);
-        await db.query("DELETE FROM system_configs WHERE key LIKE $1", [keyLike]);
         await db.query(
-          'DELETE FROM config_history WHERE "configKey" LIKE $1',
-          [keyLike],
+          "DELETE FROM agent_sessions WHERE id = ANY($1::uuid[])",
+          [sessionIds],
         );
+        await db.query("DELETE FROM system_configs WHERE key LIKE $1", [
+          keyLike,
+        ]);
+        await db.query('DELETE FROM config_history WHERE "configKey" LIKE $1', [
+          keyLike,
+        ]);
 
         const stepsLeft = await countSteps();
         const keysLeft = await countKeys();

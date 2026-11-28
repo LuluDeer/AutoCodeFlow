@@ -76,7 +76,9 @@ describe("Failed approval loop (real PG e2e)", () => {
   const unwrap = (body: any): any => body?.data ?? body;
   const auth = () => `Bearer ${admin}`;
 
-  const preview = async (goal: string): Promise<{ cardHash: string; policyGeneration: string }> => {
+  const preview = async (
+    goal: string,
+  ): Promise<{ cardHash: string; policyGeneration: string }> => {
     const res: any = await request(app.getHttpServer())
       .post("/workbench/preview")
       .set("Authorization", auth())
@@ -86,7 +88,10 @@ describe("Failed approval loop (real PG e2e)", () => {
     expect(p.eligible).toBe(true);
     expect(String(p.cardHash)).toMatch(/^[0-9a-f]{16}$/);
     expect(String(p.policyGeneration)).toMatch(/^[0-9a-f]{16}$/);
-    return { cardHash: String(p.cardHash), policyGeneration: String(p.policyGeneration) };
+    return {
+      cardHash: String(p.cardHash),
+      policyGeneration: String(p.policyGeneration),
+    };
   };
 
   /** 构造「审批发起失败」：临时让策略指纹不可读 ⇒ requestRelease fail-closed 抛错。 */
@@ -123,7 +128,8 @@ describe("Failed approval loop (real PG e2e)", () => {
       // 必须在返回前还原：retry 端点内部也调 requestRelease，若策略端口仍返回
       // null，②的重试会跟着 fail-closed（假红），所以 createFailure 自还原，
       // afterEach 只作兜底（覆盖中途抛错路径）。
-      if (originalPolicy !== undefined) (release as any).policy = originalPolicy;
+      if (originalPolicy !== undefined)
+        (release as any).policy = originalPolicy;
       originalPolicy = undefined;
     }
   };
@@ -219,7 +225,9 @@ describe("Failed approval loop (real PG e2e)", () => {
       try {
         await fn();
       } catch (err) {
-        console.warn(`WARN failed-approval-loop cleanup failed (${label}): ${String(err)}`);
+        console.warn(
+          `WARN failed-approval-loop cleanup failed (${label}): ${String(err)}`,
+        );
       }
     };
     try {
@@ -229,15 +237,19 @@ describe("Failed approval loop (real PG e2e)", () => {
         "SELECT id FROM sops WHERE title LIKE $1",
         [`方案卡：${prefix}%`],
       );
-      for (const row of extraSops) if (!sopIds.includes(row.id)) sopIds.push(row.id);
+      for (const row of extraSops)
+        if (!sopIds.includes(row.id)) sopIds.push(row.id);
       for (const f of fixtures) {
         const key = f.body.approvalKey;
-        if (key && !approvalKeys.includes(String(key))) approvalKeys.push(String(key));
+        if (key && !approvalKeys.includes(String(key)))
+          approvalKeys.push(String(key));
       }
 
       for (const key of approvalKeys) {
         await step(`approval:key:${key}`, () =>
-          db.query('DELETE FROM agent_approvals WHERE "approvalKey" = $1', [key]),
+          db.query('DELETE FROM agent_approvals WHERE "approvalKey" = $1', [
+            key,
+          ]),
         );
       }
       for (const cardHash of cardHashes) {
@@ -245,12 +257,15 @@ describe("Failed approval loop (real PG e2e)", () => {
           'SELECT "sessionId" FROM agent_approvals WHERE reason LIKE $1',
           [`%${cardHash}%`],
         );
-        for (const row of stray) if (!sessionIds.includes(row.sessionId)) sessionIds.push(row.sessionId);
+        for (const row of stray)
+          if (!sessionIds.includes(row.sessionId))
+            sessionIds.push(row.sessionId);
         const sess: { id: string }[] = await db.query(
-          'SELECT id FROM agent_sessions WHERE title LIKE $1',
+          "SELECT id FROM agent_sessions WHERE title LIKE $1",
           [`方案卡发布复核 ${cardHash}%`],
         );
-        for (const row of sess) if (!sessionIds.includes(row.id)) sessionIds.push(row.id);
+        for (const row of sess)
+          if (!sessionIds.includes(row.id)) sessionIds.push(row.id);
       }
       for (const sid of sessionIds) {
         await step(`approval:session:${sid}`, () =>
@@ -302,14 +317,27 @@ describe("Failed approval loop (real PG e2e)", () => {
 
       // 清理复查：0 残留才算干净（不是「删了就算」）。
       const checks: Array<[string, string, unknown[]]> = [
-        ["sops", "SELECT count(*)::int AS n FROM sops WHERE title LIKE $1", [`方案卡：${prefix}%`]],
-        ["agent_approvals", "SELECT count(*)::int AS n FROM agent_approvals WHERE reason LIKE $1", [`%${prefix}%`]],
-        ["agent_sessions", "SELECT count(*)::int AS n FROM agent_sessions WHERE title LIKE $1", [`%${prefix}%`]],
+        [
+          "sops",
+          "SELECT count(*)::int AS n FROM sops WHERE title LIKE $1",
+          [`方案卡：${prefix}%`],
+        ],
+        [
+          "agent_approvals",
+          "SELECT count(*)::int AS n FROM agent_approvals WHERE reason LIKE $1",
+          [`%${prefix}%`],
+        ],
+        [
+          "agent_sessions",
+          "SELECT count(*)::int AS n FROM agent_sessions WHERE title LIKE $1",
+          [`%${prefix}%`],
+        ],
       ];
       for (const [label, sql, params] of checks) {
         await step(`verify-zero:${label}`, async () => {
           const rows: { n: number }[] = await db.query(sql, params);
-          if (rows[0]?.n !== 0) throw new Error(`${label} 残留 ${rows[0]?.n} 行`);
+          if (rows[0]?.n !== 0)
+            throw new Error(`${label} 残留 ${rows[0]?.n} 行`);
         });
       }
       await step("verify-zero:audit-logs", async () => {
@@ -318,7 +346,8 @@ describe("Failed approval loop (real PG e2e)", () => {
            WHERE (detail ->> 'sopId') = ANY($1::text[])`,
           [sopIds],
         );
-        if (rows[0]?.n !== 0) throw new Error(`audit_logs 残留 ${rows[0]?.n} 行`);
+        if (rows[0]?.n !== 0)
+          throw new Error(`audit_logs 残留 ${rows[0]?.n} 行`);
       });
     } finally {
       await app?.close();
@@ -330,7 +359,10 @@ describe("Failed approval loop (real PG e2e)", () => {
 
     const rows = await failedAuditRows(String(body.sopId));
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ action: auditActionFailed, result: "failure" });
+    expect(rows[0]).toMatchObject({
+      action: auditActionFailed,
+      result: "failure",
+    });
     expect(rows[0].resourceId).toBe(body.sopId);
 
     expect(detail.sopId).toBe(body.sopId);
@@ -346,7 +378,13 @@ describe("Failed approval loop (real PG e2e)", () => {
     expect(detail.attempt).toBe("initial");
 
     const serialised = JSON.stringify(detail);
-    for (const secret of ["apiKey", "token", "secret", "password", "approvalKey"]) {
+    for (const secret of [
+      "apiKey",
+      "token",
+      "secret",
+      "password",
+      "approvalKey",
+    ]) {
       expect(serialised.toLowerCase()).not.toContain(secret.toLowerCase());
     }
 
@@ -401,7 +439,10 @@ describe("Failed approval loop (real PG e2e)", () => {
       await new Promise((r) => setTimeout(r, 100));
     }
     expect(retried).toHaveLength(1);
-    expect(retried[0]).toMatchObject({ action: auditActionRetried, result: "success" });
+    expect(retried[0]).toMatchObject({
+      action: auditActionRetried,
+      result: "success",
+    });
     expect(retried[0].resourceId).toBe(detail.sopId);
     const rd = retried[0].detail;
     expect(rd.sopId).toBe(detail.sopId);
@@ -430,7 +471,8 @@ describe("Failed approval loop (real PG e2e)", () => {
 
   it("③ 篡改 contentHash fail-closed：400 + 零审批单 + 无 retried 审计", async () => {
     const { detail } = await createFailure("tamper");
-    const tampered = `0`.repeat(64) === detail.contentHash ? `1`.repeat(64) : `0`.repeat(64);
+    const tampered =
+      `0`.repeat(64) === detail.contentHash ? `1`.repeat(64) : `0`.repeat(64);
 
     const res = await retry({
       sopId: detail.sopId,

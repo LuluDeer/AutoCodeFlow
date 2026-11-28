@@ -33,7 +33,9 @@ describe("Release approval chain (real PG e2e)", () => {
   beforeAll(async () => {
     const dbName = process.env.DB_DATABASE ?? "";
     if (!/(^|_)(test|e2e)(_|$)/i.test(dbName)) {
-      throw new Error(`release approval e2e 需要 test/e2e 库（收到 ${dbName || "<empty>"}）`);
+      throw new Error(
+        `release approval e2e 需要 test/e2e 库（收到 ${dbName || "<empty>"}）`,
+      );
     }
     app = await createTestApp();
     db = app.get(DataSource);
@@ -46,7 +48,9 @@ describe("Release approval chain (real PG e2e)", () => {
   });
 
   afterAll(async () => {
-    await db.query("DELETE FROM agent_approvals WHERE \"approvalKey\" = $1", [approvalKey]);
+    await db.query('DELETE FROM agent_approvals WHERE "approvalKey" = $1', [
+      approvalKey,
+    ]);
     await db.query("DELETE FROM agent_sessions WHERE id = $1", [sessionId]);
     await app?.close();
   });

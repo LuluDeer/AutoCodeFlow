@@ -8,7 +8,11 @@ import { Queue } from "bullmq";
 import { DataSource } from "typeorm";
 
 import { createTestApp } from "./helpers/app.helper";
-import { createSseSink, waitFor, type SseSink } from "./helpers/agent-realtime-sse";
+import {
+  createSseSink,
+  waitFor,
+  type SseSink,
+} from "./helpers/agent-realtime-sse";
 import { AgentSessionService } from "../src/modules/agent/runtime/agent-session.service";
 import {
   AgentEventStreamService,
@@ -117,9 +121,13 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
    * SUBSCRIBE 命令可能仍在途。对同一 subscriber 连接发 PING，Redis 按命令顺序
    * 处理 ⇒ PING 返回时 SUBSCRIBE 必已生效，后续 publish 不会再被竞态吞掉。
    */
-  async function ensureRelayReady(service: AgentEventStreamService): Promise<void> {
+  async function ensureRelayReady(
+    service: AgentEventStreamService,
+  ): Promise<void> {
     const subscriber = (
-      service as unknown as { subscriber?: { status?: string; ping(): Promise<unknown> } }
+      service as unknown as {
+        subscriber?: { status?: string; ping(): Promise<unknown> };
+      }
     ).subscriber;
     if (!subscriber) {
       throw new Error("relay subscriber 未建立（ensureSubscriber 未生效）");
@@ -132,8 +140,12 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
     await subscriber.ping();
   }
 
-  async function ensurePublisherReady(service: AgentEventStreamService): Promise<void> {
-    const publisher = (service as unknown as { getPublisher(): { status?: string } }).getPublisher();
+  async function ensurePublisherReady(
+    service: AgentEventStreamService,
+  ): Promise<void> {
+    const publisher = (
+      service as unknown as { getPublisher(): { status?: string } }
+    ).getPublisher();
     await waitFor(
       () => (publisher.status === "ready" ? true : undefined),
       10_000,
@@ -142,7 +154,9 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
   }
 
   /** SteerInbox 的 Redis 客户端也是惰性创建且 enableOfflineQueue=false。 */
-  async function ensureSteerRedisReady(inbox: SteerInboxService): Promise<void> {
+  async function ensureSteerRedisReady(
+    inbox: SteerInboxService,
+  ): Promise<void> {
     const client = (
       inbox as unknown as { getRedis(): { status?: string } | null }
     ).getRedis();
@@ -236,7 +250,9 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
       throw new Error(`AGENT_REALTIME_STAMP 非法: ${STAMP || "<empty>"}`);
     }
     if (!/^autoflow_agent_rt_e2e_[A-Za-z0-9_-]+$/.test(EXPECTED_DB)) {
-      throw new Error(`AGENT_REALTIME_DB_NAME 非法: ${EXPECTED_DB || "<empty>"}`);
+      throw new Error(
+        `AGENT_REALTIME_DB_NAME 非法: ${EXPECTED_DB || "<empty>"}`,
+      );
     }
     if (!Number.isInteger(REDIS_DB) || REDIS_DB < 1 || REDIS_DB > 14) {
       throw new Error(`AGENT_REALTIME_REDIS_DB 必须是 1..14: ${REDIS_DB}`);
@@ -327,9 +343,15 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
           /* best effort: harness 会按一次性库名整体 drop */
         }
       };
-      await cleanup('DELETE FROM "agent_events" WHERE "sessionId" = ANY($1::uuid[])');
-      await cleanup('DELETE FROM "agent_tool_calls" WHERE "sessionId" = ANY($1::uuid[])');
-      await cleanup('DELETE FROM "agent_steps" WHERE "sessionId" = ANY($1::uuid[])');
+      await cleanup(
+        'DELETE FROM "agent_events" WHERE "sessionId" = ANY($1::uuid[])',
+      );
+      await cleanup(
+        'DELETE FROM "agent_tool_calls" WHERE "sessionId" = ANY($1::uuid[])',
+      );
+      await cleanup(
+        'DELETE FROM "agent_steps" WHERE "sessionId" = ANY($1::uuid[])',
+      );
       await cleanup('DELETE FROM "agent_sessions" WHERE id = ANY($1::uuid[])');
     }
 
@@ -404,7 +426,11 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
 
     record("cross-instance-delta-and-snapshot", {
       sessionId: session.id,
-      receivedDeltaFrames: [tokenFrame.event, reasoningFrame.event, phaseFrame.event],
+      receivedDeltaFrames: [
+        tokenFrame.event,
+        reasoningFrame.event,
+        phaseFrame.event,
+      ],
       snapshot: synced.payload.snapshot,
       durableEventsAddedByDelta: 0,
     });
@@ -435,7 +461,9 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
     expect(synced.payload.hasMore).toBe(true);
     expect(synced.payload.truncated).toBe(true);
     expect(Number(synced.payload.lastSeq)).toBe(5000);
-    expect(stream.sink.frames.some((f) => f.event === "resync_required")).toBe(false);
+    expect(stream.sink.frames.some((f) => f.event === "resync_required")).toBe(
+      false,
+    );
     expect(stream.sink.frames.some((f) => f.event === "error")).toBe(false);
     await stream.close();
 
@@ -504,9 +532,9 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
     ]);
 
     const channel = `abort:${session.id}`;
-    const listenersBefore = (streamB as unknown as { emitter: { listenerCount(c: string): number } }).emitter.listenerCount(
-      channel,
-    );
+    const listenersBefore = (
+      streamB as unknown as { emitter: { listenerCount(c: string): number } }
+    ).emitter.listenerCount(channel);
     const binding = bindSessionAbort(streamB, session.id);
     try {
       expect(binding.signal.aborted).toBe(false);
@@ -514,7 +542,11 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
       // 再让 A 发 cancel，否则测的是 Redis 订阅竞态而不是跨副本信号链。
       await ensureRelayReady(streamB);
       expect(
-        (streamB as unknown as { emitter: { listenerCount(c: string): number } }).emitter.listenerCount(channel),
+        (
+          streamB as unknown as {
+            emitter: { listenerCount(c: string): number };
+          }
+        ).emitter.listenerCount(channel),
       ).toBe(listenersBefore + 1);
 
       // A 的 publisher 同样惰性创建；requestAbort 里 set/publish 都是 fire-and-forget。
@@ -522,7 +554,11 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
       const cancelled = await streamA.requestAbort(session.id, "e2e-A");
       expect(cancelled).toMatchObject({ sessionId: session.id, aborted: true });
 
-      await waitFor(() => (binding.signal.aborted ? true : undefined), 10_000, "B abort signal");
+      await waitFor(
+        () => (binding.signal.aborted ? true : undefined),
+        10_000,
+        "B abort signal",
+      );
       const fresh = await sessionsB.requireById(session.id);
       expect(fresh.status).toBe("aborted");
       expect(await redis.get(agentAbortKey(session.id))).toBe("1");
@@ -530,7 +566,9 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
       binding.dispose();
     }
     expect(
-      (streamB as unknown as { emitter: { listenerCount(c: string): number } }).emitter.listenerCount(channel),
+      (
+        streamB as unknown as { emitter: { listenerCount(c: string): number } }
+      ).emitter.listenerCount(channel),
     ).toBe(listenersBefore);
 
     record("cross-instance-abort-signal-and-db", {
@@ -545,14 +583,21 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
   it("⑤ A steer 入 inbox；B 工作副本仅在步边界 drain 且只消费一次", async () => {
     const session = await createSession("steer");
     await sessionsA.markWaiting(session.id, "e2e-approval");
-    expect((await sessionsB.requireById(session.id)).status).toBe("waiting_input");
+    expect((await sessionsB.requireById(session.id)).status).toBe(
+      "waiting_input",
+    );
 
     const stepsBefore = await countRows("agent_steps", session.id);
     const countsBefore = await jobCounts();
     const content = `steer-from-A-${randomUUID().slice(0, 8)}`;
     await ensureSteerRedisReady(steerInboxA);
     await ensureSteerRedisReady(steerInboxB);
-    const parked = await steerInboxA.park(session.id, content, 1, "waiting_input");
+    const parked = await steerInboxA.park(
+      session.id,
+      content,
+      1,
+      "waiting_input",
+    );
     expect(parked.intent).not.toBeNull();
     expect(parked.wake).toBe(true);
 
@@ -582,7 +627,9 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
     // 非步边界：不得提前取走（否则另一副本的 worker 会永远丢掉这条 steer）。
     const nonBoundary = await steerInboxB.drain(session.id, null);
     expect(nonBoundary.intents).toHaveLength(0);
-    expect((await readStoredIntents()).map((i) => i.id)).toEqual([stored[0].id]);
+    expect((await readStoredIntents()).map((i) => i.id)).toEqual([
+      stored[0].id,
+    ]);
 
     const drained = await steerInboxB.drain(session.id, 1);
     expect(drained.intents.map((intent) => intent.content)).toEqual([content]);

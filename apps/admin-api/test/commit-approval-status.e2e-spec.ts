@@ -65,7 +65,9 @@ describe("Commit approval status honesty (real PG e2e)", () => {
   const unwrap = (body: any): CommitBody => body?.data ?? body;
   const auth = () => `Bearer ${admin}`;
 
-  const preview = async (goal: string): Promise<{ cardHash: string; policyGeneration: string }> => {
+  const preview = async (
+    goal: string,
+  ): Promise<{ cardHash: string; policyGeneration: string }> => {
     const res: any = await request(app.getHttpServer())
       .post("/workbench/preview")
       .set("Authorization", auth())
@@ -75,7 +77,10 @@ describe("Commit approval status honesty (real PG e2e)", () => {
     expect(p.eligible).toBe(true);
     expect(String(p.cardHash)).toMatch(/^[0-9a-f]{16}$/);
     expect(String(p.policyGeneration)).toMatch(/^[0-9a-f]{16}$/);
-    return { cardHash: String(p.cardHash), policyGeneration: String(p.policyGeneration) };
+    return {
+      cardHash: String(p.cardHash),
+      policyGeneration: String(p.policyGeneration),
+    };
   };
 
   const commit = async (goal: string): Promise<CommitBody> => {
@@ -108,10 +113,10 @@ describe("Commit approval status honesty (real PG e2e)", () => {
     );
 
   const draftFor = async (sopId: string) =>
-    db.query('SELECT id, slug, status FROM sops WHERE id = $1', [sopId]);
+    db.query("SELECT id, slug, status FROM sops WHERE id = $1", [sopId]);
 
   const sessionsFor = async (cardHash: string) =>
-    db.query('SELECT id, title FROM agent_sessions WHERE title LIKE $1', [
+    db.query("SELECT id, title FROM agent_sessions WHERE title LIKE $1", [
       `方案卡发布复核 ${cardHash}%`,
     ]);
 
@@ -151,7 +156,9 @@ describe("Commit approval status honesty (real PG e2e)", () => {
       try {
         await fn();
       } catch (err) {
-        console.warn(`WARN commit-approval-status cleanup failed (${label}): ${String(err)}`);
+        console.warn(
+          `WARN commit-approval-status cleanup failed (${label}): ${String(err)}`,
+        );
       }
     };
     try {
@@ -161,25 +168,30 @@ describe("Commit approval status honesty (real PG e2e)", () => {
         "SELECT id FROM sops WHERE title LIKE $1",
         [`方案卡：${prefix}%`],
       );
-      for (const row of extraSops) if (!sopIds.includes(row.id)) sopIds.push(row.id);
+      for (const row of extraSops)
+        if (!sopIds.includes(row.id)) sopIds.push(row.id);
       for (const key of approvalKeys) {
         await step(`approval:key:${key}`, () =>
-          db.query('DELETE FROM agent_approvals WHERE "approvalKey" = $1', [key]),
+          db.query('DELETE FROM agent_approvals WHERE "approvalKey" = $1', [
+            key,
+          ]),
         );
       }
       for (const cardHash of cardHashes) {
-        const stray: { "sessionId": string }[] = await db.query(
+        const stray: { sessionId: string }[] = await db.query(
           'SELECT "sessionId" FROM agent_approvals WHERE reason LIKE $1',
           [`%${cardHash}%`],
         );
         for (const row of stray) {
-          if (!sessionIds.includes(row.sessionId)) sessionIds.push(row.sessionId);
+          if (!sessionIds.includes(row.sessionId))
+            sessionIds.push(row.sessionId);
         }
         const sess: { id: string }[] = await db.query(
-          'SELECT id FROM agent_sessions WHERE title LIKE $1',
+          "SELECT id FROM agent_sessions WHERE title LIKE $1",
           [`方案卡发布复核 ${cardHash}%`],
         );
-        for (const row of sess) if (!sessionIds.includes(row.id)) sessionIds.push(row.id);
+        for (const row of sess)
+          if (!sessionIds.includes(row.id)) sessionIds.push(row.id);
       }
       for (const sid of sessionIds) {
         await step(`approval:session:${sid}`, () =>
@@ -210,7 +222,11 @@ describe("Commit approval status honesty (real PG e2e)", () => {
 
       // 清理复查：0 残留才算干净（不是「删了就算」）。
       const checks: Array<[string, string, unknown[]]> = [
-        ["sops", "SELECT count(*)::int AS n FROM sops WHERE title LIKE $1", [`方案卡：${prefix}%`]],
+        [
+          "sops",
+          "SELECT count(*)::int AS n FROM sops WHERE title LIKE $1",
+          [`方案卡：${prefix}%`],
+        ],
         [
           "agent_approvals",
           "SELECT count(*)::int AS n FROM agent_approvals WHERE reason LIKE $1",
@@ -225,7 +241,8 @@ describe("Commit approval status honesty (real PG e2e)", () => {
       for (const [label, sql, params] of checks) {
         await step(`verify-zero:${label}`, async () => {
           const rows: { n: number }[] = await db.query(sql, params);
-          if (rows[0]?.n !== 0) throw new Error(`${label} 残留 ${rows[0]?.n} 行`);
+          if (rows[0]?.n !== 0)
+            throw new Error(`${label} 残留 ${rows[0]?.n} 行`);
         });
       }
     } finally {
@@ -344,13 +361,19 @@ describe("Commit approval status honesty (real PG e2e)", () => {
   });
 
   it("④ 契约稳定性：三值稳定码齐全，旧硬编码中文 next 不再出现", async () => {
-    expect(observed.map((item) => item.body.approvalStatus).sort()).toEqual(
-      ["failed", "not_requested", "submitted"],
-    );
+    expect(observed.map((item) => item.body.approvalStatus).sort()).toEqual([
+      "failed",
+      "not_requested",
+      "submitted",
+    ]);
     for (const item of observed) {
-      expect(["submitted", "failed", "not_requested"]).toContain(item.body.approvalStatus);
+      expect(["submitted", "failed", "not_requested"]).toContain(
+        item.body.approvalStatus,
+      );
       expect(item.body.approvalStatus).toMatch(/^[a-z_]+$/); // 稳定码，非中文文案
-      expect(Object.prototype.hasOwnProperty.call(item.body, "next")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(item.body, "next")).toBe(
+        false,
+      );
     }
   });
 });

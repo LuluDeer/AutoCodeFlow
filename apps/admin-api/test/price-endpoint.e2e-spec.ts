@@ -109,14 +109,15 @@ describe("Price endpoint for management UI (real PG e2e)", () => {
           likePattern,
         ]);
         const left = await rowsForRun();
-        console.log(`[price-e2e] runId=${runId} cleanup remaining=${left.length}`);
+        console.log(
+          `[price-e2e] runId=${runId} cleanup remaining=${left.length}`,
+        );
         expect(left).toHaveLength(0); // 清理复查：system_configs 0 行
 
         // upsert 会产生 config_history；按同一 runId 前缀清掉，避免后续用例误读。
-        await db.query(
-          'DELETE FROM config_history WHERE "configKey" LIKE $1',
-          [likePattern],
-        );
+        await db.query('DELETE FROM config_history WHERE "configKey" LIKE $1', [
+          likePattern,
+        ]);
         const histLeft = await db.query(
           'SELECT count(*)::int AS n FROM config_history WHERE "configKey" LIKE $1',
           [likePattern],
@@ -127,10 +128,9 @@ describe("Price endpoint for management UI (real PG e2e)", () => {
         console.log(`[price-e2e] history remaining=${histN}`);
       }
       if (db && userId !== null) {
-        await db.query(
-          'DELETE FROM refresh_tokens WHERE "userId" = $1',
-          [userId],
-        );
+        await db.query('DELETE FROM refresh_tokens WHERE "userId" = $1', [
+          userId,
+        ]);
         await db.query("DELETE FROM users WHERE id = $1", [userId]);
         console.log(`[price-e2e] user=${userId} cleaned`);
       }

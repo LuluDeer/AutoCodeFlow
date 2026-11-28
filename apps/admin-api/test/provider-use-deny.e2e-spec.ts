@@ -26,9 +26,11 @@ describe("Provider use deny (real PG e2e)", () => {
   const providersKey = "ai.providers";
   let before: { key: string; value: string | null; valueType: string } | null =
     null;
-  let providersBefore:
-    | { key: string; value: string | null; valueType: string }
-    | null = null;
+  let providersBefore: {
+    key: string;
+    value: string | null;
+    valueType: string;
+  } | null = null;
 
   const entry = (id: string): AiProviderEntry =>
     ({
@@ -71,7 +73,9 @@ describe("Provider use deny (real PG e2e)", () => {
         [providersBefore.value, providersBefore.valueType, providersKey],
       );
     } else {
-      await db.query("DELETE FROM system_configs WHERE key = $1", [providersKey]);
+      await db.query("DELETE FROM system_configs WHERE key = $1", [
+        providersKey,
+      ]);
     }
     if (before) {
       await db.query(
@@ -115,7 +119,10 @@ describe("Provider use deny (real PG e2e)", () => {
     //    这里只验证判据（routeFor 不发包），chatMultimodal 层 emptyResponse 另有语义。
     const route = await (
       ai as unknown as {
-        routeFor: (p: string, o?: string) => Promise<{ status: string; reason?: string }>;
+        routeFor: (
+          p: string,
+          o?: string,
+        ) => Promise<{ status: string; reason?: string }>;
       }
     ).routeFor("agent", `${deniedId}/some-model`);
     expect(route.status).toBe("error");

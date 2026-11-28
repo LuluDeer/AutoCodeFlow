@@ -3,7 +3,6 @@ import type { INestApplication } from "@nestjs/common";
 import request from "supertest";
 import { DataSource } from "typeorm";
 import { createTestApp, loginAsAdmin } from "./helpers/app.helper";
-import { priceKey } from "../src/modules/capability-activation/price.service";
 import {
   PRICE_KEY_PREFIX,
   type PricingConfig,

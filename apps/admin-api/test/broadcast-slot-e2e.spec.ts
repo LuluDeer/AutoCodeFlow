@@ -13,10 +13,9 @@ process.env.SELFTEST_SKIP_ENV_FILE = "1";
 // 已注入的 env，其次取仓库根 .env（由该脚本的 read_env 读取），最后才用夹具默认值。
 // SELFTEST_SKIP_ENV_FILE=1 只禁止 AppModule 自己加载 .env；这里显式读取连接字段，
 // 避免把进程推回 configuration.ts 的 postgres/postgres 死默认值。
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { readFileSync } = require("node:fs") as typeof import("node:fs");
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { resolve } = require("node:path") as typeof import("node:path");
+
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const FIXTURE_ENV_FILE = resolve(__dirname, "../../../.env");
 function fixtureEnvValue(key: string): string | undefined {
@@ -53,8 +52,7 @@ applyFixtureEnv("DB_USERNAME", "autoflow");
 applyFixtureEnv("DB_PASSWORD", "test-db-password");
 // DB_DATABASE 刻意不取 .env 的部署库名：真栈夹具由 HARDENING_DB_NAME 指定
 // throwaway 库；裸跑时回落到既有测试库 autoflow_test。 caller 显式给的值优先。
-process.env.DB_DATABASE ||=
-  process.env.HARDENING_DB_NAME || "autoflow_test";
+process.env.DB_DATABASE ||= process.env.HARDENING_DB_NAME || "autoflow_test";
 applyFixtureEnv("REDIS_HOST", "127.0.0.1");
 applyFixtureEnv("REDIS_PORT", "6379");
 applyFixtureEnv("REDIS_DB", "0");
@@ -63,15 +61,17 @@ process.env.JWT_SECRET ||= "test-jwt-secret-0123456789abcdef0123";
 process.env.JWT_REFRESH_SECRET ||= "test-jwt-refresh-secret-0123456789ab";
 process.env.EXECUTOR_SECRET ||= "test-executor-secret-16";
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { createTestApp } = require("./helpers/app.helper") as typeof import("./helpers/app.helper");
-
 import { randomBytes, randomUUID } from "node:crypto";
+import { createTestApp } from "./helpers/app.helper";
 import type { INestApplication } from "@nestjs/common";
 import { DataSource } from "typeorm";
 import { RedisLockService } from "../src/common/services/redis-lock.service";
 import { buildTask } from "./factories/task.factory";
-import { Task, TaskStatus, ExecuteMode } from "../src/modules/task/entities/task.entity";
+import {
+  Task,
+  TaskStatus,
+  ExecuteMode,
+} from "../src/modules/task/entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -95,7 +95,11 @@ interface Repo<T> {
 const STAMP = process.env.HARDENING_STAMP ?? randomUUID().slice(0, 8);
 const ADDR = `10.98.${STAMP.length % 200}.${(STAMP.charCodeAt(1) % 200) + 1}:8902`;
 
-function makeExecutionRow(task: Task, executor: Executor, id: string): TaskExecution {
+function makeExecutionRow(
+  task: Task,
+  executor: Executor,
+  id: string,
+): TaskExecution {
   const exec = new TaskExecution();
   exec.id = id;
   exec.taskId = task.id;
@@ -154,8 +158,12 @@ describe("broadcast slot · 真 Redis SETNX 一次性释放", () => {
     app = await createTestApp();
     dataSource = app.get(DataSource);
     taskRepo = dataSource.getRepository(Task) as unknown as Repo<Task>;
-    execRepo = dataSource.getRepository(TaskExecution) as unknown as Repo<TaskExecution>;
-    executorRepo = dataSource.getRepository(Executor) as unknown as Repo<Executor>;
+    execRepo = dataSource.getRepository(
+      TaskExecution,
+    ) as unknown as Repo<TaskExecution>;
+    executorRepo = dataSource.getRepository(
+      Executor,
+    ) as unknown as Repo<Executor>;
     taskService = app.get(TaskService);
     lockService =
       (taskService as unknown as { redisLockService?: RedisLockService })
@@ -191,16 +199,19 @@ describe("broadcast slot · 真 Redis SETNX 一次性释放", () => {
     const original = lockService.setIfAbsent.bind(lockService);
     setIfAbsentSpy = jest
       .spyOn(lockService, "setIfAbsent")
-      .mockImplementation(async (key: string, ttlMs: number, value?: string) => {
-        const ok = await original(key, ttlMs, value);
-        setIfAbsentResults.push(ok);
-        return ok;
-      });
+      .mockImplementation(
+        async (key: string, ttlMs: number, value?: string) => {
+          const ok = await original(key, ttlMs, value);
+          setIfAbsentResults.push(ok);
+          return ok;
+        },
+      );
   });
 
   afterAll(async () => {
     setIfAbsentSpy?.mockRestore();
-    if (lockService) await lockService.deleteKey(slotKey).catch(() => undefined);
+    if (lockService)
+      await lockService.deleteKey(slotKey).catch(() => undefined);
     if (dataSource && task) {
       await execRepo.delete({ taskId: task.id });
       await taskRepo.delete({ id: task.id });
@@ -211,7 +222,10 @@ describe("broadcast slot · 真 Redis SETNX 一次性释放", () => {
 
   it("winner + duplicate：SETNX 只首次生效，broadcastReservedCount 归零，且按执行快照释放", async () => {
     // 任务在途改成 single；执行行仍持有 claim 时的 broadcast 快照。
-    await taskRepo.update({ id: task!.id }, { executeMode: ExecuteMode.SINGLE });
+    await taskRepo.update(
+      { id: task!.id },
+      { executeMode: ExecuteMode.SINGLE },
+    );
 
     const callback = {
       executionId,
@@ -219,7 +233,10 @@ describe("broadcast slot · 真 Redis SETNX 一次性释放", () => {
       attemptSeq: 1,
       executorAddress: ADDR,
     };
-    const results = await taskService.handleCallback([callback, { ...callback }] as never[]);
+    const results = await taskService.handleCallback([
+      callback,
+      { ...callback },
+    ] as never[]);
     expect(results.map((r) => r.success)).toEqual([true, true]);
 
     expect(setIfAbsentSpy).toHaveBeenCalledTimes(2);
@@ -230,7 +247,9 @@ describe("broadcast slot · 真 Redis SETNX 一次性释放", () => {
     const key = await lockService.getValue(slotKey);
     expect(key).not.toBeNull();
 
-    const executorRow = await executorRepo.findOne({ where: { id: executor!.id } });
+    const executorRow = await executorRepo.findOne({
+      where: { id: executor!.id },
+    });
     expect(executorRow?.broadcastReservedCount).toBe(0);
 
     const taskRow = await taskRepo.findOne({ where: { id: task!.id } });

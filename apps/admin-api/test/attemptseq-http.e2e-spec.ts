@@ -64,7 +64,8 @@ jest.setTimeout(180_000);
 const STAMP = process.env.ATTEMPTSEQ_HTTP_STAMP ?? randomUUID().slice(0, 8);
 const SHARED_TOKEN = process.env.EXECUTOR_SECRET || "test-executor-secret-16";
 const TMP_ROOT =
-  process.env.ATTEMPTSEQ_HTTP_TMP || path.join("/tmp/opencode", `attemptseq-http-${STAMP}`);
+  process.env.ATTEMPTSEQ_HTTP_TMP ||
+  path.join("/tmp/opencode", `attemptseq-http-${STAMP}`);
 const FIXTURE = path.resolve(
   __dirname,
   "../../executor-node/src/attemptseq-http-fixture.spec.ts",
@@ -114,19 +115,25 @@ async function waitFor<T>(
     }
     await sleep(intervalMs);
   }
-  const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "");
-  throw new Error(`timeout waiting for ${label} within ${timeoutMs}ms; last=${detail}`);
+  const detail =
+    lastError instanceof Error ? lastError.message : String(lastError ?? "");
+  throw new Error(
+    `timeout waiting for ${label} within ${timeoutMs}ms; last=${detail}`,
+  );
 }
 
 function pickNonInternalIPv4(): string {
   const candidates: string[] = [];
   for (const list of Object.values(networkInterfaces())) {
     for (const iface of list ?? []) {
-      if (iface.family === "IPv4" && !iface.internal) candidates.push(iface.address);
+      if (iface.family === "IPv4" && !iface.internal)
+        candidates.push(iface.address);
     }
   }
   if (candidates.length === 0) {
-    throw new Error("no non-internal IPv4 found; push dispatch SSRF guard requires a routable host address");
+    throw new Error(
+      "no non-internal IPv4 found; push dispatch SSRF guard requires a routable host address",
+    );
   }
   // 优先 RFC1918（ EXECUTOR_ALLOW_PRIVATE_NETWORK=true 已由脚本设置），否则公网地址也可。
   return (
@@ -146,8 +153,12 @@ async function pickFreePort(): Promise<number> {
   return port;
 }
 
-async function createCapturingApp(callbackBodies: unknown[]): Promise<INestApplication> {
-  const moduleFixture = await Test.createTestingModule({ imports: [AppModule] }).compile();
+async function createCapturingApp(
+  callbackBodies: unknown[],
+): Promise<INestApplication> {
+  const moduleFixture = await Test.createTestingModule({
+    imports: [AppModule],
+  }).compile();
   const app = moduleFixture.createNestApplication();
   // 对齐生产 src/main.ts：执行器只认识 /api/executions/callback。
   app.setGlobalPrefix("api");
@@ -167,7 +178,6 @@ async function createCapturingApp(callbackBodies: unknown[]): Promise<INestAppli
       const body = JSON.parse(JSON.stringify(req.body ?? []));
       callbackBodies.push(body);
       res.on("finish", () => {
-        // eslint-disable-next-line no-console
         console.log(
           `[attemptseq-http] callback HTTP status=${res.statusCode} body=${JSON.stringify(body)}`,
         );
@@ -197,7 +207,11 @@ function startExecutorChild(env: NodeJS.ProcessEnv): ChildHarness {
   let stderrLog = "";
   let buffer = "";
   let readySettled = false;
-  let resolveReady!: (value: { port: number; address: string; pid: number }) => void;
+  let resolveReady!: (value: {
+    port: number;
+    address: string;
+    pid: number;
+  }) => void;
   let rejectReady!: (err: Error) => void;
   const ready = new Promise<{ port: number; address: string; pid: number }>(
     (resolve, reject) => {
@@ -226,7 +240,11 @@ function startExecutorChild(env: NodeJS.ProcessEnv): ChildHarness {
           });
         }
       } else if (line.startsWith("DISPATCH_OBSERVED ")) {
-        observed.push(JSON.parse(line.slice("DISPATCH_OBSERVED ".length)) as DispatchObservation);
+        observed.push(
+          JSON.parse(
+            line.slice("DISPATCH_OBSERVED ".length),
+          ) as DispatchObservation,
+        );
       }
     }
   });
@@ -318,8 +336,12 @@ describe("attemptSeq · 真 admin HTTP + 真 executor-node 进程闭环", () => 
     app = await createCapturingApp(callbackBodies);
     dataSource = app.get(DataSource);
     taskRepo = dataSource.getRepository(Task) as unknown as Repo<Task>;
-    execRepo = dataSource.getRepository(TaskExecution) as unknown as Repo<TaskExecution>;
-    executorRepo = dataSource.getRepository(Executor) as unknown as Repo<Executor>;
+    execRepo = dataSource.getRepository(
+      TaskExecution,
+    ) as unknown as Repo<TaskExecution>;
+    executorRepo = dataSource.getRepository(
+      Executor,
+    ) as unknown as Repo<Executor>;
     processor = app.get(TaskProcessor);
     executorService = app.get(ExecutorService);
 
@@ -402,8 +424,18 @@ describe("attemptSeq · 真 admin HTTP + 真 executor-node 进程闭环", () => 
       db: Number(process.env.REDIS_DB || 0),
       lazyConnect: false,
     });
-    await redis.set(`acf:pull:attemptseq-http-${STAMP}`, "fixture-slot", "EX", 600);
-    await redis.set(`slot-release:attemptseq-http-${STAMP}`, "fixture-slot", "EX", 600);
+    await redis.set(
+      `acf:pull:attemptseq-http-${STAMP}`,
+      "fixture-slot",
+      "EX",
+      600,
+    );
+    await redis.set(
+      `slot-release:attemptseq-http-${STAMP}`,
+      "fixture-slot",
+      "EX",
+      600,
+    );
   });
 
   afterAll(async () => {
@@ -417,13 +449,12 @@ describe("attemptSeq · 真 admin HTTP + 真 executor-node 进程闭环", () => 
         await Promise.race([
           once(proc, "exit"),
           sleep(6_000).then(() => {
-            if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
+            if (proc.exitCode === null && proc.signalCode === null)
+              proc.kill("SIGKILL");
           }),
         ]);
       }
-      expect(
-        proc.exitCode !== null || proc.signalCode !== null,
-      ).toBe(true);
+      expect(proc.exitCode !== null || proc.signalCode !== null).toBe(true);
       // 子进程退出证据保留给 verify 脚本做二次检查。
       fs.writeFileSync(path.join(TMP_ROOT, "executor.exited"), "1");
     }
@@ -435,16 +466,25 @@ describe("attemptSeq · 真 admin HTTP + 真 executor-node 进程闭环", () => 
 
     const observed = await waitFor(
       "executor observed dispatch",
-      () => child!.observed.find((row) => row.executionId === executionId) ?? null,
+      () =>
+        child!.observed.find((row) => row.executionId === executionId) ?? null,
       30_000,
     );
     expect(observed.attemptSeq).toBe(1);
     expect(observed.bodyKeys).toEqual(
-      expect.arrayContaining(["attemptSeq", "executionId", "params", "secrets", "task"]),
+      expect.arrayContaining([
+        "attemptSeq",
+        "executionId",
+        "params",
+        "secrets",
+        "task",
+      ]),
     );
     expect(observed.taskName).toBe(task!.name);
-    // eslint-disable-next-line no-console
-    console.log(`[attemptseq-http] executor observed dispatch=${JSON.stringify(observed)}`);
+
+    console.log(
+      `[attemptseq-http] executor observed dispatch=${JSON.stringify(observed)}`,
+    );
 
     const callback = await waitFor(
       "executor terminal callback body",
@@ -456,7 +496,9 @@ describe("attemptSeq · 真 admin HTTP + 真 executor-node 进程闭环", () => 
               (item: { executionId?: string; status?: string }) =>
                 item.executionId === executionId && item.status === "success",
             ),
-        ) as Array<{ executionId: string; status: string; attemptSeq?: number }> | undefined;
+        ) as
+          | Array<{ executionId: string; status: string; attemptSeq?: number }>
+          | undefined;
         return found?.[0] ?? null;
       },
       90_000,
@@ -477,7 +519,10 @@ describe("attemptSeq · 真 admin HTTP + 真 executor-node 进程闭环", () => 
   }, 180_000);
 
   it("② 重新 claim 使 attemptSeq 1 → 2（第二次派发用 spy 避免竞态回调）", async () => {
-    await execRepo.update({ id: executionId }, { status: ExecutionStatus.FAILED });
+    await execRepo.update(
+      { id: executionId },
+      { status: ExecutionStatus.FAILED },
+    );
     const before = await execRepo.findOne({ where: { id: executionId } });
     expect(before?.attemptSeq).toBe(1);
 
@@ -508,13 +553,15 @@ describe("attemptSeq · 真 admin HTTP + 真 executor-node 进程闭环", () => 
         },
       ]);
     expect([200, 201]).toContain(staleResponse.status);
-    // eslint-disable-next-line no-console
-    console.log(`[attemptseq-http] stale callback body=${JSON.stringify(staleResponse.body)}`);
+
+    console.log(
+      `[attemptseq-http] stale callback body=${JSON.stringify(staleResponse.body)}`,
+    );
 
     const afterStale = await execRepo.findOne({ where: { id: executionId } });
     expect(afterStale?.status).toBe(ExecutionStatus.RUNNING);
     expect(afterStale?.attemptSeq).toBe(2);
-    // eslint-disable-next-line no-console
+
     console.log(
       `[attemptseq-http] after stale row status=${afterStale?.status} attemptSeq=${afterStale?.attemptSeq} endTime=${afterStale?.endTime?.toISOString() ?? "null"}`,
     );
@@ -532,14 +579,16 @@ describe("attemptSeq · 真 admin HTTP + 真 executor-node 进程闭环", () => 
         },
       ]);
     expect([200, 201]).toContain(currentResponse.status);
-    // eslint-disable-next-line no-console
-    console.log(`[attemptseq-http] current callback body=${JSON.stringify(currentResponse.body)}`);
+
+    console.log(
+      `[attemptseq-http] current callback body=${JSON.stringify(currentResponse.body)}`,
+    );
 
     const afterCurrent = await execRepo.findOne({ where: { id: executionId } });
     expect(afterCurrent?.status).toBe(ExecutionStatus.SUCCESS);
     expect(afterCurrent?.attemptSeq).toBe(2);
     expect(afterCurrent?.endTime).toBeInstanceOf(Date);
-    // eslint-disable-next-line no-console
+
     console.log(
       `[attemptseq-http] after current row status=${afterCurrent?.status} attemptSeq=${afterCurrent?.attemptSeq} endTime=${afterCurrent?.endTime?.toISOString() ?? "null"}`,
     );

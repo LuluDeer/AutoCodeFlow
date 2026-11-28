@@ -58,9 +58,7 @@ export function createSseSink(): SseSink {
     write(chunk: string | Uint8Array): boolean {
       if (res.writableEnded) return true;
       buffer +=
-        typeof chunk === "string"
-          ? chunk
-          : Buffer.from(chunk).toString("utf8");
+        typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
 
       let split: number;
       while ((split = buffer.indexOf("\n\n")) >= 0) {
@@ -108,7 +106,8 @@ export function createSseSink(): SseSink {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
         const hit = frames.find(
-          (frame) => frame.event === event && (!predicate || predicate(frame.payload)),
+          (frame) =>
+            frame.event === event && (!predicate || predicate(frame.payload)),
         );
         if (hit) return hit;
         if (ended) {
@@ -126,16 +125,12 @@ export function createSseSink(): SseSink {
           );
         }
         await new Promise<void>((resolve) => {
-          let wake: () => void;
-          const timer = setTimeout(() => {
-            frameWaiters.delete(wake);
-            resolve();
-          }, Math.max(1, deadline - Date.now()));
-          wake = () => {
+          const wake: () => void = () => {
             clearTimeout(timer);
             frameWaiters.delete(wake);
             resolve();
           };
+          const timer = setTimeout(wake, Math.max(1, deadline - Date.now()));
           frameWaiters.add(wake);
         });
       }
@@ -147,16 +142,12 @@ export function createSseSink(): SseSink {
           throw new Error(`timeout ${timeoutMs}ms waiting for SSE end`);
         }
         await new Promise<void>((resolve) => {
-          let wake: () => void;
-          const timer = setTimeout(() => {
-            endWaiters.delete(wake);
-            resolve();
-          }, Math.max(1, deadline - Date.now()));
-          wake = () => {
+          const wake: () => void = () => {
             clearTimeout(timer);
             endWaiters.delete(wake);
             resolve();
           };
+          const timer = setTimeout(wake, Math.max(1, deadline - Date.now()));
           endWaiters.add(wake);
         });
       }

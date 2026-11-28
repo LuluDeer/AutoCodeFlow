@@ -22,7 +22,9 @@ describe("Quota amount observability (real PG e2e)", () => {
   beforeAll(async () => {
     const dbName = process.env.DB_DATABASE ?? "";
     if (!/(^|_)(test|e2e)(_|$)/i.test(dbName)) {
-      throw new Error(`quota observability e2e 需要 test/e2e 库（收到 ${dbName || "<empty>"}）`);
+      throw new Error(
+        `quota observability e2e 需要 test/e2e 库（收到 ${dbName || "<empty>"}）`,
+      );
     }
     app = await createTestApp();
     db = app.get(DataSource);

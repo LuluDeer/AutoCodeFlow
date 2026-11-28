@@ -93,11 +93,13 @@ describe("Workbench business-user session (real PG e2e)", () => {
   };
 
   const sessionRow = async (id: string) =>
-    db.query(
-      `SELECT id, kind, status, "triggerSource", "createdBy", "scopeJson", "contextJson"
+    db
+      .query(
+        `SELECT id, kind, status, "triggerSource", "createdBy", "scopeJson", "contextJson"
          FROM agent_sessions WHERE id = $1`,
-      [id],
-    ).then((r) => r[0] ?? r.rows?.[0]);
+        [id],
+      )
+      .then((r) => r[0] ?? r.rows?.[0]);
 
   const jobCount = async (id: string) => {
     // jobId 即 sessionId；BullMQ getJob 不依赖 worker 是否已消费。
@@ -158,9 +160,10 @@ describe("Workbench business-user session (real PG e2e)", () => {
             // job 可能已被 worker 消费并 removeOnComplete；忽略。
           }
         }
-        await db.query("DELETE FROM agent_sessions WHERE id = ANY($1::uuid[])", [
-          sessionIds,
-        ]);
+        await db.query(
+          "DELETE FROM agent_sessions WHERE id = ANY($1::uuid[])",
+          [sessionIds],
+        );
         await db.query("DELETE FROM sops WHERE id = ANY($1::uuid[])", [
           createdSopIds,
         ]);
@@ -170,15 +173,17 @@ describe("Workbench business-user session (real PG e2e)", () => {
 
         const left = await Promise.all([
           db.query(
-            'SELECT count(*)::int AS n FROM agent_sessions WHERE id = ANY($1::uuid[])',
+            "SELECT count(*)::int AS n FROM agent_sessions WHERE id = ANY($1::uuid[])",
             [sessionIds],
           ),
-          db.query("SELECT count(*)::int AS n FROM sops WHERE id = ANY($1::uuid[])", [
-            createdSopIds,
-          ]),
-          db.query("SELECT count(*)::int AS n FROM users WHERE id = ANY($1::int[])", [
-            createdUserIds,
-          ]),
+          db.query(
+            "SELECT count(*)::int AS n FROM sops WHERE id = ANY($1::uuid[])",
+            [createdSopIds],
+          ),
+          db.query(
+            "SELECT count(*)::int AS n FROM users WHERE id = ANY($1::int[])",
+            [createdUserIds],
+          ),
         ]);
         const counts = left.map((r) => Number((r[0] ?? r.rows?.[0])?.n ?? -1));
         console.log(
@@ -191,10 +196,7 @@ describe("Workbench business-user session (real PG e2e)", () => {
     }
   });
 
-  const createSession = (
-    token: string,
-    body: Record<string, unknown>,
-  ) =>
+  const createSession = (token: string, body: Record<string, unknown>) =>
     request(app.getHttpServer())
       .post("/workbench/sessions")
       .set("Authorization", auth(token))
@@ -217,7 +219,10 @@ describe("Workbench business-user session (real PG e2e)", () => {
     expect(row.triggerSource).toBe("workbench");
     expect(row.createdBy).toBe(`user:${idA}`);
     expect(row.scopeJson).toEqual({ sops: [sopId] });
-    expect(row.contextJson).toMatchObject({ sopId, goal: body.goal ?? "按草稿汇总昨日订单异常并推送日报" });
+    expect(row.contextJson).toMatchObject({
+      sopId,
+      goal: body.goal ?? "按草稿汇总昨日订单异常并推送日报",
+    });
 
     expect(await jobCount(body.sessionId)).toBe(1);
     enqueuedJobIds.push(String(body.sessionId));

@@ -16,21 +16,22 @@ process.env.JWT_SECRET ||= "test-jwt-secret-0123456789abcdef0123";
 process.env.JWT_REFRESH_SECRET ||= "test-jwt-refresh-secret-0123456789ab";
 process.env.EXECUTOR_SECRET ||= "test-executor-secret-16";
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { createTestApp } = require("./helpers/app.helper") as typeof import("./helpers/app.helper");
+import { createTestApp } from "./helpers/app.helper";
 
 import { randomUUID } from "node:crypto";
 import type { INestApplication } from "@nestjs/common";
 import { DataSource } from "typeorm";
 import { buildTask } from "./factories/task.factory";
-import { Task, TaskStatus, ExecuteMode } from "../src/modules/task/entities/task.entity";
+import {
+  Task,
+  TaskStatus,
+  ExecuteMode,
+} from "../src/modules/task/entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
 } from "../src/modules/task/entities/task-execution.entity";
-import {
-  ExecutorService,
-} from "../src/modules/executor/executor.service";
+import { ExecutorService } from "../src/modules/executor/executor.service";
 import { TaskProcessor } from "../src/modules/task/task.processor";
 import { TaskService } from "../src/modules/task/task.service";
 
@@ -39,7 +40,11 @@ jest.setTimeout(120_000);
 const STAMP = process.env.HARDENING_STAMP ?? randomUUID().slice(0, 8);
 const ADDR = `10.99.${STAMP.length % 200}.${(STAMP.charCodeAt(0) % 200) + 1}:8802`;
 
-function makeExecutionRow(task: Task, id: string, status: ExecutionStatus): TaskExecution {
+function makeExecutionRow(
+  task: Task,
+  id: string,
+  status: ExecutionStatus,
+): TaskExecution {
   const exec = new TaskExecution();
   exec.id = id;
   exec.taskId = task.id;
@@ -92,17 +97,19 @@ describe("attemptSeq · 真 PG 并发 claim 与世代门禁", () => {
   let dispatchSpy: jest.SpyInstance | undefined;
 
   interface Repo<T> {
-  save(entity: T): Promise<T>;
-  findOne(options: unknown): Promise<T | null>;
-  update(criteria: unknown, patch: unknown): Promise<unknown>;
-  delete(criteria: unknown): Promise<unknown>;
-}
+    save(entity: T): Promise<T>;
+    findOne(options: unknown): Promise<T | null>;
+    update(criteria: unknown, patch: unknown): Promise<unknown>;
+    delete(criteria: unknown): Promise<unknown>;
+  }
 
   beforeAll(async () => {
     app = await createTestApp();
     dataSource = app.get(DataSource);
     taskRepo = dataSource.getRepository(Task) as unknown as Repo<Task>;
-    execRepo = dataSource.getRepository(TaskExecution) as unknown as Repo<TaskExecution>;
+    execRepo = dataSource.getRepository(
+      TaskExecution,
+    ) as unknown as Repo<TaskExecution>;
     processor = app.get(TaskProcessor);
     taskService = app.get(TaskService);
 
@@ -122,8 +129,12 @@ describe("attemptSeq · 真 PG 并发 claim 与世代门禁", () => {
 
     execAId = randomUUID();
     execBId = randomUUID();
-    await execRepo.save(makeExecutionRow(task, execAId, ExecutionStatus.PENDING));
-    await execRepo.save(makeExecutionRow(task, execBId, ExecutionStatus.PENDING));
+    await execRepo.save(
+      makeExecutionRow(task, execAId, ExecutionStatus.PENDING),
+    );
+    await execRepo.save(
+      makeExecutionRow(task, execBId, ExecutionStatus.PENDING),
+    );
   });
 
   afterAll(async () => {

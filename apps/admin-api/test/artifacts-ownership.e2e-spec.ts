@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { INestApplication } from "@nestjs/common";
 import { DataSource } from "typeorm";
-import request from "supertest";
+void request; // supertest 面仅 app 借道 createTestApp 间接使用；显式 void 保持 import 可读
 import { createTestApp } from "./helpers/app.helper";
 import { ArtifactsService } from "../src/modules/artifacts/artifacts.service";
 import { UserRole } from "../src/modules/users/entities/user.entity";
@@ -27,12 +27,18 @@ describe("Artifacts ownership (real PG e2e)", () => {
   const artifactIds: string[] = [];
 
   const viewer = (id: number, isAdmin = false): AuthUser =>
-    ({ id, username: `e2e-u${id}`, role: isAdmin ? UserRole.ADMIN : UserRole.USER }) as AuthUser;
+    ({
+      id,
+      username: `e2e-u${id}`,
+      role: isAdmin ? UserRole.ADMIN : UserRole.USER,
+    }) as AuthUser;
 
   beforeAll(async () => {
     const dbName = process.env.DB_DATABASE ?? "";
     if (!/(^|_)(test|e2e)(_|$)/i.test(dbName)) {
-      throw new Error(`artifacts ownership e2e 需要 test/e2e 库（收到 ${dbName || "<empty>"}）`);
+      throw new Error(
+        `artifacts ownership e2e 需要 test/e2e 库（收到 ${dbName || "<empty>"}）`,
+      );
     }
     app = await createTestApp();
     db = app.get(DataSource);
@@ -48,7 +54,11 @@ describe("Artifacts ownership (real PG e2e)", () => {
       await db.query(
         `INSERT INTO tasks (id, name, status, "triggerType", runtime, timeout, "maxRetry", "blockStrategy", "misfireStrategy", "retryDelay", priority, "executeMode", "runOnUpstreamFailure", "ownerUserId", "projectId", "createdAt", "updatedAt")
          VALUES ($1, $2, 'active', 'manual', 'node', 30000, 0, 'discard', 'ignore', 1000, 'normal', 'single', false, $3, NULL, now(), now())`,
-        [taskId, `e2e-artifact-${runId}-${ownerUserId ?? "orphan"}`, ownerUserId],
+        [
+          taskId,
+          `e2e-artifact-${runId}-${ownerUserId ?? "orphan"}`,
+          ownerUserId,
+        ],
       );
       await db.query(
         `INSERT INTO task_executions (id, "taskId", "taskName", status, "createdAt")
@@ -70,7 +80,7 @@ describe("Artifacts ownership (real PG e2e)", () => {
     for (const id of artifactIds)
       await db.query("DELETE FROM execution_artifacts WHERE id = $1", [id]);
     for (const id of execIds)
-      await db.query('DELETE FROM task_executions WHERE id = $1', [id]);
+      await db.query("DELETE FROM task_executions WHERE id = $1", [id]);
     for (const id of taskIds)
       await db.query("DELETE FROM tasks WHERE id = $1", [id]);
     await app?.close();
@@ -92,7 +102,9 @@ describe("Artifacts ownership (real PG e2e)", () => {
     expect(u1Ids).not.toContain(taskIds[2]);
 
     const admin = await svc.listArtifactRows(q, viewer(0, true));
-    const adminIds = (admin.items as Array<{ taskId: string }>).map((r) => r.taskId);
+    const adminIds = (admin.items as Array<{ taskId: string }>).map(
+      (r) => r.taskId,
+    );
     expect(adminIds).toContain(taskIds[0]);
     expect(adminIds).toContain(taskIds[1]);
     expect(adminIds).toContain(taskIds[2]);
