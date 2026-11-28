@@ -39,10 +39,13 @@ load_env_var() {
   printf '%s' "${val}"
 }
 
-DB_HOST="$(load_env_var DB_HOST)"; DB_HOST="${DB_HOST:-127.0.0.1}"
-DB_PORT="$(load_env_var DB_PORT)"; DB_PORT="${DB_PORT:-5432}"
-DB_USERNAME="$(load_env_var DB_USERNAME)"; DB_USERNAME="${DB_USERNAME:-autoflow}"
-DB_PASSWORD="$(load_env_var DB_PASSWORD)"
+# 进程 env 优先于 .env：CI job 直接注入 DB_PASSWORD=test 且没有 .env 文件，
+# 若只读 .env 会把空串喂给 pg ⇒ SASL "client password must be a string"
+# （run 46144200900 admin-api-e2e 实证）。.env 仅作本地开发回落。
+DB_HOST="${DB_HOST:-$(load_env_var DB_HOST)}"; DB_HOST="${DB_HOST:-127.0.0.1}"
+DB_PORT="${DB_PORT:-$(load_env_var DB_PORT)}"; DB_PORT="${DB_PORT:-5432}"
+DB_USERNAME="${DB_USERNAME:-$(load_env_var DB_USERNAME)}"; DB_USERNAME="${DB_USERNAME:-autoflow}"
+DB_PASSWORD="${DB_PASSWORD:-$(load_env_var DB_PASSWORD)}"
 # e2e 目标库由环境变量决定（e2e-local.sh 会 export DB_DATABASE=autoflow_test）；
 # 刻意不读 .env 的 DB_DATABASE（那是业务库 autoflow），缺省 autoflow_test。
 DB_DATABASE="${DB_DATABASE:-autoflow_test}"
