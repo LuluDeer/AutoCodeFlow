@@ -135,7 +135,7 @@ function checkSourceTextGroups(rootDir) {
     check("验证会话 scope 含 SOP + 平台验收任务", /sops: \[a\.sopId\],[\s\S]{0,120}tasks: taskIds/.test(svcSrc2));
     check("执行器自述以 untrustedResult 标注（注入面纪律）", /untrustedResult/.test(svcSrc2));
     check("验证会话经 agent-jobs 入队", /reason: `verify:\$\{a\.id\}`/.test(svcSrc2));
-    check("验证起不来 fail-open（完成回报不被吞）", /verification session spawn failed \(fail-open\)/.test(svcSrc2));
+    check("验证起不来 fail-closed（工单落 unverified，回报不吞）", /verification fail-closed persist failed/.test(svcSrc2) && /verification session spawn failed \(fail-closed/.test(svcSrc2));
     // P7e 前半：isolated-runner 档的执行证据进复核上下文（仍按不可信自述对待）
     check("验证会话提示可参考 isolatedRun 证据（isolated-runner 档）", /isolatedRun/.test(svcSrc2) && /不可信自述/.test(svcSrc2));
 
@@ -192,7 +192,8 @@ const FIXTURE_OK = {
     "scope: { sops: [a.sopId], tasks: taskIds },",
     "untrustedResult: report,",
     "reason: `verify:${a.id}`",
-    "// verification session spawn failed (fail-open)",
+    "verification fail-closed persist failed: assignment=a1",
+    "// verification session spawn failed (fail-closed: assignment marked unverified)",
     "// isolatedRun 证据按不可信自述对待",
     '@Cron("0 */5 * * * *")',
     "if (!this.isSchedulerLeader()) return;",
@@ -283,7 +284,7 @@ function runSelftest() {
     const { result, cleanup } = runOn(
       fixtureWith(
         "apps/admin-api/src/modules/sop/sop.service.ts",
-        'if (input.status === "completed") { await this.spawnVerificationSession(); }\nscope: { sops: [a.sopId], tasks: taskIds },\nuntrustedResult: report,\nreason: `verify:${a.id}`\n// verification session spawn failed (fail-open)\n// isolatedRun\n@Cron("0 */5 * * * *")\n',
+        'if (input.status === "completed") { await this.spawnVerificationSession(); }\nscope: { sops: [a.sopId], tasks: taskIds },\nuntrustedResult: report,\nreason: `verify:${a.id}`\nverification fail-closed persist failed: assignment=a1\n// verification session spawn failed (fail-closed: assignment marked unverified)\n// isolatedRun\n@Cron("0 */5 * * * *")\n',
       ),
     );
     try {
@@ -1198,6 +1199,15 @@ console.log("\n── 3. 边界闸门（SOP 工具）──");
   // 刻意排除的 mcp 工具（与 agent-boundary-check 的 MCP_TOOLS_EXCLUDED_FROM_AGENT
   // 同源口径）。
   const EXCLUDED = [
+    // 76f2ee80 的 6 个高杠杆直连工具（与 agent-boundary-check 同源口径：面向人的
+    // CLI/IDE 快捷面，Agent 侧走模板闸与既有 scoped 工具；审批类三工具是自我引用
+    // + 四眼原则，绝不给 Agent 自批）。
+    "create_task",
+    "delete_task",
+    "list_artifacts",
+    "send_agent_message",
+    "cancel_agent_session",
+    "decide_agent_approval",
     "export_task",
     "import_task",
     "list_task_templates",
@@ -1287,8 +1297,9 @@ console.log("\n── 3. 边界闸门（SOP 工具）──");
   const approvalArgs = {
     update_task: { taskId: "t1", patch: {} },
     rollback_task_version: { taskId: "t1", versionId: "v1" },
-    upgrade_deployment: { deploymentId: "d1" },
-    stop_deployment: { deploymentId: "d1" },
+    // upgrade/stop 的 applicationId 是 76f2ee80 后的必填参数（scope 交叉核对面）
+    upgrade_deployment: { deploymentId: "d1", applicationId: "a1" },
+    stop_deployment: { deploymentId: "d1", applicationId: "a1" },
   };
   for (const t of ["update_task", "rollback_task_version", "upgrade_deployment", "stop_deployment"]) {
     const spec = reg.ALL_AGENT_TOOL_SPECS.find((x) => x.name === t);
@@ -1370,7 +1381,7 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
   check("relay 过 agent:sop 能力闸（不是裸 authenticate）", /llmRelay[\s\S]{0,600}authenticateAgent\(/.test(relaySrc));
   check("relay messages 条数钳位（≤64）", /raw\.length === 0 \|\| raw\.length > 64/.test(relaySrc));
   check("relay 单条 content 上限（≤100KB）", /100_000/.test(relaySrc));
-  check("relay role 白名单（tool 往返不对执行器开放）", /role !== "system" && role !== "user" && role !== "assistant"/.test(relaySrc));
+  check("relay role 白名单（tool 往返过 tool_call_id 校验；未知 role 拒绝）", /role !== "system" &&\s+role !== "user" &&\s+role !== "assistant" &&\s+role !== "tool"/.test(relaySrc));
   check("SopModule 引入 AiModule（relay 依赖）", /AiModule/.test(readFileSync(join(apiDir, "src/modules/sop/sop.module.ts"), "utf8")));
 
   // ── P7b：agent 媒体通道（截图/录屏回传）──
@@ -1433,7 +1444,15 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
     ackStart >= 0 && !/assignments\.update\(\s*\{\s*id:\s*a\.id\s*,?\s*\}/.test(ackSrc));
   // 指派面：列表投影刻意剥离短效租约字段，指派对话框走独立端点按租约过滤
   check("assignable-executors 端点存在（指派对话框的数据源）", /@Get\("assignable-executors"\)/.test(readFileSync(join(apiDir, "src/modules/sop/sop.controller.ts"), "utf8")));
-  check("可指派执行器复用 getAgentCapabilities 租约判定（不另造 TTL 语义）", /listSopCapableExecutors[\s\S]{0,600}getAgentCapabilities\(e\.id\)/.test(readFileSync(join(apiDir, "src/modules/executor/executor.service.ts"), "utf8")));
+  check(
+    "可指派执行器复用 getAgentCapabilities 租约判定（不另造 TTL 语义）",
+    /listSopCapableExecutors[\s\S]{0,1100}getAgentCapabilities\(e\.id\)/.test(
+      readFileSync(join(apiDir, "src/modules/executor/executor.service.ts"), "utf8"),
+    ) &&
+      /assignableExecutors\(\)[\s\S]{0,120}listSopCapableExecutors\(\)/.test(
+        readFileSync(join(apiDir, "src/modules/sop/sop.controller.ts"), "utf8"),
+      ),
+  );
 
   // ── P7b 残差补齐：agent_media 保留清理（行为测试，真实临时目录）──
   {

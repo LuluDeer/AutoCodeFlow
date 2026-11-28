@@ -598,6 +598,20 @@ console.log("── 1. 工具注册表 ──");
   // 每一项都必须是有意的产品决定，不是"忘了登记"。新增 mcp 工具若既未纳管
   // 也不在此列，本检查会红——那正是我们要的提醒。
   const MCP_TOOLS_EXCLUDED_FROM_AGENT = [
+    // 76f2ee80 新增的 6 个「高杠杆核心工具」（turnaround-tools.ts）：面向**人**
+    // 的直连操作面（CLI/IDE 快捷动作），刻意不进 Agent 工具面——
+    //   · create_task / delete_task：Agent 侧的建/删任务走 create_task_from_template
+    //     （模板闸）与既有的 scoped task 工具，直连 CRUD 属扩权；
+    //   · list_artifacts：Agent 拿产物走 execution 侧既有读面，列表页是人的视图；
+    //   · send_agent_message / cancel_agent_session / decide_agent_approval：
+    //     Agent 自发消息/自取消/自审批属自我引用（审批四眼原则——自己批自己），
+    //     cancel/decide 与 agent_session_* 自省同类，刻意排除。
+    "create_task",
+    "delete_task",
+    "list_artifacts",
+    "send_agent_message",
+    "cancel_agent_session",
+    "decide_agent_approval",
     // 任务流转的导入导出与模板面：面向人的搬运/脚手架，非 Agent 运行时职责
     // （import_task 会真的创建任务，交给 Agent 自主创建属扩权）。
     "export_task",

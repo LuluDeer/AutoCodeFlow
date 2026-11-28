@@ -446,6 +446,11 @@ const ALLOWLIST = [
   },
   // ── const-object 形态：不是"列的取值域"，而是常量表（仍需登记，防静默新增）──
   {
+    name: "WORKBENCH_CODES",
+    reason:
+      "workbench 错误码目录分片（含切片 D1/E1 的 WORKBENCH_CONVERT_* 三闸 409 码与两个 403 码）：值是 {status,zh,en} 对象（i18n 词典），不是 DB 列值域；与 COMMON_CODES 同型",
+  },
+  {
     name: "COMMON_CODES",
     reason: "错误码目录分片：值是 {status,zh,en} 对象（i18n 词典），不是 DB 列值域",
   },

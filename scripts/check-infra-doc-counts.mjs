@@ -111,8 +111,8 @@ const FLOORS = {
   jobs: 10, // 实测 38
   deployLines: 100, // 实测 1963
   migrations: 50, // 实测 122
-  composeServices: 5, // 实测 21（根 docker-compose.yml）
-  composeProfiled: 2, // 实测 13（带 profiles: 的服务）
+  composeServices: 5, // 实测 20（根 docker-compose.yml）
+  composeProfiled: 2, // 实测 12（带 profiles: 的服务）
   composeResident: 3, // 实测 8（不带 profiles: 的「常驻」服务）
 };
 
@@ -655,7 +655,7 @@ function fixtureDoc(overrides = {}) {
 }
 
 /**
- * 第 5 项的 fixture：根 compose（默认 21 个服务 / 13 个在 profile 下 / 8 个常驻，与真仓同构）。
+ * 第 5 项的 fixture：根 compose（默认 20 个服务 / 12 个在 profile 下 / 8 个常驻，与真仓同构）。
  *
  * · `promote: n` 让前 n 个 profile 服务变成常驻（造「现场变了、文档没跟」）；
  * · `tags: true` 掺入 `!reset` / `!override`（真仓 `docker-compose.ha.yml` /
@@ -676,7 +676,6 @@ const PROFILE_SERVICES = [
   "postgres-replica",
   "rustfs",
   "volume-permission-helper",
-  "jaeger",
   "pg-backup",
   "prometheus",
   "grafana",
@@ -711,7 +710,7 @@ function fixtureCompose({ promote = 0, tags = false } = {}) {
 }
 
 /** `docs/deployment.md` 的最小形态：只保留「N 个服务里 M 个在 profile 下；K 个常驻服务」那句。 */
-function fixtureDeployDoc({ services = 21, profiled = 13, resident = 8 } = {}) {
+function fixtureDeployDoc({ services = 20, profiled = 12, resident = 8 } = {}) {
   return [
     "# 部署指南",
     "",
@@ -730,7 +729,7 @@ function fixtureInfraDoc({ resident = 8 } = {}) {
   return [
     "# 基础设施总览",
     "",
-    `- 根 \`docker-compose.yml\`（1054 行）：完整部署——${resident} 个常驻服务 + profile 服务（\`rustfs\` / \`replica\` / \`jaeger\` / \`backup\` / \`monitoring\`），双网络，15 个命名卷。`,
+    `- 根 \`docker-compose.yml\`（1054 行）：完整部署——${resident} 个常驻服务 + profile 服务（\`rustfs\` / \`replica\` / \`backup\` / \`monitoring\`），双网络，15 个命名卷。`,
     "",
   ].join("\n");
 }
@@ -809,7 +808,7 @@ const SELFTEST_CASES = [
       "ci.yml job 数：38",
       "deploy.sh 行数：1963",
       "TypeORM 迁移数：122",
-      "compose 服务数：21（13 个在 profile 下 / 8 个常驻",
+      "compose 服务数：20（12 个在 profile 下 / 8 个常驻",
       "10 处断言点全部命中",
     ],
   },
@@ -949,7 +948,7 @@ const SELFTEST_CASES = [
     expectCode: 1,
     expectText: [
       "profile 下的服务数",
-      "文档写「13」，实际「12」",
+      "文档写「12」，实际「11」",
       "常驻服务数",
       "文档写「8」，实际「9」",
       // atlas 06-infra 那句「8 个常驻服务」是同一事实的第二处手抄，也要红
@@ -977,12 +976,12 @@ const SELFTEST_CASES = [
       const parsed = parseComposeServices(text);
       must(parsed.ok, `parseComposeServices 失败：${parsed.reason}`);
       must(
-        parsed.services.length === 21,
-        `解析到 ${parsed.services.length} 个服务（期望 21）——两空格缩进的服务名被漏掉/多算`,
+        parsed.services.length === 20,
+        `解析到 ${parsed.services.length} 个服务（期望 20）——两空格缩进的服务名被漏掉/多算`,
       );
       const profiled = parsed.services.filter((s) => s.profiles.length > 0);
       const resident = parsed.services.filter((s) => s.profiles.length === 0);
-      must(profiled.length === 13, `profile 服务 ${profiled.length} 个（期望 13）`);
+      must(profiled.length === 12, `profile 服务 ${profiled.length} 个（期望 12）`);
       must(resident.length === 8, `常驻服务 ${resident.length} 个（期望 8）`);
       must(
         resident.some((s) => s.name === "postgres") && profiled.some((s) => s.name === "rustfs"),
