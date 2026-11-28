@@ -239,26 +239,12 @@ export default {
   'dashboard.cockpit.cost.amount': '折算金额：{{value}}',
   'dashboard.cockpit.cost.unavailable': '成本金额不可用（未折算）',
   'dashboard.cockpit.cost.detail': '原因：{{reason}}。{{note}}',
-  // 成本原因码（后端 PriceReason 五种值）；未知码由 costReasonLabel 原样回退，不进字典。
+  // 成本原因码（后端 PriceReason 五种值）；未知码由 costReasonLabel（utils/cost-reason-label.ts）原样回退，不进字典。
   'costReason.OK': '已折算',
   'costReason.NO_TOKEN_SAMPLE': '无 token 样本',
   'costReason.PRICE_MISSING': '缺价目配置',
   'costReason.INVALID_TOKEN_COUNT': 'token 样本损坏',
   'costReason.INVALID_PRICE': '价目配置非法',
-  'dashboard.cockpit.cost.window': '近 30 天口径',
-  // TTFV 三态：gate_off（未启用）/ no_data（无样本）/ ok（真值）；缺字段=未知，绝不 0。
-  'dashboard.cockpit.ttfv.title': '首次成功用时 · TTFV',
-  'dashboard.cockpit.ttfv.subtitle': '近 30 天口径，仅 opt-in 实例',
-  'dashboard.cockpit.ttfv.gateOff': '首次成功用时未采集（遥测未启用）',
-  'dashboard.cockpit.ttfv.gateOffHint': '在设置→遥测中开启',
-  'dashboard.cockpit.ttfv.noData': '已启用，暂无符合口径的样本',
-  'dashboard.cockpit.ttfv.sampleSize': '样本量：{{count}}',
-  'dashboard.cockpit.ttfv.median': '折算中位数：{{value}} 分钟',
-  'dashboard.cockpit.ttfv.activation': '24h 激活率：{{value}}%',
-  'dashboard.cockpit.ttfv.activationPending': '24h 激活率：样本未满 24h',
-  'dashboard.cockpit.ttfv.asOf': '截止 {{value}}',
-  'dashboard.cockpit.ttfv.unknown': '首次成功用时未知（读取失败或字段缺失）',
-  'dashboard.cockpit.ttfv.note': '说明：{{note}}',
 
   // R328：北极星双口径看板（严格值主 / 近似值参考，绝不混用）。
   'dashboard.northStar.title': '北极星 · 业务结果（双口径）',
@@ -1042,6 +1028,7 @@ export default {
   'audit.action.capability_transfer': '移交能力所有权',
   'audit.action.capability_delete': '删除能力',
   'audit.action.workbench_rewind': '回退工作台会话（作废在途写入）',
+  'audit.action.workbench_convert_to_sop': '工作台会话转为 SOP 草稿',
   'audit.action.im_identity_bind': '绑定 IM 身份',
   'audit.total': '共 {{count}} 条',
   'audit.modal.detail': '详情',
@@ -2125,6 +2112,9 @@ export default {
   'install.getTokenFail': '获取共享 Token 失败，请手动生成',
   'install.getCmdFail': '获取安装命令失败，请重试',
   'install.packagesLoadFail': '安装包列表加载失败',
+  // UIAUD-B1-P1-2：轮询失败可见错误态（旧实现静默 ignore，用户干等到 300s 超时）
+  'install.pollErrorTitle': '检测请求失败',
+  'install.pollErrorRetryHint': '无法获取执行器列表，无法确认新装的执行器是否上线。请检查中台网络后重试；也可先回到上一步再重新开始检测。',
   'install.step1': '系统要求',
   'install.step2': '选择安装包',
   'install.step3': '获取安装命令',
@@ -3963,6 +3953,13 @@ export default {
   'sops.col.publishedBy': '发布者',
   'sops.col.publishedAt': '发布时间',
   'sops.col.clarifications': '澄清轮次',
+  // 切片 D1：机器验收列题（指派表）+ 验收状态标签（null=迁移前存量行）
+  'sops.col.verification': '机器验收',
+  'sops.verificationStatus.unverified': '待验收',
+  'sops.verificationStatus.passed': '验收通过',
+  'sops.verificationStatus.failed': '验收不通过',
+  'sops.verificationStatus.unclear': '无法判定',
+  'sops.verificationStatus.none': '无验收',
   // R6-Enum 交接：技术标识符列题收词（此前裸串 'slug'/'id'/'contentHash'/'changelog'）
   'sops.col.slug': 'Slug 标识',
   'sops.col.id': 'ID',
@@ -4725,6 +4722,11 @@ export default {
   'palette.retry': '重试',
   'dashboard.createFirstHint': '业务用户请从工作台描述需求；管理员也可直接创建任务。',
   'workbench.submittedForReview': '方案已提交审阅，草稿尚未运行；主管批准后您会收到通知，无需前往其他页面。',
+  // 切片 E1（workbench→SOP 直连）：commit submitted + 已有会话 ⇒ 次要 CTA。
+  'workbench.convert.cta': '转为 SOP 草稿并指派',
+  'workbench.convert.ok': '已转为 SOP 草稿：{{slug}}（管理员在 SOP 页发布后即可指派执行）',
+  'workbench.convert.failed': '转为 SOP 草稿失败',
+  'workbench.convert.missingInputs': '缺少本轮预览锚点（请重新预览方案后再转换）',
   'requireAdmin.title': '无权访问该页面',
   'login.ssoCheckFailed': '暂时无法确认企业账号登录是否可用，账号密码登录不受影响。',
   'login.ssoRetry': '重试检测',

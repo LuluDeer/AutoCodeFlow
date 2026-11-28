@@ -439,5 +439,10 @@ export default {
   'err.USERNAME_TAKEN': 'Username is already taken',
   'err.VALIDATION_FAILED': 'Validation failed: {{detail}}',
   'err.VALIDATION_FAILED_NO_DETAIL': 'Validation failed',
+  'err.WORKBENCH_APPROVAL_DECISION_ADMIN_ONLY': 'Only admins can approve or deny an approval request',
+  'err.WORKBENCH_CONVERT_APPROVAL_NOT_CONSUMED': 'The release approval has not been consumed yet; complete the four-eyes approval before converting into a SOP draft',
+  'err.WORKBENCH_CONVERT_CARD_DRIFT': 'The plan card no longer matches the commit anchor (goal/cadence/params differ); re-preview and commit before converting',
+  'err.WORKBENCH_CONVERT_NO_COMMIT': 'This workbench session has no committed plan card (missing commit anchors); it cannot be converted into a SOP draft',
+  'err.WORKBENCH_RUN_DRAFT_FORBIDDEN': 'You are not allowed to run another user\'s SOP draft',
   'err.WRITE_GUARD_ASSERTION_MISSING': 'Write endpoint is missing its authorization assertion (server misconfiguration)',
 } as const;

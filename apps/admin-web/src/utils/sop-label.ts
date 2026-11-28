@@ -38,6 +38,18 @@ export const SOP_ASSIGNMENT_STATUS_T_KEYS: Record<string, string> = {
 };
 
 /**
+ * 机器验收状态（切片 D1）的已知取值——与 admin-api
+ * sop-assignment.entity.ts 的 SOP_VERIFICATION_STATUSES 同源。
+ * null（迁移前存量行）由调用方判空后用 t('sops.verificationStatus.none') 兜底。
+ */
+export const SOP_VERIFICATION_STATUS_T_KEYS: Record<string, string> = {
+  unverified: 'sops.verificationStatus.unverified',
+  passed: 'sops.verificationStatus.passed',
+  failed: 'sops.verificationStatus.failed',
+  unclear: 'sops.verificationStatus.unclear',
+};
+
+/**
  * SopClarification.resolution 的已知取值（澄清处置，见 sop-clarification.entity.ts
  * SOP_CLARIFICATION_RESOLUTIONS）。NULL = 待中台 Agent 复核（前端伪态 pending，
  * 调用方负责判空后用 t('sops.clarResolution.pending') 兜底）。
@@ -77,6 +89,22 @@ export function sopAssignmentStatusLabel(
   t: (key: string) => string,
 ): string {
   return labelOf(SOP_ASSIGNMENT_STATUS_T_KEYS, status, t);
+}
+
+/**
+ * 机器验收状态（切片 D1）标签。与其它 SOP 标签的差异：**null 是有效输入**
+ * （迁移前存量行，无验收语义），渲染为「无验收」中性文案，而不是空串——
+ * 空串会让表格单元格看起来像数据丢了。
+ */
+export function sopVerificationStatusLabel(
+  status: string | null | undefined,
+  t: (key: string) => string,
+): string {
+  if (status === null || status === undefined || status === '') {
+    return t('sops.verificationStatus.none');
+  }
+  const key = SOP_VERIFICATION_STATUS_T_KEYS[status];
+  return key ? t(key) : status;
 }
 
 export function sopClarResolutionLabel(

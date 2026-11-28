@@ -68,6 +68,12 @@ export interface SopAssignment {
   capabilitySnapshotJson: Record<string, unknown> | null;
   permissionProfileAtPull: string | null;
   assignedBy: string;
+  /** 机器验收状态（切片 D1）：null=迁移前存量行，无验收语义。 */
+  verificationStatus: 'unverified' | 'passed' | 'failed' | 'unclear' | null;
+  /** 验收复核会话锚；spawn 失败 fail-closed 路径为 null。 */
+  verificationSessionId: string | null;
+  /** 验收结论落定时间（unverified 恒为 null）。 */
+  verificationCheckedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

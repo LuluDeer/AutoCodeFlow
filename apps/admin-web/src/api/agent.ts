@@ -143,18 +143,8 @@ export interface AgentApproval {
 }
 
 /** 审批单处置响应（agent.controller decideApproval）。 */
-export interface AgentApprovalDecision {
-  ok: boolean;
-  approval: {
-    approvalKey: string;
-    status: AgentApprovalStatus | string;
-    decidedBy: string | null;
-    decidedAt: string | null;
-    consumedAt: string | null;
-  };
-  /** grant 且会话挂起在 waiting_input 时，服务端已自动重新入队。 */
-  resumed: boolean;
-}
+export type AgentApprovalDecision =
+  components['schemas']['AgentApprovalDecisionResponseDto'];
 
 export const agentApi = {
   list: (params?: {

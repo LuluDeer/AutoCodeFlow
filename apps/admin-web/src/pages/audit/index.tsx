@@ -199,6 +199,7 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'capability.update': 'audit.action.capability_update',
   'capability.delete': 'audit.action.capability_delete',
   'workbench.rewind': 'audit.action.workbench_rewind',
+  'workbench.convert_to_sop': 'audit.action.workbench_convert_to_sop',
   'im_identity.bind': 'audit.action.im_identity_bind',
 };
 

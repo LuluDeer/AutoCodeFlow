@@ -233,26 +233,12 @@ export default {
   'dashboard.cockpit.cost.unavailable': 'Cost amount unavailable (not converted)',
   'dashboard.cockpit.cost.detail': 'Reason: {{reason}}. {{note}}',
   // Cost reason codes (the five backend PriceReason values); unknown codes are
-  // passed through verbatim by costReasonLabel and are not listed here.
+  // passed through verbatim by costReasonLabel (utils/cost-reason-label.ts) and are not listed here.
   'costReason.OK': 'Converted',
   'costReason.NO_TOKEN_SAMPLE': 'No token sample',
   'costReason.PRICE_MISSING': 'Price config missing',
   'costReason.INVALID_TOKEN_COUNT': 'Invalid token sample',
   'costReason.INVALID_PRICE': 'Invalid price config',
-  'dashboard.cockpit.cost.window': 'Last 30 days',
-  // TTFV tri-state: gate_off (disabled) / no_data (no matching sample) / ok (real value); missing field means unknown, never 0.
-  'dashboard.cockpit.ttfv.title': 'Time to first value · TTFV',
-  'dashboard.cockpit.ttfv.subtitle': 'Last 30 days · opt-in instances only',
-  'dashboard.cockpit.ttfv.gateOff': 'Time to first value not collected (telemetry disabled)',
-  'dashboard.cockpit.ttfv.gateOffHint': 'Enable it in Settings → Telemetry',
-  'dashboard.cockpit.ttfv.noData': 'Enabled, but no samples match the metric',
-  'dashboard.cockpit.ttfv.sampleSize': 'Samples: {{count}}',
-  'dashboard.cockpit.ttfv.median': 'Median: {{value}} minutes',
-  'dashboard.cockpit.ttfv.activation': '24h activation: {{value}}%',
-  'dashboard.cockpit.ttfv.activationPending': '24h activation: no sample older than 24h',
-  'dashboard.cockpit.ttfv.asOf': 'As of {{value}}',
-  'dashboard.cockpit.ttfv.unknown': 'Time to first value unknown (read failed or field missing)',
-  'dashboard.cockpit.ttfv.note': 'Note: {{note}}',
 
   // R328: North Star two-metric board (strict = primary, proxy = reference; never mixed).
   'dashboard.northStar.title': 'North Star · business outcomes (two metrics)',
@@ -1035,6 +1021,7 @@ export default {
   'audit.action.capability_transfer': 'Transfer capability ownership',
   'audit.action.capability_delete': 'Delete capability',
   'audit.action.workbench_rewind': 'Rewind workbench session (invalidate in-flight writes)',
+  'audit.action.workbench_convert_to_sop': 'Convert workbench session to SOP draft',
   'audit.action.im_identity_bind': 'Bind IM identity',
   'audit.total': '{{count}} in total',
   'audit.modal.detail': 'Detail',
@@ -2122,6 +2109,9 @@ export default {
   'install.getTokenFail': 'Failed to fetch the shared Token. Please generate it manually.',
   'install.getCmdFail': 'Failed to get the install command. Please try again.',
   'install.packagesLoadFail': 'Failed to load the install package list',
+  // UIAUD-B1-P1-2: polling failures become a visible error state (was silently ignored)
+  'install.pollErrorTitle': 'Detection request failed',
+  'install.pollErrorRetryHint': 'The executor list is unavailable, so the freshly installed executor cannot be confirmed as online. Check the connection to the admin server and retry, or go back one step and start detection again.',
   'install.step1': 'System Requirements',
   'install.step2': 'Choose Install Package',
   'install.step3': 'Get Install Command',
@@ -3975,6 +3965,13 @@ export default {
   'sops.col.publishedBy': 'Published by',
   'sops.col.publishedAt': 'Published at',
   'sops.col.clarifications': 'Clarifications',
+  // Slice D1: machine verification column title (assignment table) + verdict tags (null = pre-migration rows)
+  'sops.col.verification': 'Verification',
+  'sops.verificationStatus.unverified': 'Unverified',
+  'sops.verificationStatus.passed': 'Passed',
+  'sops.verificationStatus.failed': 'Failed',
+  'sops.verificationStatus.unclear': 'Unclear',
+  'sops.verificationStatus.none': 'No verification',
   // R6-Enum handoff: technical identifier column titles (previously raw strings)
   'sops.col.slug': 'Slug',
   'sops.col.id': 'ID',
@@ -4732,6 +4729,11 @@ export default {
   'palette.retry': 'Retry',
   'dashboard.createFirstHint': 'Business users can describe a goal in the Workbench; admins may also create a task directly.',
   'workbench.submittedForReview': 'Submitted for review. The draft is not running yet; you will be notified once a supervisor approves it. No further action is needed here.',
+  // Slice E1 (workbench→SOP direct link): commit submitted + session exists ⇒ secondary CTA.
+  'workbench.convert.cta': 'Convert to SOP draft & assign',
+  'workbench.convert.ok': 'Converted to SOP draft: {{slug}} (an admin can publish and assign it on the SOP page)',
+  'workbench.convert.failed': 'Failed to convert to a SOP draft',
+  'workbench.convert.missingInputs': 'Missing preview anchors from this round (re-preview the plan before converting)',
   'requireAdmin.title': 'You do not have access to this page',
   'login.ssoCheckFailed': 'Could not check whether single sign-on is available. Password sign-in is unaffected.',
   'login.ssoRetry': 'Retry check',

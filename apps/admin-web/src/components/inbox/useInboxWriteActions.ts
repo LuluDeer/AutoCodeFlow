@@ -73,11 +73,16 @@ export function useInboxWriteActions(reload: () => Promise<void>) {
       t('inbox.denyConfirm.title', { title, tool: approval.toolName }),
       async () => {
         const result = await agentApi.denyApproval(session.id, approval.approvalKey);
-        if (result.ok && result.approval.status === 'denied') {
+        // 生成合同里 approval 是快照行，可能为 null（理论路径：行已被并发清理）
+        const snapshot = result.approval;
+        if (result.ok && snapshot?.status === 'denied') {
           message.success(t('inbox.success.denied'));
         } else {
           message.warning(t('inbox.approvalState', {
-            status: agentApprovalStatusLabel(result.approval.status, t),
+            status: agentApprovalStatusLabel(
+              typeof snapshot?.status === 'string' ? snapshot.status : null,
+              t,
+            ),
           }));
         }
       },
@@ -142,11 +147,16 @@ function grantPublishApproval(
   if (!session || !approval) return;
   confirm(t('agents.approval.confirmTitle', { tool: approval.toolName }), async () => {
     const result = await agentApi.grantApproval(session.id, approval.approvalKey);
-    if (result.ok && result.approval.status === 'granted') {
+    // 生成合同里 approval 是快照行，可能为 null（理论路径：行已被并发清理）
+    const snapshot = result.approval;
+    if (result.ok && snapshot?.status === 'granted') {
       message.success(t('agents.approval.grantOk', { key: approval.approvalKey }));
     } else {
       message.warning(t('inbox.approvalState', {
-        status: agentApprovalStatusLabel(result.approval.status, t),
+        status: agentApprovalStatusLabel(
+          typeof snapshot?.status === 'string' ? snapshot.status : null,
+          t,
+        ),
       }));
     }
   });

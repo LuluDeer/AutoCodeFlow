@@ -36,10 +36,18 @@ import PageHeader from '../components/PageHeader';
 // UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
-// UX-06 第二扫：SOP 域裸枚举收敛到唯一事实源（状态/工单状态）
-import { sopAssignmentStatusLabel, sopStatusLabel } from '../utils/sop-label';
-// P3 审计：SOP 状态/工单状态 → Tag color 映射收敛到 utils/status-color 单一事实源
-import { SOP_ASSIGNMENT_STATUS_COLOR, SOP_STATUS_COLOR } from '../utils/status-color';
+// UX-06 第二扫：SOP 域裸枚举收敛到唯一事实源（状态/工单状态/机器验收状态）
+import {
+  sopAssignmentStatusLabel,
+  sopStatusLabel,
+  sopVerificationStatusLabel,
+} from '../utils/sop-label';
+// P3 审计：SOP 状态/工单状态/机器验收状态 → Tag color 映射收敛到 utils/status-color 单一事实源
+import {
+  SOP_ASSIGNMENT_STATUS_COLOR,
+  SOP_STATUS_COLOR,
+  SOP_VERIFICATION_STATUS_COLOR,
+} from '../utils/status-color';
 // UI-09 第三轮：≤768px 表格 → 卡片列表的结构级降级（对齐 TaskListPage/
 // ApplicationListPage 的 MOBILE-CARD-01 先例；断点与 index.css ui09 媒体查询同值）
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -97,6 +105,18 @@ function statusTag(status: Sop['status'], t: (key: string) => string) {
 function assignmentStatusTag(status: SopAssignment['status'], t: (key: string) => string) {
   // UX-06 第二扫：不再裸渲染 {status}（7 值工单状态机 → sops.assignmentStatus.*）
   return <Tag color={SOP_ASSIGNMENT_STATUS_COLOR[status] ?? 'default'}>{sopAssignmentStatusLabel(status, t)}</Tag>;
+}
+
+/**
+ * 机器验收状态 Tag（切片 D1）：unverified=灰/passed=绿/failed=红/unclear=橙；
+ * null（迁移前存量行）走中性 default + 「无验收」文案。
+ */
+function verificationStatusTag(
+  status: SopAssignment['verificationStatus'],
+  t: (key: string) => string,
+) {
+  const color = status ? (SOP_VERIFICATION_STATUS_COLOR[status] ?? 'default') : 'default';
+  return <Tag color={color}>{sopVerificationStatusLabel(status, t)}</Tag>;
 }
 
 /**
@@ -669,6 +689,12 @@ export default function SopsPage() {
     },
     { title: t('sops.col.version'), dataIndex: 'sopVersion', width: 90 },
     { title: t('sops.col.status'), dataIndex: 'status', width: 140, render: (s: SopAssignment['status']) => assignmentStatusTag(s, t) },
+    {
+      title: t('sops.col.verification'),
+      dataIndex: 'verificationStatus',
+      width: 110,
+      render: (v: SopAssignment['verificationStatus']) => verificationStatusTag(v, t),
+    },
     {
       title: t('sops.col.clarifications'),
       width: 100,

@@ -439,5 +439,10 @@ export default {
   'err.USERNAME_TAKEN': '用户名已被占用',
   'err.VALIDATION_FAILED': '参数校验失败：{{detail}}',
   'err.VALIDATION_FAILED_NO_DETAIL': '参数校验失败',
+  'err.WORKBENCH_APPROVAL_DECISION_ADMIN_ONLY': '只有管理员可以批准或拒绝审批单',
+  'err.WORKBENCH_CONVERT_APPROVAL_NOT_CONSUMED': '发布审批尚未完成（未批准或未执行），完成主管四眼审批后才能转为 SOP 草稿',
+  'err.WORKBENCH_CONVERT_CARD_DRIFT': '方案卡与提交锚点不一致（goal/cadence/params 与 commit 时不符），请重新预览并提交后再转换',
+  'err.WORKBENCH_CONVERT_NO_COMMIT': '该工作台会话还没有提交成功的方案卡（缺少 commit 锚点），不能转为 SOP 草稿',
+  'err.WORKBENCH_RUN_DRAFT_FORBIDDEN': '无权运行他人的 SOP 草稿',
   'err.WRITE_GUARD_ASSERTION_MISSING': '写端点缺少授权断言（服务端配置错误）',
 } as const;
