@@ -80,6 +80,17 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
 
   test('preload 桥可用：config:get 脱敏（token 恒 ******）且通道白名单不漂移', async () => {
     const userData = tmpUserData();
+    // 脱敏断言要有牙：预置一份**非空 token** 的隔离配置。CI 的干净 userData
+    // 下 electron-store defaults 给的是空 token，getAllMasked() 回 ''——旧断言
+    // 同时允许 '' 时那条分支恒过，"token 恒 ******"名不副实。写入后主进程的
+    // migratePlaintextToken 会把它转成密文（safeStorage 可用时），但读面
+    // getAllMasked() 对任何非空 token 一律回 TOKEN_MASK，故这里硬断言 ******。
+    // 仅落在本用例独占的 tmp userData，不触碰开发者真实配置。
+    fs.mkdirSync(userData, { recursive: true });
+    fs.writeFileSync(
+      path.join(userData, 'config.json'),
+      JSON.stringify({ executorToken: 'e2e-secret-must-never-cross-bridge' }),
+    );
     const app = await launchApp({ ELECTRON_USER_DATA_DIR: userData });
     try {
       const win = await app.firstWindow();
@@ -87,10 +98,11 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       // 桥对象必须存在（contextBridge.exposeInMainWorld('electronAPI')）
       const hasBridge = await win.evaluate(() => typeof window.electronAPI === 'object');
       expect(hasBridge).toBe(true);
-      // 读面脱敏：config:get 与既有 getAllMasked 语义一致（空 token → ''，
-      // 非空 token → ******，绝无明文回传）
+      // 读面脱敏：config:get 走 main 的 config:get → getAllMasked()，
+      // 非空 token 必须恒 ******（明文/密文都不得过桥）。
       const cfg = await win.evaluate(() => window.electronAPI.getConfig());
       expect(cfg).toBeTruthy();
+      expect(cfg.executorToken).toBe('******');
       for (const key of ['executorToken', 'token']) {
         if (key in cfg) {
           expect(['', '******'], `${key} 必须脱敏（空或掩码），不得明文`).toContain(cfg[key]);
@@ -131,20 +143,29 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       // 教训：本地 `dist/` 是**上一次 build 的产物**，直接跑 e2e 会漏掉「新增但
       // 未重建」的通道（本地 41 vs CI 44 vs 实际 48）。改动 preload 后必须
       // `npm run build` 再跑本用例，否则白名单会以过期运行时为准。
+      //
+      // run 46136854131（2026-11-28）再补 3 个：bootTheme / onAgentLiveEvent /
+      // openWorkbench。三者都已在 src/preload/index.ts 落地，且 CI job 在
+      // test:e2e 前跑 `npm run build`（ci.yml 的 Build main + renderer + executor
+      // bundle），所以 Windows 产物里确实暴露这 3 个键：bootTheme 是 P3 首帧
+      // 防闪的同步主题快照（值而非函数，值域已收窄）；onAgentLiveEvent 订阅
+      // agent:live-event（工作台/状态页共用推流）；openWorkbench 走 ADR-044 的
+      // workbench:open。与前面几轮同属"实现已落地、白名单没跟上"，补进来后
+      // 仍保持"新增即红"——下次加通道而不改这里，本用例继续红。
       expect(channels).toEqual(
         [
-          'applyTheme',
+          'applyTheme', 'bootTheme',
           'cancelUpdateDownload',
           'checkForUpdate', 'checkPort', 'clearHistory', 'closeWindow', 'deleteAppRelease',
           'downloadUpdate', 'exportConfig', 'exportDiagnosticReport', 'exportExecLog', 'getAgentStatus', 'getAutoLaunch',
           'getConfig', 'getHealthPanel', 'getHistory',
           'getLocalIPs', 'getPythonEnvStatus', 'getRunningApps', 'getStatus', 'getTodayLogs',
           'getWindowState', 'importConfig', 'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow',
-          'onConfigChanged', 'onHistoryChanged', 'onLogLine',
+          'onAgentLiveEvent', 'onConfigChanged', 'onHistoryChanged', 'onLogLine',
           'onStatusChange', 'onSwitchTab', 'onUpdateAvailable', 'onUpdateDownloaded',
           'onWindowMaximizeChange',
           'onUpdateError', 'onUpdateProgress', 'openAppFolder', 'openLogFile',
-          'openReleaseFolder', 'openTaskLogFolder', 'openWizard', 'readAppLog', 'readLog', 'revealExecLog',
+          'openReleaseFolder', 'openTaskLogFolder', 'openWizard', 'openWorkbench', 'readAppLog', 'readLog', 'revealExecLog',
           'saveAndCloseWizard', 'saveConfig', 'saveTheme', 'setAutoLaunch', 'startExecutor',
           'stopExecutor', 'testConnection', 'testInterpreterSource', 'toggleMaximizeWindow', 'uninstallApp', 'writeClipboardText',
         ].sort(),

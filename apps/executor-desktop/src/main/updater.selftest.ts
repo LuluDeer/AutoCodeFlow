@@ -652,59 +652,24 @@ async function main(): Promise<void> {
     }
 
     // ① 字符串形态：原样规整（去首尾空白）
-    assert.equal(
-      normalizeReleaseNotes('  - 修复登录超时\n- 新增诊断导出  '),
-      '- 修复登录超时\n- 新增诊断导出',
-      '4.2: 字符串形态必须原样保留（仅去首尾空白）',
-    );
+    assert.equal(normalizeReleaseNotes('  - 修复登录超时\n- 新增诊断导出  '), '- 修复登录超时\n- 新增诊断导出', '4.2: 字符串形态仅去首尾空白');
     // ② null/undefined/脏值 → 空串（不是错误，渲染层按空串隐藏入口）
     for (const empty of [null, undefined, 42, {}, [], [null], [{ version: '1.0.0' }]]) {
-      assert.equal(
-        normalizeReleaseNotes(empty),
-        '',
-        `4.2: ${JSON.stringify(empty)} 必须归一成空串（无日志 ≠ 错误）`,
-      );
+      assert.equal(normalizeReleaseNotes(empty), '', `4.2: ${JSON.stringify(empty)} 归一成空串`);
     }
     // ③ 数组形态（updater.fullChangelog=true）：带版本小标题、note 为 null 的跳过
-    assert.equal(
-      normalizeReleaseNotes([
-        { version: '1.9.0', note: '修复 A' },
-        { version: '1.8.0', note: '新增 B' },
-        { version: '1.7.0', note: null },
-      ]),
-      'v1.9.0\n修复 A\n\nv1.8.0\n新增 B',
-      '4.2: 数组形态必须逐版本加 v 标题拼接，note=null 的版本跳过',
-    );
+    const notes = [{ version: '1.9.0', note: '修复 A' }, { version: '1.8.0', note: '新增 B' }, { version: '1.7.0', note: null }];
+    assert.equal(normalizeReleaseNotes(notes), 'v1.9.0\n修复 A\n\nv1.8.0\n新增 B', '4.2: 数组逐版本加 v 标题，note=null 跳过');
     // ④ 数组里的脏元素（字符串/数字/null）必须被忽略而不是炸掉
-    assert.equal(
-      normalizeReleaseNotes(['junk', 42, null, { version: '2.0.0', note: 'ok' }]),
-      'v2.0.0\nok',
-      '4.2: 数组里的非对象元素必须被跳过',
-    );
+    assert.equal(normalizeReleaseNotes(['junk', 42, null, { version: '2.0.0', note: 'ok' }]), 'v2.0.0\nok', '4.2: 非对象元素跳过');
     // ⑤ HTML 标签必须剥掉（内容来自 GitHub Releases，是不可信外部输入；
     //    渲染层只做文本渲染，主进程这一层是第二道防线）
-    assert.equal(
-      normalizeReleaseNotes('<p>修复 <b>登录</b> 超时</p><script>alert(1)</script>'),
-      '修复 登录 超时',
-      '4.2: HTML 标签必须剥除（含 <script>——XSS 防线第一层）',
-    );
-    assert.equal(
-      normalizeReleaseNotes('第一行<br>第二行'),
-      '第一行\n第二行',
-      '4.2: <br> 必须转成换行（否则段落黏成一行）',
-    );
+    assert.equal(normalizeReleaseNotes('<p>修复 <b>登录</b> 超时</p><script>alert(1)</script>'), '修复 登录 超时', '4.2: HTML 标签剥除（XSS 防线第一层）');
+    assert.equal(normalizeReleaseNotes('第一行<br>第二行'), '第一行\n第二行', '4.2: <br> 转换行');
     // ⑥ 实体解码：&lt; &gt; &amp; &nbsp;（只处理最常见的四个）
-    assert.equal(
-      normalizeReleaseNotes('a &lt;b&gt; &amp; c&nbsp;d'),
-      'a <b> & c d',
-      '4.2: 常见 HTML 实体必须解码',
-    );
+    assert.equal(normalizeReleaseNotes('a &lt;b&gt; &amp; c&nbsp;d'), 'a <b> & c d', '4.2: 常见 HTML 实体解码');
     // ⑦ 控制字符清除 + CRLF 归一 + 连续空行压缩
-    assert.equal(
-      normalizeReleaseNotes('a\u0000b\r\n\r\n\r\n\r\nc'),
-      'ab\n\nc',
-      '4.2: 控制字符清除、CRLF 归一、连续空行压成一个',
-    );
+    assert.equal(normalizeReleaseNotes('a\u0000b\r\n\r\n\r\n\r\nc'), 'ab\n\nc', '4.2: 控制字符清除 + CRLF 归一 + 空行压缩');
     // ⑧ **封顶**：超长日志必须截断到 RELEASE_NOTES_MAX_CHARS 以内
     {
       const huge = 'x'.repeat(RELEASE_NOTES_MAX_CHARS * 3);
@@ -857,12 +822,28 @@ async function main(): Promise<void> {
       path.join(__dirname, '..', 'src', 'main', 'ipc-handlers.ts'),
       'utf-8',
     );
+    // A-3 前提已随 af4260ad 重构：IPC 统一过 resolveUpdaterCheckSupport；接线与真实判定一起钉。
     assert.ok(
-      /if \(!isSelfUpdateSupported\(process\.platform, process\.env\.APPIMAGE\)\)[\s\S]{0,400}?UPDATER_UNSUPPORTED_INSTALL/.test(
-        ipcSrc,
-      ),
-      'A-3: updater:check 必须在不支持自更新的安装形态下回 UPDATER_UNSUPPORTED_INSTALL',
+      /ipcMain\.handle\('updater:check'[\s\S]{0,700}?resolveUpdaterCheckSupport\(\s*app\.isPackaged,\s*isSelfUpdateSupported\(process\.platform,\s*process\.env\.APPIMAGE\)\s*,\s*\)[\s\S]{0,120}?if \(!support\.ok\) return support;/.test(ipcSrc),
+      'A-3: updater:check 必须经 resolveUpdaterCheckSupport(app.isPackaged, isSelfUpdateSupported(process.platform, process.env.APPIMAGE)) 判形态并原样回传不支持结果',
     );
+    // 直接驱动真实模块（复用 D-01 stub）：不支持形态回稳定哨兵，支持形态放行（非恒真）。
+    {
+      const u = loadUpdaterWithFakes().updater;
+      assert.deepStrictEqual(
+        [
+          u.resolveUpdaterCheckSupport(true, u.isSelfUpdateSupported('linux', undefined)),
+          u.resolveUpdaterCheckSupport(false, u.isSelfUpdateSupported('linux', '/tmp/x.AppImage')),
+          u.resolveUpdaterCheckSupport(true, true),
+        ],
+        [
+          { ok: false, error: 'UPDATER_UNSUPPORTED_INSTALL' },
+          { ok: false, error: 'UPDATER_UNSUPPORTED_INSTALL', development: true },
+          { ok: true },
+        ],
+        'A-3: deb/rpm 与开发态必须回哨兵；支持形态必须放行',
+      );
+    }
     const configPageSrc = fs.readFileSync(
       path.join(__dirname, '..', 'src', 'renderer', 'pages', 'ConfigPage.tsx'),
       'utf-8',

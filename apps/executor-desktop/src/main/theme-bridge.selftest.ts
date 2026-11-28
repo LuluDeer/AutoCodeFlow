@@ -69,9 +69,16 @@ function main(): void {
   assert.ok(preload.includes('bootTheme: bootTheme'), 'preload 必须把快照挂进 electronAPI 单对象');
 
   const init = readSrc('renderer/theme/theme-init.ts');
-  const bootIdx = init.indexOf('bootThemeRaw');
+  // 快照通道现形为 `parseThemeMode(window.electronAPI?.bootTheme)`（先消毒三态，
+  // 再以 bootMode 身份进入 fallback）；旧断言只认 `bootThemeRaw` 变量名，属于
+  // 前提过期——这里钉住真实链路：读快照在前，且 sanitized 值确实作为
+  // readStoredModeOrFallback 的 fallback 实参。
+  const bootIdx = init.indexOf('parseThemeMode(window.electronAPI?.bootTheme)');
   const fallbackIdx = init.indexOf('readStoredModeOrFallback(storage, bootMode)');
-  assert.ok(bootIdx >= 0 && fallbackIdx > bootIdx, 'theme-init 必须先读快照再作为 localStorage fallback');
+  assert.ok(
+    bootIdx >= 0 && fallbackIdx > bootIdx,
+    'theme-init 必须先读快照（经 parseThemeMode 归一）再作为 localStorage fallback',
+  );
   assert.ok(!init.includes('readStoredMode(storage)'), '旧的无快照兜底路径不得残留');
 
   console.log('theme-bridge selftest: all assertions passed');

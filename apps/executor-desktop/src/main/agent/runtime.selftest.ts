@@ -76,6 +76,11 @@ function makeSop(acceptance: Array<Record<string, unknown>>): SopPayload {
   };
 }
 
+type HandlerDeps = Parameters<typeof buildLoopHandlers>[0];
+function makeHandlers(ws: string, llm: Parameters<typeof buildLoopHandlers>[1], over: Partial<HandlerDeps> = {}) {
+  return buildLoopHandlers({ address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions: resolveLocalPermissions({ preset: 'standard' }), sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv(), ...over }, llm);
+}
+
 const MAIN_OK = "require('fs').writeFileSync('out.txt', 'fine');\n";
 const MAIN_BAD = "require('fs').writeFileSync('out.txt', 'fine');\nprocess.exit(1);\n";
 const VERIFY_OK = "require('fs').assert = require('assert');\nconst c = require('fs').readFileSync('out.txt', 'utf8');\nif (c !== 'fine') process.exit(2);\nconsole.log('acceptance ok');\n";
@@ -103,10 +108,7 @@ async function main(): Promise<void> {
     const result = await runAgentLoop({
       environment: makeEnv(),
       permissions,
-      handlers: buildLoopHandlers(
-        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
-        llm,
-      ),
+      handlers: makeHandlers(ws, llm),
     });
     check('一轮 delivered', result.outcome === 'delivered', `outcome=${result.outcome} msg=${result.stopMessage ?? ''}`);
     check('试跑 1 次、迭代 1 轮', result.trialRuns === 1 && result.iterations === 1);
@@ -130,10 +132,7 @@ async function main(): Promise<void> {
     const result = await runAgentLoop({
       environment: makeEnv(),
       permissions,
-      handlers: buildLoopHandlers(
-        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
-        flaky,
-      ),
+      handlers: makeHandlers(ws, flaky),
     });
     check('首次 relay 失败 → 重试后 delivered', result.outcome === 'delivered', `outcome=${result.outcome} msg=${result.stopMessage ?? ''}`);
     check('恰好 2 次 LLM 调用', calls === 2);
@@ -165,10 +164,7 @@ async function main(): Promise<void> {
     const r401 = await runAgentLoop({
       environment: makeEnv(),
       permissions,
-      handlers: buildLoopHandlers(
-        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
-        unauthorized,
-      ),
+      handlers: makeHandlers(ws, unauthorized),
     });
     check('401 → 零重试（恰好 1 次调用）', r401.outcome === 'error' && calls401 === 1, `calls=${calls401} outcome=${r401.outcome}`);
     check('401 报因带原始错误', (r401.stopMessage ?? '').includes('401'));
@@ -187,10 +183,7 @@ async function main(): Promise<void> {
     const r503 = await runAgentLoop({
       environment: makeEnv(),
       permissions,
-      handlers: buildLoopHandlers(
-        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws2, environment: makeEnv() },
-        flaky503,
-      ),
+      handlers: makeHandlers(ws2, flaky503),
     });
     const elapsed503 = Date.now() - t0;
     check('503 连续 → 3 次尝试后如实失败', r503.outcome === 'error' && calls503 === 3, `calls=${calls503} outcome=${r503.outcome}`);
@@ -213,10 +206,7 @@ async function main(): Promise<void> {
     const result = await runAgentLoop({
       environment: makeEnv(),
       permissions,
-      handlers: buildLoopHandlers(
-        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
-        llm,
-      ),
+      handlers: makeHandlers(ws, llm),
     });
     check('二轮 delivered', result.outcome === 'delivered' && result.iterations === 2, `outcome=${result.outcome} msg=${result.stopMessage ?? ''}`);
     check('试跑 2 次', result.trialRuns === 2);
@@ -224,24 +214,59 @@ async function main(): Promise<void> {
     fs.rmSync(ws, { recursive: true, force: true });
   }
 
-  // ── 3. LLM 判定 clarify ──
+  // ── 3. LLM 判定 clarify：真实问句优先，空问句才走轮次兜底 ──
   console.log('-- 3. 澄清收敛 --');
   {
     const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-rt-'));
+    const realQuestion = 'SOP 没说 out.txt 的编码';
     const llm = makeLlm([
       planJson('main.js', MAIN_BAD, VERIFY_OK),
-      JSON.stringify({ action: 'clarify', question: 'SOP 没说 out.txt 的编码' }),
+      JSON.stringify({ action: 'clarify', question: realQuestion }),
     ]);
     const result = await runAgentLoop({
       environment: makeEnv(),
       permissions,
-      handlers: buildLoopHandlers(
-        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
-        llm,
-      ),
+      handlers: makeHandlers(ws, llm),
     });
     check('clarification_requested', result.outcome === 'clarification_requested');
-    check('澄清问题透传', (result.pendingQuestion ?? '').includes('澄清'));
+    check(
+      '非空澄清问题原样透传（不加轮次前缀）',
+      result.pendingQuestion === realQuestion,
+      `pendingQuestion=${JSON.stringify(result.pendingQuestion)}`,
+    );
+    check(
+      '真实问句未被泛化前缀覆盖',
+      !(result.pendingQuestion ?? '').includes('澄清'),
+      `pendingQuestion=${JSON.stringify(result.pendingQuestion)}`,
+    );
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+
+  // ── 3b. LLM 判定 clarify 但 question 为空：如实退回「第 N 轮澄清：」──
+  console.log('-- 3b. 澄清空问句兜底 --');
+  {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-rt-empty-q-'));
+    const llm = makeLlm([
+      planJson('main.js', MAIN_BAD, VERIFY_OK),
+      JSON.stringify({ action: 'clarify', question: '' }),
+    ]);
+    const result = await runAgentLoop({
+      environment: makeEnv(),
+      permissions,
+      handlers: makeHandlers(ws, llm),
+    });
+    const expectedFallback = `第 ${result.clarifications} 轮澄清：候选实现未通过验收，需要中台补充 SOP 信息`;
+    check('空问句仍 clarification_requested', result.outcome === 'clarification_requested');
+    check(
+      '空问句走第 N 轮澄清兜底',
+      result.pendingQuestion === expectedFallback,
+      `pendingQuestion=${JSON.stringify(result.pendingQuestion)} expected=${JSON.stringify(expectedFallback)}`,
+    );
+    check(
+      '兜底带「第 N 轮澄清：」前缀',
+      /^第 \d+ 轮澄清：/.test(result.pendingQuestion ?? ''),
+      `pendingQuestion=${JSON.stringify(result.pendingQuestion)}`,
+    );
     fs.rmSync(ws, { recursive: true, force: true });
   }
 
@@ -255,10 +280,7 @@ async function main(): Promise<void> {
     const result = await runAgentLoop({
       environment: makeEnv(),
       permissions: off,
-      handlers: buildLoopHandlers(
-        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions: off, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
-        llm,
-      ),
+      handlers: makeHandlers(ws, llm, { permissions: off }),
     });
     check('off 档 → permission_denied', result.outcome === 'permission_denied' && result.stopReason === 'trial_run_not_permitted');
     check('试跑零发生', result.trialRuns === 0 && !fs.existsSync(path.join(ws, 'out.txt')));
@@ -277,10 +299,7 @@ async function main(): Promise<void> {
     const result = await runAgentLoop({
       environment: makeEnv(),
       permissions,
-      handlers: buildLoopHandlers(
-        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
-        llm,
-      ),
+      handlers: makeHandlers(ws, llm),
     });
     check('连续两次非 JSON → outcome=error（不猜测语义）', result.outcome === 'error' && (result.stopMessage ?? '').includes('已重试 1 次'));
     check('只重试一次（LLM 调用 2 次）', llm.seen.length === 2);
@@ -296,10 +315,7 @@ async function main(): Promise<void> {
     const result2 = await runAgentLoop({
       environment: makeEnv(),
       permissions,
-      handlers: buildLoopHandlers(
-        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws2, environment: makeEnv() },
-        llm2,
-      ),
+      handlers: makeHandlers(ws2, llm2),
     });
     check('首次非 JSON → 修复后 delivered', result2.outcome === 'delivered', `outcome=${result2.outcome} msg=${result2.stopMessage ?? ''}`);
     check('修复重试恰好 2 次 LLM 调用', llm2.seen.length === 2);
@@ -311,10 +327,7 @@ async function main(): Promise<void> {
     const result3 = await runAgentLoop({
       environment: makeEnv(),
       permissions,
-      handlers: buildLoopHandlers(
-        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws3, environment: makeEnv() },
-        llm3,
-      ),
+      handlers: makeHandlers(ws3, llm3),
     });
     check('缺合法 entry → outcome=error', result3.outcome === 'error' && (result3.stopMessage ?? '').includes('entry'));
     fs.rmSync(ws3, { recursive: true, force: true });
@@ -332,10 +345,7 @@ async function main(): Promise<void> {
     const result = await runAgentLoop({
       environment: makeEnv(),
       permissions,
-      handlers: buildLoopHandlers(
-        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([]), workspaceRoot: ws, environment: makeEnv() },
-        llm,
-      ),
+      handlers: makeHandlers(ws, llm, { sop: makeSop([]) }),
     });
     check('无 acceptance → 不得 delivered（验收锚点缺失绝不默认通过）', result.outcome === 'escalated');
     fs.rmSync(ws, { recursive: true, force: true });
@@ -349,10 +359,7 @@ async function main(): Promise<void> {
     const result2 = await runAgentLoop({
       environment: makeEnv(),
       permissions,
-      handlers: buildLoopHandlers(
-        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node -c "console.log(1)"' }]), workspaceRoot: ws2, environment: makeEnv() },
-        llm2,
-      ),
+      handlers: makeHandlers(ws2, llm2, { sop: makeSop([{ kind: 'command', run: 'node -c "console.log(1)"' }]) }),
     });
     check('-c 形态不被偷换成跑别的文件（escalate 而非 delivered）', result2.outcome === 'escalated');
     fs.rmSync(ws2, { recursive: true, force: true });
@@ -392,12 +399,7 @@ async function main(): Promise<void> {
       gui: Array.from({ length: 39 }, () => ({ action: 'focus', app: 'notepad' })),
     });
     const llm = makeLlm([first, planJson('main.js', MAIN_OK, VERIFY_OK), overBudget]);
-    const handlers = buildLoopHandlers({
-      address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111',
-      client: client as never, permissions: guiPermissions, sop, workspaceRoot: ws,
-      environment: makeEnv(), guiAvailable: true, guiDriver: driver,
-      mediaBaseUrl: 'https://acf.example.com',
-    }, llm);
+    const handlers = makeHandlers(ws, llm, { client: client as never, permissions: guiPermissions, sop, guiAvailable: true, guiDriver: driver, mediaBaseUrl: 'https://acf.example.com' });
     const output = await handlers.plan({ iteration: 1, environment: makeEnv(), feedback: null });
     check('GUI 动作白名单执行 + 截图上传', actions.length === 2 && uploads.length === 1 && output.includes('mediaPath='));
     await handlers.plan({ iteration: 2, environment: makeEnv(), feedback: null });
@@ -418,11 +420,7 @@ async function main(): Promise<void> {
 
     const denied = resolveLocalPermissions({ preset: 'standard', allowedApps: ['notepad'] });
     const deniedLlm = makeLlm([first]);
-    const deniedHandlers = buildLoopHandlers({
-      address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111',
-      client: client as never, permissions: denied, sop, workspaceRoot: ws,
-      environment: makeEnv(), guiAvailable: true, guiDriver: driver,
-    }, deniedLlm);
+    const deniedHandlers = makeHandlers(ws, deniedLlm, { client: client as never, permissions: denied, sop, guiAvailable: true, guiDriver: driver });
     const before = actions.length;
     const refused = await deniedHandlers.plan({ iteration: 1, environment: makeEnv(), feedback: null });
     check('hostAccess=none 即使模型请求也不触发原生 GUI', actions.length === before && refused.includes('不可用'));
