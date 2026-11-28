@@ -8,13 +8,16 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-jest.mock('./admin-client', () => ({
+// 本文件位于 src/__tests__/，真实模块在 src/ 下：mock 路径必须与第 25-27 行的
+// import 同构（`../`），否则 Jest 把它当作 src/__tests__/admin-client 这个不存在的
+// 模块，整份 suite 直接 red（CI run 46136854131）。
+jest.mock('../admin-client', () => ({
   getCurrentAdminUrl: jest.fn(() => 'http://primary:3105'),
   getAllAdminUrls: jest.fn(() => ['http://primary:3105', 'http://backup:3105']),
   failover: jest.fn(),
   initAdminClients: jest.fn(),
 }));
-jest.mock('./middleware/auth', () => ({
+jest.mock('../middleware/auth', () => ({
   getCurrentToken: jest.fn(async () => 'tok'),
   forceTokenRefresh: jest.fn(async () => null),
 }));

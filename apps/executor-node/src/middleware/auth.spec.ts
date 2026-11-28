@@ -58,6 +58,11 @@ jest.mock('../config', () => ({
 jest.mock('../device-identity', () => ({
   getDeviceFingerprint: () => 'a'.repeat(64),
   DEVICE_IDENTITY_DIR_NAME: '.device-identity',
+  // 产品里 executor-instance-id.ts 已从本模块取 kind 给行 id 分域；整体 mock
+  // 必须补齐这个导出，否则 fetchToken → getExecutorInstanceId 链在 mock 下
+  // 抛 `(0, device_identity_1.resolveInstanceKind) is not a function`，
+  // 26 条 token 用例随之全红。缺省语义与真实现一致（node，无 electron/覆盖）。
+  resolveInstanceKind: () => 'node',
 }));
 
 const mockedAxios = axios as jest.Mocked<typeof axios>;
