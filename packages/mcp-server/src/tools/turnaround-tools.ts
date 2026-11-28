@@ -11,7 +11,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
   BLOCK_STRATEGY,
-  DEPLOYMENT_ENV_VALUE_MAX_BYTES,
   EXECUTE_MODE,
   JSON_CONTENT,
   JSON_ERROR,

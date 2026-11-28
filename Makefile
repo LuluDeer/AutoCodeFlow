@@ -28,18 +28,16 @@ dev: ## 启动完整开发环境（infra 容器 + 全部应用服务；等价 ./
 	    pg_isready -U $${POSTGRES_USER:-autoflow} >/dev/null 2>&1 && break; \
 	  sleep 1; \
 	done
-	@echo "==> 安装依赖..."
-	cd apps/admin-api && npm install
-	cd apps/admin-web && npm install
-	# O-6: 项目偏好 uv 管理 Python 依赖（与 executor-python 镜像内 uv 0.8.17 对齐）——
-	# uv 存在时 uv venv + uv pip install；缺失则回退 venv+pip
-	cd apps/executor-python && \
-	  if command -v uv >/dev/null 2>&1; then \
-	    ([ -d .venv ] || uv venv .venv) && uv pip install -r requirements.txt; \
-	  else \
-	    ([ -d .venv ] || python3 -m venv .venv) && .venv/bin/pip install -r requirements.txt; \
-	  fi
-	cd apps/executor-node && npm install
+	@echo "==> 校验依赖已安装（缺失请先跑 make install）..."
+	@for d in apps/admin-api apps/admin-web apps/executor-node; do \
+	  if [ ! -d "$$d/node_modules" ]; then \
+	    echo "!! $$d/node_modules 缺失：请先执行 make install 再 make dev" >&2; exit 1; \
+	  fi; \
+	done
+	@if [ ! -d apps/executor-python/.venv ]; then \
+	  echo "!! apps/executor-python/.venv 缺失：请先执行 make install 再 make dev" >&2; exit 1; \
+	fi
+	@echo "==> 依赖就绪。"
 	@echo "==> 运行数据库迁移..."
 	cd apps/admin-api && npm run migration:run
 	@echo "==> 启动所有开发服务..."
