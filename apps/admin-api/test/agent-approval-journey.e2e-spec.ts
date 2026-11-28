@@ -5,7 +5,9 @@ import { setTimeout as wait } from "node:timers/promises";
 import type { INestApplication } from "@nestjs/common";
 import request from "supertest";
 import { DataSource } from "typeorm";
+import { APPROVAL_POLICY_FINGERPRINT_KEYS } from "../src/modules/agent/runtime/agent-approvals.service";
 import { AiService, type ToolCall } from "../src/modules/ai/ai.service";
+import { SystemConfigService } from "../src/modules/config/config.service";
 import { createTestApp, loginAsAdmin } from "./helpers/app.helper";
 
 // Runs in the regular admin-api e2e suite with a migrated test DB and Redis.
@@ -19,6 +21,18 @@ describe("Agent session · successive approvals (e2e)", () => {
   const key = `agent-e2e-${randomUUID().slice(0, 12)}`;
   const names = [`${key}-first`, `${key}-second`];
   const result = "Both requests were executed";
+  /** 与 APPROVAL_POLICY_FINGERPRINT_KEYS 一一对应的最小策略值，避免假阴/假阳。 */
+  const MINIMAL_POLICY: Record<
+    (typeof APPROVAL_POLICY_FINGERPRINT_KEYS)[number],
+    string
+  > = {
+    "agent.policy.writeRequiresApproval": "false",
+    "agent.policy.dangerousRequiresApproval": "true",
+    "agent.policy.allowDangerous": "false",
+    "agent.policy.executableSourceGate": "true",
+  };
+  /** beforeAll 前的原值；afterAll 精确恢复，null 表示原本不存在 ⇒ 删除。 */
+  const policyBackup: { key: string; value: string | null }[] = [];
 
   beforeAll(async () => {
     if (!/(^|_)(test|e2e)(_|$)/i.test(process.env.DB_DATABASE ?? "")) {
@@ -28,11 +42,37 @@ describe("Agent session · successive approvals (e2e)", () => {
     }
     app = await createTestApp();
     db = app.get(DataSource);
+    // APPROVAL_POLICY_FINGERPRINT_KEYS 四键的最小策略种子：自带并在 afterAll 恢复/删除，
+    // 不依赖其它 suite 的管理配置种子。注：当前 ConfigService 不读 system_configs，
+    // 本 suite 的真实阻断点在下方 LLM 流式替身（invokeLlm → chatMultimodalStream）。
+    const systemConfig = app.get(SystemConfigService);
+    for (const key of APPROVAL_POLICY_FINGERPRINT_KEYS) {
+      const before = await systemConfig.findOne(key).catch(() => null);
+      policyBackup.push({ key, value: before?.value ?? null });
+      await systemConfig.upsert({
+        key,
+        value: MINIMAL_POLICY[key],
+        valueType: "boolean",
+        description: "agent approval e2e minimal policy fixture",
+      });
+    }
     admin = await loginAsAdmin(app);
   });
   afterAll(async () => {
     jest.restoreAllMocks();
     try {
+      const systemConfig = app?.get(SystemConfigService);
+      if (systemConfig) {
+        for (const { key, value } of policyBackup) {
+          if (value === null) {
+            await systemConfig.remove(key).catch(() => undefined);
+          } else {
+            await systemConfig
+              .upsert({ key, value, valueType: "boolean" })
+              .catch(() => undefined);
+          }
+        }
+      }
       if (admin) {
         const tasks: { id: string }[] = await db.query(
           "SELECT id FROM tasks WHERE name IN ($1, $2)",
@@ -117,33 +157,39 @@ describe("Agent session · successive approvals (e2e)", () => {
       config: { runtime: "shell", triggerType: "manual" },
     });
     createdPaths.push(`/task-templates/${template.id}`);
-    jest
-      .spyOn(app.get(AiService), "chatMultimodal")
-      .mockImplementation(async ({ messages }) => {
-        const n = messages.filter((m) => m.role === "tool").length;
-        const calls: ToolCall[] =
-          n < names.length
-            ? [
-                {
-                  type: "function",
-                  id: `call-${n}`,
-                  function: {
-                    name: "create_task_from_template",
-                    arguments: JSON.stringify({
-                      template: template.id,
-                      name: names[n],
-                    }),
-                  },
+    const respond = async (
+      req: Parameters<AiService["chatMultimodal"]>[0],
+    ): ReturnType<AiService["chatMultimodal"]> => {
+      const n = req.messages.filter((m) => m.role === "tool").length;
+      const calls: ToolCall[] =
+        n < names.length
+          ? [
+              {
+                type: "function",
+                id: `call-${n}`,
+                function: {
+                  name: "create_task_from_template",
+                  arguments: JSON.stringify({
+                    template: template.id,
+                    name: names[n],
+                  }),
                 },
-              ]
-            : [];
-        return {
-          model: "local-script",
-          content: calls.length ? "" : result,
-          toolCalls: calls,
-          usage: { tokensIn: 2, tokensOut: 1 },
-        };
-      });
+              },
+            ]
+          : [];
+      return {
+        model: "local-script",
+        content: calls.length ? "" : result,
+        toolCalls: calls,
+        usage: { tokensIn: 2, tokensOut: 1 },
+      };
+    };
+    // 生产在 AgentEventStreamService 在场时走 chatMultimodalStream（invokeLlm），
+    // 只 mock chatMultimodal 会让真实 disabled 路由返回空响应 ⇒ 会话 failed。
+    // 两个入口同一份脚本化答复：不削弱任何断言，只补齐被新路径绕过的替身。
+    const ai = app.get(AiService);
+    jest.spyOn(ai, "chatMultimodal").mockImplementation(respond);
+    jest.spyOn(ai, "chatMultimodalStream").mockImplementation(respond);
     const { id } = await post("/agent/sessions", {
       kind: "chat",
       context: { question: key },

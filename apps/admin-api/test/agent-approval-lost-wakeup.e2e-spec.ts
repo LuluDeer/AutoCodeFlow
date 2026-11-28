@@ -8,11 +8,13 @@ import request from "supertest";
 import { DataSource } from "typeorm";
 
 import { AiService, type ToolCall } from "../src/modules/ai/ai.service";
+import { APPROVAL_POLICY_FINGERPRINT_KEYS } from "../src/modules/agent/runtime/agent-approvals.service";
 import { AgentApprovalWakeupService } from "../src/modules/agent/runtime/agent-approval-wakeup.service";
 import type { AgentJobData } from "../src/modules/agent/runtime/agent.processor";
 import { AgentRuntimeService } from "../src/modules/agent/runtime/agent-runtime.service";
 import { AgentSessionService } from "../src/modules/agent/runtime/agent-session.service";
 import { WAITING_FOR_APPROVAL_PREFIX } from "../src/modules/agent/runtime/agent-approval-waiting";
+import { SystemConfigService } from "../src/modules/config/config.service";
 import { createTestApp, loginAsAdmin } from "./helpers/app.helper";
 
 /**
@@ -38,6 +40,18 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
   const RESULT = "R296 race resolved by tail-hook compensation";
   const createdPaths: string[] = [];
   const sessionIds: string[] = [];
+  /** 与 APPROVAL_POLICY_FINGERPRINT_KEYS 一一对应的最小策略值。 */
+  const MINIMAL_POLICY: Record<
+    (typeof APPROVAL_POLICY_FINGERPRINT_KEYS)[number],
+    string
+  > = {
+    "agent.policy.writeRequiresApproval": "false",
+    "agent.policy.dangerousRequiresApproval": "true",
+    "agent.policy.allowDangerous": "false",
+    "agent.policy.executableSourceGate": "true",
+  };
+  /** beforeAll 前的原值；afterAll 精确恢复，null 表示原本不存在 ⇒ 删除。 */
+  const policyBackup: { key: string; value: string | null }[] = [];
   /** 本 spec 自己调用手动 resume 端点的次数（反面断言用，不依赖 Nest 路由 spy）。 */
   let manualResumeCalls = 0;
   /** 测试失败时兜底放行所有 gate，避免 worker 被永久卡住拖垮 app.close()。 */
@@ -122,33 +136,38 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
     templateId: string,
     taskName: string,
   ): void {
-    jest
-      .spyOn(app.get(AiService), "chatMultimodal")
-      .mockImplementation(async ({ messages }) => {
-        const n = messages.filter((m) => m.role === "tool").length;
-        const calls: ToolCall[] =
-          n === 0
-            ? [
-                {
-                  type: "function",
-                  id: "call-0",
-                  function: {
-                    name: "create_task_from_template",
-                    arguments: JSON.stringify({
-                      template: templateId,
-                      name: taskName,
-                    }),
-                  },
+    const respond = async (
+      req: Parameters<AiService["chatMultimodal"]>[0],
+    ): ReturnType<AiService["chatMultimodal"]> => {
+      const n = req.messages.filter((m) => m.role === "tool").length;
+      const calls: ToolCall[] =
+        n === 0
+          ? [
+              {
+                type: "function",
+                id: "call-0",
+                function: {
+                  name: "create_task_from_template",
+                  arguments: JSON.stringify({
+                    template: templateId,
+                    name: taskName,
+                  }),
                 },
-              ]
-            : [];
-        return {
-          model: "local-script",
-          content: calls.length ? "" : RESULT,
-          toolCalls: calls,
-          usage: { tokensIn: 2, tokensOut: 1 },
-        };
-      });
+              },
+            ]
+          : [];
+      return {
+        model: "local-script",
+        content: calls.length ? "" : RESULT,
+        toolCalls: calls,
+        usage: { tokensIn: 2, tokensOut: 1 },
+      };
+    };
+    // invokeLlm 在 AgentEventStreamService 在场时走 chatMultimodalStream；
+    // 两个入口共用同一份脚本化答复，避免真实 disabled 路由把会话打成 failed。
+    const ai = app.get(AiService);
+    jest.spyOn(ai, "chatMultimodal").mockImplementation(respond);
+    jest.spyOn(ai, "chatMultimodalStream").mockImplementation(respond);
   }
 
   async function sessionRow(id: string): Promise<SessionRow | undefined> {
@@ -231,6 +250,20 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
     }
     app = await createTestApp();
     db = app.get(DataSource);
+    // APPROVAL_POLICY_FINGERPRINT_KEYS 四键的最小策略种子：自带并在 afterAll 恢复/删除，
+    // 不依赖其它 suite 的管理配置种子。注：当前 ConfigService 不读 system_configs，
+    // 本 spec 的真实阻断点在 scriptSingleApprovalTool 的 LLM 流式替身。
+    const systemConfig = app.get(SystemConfigService);
+    for (const key of APPROVAL_POLICY_FINGERPRINT_KEYS) {
+      const before = await systemConfig.findOne(key).catch(() => null);
+      policyBackup.push({ key, value: before?.value ?? null });
+      await systemConfig.upsert({
+        key,
+        value: MINIMAL_POLICY[key],
+        valueType: "boolean",
+        description: "agent approval e2e minimal policy fixture",
+      });
+    }
     admin = await loginAsAdmin(app);
     reviewer = await createReviewer();
     // 必须取 wakeup provider 实际注入的那个 Queue 实例：实测
@@ -252,6 +285,18 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
   afterAll(async () => {
     jest.restoreAllMocks();
     try {
+      const systemConfig = app?.get(SystemConfigService);
+      if (systemConfig) {
+        for (const { key, value } of policyBackup) {
+          if (value === null) {
+            await systemConfig.remove(key).catch(() => undefined);
+          } else {
+            await systemConfig
+              .upsert({ key, value, valueType: "boolean" })
+              .catch(() => undefined);
+          }
+        }
+      }
       if (db && sessionIds.length) {
         for (const sid of sessionIds) {
           try {
