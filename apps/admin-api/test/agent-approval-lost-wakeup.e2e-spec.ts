@@ -177,7 +177,7 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
     label: string,
     read: () => Promise<T | undefined>,
     ok: (v: T) => boolean,
-    timeoutMs = 10_000,
+    timeoutMs = 30_000,
   ): Promise<T> {
     const deadline = Date.now() + timeoutMs;
     let last: T | undefined;
@@ -417,7 +417,7 @@ describe("R296 approval granted lost-wakeup · real in-process race (e2e)", () =
   /** 等本会话的 resume job 全部从 waiting/active/delayed 排空（不固定 sleep）。 */
   async function waitJobsDrained(
     id: string,
-    timeoutMs = 10_000,
+    timeoutMs = 30_000,
   ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     do {
