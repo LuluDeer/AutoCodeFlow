@@ -271,6 +271,10 @@ jobs:
           cache-dependency-path: apps/admin-api/package-lock.json
       - run: npm ci
         working-directory: apps/admin-api
+      # bcrypt 6 的 node-gyp-build 偶发选中 musl 预编译二进制（run 46150331441
+      # admin-api-coverage：libc.musl-x86_64.so.1 not found），本机源码重编译即可。
+      - run: npm rebuild bcrypt --build-from-source
+        working-directory: apps/admin-api
       # 覆盖率地板在 apps/admin-api/package.json 的 jest.coverageThreshold.global
       # 里生效（stmts 87 / branch 76 / funcs 81 / lines 88），防倒退用；
       # 覆盖率抬升后应同步上调。
