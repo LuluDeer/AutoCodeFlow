@@ -29,6 +29,21 @@ export const SOP_ASSIGNMENT_STATUSES = [
 ] as const;
 export type SopAssignmentStatus = (typeof SOP_ASSIGNMENT_STATUSES)[number];
 
+/**
+ * 切片 D1：机器验收结论值域。
+ *
+ * unverified = 已进入验收流程（复核会话已起或 spawn 失败 fail-closed 落账）
+ * 但尚无结论；passed/failed/unclear = 复核会话终态解析 VERDICT 的三态落账。
+ * NULL = 迁移前存量行，读面按「无验收语义」展示。
+ */
+export const SOP_VERIFICATION_STATUSES = [
+  "unverified",
+  "passed",
+  "failed",
+  "unclear",
+] as const;
+export type SopVerificationStatus = (typeof SOP_VERIFICATION_STATUSES)[number];
+
 @Entity("sop_assignments")
 @Index("idx_sop_assignments_sopId", ["sopId"])
 @Index("idx_sop_assignments_targetExecutorId_status", [
@@ -109,6 +124,18 @@ export class SopAssignment {
   /** 指派人：`agent:<sessionId>` 或 `user:<id>`。 */
   @Column({ type: "varchar", length: 128 })
   assignedBy: string;
+
+  /** 机器验收状态（切片 D1）：见 SOP_VERIFICATION_STATUSES；NULL=无验收语义。 */
+  @Column({ type: "varchar", length: 16, nullable: true })
+  verificationStatus: SopVerificationStatus | null;
+
+  /** 验收复核会话锚（spawn 失败 fail-closed 路径为 NULL——没有会话可指）。 */
+  @Column({ type: "uuid", nullable: true })
+  verificationSessionId: string | null;
+
+  /** 验收结论落定时间（passed/failed/unclear 回写时置，unverified 保持 NULL）。 */
+  @Column({ type: "timestamptz", nullable: true })
+  verificationCheckedAt: Date | null;
 
   @CreateDateColumn()
   createdAt: Date;

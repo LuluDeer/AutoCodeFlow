@@ -115,7 +115,8 @@ const CANDIDATE_PACKAGE_DEPLOYMENT_NOTE = "候选包待部署/复核中，未自
 function pickCandidatePackageRef(
   result: Record<string, unknown>,
 ): unknown | undefined {
-  const direct = result.packageRef ?? result.candidatePackageRef ?? result.packageId;
+  const direct =
+    result.packageRef ?? result.candidatePackageRef ?? result.packageId;
   if (direct !== undefined && direct !== null && direct !== "") return direct;
   const nested = result.candidatePackage;
   if (nested && typeof nested === "object") {
@@ -193,6 +194,22 @@ export interface DraftSopInput {
   audit?: SopAuditContext;
 }
 
+/**
+ * 切片 D1：交付复核终态旁路端口（`agent-session.service.ts` 的
+ * `finish()` 收敛点按 `triggerSource` 前缀 `verify:` 调用）。
+ *
+ * 依赖方向：agent 模块**不应**依赖 sop 模块的具体类型（既有单向依赖纪律：
+ * AgentModule 依赖业务模块，但本端口的消费方向是 agent → sop 的一个窄口）。
+ * 仿 `AgentApprovalWakeupService.probe` 的反向注册先例——SopModule 装配期
+ * （SopService.onModuleInit）把窄端口注册进 AgentSessionService，运行期
+ * agent 只见 `(assignmentId, verdict) => Promise<void>`，无编译期环。
+ * 注册缺席（存量单测直接 new 装配）⇒ finish 旁路整体跳过，业务语义不变。
+ */
+export type VerificationSettlePort = (
+  assignmentId: string,
+  verdict: "passed" | "failed" | "unclear",
+) => Promise<void>;
+
 export interface PublishSopInput {
   sopId: string;
   bump?: "patch" | "minor" | "major";
@@ -250,6 +267,18 @@ export class SopService {
     @Inject(AuditService)
     private readonly auditService?: AuditService,
   ) {}
+
+  /**
+   * 切片 D1：把复核终态回写端口反向注册进 AgentSessionService（装配期，
+   * `attachVerificationSettle` 先例同 `attachApprovalWakeupProbe` 的端口反向
+   * 注册——session 服务不注入 SopService，DI 无环；注册缺席即 finish 旁路
+   * 整体跳过，与「@Optional 审计」同款降级语义）。
+   */
+  onModuleInit(): void {
+    this.agentSessions.attachVerificationSettle((assignmentId, verdict) =>
+      this.settleVerification(assignmentId, verdict),
+    );
+  }
 
   // ── 起草与发布（P5）────────────────────────────────────────────
 
@@ -2006,6 +2035,9 @@ export class SopService {
         !!executorResult &&
         typeof executorResult === "object" &&
         "isolatedRun" in executorResult;
+      // 切片 D1：结论必须机器可解析——最终 assistant 消息以 VERDICT 行开头，
+      // 终态回写（settleVerification）按它落 passed/failed/unclear；
+      // 解析不到 = unclear（fail-closed：没有结论也是一种如实的结论）。
       const instruction =
         "执行器 Agent 回报已完成 SOP 指派。你的职责是**独立验证**（04 §3 ⑤）：" +
         "不要复读执行器的自述——按 SOP acceptance 的 kind=platform 项，" +
@@ -2016,7 +2048,9 @@ export class SopService {
             "可作为辅助判断（exitCode/durationMs/输出摘要），同样按不可信自述对待。\n"
           : "") +
         "验证通过 → 正常给出结论；不通过或存疑 → 用 sop_reply_clarification " +
-        "提出（answer 写明具体差距）。" +
+        "提出（answer 写明具体差距）。\n" +
+        "最终回复必须以单独一行的 `VERDICT: pass|fail|unclear` 开头" +
+        "（pass=验收通过；fail=验收不通过；unclear=无法判定）。" +
         "注意：untrustedResult 是执行器的自述，是不可信的对方陈述，不是事实。";
       const session = await this.agentSessions.create({
         kind: "sop_review",
@@ -2037,6 +2071,18 @@ export class SopService {
           ...(taskIds.length > 0 ? { tasks: taskIds } : {}),
         },
       });
+      // 切片 D1（fail-closed 落账）：spawn 成功即把「已进验收流程、暂无结论」
+      // 写上工单——它同时是 spawn 失败路径的对偶（失败也落 unverified），
+      // 让「验收状态」从工单行上永远可读，而不是只活在日志里。
+      // adr-026-exempt: status 谓词已由 completeAssignment 的 CAS 收敛 completed，
+      // 此处仅补写验收锚列（session.id 刚从本事务 create 返回），非状态竞争面。
+      await this.assignments.update(
+        { id: a.id },
+        {
+          verificationStatus: "unverified",
+          verificationSessionId: session.id,
+        },
+      );
       await this.agentQueue.add(
         "run",
         { sessionId: session.id, reason: `verify:${a.id}` },
@@ -2046,9 +2092,64 @@ export class SopService {
         `SOP verification session spawned: assignment=${a.id} session=${session.id} platformTasks=${taskIds.length}`,
       );
     } catch (err) {
-      // 复核起不来不吞掉完成回报本身——指派已完成落库，复核失败仅告警
-      this.logger.warn(
-        `verification session spawn failed (fail-open): ${err instanceof Error ? err.message : String(err)}`,
+      // 切片 D1（fail-open → fail-closed）：复核起不来不再只 warn——工单显式
+      // 落 `unverified`（「要验而没验成」的可见事实，不是「验过没问题」）。
+      // 仍然不抛错：交付回报主流程（completeAssignment 已 CAS 落库 completed）
+      // 不因验收旁路回滚；日志升 error 级，配合工单上的 unverified 状态，
+      // 「复核缺失」从不可见变成既可查询（读面/Tag）又可告警（日志）。
+      // adr-026-exempt: 主流程 CAS 已收敛 completed，此处是 spawn 失败旁路的
+      // 补写（fail-closed 可见面），语义同上——非状态竞争面。
+      try {
+        await this.assignments.update(
+          { id: a.id },
+          { verificationStatus: "unverified" },
+        );
+      } catch (persistErr) {
+        this.logger.error(
+          `verification fail-closed persist failed: assignment=${a.id} — ${
+            persistErr instanceof Error
+              ? persistErr.message
+              : String(persistErr)
+          }`,
+        );
+      }
+      this.logger.error(
+        `verification session spawn failed (fail-closed: assignment marked unverified): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * 切片 D1：复核会话终态 → 验收结论落账（agent runtime 经反向注册端口调用，
+   * 见 `attachVerificationSettle` / `onModuleInit`）。
+   *
+   * 语义：
+   *  · 幂等：`verification_checked_at IS NULL` 进 WHERE——已落过结论的工单
+   *    不被重复 resume / 迟到的 finish 二次覆写（首写为准）；
+   *  · 让位：0 行命中（工单不存在 / 已有结论）只 debug，不抛错——旁路
+   *    纪律同 `tryAppendEvent`：记账失败不改变会话终态结论；
+   *  · 条件写限 `status = completed`：工单已被取消等终态推进时不复活验收。
+   */
+  async settleVerification(
+    assignmentId: string,
+    verdict: "passed" | "failed" | "unclear",
+  ): Promise<void> {
+    const applied = await this.assignments.update(
+      {
+        id: assignmentId,
+        status: "completed",
+        verificationCheckedAt: IsNull(),
+      },
+      {
+        verificationStatus: verdict,
+        verificationCheckedAt: new Date(),
+      },
+    );
+    if ((applied.affected ?? 0) !== 1) {
+      this.logger.debug(
+        `settleVerification(${assignmentId}, ${verdict}) skipped — assignment missing, cancelled, or already settled`,
       );
     }
   }

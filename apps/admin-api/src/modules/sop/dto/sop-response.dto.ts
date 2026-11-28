@@ -10,6 +10,8 @@ import {
 import {
   SOP_ASSIGNMENT_STATUSES,
   SopAssignmentStatus,
+  SOP_VERIFICATION_STATUSES,
+  SopVerificationStatus,
 } from "../entities/sop-assignment.entity";
 import { SOP_CLARIFICATION_RESOLUTIONS } from "../entities/sop-clarification.entity";
 
@@ -192,6 +194,28 @@ export class SopAssignmentDto {
 
   @ApiProperty()
   assignedBy: string;
+
+  @ApiProperty({
+    nullable: true,
+    enum: SOP_VERIFICATION_STATUSES,
+    description:
+      "机器验收状态（切片 D1）：unverified=已进验收流程未出结论（含 spawn 失败 fail-closed）；" +
+      "passed/failed/unclear=复核会话 VERDICT 落账；null=迁移前存量行，无验收语义",
+  })
+  verificationStatus: SopVerificationStatus | null;
+
+  @ApiProperty({
+    nullable: true,
+    format: "uuid",
+    description: "验收复核会话锚；spawn 失败 fail-closed 路径为 null",
+  })
+  verificationSessionId: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: "验收结论落定时间（unverified 恒为 null）",
+  })
+  verificationCheckedAt: Date | null;
 
   @ApiProperty()
   createdAt: Date;

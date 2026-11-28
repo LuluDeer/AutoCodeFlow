@@ -441,6 +441,32 @@ export function buildEventBody(value: unknown): AgentEventBody | null {
   return toAgentEventBody(sanitizedJson, rawJson);
 }
 
+/**
+ * 切片 D1：SOP 交付复核终态解析（纯函数，`finish` 的 verify: 旁路消费）。
+ *
+ * 约定：复核会话的 instruction 要求最终回复以单独一行
+ * `VERDICT: pass|fail|unclear` 开头（sop.service.ts spawnVerificationSession）。
+ * 解析纪律：
+ *  · `resultJson.conclusion`（runtime succeeded 收敛点的最终 assistant 正文，
+ *    已脱敏）是唯一输入；空 / 非字符串 = unclear；
+ *  · VERDICT 行必须在**开头**（instruction 是这样要求的，且防止模型在
+ *    正文中间引用该字样造成误判）；
+ *  · 大小写不敏感、容忍行首/行尾空白——正文是模型自由文本，解析器按约定
+ *    宽松收敛；
+ *  · 解析不到 = `unclear`（fail-closed：没有可机器判定的结论，本身就是
+ *    一种如实的验收结论，绝不落 passed）。
+ */
+export function parseVerificationVerdict(
+  conclusion: unknown,
+): "passed" | "failed" | "unclear" {
+  if (typeof conclusion !== "string") return "unclear";
+  const head = conclusion.slice(0, 2000);
+  const m = /^\s*VERDICT:\s*(pass|fail|unclear)\b/i.exec(head);
+  if (!m) return "unclear";
+  const v = m[1].toLowerCase();
+  return v === "pass" ? "passed" : v === "fail" ? "failed" : "unclear";
+}
+
 /** 记录一次工具调用的输入。 */
 export interface RecordToolCallInput {
   sessionId: string;
@@ -497,8 +523,32 @@ export class AgentSessionService {
    */
   approvalWakeupProbe: ((sessionId: string) => Promise<void>) | null = null;
 
+  /**
+   * 切片 D1：SOP 交付复核终态回写端口（`verify:<assignmentId>` 会话收敛到
+   * 终态时调用）。由 SopService.onModuleInit 反向注册——本服务**不**注入
+   * SopService（agent → sop 的窄口只此一个函数签名，无 DI 环）；
+   * 注册缺席（存量单测直接 new 装配 / SopModule 缺席的装配形态）⇒ 旁路
+   * 整体跳过，finish 主链行为逐字节不变。
+   */
+  verificationSettle:
+    | ((
+        assignmentId: string,
+        verdict: "passed" | "failed" | "unclear",
+      ) => Promise<void>)
+    | null = null;
+
   attachApprovalWakeupProbe(probe: (sessionId: string) => Promise<void>): void {
     this.approvalWakeupProbe = probe;
+  }
+
+  /** 切片 D1：SopService.onModuleInit 反向注册 `settleVerification`。 */
+  attachVerificationSettle(
+    settle: (
+      assignmentId: string,
+      verdict: "passed" | "failed" | "unclear",
+    ) => Promise<void>,
+  ): void {
+    this.verificationSettle = settle;
   }
 
   constructor(
@@ -1166,6 +1216,40 @@ export class AgentSessionService {
         tokensOut: session.totalTokensOut,
       },
     });
+
+    // 切片 D1：SOP 交付复核（triggerSource = `verify:<assignmentId>`）终态回写。
+    // 挂钩点选在 finish 而不是 runtime 的 succeeded 收敛点：finish 是**全部**
+    // 终态来源（succeeded/failed/aborted/budget_exceeded + controller abort）的
+    // 唯一条件写收敛点（stale sweep 除外，但它不针对 verify 会话的结论语义）。
+    // 只挂 `succeeded`：failed/aborted 等非正常收敛没有可解析的 VERDICT 正文，
+    // 工单保持在 unverified（可见的「验了没得出结论」），不伪造结论。
+    // 独立 try/catch（旁路纪律同 tryAppendEvent / approvalWakeupProbe）：
+    // 解析与回写的任何失败只 warn，绝不影响会话终态已落库的事实与后续通知。
+    if (
+      status === "succeeded" &&
+      session.triggerSource?.startsWith("verify:")
+    ) {
+      const assignmentId = session.triggerSource.slice("verify:".length);
+      const verdict = parseVerificationVerdict(
+        (session.resultJson as Record<string, unknown> | null)?.conclusion,
+      );
+      if (this.verificationSettle) {
+        try {
+          await this.verificationSettle(assignmentId, verdict);
+        } catch (err) {
+          this.logger.warn(
+            `verification settle failed (bypass — session finish unaffected): ` +
+              `session=${id} assignment=${assignmentId} verdict=${verdict} — ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      } else {
+        this.logger.warn(
+          `verification settle port not attached; verdict unresolved: ` +
+            `session=${id} assignment=${assignmentId} verdict=${verdict}`,
+        );
+      }
+    }
 
     // P4 通知：`finish` 是**通知**的唯一收敛点，在这里通知一次即覆盖
     // runtime 的 succeeded/failed/budget_exceeded 与 controller 的 abort。

@@ -278,7 +278,7 @@ export class SopController {
   ) {}
 
   /**
-   * R280：**待人工答复的升级澄清**（跨 SOP 聚合，ADMIN 面）。
+   * R280：**待人工答复的升级澄清**（跨 SOP 聚合）。
    *
    * 为什么必须有这个端点（brief §一）：升级写入后 assignment 会 `blocked →
    * in_progress` ⇒ 按 `status=blocked` **永远筛不到**；收件箱七小节不含 SOP
@@ -287,8 +287,15 @@ export class SopController {
    *
    * 本端点读**库**、不读通知 ⇒ 不受静默规则影响，是权威可见面。
    * 路由注册在 `:id` **之前**：否则 `clarifications` 会被当成 SOP id 匹配走。
+   *
+   * 切片 D2（收件箱 SOP 小节 USER 放行）：方法级 @Roles 覆盖类级 ADMIN，同
+   * `agent.controller.ts` 的 approvals/pending 先例——USER 是升级澄清的触发方，
+   * InboxPage（全角色开放）本就把本端点当常规数据源渲染。数据面是**全局共享
+   * 运营清单**（question / sopName / assignmentStatus，无凭据、无他人私有项目
+   * 数据、不按用户 scope 过滤），只读不改状态机 ⇒ 直接放行；写面全部保持 ADMIN。
    */
   @Get("clarifications/pending")
+  @Roles(UserRole.ADMIN, UserRole.USER)
   @ApiOperation({
     summary: "列出跨 SOP、待人工答复的升级澄清（含总数、截断与降级标记）",
   })
@@ -310,7 +317,7 @@ export class SopController {
   }
 
   /**
-   * R286：**滞后的 blocked 工单**（只读观测面，ADMIN）。
+   * R286：**滞后的 blocked 工单**（只读观测面）。
    *
    * `maxRounds` 触顶路径把 assignment 写成 `blocked`（`sop.service.ts:1015-1026`），
    * 而超时扫描只取 `assigned`/`in_progress`（`:1544-1546`）⇒ `blocked` 被整体豁免，
@@ -324,6 +331,9 @@ export class SopController {
    * （本仓既有契约：非法深链安全回落、绝不 400）。
    */
   @Get("assignments/lagging")
+  // 切片 D2：方法级放行覆盖类级 ADMIN（同 clarifications/pending 的判断依据）；
+  // items 仅 assignmentId/sopId/sopName/status/blockedSince/round 等运营字段。
+  @Roles(UserRole.ADMIN, UserRole.USER)
   @ApiOperation({
     summary:
       "列出超过 N 小时未推进的 blocked 指派（含总数、截断与降级标记；不改状态机）",
