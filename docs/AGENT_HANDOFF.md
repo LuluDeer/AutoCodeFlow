@@ -1,5 +1,10 @@
 # AutoCodeFlow Agent Handoff
 
+> **产物目录不入版本库**：`artifacts/verification/**` 是本机验证证据（截图 / JSON / 日志），
+> `.gitignore:243` 的 `/artifacts/` 已覆盖，但 2026-11-27 的一个历史提交把它误加进索引；
+> 本轮已 `git rm --cached` 从版本库移除、本地文件保留。下方历史段中引用这些路径仅为
+> **当时的事实记录**，干净检出里不存在属预期，不代表验证缺失。
+
 ## 本次交接（2026-11-28 · CI 红灯修复轮，8 切片并行 + lead 串行集成）
 
 **方向来源**：用户「看 gh action 快速编排 agent 进行修复」。对 CI run 46136854131（develop push，commit 1beabcbc）做 job 级诊断——68 个 job 中 28 个失败，归为 8 个互斥写域切片并行修，lead 串行做跨切片集成、bundle 回填与总验收。全程未 git commit/push。
