@@ -5,9 +5,9 @@
 > 本轮已 `git rm --cached` 从版本库移除、本地文件保留。下方历史段中引用这些路径仅为
 > **当时的事实记录**，干净检出里不存在属预期，不代表验证缺失。
 
-## 本次交接（2026-11-28 · CI 红灯修复轮，8 切片并行 + lead 串行集成）
+## 本次交接（2026-11-28 · CI 红灯修复轮，9 轮 CI 迭代直至全绿）
 
-**方向来源**：用户「看 gh action 快速编排 agent 进行修复」。对 CI run 46136854131（develop push，commit 1beabcbc）做 job 级诊断——68 个 job 中 28 个失败，归为 8 个互斥写域切片并行修，lead 串行做跨切片集成、bundle 回填与总验收。全程未 git commit/push。
+**方向来源**：用户「看 gh action 快速编排 agent 进行修复」，随后明确指令「分批 commit 然后推 github 看 action」，并指出产物目录误入库。对 CI run 46136854131（develop push，commit 1beabcbc，68 job / 28 失败）做 job 级诊断，先 8 个互斥写域切片并行修，再按每轮 CI 新暴露的下一层红灯逐轮专项修复，共 9 轮 CI（46136854131 → 46158597068），**最终 62 job success / 6 skip / 0 fail**（run 46158597068，https://github.com/LuluDeer/AutoCodeFlow/actions/runs/46158597068）。累计本地提交约 40 个，全部已 push 到 origin/develop，工作树干净。
 
 **根因与修复（按 CI job 面）**：
 1. **admin-api 依赖漂移（解锁 ~19 个 job）**：commit 8372175d 把 `apps/admin-api/package.json` TS 从 `^6.0.3` 降到 `^5.9.3`，而 lock 根声明仍 `^6.0.3`；CI 上 npm 解析到新版 `@nestjs/schematics@12.0.17`（peer TS≥6）⇒ ERESOLVE。修：TS 声明回 `^6.0.3`；新增零依赖守卫 `scripts/check-admin-api-lock-consistency.mjs`（manifest↔lock 根声明一致 + ≥6，7 例真子进程自检），接入根 chain + ci.yml check-migrations job。
@@ -29,13 +29,14 @@
 - **真子进程守卫链（第 2 级）**：`npm run test:guards:chain` **135/135 段 / 21 批全绿 exit 0**（322.5s）。
 - **CI 配置守卫（静态第 2 级）**：workflow-yaml / actions-pinned / runner-labels / guards-wired 全 exit 0；atlas-counts / size-caps / mutation-residue / script-main-guard / test:docs / git diff --check 全 0。
 - **定向单测（第 2 级）**：admin-api typecheck:specs 0、acf-cli 476 passed 0、executor-node 全量 1964 passed 0、executor-python 全量 2120 passed 0（agent 实测）、desktop test:main 全链 0、web lint:i18n 0、bundle 两闸 0。
-- **未达级别**：未在 GitHub Actions runner 上复跑完整 CI（本地无 CI 环境，仅修复根因后由逻辑推断全绿）；desktop e2e smoke 未本机真机重跑（仅静态白名单比对 + CI 口径留 lead 复核命令）。
+- **未达级别**：desktop e2e smoke 未本机真机重跑（CI 已实跑并通过）；其余均有 GitHub Actions 实跑证据。
 
 **诚实边界 / 后续项**：
-- 本轮所有验证为本地真进程/静态守卫级，最高为守卫链真子进程级；**未实跑 GH Actions**，建议 push 前由 operator 决定是否在 CI 上先验证。
-- CI run 46136854131 还有 concurrency 取消/超时类 job（如 desktop-e2e-smoke retry）与资源抖动可能，本轮只修确定性根因，不碰 flake 策略。
-- 工作树含前会话未提交的 22 个 admin-api e2e spec 格式化改动（纯 prettier/require→import，lint 与 typecheck:specs 已过），本轮未触碰、未回退。
-- 未 git commit、未 push（House Rules；需 operator 明确指令）。
+- **最终结果**：CI run 46158597068 全绿（62 success / 6 skip），所有确定性红灯已清零。
+- 本轮所有验证为本地真进程/静态守卫级 + GitHub Actions 实跑；未在生产环境长稳验证。
+- 后续 8 轮新暴露并修复的问题均为前会话遗留（审批 e2e 的 chatMultimodalStream mock 缺口、paused 任务默认态下的派发前提、CallbackItemDto 的 errorMessage 键、turbo.json 删除后的过时测试、W1 e2e spec 格式化的 TS2552 等），非本轮首轮 8 切片引入。
+- 产物目录 `artifacts/verification/**` 已从索引移除、本地保留。
+- 累计约 40 个提交已 push 到 origin/develop，工作树干净。
 
 ---
 
