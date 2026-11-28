@@ -81,7 +81,9 @@ describe("EmailChannel · SMTP 连接池缓存", () => {
     });
     expect(key).toBe(
       createHash("sha256")
-        .update(JSON.stringify([BASE.host, 587, false, BASE.user, BASE.password]))
+        .update(
+          JSON.stringify([BASE.host, 587, false, BASE.user, BASE.password]),
+        )
         .digest("hex"),
     );
     expect(key).not.toContain(BASE.password);

@@ -82,6 +82,8 @@ describe("ExecutorPackageController — changelog:null 响应映射", () => {
     expect(
       (await controller.create({} as never, {} as never, "tester")).changelog,
     ).toBeNull();
-    expect((await controller.update("p-1" as never, {} as never)).changelog).toBeNull();
+    expect(
+      (await controller.update("p-1" as never, {} as never)).changelog,
+    ).toBeNull();
   });
 });

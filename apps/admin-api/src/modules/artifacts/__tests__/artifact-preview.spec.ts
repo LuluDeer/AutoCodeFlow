@@ -20,7 +20,10 @@ describe("ArtifactsService.previewArtifact（有界读取）", () => {
       path.join(root, execId, "report.log"),
       "第一行 hello\n第二行 world\n",
     );
-    fs.writeFileSync(path.join(root, execId, "image.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    fs.writeFileSync(
+      path.join(root, execId, "image.png"),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    );
     // 最小 service：previewArtifact 只依赖 resolveArtifactPath + fs，无需 DB。
     service = new ArtifactsService(
       {} as never,
@@ -68,6 +71,8 @@ describe("ArtifactsService.previewArtifact（有界读取）", () => {
   });
 
   it("文件不存在抛 ARTIFACT_NOT_FOUND", async () => {
-    await expect(service.previewArtifact(execId, "missing.log")).rejects.toThrow();
+    await expect(
+      service.previewArtifact(execId, "missing.log"),
+    ).rejects.toThrow();
   });
 });

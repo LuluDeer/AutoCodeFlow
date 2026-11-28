@@ -26,7 +26,8 @@ jest.mock("node:dns/promises", () => ({
   lookup: jest.fn(async () => [{ address: "93.184.216.34", family: 4 }]),
 }));
 
-const frame = (payload: unknown): string => `data: ${JSON.stringify(payload)}\n\n`;
+const frame = (payload: unknown): string =>
+  `data: ${JSON.stringify(payload)}\n\n`;
 
 describe("consumeOpenAiSseStream —— 流式工具调用聚合", () => {
   it("按 index 拼装分片 arguments；并行调用互不串台", async () => {
@@ -164,7 +165,9 @@ describe("AiService.testProvider —— 连通性自检", () => {
         {
           provide: ConfigService,
           useValue: {
-            get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+            get: jest.fn(
+              (_key: string, defaultValue?: unknown) => defaultValue,
+            ),
           },
         },
         { provide: SystemConfigService, useValue: systemConfig },
@@ -194,21 +197,26 @@ describe("AiService.testProvider —— 连通性自检", () => {
 
   it("testTools 透传 tools/tool_choice，且流式路径由 testStreaming 选择", async () => {
     await build();
-    mockedAxios.post = jest.fn().mockImplementation((_url: string, body: any) => {
-      if (body.stream) {
+    mockedAxios.post = jest
+      .fn()
+      .mockImplementation((_url: string, body: any) => {
+        if (body.stream) {
+          return Promise.resolve({
+            data: Readable.from([
+              frame({ choices: [{ delta: { content: "流式 OK" } }] }),
+              frame({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+            ]),
+          });
+        }
         return Promise.resolve({
-          data: Readable.from([
-            frame({ choices: [{ delta: { content: "流式 OK" } }] }),
-            frame({ choices: [{ delta: {}, finish_reason: "stop" }] }),
-          ]),
+          data: { choices: [{ message: { content: "OK" } }] },
         });
-      }
-      return Promise.resolve({
-        data: { choices: [{ message: { content: "OK" } }] },
       });
-    });
 
-    const result = await service.testProvider({ testTools: true, testStreaming: true });
+    const result = await service.testProvider({
+      testTools: true,
+      testStreaming: true,
+    });
 
     expect(result.ok).toBe(true);
     expect(result.preview).toBe("流式 OK");

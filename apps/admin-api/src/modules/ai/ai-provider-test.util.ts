@@ -2,12 +2,7 @@ import { sanitizeSecrets } from "../../common/utils/sanitize-secrets.util";
 import { AppError } from "../../common/errors/app-error";
 import type { AiPurpose } from "./ai-providers";
 import type { RouteResolution } from "./ai-route";
-import type {
-  MultimodalRequest,
-  MultimodalResponse,
-  ToolCall,
-  ToolSchema,
-} from "./ai.service";
+import type { ToolCall, ToolSchema } from "./ai.service";
 
 export interface TestAiProviderOptions {
   providerId?: string;

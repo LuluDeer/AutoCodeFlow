@@ -75,9 +75,7 @@ const versionRow = (
     ...over,
   }) as unknown as ApplicationVersion;
 
-const deploymentRow = (
-  over: Partial<AppDeployment> = {},
-): AppDeployment =>
+const deploymentRow = (over: Partial<AppDeployment> = {}): AppDeployment =>
   ({
     id: "dep-latest-1",
     applicationId: "app-contract-1",
@@ -119,8 +117,9 @@ describe("AppReleaseRowDto 契约字段（impl-apprelease-contract）", () => {
     const v = versionRow();
     versionFindAndCount.mockResolvedValue([[v], 1]);
     versionFind.mockResolvedValue([v]);
-    repoFind.mockImplementation((opts: { where?: { deployedVersion?: unknown } }) =>
-      Promise.resolve(opts?.where?.deployedVersion ? [deploymentRow()] : []),
+    repoFind.mockImplementation(
+      (opts: { where?: { deployedVersion?: unknown } }) =>
+        Promise.resolve(opts?.where?.deployedVersion ? [deploymentRow()] : []),
     );
 
     const out = await new AppDeploymentReleaseView(deps).getReleases(
@@ -151,8 +150,9 @@ describe("AppReleaseRowDto 契约字段（impl-apprelease-contract）", () => {
       status: DeploymentStatus.RUNNING,
       deployedAt: new Date("2026-11-27T03:04:05.000Z"),
     });
-    repoFind.mockImplementation((opts: { where?: { deployedVersion?: unknown } }) =>
-      Promise.resolve(opts?.where?.deployedVersion ? [] : [synthetic]),
+    repoFind.mockImplementation(
+      (opts: { where?: { deployedVersion?: unknown } }) =>
+        Promise.resolve(opts?.where?.deployedVersion ? [] : [synthetic]),
     );
 
     const out = await new AppDeploymentReleaseView(deps).getReleases(
