@@ -120,6 +120,13 @@ const test = base.extend<{ accountRole: Role; api: Traffic }>({
         return reply(route, { ticket: 'journey-offline-sse-ticket', expiresAt: new Date(Date.now() + 30_000).toISOString() }, 201);
       }
       if (method !== 'GET') return block('意外的写操作');
+      // 会话事件流：EventSource 带 ?ticket= 建连，离线夹具返回一条注释帧即可，
+      // 不能让未登记的流请求把用例判红（审批深链/窄屏都会触发订阅）。
+      if (method === 'GET' && /^\/api\/agent\/sessions\/[^/]+\/stream$/.test(path)) {
+        return route.fulfill({ status: 200, headers: {
+          'access-control-allow-origin': '*', 'content-type': 'text/event-stream',
+        }, body: ': offline\n\n' });
+      }
       switch (path) {
         case '/api/auth/profile': return reply(route, { id: 7, username: '值班员', role: accountRole });
         case '/api/projects': case '/api/metrics/failures': return reply(route, []);
