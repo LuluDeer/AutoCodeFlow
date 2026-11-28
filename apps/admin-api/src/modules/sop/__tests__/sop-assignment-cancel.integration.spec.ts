@@ -59,6 +59,37 @@ import { SopService } from "../sop.service";
 const rawPgPort = process.env.SOP_CANCEL_TEST_PG_PORT;
 const live = rawPgPort === undefined ? describe.skip : describe;
 
+type VerificationSettle = (
+  assignmentId: string,
+  verdict: "passed" | "failed" | "unclear",
+) => Promise<void>;
+type ApprovalWakeupProbe = (sessionId: string) => Promise<void>;
+
+/**
+ * ADR-027 测试替身保真：AgentSessionService 的两个「反向注册」端口在这里
+ * 必须保持真服务同签名、同语义——调用即存下回调（可调用的 setter），不是
+ * 空 no-op。`SopService.onModuleInit()` 会调 `attachVerificationSettle`，
+ * 替身漏一个方法就让 app.init() 直接 TypeError（CI e2e-full 已复现）。
+ * getter 让用例能断言回调确实注册成功，避免再次出现「假绿」。
+ */
+function makeAgentSessionsStub() {
+  let verificationSettle: VerificationSettle | null = null;
+  let approvalWakeupProbe: ApprovalWakeupProbe | null = null;
+  return {
+    create: jest.fn(async () => ({ id: randomUUID() })),
+    requireById: jest.fn(),
+    findStatusByIds: jest.fn(async () => []),
+    attachVerificationSettle: jest.fn((settle: VerificationSettle) => {
+      verificationSettle = settle;
+    }),
+    attachApprovalWakeupProbe: jest.fn((probe: ApprovalWakeupProbe) => {
+      approvalWakeupProbe = probe;
+    }),
+    getVerificationSettle: () => verificationSettle,
+    getApprovalWakeupProbe: () => approvalWakeupProbe,
+  };
+}
+
 live("SOP 单条指派取消 · 真 PG + 真 Nest 集成验收（级别 3）", () => {
   let app: INestApplication;
   let db: DataSource;
@@ -68,6 +99,7 @@ live("SOP 单条指派取消 · 真 PG + 真 Nest 集成验收（级别 3）", (
   let clarificationRepo: Repository<SopClarification>;
   let auditRepo: Repository<AuditLog>;
   let sopService: SopService;
+  const agentSessionsStub = makeAgentSessionsStub();
 
   const createdSopIds: string[] = [];
   const createdAssignmentIds: string[] = [];
@@ -142,11 +174,7 @@ live("SOP 单条指派取消 · 真 PG + 真 Nest 集成验收（级别 3）", (
         },
         {
           provide: AgentSessionService,
-          useValue: {
-            create: jest.fn(async () => ({ id: randomUUID() })),
-            requireById: jest.fn(),
-            findStatusByIds: jest.fn(async () => []),
-          },
+          useValue: agentSessionsStub,
         },
         {
           provide: NotificationService,
@@ -188,6 +216,11 @@ live("SOP 单条指派取消 · 真 PG + 真 Nest 集成验收（级别 3）", (
     );
     app.useGlobalFilters(new HttpExceptionFilter());
     await app.init();
+
+    // 反向注册必须真的落进替身：SopService.onModuleInit 在 app.init() 里注册
+    // verification settle；缺方法会让这里抛 TypeError，缺语义会让 getter 为空。
+    expect(agentSessionsStub.attachVerificationSettle).toHaveBeenCalledTimes(1);
+    expect(agentSessionsStub.getVerificationSettle()).toBeInstanceOf(Function);
 
     db = app.get(DataSource);
     sopRepo = db.getRepository(Sop);
