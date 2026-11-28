@@ -156,6 +156,24 @@ function loadPage(win: BrowserWindow, page: string): void {
 }
 
 /**
+ * UIAUD-B1-P1-1：渲染进程崩溃自动恢复。
+ *
+ * 四页窗口只有一份本地入口页（dev = VITE_DEV_SERVER_URL+hash，prod =
+ * loadFile index.html）——崩溃后直接按**创建时的同一入口**重新加载即可，
+ * Tab 由渲染层 localStorage 记忆自行恢复。这里没有 data: fallback 页，
+ * 因此「reload 当前 URL」与「重载入口页」语义一致且安全；独立工作台窗口
+ * （workbench-window.ts）有 data: fallback，恢复策略不同，勿合并。
+ * 重复崩溃则交回用户（窗口保留、可手动重启应用），主进程不做无限重载循环。
+ */
+function installRendererCrashRecovery(win: BrowserWindow, label: string, page: string): void {
+  win.webContents.on('render-process-gone', (_event, details) => {
+    log.warn(`Renderer process gone (${label}): reason=${details.reason} exitCode=${details.exitCode}`);
+    if (win.isDestroyed()) return;
+    loadPage(win, page);
+  });
+}
+
+/**
  * SEC-DSK-01：导航与窗口打开守卫。
  *
  * 桌面端渲染层是本机 UI，不应具备"把窗口导航到别处"的能力：一旦
@@ -362,6 +380,8 @@ export class WindowManager {
     // SEC-DSK-01：导航/弹窗/webview 守卫（每个窗口都必须挂）
     hardenWindow(this.wizardWindow);
     loadPage(this.wizardWindow, 'wizard');
+    // UIAUD-B1-P1-1：崩溃恢复（wizard 页与四页同一本地入口页，恢复语义相同）
+    installRendererCrashRecovery(this.wizardWindow, 'wizard', 'wizard');
     this.wizardWindow.on('closed', () => {
       this.wizardWindow = null;
       this.wizardClosing = false;
@@ -472,6 +492,9 @@ export class WindowManager {
     // SEC-DSK-01：导航/弹窗/webview 守卫（每个窗口都必须挂）
     hardenWindow(this.statusWindow);
     loadPage(this.statusWindow, 'status');
+    // UIAUD-B1-P1-1：崩溃恢复——status/config/history/apps 四页共享本窗口，
+    // 重载入口页后由渲染层 localStorage 恢复上次停留的 Tab。
+    installRendererCrashRecovery(this.statusWindow, 'status', 'status');
     this.statusWindow.on('closed', () => { this.statusWindow = null; });
     log.info('Status window opened');
   }

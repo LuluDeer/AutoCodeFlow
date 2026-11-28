@@ -71,7 +71,6 @@ import {
   createAgentLiveEvent,
   type AgentLiveEvent,
   type AgentLiveEventType,
-  type ClarificationMediaRef,
 } from './agent-events';
 
 export type { AgentLiveEvent, AgentLiveEventType };

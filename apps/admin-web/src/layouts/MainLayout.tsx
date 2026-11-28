@@ -35,7 +35,7 @@ import { useAuthStore } from '../store/auth';
 import { getErrMsg } from '../utils/error';
 import { authApi } from '../api/auth';
 import { logoutRemote } from '../api/logout';
-import { ROUTE_BY_PATH } from '../routes/route-registry';
+import { ROUTE_BY_PATH, homePathForRole } from '../routes/route-registry';
 import { buildShellMenu } from './buildShellMenu';
 // WEB-2：命令面板/快捷键速查只在用户真的唤起时才需要——改成按需 chunk，
 // 不再整块塞进 entry（首屏 24 个资源里少两个大依赖，HTTP/1.1 下少一波）。
@@ -343,8 +343,12 @@ export default function MainLayout() {
     edit: t('nav.taskEdit'),
   };
   const pathSegments = location.pathname.split('/').filter(Boolean);
+  // UIAUD-B1-P1-3：面包屑「首页」项不再是硬编码 /dashboard——USER 侧栏没有
+  // /dashboard 入口（route-registry shellVisible:['admin']），点首页图标会落到
+  // 一个侧栏孤页。改为 homePathForRole(role)：ADMIN→/dashboard、USER→/workbench，
+  // 与登录后 RoleHomeRedirect / logo 点击同一份单一事实源。
   const breadcrumbItems = [
-    { title: <Link to="/dashboard"><HomeOutlined /></Link> },
+    { title: <Link to={homePathForRole(user?.role)}><HomeOutlined /></Link> },
     ...pathSegments.map((seg, idx) => {
       const isLast = idx === pathSegments.length - 1;
       const path = '/' + pathSegments.slice(0, idx + 1).join('/');
@@ -448,7 +452,7 @@ export default function MainLayout() {
           type="button"
           aria-label={t('nav.logo.aria')}
           data-testid="logo-home-button"
-          onClick={() => nav(isAdmin ? '/dashboard' : '/workbench')}
+          onClick={() => nav(homePathForRole(user?.role))}
           style={{
             width: '100%',
             height: LAYOUT_TOKENS.headerHeight,

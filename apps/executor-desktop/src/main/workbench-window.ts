@@ -47,7 +47,6 @@ import { windowBackground, type ResolvedTheme } from './theme-colors';
 import { resolveRestoreBounds, type Rect } from './window-bounds';
 import {
   readWorkbenchBounds,
-  sanitizePickedFiles,
   workbenchFallbackHtml,
   writeWorkbenchBounds,
 } from './workbench-window-helpers';
@@ -321,9 +320,12 @@ export function createWorkbenchWindow(options: CreateWorkbenchWindowOptions): im
     writeWorkbenchBounds(win.getBounds(), logger);
   });
 
+  // UIAUD-B1-P0-1：fallback 页内嵌「重试」动作——重试=重新导航到**真实工作台
+  // 地址**（本闭包解析的 workbenchUrl，同源 http(s) 过 will-navigate 白名单），
+  // 绝不是 reload 当前 URL（fallback 页是 data: URL，reload 永远停在 data: 页）。
   const fallback = (detail: string): void => {
     if (win.isDestroyed()) return;
-    void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(workbenchFallbackHtml(workbenchUrl, detail))}`).catch((err: unknown) => {
+    void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(workbenchFallbackHtml(workbenchUrl, detail, workbenchUrl))}`).catch((err: unknown) => {
       logger.warn(`[workbench] fallback page failed: ${err instanceof Error ? err.message : String(err)}`);
     });
   };
@@ -331,6 +333,13 @@ export function createWorkbenchWindow(options: CreateWorkbenchWindowOptions): im
     if (!isMainFrame || validatedURL !== workbenchUrl) return;
     logger.warn(`[workbench] did-fail-load ${errorCode}: ${errorDescription}`);
     fallback(`${errorDescription} (${errorCode})`);
+  });
+  // UIAUD-B1-P1-1：渲染进程崩溃不再留白窗——切到 fallback 页（内嵌重试=回到
+  // 真实地址；若重试再失败会再走 did-fail-load 回 fallback，均为用户驱动不循环）。
+  win.webContents.on('render-process-gone', (_event, details) => {
+    logger.warn(`[workbench] renderer process gone: reason=${details.reason} exitCode=${details.exitCode}`);
+    if (win.isDestroyed()) return;
+    fallback(`渲染进程崩溃 / renderer crashed (${details.reason})`);
   });
 
   // SEC-DSK-01：只 loadURL 配置白名单地址（中台 Workbench / 登录页），

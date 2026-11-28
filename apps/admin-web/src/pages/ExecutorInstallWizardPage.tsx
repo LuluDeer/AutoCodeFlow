@@ -239,6 +239,12 @@ export default function ExecutorInstallWizardPage() {
   const [foundExecutor, setFoundExecutor] = useState<Executor | null>(null);
   const [pollTimedOut, setPollTimedOut] = useState(false);
   /**
+   * UIAUD-B1-P1-2：轮询失败可见错误态。轮询 tick 的 `executorsApi.list()` 失败
+   * 旧实现静默 ignore——中台不可达时用户对着「正在等待执行器上线」的转圈干等
+   * 300s。现在失败置 pollError（页内 StateError + 重试入口），成功一拍即清除。
+   */
+  const [pollError, setPollError] = useState<unknown>(null);
+  /**
    * P1-22（UX-AUDIT-2026-09-21）：基线快照获取失败。
    *
    * 拿不到基线就不能进第 5 步——否则"只认本次新出现的执行器"这条判据退化为
@@ -354,6 +360,7 @@ export default function ExecutorInstallWizardPage() {
       stopPolling();
       setPolling(true);
       setPollTimedOut(false);
+      setPollError(null);
       setFoundExecutor(null);
       setElapsedSeconds(0);
 
@@ -398,8 +405,16 @@ export default function ExecutorInstallWizardPage() {
             setFoundExecutor(recent);
             return;
           }
-        } catch {
-          // ignore
+          // UIAUD-B1-P1-2：单次轮询成功 ≠ 网络健康恢复，成功即清零错误态。
+          setPollError(null);
+        } catch (err: unknown) {
+          // UIAUD-B1-P1-2：轮询失败不再静默——旧实现 `catch { // ignore }` 会把
+          // 「中台连不上 / 会话过期」吞成「继续等」，用户守着转圈直到 300s 超时
+          // 才知道出问题。改为：错误态可见（StateError 展示）+「重试检测」按钮
+          // （重取基线、从头计窗口，与 handleGoToStep4 同一入口）。轮询本身继续
+          // 排下一拍（瞬时抖动自愈，成功一拍即清错误态），错误不再伪装成
+          // 「正在等待执行器上线」。
+          setPollError(err);
         }
         pollTimerRef.current = setTimeout(tick, POLL_INTERVAL_MS);
       };
@@ -964,7 +979,23 @@ export default function ExecutorInstallWizardPage() {
             {t('install.step5Desc')}
           </Paragraph>
 
-          {polling && !foundExecutor && !pollTimedOut && (
+          {/* UIAUD-B1-P1-2：轮询请求失败 → 页内可见错误态 + 手动重试（重取基线
+              并重启检测）。此时转圈停显——「等待执行器上线」与「检测请求失败」
+              是两个互斥的诚实状态；下一拍自动重试成功会清掉本错误块回到等待态。 */}
+          {pollError !== null && !foundExecutor && !pollTimedOut && (
+            <div style={{ marginBottom: 24 }}>
+              <StateError
+                error={pollError}
+                title={t('install.pollErrorTitle')}
+                onRetry={() => { void handleGoToStep4(); }}
+              />
+              <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8 }}>
+                {t('install.pollErrorRetryHint')}
+              </Typography.Paragraph>
+            </div>
+          )}
+
+          {polling && !foundExecutor && !pollTimedOut && !pollError && (
             <div style={{ textAlign: 'center', padding: '40px 0' }}>
               <Spin size="large" indicator={<SyncOutlined spin style={{ fontSize: 48, color: token.colorPrimary }} />} />
               <div style={{ marginTop: 20, color: token.colorTextSecondary, fontSize: 15 }}>{t('install.awaiting')}</div>

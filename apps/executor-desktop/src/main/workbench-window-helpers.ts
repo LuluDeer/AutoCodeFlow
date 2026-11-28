@@ -123,20 +123,43 @@ export function readLocalFileSelection(filePaths: readonly string[]): WorkbenchP
   return sanitizePickedFiles(entries);
 }
 
-/** 加载失败时的内联回退页（zh/en 双语，含「重试/Retry」按钮）。 */
-export function workbenchFallbackHtml(workbenchUrl: string, detail: string): string {
-  const safeDetail = detail.replace(/[<>&"']/g, (c) => ({
-    '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;',
-  })[c] ?? c).slice(0, 300);
-  const safeUrl = workbenchUrl.replace(/[<>&"']/g, (c) => ({
+/** HTML 属性文本转义（onclick 等双引号属性用）。 */
+function escapeAttr(value: string): string {
+  return value.replace(/[<>&"']/g, (c) => ({
     '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;',
   })[c] ?? c);
+}
+
+/**
+ * 加载失败时的内联回退页（zh/en 双语）。
+ *
+ * UIAUD-B1-P0-1：失败页当前 URL 是 `data:` URL——`location.reload()` 只会
+ * 重新加载这个 data: 页，**永远回不去真实工作台**（审计点名的死循环）。
+ * 因此「重试 / Retry」改为导航到 `retryUrl`（创建窗口时解析的真实工作台
+ * 地址；同源 http(s)，可通过 will-navigate 白名单）。`retryUrl` 语义：
+ *   - 传入 URL → 渲染内嵌 `__acfWorkbenchRetry` 脚本 +「重试」按钮；
+ *   - 传 null/undefined → 无真实地址可用，渲染「关闭并重开」按钮（关闭窗口，
+ *     重开走原创建入口重新解析配置），绝不渲染 reload。
+ * URL 以 JSON 字面量内嵌（`JSON.stringify` 后的 JS 字符串安全嵌入 <script>）。
+ */
+export function workbenchFallbackHtml(workbenchUrl: string, detail: string, retryUrl?: string | null): string {
+  const escape = (value: string): string => value.replace(/[<>&"']/g, (c) => ({
+    '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;',
+  })[c] ?? c);
+  const safeDetail = escape(detail).slice(0, 300);
+  const safeUrl = escape(workbenchUrl);
+  const retryButton = retryUrl
+    ? `<button type="button" onclick="${escapeAttr('__acfWorkbenchRetry()')}">重试 / Retry</button>`
+    : `<button type="button" onclick="${escapeAttr('window.close()')}">关闭并重开 / Close and reopen</button>`;
+  const retryScript = retryUrl
+    ? `<script>window.__acfWorkbenchRetry = function () { location.replace(${JSON.stringify(retryUrl)}); };</script>`
+    : '';
   return `<!doctype html><html lang="zh"><meta charset="utf-8"><title>Workbench</title>
 <style>body{font:14px system-ui,sans-serif;margin:0;background:#f5f6f8;color:#0f172a;padding:40px}
 button{padding:8px 16px;font-size:14px;cursor:pointer}</style>
 <div role="alert"><h1>工作台加载失败 / Workbench unavailable</h1>
 <p>${safeDetail}</p><p>${safeUrl}</p>
-<button type="button" onclick="location.reload()">重试 / Retry</button></div></html>`;
+${retryButton}</div>${retryScript}</html>`;
 }
 
 /** 纯事件回放上限（避免一次推流过大）。 */
