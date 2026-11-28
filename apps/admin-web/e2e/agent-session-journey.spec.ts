@@ -111,6 +111,11 @@ const test = base.extend<{ accountRole: Role; api: Traffic }>({
         traffic.creates.push(req.postDataJSON());
         return reply(route, { id: CHAT_ID, status: 'pending' }, 201);
       }
+      // SSE 日志流建连前先换 ticket（产品 R438：/api/execution-logs/stream 只认
+      // ticket，REST 日志端点仍拒绝）。这是只读流的前置写操作，不是越权写。
+      if (method === 'POST' && path === '/api/auth/sse-ticket') {
+        return reply(route, { ticket: 'journey-offline-sse-ticket', expiresAt: new Date(Date.now() + 30_000).toISOString() }, 201);
+      }
       if (method !== 'GET') return block('意外的写操作');
       switch (path) {
         case '/api/auth/profile': return reply(route, { id: 7, username: '值班员', role: accountRole });
