@@ -78,7 +78,7 @@ def test_invalid_vector_scan_surface_is_non_empty():
 @pytest.mark.parametrize(
     'vector', _invalid_vectors(), ids=lambda v: v['name']
 )
-def test_invalid_vector_is_rejected_with_400(vector, idle_executor):
+def test_invalid_vector_is_rejected_with_400(vector, idle_executor, monkeypatch):
     # 刻意用 model_construct 绕过外层反序列化模型：FastAPI/SDK 的 ExecuteRequest
     # 会在更外层先拒掉其中一部分（422），那就测不到 accept_execution 自己的闸门。
     # 而 pull 路径与未来的模型演进都可能绕开外层——闸门必须在**它自己那一层**成立。
@@ -91,8 +91,18 @@ def test_invalid_vector_is_rejected_with_400(vector, idle_executor):
         params=payload.get('params'),
         secrets=payload.get('secrets'),
     )
+    # attemptSeq 是顶层可选键：本执行器的运行时 ExecuteRequest 是消费面模型
+    # （字段面只有上面四个），真实入口 execute() 从 raw body 读出后作为
+    # accept_execution 的独立参数传入。协议向量必须走同一条路，闸门才真的被
+    # 测到——此前字符串世代没进协议闸，被 _safe_attempt_seq 静默丢弃，载荷
+    # 反而被接受并 create_task，在同步测试里炸出 no running event loop。
+    # 同时把闸门之后的副作用掐掉：反证时得到干净的 DID NOT RAISE，而不是
+    # 与被测行为无关的事件循环噪声。
+    _neutralize_side_effects(monkeypatch)
     with pytest.raises(ExecutionRejected) as excinfo:
-        execute_module.accept_execution(req)
+        execute_module.accept_execution(
+            req, attempt_seq=payload.get('attemptSeq')
+        )
     assert excinfo.value.status_code == 400
     assert excinfo.value.detail
     # 被拒路径不得留下 live 条目（见下方泄漏回归用例的注释）

@@ -17,6 +17,7 @@ import pytest
 import auth as auth_module
 import main as main_module
 import scheduler as sched
+from capabilities import python_executor_capabilities
 from main import maybe_re_register, register_executor
 
 
@@ -140,7 +141,16 @@ class TestMaybeReRegister:
         # 富元数据从 _register_payload 单一来源恢复——/token fallback 重建行
         # 丢掉的 type/capabilities/maxConcurrentTasks/version 在这里补齐
         assert body == main_module._register_payload()
-        assert body['type'] == 'python' and body['capabilities'] == ['python', 'shell']
+        # 本轮产品扩展后 capabilities 是全量清单（execute/pull/control:*/
+        # telemetry:*），runtime=['python','shell'] 作为旧版兼容键保留。
+        # 逐字对齐单一事实源 + 钉住不可丢的关键能力：既不恒真，也不把
+        # 沙箱条件下新增的 sandbox:bwrap 误判为漂移。
+        assert body['type'] == 'python'
+        assert body['capabilities'] == python_executor_capabilities()
+        assert {'python', 'shell', 'execute', 'pull',
+                'control:config-reload', 'control:kill',
+                'telemetry:conflict-v8'} <= set(body['capabilities'])
+        assert body['runtime'] == ['python', 'shell']
 
     @pytest.mark.asyncio
     async def test_short_circuits_when_already_registered(self, monkeypatch):

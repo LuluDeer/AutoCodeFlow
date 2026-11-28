@@ -3196,6 +3196,15 @@ def accept_execution(
                 k: v for k, v in req.task.items()
                 if k not in _TIMEOUT_PRECEDENCE or k == _selected_timeout_key
             }
+        # 派发世代 attemptSeq 是顶层可选键，但本文件的 ExecuteRequest 是
+        # 「消费面模型」（字段面刻意只有 executionId/task/params/secrets），
+        # 入口 execute() 从 raw body 读出后作为独立参数传到此处。node 侧
+        # 对整个 body 做 zod 校验（execute.ts:894），非法世代在 accept 期 400；
+        # 若这里只验 req.model_dump()，字符串/bool 等畸形世代会绕过 strict
+        # schema，被 _safe_attempt_seq 静默洗成「未派」，两端结论分叉。
+        # 缺席（None）时不塞键——与引入该键前的载荷逐字节一致。
+        if attempt_seq is not None:
+            _validation_payload['attemptSeq'] = attempt_seq
         ProtocolExecuteRequest.model_validate(_validation_payload, strict=True)
     except ValidationError as exc:
         first = exc.errors()[0]

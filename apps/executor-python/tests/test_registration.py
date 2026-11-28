@@ -3,6 +3,7 @@ import httpx
 from unittest.mock import AsyncMock, patch
 
 import auth as auth_module
+from capabilities import python_executor_capabilities
 from config import settings
 import main as main_module
 from main import register_executor, executor_started_at, executor_startup_id, PROTOCOL_VERSION
@@ -61,7 +62,10 @@ async def test_register_executor_posts_capacity_metadata(monkeypatch):
         'version': '2.0.0',
         # PROTOCOL-VER（B-3/U-2）：协议版本随注册上报（与实现版本门禁解耦）
         'protocolVersion': PROTOCOL_VERSION,
-        'capabilities': ['python', 'shell'],
+        # 全量能力来自单一事实源（execute/pull/control:*/telemetry:* 等）；
+        # 旧版 runtime 键与它并存，admin 按 runtime 名词匹配派发闸门。
+        'capabilities': python_executor_capabilities(),
+        'runtime': ['python', 'shell'],
         # ARCH-32: 派发模式自报（默认 push）
         'dispatchMode': 'push',
         # CONTRACT.md §2.3：解释器清单（可缺省；本执行器始终上报）
@@ -75,6 +79,12 @@ async def test_register_executor_posts_capacity_metadata(monkeypatch):
         # 断言的是"成功路径必须上报"这一契约。
         'deviceFingerprint': pinned_fingerprint,
     }
+    # 关键能力不可丢（反证：从 BASE_PYTHON_CAPABILITIES 删掉任一关键键 ⇒ 本例红）；
+    # 完整字典断言已逐字对齐单一事实源，额外断言保证「不是恒真比较」。
+    assert {'python', 'shell', 'execute', 'pull',
+            'control:config-reload', 'control:kill',
+            'telemetry:conflict-v8'} <= set(kwargs['json']['capabilities'])
+    assert kwargs['json']['runtime'] == ['python', 'shell']
 
 
 @pytest.mark.asyncio
