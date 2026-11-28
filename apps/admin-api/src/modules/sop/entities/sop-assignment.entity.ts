@@ -126,15 +126,15 @@ export class SopAssignment {
   assignedBy: string;
 
   /** 机器验收状态（切片 D1）：见 SOP_VERIFICATION_STATUSES；NULL=无验收语义。 */
-  @Column({ type: "varchar", length: 16, nullable: true })
+  @Column({ name: "verification_status", type: "varchar", length: 16, nullable: true })
   verificationStatus: SopVerificationStatus | null;
 
   /** 验收复核会话锚（spawn 失败 fail-closed 路径为 NULL——没有会话可指）。 */
-  @Column({ type: "uuid", nullable: true })
+  @Column({ name: "verification_session_id", type: "uuid", nullable: true })
   verificationSessionId: string | null;
 
   /** 验收结论落定时间（passed/failed/unclear 回写时置，unverified 保持 NULL）。 */
-  @Column({ type: "timestamptz", nullable: true })
+  @Column({ name: "verification_checked_at", type: "timestamptz", nullable: true })
   verificationCheckedAt: Date | null;
 
   @CreateDateColumn()
