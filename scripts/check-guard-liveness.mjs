@@ -23,7 +23,7 @@
  * ## 用法
  *   node scripts/check-guard-liveness.mjs [--selftest] [--root=<dir>]
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -99,7 +99,6 @@ export const COVERED_DEFAULT = [
   "check-executor-shell-runtime.mjs",
   "check-failure-classifiers.mjs",
   "check-failure-reasons.mjs",
-  "check-guards-wired.mjs",
   "check-handwritten-copies.mjs",
   "check-image-pinned.mjs",
   "check-index-drift.mjs",
@@ -161,6 +160,17 @@ export const UNCOVERED_REGISTRY = {
     reason: "自指递归：本守卫若覆盖自己，V8 子进程会再拉起本守卫形成翻倍/死循环",
     owner: "guard-smith",
     review_by: "2099-12-31",
+  },
+  "check-guards-wired.mjs": {
+    reason:
+      "互指递归（2026-11-28 事故根因）：wired 的 coverage-registry 也登记了本守卫" +
+      "（runGuard 探针），本守卫若再覆盖 wired 就形成 wired→liveness→wired→… 递归对——" +
+      "wired main() 176s > wired 对子进程的 120s SIGKILL ⇒ 每次全量跑必杀掉一层" +
+      "liveness（SIGKILL 下 finally rmSync 不执行 ⇒ 泄漏一个 acf-live-* 目录 + " +
+      "一批孤儿探针进程）。掐断方向：registry 里 liveness 条目已改 args:[--selftest]，" +
+      "本侧不再覆盖 wired。",
+    owner: "guard-smith",
+    review_by: "2027-05-31",
   },
   "check-npm-audit-exemptions.mjs": {
     reason: "主跑需要 npm registry 网络（离线门禁只跑 --selftest，真实审计在 CI npm-audit job）",
@@ -263,9 +273,45 @@ function lineOf(src, offset) {
   return src.slice(0, offset).split("\n").length;
 }
 
+/** coverage 临时目录的落点：可配置（ACF_COVERAGE_TMPDIR），默认 /dev/shm。
+ *  为什么不直接用 tmpdir()：2026-11-28 事故——/tmp 是带 usrquota 的 tmpfs（6.5G），
+ *  guard-liveness 全量跑会产生 ~99 个 acf-live-* 目录（每个 60-100M coverage
+ *  JSON）。正常 finally 能清；但链 runner 被强杀（SIGKILL/SIGTERM 时 npm→sh→node
+ *  子树里 detached 的 liveness 存活成孤儿）或 90s timeout 杀掉子进程时，残留
+ *  无人回收，累积到 5.2G 触发 EDQUOT，dsh 的 bash/write 工具全体失效。
+ *  /dev/shm 同为 tmpfs 但默认无 usrquota，且同机还有 DSH 工具链写 /tmp——
+ *  把 coverage 挪走是单一最有效隔离。脚本不受影响：V8 只要求目录可写。 */
+export function coverageTmpRoot() {
+  return process.env.ACF_COVERAGE_TMPDIR || "/dev/shm";
+}
+
+/** 兜底清扫：把本族残留（超过 maxAgeMs 或全局超预算）按代际删掉。
+ *  只删 `acf-live-` 前缀 + 本用户的目录，绝不越界。 */
+function sweepStaleLiveDirs(maxAgeMs = 30 * 60_000) {
+  const base = coverageTmpRoot();
+  try {
+    const now = Date.now();
+    for (const name of readdirSync(base)) {
+      if (!name.startsWith("acf-live-")) continue;
+      const abs = join(base, name);
+      try {
+        if (now - statSync(abs).mtimeMs < maxAgeMs) continue;
+        rmSync(abs, { recursive: true, force: true });
+      } catch { /* ignore：他人目录/竞态删除 */ }
+    }
+  } catch { /* base 不可读：结构红会由后续 mkdtemp 失败兜住 */ }
+}
+
 /** 跑一个脚本的 selftest 并返回其 coverage 里的"零执行判据函数"。 */
 export function deadJudgesIn(root, script) {
-  const dir = mkdtempSync(join(tmpdir(), "acf-live-"));
+  let dir;
+  try {
+    dir = mkdtempSync(join(coverageTmpRoot(), "acf-live-"));
+  } catch {
+    // /dev/shm 不可写（容器裁剪等）→ 回落 tmpdir()，并先扫一次陈年残留
+    sweepStaleLiveDirs();
+    dir = mkdtempSync(join(tmpdir(), "acf-live-"));
+  }
   try {
     const abs = join(root, "scripts", script);
     if (!existsSync(abs)) return { skipped: `脚本不存在：${script}` };

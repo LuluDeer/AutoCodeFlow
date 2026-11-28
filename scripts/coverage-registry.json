@@ -352,7 +352,7 @@
     "scripts/check-guard-liveness.mjs": {
       "helper": "push",
       "floor": 1,
-      "args": []
+      "args": ["--selftest"]
     },
     "scripts/check-handwritten-copies.mjs": {
       "helper": "subprocess",

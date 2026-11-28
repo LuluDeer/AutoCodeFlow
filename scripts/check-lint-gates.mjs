@@ -575,7 +575,19 @@ export function checkLintGates({
   try {
     const rootPkg = JSON.parse(chainText);
     const raw = rootPkg?.scripts?.["test:guards:chain"] ?? "";
-    chainSegments = String(raw).split("&&").map((x) => x.trim()).filter(Boolean);
+    // W2（链指针化）：`test:guards:chain` 已改为 `node scripts/run-guards-chain.mjs`，
+    // 链段本体改从 scripts/guards-chain-steps.json 读（与 runner / matrix 共用同一事实源）；
+    // 旧内联 && 链形态（旧分支/夹具）保持原 split 解析。JSON 缺失/空 ⇒ structure 红（fail-closed）。
+    if (String(raw).includes("run-guards-chain.mjs")) {
+      const stepsDoc = JSON.parse(
+        readFile(join(repoRoot, "scripts", "guards-chain-steps.json"), "utf8"),
+      );
+      const steps = stepsDoc?.steps;
+      if (!Array.isArray(steps) || steps.length === 0) throw new Error("guards-chain-steps.json 缺 steps");
+      chainSegments = steps.map((x) => String(x).trim()).filter(Boolean);
+    } else {
+      chainSegments = String(raw).split("&&").map((x) => x.trim()).filter(Boolean);
+    }
   } catch {
     structure.push("读不到根 package.json 的 test:guards:chain —— 判据④ 无法核对门禁链");
   }

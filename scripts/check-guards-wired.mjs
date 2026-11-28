@@ -108,7 +108,7 @@
  *   --root    ：只给 selftest 用：把 fixture 树当仓库根扫（默认 process.cwd()）。
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
@@ -368,6 +368,28 @@ export function splitCommand(text) {
 }
 
 /**
+ * W2（链指针化）：`test:guards:chain` 的值只剩 `node scripts/run-guards-chain.mjs`，
+ * 链段本体在外置的 `scripts/guards-chain-steps.json`（与本 runner / matrix 共用同一事实源）。
+ * 读不到/损坏 ⇒ null（调用方回落到 package.json 的内联链值 —— 兼容旧分支与夹具）。
+ */
+const CHAIN_STEPS_URL = new URL("./guards-chain-steps.json", import.meta.url);
+let chainStepsCache;
+function chainStepsBody() {
+  if (chainStepsCache === undefined) {
+    try {
+      const steps = JSON.parse(readFileSync(CHAIN_STEPS_URL, "utf8"))?.steps;
+      chainStepsCache =
+        Array.isArray(steps) && steps.length > 0
+          ? steps.map((s) => String(s).trim()).filter(Boolean).join(" && ")
+          : null;
+    } catch {
+      chainStepsCache = null;
+    }
+  }
+  return chainStepsCache;
+}
+
+/**
  * 递归展开 npm script：输入若干命令文本，返回**全部**命令文本（含输入本身）。
  *
  * 只认 `npm|pnpm|yarn run <name>`（`npm test` 别名不展开，见文件头）。环检测按
@@ -394,13 +416,18 @@ export function expandNpmScripts(texts, scripts, { maxDepth = MAX_SCRIPT_DEPTH }
         const command = scripts[name];
         if (typeof command !== "string") continue;
         // R22（指针切换后必须同步的一处）：`test:guards:repo` 现在指向矩阵入口
-        // `node scripts/guards-repo-matrix.mjs`，它**逐条执行** `test:guards:chain` 里的 89 段。
+        // `node scripts/guards-repo-matrix.mjs`，它**逐条执行** `test:guards:chain` 里的 134 段。
         // 展开时若只看到那句 node 命令，本地门禁面会被判「什么都没跑」⇒ 所有守卫误报"未接线"。
         // 故把矩阵入口等价代入成「入口命令 + 链定义本体」再继续递归展开。
+        // W2：链**再**指针化 —— `test:guards:chain` 的值只剩 `node scripts/run-guards-chain.mjs`，
+        // 链定义本体改从 guards-chain-steps.json 读（同一事实源）；JSON 读不到时回落旧内联链值。
         const matrixEntry = /scripts\/guards-repo-matrix\.mjs/.test(command);
-        const chainBody = scripts["test:guards:chain"];
+        const runnerEntry = /scripts\/run-guards-chain\.mjs/.test(command);
+        const chainSteps = chainStepsBody();
+        const chainBody =
+          chainSteps !== null ? chainSteps : scripts["test:guards:chain"];
         const effective =
-          matrixEntry && typeof chainBody === "string"
+          (matrixEntry || runnerEntry) && typeof chainBody === "string"
             ? `${command} && ${chainBody}`
             : command;
         visited.add(name);

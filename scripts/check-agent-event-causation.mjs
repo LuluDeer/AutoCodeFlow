@@ -762,9 +762,9 @@ function runSelftest() {
   push("⑤ 真实树的 /tmp 副本：把控制器那处改成写死 null ⇒ 红", () => {
     const dir = copyRealTree();
     try {
-      const file = join(dir, `${AGENT_SRC_REL}/agent.controller.ts`);
+      const file = join(dir, `${AGENT_SRC_REL}/runtime/agent-approval-wakeup.service.ts`);
       const src = readFileSync(file, "utf8");
-      const next = src.replace("causedBySeq,\n          payload: {", "causedBySeq: null,\n          payload: {");
+      const next = src.replace("causedBySeq,\n        payload: {", "causedBySeq: null,\n        payload: {");
       expect(next !== src, "副本里没找到控制器写入点的 causedBySeq（正则失配）");
       writeFileSync(file, next);
       runCli(["--root", dir], {

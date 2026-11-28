@@ -167,10 +167,25 @@ export function readScripts(root = REPO_ROOT) {
 }
 
 /**
+ * W2（链指针化）：`test:guards:repo`（矩阵入口）/ `test:guards:chain`（runner 入口）的 body
+ * 都只剩一句 node 命令；链段本体在 scripts/guards-chain-steps.json（与 runner / matrix 同一事实源）。
+ * 读不到 ⇒ 空串（fail-closed：可达面塌缩会让下游误报孤儿，宁可红）。
+ */
+function chainStepsText(root) {
+  try {
+    const steps = JSON.parse(readFileSync(join(root, 'scripts', 'guards-chain-steps.json'), 'utf8'))?.steps;
+    if (!Array.isArray(steps) || steps.length === 0) return '';
+    return steps.map((s) => String(s).trim()).filter(Boolean).join('\n');
+  } catch {
+    return '';
+  }
+}
+
+/**
  * 从 CI 文本收集 `npm run X` 引用，再沿 package.json 的 `npm run X` 递归展开，
  * 得到「实际上会被跑到」的 npm script 名字集合。
  */
-export function reachableScripts(scripts, workflows) {
+export function reachableScripts(scripts, workflows, root = REPO_ROOT) {
   const seed = new Set();
   for (const { text } of workflows) {
     for (const m of text.matchAll(/\bnpm\s+run\s+([A-Za-z0-9][\w:-]*)/g)) seed.add(m[1]);
@@ -183,8 +198,13 @@ export function reachableScripts(scripts, workflows) {
     const name = stack.pop();
     if (seen.has(name)) continue;
     seen.add(name);
-    const body = scripts[name];
+    let body = scripts[name];
     if (typeof body !== 'string') continue;
+    // W2：入口指针（矩阵/runner）⇒ 等价代入链段本体再继续展开（与 R22 在 check-guards-wired 的手法一致）。
+    if (/scripts\/(guards-repo-matrix|run-guards-chain)\.mjs/.test(body)) {
+      const stepsText = chainStepsText(root);
+      if (stepsText) body = `${body}\n${stepsText}`;
+    }
     for (const m of body.matchAll(/\bnpm\s+run\s+([A-Za-z0-9][\w:-]*)/g)) {
       if (!seen.has(m[1])) stack.push(m[1]);
     }
@@ -279,7 +299,7 @@ export function check(root = REPO_ROOT, {
   const inCI = workflowAssignedEnvs(workflows);
   const { scripts, error: scriptsError } = readScripts(root);
   if (scriptsError) errors.push(`结构错误：${scriptsError}`);
-  const reachable = reachableScripts(scripts, workflows);
+  const reachable = reachableScripts(scripts, workflows, root);
   const { wired: inScripts, orphan: unreachable } = scriptAssignedEnvs(scripts, reachable);
 
   for (const g of gates) {

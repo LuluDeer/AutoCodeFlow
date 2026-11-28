@@ -27,10 +27,17 @@ import { expectRequiredFixtures } from "../lib/guard-selftest.mjs";
 
 let passed = 0;
 const failures = [];
+// 临时目录登记：test() 包装器在用例结束后统一清理（fixture() 只管创建）。
+// 此前 36 个用例每个建一个 acf-docs-* 目录且从不删除 —— 多次自检累积后
+// /tmp 残留数百目录（2026-11-28 实测 308 个，与本仓 /tmp usrquota 打满
+// 事故同型）。登记-清理与 guard-liveness 的 finally 模式同源，只是把
+// 「每用例自清」换成「包装器收口」，用例内部断言不用关心目录生命周期。
+const tmpDirs = [];
 
 /** 在临时目录搭一个仓库：files = { 相对路径: 内容 } */
 function fixture(files) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "acf-docs-"));
+  tmpDirs.push(dir);
   for (const [rel, content] of Object.entries(files)) {
     const abs = path.join(dir, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -40,6 +47,7 @@ function fixture(files) {
 }
 
 function test(name, fn) {
+  const before = tmpDirs.length;
   try {
     fn();
     passed++;
@@ -47,8 +55,17 @@ function test(name, fn) {
   } catch (err) {
     failures.push([name, err]);
     console.log(`  ✘ ${name}\n      ${err.message.split("\n")[0]}`);
+  } finally {
+    // 本用例创建的临时目录统一回收（失败路径也要清，否则残留随自检次数累积）
+    for (const dir of tmpDirs.slice(before)) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+    tmpDirs.length = before;
   }
 }
+
+/** 裸块用例（R61/R77 系列，非 test() 包装）共用同一份 tmpDirs 登记；
+ *  它们的夹具目录在文件末尾「汇总」处统一兜底回收（selftest 退出即清）。 */
 
 console.log("check-docs 自检：");
 
@@ -630,6 +647,11 @@ const ADR_REQUIRED_SECTIONS = ["动机", "方案", "影响面", "回滚", "分�
 
 // ── 汇总 ─────────────────────────────────────────────────────────────────
 console.log(`\n自检结果：${passed} 通过，${failures.length} 失败`);
+// 临时目录统一收口：test() 包装器已逐用例清过；R61/R77 系列的 9 个裸块用例
+// 不走包装器，在此一次性兜底（selftest 退出即回收，残留不再随运行次数累积）。
+for (const dir of tmpDirs) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+}
 if (failures.length) {
   for (const [name, err] of failures) console.error(`\n[${name}]\n${err.stack}`);
   process.exit(1);

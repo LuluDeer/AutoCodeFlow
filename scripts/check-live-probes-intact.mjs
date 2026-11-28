@@ -32,7 +32,7 @@
  *   node scripts/check-live-probes-intact.mjs            # 判定
  *   node scripts/check-live-probes-intact.mjs --selftest # 自检（真子进程 + fixture）
  */
-import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -165,15 +165,20 @@ async function main() {
 
   if (argv.includes("--selftest")) {
     let failed = 0;
-    /** 一条自检用例。 */
+    /** 一条自检用例。fixture 目录用完即清（2026-11-28：/tmp usrquota 打满事故
+     *  的泄漏源之一——此前 385 个 r229-* 残留随自检次数累积）。 */
     const checkCase = (label, overrides, expectOk) => {
       const dir = makeFixture(overrides);
-      const r = checkLiveProbesIntact(dir);
-      const pass = r.ok === expectOk;
-      console.log(`${pass ? "✔" : "✘"} ${label}（ok=${r.ok}，期望 ${expectOk}）`);
-      if (!pass) {
-        failed += 1;
-        for (const f of r.failures) console.log(`    · ${f}`);
+      try {
+        const r = checkLiveProbesIntact(dir);
+        const pass = r.ok === expectOk;
+        console.log(`${pass ? "✔" : "✘"} ${label}（ok=${r.ok}，期望 ${expectOk}）`);
+        if (!pass) {
+          failed += 1;
+          for (const f of r.failures) console.log(`    · ${f}`);
+        }
+      } finally {
+        try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
       }
     };
 

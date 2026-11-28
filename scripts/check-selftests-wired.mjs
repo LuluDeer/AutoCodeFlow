@@ -98,14 +98,40 @@ const WHY_KEYWORDS = [
 ];
 
 /** 递归收集某个 npm script 可达的全部 npm script 名。 */
-function collectReachable(scripts, entries = ENTRY_SCRIPTS) {
+function collectReachable(scripts, entries = ENTRY_SCRIPTS, root = resolve(HERE, "..")) {
   const reach = new Set();
+  let stepsCache;
+  // W2（链指针化）：`test:guards:chain` / `test:guards:repo` 的 body 都只剩一句 node 命令，
+  // 链段本体在 scripts/guards-chain-steps.json（与 runner / matrix 共用同一事实源）。
+  // 读不到 ⇒ null（fail-closed：可达面塌缩会让本判据把大量 selftest 误判为「没人跑」）。
+  const chainStepsText = () => {
+    if (stepsCache === undefined) {
+      try {
+        const steps = JSON.parse(
+          readFileSync(join(root, "scripts", "guards-chain-steps.json"), "utf8"),
+        )?.steps;
+        stepsCache =
+          Array.isArray(steps) && steps.length > 0
+            ? steps.map((s) => String(s).trim()).filter(Boolean).join("\n")
+            : null;
+      } catch {
+        stepsCache = null;
+      }
+    }
+    return stepsCache;
+  };
   const walk = (name, depth) => {
     if (depth > 8 || reach.has(name)) return;
     const body = scripts[name];
     if (typeof body !== "string") return;
     reach.add(name);
-    for (const m of body.matchAll(/npm run ([\w:-]+)/g)) walk(m[1], depth + 1);
+    // W2：入口指针（矩阵/runner）⇒ 等价代入链段本体再继续展开（与 R22 手法一致）。
+    let source = body;
+    if (/scripts\/(guards-repo-matrix|run-guards-chain)\.mjs/.test(body)) {
+      const stepsText = chainStepsText();
+      if (stepsText) source = `${body}\n${stepsText}`;
+    }
+    for (const m of source.matchAll(/npm run ([\w:-]+)/g)) walk(m[1], depth + 1);
   };
   for (const e of entries) walk(e, 0);
   return reach;

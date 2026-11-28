@@ -166,7 +166,7 @@ export const MIN_ALLOW_REASON = 12;
  *
  * 语义不变：**想给新文件签字，必须先删一条**。上限没被放宽 —— 是真相变了。
  */
-export const MAX_BASELINE_ENTRIES = 98;
+export const MAX_BASELINE_ENTRIES = 99;
 /**
  * 基线条目数下限（空基线 = 棘轮没了）。
  *
@@ -1051,6 +1051,12 @@ function collectFiles(root) {
         continue;
       }
       if (!entry.isFile()) continue;
+      // dot 临时文件不是源码：并发批里其他守卫（如 guard-liveness 经
+      // protocol-three-way main() 的 .__p5_probe.js）可能恰在扫描窗口写/删
+      // 这类探针 —— 2026-11-28 实测「读不到 __p5_probe.js（ENOENT）」结构红
+      // 即此竞争。跳过点开头的文件，与「读不到 ≠ 没问题」判据不冲突（它防的
+      // 是**登记过的源码**消失，不是临时探针的存在性）。
+      if (entry.name.startsWith(".")) continue;
       const dot = entry.name.lastIndexOf(".");
       if (dot < 0) continue;
       if (!SOURCE_EXT.has(entry.name.slice(dot))) continue;

@@ -60,6 +60,22 @@ export function parseChain(root = ROOT) {
   const scripts = pkg.scripts ?? {};
   let raw = scripts[CHAIN_SCRIPT];
   let source = CHAIN_SCRIPT;
+  // W2（2026-11-28）：链**再**指针化 —— `test:guards:chain` 的值只剩 `node scripts/run-guards-chain.mjs`，
+  // 链段本体外置到 `scripts/guards-chain-steps.json`（134 段逐字保留；与本 runner 共用同一事实源）。
+  // 指针形态下绝不能把单段 node 命令当链执行（fail-closed）⇒ 这里直接读 steps 当段序列；
+  // JSON 读不到/缺 steps ⇒ throw（main 的 catch 会 exit 1，绝不静默少跑）。
+  if (typeof raw === "string" && raw.includes("run-guards-chain.mjs")) {
+    const stepsPath = path.join(root, "scripts", "guards-chain-steps.json");
+    const steps = JSON.parse(readFileSync(stepsPath, "utf8"))?.steps;
+    if (!Array.isArray(steps) || steps.length === 0) {
+      throw new Error(
+        `${CHAIN_SCRIPT} 已指针化，但 ${stepsPath} 缺 steps 或不可读 —— 链事实源损坏（fail-closed）`,
+      );
+    }
+    const segments = steps.map((s) => String(s).trim()).filter((s) => s !== "");
+    if (segments.length === 0) throw new Error("解析出 0 段 —— 解析器失效（不是链为空）");
+    return { segments, fallback: null };
+  }
   if (typeof raw !== "string" || raw.trim() === "") {
     raw = scripts[LEGACY_SCRIPT];
     source = LEGACY_SCRIPT;
