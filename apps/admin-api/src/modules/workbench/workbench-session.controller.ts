@@ -11,9 +11,9 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
   Get,
   Inject,
+  Ip,
   Logger,
   Optional,
   Param,
@@ -42,12 +42,14 @@ import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
 import { UserRole } from "../users/entities/user.entity";
 import {
   CreateWorkbenchChatSessionDto,
+  ConvertWorkbenchSessionToSopDto,
   DecideWorkbenchApprovalDto,
   PostWorkbenchMessageDto,
   WORKBENCH_APPROVAL_DECISIONS,
   WORKBENCH_MESSAGE_MODES,
   WorkbenchChatSessionResponseDto,
   WorkbenchSessionActionResponseDto,
+  WorkbenchSessionConvertResponseDto,
   type WorkbenchApprovalDecision,
   type WorkbenchMessageMode,
 } from "./dto/workbench-interactive.dto";
@@ -55,6 +57,10 @@ import {
   WORKBENCH_SESSION_INTERACTION_PORT,
   type WorkbenchSessionInteractionPort,
 } from "./workbench-session-interaction.port";
+import {
+  WORKBENCH_CONVERT_TO_SOP,
+  type WorkbenchConvertToSopPort,
+} from "./workbench-convert.port";
 
 @ApiTags("workbench")
 @ApiBearerAuth()
@@ -68,6 +74,11 @@ export class WorkbenchSessionController {
     @Optional()
     @Inject(WORKBENCH_SESSION_INTERACTION_PORT)
     private readonly interaction?: WorkbenchSessionInteractionPort | null,
+    // 切片 E1：workbench → SOP 转写端口。@Optional 仅兼容既有「手动 new +
+    // 单端口实参」的存量单测构造；生产由 WorkbenchModule useClass 接真实服务。
+    @Optional()
+    @Inject(WORKBENCH_CONVERT_TO_SOP)
+    private readonly convertToSop?: WorkbenchConvertToSopPort | null,
   ) {}
 
   /** ADMIN 任意会话；USER 仅自己的（createdBy = user:<id> 或 user:<username>）。 */
@@ -79,7 +90,8 @@ export class WorkbenchSessionController {
       // 防枚举：不存在与越权统一 404。
       throw new AppError("AGENT_SESSION_NOT_FOUND", {});
     }
-    if ((user as { role?: string } | undefined)?.role === UserRole.ADMIN) return;
+    if ((user as { role?: string } | undefined)?.role === UserRole.ADMIN)
+      return;
     const userId = Number(user?.id);
     const identities = [
       Number.isFinite(userId) ? `user:${userId}` : null,
@@ -95,6 +107,13 @@ export class WorkbenchSessionController {
       throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
     }
     return this.interaction;
+  }
+
+  private requireConvert(): WorkbenchConvertToSopPort {
+    if (!this.convertToSop) {
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
+    }
+    return this.convertToSop;
   }
 
   /**
@@ -120,7 +139,9 @@ export class WorkbenchSessionController {
     }
     const prompt = String(dto.prompt ?? "").trim();
     if (!prompt) {
-      throw new AppError(ErrorCode.VALIDATION_FAILED, { detail: "prompt 不能为空" });
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail: "prompt 不能为空",
+      });
     }
     // kind 由服务端从 prompt 推导——DTO 已不声明该字段，whitelist 会剥除/拒绝客户端自报。
     const kind = inferWorkbenchSessionKind(prompt);
@@ -132,7 +153,9 @@ export class WorkbenchSessionController {
       triggerSource: "workbench",
       context: {
         prompt,
-        ...(dto.context && Object.keys(dto.context).length > 0 ? { extra: dto.context } : {}),
+        ...(dto.context && Object.keys(dto.context).length > 0
+          ? { extra: dto.context }
+          : {}),
       },
       scope: {},
     });
@@ -169,7 +192,11 @@ export class WorkbenchSessionController {
       "会话事件 SSE 流。EventSource 无法设置请求头时，可先 POST /auth/sse-ticket 换取 30 秒短效票据，再用 ?ticket= 建流；也支持常规 Authorization: Bearer。断线可用 ?fromSeq= 从上一次事件序号续传。仅会话创建者或管理员可读。",
     summary: "工作台会话事件时间线 SSE 流",
   })
-  @ApiQuery({ name: "ticket", required: false, description: "SSE 专用短效票据（30 秒）" })
+  @ApiQuery({
+    name: "ticket",
+    required: false,
+    description: "SSE 专用短效票据（30 秒）",
+  })
   @ApiQuery({
     name: "fromSeq",
     required: false,
@@ -222,7 +249,9 @@ export class WorkbenchSessionController {
     this.assertOwner(session, user);
     const content = String(dto.content ?? "").trim();
     if (!content) {
-      throw new AppError(ErrorCode.VALIDATION_FAILED, { detail: "content 不能为空" });
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail: "content 不能为空",
+      });
     }
     const mode: WorkbenchMessageMode = dto.mode ?? "followup";
     if (!(WORKBENCH_MESSAGE_MODES as readonly string[]).includes(mode)) {
@@ -261,7 +290,8 @@ export class WorkbenchSessionController {
   @Post("sessions/:id/cancel")
   @ApiOperation({
     summary: "请求中止工作台会话",
-    description: "向正在运行的会话发出协作式中止请求；是否命中由会话运行态决定。仅创建者或管理员可调用。",
+    description:
+      "向正在运行的会话发出协作式中止请求；是否命中由会话运行态决定。仅创建者或管理员可调用。",
   })
   @ApiOkResponse({ type: WorkbenchSessionActionResponseDto })
   async cancelSession(
@@ -273,6 +303,52 @@ export class WorkbenchSessionController {
     this.assertOwner(session, user);
     const cancelled = await port.requestAbort(id, `user:${Number(user?.id)}`);
     return { ok: cancelled, sessionId: id };
+  }
+
+  /**
+   * 切片 E1（workbench→SOP 直连）：把一个 commit 锚定的工作台会话转写为
+   * 业务人名下的新 SOP 草稿（slug 由 goal 归一化；title=卡 title；
+   * body = goal + cadence + 会话步骤 + acceptance；front-matter 走
+   * buildDraftPayloadFromCard 草稿档契约）。
+   *
+   * 校验链全部在服务端（fail-closed）：会话存在+归属（404 防枚举）→
+   * commit 锚点齐全（409 WORKBENCH_CONVERT_NO_COMMIT）→ 重建 cardHash 与
+   * 锚点一致（409 WORKBENCH_CONVERT_CARD_DRIFT）→ 该 sop 的 sop_publish
+   * 审批单已 consumed（409 WORKBENCH_CONVERT_APPROVAL_NOT_CONSUMED）。
+   * 转换只产 draft——绝不调用 publish，发布与指派仍走 SOP 页人工闸。
+   */
+  @Post("sessions/:id/convert-to-sop")
+  @ApiOperation({
+    summary: "把工作台会话转写为 SOP 草稿（不发布）",
+    description:
+      "校验会话归属、commit 锚点与发布审批 consumed 后，将方案卡与会话步骤固化为一份新的 SOP 草稿（归属当前用户）。" +
+      "返回 slug/sopId/deeplink；发布与指派仍需管理员在 SOP 页人工完成。未提交方案卡、卡片漂移或审批未 consumed 一律 409。",
+  })
+  @ApiCreatedResponse({ type: WorkbenchSessionConvertResponseDto })
+  async convertSessionToSop(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @Body() dto: ConvertWorkbenchSessionToSopDto,
+    @CurrentUser()
+    user: { id: number | string; username?: string; role?: string } | undefined,
+    @Ip() ip?: string,
+  ): Promise<WorkbenchSessionConvertResponseDto> {
+    const convert = this.requireConvert();
+    const result = await convert.convert({
+      sessionId: id,
+      user,
+      cadence: dto.cadence,
+      ...(dto.params !== undefined ? { params: dto.params } : {}),
+      ip: ip ?? null,
+    });
+    this.logger.log(
+      JSON.stringify({
+        event: "workbench.convert_to_sop.request",
+        sessionId: id,
+        sopId: result.sopId,
+        slug: result.slug,
+      }),
+    );
+    return result;
   }
 
   /**
@@ -296,15 +372,22 @@ export class WorkbenchSessionController {
     const port = this.requirePort();
     const session = await port.findById(id);
     const decision: WorkbenchApprovalDecision = dto.decision;
-    if (!(WORKBENCH_APPROVAL_DECISIONS as readonly string[]).includes(decision)) {
-      throw new AppError(ErrorCode.VALIDATION_FAILED, { detail: "decision 非法" });
+    if (
+      !(WORKBENCH_APPROVAL_DECISIONS as readonly string[]).includes(decision)
+    ) {
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail: "decision 非法",
+      });
     }
     // withdraw 是创建者撤回自己的待批单 ⇒ 走 owner 校验；
     // grant/deny 是审批动作 ⇒ 审批人按定义不是创建者（四眼），不能先做 owner 校验。
     if (decision === "withdraw") this.assertOwner(session, user);
-    const isAdmin = (user as { role?: string } | undefined)?.role === UserRole.ADMIN;
+    const isAdmin =
+      (user as { role?: string } | undefined)?.role === UserRole.ADMIN;
     if (decision !== "withdraw" && !isAdmin) {
-      throw new ForbiddenException("只有管理员可以批准或拒绝审批单");
+      // AppError（禁裸内置异常，check:error-migration）：403 原型保持 instanceof 兼容，
+      // 同时带出稳定错误码供前端按用户语言渲染。
+      throw new AppError(ErrorCode.WORKBENCH_APPROVAL_DECISION_ADMIN_ONLY, {});
     }
     // 四眼原则：创始人（session.createdBy）不能批准自己的待批单。
     // createdBy 在仓内有两种口径（user:<id> / user:<username>），两种都要挡。
@@ -332,11 +415,12 @@ export class WorkbenchSessionController {
     // 端口布尔现在只表示「处置已落库」，不再携带 resumed 语义——不伪造 resumed。
     return { ok: applied, sessionId: id };
   }
-
 }
 
 /** prompt 推导会话类型的纯函数：包含 SOP 意图走起草、含计划意图走 plan，否则 chat。 */
-export function inferWorkbenchSessionKind(prompt: string): "chat" | "sop_authoring" | "plan" {
+export function inferWorkbenchSessionKind(
+  prompt: string,
+): "chat" | "sop_authoring" | "plan" {
   const text = String(prompt ?? "").toLowerCase();
   if (/sop|草稿|起草|流程文档/.test(text)) return "sop_authoring";
   if (/计划|方案|规划|拆解步骤/.test(text)) return "plan";

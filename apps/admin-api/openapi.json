@@ -4893,6 +4893,34 @@
         ],
         "type": "object"
       },
+      "ConvertWorkbenchSessionToSopDto": {
+        "properties": {
+          "cadence": {
+            "description": "与 commit 时一致的执行节奏（用于服务端确定性重建方案卡）",
+            "enum": [
+              "once",
+              "hourly",
+              "daily",
+              "weekly",
+              "monthly"
+            ],
+            "type": "string",
+            "x-i18n-en": "Cadence identical to commit time (used to rebuild the plan card deterministically server-side)"
+          },
+          "params": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "与 preview/commit 时完全一致的参数（缺失或漂移都会导致重建 hash 不匹配）",
+            "type": "object",
+            "x-i18n-en": "Params exactly identical to preview/commit time (missing or drifting params break the rebuilt hash)"
+          }
+        },
+        "required": [
+          "cadence"
+        ],
+        "type": "object"
+      },
       "CreateActivationDto": {
         "properties": {
           "baselineMetric": {
@@ -12320,6 +12348,32 @@
           "updatedAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "verificationCheckedAt": {
+            "description": "验收结论落定时间（unverified 恒为 null）",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "When the verdict was recorded (always null while unverified)"
+          },
+          "verificationSessionId": {
+            "description": "验收复核会话锚；spawn 失败 fail-closed 路径为 null",
+            "format": "uuid",
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Anchor of the review session; null on the spawn-failure fail-closed path"
+          },
+          "verificationStatus": {
+            "description": "机器验收状态（切片 D1）：unverified=已进验收流程未出结论（含 spawn 失败 fail-closed）；passed/failed/unclear=复核会话 VERDICT 落账；null=迁移前存量行，无验收语义",
+            "enum": [
+              "unverified",
+              "passed",
+              "failed",
+              "unclear"
+            ],
+            "nullable": true,
+            "type": "string",
+            "x-i18n-en": "Machine acceptance status (slice D1): unverified=entered the verification flow without a verdict (incl. spawn failure, fail-closed); passed/failed/unclear=verdict recorded from the review session VERDICT; null=legacy rows before the migration, no acceptance semantics"
           }
         },
         "required": [
@@ -12341,6 +12395,9 @@
           "capabilitySnapshotJson",
           "permissionProfileAtPull",
           "assignedBy",
+          "verificationStatus",
+          "verificationSessionId",
+          "verificationCheckedAt",
           "createdAt",
           "updatedAt"
         ],
@@ -16050,6 +16107,46 @@
           "id",
           "name",
           "size"
+        ],
+        "type": "object"
+      },
+      "WorkbenchSessionConvertResponseDto": {
+        "properties": {
+          "deeplink": {
+            "description": "SOP 页深链（/sops?sop=<sopId>，SopsPage 现行深链契约）",
+            "type": "string",
+            "x-i18n-en": "Deep link to the SOP page (/sops?sop=<sopId>, the current SopsPage deep-link contract)"
+          },
+          "published": {
+            "description": "恒为 false——本端点不触碰发布闸",
+            "type": "boolean",
+            "x-i18n-en": "Always false — this endpoint never touches the publish gate"
+          },
+          "slug": {
+            "description": "新草稿 slug（由 goal 归一化生成；冲突自动追加 -2/-3…）",
+            "type": "string",
+            "x-i18n-en": "Slug of the new draft (normalized from goal; conflicts append -2/-3… automatically)"
+          },
+          "sopId": {
+            "description": "新落库 SOP 草稿行 id",
+            "type": "string",
+            "x-i18n-en": "Row id of the newly created SOP draft"
+          },
+          "status": {
+            "description": "恒为 draft——转换绝不发布",
+            "enum": [
+              "draft"
+            ],
+            "type": "string",
+            "x-i18n-en": "Always draft — conversion never publishes"
+          }
+        },
+        "required": [
+          "slug",
+          "sopId",
+          "status",
+          "published",
+          "deeplink"
         ],
         "type": "object"
       },
@@ -31717,6 +31814,57 @@
         "x-i18n-en": {
           "description": "Sends a cooperative abort request to a running session; whether it takes effect depends on the session's runtime state. Only the creator or an administrator may call this.",
           "summary": "Request abort of a workbench session"
+        }
+      }
+    },
+    "/workbench/sessions/{id}/convert-to-sop": {
+      "post": {
+        "description": "校验会话归属、commit 锚点与发布审批 consumed 后，将方案卡与会话步骤固化为一份新的 SOP 草稿（归属当前用户）。返回 slug/sopId/deeplink；发布与指派仍需管理员在 SOP 页人工完成。未提交方案卡、卡片漂移或审批未 consumed 一律 409。",
+        "operationId": "WorkbenchSessionController_convertSessionToSop",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConvertWorkbenchSessionToSopDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkbenchSessionConvertResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "把工作台会话转写为 SOP 草稿（不发布）",
+        "tags": [
+          "workbench"
+        ],
+        "x-i18n-en": {
+          "description": "After validating session ownership, the commit anchors and a consumed release approval, freezes the plan card and session steps into a new SOP draft owned by the current user. Returns slug/sopId/deeplink; publishing and assignment remain admin actions on the SOP page. Sessions without a committed card, drifted cards, or an unconsumed approval always get 409.",
+          "summary": "Convert a workbench session into a SOP draft (never publishes)"
         }
       }
     },

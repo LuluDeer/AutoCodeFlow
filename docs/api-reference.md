@@ -1443,7 +1443,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 315 个操作，覆盖 272 个路径。
+共 316 个操作，覆盖 273 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1760,6 +1760,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/workbench/sessions/{id}` | 读取工作台会话进度（仅创建者或管理员） |
 | POST | `/workbench/sessions/{id}/approvals/{approvalKey}/decide` | 处置工作台会话的审批单 |
 | POST | `/workbench/sessions/{id}/cancel` | 请求中止工作台会话 |
+| POST | `/workbench/sessions/{id}/convert-to-sop` | 把工作台会话转写为 SOP 草稿（不发布） |
 | POST | `/workbench/sessions/{id}/messages` | 向工作台会话追加用户消息并恢复执行 |
 | GET | `/workbench/sessions/{id}/stream` | 工作台会话事件时间线 SSE 流 |
 

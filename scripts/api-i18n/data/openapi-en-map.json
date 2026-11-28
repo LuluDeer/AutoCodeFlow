@@ -2164,5 +2164,17 @@
   "审批处置结果（含 deny 后自动恢复失败原因）": "Approval decision result (including the reason auto-resume failed after deny)",
   "动作结果码；终态追消息被拒时为 rejected_terminal": "Action result code; rejected_terminal when a message is refused on a terminal session",
   "失败/拒绝原因（可直接展示）；ok=false 时给出": "Failure or rejection reason (safe to display); present when ok=false",
-  "处置附言（可选；不参与服务端判定，仅供前端展示/排查，最长 500 字）": "Optional decision note (not used by server logic; for UI display and troubleshooting, max 500 chars)"
+  "处置附言（可选；不参与服务端判定，仅供前端展示/排查，最长 500 字）": "Optional decision note (not used by server logic; for UI display and troubleshooting, max 500 chars)",
+  "验收复核会话锚；spawn 失败 fail-closed 路径为 null": "Anchor of the review session; null on the spawn-failure fail-closed path",
+  "验收结论落定时间（unverified 恒为 null）": "When the verdict was recorded (always null while unverified)",
+  "与 commit 时一致的执行节奏（用于服务端确定性重建方案卡）": "Cadence identical to commit time (used to rebuild the plan card deterministically server-side)",
+  "与 preview/commit 时完全一致的参数（缺失或漂移都会导致重建 hash 不匹配）": "Params exactly identical to preview/commit time (missing or drifting params break the rebuilt hash)",
+  "新草稿 slug（由 goal 归一化生成；冲突自动追加 -2/-3…）": "Slug of the new draft (normalized from goal; conflicts append -2/-3… automatically)",
+  "新落库 SOP 草稿行 id": "Row id of the newly created SOP draft",
+  "恒为 draft——转换绝不发布": "Always draft — conversion never publishes",
+  "恒为 false——本端点不触碰发布闸": "Always false — this endpoint never touches the publish gate",
+  "SOP 页深链（/sops?sop=<sopId>，SopsPage 现行深链契约）": "Deep link to the SOP page (/sops?sop=<sopId>, the current SopsPage deep-link contract)",
+  "把工作台会话转写为 SOP 草稿（不发布）": "Convert a workbench session into a SOP draft (never publishes)",
+  "机器验收状态（切片 D1）：unverified=已进验收流程未出结论（含 spawn 失败 fail-closed）；passed/failed/unclear=复核会话 VERDICT 落账；null=迁移前存量行，无验收语义": "Machine acceptance status (slice D1): unverified=entered the verification flow without a verdict (incl. spawn failure, fail-closed); passed/failed/unclear=verdict recorded from the review session VERDICT; null=legacy rows before the migration, no acceptance semantics",
+  "校验会话归属、commit 锚点与发布审批 consumed 后，将方案卡与会话步骤固化为一份新的 SOP 草稿（归属当前用户）。返回 slug/sopId/deeplink；发布与指派仍需管理员在 SOP 页人工完成。未提交方案卡、卡片漂移或审批未 consumed 一律 409。": "After validating session ownership, the commit anchors and a consumed release approval, freezes the plan card and session steps into a new SOP draft owned by the current user. Returns slug/sopId/deeplink; publishing and assignment remain admin actions on the SOP page. Sessions without a committed card, drifted cards, or an unconsumed approval always get 409."
 }
