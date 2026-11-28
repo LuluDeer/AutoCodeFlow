@@ -6,6 +6,10 @@
  *  - 真 Redis 上首次 SETNX 生效、第二次被拦；
  *  - 真 PG 上 broadcastReservedCount 从 1 归零；
  *  - 任务在途改成 single 后，回调仍按执行行的 broadcast 快照释放槽位。
+ *
+ * 收集口径：本文件是真栈 e2e，已从根 jest（npm test / coverage）的收集面排除，
+ * 并非删测试。专用入口：scripts/verify-hardening-realstack.sh，或
+ * npm run test:e2e -- --runTestsByPath test/broadcast-slot-e2e.spec.ts。
  */
 process.env.SELFTEST_SKIP_ENV_FILE = "1";
 

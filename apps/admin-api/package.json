@@ -104,6 +104,7 @@
   },
   "//jest-forceExit": "R14-fix（run 37345065125 shard-1 实证）：全部 69 套件/1726 例 111s 全绿后，jest 因残留异步句柄拒绝退出，空挂 27min 被 job 超时击杀（30min 烧在空等上）。与 test/jest-e2e.json 的 forceExit 同源同裁决：BullMQ worker/ioredis/TypeORM 连接池的残余句柄收尾是概率性竞态（Windows 本机不复现，Linux CI 偶发），句柄泄漏本体由 onModuleDestroy 体系治理，CI 语境下 forceExit 不影响断言正确性。",
   "//jest-roots": "COV-ORPHAN-SPECS（2026-10-27 审计轮 #7）：jest 默认只收 rootDir=src 下的 spec，于是 test/factories/__tests__/{user,task}.factory.spec.ts（332 行）既不匹配本工程的 .spec.ts 收集面、也不匹配 test/jest-e2e.json 的 .e2e-spec.ts 面——两个用例文件从未被任何 jest 配置运行过，而且**没有任何守卫会发现**（jest --listTests 无论怎么跑都不会列出它们）。加 roots 把 test/ 纳入收集面；e2e 文件因 testRegex 要求字面量 .spec.ts 结尾（auth.e2e-spec.ts 是 -spec.ts）不会被误收。反证：去掉 roots → --listTests 由 353 回到 351；收编后立刻抓到 user.factory 的 password 不带数字（见 user.factory.ts 的 withGuaranteedComplexity）。",
+  "//jest.testPathIgnorePatterns": "CI run 46150331441：broadcast-slot-e2e.spec.ts 是第三级真栈 e2e（需迁移后的 PG tasks 表 + Redis SETNX 环境），根 jest（npm test / npm run test:cov / CI admin-api-test、admin-api-coverage）没有这些前置 ⇒ QueryFailedError: relation 「tasks」 does not exist。本项只从根 jest 收集面排除，不是删测试：专用入口 scripts/verify-hardening-realstack.sh，或 npm run test:e2e -- --runTestsByPath test/broadcast-slot-e2e.spec.ts（走独立 test/jest-e2e.json，不继承本 jest 配置）。attemptseq-http.e2e-spec.ts 与 test/jest-e2e.json 现有排除同口径（其文件名本不匹配根 testRegex，属防御性收口）。反证：临时去掉本数组 → npx jest --listTests 重新出现该 spec；恢复 → 消失。",
   "jest": {
     "forceExit": true,
     "moduleFileExtensions": [
@@ -115,6 +116,10 @@
     "roots": [
       "<rootDir>",
       "<rootDir>/../test"
+    ],
+    "testPathIgnorePatterns": [
+      "broadcast-slot-e2e[.]spec[.]ts$",
+      "attemptseq-http[.]e2e-spec[.]ts$"
     ],
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
