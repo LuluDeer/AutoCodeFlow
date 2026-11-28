@@ -505,6 +505,14 @@ async function main() {
     ok('创建演示任务', false, `status=${taskRes.status} body=${JSON.stringify(taskRes.body)?.slice(0, 200)}`);
     return summary();
   }
+  // B-11 派发前提：TaskService.create 默认 PAUSED（迁移 1790000000110），
+  // TaskProcessor 对非 ACTIVE 任务的 PENDING 执行跳过派发 ⇒ 探针 0 请求、
+  // 后续日志流无真实终态。按 pull-dispatch/qa05 先例，触发前显式 resume。
+  const resumed = await api(API_PORT, token, 'POST', `/api/tasks/${taskId}/resume`, {});
+  ok('任务恢复 ACTIVE（B-11 派发前提）',
+    resumed.status < 300 && resumed.body?.status === 'active',
+    `status=${resumed.status} body=${JSON.stringify(resumed.body)?.slice(0, 300)}`);
+  if (resumed.status >= 300 || resumed.body?.status !== 'active') return summary();
   const trig = await api(API_PORT, token, 'POST', `/api/tasks/${taskId}/trigger`, {});
   // 触发返回的是 execution 实体（主键 id），历史形态也曾暴露 executionId —— 两者都认。
   const execId = trig.body?.executionId ?? trig.body?.id;
@@ -611,7 +619,10 @@ async function main() {
       {
         executionId: execId,
         status: 'failed',
-        error: 'probe executor reports failure (nginx-sse-selftest)',
+        // CallbackItemDto 白名单是 errorMessage；误用 error 会被
+        // ParseArrayPipe(whitelist, forbidNonWhitelisted) 整批 400 拒绝，
+        // 终态不落库 ⇒ 日志流收不到 [DONE]（qa05 同型实证）。
+        errorMessage: 'probe executor reports failure (nginx-sse-selftest)',
         executorAddress: probe.address,
       },
     ]),
