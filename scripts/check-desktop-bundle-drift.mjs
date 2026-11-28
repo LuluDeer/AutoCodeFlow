@@ -94,6 +94,7 @@ export function isBundleInput(name) {
   const isTs = name.endsWith(".ts") &&
     !name.endsWith(".spec.ts") &&
     !name.endsWith(".test.ts") &&
+    !name.endsWith(".selftest.ts") &&
     !name.endsWith(".d.ts");
   const isWorkerCjs = name.endsWith(".cjs") &&
     !name.endsWith(".selftest.cjs");
@@ -486,6 +487,17 @@ export function selftest() {
     (() => {
       const files = tree();
       files[`${SRC_DIR}/f00.spec.ts`] = "it('changed', () => { throw new Error(); });\n";
+      return files;
+    })(),
+    [],
+    { code: 0, contains: ["✔ executor-node 源码摘要一致"], absent: ["漂移", "结构错误"] },
+  );
+
+  subprocess(
+    "④b 【反证·selftest 不进摘要】改 .selftest.ts 内容 → 仍绿（不触发假漂移）",
+    (() => {
+      const files = tree();
+      files[`${SRC_DIR}/f00.selftest.ts`] = "assert(false);\n";
       return files;
     })(),
     [],

@@ -793,4 +793,4 @@ source-digest: 99b17a0ad3acd072f295a241381814c4a0b2f837e96f192cd928e86102f737eb
 #   ncc 会把依赖树内联进产物 ⇒ 仅依赖变更、src 零改动，source-digest 不变
 #   （2534ce3b…，61 个输入文件），字节哈希必变。本机 Linux（node 26 / ncc 0.45.0）重打
 #   53aa2ffc…，与 CI（run 45016297344）实测 actual **逐字节一致**。
-53aa2ffc5f6897ea8fac587ef3770f350c20f6088bc09cc667679d5d53a639d3  index.js
+21ea0cdeb2f8b3ad8cf685bd59ff66ed6349e67f06a5249b0f89c92bb8e2123d  index.js
