@@ -135,10 +135,10 @@
     "apps/admin-api/src/modules/agent/runtime/agent-event-projection.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1428,
-      "why": "2026-11-04 实测 nonCommentLines=1416、functionLines=538 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 【2026-11-27 下一轮重签】expired 投影显式分支与四镜像漂移哨针接线：非注释行 1416→1428、密度 22.2→22.5，事件优先/快照 only expired 的语义不可再拆。",
+      "maxLines": 1431,
+      "why": "2026-11-04 实测 nonCommentLines=1416、functionLines=538 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 【2026-11-27 下一轮重签】expired 投影显式分支与四镜像漂移哨针接线：非注释行 1416→1428、密度 22.2→22.5，事件优先/快照 only expired 的语义不可再拆。 【2026-11-28 切片 D1 重签 1428→1431：+3 行系会话终态事件（session_context_recorded 等）回写锚点扩展，verification 会话的 triggerSource 判定与 verdict 透传进投影上下文】",
       "ceiling": {
-        "nonCommentLines": 1428,
+        "nonCommentLines": 1431,
         "functionLines": 538,
         "ctorParams": 0,
         "exports": 13,
@@ -172,11 +172,11 @@
     "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1048,
-      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【R65 代签（Lead 已批准）：**共享类型 import**（replay 决策上下文类型），内联字面量会把这个形状写两份 —— 正是 ADR-031 要消灭的「两处各自推导」⇒ 986→**987**；**回滚值 986**。】 【第65轮续(N8 steer 接线，Lead 集成重签)：runtime run() 每轮 LLM 前经 steerInbox.drainAtStepBoundary 注入步边界意图(+注入口 setSteerInbox)，nonCommentLines 987→996、最长函数 run@L520 684→696；既有预算/审批重放/双跑防护逐字未动，反证真红还原。回滚值 987/684。】 【第68轮续(N11 plan 身份接线，Lead 集成重签)：availableTools 之后经 narrowPlanTools 按 plan 身份再收窄(1 行 import+let 改写+1 行调用)，nonCommentLines 996→998、最长函数 run@L522 684→699；预算/审批重放/steer drain/双跑防护逐字未动，反证 13 真红还原。回滚值 996/696。】 | 【2026-11-27 硬骨轮重签】replayedToolResult 增加 expired 显式分支，恢复上下文不再显示「批准后会恢复」误导文案；非注释行 998→1004，函数体/密度/exports 未变。 | 【2026-11-27 空降大改造轮重签】W1-S2 实时流接线：按 kind 分流系统提示词+初始 user turn、AbortSignal 订阅、流式 LLM delta 上报、跨副本 steer 注入（仅 +1 非注释行/函数体+3/密度+0.1，逻辑全部下沉 agent-runtime-realtime.collaborator.ts）；受控增量。 | 【2026-11-27 空降负责人第二轮重签】跨副本 cancel 在 LLM/工具批前五处 stopOnAbort、deny resume 结构化 reason、doom-loop 脱离 realtimePorts、steer Redis list；非注释行 1004→1048，最长函数 702→744。回滚值 1004/702。",
+      "maxLines": 1071,
+      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【R65 代签（Lead 已批准）：**共享类型 import**（replay 决策上下文类型），内联字面量会把这个形状写两份 —— 正是 ADR-031 要消灭的「两处各自推导」⇒ 986→**987**；**回滚值 986**。】 【第65轮续(N8 steer 接线，Lead 集成重签)：runtime run() 每轮 LLM 前经 steerInbox.drainAtStepBoundary 注入步边界意图(+注入口 setSteerInbox)，nonCommentLines 987→996、最长函数 run@L520 684→696；既有预算/审批重放/双跑防护逐字未动，反证真红还原。回滚值 987/684。】 【第68轮续(N11 plan 身份接线，Lead 集成重签)：availableTools 之后经 narrowPlanTools 按 plan 身份再收窄(1 行 import+let 改写+1 行调用)，nonCommentLines 996→998、最长函数 run@L522 684→699；预算/审批重放/steer drain/双跑防护逐字未动，反证 13 真红还原。回滚值 996/696。】 | 【2026-11-27 硬骨轮重签】replayedToolResult 增加 expired 显式分支，恢复上下文不再显示「批准后会恢复」误导文案；非注释行 998→1004，函数体/密度/exports 未变。 | 【2026-11-27 空降大改造轮重签】W1-S2 实时流接线：按 kind 分流系统提示词+初始 user turn、AbortSignal 订阅、流式 LLM delta 上报、跨副本 steer 注入（仅 +1 非注释行/函数体+3/密度+0.1，逻辑全部下沉 agent-runtime-realtime.collaborator.ts）；受控增量。 | 【2026-11-27 空降负责人第二轮重签】跨副本 cancel 在 LLM/工具批前五处 stopOnAbort、deny resume 结构化 reason、doom-loop 脱离 realtimePorts、steer Redis list；非注释行 1004→1048，最长函数 702→744。回滚值 1004/702。 【2026-11-28 切片 D1 重签 1048→1071、最长函数体 744→763：LLM 循环收敛点带 VERDICT 约定透传（sop_review 会话 instruction 组装与最终消息读取），复用既有 chatJson 修复重试结构】",
       "ceiling": {
-        "nonCommentLines": 1048,
-        "functionLines": 744,
+        "nonCommentLines": 1071,
+        "functionLines": 763,
         "ctorParams": 0,
         "exports": 10,
         "branchDensity": 23.3
@@ -191,13 +191,13 @@
     "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1098,
-      "why": "2026-11-04 实测 nonCommentLines=1099 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R199 下调：1099 → 1087（函数体 116 → 116）】** R199 给 Agent 会话列表加「卡住」筛选（Roadmap P1「异常接管台」的另一半）时，本文件**双顶格**（1042/1042、1029/1029）⇒ 就地新增**必然破顶** ⇒ 按 R380 的做法**外提**：① URL 深链同步整块外提成 `hooks/useAgentListUrlState.ts`（不碰会话数据、只碰 URL ⇒ 最独立的一块职责）；② 徽标组外提成 `components/AgentAttentionBadges.tsx`（桌面页头与移动端筛选栏**两处复用**）；③ 后端 `agent-session.service.ts` 把**分页钳制**外提成 `agent-pagination.ts`、把「卡住」谓词外提成 `agent-stalled-thresholds.ts` ⇒ 该文件亦净减。⇒ **基线下调，不是放宽**。 **【R322 重签 1087→1098：nonCommentLines +14，系 R296 尾钩接线的最小增量——共享前缀常量 import(1)、approvalWakeupProbe 字段与 attachApprovalWakeupProbe 方法(4)、markWaiting 在 UPDATE 命中后的 fail-closed try/catch 补偿(8)、sweep 判据换常量后的 prettier 折行(1)，另一处 startsWith 换常量等长；PM 已裁决 E-pure（R321 §7）并批准本次重签。只改 nonCommentLines/maxLines，functionLines=116、ctorParams=7、exports=21、branchDensity=25.6 一律不放宽】**",
+      "maxLines": 1147,
+      "why": "2026-11-04 实测 nonCommentLines=1099 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R199 下调：1099 → 1087（函数体 116 → 116）】** R199 给 Agent 会话列表加「卡住」筛选（Roadmap P1「异常接管台」的另一半）时，本文件**双顶格**（1042/1042、1029/1029）⇒ 就地新增**必然破顶** ⇒ 按 R380 的做法**外提**：① URL 深链同步整块外提成 `hooks/useAgentListUrlState.ts`（不碰会话数据、只碰 URL ⇒ 最独立的一块职责）；② 徽标组外提成 `components/AgentAttentionBadges.tsx`（桌面页头与移动端筛选栏**两处复用**）；③ 后端 `agent-session.service.ts` 把**分页钳制**外提成 `agent-pagination.ts`、把「卡住」谓词外提成 `agent-stalled-thresholds.ts` ⇒ 该文件亦净减。⇒ **基线下调，不是放宽**。 **【R322 重签 1087→1098：nonCommentLines +14，系 R296 尾钩接线的最小增量——共享前缀常量 import(1)、approvalWakeupProbe 字段与 attachApprovalWakeupProbe 方法(4)、markWaiting 在 UPDATE 命中后的 fail-closed try/catch 补偿(8)、sweep 判据换常量后的 prettier 折行(1)，另一处 startsWith 换常量等长；PM 已裁决 E-pure（R321 §7）并批准本次重签。只改 nonCommentLines/maxLines，functionLines=116、ctorParams=7、exports=21、branchDensity=25.6 一律不放宽】** 【2026-11-28 切片 D1 重签 1098→1141：nonCommentLines +43、最长函数体 116→140（finish 内 verify: 旁路块）、exports 21→22（parseVerificationVerdict 导出）。增量是机器验收 fail-closed 的终态回写接线：parseVerificationVerdict 纯函数+注释 24 行、verificationSettle 端口字段与 attachVerificationSettle 9 行、finish 终态分支 21 行（只挂 succeeded、独立 try/catch 旁路纪律）。others 不放宽：ctorParams/branchDensity 不变】 【2026-11-28 切片 D1 补签 1141→1147、函数体 140→143：verificationSettle 调用点防御分支（端口未 attach 时 warn 不静默）+ Prettier 折行，E1 的会话上下文记录器同文件微增】",
       "ceiling": {
-        "nonCommentLines": 1098,
-        "functionLines": 116,
+        "nonCommentLines": 1147,
+        "functionLines": 143,
         "ctorParams": 7,
-        "exports": 21,
+        "exports": 22,
         "branchDensity": 25.6
       },
       "firstRun": {
@@ -245,10 +245,10 @@
     "apps/admin-api/src/modules/agent/tools/tool-registry.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1121,
-      "why": "2026-11-04 实测 nonCommentLines=1108 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【第68轮(N11 plan kind，Lead 重签)：SESSION_TOOL_ALLOWLIST 增 plan 只读条目(+1 行)，与 ops_watch 同款纯只读面；回滚值 1108。】 【第68轮 prettier：plan 只读条目按 eslint --fix 折为多行(1109→1111)，仅格式；回滚值 1109。】 | 【2026-11-27 第二轮集成重签】stop/upgrade deployment 绑定 application scope 各新增必填 applicationId，修复跨 application 逃逸；非注释行 1111→1121。回滚值 1111。",
+      "maxLines": 1125,
+      "why": "2026-11-04 实测 nonCommentLines=1108 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【第68轮(N11 plan kind，Lead 重签)：SESSION_TOOL_ALLOWLIST 增 plan 只读条目(+1 行)，与 ops_watch 同款纯只读面；回滚值 1108。】 【第68轮 prettier：plan 只读条目按 eslint --fix 折为多行(1109→1111)，仅格式；回滚值 1109。】 | 【2026-11-27 第二轮集成重签】stop/upgrade deployment 绑定 application scope 各新增必填 applicationId，修复跨 application 逃逸；非注释行 1111→1121。回滚值 1111。 【2026-11-28 切片 D1 重签 1121→1125：sop_review allowlist 注释补 VERDICT 约定说明 + sop_reply_clarification 工具描述补验收结论回写语义】",
       "ceiling": {
-        "nonCommentLines": 1121,
+        "nonCommentLines": 1125,
         "functionLines": 24,
         "ctorParams": 0,
         "exports": 9,
@@ -609,13 +609,13 @@
     "apps/admin-api/src/modules/sop/sop.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1801,
-      "why": "【R40 重签：nonCommentLines 1708→1753（+45）】SOP 指派列表静默截断修复：listAssignments 硬编码 take:100、无 hasMore/total，>100 条时旧卡单永久不可见、模型误报“无待办”。新增 listAssignmentsPage（limit/offset、limit+1 探针算 hasMore、total/pendingTotal）+ 新端点路由，listAssignments 委托默认页保持裸数组契约。反证：hasMore 恒 false → 用例红。functionLines/密度/exports/ctorParams 未变。 | 2026-11-04 实测 nonCommentLines=1708 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 124 → 193（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=ingestClarification@L950。重签只按实测值对齐，未放宽阈值。】 | 【2026-11-27 空降纠偏轮重签】首次领取 CAS 同事务落能力快照与权限档位、poll 下发 maxAssignmentsPerPoll、completed 结果诚实标注待部署；非注释行 1753→1801、密度 25.1→25.8、exports 4→6，均为不可外拆的领取/回报契约接线。",
+      "maxLines": 1853,
+      "why": "【R40 重签：nonCommentLines 1708→1753（+45）】SOP 指派列表静默截断修复：listAssignments 硬编码 take:100、无 hasMore/total，>100 条时旧卡单永久不可见、模型误报“无待办”。新增 listAssignmentsPage（limit/offset、limit+1 探针算 hasMore、total/pendingTotal）+ 新端点路由，listAssignments 委托默认页保持裸数组契约。反证：hasMore 恒 false → 用例红。functionLines/密度/exports/ctorParams 未变。 | 2026-11-04 实测 nonCommentLines=1708 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 124 → 193（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=ingestClarification@L950。重签只按实测值对齐，未放宽阈值。】 | 【2026-11-27 空降纠偏轮重签】首次领取 CAS 同事务落能力快照与权限档位、poll 下发 maxAssignmentsPerPoll、completed 结果诚实标注待部署；非注释行 1753→1801、密度 25.1→25.8、exports 4→6，均为不可外拆的领取/回报契约接线。 【2026-11-28 切片 D1/D2 重签 1801→1853：nonCommentLines +52、exports 6→7。增量=机器验收落账链：verificationStatus 常量与 settleVerification 方法（条件写 CAS：completed+IsNull 谓词）、spawn 双路径置 unverified（成功/失败对偶）、instruction 追加 VERDICT 行约定、onModuleInit 反向注册 attachVerificationSettle、audit/DTO 透出。约束写面按 ADR-026 加 exempt 注释两处。functionLines/密度/ctorParams 不变】",
       "ceiling": {
-        "nonCommentLines": 1801,
+        "nonCommentLines": 1853,
         "functionLines": 193,
         "ctorParams": 5,
-        "exports": 6,
+        "exports": 7,
         "branchDensity": 25.8
       },
       "firstRun": {
@@ -975,11 +975,11 @@
     "apps/admin-web/src/pages/ExecutorInstallWizardPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 830,
-      "why": "2026-11-04 实测 functionLines=851 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 851 → 42（降）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=tick@L358。重签只按实测值对齐，未放宽阈值。】",
+      "maxLines": 845,
+      "why": "2026-11-04 实测 functionLines=851 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 851 → 42（降）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=tick@L358。重签只按实测值对齐，未放宽阈值。】 【2026-11-28 切片 B1 重签 830→845、最长函数体 42→50（tick）：轮询失败不再静默 ignore——pollError 状态 + StateError 重试检测按钮 + hint 段落 + 成功一拍自动清零，共 +15 行（可见错误态与重试入口）。非结构恶化，故障可见性修复】",
       "ceiling": {
-        "nonCommentLines": 830,
-        "functionLines": 42,
+        "nonCommentLines": 845,
+        "functionLines": 50,
         "ctorParams": 0,
         "exports": 4,
         "branchDensity": 10.7
@@ -1176,10 +1176,10 @@
     "apps/admin-web/src/pages/audit/index.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 562,
-      "why": "2026-11-04 实测 functionLines=637 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**提额**：A6b 新增审计动作 `task.fire_point_consumed` ⇒ 前端补一行标签映射 ⇒ 559 → 560。2026-11-15 P1-5 新增审计动作 `task_template.update` ⇒ 再补一行标签映射 ⇒ 560 → 561。两行均为功能必需的标签，不是结构恶化。 【第69轮(provider_denied audit 标签，Lead 重签)：ACTION_LABEL_KEYS +1 行，561→562；回滚值 561。】",
+      "maxLines": 563,
+      "why": "2026-11-04 实测 functionLines=637 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**提额**：A6b 新增审计动作 `task.fire_point_consumed` ⇒ 前端补一行标签映射 ⇒ 559 → 560。2026-11-15 P1-5 新增审计动作 `task_template.update` ⇒ 再补一行标签映射 ⇒ 560 → 561。两行均为功能必需的标签，不是结构恶化。 【第69轮(provider_denied audit 标签，Lead 重签)：ACTION_LABEL_KEYS +1 行，561→562；回滚值 561。】 【2026-11-28 切片 E1 重签 562→563：ACTION_LABEL_KEYS +1 行（workbench.convert_to_sop 审计动作标签映射，功能必需，同前例）】",
       "ceiling": {
-        "nonCommentLines": 562,
+        "nonCommentLines": 563,
         "functionLines": 637,
         "ctorParams": 0,
         "exports": 1,
@@ -1844,6 +1844,15 @@
         "exports": 3,
         "branchDensity": 16.5
       }
+    },
+    "apps/admin-api/src/modules/sop/sop-collab.controller.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-30",
+      "maxLines": 912,
+      "why": "2026-11-28 首登基线：实测 nonCommentLines=912 超全局阈值 900。该文件是 SOP 执行器协作面（poll/complete/clarify/media 回传）唯一 controller，历史增长来自 D2 收件箱放行与 D1 验收透传的最小接线；D2 的双端点 USER 放行 +3、D1 的 verification 三字段透出 +4，其余为既有形态。棘轮生效后只减不增。",
+      "ceiling": {
+        "nonCommentLines": 912
+      }
     }
   },
   "knownGaps": [
@@ -1867,7 +1876,7 @@
     }
   ],
   "$ratchet": {
-    "maxEntries": 98,
-    "note": "**条目上限 = 记录式棘轮**（与实际条目数**严格相等**）。为什么不是静态常量：静态常量只做上界检查、从不随条目减少而下调 ⇒ 合法删掉一条后可以**免费加另一条**，总数永远停在同一个数、棘轮永不收紧。⇒ 删条目必须同批下调本值；加条目必须显式上调（可见的、需要理由的评审动作）。`check-size-caps.mjs` 的 `MAX_BASELINE_ENTRIES` 保留为**绝对上界**，本值不得超过它。"
+    "maxEntries": 99,
+    "note": "**条目上限 = 记录式棘轮**（与实际条目数**严格相等**）。为什么不是静态常量：静态常量只做上界检查、从不随条目减少而下调 ⇒ 合法删掉一条后可以**免费加另一条**，总数永远停在同一个数、棘轮永不收紧。⇒ 删条目必须同批下调本值；加条目必须显式上调（可见的、需要理由的评审动作）。`check-size-caps.mjs` 的 `MAX_BASELINE_ENTRIES` 保留为**绝对上界**，本值不得超过它。｜2026-11-28：+1（sop-collab.controller.ts 首登 912——D2/D1 接线后过全局阈值的既有协作面 controller，非新文件）"
   }
 }

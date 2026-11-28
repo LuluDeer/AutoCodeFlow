@@ -7,11 +7,6 @@
       "review_by": "2026-12-15"
     },
     {
-      "key": "apps/admin-web/src/api/agent.ts\tAgentApprovalDecision",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
       "key": "apps/admin-web/src/api/agent.ts\tAgentBudget",
       "owner": "arch-core",
       "review_by": "2026-12-15"
@@ -837,6 +832,55 @@
       "reason": "批量终止编排注入的单条 kill 函数签名 (taskId, execId) => Promise<unknown>；纯前端编排回调类型，非 API 契约类型，后端无对应 schema。",
       "owner": "arch-core",
       "review_by": "2026-12-15"
+    },
+    {
+      "file": "apps/admin-web/src/api/desktop-bridge.ts",
+      "name": "DesktopAgentEventType",
+      "reason": "桌面 Agent 事件类型字面量联合（phase/plan/file/trial/browser/gui/screenshot/verify/status/error）；由桌面端 window.workbenchApi 桥接私有事件词表，无 OpenAPI 端点与 schema 对应——事件经 IPC 到渲染层，不进 HTTP 合同。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
+    },
+    {
+      "file": "apps/admin-web/src/api/desktop-bridge.ts",
+      "name": "DesktopAgentEvent",
+      "reason": "桌面 Agent 事件载荷视图模型（seq/type/payload 文本行）；IPC 事件白名单纯文本展示面，见上条理由，无生成物对应。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
+    },
+    {
+      "file": "apps/admin-web/src/api/desktop-bridge.ts",
+      "name": "DesktopContext",
+      "reason": "桌面上下文视图模型（desktopFlavor/windowKind/platform 等），由 preload 桥注入 window.workbenchApi.getContext()；Electron IPC 面，无 OpenAPI schema。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
+    },
+    {
+      "file": "apps/admin-web/src/api/desktop-bridge.ts",
+      "name": "DesktopPickedFile",
+      "reason": "pickLocalFiles 返回的文件名/大小视图模型；文件选择走 Electron dialog 经桥返回，不经 HTTP。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
+    },
+    {
+      "file": "apps/admin-web/src/api/desktop-bridge.ts",
+      "name": "DesktopCancelResult",
+      "reason": "桌面本机取消结果的视图模型（cancelled/error 文案）；同上 IPC 面。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
+    },
+    {
+      "file": "apps/admin-web/src/api/desktop-bridge.ts",
+      "name": "DesktopBridge",
+      "reason": "桥接口形状（方法探针集合）；该文件头注纪律：只读 window.workbenchApi、不 import electron、不走 axios——整个面在浏览器环境逐方法探测回退，语义以方法存在性为准，不是服务端合同。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
+    },
+    {
+      "file": "apps/admin-web/src/api/desktop-bridge.ts",
+      "name": "UnknownRecord",
+      "reason": "桥返回未知载荷的归一化中间类型（Record<string, unknown> 别名），纯 TS 工具类型，无任何合同对应。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
     }
   ]
 }

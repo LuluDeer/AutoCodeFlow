@@ -124,12 +124,6 @@
       "review_by": "2026-12-15"
     },
     {
-      "key": "apps/admin-web/src/api/agent.ts\tAgentApprovalDecision",
-      "reason": "待处置（未配对）：AgentApprovalDecision 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
       "key": "apps/admin-web/src/api/ai.ts\tAiPurpose",
       "reason": "待处置（未配对）：AiPurpose 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
       "owner": "arch-core",
@@ -668,6 +662,48 @@
       "owner": "arch-core",
       "review_by": "2026-12-15",
       "reason": "待处置（未配对）：配额状态相关手写视图/枚举类型，生成合同无同名 DTO ⇒ 无字段可比面。按「手写契约 DTO」分组豁免，纳入生成合同后销账。"
+    },
+    {
+      "key": "apps/admin-web/src/api/desktop-bridge.ts\tDesktopAgentEventType",
+      "reason": "桌面 Agent 事件类型字面量联合；IPC 私有词表，无 OpenAPI schema，配不上生成合同属预期。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
+    },
+    {
+      "key": "apps/admin-web/src/api/desktop-bridge.ts\tDesktopAgentEvent",
+      "reason": "桌面 Agent 事件载荷视图模型（seq/type/payload 文本行）；IPC 白名单纯文本展示面，无生成物对应。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
+    },
+    {
+      "key": "apps/admin-web/src/api/desktop-bridge.ts\tDesktopContext",
+      "reason": "桌面上下文视图模型（desktopFlavor/windowKind/platform），preload 桥注入；Electron IPC 面无 HTTP 合同。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
+    },
+    {
+      "key": "apps/admin-web/src/api/desktop-bridge.ts\tDesktopPickedFile",
+      "reason": "pickLocalFiles 返回的文件名/大小视图模型；Electron dialog 经桥返回，不经 HTTP。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
+    },
+    {
+      "key": "apps/admin-web/src/api/desktop-bridge.ts\tDesktopCancelResult",
+      "reason": "桌面本机取消结果视图模型；同上 IPC 面。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
+    },
+    {
+      "key": "apps/admin-web/src/api/desktop-bridge.ts\tDesktopBridge",
+      "reason": "桥接口形状（方法探针集合）；文件头注纪律：只读 window.workbenchApi、逐方法探测回退，语义是方法存在性而非服务端合同。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
+    },
+    {
+      "key": "apps/admin-web/src/api/desktop-bridge.ts\tUnknownRecord",
+      "reason": "桥返回未知载荷归一化中间类型（Record<string,unknown> 别名），纯 TS 工具类型。",
+      "owner": "arch-core",
+      "review_by": "2026-12-30"
     }
   ]
 }
