@@ -5,7 +5,6 @@ import {
   IsArray,
   IsObject,
   IsOptional,
-  IsString,
   IsUUID,
 } from "class-validator";
 
@@ -47,7 +46,10 @@ export class DagRootExecutionDto {
 
 /** POST /api/tasks/dag/trigger-roots 响应体。 */
 export class TriggerDagRootsResponseDto {
-  @ApiProperty({ description: "本次 DAG 运行的批次标记（UUID），注入到每个根执行 params._dagRunId" })
+  @ApiProperty({
+    description:
+      "本次 DAG 运行的批次标记（UUID），注入到每个根执行 params._dagRunId",
+  })
   dagRunId: string;
 
   @ApiProperty({

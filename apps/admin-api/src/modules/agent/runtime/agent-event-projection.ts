@@ -355,7 +355,10 @@ export interface ProjectionSnapshot {
    *
    * `undefined` = 调用方没提供 ⇒ 行为与改动前逐字节相同。
    */
-  approvalStatuses?: Record<string, { status: string; decidedBy: string | null }>;
+  approvalStatuses?: Record<
+    string,
+    { status: string; decidedBy: string | null }
+  >;
 }
 
 /** 缺口分类（对账报告按它分组，本阶段的核心交付就是这张表的实际计数）。 */

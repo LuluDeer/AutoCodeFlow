@@ -62,8 +62,18 @@ export class AgentInteractionController {
       "按 seq 重放持久事件后转入实时推送：先发 synced 边界帧，再有 token/reasoning/tool_call/phase/status 增量帧；每 15 秒发送心跳注释帧。断线重连传 fromSeq 从上次的 seq 续传，队列溢出时收到 resync_required 后应主动重连。",
   })
   @ApiParam({ name: "id", description: "会话 ID", format: "uuid" })
-  @ApiQuery({ name: "ticket", required: false, type: String, description: "SSE 建连专用短效票据，仅用于鉴权，不参与事件查询" })
-  @ApiQuery({ name: "fromSeq", required: false, type: Number, description: "断点续传起点：只推送 seq 大于该值的事件，缺省从头开始" })
+  @ApiQuery({
+    name: "ticket",
+    required: false,
+    type: String,
+    description: "SSE 建连专用短效票据，仅用于鉴权，不参与事件查询",
+  })
+  @ApiQuery({
+    name: "fromSeq",
+    required: false,
+    type: Number,
+    description: "断点续传起点：只推送 seq 大于该值的事件，缺省从头开始",
+  })
   @ApiOkResponse({
     description: "SSE 事件流（Res 直写，Content-Type: text/event-stream）",
     content: { "text/event-stream": { schema: { type: "string" } } },

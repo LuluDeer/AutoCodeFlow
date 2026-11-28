@@ -81,9 +81,9 @@ describe("runMigrationsWithAdvisoryLock — down transaction mode", () => {
       "unlock",
       "release",
     ]);
-    expect(sqls.some((s) => s.includes('SELECT "name" FROM "migrations"'))).toBe(
-      true,
-    );
+    expect(
+      sqls.some((s) => s.includes('SELECT "name" FROM "migrations"')),
+    ).toBe(true);
   });
 
   it("普通迁移（未声明 transaction=false）→ undoLastMigration({transaction:'each'})，保持事务行为", async () => {
@@ -122,9 +122,9 @@ describe("runMigrationsWithAdvisoryLock — down transaction mode", () => {
       undoError: boom,
     });
 
-    await expect(runMigrationsWithAdvisoryLock(ds, { mode: "down" })).rejects.toBe(
-      boom,
-    );
+    await expect(
+      runMigrationsWithAdvisoryLock(ds, { mode: "down" }),
+    ).rejects.toBe(boom);
     expect(events).toEqual([
       expect.stringContaining("try_lock"),
       "ledger",
@@ -151,7 +151,12 @@ describe("runMigrationsWithAdvisoryLock — down transaction mode", () => {
     expect(undo).toHaveBeenCalledWith({ transaction: "each" });
     expect(warnings.join("\n")).toContain('falling back to "each"');
     expect(events).toEqual(
-      expect.arrayContaining(["ledger", "undoLastMigration", "unlock", "release"]),
+      expect.arrayContaining([
+        "ledger",
+        "undoLastMigration",
+        "unlock",
+        "release",
+      ]),
     );
   });
 

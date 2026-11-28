@@ -79,7 +79,10 @@ function setupNoWinner(execution: TaskExecution) {
     rows: [],
     transitioned: false,
   });
-  return { deps, run: (cb: any) => new ExecutionCallback(deps).handleCallback([cb]) };
+  return {
+    deps,
+    run: (cb: any) => new ExecutionCallback(deps).handleCallback([cb]),
+  };
 }
 
 beforeEach(() => {
@@ -223,7 +226,8 @@ describe("callback-contract：字段漂移 fail-fast", () => {
           executionId: EXEC_ID,
           status: "success",
           attemptSeq: 7,
-          traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+          traceparent:
+            "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
         },
       ],
       metadata,
@@ -251,9 +255,7 @@ describe("callback-contract：字段漂移 fail-fast", () => {
     let root = __dirname;
     for (let i = 0; i < 12; i++) {
       if (
-        existsSync(
-          join(root, "packages", "executor-protocol", "protocol.json"),
-        )
+        existsSync(join(root, "packages", "executor-protocol", "protocol.json"))
       )
         break;
       root = dirname(root);
@@ -280,7 +282,9 @@ describe("callback-timeout：sweep 与回调终态口径一致【静态守卫级
       join(__dirname, "../scheduler/scheduler.service.ts"),
       "utf8",
     );
-    const start = scheduler.indexOf("for (const [timeoutSec, execs] of timedOut)");
+    const start = scheduler.indexOf(
+      "for (const [timeoutSec, execs] of timedOut)",
+    );
     const end = scheduler.indexOf("// P2: 本桶是 sweep", start);
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);

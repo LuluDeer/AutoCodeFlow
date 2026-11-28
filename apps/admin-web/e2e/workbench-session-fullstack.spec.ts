@@ -40,6 +40,7 @@ function logStep(msg: string) {
 }
 
 /** Unwrap the global ResponseInterceptor envelope {code,message,data}. */
+/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- e2e 断言辅助：响应体形状逐点不同，泛型 any 是刻意的宽松面 */
 async function unwrap<T = any>(resp: Awaited<ReturnType<APIRequestContext['post']>>): Promise<T> {
   const body = await resp.json();
   return (body?.data ?? body) as T;

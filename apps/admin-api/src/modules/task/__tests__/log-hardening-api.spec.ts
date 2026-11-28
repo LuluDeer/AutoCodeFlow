@@ -93,7 +93,11 @@ describe("LOG-HARDEN · REST 行号游标（行号有洞不交叠）", () => {
     expect(p1.nextCursor).toBe(6);
     expect(p1.hasMore).toBe(true);
 
-    const p2 = await svc.getExecutionLogs("exec-log-hardening", p1.nextCursor, 2);
+    const p2 = await svc.getExecutionLogs(
+      "exec-log-hardening",
+      p1.nextCursor,
+      2,
+    );
     expect(p2.lines).toEqual(["L9"]);
     expect(p2.lineNumbers).toEqual([9]);
     expect(p2.nextCursor).toBe(10);
@@ -203,11 +207,11 @@ describe("LOG-HARDEN · appendLogChunk 单调保护", () => {
       backfillFullLogsFromExecutor: async () => false,
     });
 
-    const result = await collab.appendLogChunk(
-      "exec-log-hardening",
-      0,
-      ["old 0", "old 1", "old 2"],
-    );
+    const result = await collab.appendLogChunk("exec-log-hardening", 0, [
+      "old 0",
+      "old 1",
+      "old 2",
+    ]);
 
     expect(result).toEqual({ count: 3 });
     const saved = save.mock.calls[0][1] as Array<{
@@ -217,17 +221,24 @@ describe("LOG-HARDEN · appendLogChunk 单调保护", () => {
     // 行 1 已落库且内容不同 ⇒ 保留较新行；行 0/2 未落库 ⇒ 补写。
     expect(saved.map((e) => e.lineNumber)).toEqual([0, 2]);
     expect(saved.map((e) => e.content)).toEqual(["old 0", "old 2"]);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("stale log line"));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("stale log line"),
+    );
   });
 
   it("S3 多页 append：读旧对象失败时用缓存前页，put 内容不会只剩本页", async () => {
-    const put = jest.fn(async (_executionId: string, _content: string) => "logs/e.gz");
+    const put = jest.fn(
+      async (_executionId: string, _content: string) => "logs/e.gz",
+    );
     const s3 = { put, get: jest.fn(), getStream: jest.fn() } as never;
     const warn = jest.fn();
     const collab = new ExecutionLog({
       dataSource: { transaction: jest.fn() } as never,
       execRepo: { update: jest.fn(async () => undefined) } as never,
-      logLineRepo: { delete: jest.fn(), create: jest.fn((d: unknown) => d) } as never,
+      logLineRepo: {
+        delete: jest.fn(),
+        create: jest.fn((d: unknown) => d),
+      } as never,
       logger: { warn } as never,
       resolveS3Storage: () => s3,
       s3GetExistingLog: async () => null, // 模拟读旧对象失败

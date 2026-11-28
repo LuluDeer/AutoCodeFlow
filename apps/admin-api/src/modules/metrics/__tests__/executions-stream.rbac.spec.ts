@@ -21,7 +21,9 @@ jest.mock("../runtime-metrics-entry", () => ({
   resetRuntimeGauges: jest.fn(),
 }));
 
-function payload(over: Partial<ExecutionTerminalEventPayload>): ExecutionTerminalEventPayload {
+function payload(
+  over: Partial<ExecutionTerminalEventPayload>,
+): ExecutionTerminalEventPayload {
   return {
     executionId: "exec-1",
     taskId: "mine-1",
@@ -61,17 +63,24 @@ async function harness(
     if (entity?.name === "ProjectMember") {
       return { find: jest.fn().mockResolvedValue(memberRows) };
     }
-    let call = 0;
+    const call = 0;
+    void call;
     return {
-      find: jest.fn().mockImplementation((args: { where?: { projectId?: { _value?: string[] } } }) => {
-        const projectIds = args?.where?.projectId?._value;
-        if (projectIds && projectIds.length > 0) {
-          return Promise.resolve(
-            projectIds.flatMap((pid) => (projectTaskIds[pid] ?? []).map((id) => ({ id }))),
-          );
-        }
-        return Promise.resolve(owned);
-      }),
+      find: jest
+        .fn()
+        .mockImplementation(
+          (args: { where?: { projectId?: { _value?: string[] } } }) => {
+            const projectIds = args?.where?.projectId?._value;
+            if (projectIds && projectIds.length > 0) {
+              return Promise.resolve(
+                projectIds.flatMap((pid) =>
+                  (projectTaskIds[pid] ?? []).map((id) => ({ id })),
+                ),
+              );
+            }
+            return Promise.resolve(owned);
+          },
+        ),
     };
   });
   const module: TestingModule = await Test.createTestingModule({
@@ -84,7 +93,9 @@ async function harness(
     ],
   }).compile();
   return {
-    controller: module.get<ExecutionsStreamController>(ExecutionsStreamController),
+    controller: module.get<ExecutionsStreamController>(
+      ExecutionsStreamController,
+    ),
     bus: module.get<DomainEventBus>(DomainEventBus),
     getRepository,
   };
@@ -117,14 +128,27 @@ async function open(
 
 describe("ExecutionsStreamController — RBAC 事件过滤", () => {
   it("USER 只转发属主任务的事件，丢弃无权任务与无 taskId 的事件", async () => {
-    const { controller, bus, getRepository } = await harness(["mine-1"], [
-      { projectId: "p-1", role: "editor" },
-    ]);
-    const { res, done } = await open(controller, { id: 7, role: UserRole.USER });
+    const { controller, bus, getRepository } = await harness(
+      ["mine-1"],
+      [{ projectId: "p-1", role: "editor" }],
+    );
+    const { res, done } = await open(controller, {
+      id: 7,
+      role: UserRole.USER,
+    });
 
-    bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, payload({ executionId: "e-allowed", taskId: "mine-1" }));
-    bus.emit(DOMAIN_EVENTS.EXECUTION_COMPLETED, payload({ executionId: "e-foreign", taskId: "foreign-1" }));
-    bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, payload({ executionId: "e-null", taskId: null }));
+    bus.emit(
+      DOMAIN_EVENTS.EXECUTION_FAILED,
+      payload({ executionId: "e-allowed", taskId: "mine-1" }),
+    );
+    bus.emit(
+      DOMAIN_EVENTS.EXECUTION_COMPLETED,
+      payload({ executionId: "e-foreign", taskId: "foreign-1" }),
+    );
+    bus.emit(
+      DOMAIN_EVENTS.EXECUTION_FAILED,
+      payload({ executionId: "e-null", taskId: null }),
+    );
     await new Promise((r) => setImmediate(r));
     await done();
 
@@ -156,10 +180,19 @@ describe("ExecutionsStreamController — RBAC 事件过滤", () => {
       ],
       { "p-editor": ["shared-1"], "p-viewer": ["viewer-1"] },
     );
-    const { res, done } = await open(controller, { id: 7, role: UserRole.USER });
+    const { res, done } = await open(controller, {
+      id: 7,
+      role: UserRole.USER,
+    });
 
-    bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, payload({ executionId: "e-shared", taskId: "shared-1" }));
-    bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, payload({ executionId: "e-viewer", taskId: "viewer-1" }));
+    bus.emit(
+      DOMAIN_EVENTS.EXECUTION_FAILED,
+      payload({ executionId: "e-shared", taskId: "shared-1" }),
+    );
+    bus.emit(
+      DOMAIN_EVENTS.EXECUTION_FAILED,
+      payload({ executionId: "e-viewer", taskId: "viewer-1" }),
+    );
     await new Promise((r) => setImmediate(r));
     await done();
 
@@ -169,10 +202,19 @@ describe("ExecutionsStreamController — RBAC 事件过滤", () => {
 
   it("ADMIN 转发全量，包括 taskId=null 的事件", async () => {
     const { controller, bus, getRepository } = await harness([], []);
-    const { res, done } = await open(controller, { id: 1, role: UserRole.ADMIN });
+    const { res, done } = await open(controller, {
+      id: 1,
+      role: UserRole.ADMIN,
+    });
 
-    bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, payload({ executionId: "e-foreign", taskId: "foreign-1" }));
-    bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, payload({ executionId: "e-null", taskId: null }));
+    bus.emit(
+      DOMAIN_EVENTS.EXECUTION_FAILED,
+      payload({ executionId: "e-foreign", taskId: "foreign-1" }),
+    );
+    bus.emit(
+      DOMAIN_EVENTS.EXECUTION_FAILED,
+      payload({ executionId: "e-null", taskId: null }),
+    );
     await new Promise((r) => setImmediate(r));
     await done();
 

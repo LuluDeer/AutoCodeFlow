@@ -197,9 +197,7 @@ export class ExecutionLog {
           if (prior && prior.length > 0) {
             content = `${prior}\n${content}`;
           } else {
-            throw new Error(
-              "S3 既有日志内容不可得——拒绝 append，避免覆盖前页",
-            );
+            throw new Error("S3 既有日志内容不可得——拒绝 append，避免覆盖前页");
           }
         }
         const key = await s3.put(executionId, content);

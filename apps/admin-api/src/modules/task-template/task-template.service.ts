@@ -141,7 +141,9 @@ export class TaskTemplateService {
     manifest: NormalizedTemplateManifest,
   ): Record<string, unknown> {
     const metadata: Record<string, unknown> =
-      config.metadata && typeof config.metadata === "object" && !Array.isArray(config.metadata)
+      config.metadata &&
+      typeof config.metadata === "object" &&
+      !Array.isArray(config.metadata)
         ? { ...(config.metadata as Record<string, unknown>) }
         : {};
     metadata.skillManifest = {
@@ -251,10 +253,8 @@ export class TaskTemplateService {
       typeof merged.metadata === "object" &&
       !Array.isArray(merged.metadata)
     ) {
-      const { skillManifest: _skillManifest, ...restMetadata } = merged.metadata as Record<
-        string,
-        unknown
-      >;
+      const { skillManifest: _skillManifest, ...restMetadata } =
+        merged.metadata as Record<string, unknown>;
       void _skillManifest;
       if (Object.keys(restMetadata).length > 0) merged.metadata = restMetadata;
       else delete merged.metadata;

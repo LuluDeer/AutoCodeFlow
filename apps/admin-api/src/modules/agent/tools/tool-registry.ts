@@ -876,7 +876,9 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       type: "object",
       properties: {
         deploymentId: uuid("Deployment ID"),
-        applicationId: uuid("Application ID that owns this deployment (scope-checked)"),
+        applicationId: uuid(
+          "Application ID that owns this deployment (scope-checked)",
+        ),
       },
       required: ["deploymentId", "applicationId"],
       additionalProperties: false,
@@ -899,7 +901,9 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       type: "object",
       properties: {
         deploymentId: uuid("Deployment ID"),
-        applicationId: uuid("Application ID that owns this deployment (scope-checked)"),
+        applicationId: uuid(
+          "Application ID that owns this deployment (scope-checked)",
+        ),
       },
       required: ["deploymentId", "applicationId"],
       additionalProperties: false,

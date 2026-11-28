@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { setLanguage } from '../i18n';
 import WorkbenchPage from '../pages/WorkbenchPage';
 
@@ -86,7 +87,8 @@ afterEach(async () => {
 
 describe('工作台降级横幅', () => {
   it('polling + detail=null 仍显示降级横幅；LegacyFlow 默认折叠并标注 Advanced', () => {
-    render(<WorkbenchPage />);
+    // 切片 E1 后 WorkbenchPage 依赖 Router 上下文（useNavigate），渲染需包 MemoryRouter。
+    render(<MemoryRouter><WorkbenchPage /></MemoryRouter>);
     expect(screen.getByText('实时连接暂不可用，已切换为定时刷新。')).toBeTruthy();
     expect(screen.getByText('旧版草稿入口 / Advanced')).toBeTruthy();
     expect(screen.getByText(/仅需要旧版方案预览\/确认流程时展开此处/)).toBeTruthy();

@@ -105,7 +105,8 @@ describe("非文本判据未回归", () => {
     ).toBe(ExecutionFailureReason.UNKNOWN);
     expect(
       classifyFailure({
-        errorMessage: "No online executors match the requested group/tags/runtime",
+        errorMessage:
+          "No online executors match the requested group/tags/runtime",
       }),
     ).toBe(ExecutionFailureReason.UNKNOWN);
   });

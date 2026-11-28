@@ -117,7 +117,9 @@ export class ExecutionsStreamController {
     // 纯内存判定，零 DB 查询。任何解析失败 fail-closed（视作空集合），绝不
     // 因为查不到归属就把带 taskName/errorMessage/logHead 的事件漏给无权用户。
     const isAdmin =
-      !!user && (user.role === UserRole.ADMIN || (user as { isAdmin?: boolean }).isAdmin === true);
+      !!user &&
+      (user.role === UserRole.ADMIN ||
+        (user as { isAdmin?: boolean }).isAdmin === true);
     const allowedTaskIds: Set<string> | null = isAdmin
       ? null
       : await this.resolveVisibleTaskIds(user);

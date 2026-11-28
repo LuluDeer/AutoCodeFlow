@@ -30,9 +30,7 @@ describe("ExecutionLogsStreamQueryDto — SSE ticket whitelist", () => {
       ticket: "header.eyJ0eXBlIjoic3NlX3RpY2tldCJ9.signature",
       fromLine: "7",
     });
-    expect(result.ticket).toBe(
-      "header.eyJ0eXBlIjoic3NlX3RpY2tldCJ9.signature",
-    );
+    expect(result.ticket).toBe("header.eyJ0eXBlIjoic3NlX3RpY2tldCJ9.signature");
     expect(result.fromLine).toBe("7");
   });
 

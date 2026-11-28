@@ -19,28 +19,35 @@ const SESSION_ID = "22222222-2222-4222-8222-222222222222";
 const USER = { id: 42, username: "alice", role: UserRole.USER };
 const OTHER = { id: 99, username: "bob", role: UserRole.USER };
 const ADMIN = { id: 1, username: "root", role: UserRole.ADMIN };
-const APPROVAL_KEY = "apr-22222222-2222-4222-8222-222222222222-abcdef0123456789";
+const APPROVAL_KEY =
+  "apr-22222222-2222-4222-8222-222222222222-abcdef0123456789";
 
 function makeHarness() {
-  const listOwn = jest.fn(async (input: {
-    createdBy: string;
-    createdByAlias?: string | null;
-    page: number;
-    pageSize: number;
-  }) => {
-    const owns = input.createdBy === `user:${USER.id}` || input.createdByAlias === `user:${USER.username}`;
-    if (!owns) return { items: [], total: 0 };
-    return {
-      items: [{
-        sessionId: SESSION_ID,
-        status: "running",
-        title: "workbench draft",
-        createdAt: "2026-01-01T00:00:00.000Z",
-        sopId: SOP_ID,
-      }],
-      total: 1,
-    };
-  });
+  const listOwn = jest.fn(
+    async (input: {
+      createdBy: string;
+      createdByAlias?: string | null;
+      page: number;
+      pageSize: number;
+    }) => {
+      const owns =
+        input.createdBy === `user:${USER.id}` ||
+        input.createdByAlias === `user:${USER.username}`;
+      if (!owns) return { items: [], total: 0 };
+      return {
+        items: [
+          {
+            sessionId: SESSION_ID,
+            status: "running",
+            title: "workbench draft",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            sopId: SOP_ID,
+          },
+        ],
+        total: 1,
+      };
+    },
+  );
   const findById = jest.fn(async () => ({
     id: SESSION_ID,
     kind: "sop_authoring",
@@ -53,30 +60,36 @@ function makeHarness() {
     stepCount: 1,
     steps: [] as WorkbenchSessionDetailResponseDto["steps"],
     toolCallCount: 1,
-    toolCalls: [{
-      toolName: "sop_get",
-      status: "error",
-      errorSummary: "target not found",
-      createdAt: "2026-01-01T00:00:00.000Z",
-    }],
+    toolCalls: [
+      {
+        toolName: "sop_get",
+        status: "error",
+        errorSummary: "target not found",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ],
     approvals: { pending: 1 },
-    approvalItems: [{
-      approvalKey: APPROVAL_KEY,
-      toolName: "sop_publish",
-      status: "pending",
-      reason: "release gate",
-      decidedBy: null,
-      canDecide: true,
-      canWithdraw: false,
-      createdAt: "2026-01-01T00:00:00.000Z",
-    }],
-    artifacts: [{
-      id: "33333333-3333-4333-8333-333333333333",
-      name: "report.md",
-      size: 12,
-      createdAt: "2026-01-01T00:00:00.000Z",
-      downloadUrl: `/api/tasks/executions/44444444-4444-4444-8444-444444444444/artifacts/report.md`,
-    }],
+    approvalItems: [
+      {
+        approvalKey: APPROVAL_KEY,
+        toolName: "sop_publish",
+        status: "pending",
+        reason: "release gate",
+        decidedBy: null,
+        canDecide: true,
+        canWithdraw: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+    artifacts: [
+      {
+        id: "33333333-3333-4333-8333-333333333333",
+        name: "report.md",
+        size: 12,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        downloadUrl: `/api/tasks/executions/44444444-4444-4444-8444-444444444444/artifacts/report.md`,
+      },
+    ],
   }));
   const sessions = {
     create: jest.fn(),
@@ -102,7 +115,10 @@ function makeHarness() {
 describe("Workbench resume - own session list", () => {
   it("只按当前用户身份分页查询，响应字段白名单", async () => {
     const { controller, listOwn } = makeHarness();
-    const result = await controller.listSessions({ page: 2, pageSize: 5 }, USER);
+    const result = await controller.listSessions(
+      { page: 2, pageSize: 5 },
+      USER,
+    );
 
     expect(listOwn).toHaveBeenCalledWith({
       createdBy: "user:42",
@@ -120,14 +136,25 @@ describe("Workbench resume - own session list", () => {
       sopId: SOP_ID,
     });
     const serialized = JSON.stringify(result);
-    for (const forbidden of ["createdBy", "scope", "context", "approvalKey", "resultJson"]) {
+    for (const forbidden of [
+      "createdBy",
+      "scope",
+      "context",
+      "approvalKey",
+      "resultJson",
+    ]) {
       expect(serialized).not.toContain(forbidden);
     }
   });
 
   it("查询 DTO 严格白名单：createdBy 等越权参数被拒", () => {
-    const clean = plainToInstance(ListWorkbenchSessionsQueryDto, { page: "1", pageSize: "20" });
-    expect(validateSync(clean, { whitelist: true, forbidNonWhitelisted: true })).toEqual([]);
+    const clean = plainToInstance(ListWorkbenchSessionsQueryDto, {
+      page: "1",
+      pageSize: "20",
+    });
+    expect(
+      validateSync(clean, { whitelist: true, forbidNonWhitelisted: true }),
+    ).toEqual([]);
     expect(clean.page).toBe(1);
     expect(clean.pageSize).toBe(20);
 
@@ -136,8 +163,14 @@ describe("Workbench resume - own session list", () => {
       createdBy: "user:99",
       scope: "unrestricted",
     });
-    const errors = validateSync(dirty, { whitelist: true, forbidNonWhitelisted: true });
-    expect(errors.map((e) => e.property).sort()).toEqual(["createdBy", "scope"]);
+    const errors = validateSync(dirty, {
+      whitelist: true,
+      forbidNonWhitelisted: true,
+    });
+    expect(errors.map((e) => e.property).sort()).toEqual([
+      "createdBy",
+      "scope",
+    ]);
   });
 
   it("ADMIN 列表按角色传 isAdmin=true；前台不可自报", async () => {
@@ -158,7 +191,9 @@ describe("Workbench resume - own session list", () => {
     expect(list).toEqual({ items: [], total: 0 });
     expect(JSON.stringify(list)).not.toContain(SESSION_ID);
 
-    await expect(controller.getSession(SESSION_ID, OTHER)).rejects.toMatchObject({
+    await expect(
+      controller.getSession(SESSION_ID, OTHER),
+    ).rejects.toMatchObject({
       errorCode: ErrorCode.AGENT_SESSION_NOT_FOUND,
     } satisfies Partial<AppError>);
   });
@@ -179,7 +214,9 @@ describe("Workbench resume - detail projection", () => {
       toolName: "sop_publish",
       status: "pending",
     });
-    expect(detail.approvalItems[0].reviewUrl).toContain(`approvalKey=${encodeURIComponent(APPROVAL_KEY)}`);
+    expect(detail.approvalItems[0].reviewUrl).toContain(
+      `approvalKey=${encodeURIComponent(APPROVAL_KEY)}`,
+    );
     expect(detail.artifacts[0].downloadUrl).toBe(
       "/api/tasks/executions/44444444-4444-4444-8444-444444444444/artifacts/report.md",
     );

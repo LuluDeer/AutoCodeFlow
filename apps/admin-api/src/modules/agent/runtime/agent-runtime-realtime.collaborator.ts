@@ -91,7 +91,10 @@ export function withInitialUserTurn(
   messages: MultimodalMessage[],
 ): MultimodalMessage[] {
   if (steps.length > 0) return messages;
-  return [...messages, { role: "user", content: buildInitialUserMessage(session) }];
+  return [
+    ...messages,
+    { role: "user", content: buildInitialUserMessage(session) },
+  ];
 }
 
 /** LLM 调用：端口在场且有 chatMultimodalStream 时走流，否则回退。 */
@@ -103,16 +106,21 @@ export async function invokeLlm<T>(
   fallback: () => Promise<T>,
 ): Promise<T> {
   const stream = ports?.stream;
-  const fn = (aiService as unknown as {
-    chatMultimodalStream?: (
-      req: Parameters<AiService["chatMultimodal"]>[0],
-      handlers: { onDelta?: (text: string) => void },
-    ) => Promise<T>;
-  }).chatMultimodalStream;
+  const fn = (
+    aiService as unknown as {
+      chatMultimodalStream?: (
+        req: Parameters<AiService["chatMultimodal"]>[0],
+        handlers: { onDelta?: (text: string) => void },
+      ) => Promise<T>;
+    }
+  ).chatMultimodalStream;
   if (!stream || typeof fn !== "function") return fallback();
   return fn.call(aiService, request, {
     onDelta: (text: string) =>
-      stream.publishDelta(sessionId, { type: "token_delta", text } as AgentDeltaFrame),
+      stream.publishDelta(sessionId, {
+        type: "token_delta",
+        text,
+      } as AgentDeltaFrame),
   });
 }
 

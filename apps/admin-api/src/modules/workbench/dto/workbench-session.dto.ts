@@ -62,7 +62,9 @@ export class CreateWorkbenchSessionDto {
 
 /** 创建回执：最小但诚实——客户端据此轮询 sessionId。 */
 export class WorkbenchSessionCreateResponseDto {
-  @ApiProperty({ description: "会话 id（用于 GET /workbench/sessions/:id 轮询）" })
+  @ApiProperty({
+    description: "会话 id（用于 GET /workbench/sessions/:id 轮询）",
+  })
   sessionId: string;
 
   @ApiProperty({ description: "会话初始状态（pending）" })
@@ -126,11 +128,17 @@ export class WorkbenchSessionStepDto {
   @ApiProperty({ description: "步骤角色" })
   role: string;
 
-  @ApiPropertyOptional({ description: "步骤正文预览（最长 200 字）", nullable: true })
+  @ApiPropertyOptional({
+    description: "步骤正文预览（最长 200 字）",
+    nullable: true,
+  })
   contentPreview: string | null;
 
   /** 完整正文（<=8000 字符）。contentPreview 保留兼容。 */
-  @ApiPropertyOptional({ description: "完整步骤正文（最长 8000 字符）", nullable: true })
+  @ApiPropertyOptional({
+    description: "完整步骤正文（最长 8000 字符）",
+    nullable: true,
+  })
   content?: string | null;
 
   @ApiPropertyOptional({ description: "步骤创建时间", nullable: true })
@@ -231,7 +239,10 @@ export class WorkbenchSessionDetailResponseDto {
   @ApiPropertyOptional({ description: "发起人（user:<id>）", nullable: true })
   createdBy: string | null;
 
-  @ApiProperty({ description: "作用域（固定为 {sops:[sopId]}）", additionalProperties: true })
+  @ApiProperty({
+    description: "作用域（固定为 {sops:[sopId]}）",
+    additionalProperties: true,
+  })
   scope: Record<string, unknown>;
 
   @ApiPropertyOptional({ description: "会话标题", nullable: true })
@@ -272,7 +283,10 @@ export class WorkbenchSessionDetailResponseDto {
   @ApiProperty({ type: [WorkbenchSessionToolCallDto] })
   toolCalls: WorkbenchSessionToolCallDto[];
 
-  @ApiProperty({ description: "审批单状态计数（pending/granted/consumed/denied/expired）", additionalProperties: { type: "number" } })
+  @ApiProperty({
+    description: "审批单状态计数（pending/granted/consumed/denied/expired）",
+    additionalProperties: { type: "number" },
+  })
   approvals: Record<string, number>;
 
   @ApiProperty({ type: [WorkbenchSessionApprovalDto] })

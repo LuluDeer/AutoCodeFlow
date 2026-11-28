@@ -3,6 +3,7 @@
  * 级别：单测 + 真内存状态机 + 假 DB/Redis/res。断言实际写出的 SSE 帧与 accumulator 内容。
  */
 import type { Response } from "express";
+import { AgentEventStreamService } from "../runtime/agent-event-stream.service";
 
 type Any = Record<string, any>;
 
@@ -53,8 +54,11 @@ function makeService(rows: Any[] = []) {
   };
   const dataSource = { query: jest.fn(async () => rows) };
   const config = { get: jest.fn(() => undefined) };
-  const { AgentEventStreamService } = require("../runtime/agent-event-stream.service");
-  const svc = new AgentEventStreamService(config, sessions, dataSource);
+  const svc = new AgentEventStreamService(
+    config as never,
+    sessions as never,
+    dataSource as never,
+  );
   (svc as Any).ensureSubscriber = () => undefined;
   return { svc, dataSource, session };
 }
@@ -81,8 +85,15 @@ describe("AgentEventStreamService stream contract", () => {
     const { svc } = makeService([]);
     svc.accumulator.append(SESSION_ID, { type: "token_delta", text: "你" }, 3);
     svc.accumulator.append(SESSION_ID, { type: "token_delta", text: "好" }, 4);
-    svc.accumulator.append(SESSION_ID, { type: "reasoning_delta", text: "思考" });
-    svc.accumulator.append(SESSION_ID, { type: "phase_changed", phase: "tool" }, 5);
+    svc.accumulator.append(SESSION_ID, {
+      type: "reasoning_delta",
+      text: "思考",
+    });
+    svc.accumulator.append(
+      SESSION_ID,
+      { type: "phase_changed", phase: "tool" },
+      5,
+    );
     const { res, writes } = makeRes();
     const ac = new AbortController();
     ac.abort(); // 让主循环在 synced 后立即退出
@@ -270,10 +281,13 @@ describe("sendMessageAndResume terminal rejection", () => {
       reopenForResume: jest.fn(async () => false),
     };
     const config = { get: jest.fn(() => undefined) };
-    const { AgentEventStreamService } = require("../runtime/agent-event-stream.service");
-    const svc = new AgentEventStreamService(config, sessions, {
-      query: jest.fn(),
-    });
+    const svc = new AgentEventStreamService(
+      config as never,
+      sessions as never,
+      {
+        query: jest.fn(),
+      } as never,
+    );
     (svc as Any).ensureSubscriber = () => undefined;
     const publishDurableEvent = jest.fn();
     (svc as Any).publishDurableEvent = publishDurableEvent;
@@ -382,9 +396,8 @@ describe("sendMessageAndResume terminal rejection", () => {
   it("显式 reopen 总是清理终态屏障；未调用则保持（不做跨命名空间 seq 比较）", () => {
     const proto = Object.getPrototypeOf(makeSendService("failed").svc);
     const withReopen = makeSendService("failed");
-    (withReopen.svc as Any).publishDurableEvent = proto.publishDurableEvent.bind(
-      withReopen.svc,
-    );
+    (withReopen.svc as Any).publishDurableEvent =
+      proto.publishDurableEvent.bind(withReopen.svc);
     (withReopen.svc as Any).relay = jest.fn();
     withReopen.svc.publishDurableEvent(SESSION_ID, {
       seq: 5,
@@ -397,9 +410,8 @@ describe("sendMessageAndResume terminal rejection", () => {
     expect(withReopen.svc.hasTerminalEvent(SESSION_ID)).toBe(false);
 
     const withoutReopen = makeSendService("failed");
-    (withoutReopen.svc as Any).publishDurableEvent = proto.publishDurableEvent.bind(
-      withoutReopen.svc,
-    );
+    (withoutReopen.svc as Any).publishDurableEvent =
+      proto.publishDurableEvent.bind(withoutReopen.svc);
     (withoutReopen.svc as Any).relay = jest.fn();
     withoutReopen.svc.publishDurableEvent(SESSION_ID, {
       seq: 5,
@@ -423,11 +435,10 @@ describe("requestAbort winner semantics", () => {
         status: freshStatus,
       })),
     };
-    const { AgentEventStreamService } = require("../runtime/agent-event-stream.service");
     const svc = new AgentEventStreamService(
-      { get: jest.fn(() => undefined) },
-      sessions,
-      { query: jest.fn() },
+      { get: jest.fn(() => undefined) } as never,
+      sessions as never,
+      { query: jest.fn() } as never,
     );
     (svc as Any).ensureSubscriber = () => undefined;
     (svc as Any).getPublisher = () => ({

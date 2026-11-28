@@ -35,7 +35,10 @@ const TOOL_CALLS = [
 ];
 
 /** 一份「一次写操作挂在审批上」的最小世界：没有决定事件，也没有 body 正文。 */
-function pendingWorld(): { events: ProjectionEvent[]; snapshot: ProjectionSnapshot } {
+function pendingWorld(): {
+  events: ProjectionEvent[];
+  snapshot: ProjectionSnapshot;
+} {
   const events: ProjectionEvent[] = [
     {
       seq: 1,
@@ -104,9 +107,14 @@ function withDecision(
   ];
 }
 
-function toolText(events: ProjectionEvent[], snapshot: ProjectionSnapshot): string {
+function toolText(
+  events: ProjectionEvent[],
+  snapshot: ProjectionSnapshot,
+): string {
   const projected = projectSession(events, snapshot);
-  return String(projected.messages.find((m) => m.role === "tool")?.content ?? "");
+  return String(
+    projected.messages.find((m) => m.role === "tool")?.content ?? "",
+  );
 }
 
 describe("expired 审批的事件投影", () => {

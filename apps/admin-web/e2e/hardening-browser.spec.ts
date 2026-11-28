@@ -38,7 +38,7 @@ const DB = {
 const CALLBACK_SECRET = process.env.HARDENING_CALLBACK_SECRET ?? 'test-executor-secret';
 
 const requireFromApi = createRequire(path.join(REPO_ROOT, 'apps/admin-api/package.json'));
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+/* eslint-disable @typescript-eslint/no-explicit-any -- pg 无类型包，跨包 require 的桥接面；用真类型需引 @types/pg（e2e-only） */
 const { Client } = requireFromApi('pg') as any;
 
 type AssertionStatus = 'PASS' | 'FAIL' | 'SKIP';
@@ -84,12 +84,13 @@ function writeEvidence(): void {
   const evidencePath = path.join(RUN_DIR, 'spec-evidence.json');
   // Playwright isolates each test's module scope. Merge with the existing file
   // so the final report keeps assertions from every test, not only the last one.
-  let previous: Partial<Evidence> = {};
-  try {
-    previous = JSON.parse(fs.readFileSync(evidencePath, 'utf8')) as Partial<Evidence>;
-  } catch {
-    previous = {};
-  }
+  const previous: Partial<Evidence> = ((): Partial<Evidence> => {
+    try {
+      return JSON.parse(fs.readFileSync(evidencePath, 'utf8')) as Partial<Evidence>;
+    } catch {
+      return {};
+    }
+  })();
   const byName = new Map<string, AssertionRecord>();
   for (const item of [...(previous.assertions ?? []), ...evidence.assertions]) {
     byName.set(item.name, item);
@@ -108,6 +109,7 @@ test.afterEach(() => {
   writeEvidence();
 });
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- e2e 断言辅助：响应体形状逐点不同，泛型 any 是刻意的宽松面 */
 async function withDb<T>(fn: (client: any) => Promise<T>): Promise<T> {
   if (!DB.database) throw new Error('HARDENING_DB_DATABASE missing');
   const client = new Client(DB);
@@ -123,6 +125,7 @@ async function unwrap<T = any>(resp: { json(): Promise<any> }): Promise<T> {
   const body = await resp.json();
   return (body?.data ?? body) as T;
 }
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 async function apiLogin(request: APIRequestContext, username: string, password: string) {
   const resp = await request.post(`${API_BASE}/api/auth/login`, { data: { username, password } });

@@ -16,19 +16,14 @@
  * Redis 不可用不影响主链：发布/订阅失败只 warn，SSE 侧仍有 DB 重放与 15s ping。
  * 事件写入失败也不影响推理——本服务只做转发，不决定会话状态。
  */
-import {
-  Inject,
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-} from "@nestjs/common";
+import { Inject, Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectDataSource } from "@nestjs/typeorm";
 import type { DataSource } from "typeorm";
 import type { Response } from "express";
 import Redis from "ioredis";
 import { EventEmitter } from "node:events";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { AgentSessionStatus } from "../entities/agent-session.entity";
 import { AgentSessionService, redactForStorage } from "./agent-session.service";
 import type {
@@ -94,9 +89,27 @@ export interface SendMessageResult {
 }
 
 type RelayEnvelope =
-  | { instanceId: string; sessionId: string; event: DurableAgentEvent; delta?: undefined; abort?: undefined }
-  | { instanceId: string; sessionId: string; delta: AgentDeltaFrame; event?: undefined; abort?: undefined }
-  | { instanceId: string; sessionId: string; abort: true; event?: undefined; delta?: undefined };
+  | {
+      instanceId: string;
+      sessionId: string;
+      event: DurableAgentEvent;
+      delta?: undefined;
+      abort?: undefined;
+    }
+  | {
+      instanceId: string;
+      sessionId: string;
+      delta: AgentDeltaFrame;
+      event?: undefined;
+      abort?: undefined;
+    }
+  | {
+      instanceId: string;
+      sessionId: string;
+      abort: true;
+      event?: undefined;
+      delta?: undefined;
+    };
 
 /** relay 载荷（去掉 instanceId；显式保留判别字段，避免联合被 Omit 折叠）。 */
 type RelayPayload =
@@ -229,7 +242,11 @@ export class AgentEventStreamService implements OnModuleDestroy {
    * 不直接 @InjectQueue，避免把 BullMQ 拖进纯逻辑单测与 workbench 的惰性解析。
    */
   enqueueResume:
-    | ((sessionId: string, expectedStep: number, mode: "followup" | "steer") => Promise<void>)
+    | ((
+        sessionId: string,
+        expectedStep: number,
+        mode: "followup" | "steer",
+      ) => Promise<void>)
     | null = null;
 
   /** 有未处置审批单时不自动恢复（由 AgentModule 注入 approvals.hasPendingForSession）。 */
@@ -343,7 +360,11 @@ export class AgentEventStreamService implements OnModuleDestroy {
     }
     const phase = payload?.phase;
     if (typeof phase === "string") {
-      this.accumulator.append(sessionId, { type: "phase_changed", phase }, event.seq);
+      this.accumulator.append(
+        sessionId,
+        { type: "phase_changed", phase },
+        event.seq,
+      );
     }
     this.relay({ sessionId, event });
   }
@@ -358,7 +379,10 @@ export class AgentEventStreamService implements OnModuleDestroy {
   private relay(payload: RelayPayload): void {
     if (this.destroyed) return;
     try {
-      const envelope: RelayEnvelope = { instanceId: this.instanceId, ...payload };
+      const envelope: RelayEnvelope = {
+        instanceId: this.instanceId,
+        ...payload,
+      };
       const raw = JSON.stringify(envelope);
       void this.getPublisher()
         .publish(AGENT_EVENT_RELAY_CHANNEL, raw)
@@ -386,16 +410,24 @@ export class AgentEventStreamService implements OnModuleDestroy {
       }
       if ("event" in envelope) {
         const kind = String(envelope.event.kind ?? "");
-        const payload = envelope.event.payload as Record<string, unknown> | undefined;
+        const payload = envelope.event.payload as
+          Record<string, unknown> | undefined;
         const status = String(payload?.status ?? "");
         const isRunningStart =
           kind === "session_started" ||
           kind === "session_running" ||
           ((kind === "status_changed" || kind === "session_status_changed") &&
             ["running", "started"].includes(status));
-        if (isRunningStart && this.terminalKinds.has(envelope.sessionId)) return;
-        if (TERMINAL_STATUSES.includes(kind) || TERMINAL_STATUSES.includes(status)) {
-          this.terminalKinds.set(envelope.sessionId, Number(envelope.event.seq ?? 0));
+        if (isRunningStart && this.terminalKinds.has(envelope.sessionId))
+          return;
+        if (
+          TERMINAL_STATUSES.includes(kind) ||
+          TERMINAL_STATUSES.includes(status)
+        ) {
+          this.terminalKinds.set(
+            envelope.sessionId,
+            Number(envelope.event.seq ?? 0),
+          );
         }
         this.dispatch(envelope.sessionId, "event", envelope.event);
       } else if ("delta" in envelope) {
@@ -507,8 +539,13 @@ export class AgentEventStreamService implements OnModuleDestroy {
         if (queued.event !== "event") continue;
         const ev = queued.payload as Partial<DurableAgentEvent> | undefined;
         const kind = String(ev?.kind ?? "");
-        const status = String((ev?.payload as Record<string, unknown> | undefined)?.status ?? "");
-        if (TERMINAL_STATUSES.includes(kind) || TERMINAL_STATUSES.includes(status)) {
+        const status = String(
+          (ev?.payload as Record<string, unknown> | undefined)?.status ?? "",
+        );
+        if (
+          TERMINAL_STATUSES.includes(kind) ||
+          TERMINAL_STATUSES.includes(status)
+        ) {
           this.terminalKinds.set(sessionId, Number(ev?.seq ?? 0));
         }
       }
@@ -556,14 +593,19 @@ export class AgentEventStreamService implements OnModuleDestroy {
         if (frame.event === "event") {
           const ev = frame.payload as Partial<DurableAgentEvent> | undefined;
           const kind = String(ev?.kind ?? "");
-          const status = String((ev?.payload as Record<string, unknown> | undefined)?.status ?? "");
+          const status = String(
+            (ev?.payload as Record<string, unknown> | undefined)?.status ?? "",
+          );
           const isRunningStart =
             kind === "session_started" ||
             kind === "session_running" ||
             ((kind === "status_changed" || kind === "session_status_changed") &&
               ["running", "started"].includes(status));
           if (isRunningStart && this.terminalKinds.has(sessionId)) continue;
-          if (TERMINAL_STATUSES.includes(kind) || TERMINAL_STATUSES.includes(status)) {
+          if (
+            TERMINAL_STATUSES.includes(kind) ||
+            TERMINAL_STATUSES.includes(status)
+          ) {
             this.terminalKinds.set(sessionId, Number(ev?.seq ?? 0));
           }
         }
@@ -615,7 +657,9 @@ export class AgentEventStreamService implements OnModuleDestroy {
       });
     }
     const result: AgentStreamReplayResult = {
-      lastSeq: visible.length ? Number(visible[visible.length - 1].seq) : fromSeq,
+      lastSeq: visible.length
+        ? Number(visible[visible.length - 1].seq)
+        : fromSeq,
       hasMore,
       truncated: hasMore,
       count: visible.length,
@@ -709,7 +753,10 @@ export class AgentEventStreamService implements OnModuleDestroy {
       (await this.hasPendingApprovals(sessionId).catch(() => true));
     if (session.status === "running" || pending) {
       const steer = `[用户补充（${actorText}）] ${clean}`;
-      this.steers.set(sessionId, [...(this.steers.get(sessionId) ?? []), steer]);
+      this.steers.set(sessionId, [
+        ...(this.steers.get(sessionId) ?? []),
+        steer,
+      ]);
       try {
         const key = agentSteerKey(sessionId);
         await this.getPublisher().rpush(key, steer);

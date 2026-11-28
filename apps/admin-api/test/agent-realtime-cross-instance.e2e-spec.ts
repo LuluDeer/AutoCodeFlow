@@ -367,6 +367,7 @@ gatedDescribe("Agent 实时流跨副本控制（两真 Nest + 真 PG/Redis，L3�
 
     const tokenFrame = await first.sink.waitForFrame(
       "delta",
+      // constant-time-exempt: e2e 夹具回读自身刚发布的 tokenText 断言帧到达，非凭据比较路径
       (p) => p?.type === "token_delta" && p?.text === tokenText,
     );
     const reasoningFrame = await first.sink.waitForFrame(

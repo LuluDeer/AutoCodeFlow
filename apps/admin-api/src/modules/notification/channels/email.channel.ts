@@ -23,10 +23,7 @@ export class EmailChannel extends BaseChannel implements OnModuleDestroy {
    * 告警都新建 TCP+TLS+登录；配置变化（host/port/secure/auth/from）时按新
    * hash 建池并关闭旧池。from 只影响邮件信封，不参与连接身份，故不进 key。
    */
-  private readonly transporterCache = new Map<
-    string,
-    nodemailer.Transporter
-  >();
+  private readonly transporterCache = new Map<string, nodemailer.Transporter>();
 
   constructor(
     private config: ConfigService,

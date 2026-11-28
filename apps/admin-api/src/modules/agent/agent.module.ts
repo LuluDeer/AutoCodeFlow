@@ -290,7 +290,11 @@ export class AgentModule implements OnModuleInit {
     ) => {
       await queue.add(
         "run",
-        { sessionId, reason: `resume:message:${mode}`, expectTotalSteps: stepSeq },
+        {
+          sessionId,
+          reason: `resume:message:${mode}`,
+          expectTotalSteps: stepSeq,
+        },
         {
           ...manualResumeJobOptions(sessionId, stepSeq, false),
         },

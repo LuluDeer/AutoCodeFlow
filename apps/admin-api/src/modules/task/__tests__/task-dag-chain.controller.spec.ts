@@ -6,12 +6,19 @@
 import { TaskDagChainController } from "../task-dag-chain.controller";
 
 type DepMap = Record<string, string>;
-function makeTaskService(tasks: Record<string, Partial<Record<string, unknown>> & { dependencies?: DepMap }>) {
-  const trigger = jest.fn(async (taskId: string, dto: { params?: Record<string, unknown> }) => ({
-    id: `exec-${taskId}`,
-    status: "pending",
-    params: dto.params,
-  }));
+function makeTaskService(
+  tasks: Record<
+    string,
+    Partial<Record<string, unknown>> & { dependencies?: DepMap }
+  >,
+) {
+  const trigger = jest.fn(
+    async (taskId: string, dto: { params?: Record<string, unknown> }) => ({
+      id: `exec-${taskId}`,
+      status: "pending",
+      params: dto.params,
+    }),
+  );
   const findOne = jest.fn(async (id: string) => {
     const t = tasks[id];
     if (!t) throw new Error(`task ${id} not found`);
@@ -69,7 +76,10 @@ describe("TaskDagChainController.triggerRoots", () => {
   it("重复 taskIds 去重，根节点只触发一次", async () => {
     const { service, trigger } = makeTaskService({ A: {} });
     const controller = new TaskDagChainController(service);
-    const result = await controller.triggerRoots({ taskIds: ["A", "A"] }, undefined);
+    const result = await controller.triggerRoots(
+      { taskIds: ["A", "A"] },
+      undefined,
+    );
     expect(result.rootTaskIds).toEqual(["A"]);
     expect(trigger).toHaveBeenCalledTimes(1);
   });

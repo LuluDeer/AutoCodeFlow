@@ -41,9 +41,7 @@ import { AgentQueueIdleService } from "./runtime/agent-queue-idle.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
 import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { computeApprovalPolicyFingerprint } from "./runtime/agent-approvals.service";
-import {
-  ApprovalPhraseDto,
-} from "./dto/approval-phrase.dto";
+import { ApprovalPhraseDto } from "./dto/approval-phrase.dto";
 import { parseApprovalPhrase } from "./runtime/approval-phrases";
 import {
   appendToolCallStatusChangedEvent,

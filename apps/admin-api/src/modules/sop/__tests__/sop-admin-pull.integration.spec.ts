@@ -7,10 +7,7 @@
  *    实例验证持久化副作用（级别 3）；未给端口则跳过，避免误连宿主库。
  */
 import { randomUUID } from "node:crypto";
-import {
-  type INestApplication,
-  ValidationPipe,
-} from "@nestjs/common";
+import { type INestApplication, ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { getQueueToken } from "@nestjs/bullmq";
 import { Test } from "@nestjs/testing";
@@ -20,7 +17,10 @@ import { DataSource, Repository } from "typeorm";
 import { AGENT_QUEUE_NAME } from "../../agent/runtime/agent.processor";
 import { AgentSessionService } from "../../agent/runtime/agent-session.service";
 import { AGENT_CAPABILITIES_LEASE_MS } from "../../executor/executor-constants";
-import { Executor, ExecutorStatus } from "../../executor/entities/executor.entity";
+import {
+  Executor,
+  ExecutorStatus,
+} from "../../executor/entities/executor.entity";
 import { ExecutorService } from "../../executor/executor.service";
 import { NotificationService } from "../../notification/notification.service";
 import { SchedulerService } from "../../scheduler/scheduler.service";
@@ -60,10 +60,10 @@ describe("SOP admin · poll 契约（offline）", () => {
       effectiveProfile: "preset(ce=1,sb=0,ha=0,te=0)",
     });
     await expect(
-      pipe.transform(
-        { address: "a:1", effectiveProfile: 42 } as never,
-        { type: "body", metatype: AgentCollabPollDto },
-      ),
+      pipe.transform({ address: "a:1", effectiveProfile: 42 } as never, {
+        type: "body",
+        metatype: AgentCollabPollDto,
+      }),
     ).rejects.toBeTruthy();
   });
 
@@ -136,7 +136,8 @@ live("SOP admin · 真 PG 事实源验收（级别 3）", () => {
         "SOP_ADMIN_TEST_PG_PORT must be an isolated mapped port (not 5432)",
       );
     }
-    const database = process.env.SOP_ADMIN_TEST_PG_DB ?? "autoflow_sop_admin_test";
+    const database =
+      process.env.SOP_ADMIN_TEST_PG_DB ?? "autoflow_sop_admin_test";
     if (!/(^|_)(test|e2e|r\d+)(_|$)/i.test(database)) {
       throw new Error(`Refusing to run against non-test database: ${database}`);
     }
@@ -149,7 +150,13 @@ live("SOP admin · 真 PG 事实源验收（级别 3）", () => {
           username: process.env.SOP_ADMIN_TEST_PG_USER ?? "autoflow",
           password: process.env.SOP_ADMIN_TEST_PG_PASSWORD ?? "test",
           database,
-          entities: [Sop, SopVersion, SopAssignment, SopClarification, Executor],
+          entities: [
+            Sop,
+            SopVersion,
+            SopAssignment,
+            SopClarification,
+            Executor,
+          ],
           synchronize: false,
         }),
         TypeOrmModule.forFeature([
@@ -375,8 +382,7 @@ live("SOP admin · 真 PG 事实源验收（级别 3）", () => {
 
     const harness = {
       repo: executorRepo,
-      getAgentCapabilities:
-        ExecutorService.prototype.getAgentCapabilities,
+      getAgentCapabilities: ExecutorService.prototype.getAgentCapabilities,
     } as unknown as ExecutorService;
     const listed =
       await ExecutorService.prototype.listSopCapableExecutors.call(harness);

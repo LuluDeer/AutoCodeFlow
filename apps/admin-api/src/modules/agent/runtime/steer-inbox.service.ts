@@ -193,7 +193,10 @@ export class SteerInboxService {
    * steer 丢掉。边界处 Redis 与内存合并按 id 幂等（重复正文不合并），
    * 避免同一意图二次注入。
    */
-  async drain(sessionId: string, currentStep: StepBoundary): Promise<DrainResult> {
+  async drain(
+    sessionId: string,
+    currentStep: StepBoundary,
+  ): Promise<DrainResult> {
     if (currentStep === null) {
       const inbox = this.inboxes.get(sessionId) ?? emptyInbox();
       return { intents: [], inbox };

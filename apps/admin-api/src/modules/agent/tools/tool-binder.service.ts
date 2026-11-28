@@ -733,9 +733,7 @@ export class ToolBinderService implements OnModuleInit {
     // ── 部署面（只读三件 + 干预两件）──────────────────────────────────
     this.api.register("list_deployments", async (args) =>
       this.deployments.findAll(
-        typeof args.applicationId === "string"
-          ? args.applicationId
-          : undefined,
+        typeof args.applicationId === "string" ? args.applicationId : undefined,
         this.num(args.page, 1),
         this.num(args.pageSize, 20),
       ),
@@ -801,17 +799,14 @@ export class ToolBinderService implements OnModuleInit {
           deadLetterCount:
             typeof r.deadLetterCount === "number" ? r.deadLetterCount : null,
         }))
-        .sort(
-          (a, b) => (b.deadLetterCount ?? 0) - (a.deadLetterCount ?? 0),
-        );
+        .sort((a, b) => (b.deadLetterCount ?? 0) - (a.deadLetterCount ?? 0));
       return {
         totalDeadLetters: executors.reduce(
           (n, r) => n + (r.deadLetterCount ?? 0),
           0,
         ),
         executors,
-        note:
-          "Counts are executor-side callback payloads awaiting replay (last heartbeat value).",
+        note: "Counts are executor-side callback payloads awaiting replay (last heartbeat value).",
       };
     });
 
@@ -950,16 +945,12 @@ export class ToolBinderService implements OnModuleInit {
     if (!this.moduleRef) {
       // 这里用普通 Error：AppError 的码表只收已登记的稳定码，装配缺失不是
       // 用户可见业务错误；AgentApiClient.invoke 会把 message 原样回给模型。
-      throw new Error(
-        `${toolName}: 进程内依赖解析器未装配（内部装配错误）`,
-      );
+      throw new Error(`${toolName}: 进程内依赖解析器未装配（内部装配错误）`);
     }
     try {
       return this.moduleRef.get<T>(token, { strict: false });
     } catch {
-      throw new Error(
-        `${toolName}: 所需服务 ${token.name} 未在当前应用中注册`,
-      );
+      throw new Error(`${toolName}: 所需服务 ${token.name} 未在当前应用中注册`);
     }
   }
 

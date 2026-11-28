@@ -10,6 +10,7 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import {
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsObject,
@@ -23,8 +24,13 @@ import {
 import { Type } from "class-transformer";
 
 /** 审批处置动作。grant/deny 需 ADMIN 且四眼；withdraw 允许创建者本人。 */
-export const WORKBENCH_APPROVAL_DECISIONS = ["grant", "deny", "withdraw"] as const;
-export type WorkbenchApprovalDecision = (typeof WORKBENCH_APPROVAL_DECISIONS)[number];
+export const WORKBENCH_APPROVAL_DECISIONS = [
+  "grant",
+  "deny",
+  "withdraw",
+] as const;
+export type WorkbenchApprovalDecision =
+  (typeof WORKBENCH_APPROVAL_DECISIONS)[number];
 
 /** 会话消息模式：followup 普通续问；steer 在等待期注入。 */
 export const WORKBENCH_MESSAGE_MODES = ["followup", "steer"] as const;
@@ -70,7 +76,10 @@ export class WorkbenchChatSessionResponseDto {
   @ApiProperty({ description: "会话初始状态（pending）" })
   status: string;
 
-  @ApiProperty({ enum: ["chat", "sop_authoring", "plan"], description: "实际会话类型" })
+  @ApiProperty({
+    enum: ["chat", "sop_authoring", "plan"],
+    description: "实际会话类型",
+  })
   kind: string;
 
   @ApiProperty({ description: "首条 user 消息是否已落库" })
@@ -79,7 +88,10 @@ export class WorkbenchChatSessionResponseDto {
 
 /** POST /workbench/sessions/:id/messages 请求体。 */
 export class PostWorkbenchMessageDto {
-  @ApiProperty({ description: "追加的对话正文（落 role=user AgentStep）", maxLength: 4000 })
+  @ApiProperty({
+    description: "追加的对话正文（落 role=user AgentStep）",
+    maxLength: 4000,
+  })
   @IsString()
   @IsNotEmpty({ message: "content 不能为空" })
   @Matches(/\S/, { message: "content 不能为纯空白" })
@@ -87,7 +99,8 @@ export class PostWorkbenchMessageDto {
   content: string;
 
   @ApiPropertyOptional({
-    description: "投送模式；followup=普通续问，steer=等待期注入（默认 followup）",
+    description:
+      "投送模式；followup=普通续问，steer=等待期注入（默认 followup）",
     enum: WORKBENCH_MESSAGE_MODES,
     default: "followup",
   })
@@ -159,4 +172,51 @@ export class ListWorkbenchInteractiveSessionsQueryDto {
   @Min(1)
   @Max(50)
   pageSize?: number;
+}
+
+/**
+ * POST /workbench/sessions/:id/convert-to-sop 请求体（切片 E1：workbench → SOP 直连）。
+ *
+ * 刻意**不含 goal / card / slug**：goal 与 cardHash 由服务端从会话
+ * contextJson 读取（createSession 时写入的 commit 锚点）；卡片内容一律由
+ * 服务端按 goal/cadence/params 确定性重建——客户端无法塞入未经验证的卡片。
+ */
+export class ConvertWorkbenchSessionToSopDto {
+  @ApiProperty({
+    description: "与 commit 时一致的执行节奏（用于服务端确定性重建方案卡）",
+    enum: ["once", "hourly", "daily", "weekly", "monthly"],
+  })
+  @IsIn(["once", "hourly", "daily", "weekly", "monthly"])
+  cadence: "once" | "hourly" | "daily" | "weekly" | "monthly";
+
+  @ApiPropertyOptional({
+    description:
+      "与 preview/commit 时完全一致的参数（缺失或漂移都会导致重建 hash 不匹配）",
+    additionalProperties: { type: "string" },
+  })
+  @IsOptional()
+  @IsObject()
+  params?: Record<string, string>;
+}
+
+/** convert-to-sop 回执：新 SOP 草稿的定位信息（绝不自动发布）。 */
+export class WorkbenchSessionConvertResponseDto {
+  @ApiProperty({
+    description: "新草稿 slug（由 goal 归一化生成；冲突自动追加 -2/-3…）",
+  })
+  slug: string;
+
+  @ApiProperty({ description: "新落库 SOP 草稿行 id" })
+  sopId: string;
+
+  @ApiProperty({ enum: ["draft"], description: "恒为 draft——转换绝不发布" })
+  status: "draft";
+
+  @ApiProperty({ description: "恒为 false——本端点不触碰发布闸" })
+  published: boolean;
+
+  @ApiProperty({
+    description: "SOP 页深链（/sops?sop=<sopId>，SopsPage 现行深链契约）",
+  })
+  deeplink: string;
 }

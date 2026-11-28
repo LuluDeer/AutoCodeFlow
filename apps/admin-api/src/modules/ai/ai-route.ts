@@ -186,8 +186,7 @@ export function resolveAiRoute(ctx: RouteContext): RouteResolution {
     return {
       status: "error",
       reason: "capability_missing",
-      message:
-        `provider「${providerId}」当前传输协议不支持视频理解；请选一个 OpenAI 兼容多模态端点`,
+      message: `provider「${providerId}」当前传输协议不支持视频理解；请选一个 OpenAI 兼容多模态端点`,
     };
   }
 

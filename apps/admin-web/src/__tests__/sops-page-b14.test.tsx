@@ -97,6 +97,9 @@ const assignment: SopAssignment = {
   capabilitySnapshotJson: null,
   permissionProfileAtPull: null,
   assignedBy: 'tester',
+  verificationStatus: null,
+  verificationSessionId: null,
+  verificationCheckedAt: null,
   createdAt: '2026-01-01T00:00:00Z',
   updatedAt: '2026-01-01T02:00:00Z',
 };

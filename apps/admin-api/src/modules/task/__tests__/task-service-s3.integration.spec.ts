@@ -706,7 +706,12 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
     // 保留原业务意图：第一页的 nextCursor 直接续出过滤后的第二页，不漏不重。
     it("level 模式下 fromLine 是行号游标；用 nextCursor 续出过滤后第二页", async () => {
       // 物理行号：0=[INFO] starting, 1=[ERROR] boom, 3=tz boom（ERROR 命中）
-      const firstPage = await service.getExecutionLogs("e-level", 0, 1, "ERROR");
+      const firstPage = await service.getExecutionLogs(
+        "e-level",
+        0,
+        1,
+        "ERROR",
+      );
       expect(firstPage.lines).toEqual(["[ERROR] boom"]);
       expect(firstPage.lineNumbers).toEqual([1]);
       expect(firstPage.totalLines).toBe(2);
@@ -719,9 +724,7 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
         1,
         "ERROR",
       );
-      expect(secondPage.lines).toEqual([
-        "2024-01-01 10:00:00 [ERROR] tz boom",
-      ]);
+      expect(secondPage.lines).toEqual(["2024-01-01 10:00:00 [ERROR] tz boom"]);
       expect(secondPage.lineNumbers).toEqual([3]);
       expect(secondPage.totalLines).toBe(2);
       expect(secondPage.hasMore).toBe(false);

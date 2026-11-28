@@ -3689,10 +3689,7 @@ export class TaskService implements OnModuleInit {
     ping?: () => void,
     // LOG-HARDEN: 断线重连起点 + 带行号帧出口（纯接线，实现在协作者）。
     fromLine = 0,
-    emitFrame?: (frame: {
-      lineNumber: number;
-      content: string;
-    }) => void,
+    emitFrame?: (frame: { lineNumber: number; content: string }) => void,
   ): Promise<void> {
     return this.executionLogRead.streamExecutionLogs(
       execId,

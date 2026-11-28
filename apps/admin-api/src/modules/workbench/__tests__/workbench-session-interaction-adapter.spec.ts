@@ -24,11 +24,13 @@ type Any = Record<string, any>;
 const SESSION_ID = "22222222-2222-4222-8222-222222222222";
 const KEY = "apr-22222222-2222-4222-8222-222222222222-abcdef0123456789";
 
-function harness(options: {
-  approvalStatus?: string;
-  sessionCreatedBy?: string;
-  abortResult?: Any;
-} = {}) {
+function harness(
+  options: {
+    approvalStatus?: string;
+    sessionCreatedBy?: string;
+    abortResult?: Any;
+  } = {},
+) {
   const approval: Any = {
     approvalKey: KEY,
     sessionId: SESSION_ID,
@@ -82,11 +84,14 @@ function harness(options: {
     tryAppendEvent: jest.fn(async () => 1),
   };
   const stream = {
-    requestAbort: jest.fn(async () => options.abortResult ?? {
-      sessionId: SESSION_ID,
-      status: "aborted",
-      aborted: true,
-    }),
+    requestAbort: jest.fn(
+      async () =>
+        options.abortResult ?? {
+          sessionId: SESSION_ID,
+          status: "aborted",
+          aborted: true,
+        },
+    ),
     sendMessageAndResume: jest.fn(),
   };
   const queue = { add: jest.fn(async () => ({})) };
@@ -102,10 +107,21 @@ function harness(options: {
   } as unknown as ModuleRef;
 
   const port = createWorkbenchSessionInteractionPort(moduleRef);
-  return { port, approvals, sessions, stream, queue, toolCalls, approval, session };
+  return {
+    port,
+    approvals,
+    sessions,
+    stream,
+    queue,
+    toolCalls,
+    approval,
+    session,
+  };
 }
 
-function decideInput(decision: WorkbenchDecideApprovalInput["decision"]): WorkbenchDecideApprovalInput {
+function decideInput(
+  decision: WorkbenchDecideApprovalInput["decision"],
+): WorkbenchDecideApprovalInput {
   return {
     sessionId: SESSION_ID,
     approvalKey: KEY,
@@ -120,7 +136,9 @@ describe("工作台审批 — deny/withdraw 真实副作用", () => {
     "%s：结算台账 + tool_call_status_changed + decision 字段",
     async (decision) => {
       const h = harness();
-      await expect(h.port.decideApproval(decideInput(decision))).resolves.toBe(true);
+      await expect(h.port.decideApproval(decideInput(decision))).resolves.toBe(
+        true,
+      );
 
       // ① 审批流转：denied + 显式 decision（withdraw 与 deny 同 status 不同 decision）
       expect(h.approvals.decide).toHaveBeenCalledTimes(1);
@@ -147,7 +165,9 @@ describe("工作台审批 — deny/withdraw 真实副作用", () => {
         "approval_decided",
         { approvalKey: KEY, status: "denied" },
       );
-      const event = (h.sessions.tryAppendEvent.mock.calls[0] as Any[])[1] as Any;
+      const event = (
+        h.sessions.tryAppendEvent.mock.calls[0] as Any[]
+      )[1] as Any;
       expect(event.kind).toBe("tool_call_status_changed");
       expect(event.causedBySeq).toBe(7);
       expect(event.payload).toMatchObject({
@@ -162,8 +182,15 @@ describe("工作台审批 — deny/withdraw 真实副作用", () => {
 
   it("grant：不结算台账、不发 settled，decision=grant", async () => {
     const h = harness();
-    await expect(h.port.decideApproval(decideInput("grant"))).resolves.toBe(true);
-    expect(h.approvals.decide).toHaveBeenCalledWith(KEY, "granted", "alice", "grant");
+    await expect(h.port.decideApproval(decideInput("grant"))).resolves.toBe(
+      true,
+    );
+    expect(h.approvals.decide).toHaveBeenCalledWith(
+      KEY,
+      "granted",
+      "alice",
+      "grant",
+    );
     expect(h.sessions.settleToolCallByApprovalId).not.toHaveBeenCalled();
     expect(h.sessions.tryAppendEvent).not.toHaveBeenCalled();
   });
@@ -187,19 +214,28 @@ describe("工作台审批 — deny/withdraw 真实副作用", () => {
 
   it("已处置 / 不存在 / 会话不匹配 ⇒ false，零副作用", async () => {
     const decided = harness({ approvalStatus: "granted" });
-    await expect(decided.port.decideApproval(decideInput("deny"))).resolves.toBe(false);
+    await expect(
+      decided.port.decideApproval(decideInput("deny")),
+    ).resolves.toBe(false);
     expect(decided.approvals.decide).not.toHaveBeenCalled();
     expect(decided.sessions.settleToolCallByApprovalId).not.toHaveBeenCalled();
     expect(decided.queue.add).not.toHaveBeenCalled();
 
     const missing = harness();
     missing.approvals.findByKey.mockResolvedValueOnce(null);
-    await expect(missing.port.decideApproval(decideInput("deny"))).resolves.toBe(false);
+    await expect(
+      missing.port.decideApproval(decideInput("deny")),
+    ).resolves.toBe(false);
     expect(missing.approvals.decide).not.toHaveBeenCalled();
 
     const mismatch = harness();
-    mismatch.approvals.findByKey.mockResolvedValueOnce({ ...mismatch.approval, sessionId: "other" });
-    await expect(mismatch.port.decideApproval(decideInput("deny"))).resolves.toBe(false);
+    mismatch.approvals.findByKey.mockResolvedValueOnce({
+      ...mismatch.approval,
+      sessionId: "other",
+    });
+    await expect(
+      mismatch.port.decideApproval(decideInput("deny")),
+    ).resolves.toBe(false);
     expect(mismatch.approvals.decide).not.toHaveBeenCalled();
   });
 });
@@ -207,13 +243,21 @@ describe("工作台审批 — deny/withdraw 真实副作用", () => {
 describe("工作台取消 — result.aborted", () => {
   it("终态会话 aborted=false ⇒ 端口返回 false（不是 Boolean(result)）", async () => {
     const h = harness({
-      abortResult: { sessionId: SESSION_ID, status: "succeeded", aborted: false },
+      abortResult: {
+        sessionId: SESSION_ID,
+        status: "succeeded",
+        aborted: false,
+      },
     });
-    await expect(h.port.requestAbort(SESSION_ID, "user:42")).resolves.toBe(false);
+    await expect(h.port.requestAbort(SESSION_ID, "user:42")).resolves.toBe(
+      false,
+    );
   });
 
   it("非终态 aborted=true ⇒ true", async () => {
     const h = harness();
-    await expect(h.port.requestAbort(SESSION_ID, "user:42")).resolves.toBe(true);
+    await expect(h.port.requestAbort(SESSION_ID, "user:42")).resolves.toBe(
+      true,
+    );
   });
 });

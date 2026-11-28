@@ -9,6 +9,7 @@ import {
   AgentDoomLoopGuard,
   canonicalCallKey,
 } from "../runtime/agent-doom-loop.guard";
+import { AgentEventStreamService } from "../runtime/agent-event-stream.service";
 import {
   buildInitialUserMessage,
   systemPromptForKind,
@@ -85,8 +86,12 @@ describe("Agent prompt registry", () => {
       contextJson: { question: "为什么队列停摆？", extra: "x" },
     } as Any;
     expect(buildInitialUserMessage(session as never)).toBe("为什么队列停摆？");
-    expect(buildInitialUserMessage({ ...session, contextJson: { a: 1 } } as never)).toContain("\"a\": 1");
-    expect(buildInitialUserMessage({ ...session, contextJson: null } as never)).toBe("巡检");
+    expect(
+      buildInitialUserMessage({ ...session, contextJson: { a: 1 } } as never),
+    ).toContain('"a": 1');
+    expect(
+      buildInitialUserMessage({ ...session, contextJson: null } as never),
+    ).toBe("巡检");
   });
 });
 
@@ -153,8 +158,11 @@ function makeStream(over: Any = {}) {
   };
   const config = { get: jest.fn(() => undefined) };
   // 直接构造，避开 Nest DI（构造器只有 config/sessions/dataSource）。
-  const { AgentEventStreamService } = require("../runtime/agent-event-stream.service");
-  const svc = new AgentEventStreamService(config, sessions, {} as Any);
+  const svc = new AgentEventStreamService(
+    config as never,
+    sessions as never,
+    {} as never,
+  );
   (svc as Any).getPublisher = () => redis;
   (svc as Any).ensureSubscriber = () => undefined;
   svc.enqueueResume = async (sid: string, stepSeq: number, mode: string) => {
@@ -169,11 +177,17 @@ describe("AgentEventStreamService abort / resume", () => {
     const signaled: string[] = [];
     svc.subscribeAbort("s1", () => signaled.push("yes"));
     const result = await svc.requestAbort("s1", "admin");
-    expect(result).toMatchObject({ sessionId: "s1", status: "aborted", aborted: true });
+    expect(result).toMatchObject({
+      sessionId: "s1",
+      status: "aborted",
+      aborted: true,
+    });
     expect(sessions.finish).toHaveBeenCalledWith(
       "s1",
       "aborted",
-      expect.objectContaining({ errorMessage: expect.stringContaining("admin") }),
+      expect.objectContaining({
+        errorMessage: expect.stringContaining("admin"),
+      }),
     );
     expect(redis.set).toHaveBeenCalledWith(
       "acf:agent-abort:s1",
@@ -192,14 +206,23 @@ describe("AgentEventStreamService abort / resume", () => {
   });
 
   it("running 会话发消息写 user step 并 steer（不入第二个 job）", async () => {
-    const { svc, appended, enqueued, redis } = makeStream({ status: "running" });
+    const { svc, appended, enqueued, redis } = makeStream({
+      status: "running",
+    });
     const result = await svc.sendMessageAndResume("s1", {
       content: "换个方向查",
       mode: "steer",
       actor: "alice",
     });
-    expect(result).toMatchObject({ stepSeq: 2, action: "steered", status: "running" });
-    expect(appended[0]).toMatchObject({ role: "user", content: "[alice] 换个方向查" });
+    expect(result).toMatchObject({
+      stepSeq: 2,
+      action: "steered",
+      status: "running",
+    });
+    expect(appended[0]).toMatchObject({
+      role: "user",
+      content: "[alice] 换个方向查",
+    });
     expect(enqueued).toHaveLength(0);
     expect(redis.rpush).toHaveBeenCalledWith(
       "acf:agent-steer:s1",
@@ -218,7 +241,11 @@ describe("AgentEventStreamService abort / resume", () => {
       content: "开始吧",
       actor: "bob",
     });
-    expect(result).toMatchObject({ stepSeq: 2, action: "enqueued", status: "pending" });
+    expect(result).toMatchObject({
+      stepSeq: 2,
+      action: "enqueued",
+      status: "pending",
+    });
     expect(enqueued).toEqual([{ sid: "s1", stepSeq: 2, mode: "followup" }]);
   });
 

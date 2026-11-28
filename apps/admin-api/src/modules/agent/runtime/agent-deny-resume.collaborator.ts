@@ -25,7 +25,10 @@ export interface DenyResumeResult {
 export async function maybeResumeAfterDeny(
   sessions: Pick<AgentSessionService, "findById">,
   approvals: Pick<AgentApprovalsService, "hasPendingForSession">,
-  enqueue: (session: AgentSession, reason: "resume:approval_denied") => Promise<unknown>,
+  enqueue: (
+    session: AgentSession,
+    reason: "resume:approval_denied",
+  ) => Promise<unknown>,
   sessionId: string,
   sessionSnapshot: AgentSession,
 ): Promise<DenyResumeResult> {

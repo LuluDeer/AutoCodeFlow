@@ -47,8 +47,14 @@ describe("buildExecutionTimeline · 阶段时长（加性兼容）", () => {
       createdAt: "2026-09-07T08:00:00.000Z",
     });
     expect(tl[1]).toEqual({ phase: "started", at: null, detail: undefined });
-    expect(tl[2]).toEqual({ phase: "finished", at: null, detail: "status=pending" });
-    expect(getExecutionTimelineDurations({ createdAt: base.createdAt })).toEqual({
+    expect(tl[2]).toEqual({
+      phase: "finished",
+      at: null,
+      detail: "status=pending",
+    });
+    expect(
+      getExecutionTimelineDurations({ createdAt: base.createdAt }),
+    ).toEqual({
       queueWaitMs: null,
       runDurationMs: null,
       totalDurationMs: null,

@@ -39,10 +39,12 @@ const DTO: CreateWorkbenchSessionDto = {
   expectedCardHash: "abcdef0123456789",
 };
 
-function makeHarness(over: {
-  sop?: Record<string, unknown> | null;
-  session?: Record<string, unknown> | null;
-} = {}) {
+function makeHarness(
+  over: {
+    sop?: Record<string, unknown> | null;
+    session?: Record<string, unknown> | null;
+  } = {},
+) {
   const sop = {
     id: SOP_ID,
     slug: "workbench-abcdef01",
@@ -60,7 +62,9 @@ function makeHarness(over: {
     id: SESSION_ID,
     status: "pending" as const,
   }));
-  const enqueue = jest.fn(async (_sessionId: string, _reason: string) => undefined);
+  const enqueue = jest.fn(
+    async (_sessionId: string, _reason: string) => undefined,
+  );
   const findById = jest.fn(async () =>
     over.session === null
       ? null
@@ -81,7 +85,12 @@ function makeHarness(over: {
     approvals: {},
     artifacts: [] as WorkbenchSessionDetailResponseDto["artifacts"],
   }));
-  const sessions = { create, enqueue, findById, readSummary } as unknown as WorkbenchSessionsPort;
+  const sessions = {
+    create,
+    enqueue,
+    findById,
+    readSummary,
+  } as unknown as WorkbenchSessionsPort;
   // 构造器新增的 sessions 端口追加在末尾（第 9 位），前面的 8 个依赖按既有顺序占位。
   const controller = new WorkbenchController(
     { getSop } as never,

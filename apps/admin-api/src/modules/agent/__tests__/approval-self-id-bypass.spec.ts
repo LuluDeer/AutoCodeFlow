@@ -41,7 +41,11 @@ const configWith = (block: boolean): ApprovalSelfConfigReader => ({
 const admin = (id: number, username = "alice") =>
   ({ id, username, role: UserRole.ADMIN }) as Any;
 
-function harness(createdBy: string | null, toolName = "update_task", block = true) {
+function harness(
+  createdBy: string | null,
+  toolName = "update_task",
+  block = true,
+) {
   const session: Any = {
     id: SESSION,
     status: "waiting_input",

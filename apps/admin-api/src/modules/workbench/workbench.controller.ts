@@ -1,7 +1,6 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
   Inject as NestInject,
   Ip,
   Logger,
@@ -790,7 +789,8 @@ export class WorkbenchController {
     @Query() query: ListWorkbenchSessionsQueryDto,
     @CurrentUser() user: { id: number | string; username?: string } | undefined,
   ): Promise<WorkbenchSessionListResponseDto> {
-    const sessions = this.sessions as WorkbenchSessionsWithResume | null | undefined;
+    const sessions = this.sessions as
+      WorkbenchSessionsWithResume | null | undefined;
     if (!sessions?.listOwn) {
       throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, {});
     }
@@ -798,7 +798,8 @@ export class WorkbenchController {
     if (!Number.isFinite(userId)) {
       throw new AppError(ErrorCode.USER_NOT_FOUND, {});
     }
-    const isAdmin = (user as { role?: string } | undefined)?.role === UserRole.ADMIN;
+    const isAdmin =
+      (user as { role?: string } | undefined)?.role === UserRole.ADMIN;
     const result = await sessions.listOwn({
       createdBy: `user:${userId}`,
       createdByAlias: user?.username ? `user:${user.username}` : null,
@@ -836,7 +837,8 @@ export class WorkbenchController {
     if (!Number.isFinite(userId)) {
       throw new AppError(ErrorCode.USER_NOT_FOUND, {});
     }
-    const isAdmin = (user as { role?: string } | undefined)?.role === UserRole.ADMIN;
+    const isAdmin =
+      (user as { role?: string } | undefined)?.role === UserRole.ADMIN;
     const identity = `user:${userId}`;
 
     // ① 存在性 + 状态：用 SopService.getSop（不存在抛 SOP_NOT_FOUND → 404）。
@@ -849,7 +851,8 @@ export class WorkbenchController {
     // ② 归属：createdBy 口径见 sop.entity.ts:64-66（user:<id> / agent:<sessionId>）。
     //    ADMIN 代跑是管理面例外；普通 USER 只能跑自己的草稿。
     if (!isAdmin && sop.createdBy !== identity) {
-      throw new ForbiddenException("无权运行他人的 SOP 草稿");
+      // AppError（禁裸内置异常）：带 WORKBENCH_RUN_DRAFT_FORBIDDEN 稳定码。
+      throw new AppError(ErrorCode.WORKBENCH_RUN_DRAFT_FORBIDDEN, {});
     }
 
     // ③ 服务端钉死会话形状；context 只放服务端已知事实 + 客户提供的 goal。
@@ -900,7 +903,8 @@ export class WorkbenchController {
     if (!Number.isFinite(userId)) {
       throw new AppError(ErrorCode.USER_NOT_FOUND, {});
     }
-    const isAdmin = (user as { role?: string } | undefined)?.role === UserRole.ADMIN;
+    const isAdmin =
+      (user as { role?: string } | undefined)?.role === UserRole.ADMIN;
     const session = await this.sessions.findById(id);
     // 防枚举：不存在与越权统一 404（不告诉调用方「存在但不属于你」）。
     if (!session) {

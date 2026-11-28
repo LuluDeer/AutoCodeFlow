@@ -87,19 +87,28 @@ export function createWorkbenchSessionInteractionPort(
 ): WorkbenchSessionInteractionPort {
   const logger = new Logger("WorkbenchSessionInteraction");
   const sessions = () => moduleRef.get(AgentSessionService, { strict: false });
-  const approvals = () => moduleRef.get(AgentApprovalsService, { strict: false });
-  const stream = () => moduleRef.get(AgentEventStreamService, { strict: false });
+  const approvals = () =>
+    moduleRef.get(AgentApprovalsService, { strict: false });
+  const stream = () =>
+    moduleRef.get(AgentEventStreamService, { strict: false });
   const queue = () =>
     moduleRef.get<Queue<AgentJobData>>(getQueueToken(AGENT_QUEUE_NAME), {
       strict: false,
     });
   const dataSource = () => moduleRef.get(DataSource, { strict: false });
 
-  async function resumeSession(sessionId: string, reason: string): Promise<boolean> {
+  async function resumeSession(
+    sessionId: string,
+    reason: string,
+  ): Promise<boolean> {
     const session = await sessions().findById(sessionId);
     if (!session || session.status !== "waiting_input") return false;
     if (await approvals().hasPendingForSession(sessionId)) return false;
-    await queue().add("run", { sessionId, reason }, manualResumeJobOptions(sessionId, session.totalSteps));
+    await queue().add(
+      "run",
+      { sessionId, reason },
+      manualResumeJobOptions(sessionId, session.totalSteps),
+    );
     return true;
   }
 
@@ -109,7 +118,9 @@ export function createWorkbenchSessionInteractionPort(
       return { id: created.id, status: created.status };
     },
 
-    findById: async (id: string): Promise<WorkbenchInteractiveSessionRow | null> => {
+    findById: async (
+      id: string,
+    ): Promise<WorkbenchInteractiveSessionRow | null> => {
       const row = await sessions().findById(id);
       if (!row) return null;
       return {
@@ -131,7 +142,8 @@ export function createWorkbenchSessionInteractionPort(
       // 让上层回 {ok:false, reason}；不能吞成 void 再让 controller 谎报 ok:true。
       if (result?.action === "rejected_terminal") {
         throw new WorkbenchTerminalRejectedError(
-          result.reason ?? `会话已处于终态（${result.status}），不能继续追加消息`,
+          result.reason ??
+            `会话已处于终态（${result.status}），不能继续追加消息`,
           result.status,
         );
       }
@@ -241,14 +253,19 @@ export function createWorkbenchSessionInteractionPort(
 
     listOwn: async ({ createdBy, createdByAlias, isAdmin, page, pageSize }) => {
       const safePage = Math.max(1, Math.trunc(Number(page) || 1));
-      const safePageSize = Math.min(50, Math.max(1, Math.trunc(Number(pageSize) || 20)));
+      const safePageSize = Math.min(
+        50,
+        Math.max(1, Math.trunc(Number(pageSize) || 20)),
+      );
       const offset = (safePage - 1) * safePageSize;
       const alias = createdByAlias || createdBy;
       // ADMIN 可看全部；USER 只看自己。kind 限交互面三类。
       const where = isAdmin
         ? `s.kind IN ('chat','plan','sop_authoring')`
         : `s."createdBy" IN ($1, $2) AND s.kind IN ('chat','plan','sop_authoring')`;
-      const params = isAdmin ? [safePageSize, offset] : [createdBy, alias, safePageSize, offset];
+      const params = isAdmin
+        ? [safePageSize, offset]
+        : [createdBy, alias, safePageSize, offset];
       const countParams = isAdmin ? [] : [createdBy, alias];
       const [rows, countRows] = await Promise.all([
         dataSource().query(

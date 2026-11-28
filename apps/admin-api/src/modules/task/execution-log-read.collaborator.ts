@@ -285,10 +285,12 @@ export class ExecutionLogRead {
     fromLine = 0,
     limit = 500,
     level?: string | null,
-  ): Promise<ExecutionLogPage & {
-    logsPurged: boolean | null;
-    logsPurgedAt: string | null;
-  }> {
+  ): Promise<
+    ExecutionLogPage & {
+      logsPurged: boolean | null;
+      logsPurgedAt: string | null;
+    }
+  > {
     // Cap limit to prevent accidental memory exhaustion
     const safeLimit = Math.min(Math.max(1, limit), 2000);
     const exec = await this.deps.execRepo.findOne({ where: { id: execId } });
@@ -376,7 +378,10 @@ export class ExecutionLogRead {
     const hasMore = dbRows.length > safeLimit;
     const rows = dbRows.slice(0, safeLimit);
     const lineNumbers = rows.map((r) => r.lineNumber);
-    const lastLine = lineNumbers.length > 0 ? lineNumbers[lineNumbers.length - 1] : fromLine - 1;
+    const lastLine =
+      lineNumbers.length > 0
+        ? lineNumbers[lineNumbers.length - 1]
+        : fromLine - 1;
     const totalLines = await this.deps.logLineRepo.count({
       where: {
         executionId: execId,
@@ -818,7 +823,8 @@ export async function paginateLogStream(
     idx++;
   }
   const totalLines = opts.level ? matched : idx;
-  const lastLine = lineNumbers.length > 0 ? lineNumbers[lineNumbers.length - 1] : fromLine - 1;
+  const lastLine =
+    lineNumbers.length > 0 ? lineNumbers[lineNumbers.length - 1] : fromLine - 1;
   return {
     lines: out,
     lineNumbers,

@@ -459,13 +459,15 @@ export class TaskExecutionResponseDto {
 
   @ApiPropertyOptional({
     nullable: true,
-    description: "claim 时落库的执行模式快照（single/broadcast），不随任务当前 executeMode 变化",
+    description:
+      "claim 时落库的执行模式快照（single/broadcast），不随任务当前 executeMode 变化",
   })
   executeMode?: string | null;
 
   @ApiPropertyOptional({
     nullable: true,
-    description: "本次执行是否按广播派发，claim 时落库；null 表示没有快照的历史执行行",
+    description:
+      "本次执行是否按广播派发，claim 时落库；null 表示没有快照的历史执行行",
   })
   isBroadcast?: boolean | null;
 

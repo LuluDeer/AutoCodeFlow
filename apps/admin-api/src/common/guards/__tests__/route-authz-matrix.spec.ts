@@ -554,8 +554,7 @@ describe("R203-A1 全路由鉴权矩阵（route-authz-matrix）", () => {
     // 下面两个用例里逐条对账（未登记的一项都不会被放过）；这里只断言其余违规为空。
     const remaining = violations.filter(
       (v) =>
-        v.kind !== "empty-roles-override" &&
-        v.kind !== "declaration-conflict",
+        v.kind !== "empty-roles-override" && v.kind !== "declaration-conflict",
     );
     expect(
       remaining.map((v) => v.kind + ": " + v.id + " — " + v.detail),

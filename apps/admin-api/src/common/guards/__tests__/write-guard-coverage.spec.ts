@@ -291,9 +291,7 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
     expect(unregistered).toEqual([]);
 
     // 双向对账：登记表里的 id 必须真的仍是共存（源码修好后忘记删表也要红）。
-    const registered = both
-      .map((line) => line.split(":")[0])
-      .sort();
+    const registered = both.map((line) => line.split(":")[0]).sort();
     expect(registered).toEqual(
       Object.keys(ROLES_WITH_WRITE_GUARD_OPT_OUT).sort(),
     );

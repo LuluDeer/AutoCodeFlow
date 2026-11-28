@@ -1340,7 +1340,9 @@ export class AiService {
    * POST /ai/test「用当前配置探一下」的兼容语义；`testTools` 未指定用途时
    * 默认按 agent 路由，因为只有 agent 用途保证工具调用面。
    */
-  async testProvider(options: TestAiProviderOptions = {}): Promise<TestAiProviderResult> {
+  async testProvider(
+    options: TestAiProviderOptions = {},
+  ): Promise<TestAiProviderResult> {
     const purpose: AiPurpose = options.purpose ?? "agent";
     const started = Date.now();
     const base: TestAiProviderResult = {
@@ -1379,7 +1381,8 @@ export class AiService {
         ? await this.chatMultimodalStream(request)
         : await this.chatMultimodal(request);
       const preview = formatTestPreview(res.content, res.toolCalls);
-      const ok = res.content.trim().length > 0 || (res.toolCalls?.length ?? 0) > 0;
+      const ok =
+        res.content.trim().length > 0 || (res.toolCalls?.length ?? 0) > 0;
       return {
         ...base,
         ok,

@@ -44,7 +44,8 @@ export class TaskDagChainController {
   @HttpCode(HttpStatus.OK)
   @WriteGuard("task", {
     scope: "project-role",
-    reason: "仅触发任务子图的根节点；每个根节点的归属由 TaskService.trigger 复核",
+    reason:
+      "仅触发任务子图的根节点；每个根节点的归属由 TaskService.trigger 复核",
   })
   @ApiOperation({
     summary: "按 DAG 只触发根节点",
@@ -80,8 +81,8 @@ export class TaskDagChainController {
     const rootTaskIds: string[] = [];
     const skippedDependentTaskIds: string[] = [];
     for (const taskId of taskIds) {
-      const hasInternalPredecessor = (depsByTask.get(taskId) ?? []).some((dep) =>
-        inSubgraph.has(dep),
+      const hasInternalPredecessor = (depsByTask.get(taskId) ?? []).some(
+        (dep) => inSubgraph.has(dep),
       );
       if (hasInternalPredecessor) skippedDependentTaskIds.push(taskId);
       else rootTaskIds.push(taskId);

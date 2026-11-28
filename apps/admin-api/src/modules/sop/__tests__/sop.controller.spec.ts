@@ -29,6 +29,9 @@ import {
 import { SopController, DraftSopDto, UpdateSopDto } from "../sop.controller";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
 import { IS_PUBLIC_KEY } from "../../../common/decorators/public.decorator";
+import { RolesGuard } from "../../../common/guards/roles.guard";
+import type { AuthUser } from "../../../common/interfaces/auth-user.interface";
+import { Reflector } from "@nestjs/core";
 import { UserRole } from "../../users/entities/user.entity";
 import { AppError } from "../../../common/errors/app-error";
 import { ErrorCode } from "../../../common/errors/error-codes";
@@ -504,6 +507,88 @@ describe("R34-A1 轴2 · 媒体面的鉴权边界（blob 不得匿名可猜）",
       h.controller.downloadMedia("missing-id", fakeRes() as never),
     ).rejects.toThrow(NotFoundException);
     expect(h.media.openStream).not.toHaveBeenCalled();
+  });
+});
+
+describe("切片 D2 · 收件箱 SOP 小节 USER 放行（只读双角色，写面保持 ADMIN）", () => {
+  // 与 agent 模块 inbox-viewer.spec.ts 同款：真 RolesGuard + 元数据断言。
+  const guard = new RolesGuard(new Reflector());
+  const guardContext = (handler: object, user: AuthUser) =>
+    ({
+      getHandler: () => handler,
+      getClass: () => SopController,
+      switchToHttp: () => ({ getRequest: () => ({ user }) }),
+    }) as never;
+
+  const USER = {
+    id: 11,
+    username: "u1",
+    email: "u1@example.test",
+    role: UserRole.USER,
+    isActive: true,
+  } as AuthUser;
+  const ADMIN = {
+    id: 1,
+    username: "admin",
+    email: "admin@example.test",
+    role: UserRole.ADMIN,
+    isActive: true,
+  } as AuthUser;
+
+  it("类级 ADMIN 保留；两个收件箱只读端点的方法级元数据放行给 USER", () => {
+    expect(Reflect.getMetadata(ROLES_KEY, SopController)).toEqual([
+      UserRole.ADMIN,
+    ]);
+    expect(
+      Reflect.getMetadata(
+        ROLES_KEY,
+        SopController.prototype.listPendingClarifications,
+      ),
+    ).toEqual([UserRole.ADMIN, UserRole.USER]);
+    expect(
+      Reflect.getMetadata(
+        ROLES_KEY,
+        SopController.prototype.listLaggingAssignments,
+      ),
+    ).toEqual([UserRole.ADMIN, UserRole.USER]);
+    // 未放行的读端点（如 SOP 清单）不得被波及。
+    expect(
+      Reflect.getMetadata(ROLES_KEY, SopController.prototype.list),
+    ).toBeUndefined();
+    // 写面（答复澄清）不得被波及。
+    expect(
+      Reflect.getMetadata(ROLES_KEY, SopController.prototype.humanReply),
+    ).toBeUndefined();
+    // 两个放行端点都不是 @Public（JwtAuthGuard 不让路）。
+    expect(
+      Reflect.getMetadata(
+        IS_PUBLIC_KEY,
+        SopController.prototype.listPendingClarifications,
+      ),
+    ).toBeUndefined();
+    expect(
+      Reflect.getMetadata(
+        IS_PUBLIC_KEY,
+        SopController.prototype.listLaggingAssignments,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("RolesGuard：USER/ADMIN 均可过两个收件箱只读端点（其余 handler USER 仍 403）", () => {
+    for (const handler of [
+      SopController.prototype.listPendingClarifications,
+      SopController.prototype.listLaggingAssignments,
+    ]) {
+      expect(guard.canActivate(guardContext(handler, USER))).toBe(true);
+      expect(guard.canActivate(guardContext(handler, ADMIN))).toBe(true);
+    }
+    // USER 依旧过不了的对照：SOP 清单（类级 ADMIN）与写面 humanReply。
+    expect(
+      guard.canActivate(guardContext(SopController.prototype.list, USER)),
+    ).toBe(false);
+    expect(
+      guard.canActivate(guardContext(SopController.prototype.humanReply, USER)),
+    ).toBe(false);
   });
 });
 

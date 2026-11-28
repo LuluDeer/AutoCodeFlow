@@ -83,7 +83,15 @@ export function buildInitialUserMessage(session: AgentSession): string {
   if (!ctx || typeof ctx !== "object") {
     return session.title?.trim() || "请开始本次会话的任务。";
   }
-  for (const key of ["question", "goal", "objective", "task", "目标", "问题", "描述"]) {
+  for (const key of [
+    "question",
+    "goal",
+    "objective",
+    "task",
+    "目标",
+    "问题",
+    "描述",
+  ]) {
     const value = ctx[key];
     if (typeof value === "string" && value.trim()) return value.trim();
   }

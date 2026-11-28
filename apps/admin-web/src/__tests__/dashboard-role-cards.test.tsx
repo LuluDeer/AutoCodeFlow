@@ -1,8 +1,10 @@
 /**
  * Dashboard 按角色渲染首屏 —— 第 2 级：组件级（RTL + API 层 mock）。
  *
- * 契约：ApprovalQueueCard 对所有角色渲染；CostPostureCard / NorthStarCard /
- * TtfvCard 三卡仅 role=admin 渲染；user 分支不触发 stats / north-star 请求；
+ * 契约（task-13 切片 C1 驾驶舱瘦身）：ApprovalQueueCard 对所有角色渲染；
+ * NorthStarCard 仅 role=admin 渲染；驾驶舱不再渲染 CostPostureCard /
+ * TtfvCard（ttfv 组件已删除，cost 卡 testid 不应出现在 boss-cockpit 内）；
+ * user 分支不触发 north-star 请求；
  * role 首帧未就绪（user=undefined）按非 admin 处理，不闪 403；
  * 后端权限面（ADR-044/045）保留 403，本套件只证明前端隐藏分支。
  */
@@ -237,6 +239,7 @@ function expectNoAdminCards() {
   expect(document.querySelector('[data-testid="north-star-strict"]')).toBeNull();
   expect(document.querySelector('[data-testid="boss-ttfv-card"]')).toBeNull();
   expect(document.querySelector('[data-testid="boss-cost-amount"]')).toBeNull();
+  expect(document.querySelector('[data-testid="boss-cost-unavailable"]')).toBeNull();
 }
 
 beforeEach(() => {
@@ -254,19 +257,22 @@ afterEach(() => {
 });
 
 describe('Dashboard 按角色渲染首屏（第 2 级组件级）', () => {
-  it('1. role=admin ⇒ 四卡全渲染（审批/成本/北极星/TTFV）', async () => {
+  it('1. role=admin ⇒ 两卡渲染（审批 + 北极星），成本/TTFV 卡不再上驾驶舱', async () => {
     setRole('admin');
     renderDashboard();
     expect(await screen.findByTestId('boss-cockpit')).toBeTruthy();
     expect(screen.getByTestId('boss-approval-card')).toBeTruthy();
-    for (const testId of ['boss-cost-card', 'north-star-card', 'boss-ttfv-card']) {
-      expect(screen.getByTestId(testId)).toBeTruthy();
-    }
+    expect(screen.getByTestId('north-star-card')).toBeTruthy();
+    // 瘦身契约：cost / ttfv 卡在 admin 首屏也一律缺席（含内容锚防假绿）。
+    expect(screen.queryByTestId('boss-cost-card')).toBeNull();
+    expect(screen.queryByTestId('boss-cost-amount')).toBeNull();
+    expect(screen.queryByTestId('boss-cost-unavailable')).toBeNull();
+    expect(screen.queryByTestId('boss-ttfv-card')).toBeNull();
     const cockpit = screen.getByTestId('boss-cockpit');
     expect(cockpit.querySelectorAll('[data-testid="north-star-card"]')).toHaveLength(1);
   });
 
-  it('2. role=user ⇒ 仅审批卡可见，ADMIN 三卡不存在', async () => {
+  it('2. role=user ⇒ 仅审批卡可见，北极星卡不存在', async () => {
     setRole('user');
     renderDashboard();
     expect(await screen.findByTestId('boss-approval-card')).toBeTruthy();
@@ -287,7 +293,7 @@ describe('Dashboard 按角色渲染首屏（第 2 级组件级）', () => {
     expectNoAdminCards();
   });
 
-  it('4. user=undefined 首帧 ⇒ 不误渲染 ADMIN 三卡、不闪 403，审批卡仍可见', async () => {
+  it('4. user=undefined 首帧 ⇒ 不误渲染北极星卡、不闪 403，审批卡仍可见', async () => {
     setRole('unready');
     renderDashboard();
     const cockpit = screen.getByTestId('boss-cockpit');
@@ -301,7 +307,7 @@ describe('Dashboard 按角色渲染首屏（第 2 级组件级）', () => {
     expectNoAdminCards();
   });
 
-  it('5. role=user 审批卡读到 N ⇒ count 可见、link 可跳 inbox，隐藏三卡不破坏可用卡', async () => {
+  it('5. role=user 审批卡读到 N ⇒ count 可见、link 可跳 inbox，隐藏卡不破坏可用卡', async () => {
     setRole('user');
     renderDashboard();
     const count = await screen.findByTestId('boss-approval-count');

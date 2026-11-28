@@ -121,7 +121,9 @@ export interface ClassifyFailureInput {
 function toFailureReason(code: string | null): ExecutionFailureReason | null {
   if (code === null) return null;
   const valid = Object.values(ExecutionFailureReason) as string[];
-  return valid.includes(code) ? (code as unknown as ExecutionFailureReason) : null;
+  return valid.includes(code)
+    ? (code as unknown as ExecutionFailureReason)
+    : null;
 }
 
 /**
@@ -157,10 +159,7 @@ export function classifyFailure(
   const fromText = toFailureReason(classifyByProtocol(parts, "admin"));
   // `admin` 阶段未命中时生成物返回兜底码 `unknown`；它不是具体文本规则，不能
   // 抢在 exitCode 之前吃掉「非零退出码 ⇒ script_error」这条契约外判据。
-  if (
-    fromText !== null &&
-    fromText !== ExecutionFailureReason.UNKNOWN
-  ) {
+  if (fromText !== null && fromText !== ExecutionFailureReason.UNKNOWN) {
     return fromText;
   }
 

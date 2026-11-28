@@ -61,7 +61,10 @@ describe("跨副本 abort 的本地消费", () => {
     const binding = bindSessionAbort(stream.svc as never, SID);
 
     expect(binding.signal.aborted).toBe(false);
-    expect(stream.subscribeAbort).toHaveBeenCalledWith(SID, expect.any(Function));
+    expect(stream.subscribeAbort).toHaveBeenCalledWith(
+      SID,
+      expect.any(Function),
+    );
     expect(stream.listenerCount(SID)).toBe(1);
 
     stream.relayAbort(SID);
@@ -81,7 +84,14 @@ describe("跨副本 abort 的本地消费", () => {
   it("runtime 在 LLM 返回后立刻消费 abort：收敛 aborted，不再落 assistant step", async () => {
     const fake = makeFakeStream();
     const steps: Any[] = [
-      { id: "s0", role: "user", content: "目标", summary: null, toolCallId: null, toolCallsJson: null },
+      {
+        id: "s0",
+        role: "user",
+        content: "目标",
+        summary: null,
+        toolCallId: null,
+        toolCallsJson: null,
+      },
     ];
     const appended: Any[] = [];
     const finished: Any[] = [];
@@ -143,14 +153,20 @@ describe("跨副本 abort 的本地消费", () => {
           model: "stub",
         };
       }),
-      getActiveRoute: jest.fn(async () => ({ provider: "stub", model: "stub" })),
+      getActiveRoute: jest.fn(async () => ({
+        provider: "stub",
+        model: "stub",
+      })),
     };
     const runtime = new AgentRuntimeService(
       sessions as never,
       budget as never,
       ai as never,
     );
-    runtime.llmRetryOptions = { sleep: async () => undefined, random: () => 0.5 };
+    runtime.llmRetryOptions = {
+      sleep: async () => undefined,
+      random: () => 0.5,
+    };
     runtime.setApprovals({ listForSession: jest.fn(async () => []) } as never);
     runtime.setEventStream(fake.svc as never);
 
@@ -269,7 +285,9 @@ describe("steer inbox 跨副本 drain", () => {
     const localOnly = new SteerInboxService();
     await localOnly.park("local", "内存兜底", 2, "waiting_input");
     expect(localOnly.peek("local").intents).toHaveLength(1);
-    expect((await localOnly.drain("local", 3)).intents[0].content).toBe("内存兜底");
+    expect((await localOnly.drain("local", 3)).intents[0].content).toBe(
+      "内存兜底",
+    );
   });
 });
 
@@ -359,14 +377,28 @@ describe("死循环守卫在没有 stream / realtimePorts 时仍生效", () => {
 
   it("只传 guard（无 stream、无整包 ports）也会在第 3 次插入提醒", () => {
     const guard = new AgentDoomLoopGuard();
-    const messages = observeAndRemind(guard, "loop-1", base as never, calls as never);
+    const messages = observeAndRemind(
+      guard,
+      "loop-1",
+      base as never,
+      calls as never,
+    );
     expect(guard.peek("loop-1")?.count).toBe(3);
-    expect(messages.some((m: Any) => typeof m.content === "string" && m.content.includes("连续"))).toBe(true);
+    expect(
+      messages.some(
+        (m: Any) => typeof m.content === "string" && m.content.includes("连续"),
+      ),
+    ).toBe(true);
   });
 
   it("旧调用形态 {guard} 无 stream 同样生效；{stream} 无 guard 则不判定", () => {
     const guard = new AgentDoomLoopGuard();
-    const viaPorts = observeAndRemind({ guard }, "loop-2", base as never, calls as never);
+    const viaPorts = observeAndRemind(
+      { guard },
+      "loop-2",
+      base as never,
+      calls as never,
+    );
     expect(viaPorts.length).toBe(base.length + 1);
 
     const noGuard = observeAndRemind(

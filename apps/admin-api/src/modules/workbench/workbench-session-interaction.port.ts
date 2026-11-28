@@ -8,13 +8,17 @@
  * 单测用内存替身，不碰 Redis / PG / BullMQ。
  */
 import type { Response } from "express";
-import type { AgentSessionKind, AgentSessionStatus } from "../agent/entities/agent-session.entity";
+import type {
+  AgentSessionKind,
+  AgentSessionStatus,
+} from "../agent/entities/agent-session.entity";
 import type {
   WorkbenchApprovalDecision,
   WorkbenchMessageMode,
 } from "./dto/workbench-interactive.dto";
 
-export const WORKBENCH_SESSION_INTERACTION_PORT = "WORKBENCH_SESSION_INTERACTION_PORT";
+export const WORKBENCH_SESSION_INTERACTION_PORT =
+  "WORKBENCH_SESSION_INTERACTION_PORT";
 
 export interface WorkbenchInteractiveSessionRow {
   id: string;

@@ -238,7 +238,9 @@ describe("声明面 == 执行面（真实 AgentApiClient + 真 binder）", () =>
   it("逐个 invoke 全部声明工具：不会再得到「没有绑定执行体」", async () => {
     const { api } = harness();
     const hardDisabled = new Set(
-      ALL_AGENT_TOOL_SPECS.filter((s) => s.hardDisabled === true).map((s) => s.name),
+      ALL_AGENT_TOOL_SPECS.filter((s) => s.hardDisabled === true).map(
+        (s) => s.name,
+      ),
     );
 
     for (const s of ALL_AGENT_TOOL_SPECS) {
@@ -246,7 +248,10 @@ describe("声明面 == 执行面（真实 AgentApiClient + 真 binder）", () =>
       const unbound = (res.errorMessage ?? "").includes("没有绑定执行体");
       if (hardDisabled.has(s.name)) {
         // 硬禁用工具刻意不绑定 handler，闸门在 invoke 前拦下。
-        expect({ name: s.name, unbound }).toEqual({ name: s.name, unbound: true });
+        expect({ name: s.name, unbound }).toEqual({
+          name: s.name,
+          unbound: true,
+        });
         continue;
       }
       if (res.isError) {
@@ -490,21 +495,25 @@ describe("写工具硬化完整性判据（回归即红）", () => {
     const implemented = new Set(api.implementedTools());
 
     const noApproval = ALL_AGENT_TOOL_SPECS.map((s) =>
-      s.name === "delete_application" ? { ...s, approvalRequired: undefined } : s,
+      s.name === "delete_application"
+        ? { ...s, approvalRequired: undefined }
+        : s,
     ) as typeof ALL_AGENT_TOOL_SPECS;
     expect(
       auditToolHardening(noApproval, implemented, binderSource).missingApproval,
     ).toContain("delete_application");
 
     const unscoped = ALL_AGENT_TOOL_SPECS.map((s) =>
-      s.name === "stop_deployment" ? { ...s, resourceKind: "none" as const } : s,
+      s.name === "stop_deployment"
+        ? { ...s, resourceKind: "none" as const }
+        : s,
     ) as typeof ALL_AGENT_TOOL_SPECS;
     expect(
       auditToolHardening(unscoped, implemented, binderSource).unscoped,
     ).toContain("stop_deployment");
 
     const forged = binderSource.replace(
-      "id: actor.id,\n        role: actor.role === \"admin\" ? UserRole.ADMIN : UserRole.USER,",
+      'id: actor.id,\n        role: actor.role === "admin" ? UserRole.ADMIN : UserRole.USER,',
       "id: 0,\n        role: UserRole.ADMIN,",
     );
     expect(forged).not.toBe(binderSource);

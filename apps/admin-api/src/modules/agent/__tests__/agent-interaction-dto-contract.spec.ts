@@ -56,11 +56,9 @@ describe("AgentMessageResponseDto 三值 action + 可选 reason", () => {
       sendMessageAndResume,
     } as never);
 
-    const out = await ctl.postMessage(
-      SID,
-      { content: "补充一个目标" },
-      { username: "admin" } as never,
-    );
+    const out = await ctl.postMessage(SID, { content: "补充一个目标" }, {
+      username: "admin",
+    } as never);
 
     expect(out).toEqual(rejected);
     expect(out.action).toBe("rejected_terminal");
@@ -96,7 +94,10 @@ describe("审批处置响应 DTO 的 resumeReason", () => {
       listToolCalls: jest.fn(async () => []),
     };
     ctl.approvals = {
-      findByKey: jest.fn(async () => ({ sessionId: SID, toolName: "update_task" })),
+      findByKey: jest.fn(async () => ({
+        sessionId: SID,
+        toolName: "update_task",
+      })),
       decide: jest.fn(async () => ({
         approvalKey: "k1",
         status: "denied",

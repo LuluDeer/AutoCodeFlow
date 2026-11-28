@@ -23,6 +23,7 @@ import {
   DecideWorkbenchApprovalDto,
 } from "../dto/workbench-interactive.dto";
 import { WorkbenchAiPlannerService } from "../workbench-ai-planner.service";
+import { WorkbenchSessionController } from "../workbench-session.controller";
 import {
   PREVIEW_CAPABILITY_WHITELIST,
   buildPreview,
@@ -37,7 +38,7 @@ const ADMIN = { id: 1, username: "root", role: UserRole.ADMIN };
 const SESSION_ID = "22222222-2222-4222-8222-222222222222";
 
 describe("workbench preview — 白名单与触发周期", () => {
-  it('http 在能力白名单内，once/hourly 在 cadence 枚举内', () => {
+  it("http 在能力白名单内，once/hourly 在 cadence 枚举内", () => {
     expect(PREVIEW_CAPABILITY_WHITELIST).toContain("http");
     expect(PREVIEW_CADENCES).toContain("once");
     expect(PREVIEW_CADENCES).toContain("hourly");
@@ -67,7 +68,9 @@ describe("workbench preview — 白名单与触发周期", () => {
     const res = buildPreview({ goal: "每小时巡检", cadence: "hourly" });
     expect(res.card.triggerText).toBe("每小时执行一次");
     expect(res.checks).toEqual(
-      expect.arrayContaining([expect.objectContaining({ field: "cadence", status: "ok" })]),
+      expect.arrayContaining([
+        expect.objectContaining({ field: "cadence", status: "ok" }),
+      ]),
     );
   });
 });
@@ -75,7 +78,11 @@ describe("workbench preview — 白名单与触发周期", () => {
 describe("WorkbenchAiPlannerService — LLM 增强与回落", () => {
   const card = buildPreview({ goal: "汇总订单异常", cadence: "daily" }).card;
 
-  function makeAi(content: string, model = "test-model", provider = "test-provider") {
+  function makeAi(
+    content: string,
+    model = "test-model",
+    provider = "test-provider",
+  ) {
     return {
       chatMultimodal: jest.fn(async () => ({
         content,
@@ -88,9 +95,13 @@ describe("WorkbenchAiPlannerService — LLM 增强与回落", () => {
 
   it("未传 useAi / AI 缺席 → 返回空对象，不污染既有响应形状", async () => {
     const noAi = new WorkbenchAiPlannerService(null);
-    expect(await noAi.enhance({ goal: "x", cadence: "daily" }, card)).toEqual({});
+    expect(await noAi.enhance({ goal: "x", cadence: "daily" }, card)).toEqual(
+      {},
+    );
     const withAi = new WorkbenchAiPlannerService(makeAi("{}") as never);
-    expect(await withAi.enhance({ goal: "x", cadence: "daily" }, card)).toEqual({});
+    expect(await withAi.enhance({ goal: "x", cadence: "daily" }, card)).toEqual(
+      {},
+    );
   });
 
   it("useAi=true 且模型返回合法 JSON → plannerMode=ai，建议经白名单过滤", async () => {
@@ -123,7 +134,10 @@ describe("WorkbenchAiPlannerService — LLM 增强与回落", () => {
       }),
     } as never);
     expect(
-      await throwing.enhance({ goal: "x", cadence: "daily", useAi: true }, card),
+      await throwing.enhance(
+        { goal: "x", cadence: "daily", useAi: true },
+        card,
+      ),
     ).toEqual({ plannerMode: "deterministic" });
 
     const garbage = new WorkbenchAiPlannerService(makeAi("not json") as never);
@@ -173,12 +187,17 @@ describe("chat-session — prompt-first 创建与会话类型推导", () => {
     expect(keys).not.toContain("scope");
     expect(keys).not.toContain("createdBy");
     expect(keys).not.toContain("triggerSource");
-    const errors = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
+    const errors = await validate(dto, {
+      whitelist: true,
+      forbidNonWhitelisted: true,
+    });
     expect(errors.map((e) => e.property)).toContain("kind");
   });
 
   it("审批 DTO 只接受 grant/deny/withdraw，note 可选消除 400", async () => {
-    const ok = plainToInstance(DecideWorkbenchApprovalDto, { decision: "withdraw" });
+    const ok = plainToInstance(DecideWorkbenchApprovalDto, {
+      decision: "withdraw",
+    });
     expect(await validate(ok)).toHaveLength(0);
     const withNote = plainToInstance(DecideWorkbenchApprovalDto, {
       decision: "deny",
@@ -186,7 +205,9 @@ describe("chat-session — prompt-first 创建与会话类型推导", () => {
     });
     expect(await validate(withNote)).toHaveLength(0);
     expect(withNote.note).toBe("误操作，撤回");
-    const bad = plainToInstance(DecideWorkbenchApprovalDto, { decision: "approve" });
+    const bad = plainToInstance(DecideWorkbenchApprovalDto, {
+      decision: "approve",
+    });
     expect(await validate(bad)).not.toHaveLength(0);
   });
 });
@@ -205,7 +226,8 @@ function makeInteractiveHarness(sessionOwner: string) {
     createdBy: sessionOwner,
   }));
   const requestAbort = jest.fn(async () => true);
-  const decideApproval = jest.fn(async () => true);  const port: WorkbenchSessionInteractionPort = {
+  const decideApproval = jest.fn(async () => true);
+  const port: WorkbenchSessionInteractionPort = {
     createSession: create as never,
     findById: findById as never,
     sendMessage: sendMessage as never,
@@ -218,20 +240,6 @@ function makeInteractiveHarness(sessionOwner: string) {
 }
 
 describe("chat-session — owner 校验与审批四眼", () => {
-  const { WorkbenchSessionController } = require("../workbench-session.controller") as {
-    WorkbenchSessionController: new (port: WorkbenchSessionInteractionPort) => {
-      createChatSession(dto: unknown, user: unknown): Promise<unknown>;
-      postMessage(id: string, dto: unknown, user: unknown): Promise<unknown>;
-      cancelSession(id: string, user: unknown): Promise<unknown>;
-      decideApproval(
-        id: string,
-        approvalKey: string,
-        dto: unknown,
-        user: unknown,
-      ): Promise<unknown>;
-    };
-  };
-
   it("prompt-first 创建：triggerSource=workbench，首条 user step 由端口写一次", async () => {
     const h = makeInteractiveHarness(`user:${USER.id}`);
     const controller = new WorkbenchSessionController(h.port);
@@ -244,11 +252,17 @@ describe("chat-session — owner 校验与审批四眼", () => {
     expect(res.initialStepPersisted).toBe(true);
     expect(h.create).toHaveBeenCalledTimes(1);
     expect(h.create).toHaveBeenCalledWith(
-      expect.objectContaining({ triggerSource: "workbench", kind: "sop_authoring" }),
+      expect.objectContaining({
+        triggerSource: "workbench",
+        kind: "sop_authoring",
+      }),
     );
     expect(h.sendMessage).toHaveBeenCalledTimes(1);
     expect(h.sendMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ content: "帮我起草一份 SOP", mode: "followup" }),
+      expect.objectContaining({
+        content: "帮我起草一份 SOP",
+        mode: "followup",
+      }),
     );
   });
 
@@ -294,10 +308,13 @@ describe("chat-session — owner 校验与审批四眼", () => {
   it("追加消息：终态拒绝 ⇒ ok:false + action + reason（不谎报成功）", async () => {
     const h = makeInteractiveHarness(`user:${USER.id}`);
     h.port.sendMessage = jest.fn(async () => {
-      const err = Object.assign(new Error("会话已处于终态（succeeded），不能继续追加消息"), {
-        action: "rejected_terminal",
-        reason: "会话已处于终态（succeeded），不能继续追加消息",
-      });
+      const err = Object.assign(
+        new Error("会话已处于终态（succeeded），不能继续追加消息"),
+        {
+          action: "rejected_terminal",
+          reason: "会话已处于终态（succeeded），不能继续追加消息",
+        },
+      );
       throw err;
     }) as never;
     const controller = new WorkbenchSessionController(h.port);
@@ -330,16 +347,31 @@ describe("chat-session — owner 校验与审批四眼", () => {
     const h = makeInteractiveHarness(`user:${ADMIN.username}`);
     const controller = new WorkbenchSessionController(h.port);
     await expect(
-      controller.decideApproval(SESSION_ID, "apr-1", { decision: "grant" }, USER),
+      controller.decideApproval(
+        SESSION_ID,
+        "apr-1",
+        { decision: "grant" },
+        USER,
+      ),
     ).rejects.toBeInstanceOf(ForbiddenException);
     await expect(
-      controller.decideApproval(SESSION_ID, "apr-1", { decision: "grant" }, ADMIN),
+      controller.decideApproval(
+        SESSION_ID,
+        "apr-1",
+        { decision: "grant" },
+        ADMIN,
+      ),
     ).rejects.toBeInstanceOf(ForbiddenException);
     // withdraw 不要求 ADMIN，也不要求四眼（owner 本人撤回自己的待批单）。
     const ownerHarness = makeInteractiveHarness(`user:${USER.id}`);
     const ownerController = new WorkbenchSessionController(ownerHarness.port);
     await expect(
-      ownerController.decideApproval(SESSION_ID, "apr-1", { decision: "withdraw" }, USER),
+      ownerController.decideApproval(
+        SESSION_ID,
+        "apr-1",
+        { decision: "withdraw" },
+        USER,
+      ),
     ).resolves.toEqual({ ok: true, sessionId: SESSION_ID });
     expect(ownerHarness.decideApproval).toHaveBeenCalledWith(
       expect.objectContaining({ decision: "withdraw" }),

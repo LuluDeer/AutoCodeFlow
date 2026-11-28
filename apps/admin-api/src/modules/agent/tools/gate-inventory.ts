@@ -450,7 +450,10 @@ function handlerBlock(binderSource: string, name: string): string {
   const marker = `register("${name}"`;
   const start = binderSource.indexOf(marker);
   if (start < 0) return "";
-  const next = binderSource.indexOf("this.api.register(", start + marker.length);
+  const next = binderSource.indexOf(
+    "this.api.register(",
+    start + marker.length,
+  );
   return binderSource.slice(
     start,
     next < 0 ? Math.min(binderSource.length, start + 4000) : next,

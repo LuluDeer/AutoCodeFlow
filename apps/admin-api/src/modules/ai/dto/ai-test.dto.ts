@@ -35,7 +35,8 @@ export class TestAiProviderDto {
   testStreaming?: boolean;
 
   @ApiPropertyOptional({
-    description: "是否验证工具调用声明透传（开启且未指定用途时默认按智能体用途测试）",
+    description:
+      "是否验证工具调用声明透传（开启且未指定用途时默认按智能体用途测试）",
   })
   @IsOptional()
   @IsBoolean()

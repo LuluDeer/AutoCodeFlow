@@ -29,15 +29,6 @@ export interface WorkbenchPlanSuggestion {
   aiSuggestions?: PlanCardAiSuggestionsDto;
 }
 
-interface RawSuggestion {
-  title?: unknown;
-  summary?: unknown;
-  suggestedSteps?: unknown;
-  capabilityHints?: unknown;
-  acceptanceText?: unknown;
-  riskNotes?: unknown;
-}
-
 /** 从可能带 markdown 代码围栏的模型输出里取出第一个 `{...}` 对象。 */
 function extractJsonObject(raw: string): Record<string, unknown> | null {
   const text = raw.trim();
@@ -63,7 +54,11 @@ function cleanString(value: unknown, max: number): string | null {
   return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
 }
 
-function cleanStringArray(value: unknown, maxItems: number, maxChars: number): string[] {
+function cleanStringArray(
+  value: unknown,
+  maxItems: number,
+  maxChars: number,
+): string[] {
   if (!Array.isArray(value)) return [];
   const result: string[] = [];
   for (const item of value) {
@@ -125,7 +120,11 @@ export class WorkbenchAiPlannerService {
           maxTokens: 600,
         }),
       );
-      if (!response || typeof response.content !== "string" || !response.content.trim()) {
+      if (
+        !response ||
+        typeof response.content !== "string" ||
+        !response.content.trim()
+      ) {
         return { plannerMode: "deterministic" };
       }
       const parsed = extractJsonObject(response.content);
@@ -136,14 +135,17 @@ export class WorkbenchAiPlannerService {
       if (!summary && steps.length === 0 && risks.length === 0) {
         return { plannerMode: "deterministic" };
       }
-      const hints = cleanStringArray(parsed.capabilityHints, 6, 32).filter((value) =>
-        (PREVIEW_CAPABILITY_WHITELIST as readonly string[]).includes(value),
+      const hints = cleanStringArray(parsed.capabilityHints, 6, 32).filter(
+        (value) =>
+          (PREVIEW_CAPABILITY_WHITELIST as readonly string[]).includes(value),
       );
       const suggestions: PlanCardAiSuggestionsDto = {
         summary: summary ?? "已给出步骤与风险建议。",
         suggestedSteps: steps,
         riskNotes: risks,
-        ...(cleanString(parsed.title, 120) ? { title: cleanString(parsed.title, 120)! } : {}),
+        ...(cleanString(parsed.title, 120)
+          ? { title: cleanString(parsed.title, 120)! }
+          : {}),
         ...(hints.length > 0 ? { capabilityHints: hints } : {}),
         ...(cleanString(parsed.acceptanceText, 400)
           ? { acceptanceText: cleanString(parsed.acceptanceText, 400)! }
@@ -169,7 +171,11 @@ export class WorkbenchAiPlannerService {
   private withTimeout<T>(work: Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error(`workbench AI planner timed out after ${WORKBENCH_PLANNER_TIMEOUT_MS}ms`));
+        reject(
+          new Error(
+            `workbench AI planner timed out after ${WORKBENCH_PLANNER_TIMEOUT_MS}ms`,
+          ),
+        );
       }, WORKBENCH_PLANNER_TIMEOUT_MS);
       work.then(
         (value) => {

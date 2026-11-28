@@ -188,7 +188,9 @@ export class ExecutorPackageController {
     @UploadedFile() file: Express.Multer.File,
     @CurrentUser("username") uploadedBy: string,
   ): Promise<ExecutorPackageView> {
-    return this.withChangelog(await this.svc.create(createDto, file, uploadedBy));
+    return this.withChangelog(
+      await this.svc.create(createDto, file, uploadedBy),
+    );
   }
 
   @Get()
@@ -253,7 +255,9 @@ export class ExecutorPackageController {
     type: ExecutorPackageResponseDto,
   })
   @ApiResponse({ status: 404, description: "包不存在" })
-  async findOne(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackageView> {
+  async findOne(
+    @Param("id", ParseUUIDPipe) id: string,
+  ): Promise<ExecutorPackageView> {
     return this.withChangelog(await this.svc.findOne(id));
   }
 
@@ -414,7 +418,9 @@ export class ExecutorPackageController {
   @ApiOperation({ summary: "弃用执行器包" })
   @ApiParam({ name: "id", description: "包 ID" })
   @ApiOkResponse({ type: ExecutorPackageResponseDto })
-  async deprecate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackageView> {
+  async deprecate(
+    @Param("id", ParseUUIDPipe) id: string,
+  ): Promise<ExecutorPackageView> {
     return this.withChangelog(await this.svc.deprecate(id));
   }
 
@@ -422,7 +428,9 @@ export class ExecutorPackageController {
   @ApiOperation({ summary: "激活执行器包" })
   @ApiParam({ name: "id", description: "包 ID" })
   @ApiOkResponse({ type: ExecutorPackageResponseDto })
-  async activate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackageView> {
+  async activate(
+    @Param("id", ParseUUIDPipe) id: string,
+  ): Promise<ExecutorPackageView> {
     return this.withChangelog(await this.svc.activate(id));
   }
 

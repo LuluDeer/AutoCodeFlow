@@ -393,7 +393,9 @@ export class AgentInboxService {
       // `pageSize: 1` 只为拿 total（不搬行体）。
       !adminOnly
         ? { value: null, degraded: false }
-        : this.read("counts.stalled", () => this.sessionsTotal({ stalled: {} })),
+        : this.read("counts.stalled", () =>
+            this.sessionsTotal({ stalled: {} }),
+          ),
       // 一次性把「条数 + 截断位」拿回来：截断位必须与条数**同源**，否则并发下
       // 一个请求的 `backlogged=3` 可能配上另一个请求的 `truncated`。
       this.read("counts.backlogged", () => this.backlog.findBacklogged()),

@@ -244,7 +244,10 @@ export class ArtifactsController {
     description:
       "有界预览结果（name/mimeType/size/truncated/kind/content）；非文本 content 恒为 null",
   })
-  @ApiResponse({ status: 400, description: "执行 ID 或产物名非法、maxBytes 越界" })
+  @ApiResponse({
+    status: 400,
+    description: "执行 ID 或产物名非法、maxBytes 越界",
+  })
   @ApiResponse({ status: 403, description: "调用者无权访问该产物" })
   @ApiResponse({ status: 404, description: "产物不存在" })
   async preview(

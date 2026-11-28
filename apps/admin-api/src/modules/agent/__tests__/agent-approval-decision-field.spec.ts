@@ -4,7 +4,10 @@
  * 覆盖：withdraw/deny/grant 显式传 decision ⇒ 事件 payload 带该字段且 status 兼容；
  * 既有 agent 主线 3 参调用不传 ⇒ payload 仍是 4 键（不破坏既有断言）。
  */
-import { AgentApprovalsService, buildApprovalDecidedPayload } from "../runtime/agent-approvals.service";
+import {
+  AgentApprovalsService,
+  buildApprovalDecidedPayload,
+} from "../runtime/agent-approvals.service";
 import type { AgentEventInput } from "../entities/agent-event.entity";
 
 type Any = Record<string, any>;
@@ -32,10 +35,15 @@ function repo(status = "denied") {
 
 function sink() {
   const seen: Array<{ sessionId: string; event: AgentEventInput }> = [];
-  return { seen, tryAppendEvent: jest.fn(async (sessionId: string, event: AgentEventInput) => {
-    seen.push({ sessionId, event });
-    return seen.length;
-  }) };
+  return {
+    seen,
+    tryAppendEvent: jest.fn(
+      async (sessionId: string, event: AgentEventInput) => {
+        seen.push({ sessionId, event });
+        return seen.length;
+      },
+    ),
+  };
 }
 
 describe("approval_decided · decision 字段", () => {

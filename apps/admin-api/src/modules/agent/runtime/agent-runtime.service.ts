@@ -517,8 +517,12 @@ export class AgentRuntimeService {
    */
   private eventStream: AgentEventStreamService | null = null;
   private doomGuard: AgentDoomLoopGuard | null = null;
-  setEventStream(s: AgentEventStreamService): void { this.eventStream = s; }
-  setDoomLoopGuard(g: AgentDoomLoopGuard): void { this.doomGuard = g; }
+  setEventStream(s: AgentEventStreamService): void {
+    this.eventStream = s;
+  }
+  setDoomLoopGuard(g: AgentDoomLoopGuard): void {
+    this.doomGuard = g;
+  }
   /** 仅 LLM 流式调用使用：它必须有 stream；guard 单独走 `this.doomGuard`。 */
   private get realtimePorts(): RealtimePorts | null {
     return this.eventStream ? { stream: this.eventStream } : null;
@@ -682,11 +686,17 @@ export class AgentRuntimeService {
         //   · 当前步序号取自本 run 的 DB 用量（usage.steps），每轮 LLM 前调一次；
         //   · provider 缺席 ⇒ 整段跳过（fail-open），主链逐字不变。
         if (this.steerInbox) {
-          const drained: { intents: readonly { content: string }[] } = await this.steerInbox.drain(sessionId, usage.steps as StepBoundary);
-          for (const intent of drained.intents) messages = [...messages, { role: "user", content: intent.content }];
+          const drained: { intents: readonly { content: string }[] } =
+            await this.steerInbox.drain(sessionId, usage.steps as StepBoundary);
+          for (const intent of drained.intents)
+            messages = [...messages, { role: "user", content: intent.content }];
         }
         // W1-S2：跨副本 steer 注入（写入侧已持久化 user 步）。
-        messages = await injectRemoteSteers(sessionId, messages, this.eventStream);
+        messages = await injectRemoteSteers(
+          sessionId,
+          messages,
+          this.eventStream,
+        );
 
         // ── 推理 ──
         let tools = this.toolExecutor
@@ -950,7 +960,13 @@ export class AgentRuntimeService {
         const t0 = Date.now();
         try {
           // W1-S2：实时端口在场走流式 LLM（delta 直发 SSE），否则原路径。
-          res = await invokeLlm(this.aiService, this.realtimePorts, request, sessionId, () => this.callLlmWithRetry(request, deadlineAt));
+          res = await invokeLlm(
+            this.aiService,
+            this.realtimePorts,
+            request,
+            sessionId,
+            () => this.callLlmWithRetry(request, deadlineAt),
+          );
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           // 模型调用失败 → 记 step 后收敛（不是 budget_exceeded：预算没超，
@@ -1046,7 +1062,9 @@ export class AgentRuntimeService {
         if (abortedAfterLlm) return abortedAfterLlm;
 
         // provider/model 优先本次响应（避免二次解析漂移），mock 缺字段才回落。
-        const route = await resolveRoute(res, () => this.aiService.getActiveRoute());
+        const route = await resolveRoute(res, () =>
+          this.aiService.getActiveRoute(),
+        );
         lastPromptTokens = res.usage.tokensIn;
 
         const step = await this.sessionService.appendStep(sessionId, {
@@ -1140,7 +1158,12 @@ export class AgentRuntimeService {
 
         // W1-S2：整批 tool_calls 过死循环守卫。
         // 只依赖 doomGuard：即使 stream 未装配，守卫仍执行判定（不再被 realtimePorts 连带 fail-open）。
-        messages = observeAndRemind(this.doomGuard, sessionId, messages, res.toolCalls);
+        messages = observeAndRemind(
+          this.doomGuard,
+          sessionId,
+          messages,
+          res.toolCalls,
+        );
 
         // 工具执行前的 abort 检查（只读批/串行批的共同入口）。
         const abortedBeforeTools = await this.stopOnAbort(

@@ -32,7 +32,9 @@ export interface DoomLoopVerdict {
 }
 
 /** 升级阈值（升序，闭集）。 */
-export const DOOM_LOOP_THRESHOLDS: readonly DoomLoopLevel[] = [3, 5, 8] as const;
+export const DOOM_LOOP_THRESHOLDS: readonly DoomLoopLevel[] = [
+  3, 5, 8,
+] as const;
 
 /** 深度排序规范化：同构对象键顺序无关，数组顺序保留。 */
 export function canonicalCallKey(toolName: string, args: unknown): string {
@@ -64,8 +66,7 @@ function canonicalValue(value: unknown, depth: number): string {
   const keys = Object.keys(obj).sort();
   return `{${keys
     .map(
-      (key) =>
-        `${JSON.stringify(key)}:${canonicalValue(obj[key], depth + 1)}`,
+      (key) => `${JSON.stringify(key)}:${canonicalValue(obj[key], depth + 1)}`,
     )
     .join(",")}}`;
 }
@@ -125,7 +126,8 @@ export class AgentDoomLoopGuard {
     if (!entry) return null;
     const level = [...DOOM_LOOP_THRESHOLDS]
       .reverse()
-      .find((threshold) => entry.count >= threshold) as DoomLoopLevel | undefined;
+      .find((threshold) => entry.count >= threshold) as
+      DoomLoopLevel | undefined;
     return {
       count: entry.count,
       level: level ?? 0,

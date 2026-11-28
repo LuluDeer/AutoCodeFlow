@@ -358,30 +358,40 @@ export class AgentCollabAckReplyDto {
 function parseRelayToolCalls(raw: unknown, index: number): ToolCall[] {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > 32) {
-    throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+    throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+      index,
+    });
   }
   const calls: ToolCall[] = [];
   for (const item of raw) {
     if (!item || typeof item !== "object") {
-      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+        index,
+      });
     }
     const rec = item as Record<string, unknown>;
-    const fn = rec.function && typeof rec.function === "object"
-      ? (rec.function as Record<string, unknown>)
-      : undefined;
+    const fn =
+      rec.function && typeof rec.function === "object"
+        ? (rec.function as Record<string, unknown>)
+        : undefined;
     const id = typeof rec.id === "string" ? rec.id.trim() : "";
     const name = typeof fn?.name === "string" ? fn.name.trim() : "";
     if (!id || !name || rec.type !== "function") {
-      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+        index,
+      });
     }
     const rawArgs = fn?.arguments;
-    const args = typeof rawArgs === "string"
-      ? rawArgs
-      : rawArgs !== undefined && rawArgs !== null
-        ? JSON.stringify(rawArgs)
-        : "{}";
+    const args =
+      typeof rawArgs === "string"
+        ? rawArgs
+        : rawArgs !== undefined && rawArgs !== null
+          ? JSON.stringify(rawArgs)
+          : "{}";
     if (args.length > 100_000) {
-      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, {
+        index,
+      });
     }
     calls.push({ id, type: "function", function: { name, arguments: args } });
   }
@@ -412,7 +422,9 @@ function parseRelayMessages(
   return raw.map((m, index) => {
     const role = m?.role;
     if (
-      role !== "system" && role !== "user" && role !== "assistant" &&
+      role !== "system" &&
+      role !== "user" &&
+      role !== "assistant" &&
       role !== "tool"
     ) {
       throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_ROLE_INVALID, { index });
@@ -420,21 +432,31 @@ function parseRelayMessages(
     const content = m?.content;
     // role:'tool' 的 content 是工具执行结果文本（非多模态 part），必带 tool_call_id。
     if (role === "tool") {
-      const toolCallId = typeof m.tool_call_id === "string" ? m.tool_call_id.trim() : "";
+      const toolCallId =
+        typeof m.tool_call_id === "string" ? m.tool_call_id.trim() : "";
       if (!toolCallId) {
-        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_ROLE_INVALID, { index });
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_ROLE_INVALID, {
+          index,
+        });
       }
       if (typeof content !== "string" || content.length === 0) {
-        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+          index,
+        });
       }
       if (content.length > 100_000) {
-        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, {
+          index,
+        });
       }
-      return { role: "tool", content, tool_call_id: toolCallId } as MultimodalMessage;
+      return {
+        role: "tool",
+        content,
+        tool_call_id: toolCallId,
+      } as MultimodalMessage;
     }
-    const toolCalls = role === "assistant"
-      ? parseRelayToolCalls(m.tool_calls, index)
-      : [];
+    const toolCalls =
+      role === "assistant" ? parseRelayToolCalls(m.tool_calls, index) : [];
     if (typeof content === "string") {
       if (content.length === 0 && toolCalls.length === 0) {
         throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
@@ -452,7 +474,10 @@ function parseRelayMessages(
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       } as MultimodalMessage;
     }
-    if (content !== undefined && (!Array.isArray(content) || content.length === 0)) {
+    if (
+      content !== undefined &&
+      (!Array.isArray(content) || content.length === 0)
+    ) {
       throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
         index,
       });

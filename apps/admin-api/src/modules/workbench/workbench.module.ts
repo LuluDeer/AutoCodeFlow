@@ -62,6 +62,8 @@ import {
 import { WorkbenchSessionController } from "./workbench-session.controller";
 import { WORKBENCH_SESSION_INTERACTION_PORT } from "./workbench-session-interaction.port";
 import { createWorkbenchSessionInteractionPort } from "./workbench-session-interaction.adapter";
+import { WORKBENCH_CONVERT_TO_SOP } from "./workbench-convert.port";
+import { ConvertToSopService } from "./convert-to-sop.service";
 import { WorkbenchAiPlannerService } from "./workbench-ai-planner.service";
 import { AiModule } from "../ai/ai.module";
 
@@ -163,7 +165,10 @@ function toolErrorSummary(row: {
   return clipText(body.error ?? body.message ?? body.detail);
 }
 
-function artifactDownloadUrl(executionId: unknown, name: unknown): string | null {
+function artifactDownloadUrl(
+  executionId: unknown,
+  name: unknown,
+): string | null {
   if (typeof executionId !== "string" || !executionId) return null;
   if (typeof name !== "string" || !name) return null;
   return `/api/tasks/executions/${encodeURIComponent(executionId)}/artifacts/${encodeURIComponent(name)}`;
@@ -190,9 +195,20 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
     AuditModule,
     AiModule,
   ],
-  controllers: [WorkbenchController, ReleaseRetryController, WorkbenchSessionController],
+  controllers: [
+    WorkbenchController,
+    ReleaseRetryController,
+    WorkbenchSessionController,
+  ],
   providers: [
     WorkbenchAiPlannerService,
+    // 切片 E1：workbench 会话 → SOP 草稿转写。token + useClass：控制器只依赖
+    // workbench-convert.port.ts 的结构面（不 value-import 服务实现，保住
+    // workbench-session 内存替身单测的装载面）；真实实现在这里接线。
+    {
+      provide: WORKBENCH_CONVERT_TO_SOP,
+      useClass: ConvertToSopService,
+    },
     {
       provide: CapabilityActivationRecorder,
       useExisting: CapabilityActivationService,
@@ -379,10 +395,19 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
             );
           },
           findById: (id) => sessions().findById(id),
-          listOwn: async ({ createdBy, createdByAlias, isAdmin, page, pageSize }) => {
+          listOwn: async ({
+            createdBy,
+            createdByAlias,
+            isAdmin,
+            page,
+            pageSize,
+          }) => {
             const dataSource = moduleRef.get(DataSource, { strict: false });
             const safePage = Math.max(1, Math.trunc(Number(page) || 1));
-            const safePageSize = Math.min(50, Math.max(1, Math.trunc(Number(pageSize) || 20)));
+            const safePageSize = Math.min(
+              50,
+              Math.max(1, Math.trunc(Number(pageSize) || 20)),
+            );
             const offset = (safePage - 1) * safePageSize;
             const alias = createdByAlias || createdBy;
             // isAdmin 分支此前是死代码（controller 从不传）：ADMIN 看全部交互式
@@ -425,14 +450,16 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
           },
           readSummary: async (id) => {
             const svc = sessions();
-            const [sessionRow, steps, toolCalls, approvals] = await Promise.all([
-              svc.findById(id),
-              svc.listSteps(id),
-              svc.listToolCalls(id),
-              moduleRef
-                .get(AgentApprovalsService, { strict: false })
-                .listForSession(id),
-            ]);
+            const [sessionRow, steps, toolCalls, approvals] = await Promise.all(
+              [
+                svc.findById(id),
+                svc.listSteps(id),
+                svc.listToolCalls(id),
+                moduleRef
+                  .get(AgentApprovalsService, { strict: false })
+                  .listForSession(id),
+              ],
+            );
             // 产物摘要：task_executions.agentSessionId → execution_artifacts。
             // 用 DataSource 直读窄投影，避免反向依赖 ArtifactsModule；读失败
             // 降级为空数组（产物是附加信息，不能让会话详情整页 500）。
@@ -491,9 +518,10 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
               // 完整时间线：最多 50 步，每步正文 <=8000 字符。
               steps: steps.slice(-50).map((s) => {
                 const full = typeof s.content === "string" ? s.content : null;
-                const bounded = full !== null && full.length > STEP_CONTENT_MAX
-                  ? full.slice(0, STEP_CONTENT_MAX)
-                  : full;
+                const bounded =
+                  full !== null && full.length > STEP_CONTENT_MAX
+                    ? full.slice(0, STEP_CONTENT_MAX)
+                    : full;
                 return {
                   seq: Number(s.seq),
                   role: String(s.role),
@@ -508,9 +536,15 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
                 status: String(tc.status),
                 errorSummary: toolErrorSummary(tc),
                 createdAt: tc.createdAt ?? null,
-                argsPreview: jsonPreview((tc as { argsJson?: unknown }).argsJson),
-                outputPreview: jsonPreview((tc as { resultJson?: unknown }).resultJson),
-                stateChangedAt: (tc as { stateChangedAt?: Date | null }).stateChangedAt ?? null,
+                argsPreview: jsonPreview(
+                  (tc as { argsJson?: unknown }).argsJson,
+                ),
+                outputPreview: jsonPreview(
+                  (tc as { resultJson?: unknown }).resultJson,
+                ),
+                stateChangedAt:
+                  (tc as { stateChangedAt?: Date | null }).stateChangedAt ??
+                  null,
               })),
               approvals: approvalCounts,
               approvalItems: approvals.map((a) => ({
@@ -520,7 +554,8 @@ function artifactDownloadUrl(executionId: unknown, name: unknown): string | null
                 reason: clipText(a.reason),
                 decidedBy: a.decidedBy ?? null,
                 createdAt: a.createdAt ?? null,
-                argsDigest: (a as { argsDigest?: string | null }).argsDigest ?? null,
+                argsDigest:
+                  (a as { argsDigest?: string | null }).argsDigest ?? null,
                 canDecide: a.status === "pending",
                 canWithdraw: a.status === "pending",
               })),
