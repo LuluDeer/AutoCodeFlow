@@ -7,35 +7,11 @@
 import { Card, Skeleton, Tooltip, Typography } from 'antd';
 import { WalletOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { costReasonLabel } from '../../utils/cost-reason-label';
 import { useActivationStatsBrief } from '../../api/queries';
 import '../../i18n';
 
 const { Text } = Typography;
-
-type Translate = import('i18next').TFunction;
-
-/**
- * 后端 PriceReason（apps/admin-api .../price.dto.ts）五种值 → 本地化文案。
- * 未登记的原因码（含前端哨兵 READ_FAILED / UNKNOWN 与后端未来新增值）
- * 原样回退——保持可诊断，不伪装成已知原因，也不渲染空串。
- */
-// eslint-disable-next-line react-refresh/only-export-components -- 本次文件边界不允许新建 utils；此纯函数只被用量页与测试消费，无组件状态边界风险
-export function costReasonLabel(reason: string, t: Translate): string {
-  switch (reason) {
-    case 'OK':
-      return t('costReason.OK');
-    case 'NO_TOKEN_SAMPLE':
-      return t('costReason.NO_TOKEN_SAMPLE');
-    case 'PRICE_MISSING':
-      return t('costReason.PRICE_MISSING');
-    case 'INVALID_TOKEN_COUNT':
-      return t('costReason.INVALID_TOKEN_COUNT');
-    case 'INVALID_PRICE':
-      return t('costReason.INVALID_PRICE');
-    default:
-      return reason;
-  }
-}
 
 export default function CostPostureCard() {
   const { t } = useTranslation();

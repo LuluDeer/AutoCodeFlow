@@ -26,7 +26,7 @@ import {
 } from '../api/capability-activation';
 import { useTranslation } from 'react-i18next';
 import i18n from '../i18n';
-import { costReasonLabel } from '../components/dashboard/CostPostureCard';
+import { costReasonLabel } from '../utils/cost-reason-label';
 
 const { Text, Title } = Typography;
 const DEFAULT_DAYS = 30;

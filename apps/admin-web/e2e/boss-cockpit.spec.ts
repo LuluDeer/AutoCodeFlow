@@ -6,10 +6,15 @@ import { test as base, expect } from "@playwright/test";
  * ⚠️ 覆盖边界声明：**这是传输层 mock（context.route），不证明后端真跑。**
  *   · 本 spec 用真 build + 真 Chromium 渲染真实 SPA 产物，断言 DOM 可达与
  *     data-testid 可见、交互落点正确；
- *   · 所有 API 响应由 page.route 喂 fixture（含审批/成本/北极星/既有 KPI/认证），
+ *   · 所有 API 响应由 page.route 喂 fixture（含审批/北极星/既有 KPI/认证），
  *     因此只证明「前端在真实浏览器里对这些数据形状渲染正确」，
  *     不证明 API 真返回这些值、不证明后端持久化/约束/队列行为。
  *   真后端证据另见 north-star-real-backend.spec.ts 等 spec；二者不可互相替代。
+ *
+ * task-13 切片 C1 驾驶舱瘦身：驾驶舱砍为两卡（审批 + 北极星，北极星仅 admin）。
+ * 原 CostPostureCard / TtfvCard 不再由驾驶舱渲染——TtfvCard 组件连同
+ * e2e/ttfv-card.spec.ts 已整体退役；本 spec 用例 ④⑤ 改为「cockpit 内
+ * cost/ttfv 锚缺席」断言（stub 夹具保持成本/北极星两路数据源兼容）。
  *
  * 环境适配（曾导致本 spec 的 unknown 假绿）：.env 把 VITE_API_URL_INTERNAL 指向
  * 独立 API 主机（如 :3105），请求路径是裸 /metrics/summary 而非 /api/metrics/summary。
@@ -310,13 +315,12 @@ async function openDashboard(page: import("@playwright/test").Page) {
 }
 
 test.describe("老板驾驶舱一屏（传输层 mock，非真后端）", () => {
-  test("① 首屏区块可达：审批卡 / 成本卡 / 北极星卡可见，北极星仅一处", async ({
+  test("① 首屏两卡同屏：审批卡 + 北极星卡可见，北极星仅一处，cost/ttfv 锚缺席", async ({
     page,
     boss,
   }) => {
     await openDashboard(page);
     await expect(page.getByTestId("boss-approval-card")).toBeVisible();
-    await expect(page.getByTestId("boss-cost-card")).toBeVisible();
     await expect(page.getByTestId("boss-approval-count")).toContainText("3");
     // 北极星卡：strict 锚点在 cockpit 内且全页唯一。
     const cockpit = page.getByTestId("boss-cockpit");
@@ -326,6 +330,12 @@ test.describe("老板驾驶舱一屏（传输层 mock，非真后端）", () => 
     await expect(page.locator('[data-testid="north-star-strict"]')).toHaveCount(
       1,
     );
+    // 瘦身契约：驾驶舱不再渲染成本卡与 TTFV 卡（ttfv spec 已退役）。
+    await expect(cockpit.locator('[data-testid="boss-cost-card"]')).toHaveCount(0);
+    await expect(cockpit.locator('[data-testid="boss-cost-amount"]')).toHaveCount(0);
+    await expect(cockpit.locator('[data-testid="boss-cost-unavailable"]')).toHaveCount(0);
+    await expect(cockpit.locator('[data-testid="boss-ttfv-card"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="boss-ttfv-card"]')).toHaveCount(0);
     expect(boss.errors.filter((e) => !e.includes("favicon"))).toEqual([]);
   });
 
@@ -352,22 +362,32 @@ test.describe("老板驾驶舱一屏（传输层 mock，非真后端）", () => 
     await expect(page.getByTestId("boss-approval-unknown")).toHaveCount(0);
   });
 
-  test("④ 成本 NO_TOKEN_SAMPLE ⇒ unavailable 可见、无 ¥0.00", async ({
+  test("④ NO_TOKEN_SAMPLE ⇒ 驾驶舱不渲染成本卡（诚实标缺语义上屏退役）", async ({
     page,
   }) => {
     await openDashboard(page);
-    await expect(page.getByTestId("boss-cost-unavailable")).toBeVisible();
+    await expect(page.getByTestId("boss-cost-card")).toHaveCount(0);
+    await expect(page.getByTestId("boss-cost-unavailable")).toHaveCount(0);
     await expect(page.getByTestId("boss-cost-amount")).toHaveCount(0);
-    const cardText = await page.getByTestId("boss-cost-card").innerText();
-    expect(cardText).not.toContain("¥0.00");
+    // 全页文本也不出现折算金额假事实。
+    const cockpitText = await page.getByTestId("boss-cockpit").innerText();
+    expect(cockpitText).not.toContain("¥0.00");
   });
 
-  test("⑤ 成本 OK+123.45 ⇒ amount 显示金额", async ({ page, boss }) => {
+  test("⑤ 成本 OK+123.45 ⇒ 驾驶舱内仍无 cost 锚（数据形状无关，两卡不变）", async ({
+    page,
+    boss,
+  }) => {
     boss.priceReason = "OK";
     boss.currencyValue = 123.45;
     await openDashboard(page);
-    await expect(page.getByTestId("boss-cost-amount")).toContainText("123.45");
+    const cockpit = page.getByTestId("boss-cockpit");
+    await expect(page.getByTestId("boss-cost-amount")).toHaveCount(0);
     await expect(page.getByTestId("boss-cost-unavailable")).toHaveCount(0);
+    await expect(page.getByTestId("boss-cost-card")).toHaveCount(0);
+    // 两卡同屏契约在成本数据为真值时依旧成立。
+    await expect(cockpit.locator('[data-testid="north-star-strict"]')).toHaveCount(1);
+    await expect(cockpit.locator('[data-testid="boss-approval-card"]')).toHaveCount(1);
   });
 
   test("⑥ 审批入口点击跳 /inbox", async ({ page }) => {

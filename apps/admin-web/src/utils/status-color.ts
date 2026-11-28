@@ -98,3 +98,15 @@ export const SOP_ASSIGNMENT_STATUS_COLOR: Record<string, string> = {
   cancelled: 'default',
   stalled: 'volcano',
 };
+
+/**
+ * 机器验收状态（切片 D1）→ Tag color：unverified=灰（进了流程没结论）、
+ * passed=绿、failed=红、unclear=橙；null（迁移前存量行）由调用方判空走
+ * 'default'。与 SOP_ASSIGNMENT_STATUS_COLOR 同款 Record<string,string> 宽键。
+ */
+export const SOP_VERIFICATION_STATUS_COLOR: Record<string, string> = {
+  unverified: 'default',
+  passed: 'green',
+  failed: 'red',
+  unclear: 'orange',
+};

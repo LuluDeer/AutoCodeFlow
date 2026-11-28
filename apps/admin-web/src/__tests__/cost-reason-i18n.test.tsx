@@ -9,7 +9,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import CostPostureCard, { costReasonLabel } from '../components/dashboard/CostPostureCard';
+import CostPostureCard from '../components/dashboard/CostPostureCard';
+import { costReasonLabel } from '../utils/cost-reason-label';
 import ActivationStatsPage from '../pages/ActivationStatsPage';
 import {
   getActivationStats,

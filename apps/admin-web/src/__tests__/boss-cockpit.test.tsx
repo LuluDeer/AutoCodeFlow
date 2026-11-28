@@ -8,10 +8,12 @@
  *     - boss-approval-unknown      null/degraded ⇒「未知（读取失败）」，绝不显示 0
  *     - boss-approval-empty        读到 0
  *     - boss-approval-link         跳 /inbox
- *   · boss-cost-card               成本卡
- *     - boss-cost-amount           仅 priceReason=OK 且 currencyValue 非 null
- *     - boss-cost-unavailable      否则标缺，绝不 0 / ¥0.00
  *   · 北极星卡从页面底部移入 boss-cockpit，且全页仅一处实例。
+ *
+ * task-13 切片 C1 驾驶舱瘦身：驾驶舱只渲染 审批卡 + 北极星卡（admin）两卡；
+ * CostPostureCard / TtfvCard 不再由驾驶舱渲染——suite 保留成本卡标缺用例
+ * （组件文件仍在，供用量页复用同一 dualBasis 语义），但新增 boss-cockpit 内
+ * cost/ttfv 锚缺席断言；boss-ttfv-* 锚随 TtfvCard 删除而整体缺席。
  *
  * 边界声明：本套件 mock 的是 API 层（agentApi / metricsApi / getActivationStats），
  * 只证明「组件在该数据形状下的分支行为」，不证明后端真跑、不证明传输层已接通。
@@ -291,11 +293,16 @@ afterEach(() => {
 });
 
 describe('boss-cockpit — 老板驾驶舱一屏（第 2 级组件级）', () => {
-  it('1. 首屏区块 boss-cockpit 存在，审批卡与成本卡挂载', async () => {
+  it('1. 首屏区块 boss-cockpit 存在，两卡同屏：审批卡 + 北极星卡；cost/ttfv 锚缺席', async () => {
     renderDashboard();
-    expect(await screen.findByTestId('boss-cockpit')).toBeTruthy();
+    const cockpit = await screen.findByTestId('boss-cockpit');
     expect(screen.getByTestId('boss-approval-card')).toBeTruthy();
-    expect(screen.getByTestId('boss-cost-card')).toBeTruthy();
+    expect(cockpit.querySelector('[data-testid="north-star-card"]')).not.toBeNull();
+    // 瘦身契约：cost / ttfv 卡不再由驾驶舱渲染（含内容锚防假绿）。
+    expect(screen.queryByTestId('boss-cost-card')).toBeNull();
+    expect(screen.queryByTestId('boss-cost-amount')).toBeNull();
+    expect(screen.queryByTestId('boss-cost-unavailable')).toBeNull();
+    expect(screen.queryByTestId('boss-ttfv-card')).toBeNull();
   });
 
   it('2. inboxCounts=null+degraded ⇒ unknown 可见、count 不存在、审批卡内不出现 0', async () => {
@@ -339,38 +346,35 @@ describe('boss-cockpit — 老板驾驶舱一屏（第 2 级组件级）', () =>
     expect(screen.queryByTestId('boss-approval-empty')).toBeNull();
   });
 
-  it('5. 成本 NO_TOKEN_SAMPLE+null ⇒ unavailable 可见、成本卡不出现 ¥0.00 / 0 元', async () => {
+  it('5. 成本标缺语义保留（组件供用量页复用）但驾驶舱不渲染：cockpit 内无 cost 锚', async () => {
     mockedGetActivationStats.mockResolvedValue(statsFixture({
       priceReason: 'NO_TOKEN_SAMPLE', currencyValue: null,
     }) as never);
     renderDashboard();
-    expect(await screen.findByTestId('boss-cost-unavailable')).toBeTruthy();
+    expect(screen.queryByTestId('boss-cost-card')).toBeNull();
+    expect(screen.queryByTestId('boss-cost-unavailable')).toBeNull();
     expect(screen.queryByTestId('boss-cost-amount')).toBeNull();
-    const text = textOf('boss-cost-card');
-    expect(text).not.toContain('¥0.00');
-    expect(text).not.toContain('0 元');
-    expect(text).not.toContain('0元');
+    expect(mockedGetActivationStats).not.toHaveBeenCalled();
   });
 
-  it('6. 成本 OK + currencyValue=123.45 ⇒ amount 显示金额', async () => {
+  it('6. 成本 OK + currencyValue=123.45 ⇒ 驾驶舱内仍无 cost 锚（数据形状无关）', async () => {
     mockedGetActivationStats.mockResolvedValue(statsFixture({
       priceReason: 'OK', currencyValue: 123.45,
     }) as never);
     renderDashboard();
-    const amount = await screen.findByTestId('boss-cost-amount');
-    expect(amount.textContent).toContain('123.45');
+    await screen.findByTestId('boss-approval-count');
+    expect(screen.queryByTestId('boss-cost-card')).toBeNull();
+    expect(screen.queryByTestId('boss-cost-amount')).toBeNull();
     expect(screen.queryByTestId('boss-cost-unavailable')).toBeNull();
   });
 
-  it('7. 成本 API 读失败 ⇒ 仍走标缺，成本卡不显示 0', async () => {
+  it('7. 成本 API 读失败 ⇒ 驾驶舱仍不渲染 cost 卡（诚实标缺语义在组件级单测覆盖）', async () => {
     mockedGetActivationStats.mockRejectedValueOnce(new Error('boom: stats unavailable'));
     renderDashboard();
-    expect(await screen.findByTestId('boss-cost-unavailable')).toBeTruthy();
+    await screen.findByTestId('boss-approval-count');
+    expect(screen.queryByTestId('boss-cost-card')).toBeNull();
     expect(screen.queryByTestId('boss-cost-amount')).toBeNull();
-    const text = textOf('boss-cost-card');
-    expect(text).not.toContain('¥0.00');
-    expect(text).not.toContain('0 元');
-    expect(text).not.toContain('0元');
+    expect(screen.queryByTestId('boss-cost-unavailable')).toBeNull();
   });
 
   it('8. 北极星卡位于 boss-cockpit 内，且全页仅一处实例（防双实例）', async () => {
@@ -383,7 +387,7 @@ describe('boss-cockpit — 老板驾驶舱一屏（第 2 级组件级）', () =>
     expect(cockpit.querySelector('[data-testid="north-star-strict"]')).not.toBeNull();
   });
 
-  it('9. 既有 KPI 卡仍渲染（驾驶舱改造不破坏老区块）', async () => {
+  it('9. 既有 KPI 卡仍渲染（驾驶舱瘦身不破坏老区块）', async () => {
     renderDashboard();
     expect(await screen.findByTestId('kpi-today-runs')).toBeTruthy();
     expect(screen.getByTestId('kpi-running')).toBeTruthy();
