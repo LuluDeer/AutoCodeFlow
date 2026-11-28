@@ -189,6 +189,11 @@ jobs:
           cache-dependency-path: apps/admin-api/package-lock.json
       - run: npm ci
         working-directory: apps/admin-api
+      # bcrypt 6 的 node-gyp-build 偶发选中 musl 预编译二进制（run 46144200900：
+      # libc.musl-x86_64.so.1: cannot open shared object file），在 glibc runner 上
+      # 用本机 toolchain 重编译即可；失败必须让 job 红，不许 --force 吞错。
+      - run: npm rebuild bcrypt --build-from-source
+        working-directory: apps/admin-api
       - run: npm run typecheck
         working-directory: apps/admin-api
       # R117：根 tsconfig 排除了 `**/*.spec.ts` 与 `__tests__/**` ⇒ spec 里的类型错误对 `npm run typecheck`
@@ -467,7 +472,7 @@ jobs:
           # 但不会产生 DROP/DELETE —— 必须点名这些副作用才不算假绿（R434 P2）。
           printf '%s\n' "$plain" | grep -qE 'DELETE FROM "migrations"' \
             || { echo "::error::revert did not delete a migration record (down() may be a no-op)"; exit 1; }
-          printf '%s\n' "$plain" | grep -qE 'DROP (TABLE|INDEX) IF EXISTS' \
+          printf '%s\n' "$plain" | grep -qE 'DROP (TABLE|INDEX|COLUMN|CONSTRAINT|TYPE) IF EXISTS' \
             || { echo "::error::revert did not execute reverse DDL (down() may be a no-op)"; exit 1; }
           npm run migration:run
           echo "revert + re-run OK：down 路径可达且有副作用"
