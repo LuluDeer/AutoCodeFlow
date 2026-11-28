@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { INestApplication } from "@nestjs/common";
 import { DataSource } from "typeorm";
-import request from "supertest";
 import { createTestApp } from "./helpers/app.helper";
 import { ArtifactsService } from "../src/modules/artifacts/artifacts.service";
 import { UserRole } from "../src/modules/users/entities/user.entity";
